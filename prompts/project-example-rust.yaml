@@ -1,0 +1,68 @@
+# Example .claude/project.yaml for a Rust/Axum project
+# Copy to your project at: .claude/project.yaml
+
+project: acme-service
+description: High-throughput event processing service built with Axum and Tokio
+
+techStack:
+  language: rust
+  framework: axum
+  testing: cargo-test
+  platform: k8s
+
+commands:
+  install: null                               # cargo handles deps automatically
+  format: cargo fmt
+  lint: cargo clippy -- -D warnings
+  typecheck: null                             # rustc covers this in build
+  test: cargo test
+  build: cargo build --release
+  check: cargo check
+
+docStyle: rustdoc
+typeChecker: none                             # rustc enforces types at compile time
+propertyTestingLib: proptest
+
+fragility:
+  highRiskModules:
+    - src/ingestion/
+    - src/state/
+    - src/protocol/handshake.rs
+  knownFragilePatterns:
+    - "Arc<Mutex<T>> guards held across await points — deadlock risk under load"
+    - "tokio::spawn tasks that ignore JoinHandle — silent panics, no backpressure"
+    - "serde_json::Value used where typed structs should be — schema drift undetected"
+
+adrs:
+  ADR-001:
+    title: Tokio multi-thread runtime with bounded channels
+    summary: Unbounded channels caused OOM under bursts; all channels must be bounded
+    location: docs/adr/001-bounded-channels.md
+  ADR-002:
+    title: Actor model for stateful components
+    summary: Shared mutable state via Arc<Mutex> caused contention; use actors with message passing
+    location: docs/adr/002-actor-model.md
+
+invariants:
+  noMutexAcrossAwait:
+    rule: "Never hold a std::sync::Mutex guard across an .await point"
+    scope: src/
+    why: "Causes deadlock on single-threaded executor; use tokio::sync::Mutex for async contexts"
+  boundedChannels:
+    rule: "All tokio channels must use bounded capacity"
+    scope: src/
+    why: "Unbounded mpsc caused OOM incident; bounded channels provide natural backpressure"
+  noUnwrapInLibrary:
+    rule: "No .unwrap() or .expect() in library code — propagate errors with ?"
+    scope: src/
+    why: "Panics in library code crash the entire service; callers must handle errors"
+
+redLines:
+  - "Never use std::sync::Mutex in async code — use tokio::sync::Mutex"
+  - "Never spawn a task without storing the JoinHandle or using tokio::spawn with error logging"
+  - "Never use serde_json::Value in domain types — define typed structs"
+
+terminology:
+  ingestion: "The process of receiving and validating inbound events"
+  commitment: "Acknowledging an event to the upstream system (non-retryable)"
+  segment: "A bounded window of events processed atomically"

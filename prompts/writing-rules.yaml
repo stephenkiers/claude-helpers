@@ -1,0 +1,29 @@
+# Writing Rules
+# Accumulated from real reader feedback. Each rule describes a prose pattern
+# that undermines readability, how to detect it, and how to fix it.
+
+rules:
+  - name: Aphoristic stacking
+    description: >
+      Short declarative sentences (<10 words) stacked without conjunctions
+      or connective tissue. Creates a cadence readers associate with
+      AI-generated text, causing them to skim.
+    detect: >
+      3+ consecutive short declarative sentences with no connectives
+      (because, which means, so, since, but, however, —).
+    fix: >
+      Vary sentence length. Use connective prose to show reasoning:
+      "because", "which means", "so", "since". Combine related short
+      sentences. One short sentence for emphasis is fine; three in a row is a pattern.
+    example:
+      before: "A fix project buys time. An ownership model breaks the cycle. Teams need clarity."
+      after: "A fix project buys time, but only an ownership model breaks the cycle — teams need clarity about who's responsible."
+    source: Peer feedback on staging doc, 2026-04-24
+    nuance: >
+      Exception: intentional staccato that *enacts* a feeling (cascade,
+      accumulation, weight) can be stronger than a merged clause. Apply
+      this rule when short sentences stack without purpose — not when
+      the rhythm is doing semantic work. E.g., "Campaigns expire. Catalog
+      items go stale. Cross-database relationships break in transit." earns
+      its staccato because each item is a distinct failure cascading from
+      the same root cause.

@@ -1,0 +1,64 @@
+# Example .claude/project.yaml for a TypeScript/Next.js project
+# Copy to your project at: .claude/project.yaml
+
+project: acme-web
+description: Next.js frontend and API routes for the Acme customer portal
+
+techStack:
+  language: typescript
+  framework: next
+  testing: vitest
+  platform: edge
+
+commands:
+  install: bun install
+  format: bun run format
+  lint: bun run lint
+  typecheck: bun run typecheck
+  test: bun run test
+  build: bun run build
+  check: bun run check                        # runs lint + typecheck together
+
+docStyle: jsdoc
+typeChecker: tsc
+propertyTestingLib: fast-check
+
+fragility:
+  highRiskModules:
+    - src/app/api/
+    - src/lib/auth.ts
+    - src/lib/stripe.ts
+  knownFragilePatterns:
+    - "useEffect with stale closure over props — subscribes once, reads old value forever"
+    - "Zustand slices mutating state outside of set() — breaks time-travel debugging"
+    - "Edge runtime handlers importing Node-only modules — fails silently in dev, crashes in prod"
+
+adrs:
+  ADR-001:
+    title: Zustand for client state, React Query for server state
+    summary: Mixing local and server state in one store caused staleness bugs; split by origin
+    location: docs/adr/001-state-management.md
+  ADR-002:
+    title: All API calls go through src/lib/api.ts — no raw fetch in components
+    summary: Direct fetch in components made auth header injection inconsistent; centralized client
+    location: docs/adr/002-api-client.md
+
+invariants:
+  noRawFetchInComponents:
+    rule: "Components must not call fetch() directly — use hooks from src/hooks/ or src/lib/api.ts"
+    scope: src/components/, src/app/
+    why: "Auth headers and error handling were inconsistently applied in 6+ places"
+  noNodeAPIsInEdgeRoutes:
+    rule: "Edge runtime API routes must not import fs, crypto, or other Node-only built-ins"
+    scope: src/app/api/
+    why: "Edge runtime doesn't include Node stdlib; failures are silent in dev and fatal in prod"
+
+redLines:
+  - "Never use 'any' — use 'unknown' with type narrowing or define a proper type"
+  - "Never suppress TypeScript errors with @ts-ignore without a dated comment explaining why"
+  - "Never store auth tokens in localStorage — use httpOnly cookies"
+
+terminology:
+  workspace: "A customer's isolated environment (not 'project', 'org', or 'account')"
+  member: "A user within a workspace (not 'user' at the workspace level — 'user' is the global account)"
+  plan: "Subscription tier (not 'tier', 'tier-name', or 'subscription')"

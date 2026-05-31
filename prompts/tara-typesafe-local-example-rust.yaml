@@ -1,0 +1,40 @@
+# Example .claude/reviewers/tara-typesafe-local.yaml for a Rust project
+# Copy to your project at: .claude/reviewers/tara-typesafe-local.yaml
+# Extends the global Tara TypeSafe reviewer with Rust-specific type-tightening patterns.
+
+extends: tara-typesafe
+
+triggers:
+  keywords:
+    - newtype
+    - PhantomData
+    - impl Trait
+    - dyn Trait
+    - Box<dyn
+    - Arc<dyn
+    - as usize
+    - as i64
+    - transmute
+    - unsafe
+
+projectChecks:
+  - "Check for primitive obsession — bare u32/i64/String where a newtype would prevent mixups (UserId vs EventId)"
+  - "Check for Box<dyn Trait> where impl Trait or an enum would be more precise and avoid heap allocation"
+  - "Check for String args where &str would suffice — signals ownership requirements to callers"
+  - "Check for tuple structs with more than 2 fields — named fields are self-documenting"
+  - "Check for #[derive(Default)] on types where Default would be semantically meaningless"
+  - "Check for pub fields on structs where invariants need to be maintained — prefer accessor methods"
+
+redLines:
+  - pattern: "as usize / as i64 / as u32 (naked numeric casts)"
+    why: "Silent truncation and wraparound — use TryFrom/TryInto or explicit checked casts"
+    fix: "Use usize::try_from(x)? or x.try_into()? to surface conversion failures"
+  - pattern: "unsafe { mem::transmute }"
+    why: "Bypasses the entire type system — only acceptable with a safety comment and review"
+    fix: "If unavoidable, add SAFETY comment explaining all invariants that make this sound"
+
+modernizationTargets:
+  - "Box<dyn Error> → anyhow::Error or a custom enum for typed errors"
+  - "String in API positions → impl Into<String> or &str depending on ownership"
+  - "Option<Option<T>> → a named enum with three states"
+  - "(T, U) in public API → named struct for clarity"

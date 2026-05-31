@@ -1,0 +1,44 @@
+# Example .claude/reviewers/tara-typesafe-local.yaml for a Python project
+# Copy to your project at: .claude/reviewers/tara-typesafe-local.yaml
+# Extends the global Tara TypeSafe reviewer with Python-specific type-tightening patterns.
+
+extends: tara-typesafe
+
+triggers:
+  keywords:
+    - TypedDict
+    - Protocol
+    - dataclass
+    - field
+    - ClassVar
+    - Final
+    - Literal
+    - overload
+    - cast
+    - TYPE_CHECKING
+
+projectChecks:
+  - "Check for dict[str, Any] that could be TypedDict — name the keys, type the values"
+  - "Check for functions with **kwargs that could be TypedDict params"
+  - "Check for Pydantic models missing `model_config = ConfigDict(strict=True)` on critical validators"
+  - "Check for TypeVar usage where ParamSpec or TypeVarTuple would be more precise"
+  - "Check for @overload stubs with implementations that don't match the declared overloads"
+
+redLines:
+  - pattern: "from typing import *"
+    why: "Pollutes namespace; makes it impossible to tell which types are used"
+    fix: "Import only the types you need explicitly"
+  - pattern: "cast(Any, x)"
+    why: "Disables type checking entirely at that point — treat as a red flag"
+    fix: "Use proper type narrowing or assert isinstance()"
+  - pattern: "# type: ignore without comment"
+    why: "Unexplained suppression — future readers can't tell if it's still needed"
+    fix: "Add comment: # type: ignore[error-code]  # reason"
+
+modernizationTargets:
+  - "Optional[X] → X | None (Python 3.10+)"
+  - "Union[X, Y] → X | Y (Python 3.10+)"
+  - "List[X] → list[X] (Python 3.9+)"
+  - "Dict[K, V] → dict[K, V] (Python 3.9+)"
+  - "Tuple[X, ...] → tuple[X, ...] (Python 3.9+)"
+  - "Type[X] → type[X] (Python 3.9+)"

@@ -1,0 +1,43 @@
+# Example .claude/reviewers/tara-typesafe-local.yaml for a TypeScript project
+# Copy to your project at: .claude/reviewers/tara-typesafe-local.yaml
+# Extends the global Tara TypeSafe reviewer with TypeScript-specific type-tightening patterns.
+
+extends: tara-typesafe
+
+triggers:
+  keywords:
+    - satisfies
+    - as const
+    - infer
+    - keyof
+    - typeof
+    - "!"
+    - unknown
+    - never
+    - discriminated
+
+projectChecks:
+  - "Check for Record<string, unknown> where a discriminated union or interface would be precise"
+  - "Check for string literals that should be template literal types"
+  - "Check for optional chaining (?.) where the type should be non-nullable and narrowed earlier"
+  - "Check for as T casts that could be replaced with satisfies T (preserves the actual type)"
+  - "Check for functions returning Promise<void> that could return Promise<T> for better composition"
+  - "Check for catch (e: any) — use catch (e: unknown) with proper narrowing"
+
+redLines:
+  - pattern: "catch (e: any)"
+    why: "Gives e any type — silences type errors in the catch block"
+    fix: "Use catch (e: unknown) and narrow with instanceof or type guard"
+  - pattern: "x as SomeType (without type guard)"
+    why: "Runtime type assertion — use satisfies or a type guard function instead"
+    fix: "Use satisfies for object literals; write a type predicate function for runtime checks"
+  - pattern: "@ts-ignore"
+    why: "Suppresses ALL errors on the next line — use @ts-expect-error with a comment instead"
+    fix: "@ts-expect-error — [reason why this is needed]"
+
+modernizationTargets:
+  - "Array<T> → T[] for readability"
+  - "x as T → satisfies T when T is a wider type"
+  - "interface Foo { [key: string]: unknown } → Record<string, unknown>"
+  - "function f(x: string | undefined) → function f(x?: string) when undefined is from omission"
+  - "Readonly<T[]> → readonly T[] for brevity"

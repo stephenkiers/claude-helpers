@@ -1,0 +1,114 @@
+# .claude/project.yaml — canonical project context for Claude Code reviewers and commands
+#
+# Copy this file to your project at: .claude/project.yaml
+# All fields are optional. Omit what you don't need.
+# Reviewers and commands read this once per session and use it to skip auto-detection.
+#
+# Referenced by:
+#   /expert-review          — techStack, adrs, invariants, redLines, fragility
+#   /shipit                 — commands (overrides auto-detection)
+#   /expert-harden-types    — typeChecker, commands.typecheck
+#   /expert-harden-contracts — docStyle, commands.test
+#   /expert-harden-tests    — propertyTestingLib, techStack.testing, commands.test
+#   Contract Chris          — docStyle
+#   Tara TypeSafe           — typeChecker
+#   Fragile Feynman        — fragility
+
+project: my-project
+description: One-sentence description of what this project does
+
+# ─── Tech Stack ───────────────────────────────────────────────────────────────
+# Used by /expert-review Step 0 to skip file-extension detection.
+# language: primary language (python | rust | typescript | go | ruby | kotlin | swift | elixir)
+# framework: main framework (fastapi | django | axum | actix | react | next | express | rails)
+# testing: test framework (pytest | unittest | cargo-test | jest | vitest | go-test | rspec)
+# platform: deployment target (lambda | cloudrun | k8s | edge | desktop | cli | wasm)
+techStack:
+  language: python
+  framework: fastapi
+  testing: pytest
+  platform: k8s
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+# When present, /shipit uses these instead of auto-detecting from build files.
+# Any key set to null means "not applicable" (skip that step).
+# Any key omitted means "auto-detect as usual".
+commands:
+  install: pip install -e ".[dev]"
+  format: ruff format .
+  lint: ruff check .
+  typecheck: mypy src/
+  test: pytest
+  build: null          # not applicable for this project
+  check: null          # composite check (replaces lint+typecheck if set)
+
+# ─── Documentation Style ──────────────────────────────────────────────────────
+# Used by Contract Chris to frame docstring findings.
+# Options: google | numpy | sphinx | jsdoc | rustdoc | godoc | none
+docStyle: google
+
+# ─── Type Checker ─────────────────────────────────────────────────────────────
+# Used by Tara TypeSafe to tailor type-tightening suggestions.
+# Options: mypy | pyright | tsc | flow | sorbet | none
+typeChecker: mypy
+
+# ─── Property Testing Library ─────────────────────────────────────────────────
+# Used by Tara TypeSafe to suggest property-based test additions.
+# Options: hypothesis | quickcheck | proptest | fast-check | jqwik | none
+propertyTestingLib: hypothesis
+
+# ─── Fragility Context ────────────────────────────────────────────────────────
+# Used by Fragile Feynman to focus pre-mortem analysis on known risk areas.
+# highRiskModules: file globs or module paths that have historically caused incidents
+# knownFragilePatterns: free-text descriptions of recurring fragility patterns in this codebase
+fragility:
+  highRiskModules:
+    - src/auth/
+    - src/billing/
+    - src/data_pipeline/transforms.py
+  knownFragilePatterns:
+    - "Celery tasks that silently swallow exceptions and mark themselves successful"
+    - "Config values loaded at import time — breaks in test isolation"
+    - "DB session shared across threads via context var"
+
+# ─── ADRs ─────────────────────────────────────────────────────────────────────
+# Architecture Decision Records. North Star Nick loads these to check alignment.
+# location: path relative to project root where full ADR docs live
+adrs:
+  ADR-001:
+    title: Use async SQLAlchemy for all database access
+    summary: Synchronous ORM was causing connection pool exhaustion under load
+    location: docs/adr/001-async-sqlalchemy.md
+  ADR-002:
+    title: Domain events published via internal event bus, not direct calls
+    summary: Decouples billing from auth, enables replay, simplifies testing
+    location: docs/adr/002-event-bus.md
+
+# ─── Invariants ───────────────────────────────────────────────────────────────
+# Project-wide invariants all reviewers should treat as red lines.
+# rule: the invariant statement
+# scope: where in the codebase it applies
+# why: rationale (helps reviewers judge edge cases)
+invariants:
+  noDirectDBInHandlers:
+    rule: "HTTP handlers must not import or call DB session directly — go through a service"
+    scope: src/api/
+    why: "Keeps handlers thin and testable; DB calls in handlers blocked multiple refactors"
+  eventsMustBeIdempotent:
+    rule: "All event handlers must be idempotent — safe to replay"
+    scope: src/events/
+    why: "Event bus delivers at-least-once; non-idempotent handlers caused duplicate billing"
+
+# ─── Red Lines ────────────────────────────────────────────────────────────────
+# Project-wide things to never do. All reviewers treat these as automatic findings.
+redLines:
+  - "Never use os.environ.get() outside of src/config.py — secrets only via Settings class"
+  - "Never commit secrets or API keys"
+  - "Never use print() in non-CLI code — use structlog"
+
+# ─── Terminology ──────────────────────────────────────────────────────────────
+# Domain terms that reviewers should use consistently in findings.
+terminology:
+  tenant: "An organization account (not 'customer', 'client', or 'org')"
+  workspace: "A sub-unit within a tenant (not 'project' or 'team')"
+  event: "An internal domain event, not a webhook or external notification"

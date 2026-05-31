@@ -1,0 +1,63 @@
+# Example .claude/project.yaml for a Python/FastAPI project
+# Copy to your project at: .claude/project.yaml
+
+project: acme-api
+description: FastAPI backend for the Acme SaaS platform
+
+techStack:
+  language: python
+  framework: fastapi
+  testing: pytest
+  platform: k8s
+
+commands:
+  install: pip install -e ".[dev]"
+  format: ruff format .
+  lint: ruff check .
+  typecheck: mypy src/
+  test: pytest
+  build: docker build -t acme-api .
+  check: null
+
+docStyle: google
+typeChecker: mypy
+propertyTestingLib: hypothesis
+
+fragility:
+  highRiskModules:
+    - src/auth/
+    - src/billing/
+    - src/data_pipeline/
+  knownFragilePatterns:
+    - "Celery tasks that swallow exceptions and mark as SUCCESS regardless of outcome"
+    - "Config loaded at import time — breaks test isolation when env vars change mid-session"
+    - "SQLAlchemy session shared across async tasks via contextvars — leaks state between requests"
+
+adrs:
+  ADR-001:
+    title: Async SQLAlchemy for all DB access
+    summary: Sync ORM caused connection pool exhaustion; all DB calls must be async
+    location: docs/adr/001-async-sqlalchemy.md
+  ADR-002:
+    title: Domain events over direct cross-service calls
+    summary: Services communicate via internal event bus; no direct imports across domain boundaries
+    location: docs/adr/002-event-bus.md
+
+invariants:
+  noDirectDBInHandlers:
+    rule: "HTTP handlers must not import DB session — route through service layer"
+    scope: src/api/
+    why: "Thin handlers, testable services; direct DB in handlers blocked 3 refactors"
+  idempotentEventHandlers:
+    rule: "All event handlers must tolerate duplicate delivery safely"
+    scope: src/events/
+    why: "At-least-once delivery guarantee; non-idempotent handlers caused double-billing incident"
+
+redLines:
+  - "Never call os.environ directly — use src/config.py Settings class"
+  - "Never use print() in non-CLI code — use structlog logger"
+  - "Never import across domain boundaries (billing → auth is OK; auth → billing is not)"
+
+terminology:
+  tenant: "Top-level organization account (not 'customer', 'org', or 'client')"
+  workspace: "Sub-unit within a tenant (not 'project' or 'team')"

@@ -1,0 +1,45 @@
+# Example .claude/reviewers/fragile-feynman-local.yaml for a Python project
+# Copy to your project at: .claude/reviewers/fragile-feynman-local.yaml
+# Extends the global Fragile Feynman reviewer with Python-specific fragility patterns.
+
+extends: fragile-feynman
+
+triggers:
+  keywords:
+    - celery
+    - apply_async
+    - task.delay
+    - @shared_task
+    - import_string
+    - getattr
+    - hasattr
+    - setattr
+    - __dict__
+    - globals()
+    - locals()
+
+projectChecks:
+  - "Celery tasks: check that all exceptions are caught or propagate — silent SUCCESS masks failures"
+  - "Django signals: check for implicit ordering assumptions between signal receivers"
+  - "SQLAlchemy: check for session.merge() or session.add() on objects from a different session"
+  - "Pydantic models: check for validators that silently coerce invalid values instead of raising"
+  - "Import-time side effects: check for code that runs at module import (DB calls, config reads)"
+
+redLines:
+  - pattern: "bare except: pass"
+    why: "Silences all exceptions including KeyboardInterrupt and SystemExit — untraceable failures"
+    fix: "Catch specific exception types; log before swallowing"
+  - pattern: "global <var> in function body"
+    why: "Shared mutable state — breaks under concurrent requests and test isolation"
+    fix: "Pass state explicitly or use a context variable with clear scope"
+  - pattern: "os.environ loaded outside config module"
+    why: "Load-bearing defaults baked into multiple callsites — impossible to change consistently"
+    fix: "Centralize all config access behind a Settings object"
+
+fragilePatterns:
+  - name: "Celery chord / group with shared result backend state"
+    description: "Chord callbacks assume all group tasks succeeded; partial failure leaves backend in inconsistent state"
+    mitigation: "Use chord error callbacks; treat each task as independent; check chord results explicitly"
+  - name: "Pydantic default_factory with mutable default"
+    description: "List/dict defaults that look per-instance but share state if field is declared incorrectly"
+    mitigation: "Always use default_factory=list not default=[]; run mutation tests"

@@ -1,0 +1,21 @@
+# North Star Nick — project-local override for the claude-helpers repo itself.
+# This dogfoods ADR-0005 (three-layer context cascade): the generic persona lives in
+# reviewers/north-star-nick.yaml; this file points Nick at THIS project's strategic docs.
+
+project: claude-helpers
+
+# Paths North Star Nick loads in Step 2 (relative to repo root).
+strategicDocuments:
+  adrIndex: docs/adr/README.md
+  adrDirectory: docs/adr/
+  # No separate issues index / product plan — this is a personal config repo, not a product.
+
+currentPhase: >
+  Public open-source release. The repo is published as an opinionated, fork-and-adapt config.
+  Decisions are recorded as ADRs in docs/adr/.
+
+# Project-specific things Nick should treat as architectural decisions:
+invariants:
+  - "Personas stay generic; project-specific knowledge belongs in a consuming project's .claude/, not here."
+  - "New reviewers must register lightweight triggers in reviewers/index.yaml (ADR-0001, ADR-0003)."
+  - "No private/employer references in the public tree (names, paths, internal projects)."
