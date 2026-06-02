@@ -1,6 +1,6 @@
 ---
 description: Review PR comments with an expert panel huddle — fetches all unresolved comments, evaluates them, then convenes expert reviewers to weigh in on flagged items before recommending action.
-allowed-tools: Bash(gh api:*), Bash(gh pr:*), Bash(gh pr diff:*), Bash(gh pr view:*), Bash(cat:*), Bash(jq:*), Bash(echo:*), Read, Glob, Grep
+allowed-tools: Bash(gh api:*), Bash(gh pr:*), Bash(gh pr diff:*), Bash(gh pr view:*), Bash(cat:*), Bash(jq:*), Bash(echo:*), Bash(date:*), Bash(sleep:*), Read, Glob, Grep
 ---
 
 # Expert PR Comments
@@ -9,9 +9,62 @@ Review all unresolved PR review comments — from GitHub Copilot, olive-agent, a
 
 This is the expert version of `/pr-comments`. It runs the same Steps 1–5, then adds an Expert Huddle (Step 5.5) before offering to act.
 
-**Arguments:** $ARGUMENTS (optional PR number, URL, or `owner/repo#number` — if omitted, use cached PR or detect from current branch)
+**Arguments:** $ARGUMENTS (optional PR number, URL, or `owner/repo#number` — if omitted, use cached PR or detect from current branch; plus optional `--watch [minutes]` to wait for review comments to land before reviewing — see Step 0)
+
+## Step 0: Watch mode (optional)
+
+Parse `$ARGUMENTS` for `--watch`. If absent, **skip this entire step** — behavior is unchanged.
+
+If `--watch` is present:
+- If a bare integer follows it (`--watch 10`), use it as the timeout in **minutes**; otherwise default to `30`.
+- Strip `--watch [N]` from the arguments so any remaining PR number/URL still flows into Step 1.
+
+The point of watch mode is to let you trigger a GitHub review and *immediately* start this command:
+it waits — spending **near-zero tokens** — until the review comments have actually landed and
+stabilized, then falls through into the normal flow. To keep token cost minimal, the wait is done by
+a **single backgrounded Bash command** that does its own `sleep` between polls and only wakes Claude
+when it exits. Do **not** poll with repeated foreground tool calls.
+
+1. **Resolve the PR first.** Run the Step 1 cache-first identification now to obtain owner/repo/PR
+   number. (When you reach Step 1 later, it will already be resolved — treat it as a no-op.)
+
+2. **Launch the poll loop in the background** (`run_in_background: true`), substituting
+   `{owner}`/`{repo}`/`{pr}` and `{minutes}`:
+
+   ```bash
+   OWNER={owner}; REPO={repo}; PR={pr}; TIMEOUT_MIN={minutes}; INTERVAL=30
+   deadline=$(( $(date +%s) + TIMEOUT_MIN*60 )); prev=-1
+   while :; do
+     count=$(gh api graphql -f query='
+       query($owner:String!,$repo:String!,$pr:Int!){
+         repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
+           reviewThreads(first:100){ nodes{ isResolved comments(first:1){ nodes{ body } } } } } } }
+     ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" \
+       --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+              | select(.isResolved==false)
+              | select((.comments.nodes[0].body // "") != "")] | length')
+     if [ "$count" -gt 0 ] && [ "$count" -eq "$prev" ]; then echo "READY:$count"; exit 0; fi
+     if [ "$(date +%s)" -ge "$deadline" ]; then echo "TIMEOUT:$count"; exit 1; fi
+     prev=$count; sleep "$INTERVAL"
+   done
+   ```
+
+   "Content comments" = unresolved review threads whose first comment has a non-empty body. The loop
+   proceeds (`READY`) only when the count is **> 0 and unchanged across two consecutive polls**, so a
+   half-posted batch of comments isn't processed early ("stabilize then run"). This count query is
+   intentionally lightweight — no diffs or comment bodies are fetched during the wait.
+
+3. **When the background process exits**, read its final line:
+   - `READY:<n>` → comments have landed and stabilized. Proceed to Step 2 (the PR is already
+     identified; skip Step 1).
+   - `TIMEOUT:<n>` with `n > 0` → comments were found but never stabilized within the window. Tell
+     the user and ask whether to proceed with the current set anyway.
+   - `TIMEOUT:0` → no review comments landed within the window. Report this and stop.
 
 ## Step 1: Identify the PR
+
+> If watch mode (Step 0) already identified the PR, this step is a no-op — reuse the resolved
+> owner/repo/PR number and continue.
 
 Use the **cache-first** pattern (same as /shipit):
 
