@@ -57,12 +57,14 @@ See the ADRs for the full rationale:
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
 - `/implement-with-haiku` — background Haiku flow: implement, spec-blind test author, adversary review
 - `/shipit` — run CI checks locally, commit, open a PR (`/shipit-reference` for details)
+- `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/cleanup` — clean up a worktree after a PR is merged
 - `/fork-planning` — fork a planning session
 
 **Research & writing**
 - `/research-swarm` — deep research on a topic via parallel web agents, optionally cross-checked
-  against internal knowledge (Confluence/Glean) if those MCP tools are available
+  against internal knowledge (via whatever internal-search MCP tools you have configured — Slack,
+  Confluence, Notion, Glean, Drive, etc.) if any are available
 - `/expert-write` — edit a document with expert writing personas + accumulated prose rules
 - `/style-google-doc` — apply a standard Google Doc visual style
 - `/search-claude` — search prior Claude Code transcripts; returns resume commands

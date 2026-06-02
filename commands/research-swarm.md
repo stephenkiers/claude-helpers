@@ -1,6 +1,6 @@
 ---
 name: research-swarm
-description: "Deep research on a topic using parallel web research agents, then validates findings against internal company knowledge via Confluence and Glean (if available). Use when asked to research a topic broadly, explore a problem space, or validate external claims against internal reality."
+description: "Deep research on a topic using parallel web research agents, then validates findings against your internal knowledge via whatever internal-search MCP tools you have configured (e.g. Slack, Confluence, Notion, Google Drive — if available). Use when asked to research a topic broadly, explore a problem space, or validate external claims against internal reality."
 allowed-tools: Read, Bash, AskUserQuestion, Agent, Monitor, WebSearch, WebFetch
 argument-hint: <topic to research>
 ---
@@ -8,7 +8,11 @@ argument-hint: <topic to research>
 # /research-swarm
 
 Two-wave research skill: external web research (Wave 1) followed by internal validation against
-Confluence and Glean (Wave 2, if available). Produces a contextually-named output file in `artifacts/drafts/`.
+your own internal knowledge sources (Wave 2, if available). Wave 2 is **source-agnostic** — it uses
+whatever internal-search MCP tools are connected to the current session (Slack, Confluence, Notion,
+Glean, Google Drive, etc.), one validation worker per available source. If no internal-search tools
+are present, Wave 2 is skipped automatically. Produces a contextually-named output file in
+`artifacts/drafts/`.
 
 ---
 
@@ -64,8 +68,8 @@ AskUserQuestion: "Here's the research plan for: <topic>
     W4 — <angle 4 description, if applicable>
 
   Wave 2 (internal validation, if available):
-    VB — Confluence docs
-    VC — Glean / company knowledge base
+    One worker per connected internal-search MCP tool
+    (e.g. Slack, Confluence, Notion, Drive — detected at launch)
 
 Ready to launch?"
 
@@ -199,17 +203,26 @@ Options:
 
 ## Step 9: Wave 2 — Internal validation (parallel Haiku workers)
 
-Launch VB (Confluence) and/or VC (Glean) workers if those tools are available in the current
-session (`run_in_background: true`, `model: haiku`). Pass the numbered claims list, `<SID>`,
-and the event file path in each prompt.
+**First, detect available internal-search sources.** Inspect the MCP tools connected to the current
+session and select any whose purpose is searching internal knowledge — for example Slack, Confluence,
+Notion, Glean, Google Drive, Jira, or any other internal/company search tool the user has configured.
+Web search and file-system tools do **not** count.
+
+- If **zero** internal-search tools are available, skip Wave 2 entirely: jump to Step 11 and treat the
+  internal evidence as empty. Tell the user no internal-search tools were detected.
+- Otherwise, launch **one worker per detected source** (`run_in_background: true`, `model: haiku`).
+  Assign each a worker ID `V1`, `V2`, … and pass it the source's name, the search tool to use, the
+  numbered claims list, `<SID>`, and the event file path.
 
 #### Wave 2 worker prompt template
 
-Instantiate once per available worker (VB, VC), substituting per the diff table below.
+Instantiate once per detected source, substituting `<WV>`, `<SOURCE>`, and `<TOOL>`.
 
 ```
 You are a Wave 2 internal validation worker for the /research-swarm skill.
 Worker ID: <WV>
+Source name: <SOURCE>          (e.g. "Slack", "Confluence", "Notion")
+Search tool: <TOOL>            (the MCP tool to use for searching this source)
 Event file: /tmp/research-swarm-<SID>.jsonl
 Topic: <TOPIC>
 Claims to validate (indexed 1..N):
@@ -219,29 +232,20 @@ Instructions:
 Append single-line JSON events to the event file using:
   echo '<json>' >> /tmp/research-swarm-<SID>.jsonl
 
-1. Append: {"w":"<WV>","e":"start"}
+1. Append: {"w":"<WV>","e":"start","source":"<SOURCE>"}
 
-2. Run <BUDGET> searches using <TOOL>.
+2. Run 3–6 keyword searches with <TOOL> (short keyword queries, not full sentences;
+   adapt the query style to what the tool expects). Take the top ~5 results per query.
    For each relevant result, identify which claim it addresses.
-   Append: {"w":"<WV>","e":"<KEY>","claim_ref":<index>,"verdict":"confirmed|contradicted|inconclusive","title":"<title>","url":"<url>","excerpt":"<first 100 chars>","<EXTRA_FIELDS>"}
+   Append: {"w":"<WV>","e":"result","source":"<SOURCE>","claim_ref":<index>,"verdict":"confirmed|contradicted|inconclusive","title":"<title>","url":"<url>","excerpt":"<first 100 chars>"}
 
 3. If no relevant results for a claim:
-   Append: {"w":"<WV>","e":"<KEY>","claim_ref":<index>,"verdict":"inconclusive","title":null,"url":null,"excerpt":null}
+   Append: {"w":"<WV>","e":"result","source":"<SOURCE>","claim_ref":<index>,"verdict":"inconclusive","title":null,"url":null,"excerpt":null}
 
 4. Append: {"w":"<WV>","e":"done"}
 
-Return: {"worker":"<WV>","validations":[{"claim_ref":<index>,"verdict":"confirmed|contradicted|inconclusive","<RESULT_KEY>":[...]}]}
+Return: {"worker":"<WV>","source":"<SOURCE>","validations":[{"claim_ref":<index>,"verdict":"confirmed|contradicted|inconclusive","results":[...]}]}
 ```
-
-#### Wave 2 worker diff table
-
-| Field | VB (confluence) | VC (glean) |
-|---|---|---|
-| Tool | Confluence search MCP tool | Glean search MCP tool |
-| Budget | 1–2 CQL queries, top 3 results | 3–6 keyword queries (not full sentences), top 5 results |
-| Event key | `doc` | `result` |
-| Extra fields | (none beyond template) | `"source":"<datasource>"` |
-| Result key | `docs` | `results` |
 
 ---
 
@@ -256,9 +260,9 @@ tail -f -n 0 /tmp/research-swarm-<SID>.jsonl | grep --line-buffered ""
 Description: `"Wave 2 validation workers for research-swarm <SID>"`
 Timeout: 90000ms
 
-Translate each event to `[<worker>/<source>] <description>` (VB→confluence, VC→glean):
+Translate each event to `[<worker>/<source>] <description>` (use the `source` field on each event):
 - `start` → "Searching <source>..." | `done` → "Done."
-- doc/result with title → "Claim <N>: <verdict> — <title>" | null title → "Claim <N>: no results."
+- `result` with title → "Claim <N>: <verdict> — <title>" | null title → "Claim <N>: no results."
 
 Wait until all launched Wave 2 workers have written `{"e":"done"}` before continuing.
 
@@ -296,10 +300,9 @@ staging" becomes `research-swarm-strangler-fig-staging.json`. Write to `artifact
     "id": "kebab-case-id", "claim": "...", "category": "...",
     "status": "validated|contradicted|needs-validation", "confidence": 0.0,
     "external_evidence": { "sources": [{ "url": "...", "org": "...", "excerpt": "..." }] },
-    "internal_evidence": {
-      "confluence_docs": [{ "title": "...", "url": "...", "excerpt": "..." }],
-      "glean_results": [{ "title": "...", "url": "...", "source": "...", "excerpt": "..." }]
-    },
+    "internal_evidence": [
+      { "source": "<source name, e.g. Slack/Confluence/Notion>", "title": "...", "url": "...", "excerpt": "..." }
+    ],
     "findings_detail": "1–2 sentence synthesis", "questions": ["follow-up if low confidence"]
   }]
 }

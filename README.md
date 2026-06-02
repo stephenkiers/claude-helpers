@@ -51,7 +51,8 @@ is `./install.sh` (add `--with-zsh-keybindings` to opt into Option+Arrow word ju
   routing and checkpointed artifacts.
 - **Planning & hardening** — `/expert-plan`, `/expert-review-plan`, `/expert-harden-{types,contracts,tests}`,
   `/expert-pre-mortem`.
-- **Lifecycle** — `/track`, `/implement-with-haiku`, `/shipit`, `/cleanup`, `/expert-rebase`, and more.
+- **Lifecycle** — `/track`, `/implement-with-haiku`, `/shipit`, `/expert-implement-with-haiku-and-ship`
+  (runs all three in one shot), `/cleanup`, `/expert-rebase`, and more.
 
 See [CLAUDE.md](CLAUDE.md) for the full command and persona catalog.
 
