@@ -62,27 +62,31 @@ if [ ! -d "$PROJECTS_DIR" ]; then
   exit 1
 fi
 
-# --- Build candidate file list ---
-FIND_ARGS=(-name '*.jsonl' -size -50M)
-if [ "$DAYS" -lt 10000 ]; then
-  FIND_ARGS+=(-mtime "-${DAYS}")
-fi
-
-mapfile -t CANDIDATES < <(find "$PROJECTS_DIR" "${FIND_ARGS[@]}" 2>/dev/null | grep -v '/subagents/' || true)
-
-TOTAL_CANDIDATES=${#CANDIDATES[@]}
-
-if [ "$TOTAL_CANDIDATES" -eq 0 ]; then
-  if [ "$DAYS" -lt 10000 ]; then
-    echo "No transcripts found in last ${DAYS} days. Try --all or a different query."
-  else
-    echo "No transcripts found."
-  fi
-  exit 0
-fi
-
 # --- Grep for matching files ---
-mapfile -t MATCHES < <(printf '%s\n' "${CANDIDATES[@]}" | xargs rg -i -l -F --max-filesize 50M -- "$QUERY" 2>/dev/null || true)
+# NOTE: rg is a shell function in Claude Code (not a PATH binary), so
+# `find ... | xargs rg` fails silently ("xargs: rg: No such file or directory").
+# Use rg's own recursive walk + globs instead, then filter by mtime/size in bash.
+mapfile -t RAW_MATCHES < <(rg -i -l -F \
+  --max-filesize 50M \
+  -g '*.jsonl' \
+  -g '!*/subagents/*' \
+  -- "$QUERY" "$PROJECTS_DIR" 2>/dev/null || true)
+
+# Apply time window (mtime) in bash, since rg can't filter by age.
+declare -a MATCHES
+if [ "$DAYS" -lt 10000 ]; then
+  now=$(date +%s)
+  cutoff=$(( now - DAYS * 86400 ))
+else
+  cutoff=0
+fi
+for f in "${RAW_MATCHES[@]}"; do
+  [ -n "$f" ] || continue
+  mt=$(stat -f %m "$f" 2>/dev/null || echo 0)
+  if [ "$mt" -ge "$cutoff" ]; then
+    MATCHES+=("$f")
+  fi
+done
 
 MATCH_COUNT=${#MATCHES[@]}
 
