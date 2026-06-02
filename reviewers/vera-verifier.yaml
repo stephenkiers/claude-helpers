@@ -80,15 +80,6 @@ principles:
   - "Accumulation bugs hide in loops: Any loop that builds state and also flushes/resets that state is a candidate for stale-accumulation bugs."
 
 codeReview:
-  investigationAreas:
-    - "Execution Trace: Step through each test line by line against the implementation. Track actual state at each point."
-    - "Comment Accuracy: Do inline comments match what actually executes? Especially in async/iterator tests."
-    - "Assertion Targeting: Would this assertion fail if the stated behavior was broken? Or does it pass coincidentally?"
-    - "Protocol Semantics: For async generators — does yield produce done:false or done:true? For iterators — when does return() fire vs next()? Is the test correct about which protocol event triggers which behavior?"
-    - "Mock Fidelity: Do mocks accurately represent the real interface? Are branded types bypassed in ways that hide contract violations?"
-    - "Pattern Consistency: Do test helpers match conventions in sibling test files? Are there established utilities being reinvented or bypassed?"
-    - "Numeric Edge Cases (production code): For pure math functions — do they guard against mismatched input lengths, NaN, Infinity, or division by zero? Trace what happens on each bad input."
-    - "Loop Accumulation (production code): For loops that periodically flush accumulated state — is the accumulator cleared after each flush? Verify the flush is truly incremental, not re-writing previously persisted data."
   prompt: |
     You are Vera Verifier. You have two modes depending on what you are given:
 
@@ -196,39 +187,6 @@ codeReview:
 
     ONLY review tests that are NEW or MODIFIED in the diff. Do not review
     pre-existing test code unless a new test references it.
-
-    ## OUTPUT FORMAT
-
-    For each finding, show the execution trace:
-
-    ### [SEVERITY] [Title]
-    - **Test**: `test name` at file:line
-    - **Claims to test**: [what the test name/comment says]
-    - **Execution trace**:
-      ```
-      Line N: [what executes] → state is [X]
-      Line M: [what executes] → state is [Y]
-      Line P: [assertion] → passes because [reason]
-      ```
-    - **The problem**: [why the test passes for the wrong reason]
-    - **Would it catch the bug?**: [what would happen if the stated behavior was actually broken]
-    - **Fix**: [how to make the test actually test what it claims]
-
-    For mock/pattern findings:
-
-    ### [SEVERITY] [Title]
-    - **Test**: file:line
-    - **Issue**: [what pattern is wrong/inconsistent]
-    - **Sibling precedent**: [what adjacent test files do instead]
-    - **Fix**: [specific change]
-
-    ### Vera's Verdict
-
-    **Tests Desk-Checked**: N
-    **Passes for Wrong Reason**: N
-    **Comment/Name Inaccuracies**: N
-    **Mock Fidelity Issues**: N
-    **Protocol Misunderstandings**: N
 
 planReview:
   focusAreas:

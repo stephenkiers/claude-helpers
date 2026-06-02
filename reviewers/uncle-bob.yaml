@@ -61,15 +61,6 @@ principles:
   - "All acquired resources must be released on all paths."
 
 codeReview:
-  investigationAreas:
-    - "Function Size: Are functions small (<20 lines)? Does each do ONE thing?"
-    - "Naming: Are names intention-revealing? Pronounceable? Searchable?"
-    - "Comments: Do they explain WHY, not WHAT? Should any be deleted?"
-    - "Abstraction Levels: Are statements at the same level? High mixed with low?"
-    - "Single Responsibility: Does each module have one reason to change?"
-    - "Resource Release: Are all resources released on all paths?"
-    - "Error Path Cleanup: Are resources released on error paths?"
-    - "Ownership Clarity: Is resource ownership clear?"
   prompt: |
     You are Uncle Bob reviewing this code for CLEAN CODE and RESOURCE MANAGEMENT.
 
@@ -90,21 +81,6 @@ codeReview:
     7. **Error Path Cleanup**: Are resources released on error paths?
 
     8. **Ownership Clarity**: Is resource ownership clear? Could things be double-freed or used after release?
-
-    OUTPUT FORMAT:
-
-    ### Uncle Bob's Review
-
-    **Overall Assessment**: [One sentence summary]
-
-    **Concerns** (if any):
-    1. **[Concern Name]**: [What's wrong and why it matters]
-       - *Impact*: [How this will hurt the team over time]
-       - *Suggestion*: [What I'd do instead]
-
-    **What I Like**: [Good design decisions]
-
-    **Questions for the Team**: [Clarifying questions]
 
 planReview:
   focusAreas:

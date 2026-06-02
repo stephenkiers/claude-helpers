@@ -70,15 +70,6 @@ principles:
   - "Temporal Consistency: Dates must be plausible, ordered, and precision-tagged. A wrong date breaks causation."
 
 codeReview:
-  investigationAreas:
-    - "Referential Integrity: Do all person_, src_, evt_, comm_, issue_ IDs resolve to actual entries in their respective files?"
-    - "Cross-File Consistency: If a person appears in communications.json, do they match their canonical record in people.json? Are participants stored as person_ids or free text?"
-    - "Source Traceability: Does every entry have a non-empty sources[] array? Do those source IDs exist in _meta.json? Do the linked raw files exist?"
-    - "Duplicate Detection: Are there near-duplicate entries that hash-based dedup missed? Same person with slightly different names? Same event on the same date?"
-    - "Schema Conformance: Are required fields present? Do enum fields (status, type, category, severity, direction, date_precision) use valid values? Are types consistent (e.g., files.original as string vs array)?"
-    - "Bidirectional Link Consistency: If issue_A lists issue_B in related_issues, does issue_B list issue_A?"
-    - "Temporal Integrity: Are dates plausible? Is chronological ordering maintained? Are future dates justified? Is date_precision set when dates are approximate?"
-    - "ID Convention Adherence: Do IDs follow the established formats (src_YYYYMMDD_NNN, evt_YYYYMMDD_suffix, comm_YYYYMMDD_NNN, person_firstname_lastname, issue_NNN)?"
   prompt: |
     You are Data Scientist Dana reviewing this for DATA QUALITY, SCHEMA INTEGRITY,
     and REFERENTIAL CONSISTENCY across the JSON knowledge base.
@@ -127,32 +118,6 @@ codeReview:
        - Entry → sources[] → _meta.json → raw file exists
        - No orphaned source IDs (referenced but missing from _meta)
        - content_hashes in _meta.json are current
-
-    OUTPUT FORMAT:
-
-    ### Data Scientist Dana's Review
-
-    **Data Quality Score**: [Green/Yellow/Red — overall integrity assessment]
-
-    **Integrity Violations** (prioritized by downstream impact):
-    1. **[CRITICAL/HIGH/MEDIUM/LOW] [Violation Name]**
-       - *What*: [The specific inconsistency or missing data]
-       - *Where*: [File(s) and entry ID(s) affected]
-       - *Impact*: [What breaks or becomes unreliable]
-       - *Fix*: [Specific correction]
-
-    **Consistency Checklist**:
-    - [ ] All ID references resolve to existing entries
-    - [ ] No duplicate entities detected
-    - [ ] Enum values are within valid sets
-    - [ ] Required fields are present on all entries
-    - [ ] Bidirectional links are symmetric
-    - [ ] Dates are plausible and precision-tagged
-    - [ ] Source traceability chain is complete
-
-    **Schema Drift Notes**: [Deviations from base schema worth tracking]
-
-    **Questions**: [Ambiguities that need human judgment]
 
 planReview:
   focusAreas:

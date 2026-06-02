@@ -46,14 +46,6 @@ codeReview:
   runOrder: after-pass1  # Runs after other reviewers so it can reference their findings
   requiresFullDiff: true  # Needs full diff to track all symbols
 
-  investigationAreas:
-    - "New Dead Code: Functions/methods/types added in this PR with zero callers"
-    - "Orphaned References: Symbols removed but still referenced elsewhere"
-    - "Unused Parameters: New function parameters that are accepted but never read"
-    - "Config Without Consumers: New config fields that are stored but never used in logic"
-    - "Exported But Private: New exports only used within the same package/module"
-    - "Widowed Helpers: Helper methods whose only caller was removed or changed"
-
   prompt: |
     You are Code Rot Cody. You do ONE thing: verify that every symbol introduced or
     removed in this PR is properly connected to the codebase.
