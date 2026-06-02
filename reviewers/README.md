@@ -109,6 +109,11 @@ is deliberately small so blind-first review stays cheap and routing stays sharp.
 3. Would this persona ever reach DEEP-DIVE on a real diff, or would it almost always SKIP?
    A persona that rarely fires is routing noise, not coverage.
 
+**Why these rules exist:** the `OUTPUT FORMAT` and "Load Project Context" rules below both exist to
+keep personas thin and consistent. The output format is canonical so Pass 2 re-evaluation and the
+amalgamation step can parse every reviewer the same way — a per-persona format breaks that contract.
+Load Project Context is centralized so a change to how context loads happens in one place, not 27.
+
 **If it clears the guardrail, the checklist:**
 
 - [ ] Create `reviewers/{kebab-name}.yaml` with: `name`, `priority`, `summary` (with nested
@@ -127,12 +132,23 @@ is deliberately small so blind-first review stays cheap and routing stays sharp.
 
 ## Persona Schemas
 
-Two `codeReview` shapes are supported:
+Personas live in one place (`reviewers/`) but are tagged by **what they review**. The `index.yaml`
+entry — its `triggers` and `note` — declares whether a persona runs in code review, prose review, or
+both, and the YAML body carries the matching review block.
+
+**Code-review personas** (`/expert-review`) use a `codeReview` block, in two shapes:
 
 - **Standard** (the default): `codeReview.prompt` with an `INVESTIGATE:` body; output format is
   inherited from `expert-framework.md`.
 - **Self-formatting carve-outs** (`code-rot-cody`, `contrarian-carl`, `consistency-checker`): keep
   their own `OUTPUT FORMAT` block because their output structure differs from the standard template.
+
+**Editorial personas** (`/expert-write`) use an `editReview.focusAreas` block instead of
+`codeReview.prompt`. The current three are **Audience Editor** (`editor-audience.yaml`), **Cadence
+Editor** (`editor-cadence.yaml`), and **Signal Editor** (`editor-signal.yaml`). They have **no diff
+`triggers`**, so the code-review tagger never routes to them — their `index.yaml` `note` marks them
+`for /expert-write`. A persona with only an `editReview` block is not a valid `/expert-review`
+target; do not request one there.
 
 ## Creating Project Context
 

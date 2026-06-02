@@ -14,6 +14,9 @@ check for and read these files in order (skip silently if absent):
 1. `.claude/project.yaml` — project-wide tech stack, ADRs, invariants, red lines, terminology.
 2. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.
 
+Read them in that order — project-wide context first, then the local override applied on top. When
+both set the same value, the local override wins.
+
 If either exists, fold its knowledge into your review:
 
 - Apply project-specific invariants and red lines as **additional** checks in your domain.
@@ -23,6 +26,13 @@ If either exists, fold its knowledge into your review:
 
 A persona only needs its own context-loading block when it loads context **differently** from
 this default; otherwise this section governs.
+
+## Reviewer-Specific Input Scope
+
+Most reviewers receive only the diff sections the tagger routed to them. One exception:
+
+- **Sam System** receives the **full diff** (not just tagged sections), because his job is to trace
+  data flow across files — he needs to see both ends of every cross-file connection.
 
 ## Pass 1: Blind Review
 
