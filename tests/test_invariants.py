@@ -217,22 +217,31 @@ for file in REVIEWERS_DIR.glob("*.yaml"):
     content = file.read_text()
     issues = []
 
-    # Check for summary field (must exist and have content)
-    if not re.search(r"^summary:", content, re.MULTILINE):
+    # Check for summary field (must exist and have content).
+    # `summary:` is a YAML parent key — its value is nested, indented children
+    # on following lines (character:/voice:), so the key line itself is bare.
+    # "Empty" means the key has no indented child block beneath it.
+    summary_match = re.search(r"^summary:[^\n]*\n", content, re.MULTILINE)
+    if not summary_match:
         issues.append("missing summary")
     else:
-        # Check it's not empty
-        match = re.search(r"^summary:\s*$", content, re.MULTILINE)
-        if match:
+        rest = content[summary_match.end():]
+        # First non-blank line after `summary:` must be indented (a child).
+        has_child = re.match(r"(?:[ \t]*\n)*[ \t]+\S", rest)
+        if not has_child:
             issues.append("empty summary")
 
     # Check for principles field (must exist and have content)
     if not re.search(r"^principles:", content, re.MULTILINE):
         issues.append("missing principles")
 
-    # Check for codeReview.prompt (under codeReview section)
-    if not re.search(r"^\s+prompt:", content, re.MULTILINE):
-        issues.append("missing codeReview.prompt")
+    # Check the persona carries a review body. Two shapes are supported:
+    #   - code-review personas: codeReview.prompt (an indented `prompt:`)
+    #   - editor personas (editor-*): editReview with focusAreas
+    has_code_prompt = bool(re.search(r"^\s+prompt:", content, re.MULTILINE))
+    has_edit_review = bool(re.search(r"^editReview:", content, re.MULTILINE))
+    if not (has_code_prompt or has_edit_review):
+        issues.append("missing review body (codeReview.prompt or editReview)")
 
     if issues:
         missing_fields[file.name] = issues

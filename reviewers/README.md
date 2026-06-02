@@ -94,6 +94,46 @@ Templates for `project.yaml` and `{expert}-local.yaml` are in `~/.claude/prompts
 | Security Sage | `security-sage.yaml` | Security | Not yet |
 | ... | ... | ... | ... |
 
+## Adding a New Reviewer
+
+Before writing a new persona, clear the **novelty guardrail**: a new reviewer must own a lens that
+no existing persona already covers. Most "I need a reviewer for X" cases are better served by a
+`{expert}-local.yaml` override or a project-specific trigger than by a whole new persona — the panel
+is deliberately small so blind-first review stays cheap and routing stays sharp.
+
+**Novelty check (answer before creating the file):**
+
+1. Scan [`index.yaml`](index.yaml) — does an existing persona's domain already cover this concern?
+   If yes, extend it (triggers or a `-local.yaml`) instead of adding a persona.
+2. Is the lens genuinely orthogonal to the existing 27, or just a narrower slice of one?
+3. Would this persona ever reach DEEP-DIVE on a real diff, or would it almost always SKIP?
+   A persona that rarely fires is routing noise, not coverage.
+
+**If it clears the guardrail, the checklist:**
+
+- [ ] Create `reviewers/{kebab-name}.yaml` with: `name`, `priority`, `summary` (with nested
+      `character` + `voice`), `triggers` (`filePatterns` / `keywords` / `riskIndicators`),
+      `principles`, and `codeReview.prompt` (containing an `INVESTIGATE:` body).
+- [ ] Do **not** add a per-persona `OUTPUT FORMAT` block — the canonical format lives in
+      [`prompts/expert-framework.md`](../prompts/expert-framework.md). Only add one if your persona
+      genuinely needs a different shape (see the existing carve-outs).
+- [ ] Do **not** add a per-persona "Load Project Context" block unless you load context differently
+      from the default — that step is centralized in `expert-framework.md`.
+- [ ] Add a matching entry to [`index.yaml`](index.yaml) (the tagger routes from this index; a
+      persona missing here never runs).
+- [ ] Run `python3 tests/test_invariants.py` — the index/file mapping must stay bidirectional and
+      the count invariant must hold.
+- [ ] Re-run `/setup-local` so the new file gets symlinked into `~/.claude/reviewers/`.
+
+## Persona Schemas
+
+Two `codeReview` shapes are supported:
+
+- **Standard** (the default): `codeReview.prompt` with an `INVESTIGATE:` body; output format is
+  inherited from `expert-framework.md`.
+- **Self-formatting carve-outs** (`code-rot-cody`, `contrarian-carl`, `consistency-checker`): keep
+  their own `OUTPUT FORMAT` block because their output structure differs from the standard template.
+
 ## Creating Project Context
 
 When setting up a new project, create `.claude/project.yaml`.

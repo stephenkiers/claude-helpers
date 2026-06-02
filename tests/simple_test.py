@@ -52,8 +52,12 @@ for f in REVIEWERS.glob("*.yaml"):
         missing_fields.append(f"{f.name}: no summary")
     if not re.search(r"^principles:", content, re.MULTILINE):
         missing_fields.append(f"{f.name}: no principles")
-    if not re.search(r"^\s+prompt:", content, re.MULTILINE):
-        missing_fields.append(f"{f.name}: no codeReview.prompt")
+    # Review body: code-review personas use codeReview.prompt; editor personas
+    # (editor-*) use editReview instead. Either satisfies the regression guard.
+    has_code_prompt = re.search(r"^\s+prompt:", content, re.MULTILINE)
+    has_edit_review = re.search(r"^editReview:", content, re.MULTILINE)
+    if not (has_code_prompt or has_edit_review):
+        missing_fields.append(f"{f.name}: no review body (codeReview.prompt or editReview)")
 inv5 = len(missing_fields) == 0
 print(f"5. Missing core fields: {len(missing_fields)} - {'PASS' if inv5 else 'FAIL'}")
 if missing_fields:
