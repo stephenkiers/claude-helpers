@@ -179,3 +179,10 @@ reviewers:
     priority: medium
     useWhen: Documentation emphasis, key points, narrative focus, prominence of important information
     note: "Signal editor — editorial persona for /expert-write. No diff triggers. Evaluates what stands out and what should."
+
+  - name: Fact-Check Fiona
+    file: fact-check-fiona.yaml
+    priority: high
+    useWhen: New or modified KB claims (facts, quotes, proposals, problems, source summaries, person attributions) — audits whether each claim's wording is fully supported by its cited source.
+    triggers: [kb/facts, kb/quotes, kb/proposals, kb/problems, kb/sources-registry, fact, claim, summary, confidence, evidence_type, source_refs, confirmed, complete, all, every, always, never, resolved, fully, unlike]
+    note: "Epistemic claim auditor for knowledge bases. Complements Data Scientist Dana (structural integrity) by checking claim-strength-vs-evidence: overstatement, unsourced clauses, inference-as-fact, confidence calibration."

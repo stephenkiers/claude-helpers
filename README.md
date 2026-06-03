@@ -44,7 +44,7 @@ is `./install.sh` (add `--with-zsh-keybindings` to opt into Option+Arrow word ju
 
 ## What's inside
 
-- **27 reviewer personas** (`reviewers/`) — character-driven experts (security, type safety,
+- **28 reviewer personas** (`reviewers/`) — character-driven experts (security, type safety,
   concurrency, DDD, composition/EDA, fragility, contracts, dead code, and more), routed to only the
   parts of a diff they care about.
 - **`/expert-review`** — the core: a blind-first, two-pass, multi-persona review with cheap-model
@@ -60,7 +60,7 @@ See [CLAUDE.md](CLAUDE.md) for the full command and persona catalog.
 
 The design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
 
-- **Progressive disclosure** — 27 personas would be ruinous to load all at once, so experts load lazily;
+- **Progressive disclosure** — 28 personas would be ruinous to load all at once, so experts load lazily;
   a cheap tagger routes diff sections to the few relevant reviewers, and each loads its own context on
   demand. ([ADR-0001](docs/adr/0001-progressive-disclosure.md))
 - **Blind-first, two-pass review** — reviewers judge the code before they see the author's rationale,
