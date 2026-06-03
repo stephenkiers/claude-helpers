@@ -85,13 +85,13 @@ Output a summary in this format:
 
 ---
 
-### Cadence Editor — {N} passages flagged
+### Shakespeare (cadence) — {N} passages flagged
 {2–3 most impactful: show before/after excerpts, label the pattern}
 
-### Signal Editor — {N} passages flagged
+### Strunk (signal) — {N} passages flagged
 {2–3 most impactful: show before/after excerpts, label the pattern}
 
-### Audience Editor — {N} passages flagged
+### Demosthenes (audience) — {N} passages flagged
 {2–3 most impactful: show before/after excerpts, label the pattern}
 
 ---

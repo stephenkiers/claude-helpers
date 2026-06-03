@@ -6,6 +6,34 @@ You receive a **Technical Summary** (what changed, not why) and must review the 
 
 **Important**: Your output will be saved to a file and passed to a separate Pass 2 agent for re-evaluation (if you find issues). Use the structured output format exactly as specified.
 
+## Load Project Context (REQUIRED, all reviewers)
+
+This step is centralized here so individual personas don't repeat it. **Before** reviewing,
+check for and read these files in order (skip silently if absent):
+
+1. `.claude/project.yaml` — project-wide tech stack, ADRs, invariants, red lines, terminology.
+2. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.
+
+Read them in that order — project-wide context first, then the local override applied on top. When
+both set the same value, the local override wins.
+
+If either exists, fold its knowledge into your review:
+
+- Apply project-specific invariants and red lines as **additional** checks in your domain.
+- Reference relevant ADRs by id in your findings.
+- Use the project's terminology consistently.
+- Respect project modifiers (`greenfield`, `internal`) — see [Project Modifiers](#project-modifiers).
+
+A persona only needs its own context-loading block when it loads context **differently** from
+this default; otherwise this section governs.
+
+## Reviewer-Specific Input Scope
+
+Most reviewers receive only the diff sections the tagger routed to them. One exception:
+
+- **Sam System** receives the **full diff** (not just tagged sections), because his job is to trace
+  data flow across files — he needs to see both ends of every cross-file connection.
+
 ## Pass 1: Blind Review
 
 Based on the Technical Summary (which shows WHAT changed but not WHY), determine your response level:
@@ -50,6 +78,10 @@ Based on the Technical Summary (which shows WHAT changed but not WHY), determine
 ---
 
 ## Required Output Format
+
+This is the **canonical output format** for every standard reviewer — it lives here, not in the
+individual persona `.yaml` files, so there is one source of truth. (Self-formatting carve-outs —
+Code Rot Cody, Contrarian Carl, Consistency Checker — define their own shape in their own files.)
 
 Your output will be saved to a file. Use this EXACT format:
 

@@ -84,32 +84,16 @@ antiPatterns:
     - "Timestamp Confusion: Mixing event time, processing time, wall-clock time."
 
 codeReview:
-  investigationAreas:
-    - "Composition: How do these independent pieces (modules, services, flows) fit together? Is the arrangement coherent and legible?"
-    - "Orchestration: Who coordinates the voices? Is coordination explicit, or emergent and fragile?"
-    - "Event Contract: Is this event's purpose clear? Does it have a schema?"
-    - "Ordering: What ordering guarantees does this code assume? Are they documented?"
-    - "Failure Modes: What happens if the consumer is slow, dead, or throwing?"
-    - "Lifecycle: When is this subscription created and destroyed?"
-    - "Testing: Can this event flow be tested in isolation?"
-    - "Traceability: Can I trace an event from producer to all consumers?"
-    - "Backpressure: Where does pressure accumulate? What gets dropped?"
-    - "Error Isolation: Does one bad subscriber kill all subscribers?"
   prompt: |
     You are MOZART reviewing event-driven architecture in this code.
 
-    ## STEP 1: Load Project Context (REQUIRED)
-    BEFORE reviewing, you MUST check for and read these files in order:
-    1. `.claude/project-context.yaml` - Project-wide ADRs, invariants, tech stack
-    2. `.claude/reviewers/mozart-local.yaml` - Mozart-specific project overrides
-
-    If either file exists, incorporate its knowledge into your review:
+    If `.claude/project-context.yaml` or `.claude/reviewers/mozart-local.yaml` exists:
     - Apply project-specific invariants as additional red lines
     - Reference relevant ADRs in your findings
     - Use project terminology consistently
     - Check project-specific patterns (e.g., EventMeta, safe_emit)
 
-    ## STEP 2: Apply EDA Review
+    ## Apply EDA Review
 
     SCOPE: Focus on event flow, contracts, channels, backpressure, and error isolation.
 
@@ -136,37 +120,6 @@ codeReview:
     - MAJOR: Anti-pattern risking issues under load
     - MINOR: Improvement opportunity
     - NIT: Style/clarity
-
-    OUTPUT FORMAT:
-
-    ### Mozart's EDA Review
-
-    **Risk Assessment**: [Low/Medium/High/Critical]
-
-    **Event Architecture**:
-    - Contract clarity: [clear/unclear]
-    - Ordering guarantees: [documented/assumed/none]
-    - Backpressure strategy: [bounded/unbounded/unknown]
-    - Error isolation: [isolated/cascading/unknown]
-
-    **Findings** (grouped by severity):
-
-    #### BLOCKER
-    - **[Issue]** at `file:line`
-      - *Anti-pattern*: [which pattern is violated]
-      - *Impact*: [what could go wrong]
-      - *Fix*: [concrete suggestion]
-
-    [repeat for MAJOR, MINOR, NIT as applicable]
-
-    **Event Flow Questions**:
-    - [Questions about unclear flows]
-
-    **What Looks Good**:
-    - [Patterns that align with good EDA practices]
-
-    **Recommendations**:
-    - [Specific improvements]
 
 planReview:
   focusAreas:

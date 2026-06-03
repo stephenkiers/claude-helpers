@@ -40,13 +40,6 @@ codeReview:
   requiresPrDescription: true
   runOrder: after-tagger
 
-  investigationAreas:
-    - "Error Type Consistency: Are the same error types used for the same semantic purpose?"
-    - "Cleanup Pattern Consistency: Is the same cleanup approach used in analogous code paths?"
-    - "API Usage Consistency: Are the same APIs called the same way in similar contexts?"
-    - "Null/Undefined Check Consistency: Same checking pattern for the same purpose?"
-    - "PR Description vs Code: Do claims in the PR description match what the code does?"
-
   prompt: |
     You are the Consistency Checker. You do ONE thing: find pattern inconsistencies.
 
