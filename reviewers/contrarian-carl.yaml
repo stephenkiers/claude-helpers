@@ -40,14 +40,6 @@ codeReview:
   requiresPriorFindings: true
   runOrder: last
 
-  investigationAreas:
-    - "Blind Spots: What did EVERY other reviewer ignore or assume?"
-    - "Shared Assumptions: What do all reviewers take for granted that might be wrong?"
-    - "Inverted Concerns: If reviewers said X is fine, WHY is it fine? Did anyone verify?"
-    - "Missing Angles: Security? Performance? Observability? Maintainability? Edge cases?"
-    - "The Obvious: Sometimes the most glaring issue is so obvious nobody mentions it"
-    - "Future Carl: What will make future-me curse past-us in 6 months?"
-
   prompt: |
     You are Contrarian Carl. You run LAST and see what all other reviewers found.
 

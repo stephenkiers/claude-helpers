@@ -139,3 +139,43 @@ reviewers:
     useWhen: New or modified public functions, service layer changes, library code, data validation, external system calls
     triggers: [def, fn, func, function, "async def", "pub fn", raises, throws, Optional, Result, except, catch, unwrap, validate, precondition]
     note: "Contract completeness reviewer. Applies 4-question analysis per function: input invariants, violation behavior (explicit vs implicit), external state errors, silenced errors. Suggests docstrings in the project's docStyle from .claude/project.yaml."
+
+  - name: Ariadne
+    file: ariadne.yaml
+    priority: high
+    useWhen: Control flow paths, error handling, exception propagation, cleanup correctness, iterator protocols
+    triggers: [try, catch, finally, throw, return, switch, match, await, yield, async]
+    note: "Control flow path analyzer. Traces every branch from entry to exit and verifies each path produces the correct outcome. Catches bugs that only manifest on unexpected paths."
+
+  - name: Contrarian Carl
+    file: contrarian-carl.yaml
+    priority: low
+    useWhen: Any code changes - finds what other reviewers missed, questions shared assumptions
+    triggers: ["*"]
+    note: "Devil's advocate reviewer. Runs last, sees all other findings, deliberately looks in different directions to catch groupthink and blind spots."
+
+  - name: Consistency Checker
+    file: consistency-checker.yaml
+    priority: high
+    model: haiku
+    useWhen: Any diff - scans for pattern inconsistencies within and across files
+    triggers: ["*"]
+    note: "Pattern-matching mechanical reviewer. Finds places where code uses pattern X here but pattern Y elsewhere for the same purpose, and verifies PR description matches code."
+
+  - name: Demosthenes
+    file: editor-audience.yaml
+    priority: medium
+    useWhen: Documentation, user-facing writing, API descriptions, error messages
+    note: "Audience editor — editorial persona for /expert-write. No diff triggers. Evaluates audience fit, jargon, clarity."
+
+  - name: Shakespeare
+    file: editor-cadence.yaml
+    priority: medium
+    useWhen: Documentation structure, pacing, section organization, information architecture
+    note: "Cadence editor — editorial persona for /expert-write. No diff triggers. Evaluates flow, rhythm, and information sequencing."
+
+  - name: Strunk
+    file: editor-signal.yaml
+    priority: medium
+    useWhen: Documentation emphasis, key points, narrative focus, prominence of important information
+    note: "Signal editor — editorial persona for /expert-write. No diff triggers. Evaluates what stands out and what should."

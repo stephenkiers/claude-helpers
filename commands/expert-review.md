@@ -320,6 +320,12 @@ For each reviewer with tagged sections:
 
 5. **Move to next reviewer** and repeat
 
+> **Output format is canonical, not per-persona.** Standard reviewer `.yaml` files no longer
+> carry their own `OUTPUT FORMAT` block — the format above is the single source of truth, defined
+> in `@~/.claude/prompts/expert-framework.md` and loaded in Step 1. The only personas that define
+> their own output shape are the self-formatting carve-outs run in their own steps below:
+> Sam System (Step 5.5), Code Rot Cody (Step 5.6), and Contrarian Carl (Step 5.7).
+
 **Important**: Do NOT include Business Context yet - this is blind review (WHAT changed, not WHY).
 
 For delta review, apply this scope rule to each review:

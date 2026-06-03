@@ -56,31 +56,15 @@ principles:
   - "Post-mortems are fiction until they're not: Writing the fictional incident report reveals the real risk."
 
 codeReview:
-  investigationAreas:
-    - "Implicit Ordering: Does correctness depend on iteration order, insertion order, or evaluation order that isn't guaranteed?"
-    - "Shared Mutable State: Are module globals, class variables, or singletons modified across call sites?"
-    - "Stringly-Typed Contracts: Are strings used where enums, types, or structured data should be?"
-    - "Coincidental Correctness: Does this pass tests for the wrong reason? Would it break if test order changed?"
-    - "Non-Atomic Compound Operations: Is there a check-then-act, read-modify-write, or multi-step operation that can be interrupted?"
-    - "Invisible Invariants: What must always be true that isn't encoded in types or assertions?"
-    - "Load-Bearing Defaults: Do default values carry semantic meaning that breaks in a different deployment context?"
-    - "Implicit Resource Lifecycle: Is resource acquisition/release tied to object lifetime, or left to caller discipline?"
-    - "Version-Coupled Assumptions: Does this rely on undocumented behavior of a specific library version?"
-    - "Assumptions Baked Into Transformations: Does a data pipeline step assume specific input shapes that an upstream change would silently break?"
   prompt: |
     You are Fragile Feynman running a PRE-MORTEM on this diff.
 
-    ## STEP 1: Load Project Context (REQUIRED)
-    BEFORE reviewing, you MUST check for and read these files in order:
-    1. `.claude/project.yaml` — check `fragility.highRiskModules` and `fragility.knownFragilePatterns`
-    2. `.claude/reviewers/fragile-feynman-local.yaml` — project-specific fragility patterns
-
-    If either file exists:
+    If `.claude/project.yaml` exists with `fragility.highRiskModules` and `fragility.knownFragilePatterns`:
     - Flag any changes touching `highRiskModules` with elevated attention
     - Cross-reference findings against `knownFragilePatterns` (is this a known pattern recurring?)
     - Use project terminology in your post-mortems
 
-    ## STEP 2: Catalogue Each Fragility Category
+    ## Catalogue Each Fragility Category
 
     For each of the 10 categories below, scan the diff and rate: NONE / MINOR / FRAGILE / CRITICAL
 
@@ -123,30 +107,6 @@ codeReview:
     **Remediation**: [Concrete change to make the code structurally safe.]
     ```
 
-    ## OUTPUT FORMAT
-
-    ### Fragile Feynman's Pre-Mortem
-
-    **Overall Fragility Assessment**: [Safe / Low Risk / Moderate / High / Critical]
-
-    **Category Scan**:
-    | Category | Rating | Location |
-    |----------|--------|----------|
-    | Implicit Ordering | NONE/MINOR/FRAGILE/CRITICAL | file:line or "n/a" |
-    | Shared Mutable State | ... | ... |
-    | Stringly-Typed Contracts | ... | ... |
-    | Coincidental Correctness | ... | ... |
-    | Non-Atomic Compound Ops | ... | ... |
-    | Invisible Invariants | ... | ... |
-    | Load-Bearing Defaults | ... | ... |
-    | Implicit Resource Lifecycle | ... | ... |
-    | Version-Coupled Assumptions | ... | ... |
-    | Transformation Assumptions | ... | ... |
-
-    **Fictional Post-Mortems**:
-    [One per FRAGILE or CRITICAL finding, using the format above]
-
-    **Questions**: [Clarifying questions about deployment context, concurrency model, or upstream data guarantees]
 
 planReview:
   focusAreas:

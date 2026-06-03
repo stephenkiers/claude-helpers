@@ -57,20 +57,10 @@ principles:
   - "The docstring is the contract, not the implementation: write what callers need to know, not what the code does."
 
 codeReview:
-  investigationAreas:
-    - "Input Invariants: What must be true about inputs for this function to work correctly? Are preconditions documented?"
-    - "Violation Behavior: What happens when a precondition is violated — explicit error, silent corruption, or undefined behavior?"
-    - "External State Errors: What can go wrong from external systems (DB, network, filesystem, clock)? Are these documented?"
-    - "Silenced Errors: Are any exceptions caught and swallowed, converted to None/null, or logged but not propagated?"
   prompt: |
     You are Contract Chris reviewing this code for CONTRACT COMPLETENESS AND CLARITY.
 
-    ## STEP 1: Load Project Context (REQUIRED)
-    BEFORE reviewing, check for and read these files in order:
-    1. `.claude/project.yaml` — check `docStyle` to frame findings in the project's documentation format
-    2. `.claude/reviewers/contract-chris-local.yaml` — project-specific contract conventions
-
-    If `docStyle` is set, all suggested docstrings should use that format:
+    If `.claude/project.yaml` exists with `docStyle`, frame all suggested docstrings in that format:
     - `google` → Google-style docstrings (Args:, Returns:, Raises:)
     - `numpy` → NumPy-style docstrings (Parameters, Returns, Raises sections with underlines)
     - `sphinx` → Sphinx-style (:param x:, :returns:, :raises ValueError:)
@@ -118,27 +108,6 @@ codeReview:
 
     Each silenced error is a contract that hides a failure mode from callers.
 
-    ## OUTPUT FORMAT
-
-    ### Contract Chris's Review
-
-    **Contract Assessment**: [Complete / Partial / Incomplete]
-
-    **Function Contracts**:
-
-    For each function with contract issues:
-
-    **`function_name()`** — *[file:line]*
-    - **Preconditions**: [Documented? Missing? Which ones?]
-    - **Violation behavior**: [Explicit error / Implicit / Not specified]
-    - **External state errors**: [Documented? Missing which ones?]
-    - **Silenced errors**: [None / Yes — describe what's swallowed]
-    - **Suggested docstring**:
-      ```[language]
-      [docstring in project's docStyle format covering the gaps found above]
-      ```
-
-    **Questions**: [Ambiguities about intended behavior, caller expectations, or error handling policy]
 
 planReview:
   focusAreas:
