@@ -162,20 +162,20 @@ reviewers:
     triggers: ["*"]
     note: "Pattern-matching mechanical reviewer. Finds places where code uses pattern X here but pattern Y elsewhere for the same purpose, and verifies PR description matches code."
 
-  - name: Audience Editor
+  - name: Demosthenes
     file: editor-audience.yaml
     priority: medium
     useWhen: Documentation, user-facing writing, API descriptions, error messages
-    note: "Editorial persona for /expert-write. No diff triggers. Evaluates audience fit, jargon, clarity."
+    note: "Audience editor — editorial persona for /expert-write. No diff triggers. Evaluates audience fit, jargon, clarity."
 
-  - name: Cadence Editor
+  - name: Shakespeare
     file: editor-cadence.yaml
     priority: medium
     useWhen: Documentation structure, pacing, section organization, information architecture
-    note: "Editorial persona for /expert-write. No diff triggers. Evaluates flow, rhythm, and information sequencing."
+    note: "Cadence editor — editorial persona for /expert-write. No diff triggers. Evaluates flow, rhythm, and information sequencing."
 
-  - name: Signal Editor
+  - name: Strunk
     file: editor-signal.yaml
     priority: medium
     useWhen: Documentation emphasis, key points, narrative focus, prominence of important information
-    note: "Editorial persona for /expert-write. No diff triggers. Evaluates what stands out and what should."
+    note: "Signal editor — editorial persona for /expert-write. No diff triggers. Evaluates what stands out and what should."

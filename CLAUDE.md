@@ -87,7 +87,8 @@ See the ADRs for the full rationale:
 - **Code Rot Cody** — dead code / orphaned-symbol detection (Haiku, full-repo grep)
 - …plus Know-It-All Nigel, Vera Verifier, Ariadne, Contrarian Carl, Scope Creep Steve, Penny Pincher,
   Curious Casey, Business Beth, Danielle the Designer, Dependency Skeptic, Data Scientist Dana,
-  Frontend Fred, and the editor personas (Audience, Cadence, Signal) + Consistency Checker.
+  Frontend Fred, the editor personas (Demosthenes/audience, Shakespeare/cadence, Strunk/signal) +
+  Consistency Checker.
 
 ## Project context
 

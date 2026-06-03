@@ -144,8 +144,9 @@ both, and the YAML body carries the matching review block.
   their own `OUTPUT FORMAT` block because their output structure differs from the standard template.
 
 **Editorial personas** (`/expert-write`) use an `editReview.focusAreas` block instead of
-`codeReview.prompt`. The current three are **Audience Editor** (`editor-audience.yaml`), **Cadence
-Editor** (`editor-cadence.yaml`), and **Signal Editor** (`editor-signal.yaml`). They have **no diff
+`codeReview.prompt`. The current three are **Demosthenes** (`editor-audience.yaml`, audience fit),
+**Shakespeare** (`editor-cadence.yaml`, rhythm and pacing), and **Strunk** (`editor-signal.yaml`,
+signal over noise). They have **no diff
 `triggers`**, so the code-review tagger never routes to them — their `index.yaml` `note` marks them
 `for /expert-write`. A persona with only an `editReview` block is not a valid `/expert-review`
 target; do not request one there.
