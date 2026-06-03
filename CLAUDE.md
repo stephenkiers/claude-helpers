@@ -71,7 +71,7 @@ See the ADRs for the full rationale:
 
 ## Reviewers (personas)
 
-27 character-driven reviewers in `reviewers/`, indexed with their triggers in
+28 character-driven reviewers in `reviewers/`, indexed with their triggers in
 [`reviewers/index.yaml`](reviewers/index.yaml). Highlights:
 
 - **Uncle Bob** — clean code, SOLID, resource management
