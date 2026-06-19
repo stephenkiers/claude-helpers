@@ -36,8 +36,8 @@ list_folders() {
       desc=""
     fi
     if [ -z "$created" ]; then
-      mt=$(stat -f %m "$f" 2>/dev/null || echo 0)
-      created=$(date -r "$mt" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown")
+      mt=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+      created=$(date -r "$mt" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$mt" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown")
     fi
     [ -f "$f/plan.md" ] && plan_marker=" [+plan]" || plan_marker=""
     printf '  %s%s\n' "$name" "$plan_marker"
@@ -53,11 +53,11 @@ if [ -z "$ARGS" ]; then
   mapfile -t RECENT < <(
     for d in "$HANDOFF_DIR"/*/; do
       [ -d "$d" ] || continue
-      mt=$(stat -f %m "$d" 2>/dev/null || echo 0)
+      mt=$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)
       printf '%s|%s\n' "$mt" "${d%/}"
-    done | sort -t'|' -k1 -rn | head -5 | cut -d'|' -f2
+    done | sort -t'|' -k1 -rn | head -5 | awk -F'|' '{print $2}'
   )
-  echo "5 most recent handoffs (of $(ls -1 "$HANDOFF_DIR" | wc -l | tr -d ' ')):"
+  echo "5 most recent handoffs (of $(ls -1 "$HANDOFF_DIR" | awk 'END{print NR}')):"
   echo ""
   list_folders "${RECENT[@]}"
   exit 0
@@ -97,8 +97,9 @@ fi
 # --- No folder match: literal grep across prompts + metadata ---
 echo "MODE=search"
 mapfile -t HITS < <(
-  rg -i -l -F --max-filesize 5M -- "$ARGS" "$HANDOFF_DIR" 2>/dev/null | \
-    xargs -I{} dirname {} 2>/dev/null | sort -u | head -20
+  rg -i -l -F --max-filesize 5M -- "$ARGS" "$HANDOFF_DIR" 2>/dev/null \
+    | while IFS= read -r match; do dirname "$match"; done \
+    | sort -u | head -20
 )
 if [ "${#HITS[@]}" -eq 0 ]; then
   echo "No handoffs matched '$ARGS'. Run /handoff-resume with no args to list recent ones."
@@ -108,9 +109,9 @@ fi
 # Rank by mtime, take 5
 mapfile -t RANKED < <(
   for d in "${HITS[@]}"; do
-    mt=$(stat -f %m "$d" 2>/dev/null || echo 0)
+    mt=$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)
     printf '%s|%s\n' "$mt" "$d"
-  done | sort -t'|' -k1 -rn | head -5 | cut -d'|' -f2
+  done | sort -t'|' -k1 -rn | head -5 | awk -F'|' '{print $2}'
 )
 echo "${#HITS[@]} handoff(s) matched '$ARGS' (showing top ${#RANKED[@]}):"
 echo ""
