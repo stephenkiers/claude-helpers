@@ -77,7 +77,7 @@ Do the following:
 7. **Print confirmation** — a single block like:
    ```
    Handoff saved: <DIR>
-     prompt.md     (<N> lines)
+     prompt.md
      metadata.json
      plan.md       (if copied)
 
