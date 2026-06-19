@@ -60,6 +60,8 @@ See the ADRs for the full rationale:
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/cleanup` — clean up a worktree after a PR is merged
 - `/fork-planning` — fork a planning session
+- `/handoff` — snapshot the current conversation into `~/.handoff/<timestamp>-<slug>/` so it can be resumed elsewhere (pair with Esc-Esc to rewind)
+- `/handoff-resume` — list recent handoffs, or load one (by name/prefix/query) into the current window
 
 **Research & writing**
 - `/research-swarm` — deep research on a topic via parallel web agents, optionally cross-checked
