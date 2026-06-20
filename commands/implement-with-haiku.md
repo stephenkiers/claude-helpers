@@ -35,11 +35,26 @@ find . -maxdepth 2 -name "tsconfig*.json" -o -name ".eslintrc*" -o -name "eslint
 
 Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You'll use it between rounds to identify which files each round changed.
 
+**Stage timing (telemetry).** This flow captures the wall-clock of each round so you can see which round is the long pole (it's the input that decides whether parallelizing a round is worth it). Use a tiny on-disk log so the numbers survive context summarization between notifications:
+
+```bash
+TIMING_LOG="/tmp/iwh-timing-${START_SHA}.txt"
+echo "T_START=$(date +%s)" > "$TIMING_LOG"   # overall start; truncates any stale log for this SHA
+```
+
+At each round boundary you'll append a `KEY=$(date +%s)` line (instructions below). Each round's duration is `end - start`; the total is `last - T_START`. Read the log back with `cat "$TIMING_LOG"` when you build the final summary.
+
 Also read these files using the `Read` tool if they exist (skip silently if not):
 - `CLAUDE.md` — project conventions and coding rules
 - `.claude/project.yaml` — project-specific context
 
 ## Step 3: Launch round 1 — Implementer
+
+Record the round-1 start immediately before spawning:
+
+```bash
+echo "R1_START=$(date +%s)" >> "$TIMING_LOG"
+```
 
 Spawn a `plan-implementer` sub-agent with `run_in_background: true`.
 
@@ -65,7 +80,9 @@ After each task notification, count prior `plan-implementer` notifications in th
 
 ### After round 1 (implementer)
 
-**If `COMMITTED: no`:** stop. Surface the report. Suggest `/expert-review`, `/shipit`, or re-run.
+Record the round-1 end first: `echo "R1_END=$(date +%s)" >> "$TIMING_LOG"`.
+
+**If `COMMITTED: no`:** stop. Surface the report (include round-1 duration `R1_END - R1_START`). Suggest `/expert-review`, `/shipit`, or re-run.
 
 **If `COMMITTED: yes`:**
 - Get the list of files round 1 changed:
@@ -102,9 +119,12 @@ After each task notification, count prior `plan-implementer` notifications in th
   >
   > [Project conventions, project context as in round 1]
 
-- Tell the user: "Round 1 complete — implementation committed. Launching round 2 (spec-blind test author)."
+- Record the round-2 start before spawning: `echo "R2_START=$(date +%s)" >> "$TIMING_LOG"`.
+- Tell the user: "Round 1 complete — implementation committed (took `R1_END - R1_START`s). Launching round 2 (spec-blind test author)."
 
 ### After round 2 (test author)
+
+Record the round-2 end first: `echo "R2_END=$(date +%s)" >> "$TIMING_LOG"`.
 
 - Get the full file list since `START_SHA`:
   ```bash
@@ -148,9 +168,19 @@ After each task notification, count prior `plan-implementer` notifications in th
   >
   > [Project conventions, project context as in round 1]
 
+- Record the round-3 start before spawning: `echo "R3_START=$(date +%s)" >> "$TIMING_LOG"`.
 - Tell the user: "Round 2 complete — [N tests added, M failing | no tests committed]. Launching round 3 (adversary review)."
 
 ### After round 3 (adversary)
+
+Record the round-3 end first, then read back the full log:
+
+```bash
+echo "R3_END=$(date +%s)" >> "$TIMING_LOG"
+cat "$TIMING_LOG"
+```
+
+Compute each duration in seconds (`*_END - *_START`) and the total (`R3_END - T_START`); format as `mm:ss`.
 
 Surface a final summary in this exact structure so the experiment is legible at a glance:
 
@@ -171,7 +201,15 @@ ROUND 3 — Adversary
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
   Final test status: <P passed, F failed>
+
+TIMING (wall-clock per stage)
+  Round 1 (implement):  <mm:ss>
+  Round 2 (tests):      <mm:ss>
+  Round 3 (adversary):  <mm:ss>
+  Total:                <mm:ss>
 ```
+
+Then a one-line **timing read** naming the long pole — e.g. "Round 1 dominated at 6:12 of 9:40 total; parallelizing it is where the wall-clock win is" or "All three rounds were comparable (~3 min each); no single long pole."
 
 Then a one-line **experiment read**: which rounds produced signal, which didn't. Examples:
 - "Round 2 stayed spec-blind and caught 2 divergences; round 3 found 1 more independently. All three roles earned their keep."
