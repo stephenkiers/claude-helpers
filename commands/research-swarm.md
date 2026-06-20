@@ -1,7 +1,7 @@
 ---
 name: research-swarm
 description: "Deep research on a topic using parallel web research agents, then validates findings against your internal knowledge via whatever internal-search MCP tools you have configured (e.g. Slack, Confluence, Notion, Google Drive — if available). Use when asked to research a topic broadly, explore a problem space, or validate external claims against internal reality."
-allowed-tools: Read, Bash, AskUserQuestion, Agent, Monitor, WebSearch, WebFetch
+allowed-tools: Read, Bash, AskUserQuestion, Agent, WebSearch, WebFetch
 argument-hint: <topic to research>
 ---
 
@@ -149,22 +149,22 @@ Return a JSON object:
 
 ---
 
-## Step 7: Monitor Wave 1
+## Step 7: Stream Wave 1 progress
 
-Start a Monitor on the event file immediately after launching workers:
+Stream the event file while workers are running:
 
 ```bash
 tail -f /tmp/research-swarm-<SID>.jsonl | grep --line-buffered ""
 ```
 
-Description: `"Wave 1 research workers for research-swarm <SID>"`
-Timeout: 120000ms
+As each JSON line arrives, translate it for the user:
+- `start` → "[<worker>] Researching: <angle>..."
+- `search` → "[<worker>] Searching: <q>"
+- `source` → "[<worker>] Reading: <org> (<url>)"
+- `claim` → "[<worker>] Claim: <text>"
+- `done` → "[<worker>] Done."
 
-Translate each event to `[<worker>] <description>`:
-- `start` → "Researching: <angle>..." | `search` → "Searching: <q>" | `source` → "Reading: <org> (<url>)"
-- `claim` → "Claim: <text>" | `done` → "Done."
-
-Wait until all launched Wave 1 workers have written `{"e":"done"}` before continuing.
+Continue until all launched Wave 1 workers have written `{"e":"done"}`, then stop tailing.
 
 ---
 
@@ -249,22 +249,21 @@ Return: {"worker":"<WV>","source":"<SOURCE>","validations":[{"claim_ref":<index>
 
 ---
 
-## Step 10: Monitor Wave 2
+## Step 10: Stream Wave 2 progress
 
-Start a Monitor on the event file immediately after launching workers:
+Stream the event file while workers are running:
 
 ```bash
 tail -f -n 0 /tmp/research-swarm-<SID>.jsonl | grep --line-buffered ""
 ```
 
-Description: `"Wave 2 validation workers for research-swarm <SID>"`
-Timeout: 90000ms
+As each JSON line arrives, translate it for the user (use the `source` field on each event):
+- `start` → "[<worker>/<source>] Searching <source>..."
+- `result` with title → "[<worker>/<source>] Claim <N>: <verdict> — <title>"
+- `result` with null title → "[<worker>/<source>] Claim <N>: no results."
+- `done` → "[<worker>/<source>] Done."
 
-Translate each event to `[<worker>/<source>] <description>` (use the `source` field on each event):
-- `start` → "Searching <source>..." | `done` → "Done."
-- `result` with title → "Claim <N>: <verdict> — <title>" | null title → "Claim <N>: no results."
-
-Wait until all launched Wave 2 workers have written `{"e":"done"}` before continuing.
+Continue until all launched Wave 2 workers have written `{"e":"done"}`, then stop tailing.
 
 Then clean up:
 
