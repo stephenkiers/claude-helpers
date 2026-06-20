@@ -334,6 +334,52 @@ if [ -f "$PROJECT_ISSUES" ]; then
 fi
 ```
 
+### 2.5. Validate Merged Main (regression gate)
+
+**Only when `PR_STATE = "MERGED"`.** For OPEN/CLOSED/NONE nothing is integrated
+into `main`, so skip validation with a note. We are already in `$MAIN_WORKTREE`
+(Step 1 switched there) — run everything from main, never touch the target worktree.
+
+This catches regressions that only surface once the squash-merged PR lands
+alongside other merges. **Validation never blocks cleanup**: the merge is already
+irreversible, so a failure is reported loudly and we still remove the worktree.
+
+```bash
+if [ "$PR_STATE" = "MERGED" ]; then
+  # 1. Update main to the merged commit (ff-only so cleanup never rewrites history)
+  git pull --ff-only origin main 2>&1 \
+    || echo "WARN: could not fast-forward main; validating current main state"
+
+  # 2. Pick validation command: prefer `just check`, fall back to shipit's cache.
+  #    cleanup.md is a global command, so `just check` only exists in some repos.
+  if command -v just >/dev/null 2>&1 \
+     && just --summary 2>/dev/null | tr ' ' '\n' | grep -qx check; then
+    CHECK_CMD="just check"
+  else
+    CHECK_CMD=""  # No `just check` — use repo-cache commands (see below)
+  fi
+
+  # 3. Run validation, capture result, but DO NOT abort cleanup on failure.
+  if [ -n "$CHECK_CMD" ]; then
+    echo "Validating merged main with: $CHECK_CMD"
+    if eval "$CHECK_CMD"; then
+      echo "VALIDATION=pass — merged main is green"
+    else
+      echo "VALIDATION=fail — REGRESSION on main after merge of $CURRENT_BRANCH"
+      echo "Cleanup will continue (PR already merged); investigate main separately."
+    fi
+  else
+    echo "No \`just check\` recipe found — validate using shipit's cached commands."
+    # Fallback: reuse /shipit Step 3. Read .claude/repo-cache.json and run each
+    # non-null command in order: format → check (or lint+typecheck) → test → build.
+    # Same warn-but-continue contract: a failing command reports REGRESSION but
+    # must not stop cleanup.
+  fi
+else
+  echo "PR not merged (PR_STATE=$PR_STATE) — skipping main validation (nothing integrated)"
+fi
+```
+
 ### 3. Remove Worktree (from main)
 
 When PR_STATE is **MERGED**, use `git branch -D` (force delete). Squash merges mean the local
@@ -371,6 +417,9 @@ fi
 | Target not a registered worktree | Abort with error message |
 | PR confirmed MERGED | Proceed with all cleanup (including `-D`) without asking |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
+| PR confirmed MERGED | Pull main ff-only, run `just check` (or cached shipit commands) as a regression gate |
+| Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
+| Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
 | **Shell stuck in deleted dir** | See recovery section below |
 
@@ -401,6 +450,8 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 # MAIN_WORKTREE=/Users/me/Repositories/my-project/worktrees/main
 # Now in main worktree, safe to proceed
 # PR was merged
+# Validating merged main with: just check
+# VALIDATION=pass — merged main is green
 # ✓ Removed worktree
 # ✓ Deleted branch: feature/42-add-export
 ```
@@ -408,6 +459,9 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 ## Notes
 
 - This command complements `/shipit` - use `/shipit` to create PR, `/cleanup` after merge
+- When the PR is merged, cleanup pulls `main` (ff-only) and runs `just check` — or
+  shipit's cached `repo-cache.json` commands if no `just check` recipe exists — as a
+  regression gate on integrated `main`. Failures are reported but never block cleanup.
 - Cache is committed to git, so no manual syncing needed
 - Safe to run multiple times (idempotent checks)
 - **Works from main or any worktree** — never cd's into the target, uses `git -C` instead
