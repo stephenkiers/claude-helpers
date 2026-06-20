@@ -344,36 +344,54 @@ This catches regressions that only surface once the squash-merged PR lands
 alongside other merges. **Validation never blocks cleanup**: the merge is already
 irreversible, so a failure is reported loudly and we still remove the worktree.
 
+Validation uses the **same command set `/shipit` runs** — sourced from
+`.claude/repo-cache.json`, the single source of truth `/shipit` writes for this
+repo's checks (`just check`, `cargo test`, `make lint`, etc. are all just entries
+in it). `cleanup.md` is a global command, so it can't assume any particular tool;
+the cache (or, if absent, `CLAUDE.md`) is what tells us what "green" means here.
+
 ```bash
 if [ "$PR_STATE" = "MERGED" ]; then
   # 1. Update main to the merged commit (ff-only so cleanup never rewrites history)
   git pull --ff-only origin main 2>&1 \
     || echo "WARN: could not fast-forward main; validating current main state"
 
-  # 2. Pick validation command: prefer `just check`, fall back to shipit's cache.
-  #    cleanup.md is a global command, so `just check` only exists in some repos.
-  if command -v just >/dev/null 2>&1 \
-     && just --summary 2>/dev/null | tr ' ' '\n' | grep -qx check; then
-    CHECK_CMD="just check"
+  # 2. Discover the check commands the SAME way /shipit does: from repo-cache.json.
+  #    If it's missing we don't know what "green" means here, so we say so loudly
+  #    rather than silently passing.
+  REPO_CACHE=".claude/repo-cache.json"
+  if [ ! -f "$REPO_CACHE" ]; then
+    echo "VALIDATION=skipped — no $REPO_CACHE found."
+    echo "Run /shipit once (it writes the cache) or document the check commands in"
+    echo "CLAUDE.md, then validate main manually. Cleanup will continue."
   else
-    CHECK_CMD=""  # No `just check` — use repo-cache commands (see below)
-  fi
+    # Build the command list in /shipit Step 3 order, skipping nulls. A composite
+    # `check` replaces separate lint+typecheck (same rule /shipit applies).
+    if [ -n "$(jq -r '.commands.check // empty' "$REPO_CACHE")" ]; then
+      ORDER='["format","check","vet","test","build"]'
+    else
+      ORDER='["format","lint","vet","typecheck","test","build"]'
+    fi
+    CMDS=$(jq -r --argjson order "$ORDER" '$order[] as $k | .commands[$k] // empty' "$REPO_CACHE")
 
-  # 3. Run validation, capture result, but DO NOT abort cleanup on failure.
-  if [ -n "$CHECK_CMD" ]; then
-    echo "Validating merged main with: $CHECK_CMD"
-    if eval "$CHECK_CMD"; then
+    # 3. Run each command. Warn-but-continue: a failure flags REGRESSION but the
+    #    non-zero exit must NEVER abort cleanup — the merge is already irreversible.
+    VALIDATION=pass
+    while IFS= read -r cmd; do
+      [ -z "$cmd" ] && continue
+      echo "Validating merged main: $cmd"
+      if ! eval "$cmd"; then
+        VALIDATION=fail
+        echo "FAILED: \`$cmd\` (main's integrated state after merging $CURRENT_BRANCH)"
+      fi
+    done <<< "$CMDS"
+
+    if [ "$VALIDATION" = "pass" ]; then
       echo "VALIDATION=pass — merged main is green"
     else
-      echo "VALIDATION=fail — REGRESSION on main after merge of $CURRENT_BRANCH"
-      echo "Cleanup will continue (PR already merged); investigate main separately."
+      echo "VALIDATION=fail — REGRESSION on main; investigate separately."
+      echo "Cleanup will continue (PR already merged)."
     fi
-  else
-    echo "No \`just check\` recipe found — validate using shipit's cached commands."
-    # Fallback: reuse /shipit Step 3. Read .claude/repo-cache.json and run each
-    # non-null command in order: format → check (or lint+typecheck) → test → build.
-    # Same warn-but-continue contract: a failing command reports REGRESSION but
-    # must not stop cleanup.
   fi
 else
   echo "PR not merged (PR_STATE=$PR_STATE) — skipping main validation (nothing integrated)"
@@ -417,8 +435,9 @@ fi
 | Target not a registered worktree | Abort with error message |
 | PR confirmed MERGED | Proceed with all cleanup (including `-D`) without asking |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
-| PR confirmed MERGED | Pull main ff-only, run `just check` (or cached shipit commands) as a regression gate |
+| PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands |
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
+| Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
 | Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
 | **Shell stuck in deleted dir** | See recovery section below |
@@ -450,7 +469,7 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 # MAIN_WORKTREE=/Users/me/Repositories/my-project/worktrees/main
 # Now in main worktree, safe to proceed
 # PR was merged
-# Validating merged main with: just check
+# Validating merged main: just check
 # VALIDATION=pass — merged main is green
 # ✓ Removed worktree
 # ✓ Deleted branch: feature/42-add-export
@@ -459,9 +478,10 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 ## Notes
 
 - This command complements `/shipit` - use `/shipit` to create PR, `/cleanup` after merge
-- When the PR is merged, cleanup pulls `main` (ff-only) and runs `just check` — or
-  shipit's cached `repo-cache.json` commands if no `just check` recipe exists — as a
-  regression gate on integrated `main`. Failures are reported but never block cleanup.
+- When the PR is merged, cleanup pulls `main` (ff-only) and runs the same checks
+  `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
+  integrated `main`. If that cache doesn't exist, validation is skipped with a note
+  (run `/shipit` once to write it). Failures are reported but never block cleanup.
 - Cache is committed to git, so no manual syncing needed
 - Safe to run multiple times (idempotent checks)
 - **Works from main or any worktree** — never cd's into the target, uses `git -C` instead
