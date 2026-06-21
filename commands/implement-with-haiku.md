@@ -1,6 +1,6 @@
 ---
 description: Launch a background Haiku agent to implement the current issue or a passed plan. Re-run to iterate and improve.
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(pwd:*), Bash(find:*), Agent
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Agent
 ---
 
 # Implement with Haiku
@@ -35,13 +35,17 @@ find . -maxdepth 2 -name "tsconfig*.json" -o -name ".eslintrc*" -o -name "eslint
 
 Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You'll use it between rounds to identify which files each round changed.
 
+**Stage timing (telemetry).** This flow reports the **agent compute time** of each round so you can see which round is the long pole (the input that decides whether parallelizing a round is worth it). Each round's duration is self-measured by the `plan-implementer` agent — it timestamps to a file at the start and returns an `ELAPSED_SECONDS:` line in its report (see the agent definition). This is the reliable metric: it counts only the agent's own work, immune to permission dialogs, orchestrator latency, and idle time between conversation turns.
+
+Do **not** report an end-to-end wall-clock total. In an interactive session the run can span many turns (even days) with idle time the orchestrator cannot distinguish from work, so a wall-clock number is misleading. Report per-round agent compute and their sum only.
+
 Also read these files using the `Read` tool if they exist (skip silently if not):
 - `CLAUDE.md` — project conventions and coding rules
 - `.claude/project.yaml` — project-specific context
 
 ## Step 3: Launch round 1 — Implementer
 
-Spawn a `plan-implementer` sub-agent with `run_in_background: true`.
+Spawn a `plan-implementer` sub-agent with `run_in_background: true`. (No manual start-stamp needed — the agent self-times and returns `ELAPSED_SECONDS` in its report.)
 
 The prompt must be fully self-contained — include:
 - The full plan text (verbatim)
@@ -65,7 +69,9 @@ After each task notification, count prior `plan-implementer` notifications in th
 
 ### After round 1 (implementer)
 
-**If `COMMITTED: no`:** stop. Surface the report. Suggest `/expert-review`, `/shipit`, or re-run.
+Note round 1's duration from the report's `ELAPSED_SECONDS` line.
+
+**If `COMMITTED: no`:** stop. Surface the report (include round-1 duration). Suggest `/expert-review`, `/shipit`, or re-run.
 
 **If `COMMITTED: yes`:**
 - Get the list of files round 1 changed:
@@ -102,9 +108,11 @@ After each task notification, count prior `plan-implementer` notifications in th
   >
   > [Project conventions, project context as in round 1]
 
-- Tell the user: "Round 1 complete — implementation committed. Launching round 2 (spec-blind test author)."
+- Tell the user: "Round 1 complete — implementation committed (took <ELAPSED_SECONDS>s). Launching round 2 (spec-blind test author)."
 
 ### After round 2 (test author)
+
+Note round 2's duration from its report's `ELAPSED_SECONDS` line.
 
 - Get the full file list since `START_SHA`:
   ```bash
@@ -152,6 +160,8 @@ After each task notification, count prior `plan-implementer` notifications in th
 
 ### After round 3 (adversary)
 
+Collect each round's `ELAPSED_SECONDS` from the three reports. Total agent compute = round 1 + round 2 + round 3. Format all as `mm:ss`. If any round reported `ELAPSED_SECONDS: unknown`, mark that round `n/a` and note the total is a lower bound.
+
 Surface a final summary in this exact structure so the experiment is legible at a glance:
 
 ```
@@ -171,7 +181,15 @@ ROUND 3 — Adversary
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
   Final test status: <P passed, F failed>
+
+TIMING (agent compute per round — self-measured; excludes idle between turns)
+  Round 1 (implement):  <mm:ss>
+  Round 2 (tests):      <mm:ss>
+  Round 3 (adversary):  <mm:ss>
+  Total agent compute:  <mm:ss>
 ```
+
+Then a one-line **timing read** naming the long pole — e.g. "Round 1 dominated at 6:12 of 9:40 total; parallelizing it is where the wall-clock win is" or "All three rounds were comparable (~3 min each); no single long pole."
 
 Then a one-line **experiment read**: which rounds produced signal, which didn't. Examples:
 - "Round 2 stayed spec-blind and caught 2 divergences; round 3 found 1 more independently. All three roles earned their keep."
