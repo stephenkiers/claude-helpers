@@ -2,7 +2,7 @@
 name: plan-implementer-2
 description: Implements a detailed step-by-step coding plan autonomously in the current working directory. Pass a numbered plan with file paths, precise changes, and the verification commands to run. Reports what was done when complete.
 model: claude-haiku-4-5-20251001
-tools: Read, Edit, Write, Glob, Grep, Bash(git *), Bash(gh issue view*), Bash(gh issue list*), Bash(gh pr view*), Bash(gh pr list*), Bash(cargo *), Bash(swift *), Bash(xcodebuild *), Bash(npx *), Bash(npm *), Bash(pnpm *), Bash(yarn *), Bash(ls *), Bash(rg *), Bash(find *), Bash(cat *), Bash(head *), Bash(tail *), Bash(wc *), Bash(date *), Bash(echo *), Bash(pwd)
+tools: Read, Edit, Write, Glob, Grep, Bash(git *), Bash(gh issue view*), Bash(gh issue list*), Bash(gh pr view*), Bash(gh pr list*), Bash(cargo *), Bash(swift *), Bash(xcodebuild *), Bash(npx *), Bash(npm *), Bash(pnpm *), Bash(yarn *), Bash(bun *), Bash(ls *), Bash(rg *), Bash(find *), Bash(cat *), Bash(head *), Bash(tail *), Bash(wc *), Bash(date *), Bash(echo *), Bash(pwd)
 permissionMode: bypassPermissions
 maxTurns: 120
 ---
