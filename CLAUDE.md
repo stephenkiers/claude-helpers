@@ -55,7 +55,7 @@ See the ADRs for the full rationale:
 **Lifecycle**
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
-- `/implement-with-haiku` — background Haiku flow: implement, spec-blind test author, adversary review
+- `/implement-with-haiku` — parallel Haiku implementers → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → spec-blind test author → adversary review
 - `/shipit` — run CI checks locally, commit, open a PR (`/shipit-reference` for details)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/cleanup` — clean up a worktree after a PR is merged

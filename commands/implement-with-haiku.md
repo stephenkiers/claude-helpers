@@ -1,17 +1,20 @@
 ---
-description: Launch a background Haiku agent to implement the current issue or a passed plan. Re-run to iterate and improve.
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Agent
+description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(git worktree:*), Bash(git merge:*), Bash(git checkout:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
 ---
 
 # Implement with Haiku
 
-Launch a background `plan-implementer` Haiku agent and return immediately. You'll be notified when it's done.
+Splits the plan into independent work units, runs them as parallel background `plan-implementer`
+agents in isolated worktrees, then applies an **orchestrator-owned integration gate** before handing
+off to spec-blind test writing and adversary review.
 
-The flow runs **three rounds with distinct cognitive roles** — same model, divergent prompts:
+The flow:
 
-1. **Implementer** — builds to plan
-2. **Spec-blind test author** — writes tests from the plan without reading the implementation
-3. **Adversary** — assumes the implementation is wrong somewhere, finds divergence and production failure modes
+1. **Round 1 — Implementer(s)** — one Haiku per work unit, in parallel worktrees
+2. **Integration gate** — orchestrator runs build/type-check + anti-cheat scan + bounded fix loop
+3. **Round 2 — Spec-blind test author** — writes tests from the plan without reading the implementation
+4. **Round 3 — Adversary** — assumes something is wrong, finds divergence and failure modes
 
 ## Step 1: Find the plan
 
@@ -33,147 +36,377 @@ git rev-parse HEAD
 find . -maxdepth 2 -name "tsconfig*.json" -o -name ".eslintrc*" -o -name "eslint.config.*" -o -name "prettier.config.*" -o -name ".prettierrc*" -o -name "pyproject.toml" -o -name ".editorconfig" -o -name "biome.json" 2>/dev/null | head -20
 ```
 
-Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You'll use it between rounds to identify which files each round changed.
-
-**Stage timing (telemetry).** This flow reports the **agent compute time** of each round so you can see which round is the long pole (the input that decides whether parallelizing a round is worth it). Each round's duration is self-measured by the `plan-implementer` agent — it timestamps to a file at the start and returns an `ELAPSED_SECONDS:` line in its report (see the agent definition). This is the reliable metric: it counts only the agent's own work, immune to permission dialogs, orchestrator latency, and idle time between conversation turns.
-
-Do **not** report an end-to-end wall-clock total. In an interactive session the run can span many turns (even days) with idle time the orchestrator cannot distinguish from work, so a wall-clock number is misleading. Report per-round agent compute and their sum only.
+Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You will use it throughout.
 
 Also read these files using the `Read` tool if they exist (skip silently if not):
 - `CLAUDE.md` — project conventions and coding rules
 - `.claude/project.yaml` — project-specific context
 
-## Step 3: Launch round 1 — Implementer
+**Stage timing.** Each agent self-measures and returns an `ELAPSED_SECONDS:` line. Report per-round
+agent compute, not end-to-end wall clock (which includes idle between turns).
 
-Spawn a `plan-implementer` sub-agent with `run_in_background: true`. (No manual start-stamp needed — the agent self-times and returns `ELAPSED_SECONDS` in its report.)
+## Step 2.5: Pre-flight orphan sweep
 
-The prompt must be fully self-contained — include:
-- The full plan text (verbatim)
-- Absolute path of the working directory
-- Current branch name
+Before creating anything, clean up worktrees from any prior aborted run. Run from the main worktree
+using `git -C` — never `cd` into a worktree you intend to delete.
+
+```bash
+BRANCH=$(git branch --show-current)
+MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+
+# Prune stale entries first
+git worktree prune
+
+# Find leftover haiku worktrees from a prior run
+git worktree list --porcelain | awk '/^worktree / {print $2}' | while read -r wt; do
+  bn=$(git -C "$wt" branch --show-current 2>/dev/null || true)
+  case "$bn" in
+    "${BRANCH}-haiku-"*)
+      echo "Removing orphan worktree: $wt (branch: $bn)"
+      git worktree remove --force "$wt" 2>/dev/null || true
+      git branch -D "$bn" 2>/dev/null || true
+      ;;
+  esac
+done
+git worktree prune
+```
+
+## Step 3: Split the plan into work units
+
+Analyze the plan and emit **1..N work units**. Each unit must have:
+- `id` — a short slug, e.g. `auth`, `api`, `ui` (used in branch names)
+- `sub-task` — a self-contained description of only this unit's work
+- `owned-files` — explicit list of every file this unit will create or modify
+- (derived) `forbidden-files` — all other units' owned files, which this unit must not touch
+
+**Rules:**
+- Split only along genuinely independent seams (no shared mutable state).
+- Every **shared file** (barrel/index exports, `package.json`, route registries, migration registries)
+  must be assigned to **exactly one** unit — never left unassigned.
+- **Extract shared contracts/interfaces** (types, enums, constants) into the sub-task text given to
+  *all* units — cheap drift reduction without inter-agent communication.
+- Always emit **≥ 1** unit. If the plan is too coupled to split safely, emit 1 unit.
+
+**Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
+directly in the main working directory (background, `run_in_background: true`) with the same self-contained
+prompt described in Step 4b. Proceed to the Integration Gate when it completes.
+
+## Step 4a: Create one worktree per unit (multi-unit only)
+
+For each unit, create a branch off `START_SHA` and a worktree:
+
+```bash
+BRANCH=$(git branch --show-current)
+MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+WT_PARENT="${MAIN_WT}/.claude/worktrees"
+mkdir -p "$WT_PARENT"
+
+# For each unit (replace UNIT_ID with the actual id):
+UNIT_ID="<id>"
+WT_BRANCH="${BRANCH}-haiku-${UNIT_ID}"
+WT_PATH="${WT_PARENT}/${WT_BRANCH}"
+git worktree add "$WT_PATH" -b "$WT_BRANCH" "$START_SHA"
+```
+
+Track the created worktrees: `[{id, branch: WT_BRANCH, path: WT_PATH, status: "running"}]`
+
+## Step 4b: Launch round-1 implementers (background, parallel)
+
+Launch one background `plan-implementer` agent per unit simultaneously (`run_in_background: true`).
+
+Each prompt must be **fully self-contained** (the agent has no other context). Include:
+- The unit's sub-task text (verbatim, from Step 3)
+- Absolute path of `WT_PATH` as the working directory
+- The branch name
 - The 5 most recent commit messages (for commit style)
 - Contents of `CLAUDE.md` if found (under a "Project conventions" heading)
 - Contents of `.claude/project.yaml` if found (under a "Project context" heading)
-- Names of any style/lint/format config files found by the `find` above (so the agent knows to read them before editing)
-- **An explicit instruction: "Do not write tests in this pass. A separate pass will write tests from the plan."**
+- Names of any style/lint/format config files found in Step 2
+- The shared contracts/interfaces extracted in Step 3
+- `OWNED FILES (only touch these):` — the unit's owned-files list
+- `FORBIDDEN FILES (do not read or modify):` — all other units' owned files
+- **"Do not write tests in this pass. A separate pass will write tests from the plan."**
+- The verification commands from the plan (or `n/a` if none for this unit)
+- The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section)
 
-## Step 4: Confirm
+Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for completions."
 
-One sentence confirming round 1 is launched and that two further rounds (tests, adversary review) will follow automatically.
+## Step 4c: Process unit completions (serialized merge)
+
+When each unit's `plan-implementer` agent returns, **immediately** process it before the next
+one arrives. The orchestrator serializes all merges — never concurrently.
+
+**First: validate the report.** All four trailer lines must be present:
+- `ELAPSED_SECONDS: <n | unknown>`
+- `VERIFIED: pass | fail | n/a`
+- `FILES_TOUCHED:` (with paths on subsequent lines)
+- `COMMITTED: yes | no`
+
+If any trailer line is missing → **interrupted handoff**: surface the unit's report and offer:
+- Re-run this unit (re-launch with the same prompt in its existing worktree)
+- Inspect its worktree diff manually
+- Mark failed and continue with remaining units
+
+**If `COMMITTED: no`:** Mark unit `failed`. Leave its worktree in place for inspection. Surface
+the report and reason.
+
+**If `COMMITTED: yes`:** Merge from the main worktree (never cd into the unit's worktree):
+```bash
+# From main worktree, merge the unit's branch
+git merge --no-ff "$WT_BRANCH" -m "merge: round-1 unit ${UNIT_ID}"
+```
+
+- **Clean merge** → tear down the worktree:
+  ```bash
+  git worktree remove "$WT_PATH"
+  git worktree prune
+  git branch -D "$WT_BRANCH"
+  ```
+  Mark unit `merged`.
+
+- **Conflict on an owned file** → resolve it yourself using full plan knowledge (you know both
+  units' intent). Commit the resolution. Tear down the worktree. Mark unit `merged`.
+
+- **Conflict on an unassigned/shared file** → **stop and ask the human** before resolving.
+  Leave the worktree in place until resolved.
+
+## Step 4d: Join barrier
+
+**Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
+`conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
+
+If any units are `failed` (committed: no), surface a summary and ask the human whether to:
+- Abort the run
+- Proceed to the gate with the successfully-merged units only
 
 ---
 
-## Iteration loop (3 rounds, distinct roles)
+## Integration Gate (Part B — runs after all units merge, before round 2)
 
-After each task notification, count prior `plan-implementer` notifications in this conversation to determine which round just finished.
+The orchestrator (you, Sonnet) now runs the checks — not a Haiku. The implementer's self-reported
+`VERIFIED:` is noted but not trusted; the gate is authoritative.
 
-### After round 1 (implementer)
+### Gate step 1: Build / type-check
 
-Note round 1's duration from the report's `ELAPSED_SECONDS` line.
+Run the project's build and type-check commands. Use the config files found in Step 2 to determine
+which tool applies (`tsc`, `cargo check`, `swiftbuild`, `npm run build`, `pnpm typecheck`, etc.).
 
-**If `COMMITTED: no`:** stop. Surface the report (include round-1 duration). Suggest `/expert-review`, `/shipit`, or re-run.
+```bash
+# Examples — run whichever applies:
+npx tsc --noEmit
+cargo check
+pnpm run typecheck
+```
 
-**If `COMMITTED: yes`:**
-- Get the list of files round 1 changed:
-  ```bash
-  git diff --name-only START_SHA..HEAD
-  ```
-- Launch round 2 (background `plan-implementer`) with a **spec-blind test author** prompt:
+Record: **build pass | fail** and any error output.
 
-  > Your job is to write tests for the plan below. The plan has already been implemented by a prior pass — but you must **not** look at how it was implemented. Tests written from the implementation just encode the implementer's assumptions; tests written from the plan alone are an independent reading of the spec.
-  >
-  > **Plan:**
-  > [verbatim plan]
-  >
-  > **DO NOT read these files** (they are round 1's implementation):
-  > [file list]
-  >
-  > **DO NOT run `git diff` or `git status`** — they would expose the implementation.
-  >
-  > **DO read:**
-  > - Existing test files (to learn project conventions, fixtures, helpers)
-  > - Test config (`pytest.ini`, `vitest.config.*`, `jest.config.*`, `Cargo.toml` test sections, etc.)
-  > - The plan above
-  >
-  > Treat this as your plan:
-  > 1. Identify the project's test framework and conventions.
-  > 2. Identify what behavior the plan implies should be testable.
-  > 3. Write tests covering that behavior — happy path plus at least one edge case per testable unit.
-  > 4. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal for the next pass.
-  > 5. Commit the tests with a clear message.
-  > 6. Report: framework used, test paths added, pass/fail summary, failure messages verbatim if any.
-  > 7. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you read and why. Be honest — this is for evaluating whether the spec-blind constraint actually holds.
-  >
-  > End with `COMMITTED: yes` or `COMMITTED: no`.
-  >
-  > [Project conventions, project context as in round 1]
+### Gate step 2: Anti-tamper scan
 
-- Tell the user: "Round 1 complete — implementation committed (took <ELAPSED_SECONDS>s). Launching round 2 (spec-blind test author)."
+The implementer is forbidden from touching test files or neutering the verify pipeline. Scan now.
 
-### After round 2 (test author)
+```bash
+# Files changed in round 1
+git diff --name-only "$START_SHA"..HEAD
+```
 
-Note round 2's duration from its report's `ELAPSED_SECONDS` line.
+**Test-file tampering:** Flag any changed file matching test-path globs:
+- `*.test.*`, `*.spec.*`, `*_test.*`, `test_*.{ts,js,py,rs,swift}`, `tests/**`, `__tests__/**`, `spec/**`
+- Removed test files are always a gate failure.
 
-- Get the full file list since `START_SHA`:
-  ```bash
-  git diff --name-only START_SHA..HEAD
-  ```
-- Separate into round 1's files (implementation) and round 2's new files (tests).
-- Launch round 3 (background `plan-implementer`) with an **adversary** prompt:
+**Neutered verification:** Flag any changed build/config file:
+- `package.json`, `Makefile`, `Cargo.toml`, `pyproject.toml`, `build.gradle`, `.github/workflows/**`
+- Then check the diff of those files for: `|| true`, `--no-verify`, `it.skip`, `xit(`, `xfail`,
+  `pytest.mark.skip`, `#[ignore]`, CI steps commented out, test commands replaced with `echo` or `:`
 
-  > You are an adversarial reviewer. A prior pass implemented this plan, and a separate pass wrote spec-blind tests. Your job is to find divergence between the implementation and the plan — assume something is wrong somewhere. Don't confirm correctness; argue against it.
-  >
-  > **Plan:**
-  > [verbatim plan]
-  >
-  > **Round 1 report (implementer):**
-  > [report]
-  >
-  > **Round 2 report (test author):**
-  > [report]
-  >
-  > **Implementation files (round 1):** [list]
-  > **Test files (round 2):** [list]
-  >
-  > Treat this as your plan:
-  > 1. Read the implementation files.
-  > 2. Read the test files. Note which fail and why.
-  > 3. Investigate divergence: where does the implementation drift from the plan? What did the implementer rationalize past? Where would this break in production? Consider edge cases, error paths, concurrent access, malformed input, resource leaks, missing validation.
-  > 4. For each finding, decide:
-  >    - **Fix it** — only if it affects correctness AND the fix is unambiguous.
-  >    - **Flag it** — if ambiguous, or if it concerns plan quality rather than implementation.
-  > 5. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
-  > 6. If you fixed anything, re-run the tests and report results.
-  > 7. Commit fixes (if any) with a clear message.
-  > 8. Report: issues found (numbered). For **each** issue, label its source as one of:
-  >    - `[FROM_TEST]` — surfaced by a failing round 2 test
-  >    - `[INDEPENDENT]` — found by reading the code, not caught by any test
-  >    - `[PLAN_GAP]` — the plan itself was ambiguous or missing constraint
-  >
-  >    Then state whether you fixed or flagged it (with reasoning), and report final test status.
-  >
-  > End with `COMMITTED: yes` or `COMMITTED: no`.
-  >
-  > [Project conventions, project context as in round 1]
+**Stub/placeholder bodies:** In each changed implementation file, grep for:
+```bash
+grep -n "TODO\|FIXME\|unimplemented!()\|NotImplementedError\|raise NotImplemented\b\|throw new NotImplemented" <file>
+```
+Also flag functions/methods whose entire body is `pass`, `return`, or an empty block `{}` with no
+other statements (use judgment — a stub is different from an intentionally minimal implementation).
 
-- Tell the user: "Round 2 complete — [N tests added, M failing | no tests committed]. Launching round 3 (adversary review)."
+**Any flag → gate failure.**
 
-### After round 3 (adversary)
+### Gate step 3: Determine outcome
 
-Collect each round's `ELAPSED_SECONDS` from the three reports. Total agent compute = round 1 + round 2 + round 3. Format all as `mm:ss`. If any round reported `ELAPSED_SECONDS: unknown`, mark that round `n/a` and note the total is a lower bound.
+- **No build errors AND no tamper flags** → Gate **passes**. Proceed to Round 2.
+  Emit: `GATE: pass — build clean, no tamper flags`
 
-Surface a final summary in this exact structure so the experiment is legible at a glance:
+- **Any failure** → Gate **fails**. Emit a summary of failures. Dispatch a fix-Haiku (next section).
+
+### Gate step 4: Fix-Haiku convergence loop (on failure)
+
+Max **K = 3** iterations. On each iteration:
+
+1. Launch a fix `plan-implementer` agent (background) in an isolated worktree branched from current
+   HEAD (not START_SHA). Prompt it with:
+   - The specific failures from the gate (compile errors, stub locations, tamper flags)
+   - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
+   - The owned files that need fixing
+   - Full project context
+2. When it returns, validate its trailer (same incomplete-report check as Step 4c).
+3. Merge its branch back (same serialized merge pattern — no-ff, tear down worktree after).
+4. Re-run Gate steps 1–3 on the updated tree.
+5. If gate passes → exit loop. If still failing and iterations < K → repeat.
+6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
+   failures. Do not proceed to Round 2. Let the human decide.
+
+Emit a line each time a fix-Haiku is dispatched: `GATE attempt <i>/<K>: dispatching fix-Haiku`
+
+---
+
+## Round 2: Spec-blind test author
+
+Record the current HEAD before launching round 2:
+```bash
+git rev-parse HEAD  # store as ROUND2_START_SHA
+```
+
+Get the list of files round 1 changed:
+```bash
+git diff --name-only "$START_SHA"..HEAD
+```
+
+Launch a background `plan-implementer` with a **spec-blind test author** prompt:
+
+> Your job is to write tests for the plan below. The plan has already been implemented by a prior
+> pass — but you must **not** look at how it was implemented. Tests written from the implementation
+> just encode the implementer's assumptions; tests written from the plan alone are an independent
+> reading of the spec.
+>
+> **Plan:**
+> [verbatim plan]
+>
+> **DO NOT read these files** (they are round 1's implementation):
+> [file list from git diff --name-only START_SHA..HEAD]
+>
+> **DO NOT run `git diff` or `git status`** — they would expose the implementation.
+>
+> **DO read:**
+> - Existing test files (to learn project conventions, fixtures, helpers)
+> - Test config (`pytest.ini`, `vitest.config.*`, `jest.config.*`, `Cargo.toml` test sections, etc.)
+> - The plan above
+>
+> Treat this as your plan:
+> 1. Identify the project's test framework and conventions.
+> 2. Identify what behavior the plan implies should be testable.
+> 3. Write tests covering that behavior — happy path plus at least one edge case per testable unit.
+> 4. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal.
+> 5. Commit the tests with a clear message.
+> 6. Report: framework used, test paths added, pass/fail summary, failure messages verbatim if any.
+> 7. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read
+>    any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you
+>    read and why. Be honest — this is for evaluating whether the spec-blind constraint holds.
+>
+> [Full report trailer per plan-implementer instructions]
+>
+> [Project conventions, project context]
+
+Tell the user: "Gate passed. Launching round 2 (spec-blind test author)."
+
+### After round 2: machine-check spec-blind (Part C)
+
+Validate the report trailer (same incomplete-report check). Then machine-check spec-blindness:
+
+```bash
+# Files round 2 touched
+git diff --name-only "$ROUND2_START_SHA"..HEAD
+```
+
+Cross-reference against the round-1 implementation files (`git diff --name-only START_SHA..ROUND2_START_SHA`).
+If any round-2 file is also a round-1 implementation file → **SPEC_BLIND: VIOLATED (touched impl files)**.
+
+This is independent of the agent's self-reported `SPEC_BLIND:` line. Both are recorded in the summary.
+
+On violation → **flag round 2's signal as compromised** and **proceed to round 3** (do not block —
+this is an unattended background run; the adversary is the backstop).
+
+---
+
+## Round 3: Adversary
+
+Collect the full file split:
+```bash
+IMPL_FILES=$(git diff --name-only "$START_SHA".."$ROUND2_START_SHA")
+TEST_FILES=$(git diff --name-only "$ROUND2_START_SHA"..HEAD)
+```
+
+Launch a background `plan-implementer` with an **adversary** prompt:
+
+> You are an adversarial reviewer. A prior pass implemented this plan, and a separate pass wrote
+> spec-blind tests. Your job is to find divergence between the implementation and the plan —
+> assume something is wrong somewhere. Don't confirm correctness; argue against it.
+>
+> **Plan:**
+> [verbatim plan]
+>
+> **Round 1 report (implementer):**
+> [report]
+>
+> **Round 2 report (test author):**
+> [report]
+> **SPEC_BLIND machine-check result:** [verified by diff | VIOLATED — touched impl files]
+>
+> **Implementation files (round 1):** [IMPL_FILES]
+> **Test files (round 2):** [TEST_FILES]
+>
+> Treat this as your plan:
+> 1. Read the implementation files.
+> 2. Read the test files. Note which fail and why.
+> 3. Investigate divergence: where does the implementation drift from the plan? What did the
+>    implementer rationalize past? Where would this break in production? Consider edge cases,
+>    error paths, concurrent access, malformed input, resource leaks, missing validation.
+> 4. For each finding, decide:
+>    - **Fix it** — only if it affects correctness AND the fix is unambiguous.
+>    - **Flag it** — if ambiguous, or if it concerns plan quality rather than implementation.
+> 5. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
+> 6. If you fixed anything, re-run the tests and report results.
+> 7. Commit fixes (if any) with a clear message.
+> 8. Report: issues found (numbered). For **each** issue, label its source as one of:
+>    - `[FROM_TEST]` — surfaced by a failing round 2 test
+>    - `[INDEPENDENT]` — found by reading the code, not caught by any test
+>    - `[PLAN_GAP]` — the plan itself was ambiguous or missing a constraint
+>
+>    Then state whether you fixed or flagged it (with reasoning), and report final test status.
+>
+> [Full report trailer per plan-implementer instructions]
+>
+> [Project conventions, project context]
+
+Tell the user: "Round 2 complete — [N tests added, M failing | no tests committed]. Launching round 3 (adversary review)."
+
+### After round 3: validate and surface
+
+Validate the round-3 trailer. Then surface the final summary.
+
+---
+
+## Incomplete report handling (applies to every round and every unit)
+
+A report missing any of the four required trailer lines (`ELAPSED_SECONDS`, `VERIFIED`,
+`FILES_TOUCHED`, `COMMITTED`) is an **interrupted handoff** — do not silently proceed.
+
+Surface the truncated report and offer a menu:
+- **Re-run** — re-launch with the same prompt (unit retains its worktree / state)
+- **Inspect** — let the human review the worktree diff and decide next steps
+- **Skip** — mark this unit failed, continue with the rest (only for round-1 units)
+- **Abort** — stop the flow entirely
+
+---
+
+## Final summary
+
+Collect each round's `ELAPSED_SECONDS`. Format all as `mm:ss`. Sum = total agent compute.
 
 ```
-ROUND 1 — Implementer
-  Files changed: <count>
-  Commit: <sha or "none">
-
+ROUND 1 — Implementer (parallel)
+  Units: <N>   Merged clean: <c>   Conflicts resolved: <c>   Failed: <c>
+INTEGRATION GATE (trusted)
+  Build/type-check: <pass | fail>   Convergence iterations: <i>/<K>
+  Tamper flags: tests-modified <c>  verify-neutered <c>  stubs <c>
 ROUND 2 — Spec-blind test author
-  SPEC_BLIND: <yes | no — and what was read if no>
-  Tests added: <count, paths>
-  Pass/fail: <P passed, F failed>
-
+  SPEC_BLIND: <verified by diff | VIOLATED — touched impl files> (self-report: yes | no)
+  Tests added: <count, paths>   Pass/fail: <P passed, F failed>
 ROUND 3 — Adversary
   Issues found: <count>
     [FROM_TEST]:    <count>  ← signal that round 2 caught real divergence
@@ -181,23 +414,22 @@ ROUND 3 — Adversary
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
   Final test status: <P passed, F failed>
-
 TIMING (agent compute per round — self-measured; excludes idle between turns)
-  Round 1 (implement):  <mm:ss>
+  Round 1 (implement):  <mm:ss>  [<N> units in parallel]
+  Gate convergence:     <i> iteration(s)
   Round 2 (tests):      <mm:ss>
   Round 3 (adversary):  <mm:ss>
   Total agent compute:  <mm:ss>
 ```
 
-Then a one-line **timing read** naming the long pole — e.g. "Round 1 dominated at 6:12 of 9:40 total; parallelizing it is where the wall-clock win is" or "All three rounds were comparable (~3 min each); no single long pole."
+Then a one-line **timing read** naming the long pole (e.g. "Round 1 dominated at 6:12 of 9:40 total
+across 2 parallel units; wall-clock was approximately half that").
 
-Then a one-line **experiment read**: which rounds produced signal, which didn't. Examples:
-- "Round 2 stayed spec-blind and caught 2 divergences; round 3 found 1 more independently. All three roles earned their keep."
-- "Round 2 self-reported reading the implementation; spec-blind constraint did not hold this run."
-- "Round 2 tests all passed; round 3 still found 3 independent issues — tests may be too weak for this plan."
-- "Round 3 flagged 4 PLAN_GAP issues — sharpen the plan before re-running."
+Then a one-line **experiment read**: which rounds produced signal, which didn't.
 
 Suggested next steps:
 - Review the diff and run `/expert-review`
 - Ship with `/shipit`
 - If round 3 flagged `[PLAN_GAP]` issues, revise the plan before re-running
+- If round 2's spec-blind was VIOLATED, treat round-3 findings with lower confidence (adversary
+  may have had prior exposure to the implementation)
