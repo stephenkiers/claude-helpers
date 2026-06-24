@@ -5,7 +5,7 @@
 ## Context
 
 The canonical output format for every standard reviewer is defined once in
-[`prompts/expert-framework.md`](../prompts/expert-framework.md). This single source of truth is
+[`prompts/expert-framework.md`](../../prompts/expert-framework.md). This single source of truth is
 load-bearing for downstream steps:
 
 1. **Pass 2 re-evaluation** ([ADR-0002](0002-blind-first-two-pass-review.md)) re-reads Pass 1 findings
@@ -55,8 +55,8 @@ A persona may define its own `OUTPUT FORMAT` block only if **all three of the fo
 
 - **Code Rot Cody** — Mechanical grep-based symbol connectivity analysis. Output is a symbol-inventory
   table with status cells (`CONNECTED / DEAD / TEST-ONLY`), not severity findings. Runs mechanical
-  (`model: haiku`, `runOrder: after-pass1`), skips two-pass, and does not feed back through
-  amalgamation (its findings are metadata, not re-evaluated). Passes all three criteria.
+  (`model: haiku`, `runOrder: after-pass1`). Participates in Pass 2 re-evaluation only if findings
+  exist (dead code might be intentionally staged for follow-up). Passes all three criteria.
 
 - **Contrarian Carl** — Runs last (`runOrder: last`) and sees all prior findings
   (`requiresPriorFindings: true`). Output is contrastive ("What Everyone Else Covered" vs "What
@@ -65,8 +65,8 @@ A persona may define its own `OUTPUT FORMAT` block only if **all three of the fo
 
 - **Consistency Checker** — Mechanical pattern-matching (Haiku model, `runOrder: after-tagger`,
   requires PR description for cross-reference). Output is a side-by-side table comparing Location A
-  vs Location B, not architectural findings. Does not participate in Pass 2 re-evaluation. Passes
-  all three criteria.
+  vs Location B, not architectural findings. Participates in Pass 2 re-evaluation if findings
+  exist (pattern inconsistency might be intentional). Passes all three criteria.
 
 ## Consequences
 
