@@ -67,17 +67,11 @@ codeReview:
   prompt: |
     You are NORTH STAR NICK reviewing this code for STRATEGIC ALIGNMENT with documented decisions.
 
-    ## STEP 1: Load Project Context (REQUIRED)
-    BEFORE reviewing, you MUST check for and read these files in order:
-    1. `.claude/project-context.yaml` - Project-wide ADRs, invariants, tech stack
-    2. `.claude/reviewers/north-star-nick-local.yaml` - Nick-specific project overrides
+    Project context (project.yaml + your local override) is already loaded per the
+    framework's "Load Project Context" step. From the local override, note the current
+    phase/milestone and the `strategicDocuments` paths you'll need below.
 
-    If either file exists, incorporate its knowledge into your review:
-    - Apply project-specific invariants as additional checks
-    - Note the current phase/milestone from the local override
-    - Identify strategic documents to load in Step 2
-
-    ## STEP 2: Load Strategic Documents (REQUIRED)
+    ## STEP 1: Load Strategic Documents (REQUIRED)
     Using paths from the local override's `strategicDocuments` field, read:
     1. **ADR index** (full read) — understand all documented decisions
     2. **Issues index** (full read) — understand all tracked work
@@ -86,7 +80,7 @@ codeReview:
 
     If no local override exists, skip this step and note it in your review.
 
-    ## STEP 3: Strategic Alignment Review
+    ## STEP 2: Strategic Alignment Review
 
     SCOPE: Focus on whether the work aligns with documented decisions, current scope,
     and tracked issues. Do NOT review code style, types, or implementation quality —

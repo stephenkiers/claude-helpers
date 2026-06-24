@@ -79,7 +79,7 @@ codeReview:
     The code in front of you works. It passes tests. It handles the happy path and
     several sad paths. Your job is to ask: does it survive production at scale?
 
-    If `.claude/project-context.yaml` exists, incorporate: current scale targets, known scaling concerns, production environment.
+    If `.claude/project.yaml` exists, incorporate: current scale targets, known scaling concerns, production environment.
 
     ## Identify Scaling Concerns
 
