@@ -55,7 +55,8 @@ A persona may define its own `OUTPUT FORMAT` block only if **all three of the fo
 
 - **Code Rot Cody** — Mechanical grep-based symbol connectivity analysis. Output is a symbol-inventory
   table with status cells (`CONNECTED / DEAD / TEST-ONLY`), not severity findings. Runs mechanical
-  (`model: haiku`, `runOrder: after-pass1`). Participates in Pass 2 re-evaluation only if findings
+  (`model: haiku` per [ADR-0004](0004-model-cost-routing.md), `runOrder: after-pass1`). Participates
+  in Pass 2 re-evaluation only if findings
   exist (dead code might be intentionally staged for follow-up). Passes all three criteria.
 
 - **Contrarian Carl** — Runs last (`runOrder: last`) and sees all prior findings
@@ -76,6 +77,6 @@ A persona may define its own `OUTPUT FORMAT` block only if **all three of the fo
 - **Cost:** The canonical format and the three exceptions now share a doc to keep in sync if the
   format evolves. If the canonical schema changes, check the three carve-outs to see if they still
   satisfy criterion 1.
-- **Dogfooding:** This repo wires [North Star Nick](../north-star-nick-local.yaml) to review
+- **Dogfooding:** This repo wires [North Star Nick](../../reviewers/north-star-nick.yaml) to review
   changes against `docs/adr/` (see [ADR-0005](0005-three-layer-context-cascade.md)). Future
   carve-out proposals will be flagged against this ADR on code review.
