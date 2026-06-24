@@ -10,7 +10,7 @@ import os
 import re
 from pathlib import Path
 
-REPO_ROOT = Path("/Users/stephenkiers/Repositories/claude-helpers-open-source/.claude/worktrees/1-trim-reviewer-persona-scaffolding")
+REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEWERS_DIR = REPO_ROOT / "reviewers"
 PROMPTS_DIR = REPO_ROOT / "prompts"
 
@@ -136,19 +136,20 @@ test_result(
 )
 
 # ============================================================================
-# INVARIANT 4: Index completeness (27 reviewers)
+# INVARIANT 4: Index completeness (reviewer files <-> index entries)
 # ============================================================================
 print()
-print("[Invariant 4] Index completeness (27 reviewers + 6 required personas)")
+print("[Invariant 4] Index completeness (reviewer files match index + 6 required personas)")
 
 # Count YAML files (excluding index.yaml)
 yaml_files = [f.name for f in REVIEWERS_DIR.glob("*.yaml") if f.name != "index.yaml"]
 yaml_file_count = len(yaml_files)
+EXPECTED_REVIEWER_COUNT = 28
 
 test_result(
-    "Exactly 27 reviewer YAML files",
-    yaml_file_count == 27,
-    f"Found {yaml_file_count} files (expected 27)"
+    f"Exactly {EXPECTED_REVIEWER_COUNT} reviewer YAML files",
+    yaml_file_count == EXPECTED_REVIEWER_COUNT,
+    f"Found {yaml_file_count} files (expected {EXPECTED_REVIEWER_COUNT})"
 )
 
 # Read and parse index.yaml entries
@@ -161,9 +162,9 @@ if index_file.exists():
         index_entries.add(match.group(1))
 
 test_result(
-    "Index contains 27 entries",
-    len(index_entries) == 27,
-    f"Found {len(index_entries)} entries (expected 27). Entries: {sorted(index_entries)}"
+    f"Index contains {EXPECTED_REVIEWER_COUNT} entries",
+    len(index_entries) == EXPECTED_REVIEWER_COUNT,
+    f"Found {len(index_entries)} entries (expected {EXPECTED_REVIEWER_COUNT}). Entries: {sorted(index_entries)}"
 )
 
 # Check the 6 required personas

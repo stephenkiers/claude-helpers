@@ -24,7 +24,7 @@ Collect the input to plan against:
    - Ask user if neither is available
 
 2. **Project context** (best-effort, skip if not found):
-   - `.claude/project-context.yaml` — ADRs, tech stack, invariants, terminology
+   - `.claude/project.yaml` — ADRs, tech stack, invariants, terminology
    - `CLAUDE.md` — project conventions and constraints
    - Recent git history for relevant areas (`git log --oneline -20`)
 
