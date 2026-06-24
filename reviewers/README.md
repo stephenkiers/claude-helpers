@@ -125,6 +125,8 @@ both, and the YAML body carries the matching review block.
   inherited from `expert-framework.md`.
 - **Self-formatting carve-outs** (`code-rot-cody`, `contrarian-carl`, `consistency-checker`): keep
   their own `OUTPUT FORMAT` block because their output structure differs from the standard template.
+  See [ADR-0006](../docs/adr/0006-reviewer-output-format-carve-outs.md) for the bar a persona must
+  clear to qualify.
 
 **Editorial personas** (`/expert-write`) use an `editReview.focusAreas` block instead of
 `codeReview.prompt`. The current three are **Demosthenes** (`editor-audience.yaml`, audience fit),
