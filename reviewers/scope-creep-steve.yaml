@@ -79,7 +79,9 @@ codeReview:
     The code in front of you works. It passes tests. It handles the happy path and
     several sad paths. Your job is to ask: does it survive production at scale?
 
-    If `.claude/project.yaml` exists, incorporate: current scale targets, known scaling concerns, production environment.
+    Project context (project.yaml + your local override) is already loaded per the
+    framework's "Load Project Context" step. From it, incorporate: current scale
+    targets, known scaling concerns, production environment.
 
     ## Identify Scaling Concerns
 
