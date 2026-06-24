@@ -25,7 +25,7 @@ Three personas deliberately opt out of the canonical format:
 
 The rationale for these carve-outs is scattered: partial mentions in `reviewers/README.md`, an aside
 in `expert-framework.md`, and a one-line note in [ADR-0002](0002-blind-first-two-pass-review.md)
-(mechanical reviewers skip two-pass). There is no single place that states the contract, the bar a
+on two-pass scope. There is no single place that states the contract, the bar a
 persona must clear to opt out, and why each existing carve-out qualifies.
 
 ## Decision
@@ -44,30 +44,40 @@ A persona may define its own `OUTPUT FORMAT` block only if **all three of the fo
    Examples that fail: "I want more bullet points" or "I prefer emojis" — these are style preferences,
    not structural incompatibility.
 
-2. **The output sits outside the parse path that depends on the canonical format.** That is:
-   - It does **not** participate in Pass 2 re-evaluation (mechanical reviewers skip two-pass per
-     [ADR-0002](0002-blind-first-two-pass-review.md), or the persona's output is consumed by humans
-     or a different step rather than the severity-counting amalgamation).
+2. **The persona's distinctive output is supplementary context, not the canonical severity payload
+   the amalgamation parses.** Step 8 of `/expert-review` groups and severity-counts the canonical
+   Findings block from every reviewer file. A carve-out qualifies when its custom shape carries
+   information the roll-up does not grade for severity — a connectivity inventory, a contrastive
+   "what others missed" list, or a Location-A-vs-B comparison — surfaced for humans or a
+   cross-reference step rather than as graded findings.
+
+   Pass 2 re-evaluation ([ADR-0002](0002-blind-first-two-pass-review.md)) is a **separate axis**: it
+   re-weighs a reviewer's findings against project context and is independent of output shape. A
+   carve-out may still participate in Pass 2 — Code Rot Cody and Consistency Checker do when they
+   have findings, Contrarian Carl does not — so Pass-2 participation neither earns nor forfeits a
+   format carve-out.
 
 3. **The override is documented here,** explaining why the persona qualifies.
 
 ### Justification of existing carve-outs
 
-- **Code Rot Cody** — Mechanical grep-based symbol connectivity analysis. Output is a symbol-inventory
-  table with status cells (`CONNECTED / DEAD / TEST-ONLY`), not severity findings. Runs mechanical
-  (`model: haiku` per [ADR-0004](0004-model-cost-routing.md), `runOrder: after-pass1`). Participates
-  in Pass 2 re-evaluation only if findings
-  exist (dead code might be intentionally staged for follow-up). Passes all three criteria.
+- **Code Rot Cody** — Mechanical grep-based symbol connectivity analysis (`model: haiku` per
+  [ADR-0004](0004-model-cost-routing.md), `runOrder: after-pass1`). Distinctive output is a
+  symbol-inventory table with status cells (`CONNECTED / DEAD / TEST-ONLY`) — connectivity metadata
+  the severity roll-up does not grade, not findings. (He participates in Pass 2 only when he raises
+  findings, per the orthogonal-axis note above — dead code may be intentionally staged for a
+  follow-up PR.) Passes all three criteria.
 
 - **Contrarian Carl** — Runs last (`runOrder: last`) and sees all prior findings
   (`requiresPriorFindings: true`). Output is contrastive ("What Everyone Else Covered" vs "What
-  Everyone Missed") and is read by humans as context, not fed back through Pass 2 re-evaluation or
-  the severity-counting amalgamation. Passes all three criteria.
+  Everyone Missed"), read by humans as context rather than parsed into the severity roll-up; he also
+  skips Pass 2 entirely. Passes all three criteria.
 
-- **Consistency Checker** — Mechanical pattern-matching (Haiku model, `runOrder: after-tagger`,
-  requires PR description for cross-reference). Output is a side-by-side table comparing Location A
-  vs Location B, not architectural findings. Participates in Pass 2 re-evaluation if findings
-  exist (pattern inconsistency might be intentional). Passes all three criteria.
+- **Consistency Checker** — Mechanical pattern-matching (`model: haiku` per
+  [ADR-0004](0004-model-cost-routing.md), `runOrder: after-tagger`, requires the PR description for
+  cross-reference). Distinctive output is a side-by-side table comparing Location A vs Location B
+  rather than graded findings. (It participates in Pass 2 when it has findings, per the
+  orthogonal-axis note — a pattern inconsistency may be intentional.) Passes all three criteria.
 
 ## Consequences
 
