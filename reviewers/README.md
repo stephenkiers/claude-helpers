@@ -38,29 +38,18 @@ Experts follow a two-layer context loading pattern:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Adding Context Loading to an Expert
+## Context Loading
 
-Add this block at the START of the expert's `codeReview.prompt`:
+Project-context loading is **centralized** in `prompts/expert-framework.md` under
+"Load Project Context (REQUIRED, all reviewers)". Every persona inherits it — they read
+`.claude/project.yaml` and `.claude/reviewers/{expert}-local.yaml` automatically. **Do not**
+add a per-persona "Load Project Context" / STEP 1 block; that duplication is what the framework
+now owns (and contradicts the "Adding a New Reviewer" checklist).
 
-```yaml
-codeReview:
-  prompt: |
-    You are {EXPERT_NAME} reviewing {DOMAIN} in this code.
-
-    ## STEP 1: Load Project Context (REQUIRED)
-    BEFORE reviewing, you MUST check for and read these files in order:
-    1. `.claude/project-context.yaml` - Project-wide ADRs, invariants, tech stack
-    2. `.claude/reviewers/{expert}-local.yaml` - Expert-specific project overrides
-
-    If either file exists, incorporate its knowledge into your review:
-    - Apply project-specific invariants as additional red lines
-    - Reference relevant ADRs in your findings
-    - Use project terminology consistently
-    - Check project-specific patterns
-
-    ## STEP 2: Apply {DOMAIN} Review
-    [... rest of expert-specific review instructions ...]
-```
+Add a context block to a persona **only** when it loads context *differently* from the default
+— e.g. North Star Nick, which additionally reads strategic documents (ADR index, issues index)
+whose paths come from its local override. In that case, reference the already-loaded context
+rather than re-listing the generic files.
 
 ## File Conventions
 
@@ -81,18 +70,12 @@ Templates for `project.yaml` and `{expert}-local.yaml` are in `~/.claude/prompts
 
 ## Current Experts
 
-| Expert | File | Domain | Has Context Loading |
-|--------|------|--------|---------------------|
-| Mozart | `mozart-eda.yaml` | Event-Driven Architecture | Yes |
-| North Star Nick | `north-star-nick.yaml` | Strategic Alignment | Yes |
-| Rachel | `rachel.yaml` | Concurrency | Yes |
-| Sam System | `sam-system.yaml` | System Composition | Yes |
-| Fragile Feynman | `fragile-feynman.yaml` | Pre-mortem Fragility Analysis | Yes |
-| Contract Chris | `contract-chris.yaml` | Contract Documentation | Yes |
-| Tara TypeSafe | `tara-typesafe.yaml` | Type Safety + Tighten-Types | Yes |
-| Uncle Bob | `uncle-bob.yaml` | Clean Code / SOLID | Not yet |
-| Security Sage | `security-sage.yaml` | Security | Not yet |
-| ... | ... | ... | ... |
+The authoritative, always-current roster lives in [`index.yaml`](index.yaml) — each entry has the
+expert's `name`, `file`, `triggers`, and `useWhen`. Browse that file (or the `*.yaml` files in this
+directory) for the full list rather than a table here that drifts out of date.
+
+All personas inherit project-context loading from the framework (see [Context Loading](#context-loading)
+above), so there is no longer a per-persona "has context loading" distinction.
 
 ## Adding a New Reviewer
 
@@ -206,7 +189,7 @@ terminology:
 
 ## Creating Expert-Local Overrides
 
-Only create `{expert}-local.yaml` when you need expert-specific project knowledge beyond `project-context.yaml`:
+Only create `{expert}-local.yaml` when you need expert-specific project knowledge beyond `project.yaml`:
 
 ```yaml
 extends: {expert-name}

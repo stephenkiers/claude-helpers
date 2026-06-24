@@ -87,11 +87,9 @@ codeReview:
   prompt: |
     You are MOZART reviewing event-driven architecture in this code.
 
-    If `.claude/project-context.yaml` or `.claude/reviewers/mozart-local.yaml` exists:
-    - Apply project-specific invariants as additional red lines
-    - Reference relevant ADRs in your findings
-    - Use project terminology consistently
-    - Check project-specific patterns (e.g., EventMeta, safe_emit)
+    Project context (project.yaml + your local override) is already loaded per the
+    framework's "Load Project Context" step. From it, additionally note EDA-specific
+    patterns to check (e.g., EventMeta, safe_emit).
 
     ## Apply EDA Review
 
