@@ -81,7 +81,9 @@ Based on the Technical Summary (which shows WHAT changed but not WHY), determine
 
 This is the **canonical output format** for every standard reviewer — it lives here, not in the
 individual persona `.yaml` files, so there is one source of truth. (Self-formatting carve-outs —
-Code Rot Cody, Contrarian Carl, Consistency Checker — define their own shape in their own files.)
+Code Rot Cody, Contrarian Carl, Consistency Checker — define their own shape in their own files.
+See [ADR-0006](../docs/adr/0006-reviewer-output-format-carve-outs.md) for the bar a persona must
+clear to qualify.)
 
 Your output will be saved to a file. Use this EXACT format:
 

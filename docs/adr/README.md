@@ -17,6 +17,7 @@ to North Star Nick).
 - [ADR-0003: Tagger-based reviewer routing](0003-tagger-routing.md)
 - [ADR-0004: Model cost routing (Haiku for mechanical work)](0004-model-cost-routing.md)
 - [ADR-0005: Three-layer context cascade](0005-three-layer-context-cascade.md)
+- [ADR-0006: Reviewer output-format carve-outs](0006-reviewer-output-format-carve-outs.md)
 
 ## Format
 
