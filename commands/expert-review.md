@@ -1,14 +1,14 @@
 ---
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--full] [--all] [--force]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(gh:*), Bash(ls:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(gh:*), Bash(ls:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write
 model: opus
 ---
 
 # Expert Code Review
 
 A checkpoint-based code review system that:
-1. **Summarizer** analyzes the diff → saves to `/tmp/code-review/{branch}-{hash}/summary.md`
+1. **Summarizer** analyzes the diff → saves to `~/.claude/reviews/{project}/{branch}-{hash}/summary.md`
 2. **Tagger** (haiku) routes diff sections to reviewers → saves to `.../{hash}/tagged-sections.md`
 3. **Consistency Checker** (haiku) scans for pattern inconsistencies → saves to `.../{hash}/consistency-checker-pass1.md`
 4. **Pass 1 reviewers** (main thread, sequential, ALL reviewers) → each saves to `.../{reviewer}-pass1.md` — includes Open Questions and Proposals
@@ -22,7 +22,7 @@ A checkpoint-based code review system that:
 
 **Why checkpoints?** If any agent fails, work from other agents is preserved. Each step produces inspectable artifacts.
 
-**Why subfolders?** Each review gets its own folder (`{branch}-{short_hash}/`), enabling comparison between reviews and avoiding conflicts.
+**Why subfolders?** Each review gets its own folder (`{branch}-{short_hash}/`), enabling comparison between reviews and avoiding conflicts. Reviews live under `~/.claude/reviews/` so they persist across reboots (unlike `/tmp`).
 
 ## Arguments
 
@@ -38,7 +38,7 @@ A checkpoint-based code review system that:
 
 ## File Checkpoint Locations
 
-All artifacts saved to `/tmp/code-review/{branch}-{short_hash}/`:
+All artifacts saved to `~/.claude/reviews/{project}/{branch}-{short_hash}/`:
 - `summary.md` - Summarizer output (Technical Summary + Business Context)
 - `tagged-sections.md` - Tagger output (section → reviewer routing)
 - `consistency-checker-pass1.md` - Consistency Checker output (pattern inconsistencies + PR desc cross-ref)
@@ -46,7 +46,7 @@ All artifacts saved to `/tmp/code-review/{branch}-{short_hash}/`:
 - `code-rot-cody-pass1.md` - Code Rot Cody output (dead code, orphaned refs, unused config)
 - `{reviewer}-pass2.md` - Pass 2 re-evaluation output (only if findings exist)
 
-Example: `/tmp/code-review/feature-foo-abc1234/`
+Example: `~/.claude/reviews/my-project/feature-foo-abc1234/`
 
 ---
 
@@ -58,7 +58,8 @@ Example: `/tmp/code-review/feature-foo-abc1234/`
    ```bash
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
    HASH=$(git rev-parse --short HEAD)
-   REVIEW_DIR="/tmp/code-review/${BRANCH}-${HASH}"
+   PROJECT=$(basename "$(git rev-parse --show-toplevel)")
+   REVIEW_DIR="$HOME/.claude/reviews/${PROJECT}/${BRANCH}-${HASH}"
    ```
 
 2. Create checkpoint directory:
@@ -726,12 +727,12 @@ The amalgamated report from Step 8 must be saved as a single file so the user ca
    - Cross-Review consensus themes (from `*-cross-review.md` files)
    - Sign-off checklist at the end so the user can mark which findings to act on
 
-3. **Do NOT write the report to the worktree root** — it pollutes `git status`. Keep it in `/tmp/code-review/{branch}-{hash}/` where the rest of the checkpoints live.
+3. **Do NOT write the report to the worktree root** — it pollutes `git status`. Keep it in `~/.claude/reviews/{project}/{branch}-{hash}/` where the rest of the checkpoints live.
 
 4. **The in-conversation response (the assistant message after running this command)** must be much shorter than the file:
    - Brief actionable summary (counts + the 1–3 most important findings)
    - Top 3–5 recommended next actions
-   - End the response with: `📄 Full report: /tmp/code-review/{branch}-{hash}/final-report.md`
+   - End the response with: `📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}/final-report.md`
 
    Do NOT inline the full report in the response — the user can `cat` or open the file if they want detail. The link is the contract.
 
@@ -747,7 +748,7 @@ After amalgamation, write review metadata to `.claude/github-cache.json` so `/sh
        "lastRun": "2024-01-15T10:30:00Z",
        "commit": "abc1234",
        "branch": "feature-foo",
-       "reviewDir": "/tmp/code-review/feature-foo-abc1234",
+       "reviewDir": "/Users/you/.claude/reviews/my-project/feature-foo-abc1234",
        "reviewers": ["uncle-bob", "security-sage", "tara-typesafe"],
        "scope": "delta",
        "findings": {
@@ -797,7 +798,7 @@ Do NOT inline the full template below in the assistant message. The user will op
 **Project**: [detected project name]
 **Scope**: Delta from main | Full codebase
 **Files Reviewed**: N files
-**Checkpoint Directory**: /tmp/code-review/{branch}-{hash}/
+**Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}/
 
 ## Executive Summary
 
@@ -924,7 +925,7 @@ All review artifacts saved to `{REVIEW_DIR}/`:
 2. ...
 3. ...
 
-📄 Full report: /tmp/code-review/{branch}-{hash}/final-report.md
+📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}/final-report.md
 ```
 
 ---
@@ -979,13 +980,13 @@ Each review gets its own subfolder, enabling comparison:
 
 ```bash
 # Compare two reviews
-diff /tmp/code-review/main-abc1234/ /tmp/code-review/feature-bar-def5678/
+diff ~/.claude/reviews/my-project/main-abc1234/ ~/.claude/reviews/my-project/feature-bar-def5678/
 
-# List all reviews
-ls /tmp/code-review/
+# List all reviews for a project
+ls ~/.claude/reviews/my-project/
 
-# Clean up old reviews
-rm -rf /tmp/code-review/
+# Clean up old reviews (optional — reviews persist until you delete them)
+rm -rf ~/.claude/reviews/my-project/
 ```
 
 ---

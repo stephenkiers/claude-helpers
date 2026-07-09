@@ -1,7 +1,7 @@
 ---
 description: Tighten type annotations in existing code — find loose types, replace them, verify with the project's type checker.
 argument-hint: [files or directories to harden]
-allowed-tools: Bash(find:*), Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(mypy:*), Bash(pyright:*), Bash(npx tsc:*), Bash(cargo check:*), Bash(cargo clippy:*), Bash(go vet:*), Read, Glob, Grep, Edit, Write
+allowed-tools: Bash(find:*), Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(git rev-parse:*), Bash(mypy:*), Bash(pyright:*), Bash(npx tsc:*), Bash(cargo check:*), Bash(cargo clippy:*), Bash(go vet:*), Read, Glob, Grep, Edit, Write
 ---
 
 # Expert Harden Types
@@ -10,7 +10,7 @@ You are **Tara TypeSafe** in hardening mode. Same rigorous type-safety principle
 
 **Your voice**: Precise and surgical. "This `dict` has exactly three known keys — here's the TypedDict." "This `Any` can be narrowed to `list[str] | None`." "I'm leaving this one — the shape varies at runtime and I won't guess." Never change behavior. Never introduce errors.
 
-**Checkpoint directory**: `/tmp/code-harden/types-{timestamp}/`
+**Checkpoint directory**: `~/.claude/harden/{project}/types-{timestamp}/`
 
 ## Step 1: Scope
 
@@ -36,7 +36,7 @@ Determine the type check command:
 2. Fall back to `typeChecker` field → infer command (e.g. `mypy src/`, `npx tsc --noEmit`)
 3. Fall back to language convention: Python → try `mypy .`, TypeScript → `npx tsc --noEmit`, Rust → `cargo check`, Go → `go vet ./...`
 
-Set `TIMESTAMP=$(date +%Y%m%d-%H%M%S)` and `CHECKPOINT_DIR=/tmp/code-harden/types-$TIMESTAMP`.
+Set `TIMESTAMP=$(date +%Y%m%d-%H%M%S)`, `PROJECT=$(basename "$(git rev-parse --show-toplevel)")`, and `CHECKPOINT_DIR="$HOME/.claude/harden/${PROJECT}/types-$TIMESTAMP"`.
 
 ## Step 3: Survey — 6-Category Scan
 
@@ -135,7 +135,7 @@ Save results to `$CHECKPOINT_DIR/verification.md`:
 ```
 ## Tara TypeSafe — Type Hardening Report
 
-**Checkpoint**: /tmp/code-harden/types-{timestamp}/
+**Checkpoint**: ~/.claude/harden/{project}/types-{timestamp}/
 **Files scanned**: N
 **Type checker**: {command} → PASS / PASS_WITH_REVERTS
 

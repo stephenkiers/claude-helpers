@@ -1,7 +1,7 @@
 ---
 description: Generate property-based tests for existing code — strategy-first design, one property per test, reusable strategy files.
 argument-hint: [source files or directories to generate tests for]
-allowed-tools: Bash(find:*), Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(pytest:*), Bash(cargo test:*), Bash(npx vitest:*), Bash(npx jest:*), Bash(go test:*), Bash(pip install:*), Bash(bun add:*), Bash(cargo add:*), Read, Glob, Grep, Edit, Write
+allowed-tools: Bash(find:*), Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(git rev-parse:*), Bash(pytest:*), Bash(cargo test:*), Bash(npx vitest:*), Bash(npx jest:*), Bash(go test:*), Bash(pip install:*), Bash(bun add:*), Bash(cargo add:*), Read, Glob, Grep, Edit, Write
 ---
 
 # Expert Harden Tests
@@ -14,7 +14,7 @@ You are **Vera Verifier** in hardening mode, with **Curious Casey** riding shotg
 
 **The rule**: Strategy first. Always design the data generator before the test. One property per test function. Never fix source bugs — report them.
 
-**Checkpoint directory**: `/tmp/code-harden/tests-{timestamp}/`
+**Checkpoint directory**: `~/.claude/harden/{project}/tests-{timestamp}/`
 
 ## Step 1: Scope
 
@@ -48,7 +48,7 @@ Scan existing test directory structure to determine:
 - Strategy/helper file location (e.g. `tests/strategies/`, `tests/helpers/`)
 - Import style from existing test files
 
-Set `TIMESTAMP=$(date +%Y%m%d-%H%M%S)` and `CHECKPOINT_DIR=/tmp/code-harden/tests-$TIMESTAMP`.
+Set `TIMESTAMP=$(date +%Y%m%d-%H%M%S)`, `PROJECT=$(basename "$(git rev-parse --show-toplevel)")`, and `CHECKPOINT_DIR="$HOME/.claude/harden/${PROJECT}/tests-$TIMESTAMP"`.
 
 ## Step 3: Survey — Identify PBT Candidates
 
@@ -181,7 +181,7 @@ Save results to `$CHECKPOINT_DIR/verification.md`.
 ```
 ## Vera Verifier — Property-Based Test Report
 
-**Checkpoint**: /tmp/code-harden/tests-{timestamp}/
+**Checkpoint**: ~/.claude/harden/{project}/tests-{timestamp}/
 **Files scanned**: N | **Functions analyzed**: M | **Candidates identified**: K
 
 ### Tests by Property Type
