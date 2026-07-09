@@ -1,12 +1,12 @@
 ---
-description: Edit a document using expert writing personas and accumulated prose rules. Drafts revised version to /tmp/ for diffing.
+description: Edit a document using expert writing personas and accumulated prose rules. Drafts revised version to ~/.claude/expert-write/ for diffing.
 argument-hint: <file> [--add-rule]
 allowed-tools: Bash(diff:*), Bash(cp:*), Bash(date:*), Bash(wc:*), Bash(ls:*), Bash(mkdir:*), Read, Glob, Grep, Write, AskUserQuestion
 ---
 
 # Expert Write
 
-A document editing system that applies accumulated prose rules through specialized editor personas. Produces a revised draft to `/tmp/expert-write/` so you can diff and cherry-pick changes.
+A document editing system that applies accumulated prose rules through specialized editor personas. Produces a revised draft to `~/.claude/expert-write/` so you can diff and cherry-pick changes.
 
 **Two modes:**
 - **Edit mode** (default): `$ARGUMENTS` is a file path — runs all editors against the document
@@ -64,10 +64,10 @@ Apply all edits to produce a revised version of the document. Where editors conf
 ### Step 6: Write Revised Document
 
 ```bash
-mkdir -p /tmp/expert-write
+mkdir -p "$HOME/.claude/expert-write"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 FILENAME=$(basename "$ARGUMENTS" .md)
-OUTPUT="/tmp/expert-write/${FILENAME}-${TIMESTAMP}.md"
+OUTPUT="$HOME/.claude/expert-write/${FILENAME}-${TIMESTAMP}.md"
 ```
 
 Write the revised document to `$OUTPUT`.
