@@ -243,17 +243,32 @@ After confirming the issue is closed, update both caches.
 # Detect issue from worktree cache first, then branch name
 ISSUE_NUM=$(echo "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
 if [ -z "$ISSUE_NUM" ]; then
-  ISSUE_NUM=$(echo "$CURRENT_BRANCH" | grep -oE '^[0-9]+' || echo "")
+  # Strip any type prefix (feature/, fix/, chore/) before matching the leading number
+  ISSUE_NUM=$(echo "$CURRENT_BRANCH" | sed 's|.*/||' | grep -oE '^[0-9]+' || echo "")
 fi
 
 # Check worktree cache for issue state
 CACHED_ISSUE_STATE=$(echo "$GITHUB_CACHE" | jq -r '.issue.state // empty' 2>/dev/null)
 
 if [ -n "$ISSUE_NUM" ]; then
-  # Derive issues.json path from the git common dir (bare repo root)
-  # e.g. /path/to/repo/.bare → /path/to/repo/issues.json
-  GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
-  CACHE_FILE="$(dirname "$GIT_COMMON_DIR")/issues.json"
+  # Locate issues.json — layouts differ, so probe candidates in order:
+  #   1. bare-repo layout:  /path/to/repo/.bare → /path/to/repo/issues.json
+  #      (for a normal .git dir this resolves to the main worktree itself)
+  #   2. meta-folder layout: cache sits one level above the main worktree,
+  #      e.g. workspace/project/issues.json next to workspace/project/main/
+  # Use --path-format=absolute: --git-common-dir alone can return a relative
+  # ".git", which would silently resolve the cache to the wrong directory.
+  GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  CACHE_FILE=""
+  for CANDIDATE in \
+    "$(dirname "$GIT_COMMON_DIR")/issues.json" \
+    "$(dirname "$MAIN_WORKTREE")/issues.json"; do
+    if [ -f "$CANDIDATE" ]; then
+      CACHE_FILE="$CANDIDATE"
+      break
+    fi
+  done
+  [ -n "$CACHE_FILE" ] && echo "Issue cache: $CACHE_FILE"
 
   # Check worktree cache first (most specific), then project-level cache
   if [ "$CACHED_ISSUE_STATE" = "closed" ]; then
