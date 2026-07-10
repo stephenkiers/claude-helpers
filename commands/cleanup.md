@@ -19,6 +19,9 @@ Remove a worktree and optionally delete the branch.
 - When the PR is confirmed **MERGED** (via cache or API), all cleanup operations are safe —
   proceed without asking. The merge is an irreversible GitHub state.
 - Only ask for confirmation when the PR is NOT merged (OPEN, CLOSED, NONE).
+- **One exception**: if the issue/PR lists manual post-merge validations (step 2b-ii), pause
+  and check with the user before removing the worktree — that's a "did you test it?" question,
+  not a permission prompt.
 - Combine as many operations as possible into single bash commands to reduce prompts.
 
 ### Handling uncommitted changes
@@ -161,25 +164,9 @@ fi
 # Switch to main if not already there
 cd "$MAIN_WORKTREE"
 
-USE_GRAFT=false
-GRAFT_REPO_NAME=""
-GRAFT_WORKTREE_NAME=""
-if command -v graft >/dev/null 2>&1; then
-  GRAFT_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/graft/config.json"
-  if [ -f "$GRAFT_CONFIG" ]; then
-    GRAFT_REPO_NAME=$(jq -r --arg path "$MAIN_WORKTREE" '
-      .repos // {} | to_entries[] |
-      select(.value.path == $path) | .key
-    ' "$GRAFT_CONFIG" 2>/dev/null | head -1)
-    if [ -n "$GRAFT_REPO_NAME" ]; then
-      GRAFT_WORKTREE_NAME=$(basename "$CURRENT_WORKTREE")
-      # Verify graft tracks this worktree (it might have been created manually)
-      if graft ls -r "$GRAFT_REPO_NAME" 2>/dev/null | grep -q "$GRAFT_WORKTREE_NAME"; then
-        USE_GRAFT=true
-      fi
-    fi
-  fi
-fi
+# Graft detection: run the Graft Detection block PLUS its cleanup variant from
+# ~/.claude/commands/worktree-reference.md here (sets USE_GRAFT, GRAFT_REPO_NAME,
+# GRAFT_WORKTREE_NAME — the cleanup variant verifies graft tracks $CURRENT_WORKTREE).
 
 echo "CURRENT_WORKTREE=$CURRENT_WORKTREE"
 echo "CURRENT_BRANCH=$CURRENT_BRANCH"
@@ -243,17 +230,32 @@ After confirming the issue is closed, update both caches.
 # Detect issue from worktree cache first, then branch name
 ISSUE_NUM=$(echo "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
 if [ -z "$ISSUE_NUM" ]; then
-  ISSUE_NUM=$(echo "$CURRENT_BRANCH" | grep -oE '^[0-9]+' || echo "")
+  # Strip any type prefix (feature/, fix/, chore/) before matching the leading number
+  ISSUE_NUM=$(echo "$CURRENT_BRANCH" | sed 's|.*/||' | grep -oE '^[0-9]+' || echo "")
 fi
 
 # Check worktree cache for issue state
 CACHED_ISSUE_STATE=$(echo "$GITHUB_CACHE" | jq -r '.issue.state // empty' 2>/dev/null)
 
 if [ -n "$ISSUE_NUM" ]; then
-  # Derive issues.json path from the git common dir (bare repo root)
-  # e.g. /path/to/repo/.bare → /path/to/repo/issues.json
-  GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
-  CACHE_FILE="$(dirname "$GIT_COMMON_DIR")/issues.json"
+  # Locate issues.json — layouts differ, so probe candidates in order:
+  #   1. bare-repo layout:  /path/to/repo/.bare → /path/to/repo/issues.json
+  #      (for a normal .git dir this resolves to the main worktree itself)
+  #   2. meta-folder layout: cache sits one level above the main worktree,
+  #      e.g. workspace/project/issues.json next to workspace/project/main/
+  # Use --path-format=absolute: --git-common-dir alone can return a relative
+  # ".git", which would silently resolve the cache to the wrong directory.
+  GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  CACHE_FILE=""
+  for CANDIDATE in \
+    "$(dirname "$GIT_COMMON_DIR")/issues.json" \
+    "$(dirname "$MAIN_WORKTREE")/issues.json"; do
+    if [ -f "$CANDIDATE" ]; then
+      CACHE_FILE="$CANDIDATE"
+      break
+    fi
+  done
+  [ -n "$CACHE_FILE" ] && echo "Issue cache: $CACHE_FILE"
 
   # Check worktree cache first (most specific), then project-level cache
   if [ "$CACHED_ISSUE_STATE" = "closed" ]; then
@@ -288,19 +290,56 @@ if [ -n "$ISSUE_NUM" ]; then
 fi
 ```
 
+### 2b-ii. Surface Post-Merge Manual Validations (from the issue/PR)
+
+Merged code isn't always fully verified code — the ticket often lists checks that can only be
+done by a human after deploy (visual QA, a staging flow, a metrics dashboard, an email actually
+arriving). Before tearing down the worktree, read the issue and PR bodies and **raise any such
+items to the user** so they aren't lost with the worktree.
+
+Fetch the text (cheap, read-only — no confirmation needed):
+
+```bash
+# Issue title + body only (if an issue was detected in 2b). Deliberately skip comments —
+# validation checklists live in the body/test plan, and comment threads can be huge
+# (bots, review chatter). Cap size as a token-cost safety net.
+if [ -n "$ISSUE_NUM" ]; then
+  ISSUE_TEXT=$(gh issue view "$ISSUE_NUM" --json title,body \
+    -q '.title, .body' 2>/dev/null | head -c 8000 || echo "")
+fi
+
+# PR body (may contain a test-plan / checklist section)
+PR_BODY=$(gh pr view "$CURRENT_BRANCH" --json body -q '.body' 2>/dev/null | head -c 8000 || echo "")
+```
+
+Then **read the fetched text yourself** (don't grep-and-dump) and look for anything that
+requires human verification after merge, e.g.:
+
+- Sections titled "Manual validation", "Post-merge", "QA", "Test plan", "Verification",
+  "Acceptance criteria", "Rollout", "Monitoring"
+- Unchecked checklist items (`- [ ]`) anywhere in the issue or PR
+- Phrases like "verify in staging/production", "check the dashboard", "smoke test",
+  "confirm with", "after deploy"
+
+**If any are found**, present them to the user as a short checklist and ask whether they've
+been done — e.g.:
+
+> ⚠️ The issue/PR mentions manual post-merge validations. Have you verified these?
+> - [ ] Confirm the export email renders correctly in Gmail (issue #42)
+> - [ ] Check the p95 latency dashboard after deploy (PR test plan)
+
+This is **advisory, not blocking**: if the user says they're done (or wants to skip), continue.
+But do wait for their answer before removing the worktree — this is the last natural checkpoint
+where the context still exists. If nothing manual-validation-shaped is found, say so in one line
+and move on without prompting.
+
 ### 2c. Update Project Issues Tracker
 
 After confirming merge/close status, check if the **project root** contains an `issues.json` that is a **JSON array** with objects that have `id`, `title`, and `status` fields. If found, update the matching entry's `status` to `"done"`.
 
-```bash
-# Detect project root (parent of worktrees/ structure, or main worktree itself)
-PARENT_BASENAME=$(basename "$(dirname "$MAIN_WORKTREE")")
-if [ "$PARENT_BASENAME" = "worktrees" ]; then
-  PROJECT_ROOT=$(dirname "$(dirname "$MAIN_WORKTREE")")
-else
-  PROJECT_ROOT="$MAIN_WORKTREE"
-fi
-```
+Detect `PROJECT_ROOT` per the **Project Detection** block in
+`~/.claude/commands/worktree-reference.md` (step 6 — parent of `worktrees/` structure, or the main
+worktree itself).
 
 **Matching logic** (in priority order):
 1. **By id**: If `$ISSUE_NUM` matches an entry's `id` field (works for both GitHub issue numbers and local plan IDs)
@@ -434,6 +473,8 @@ fi
 | Target resolves to main | Abort with error message |
 | Target not a registered worktree | Abort with error message |
 | PR confirmed MERGED | Proceed with all cleanup (including `-D`) without asking |
+| Issue/PR lists manual post-merge validations | Surface as a checklist, ask user before removing worktree (advisory, never blocks if user confirms) |
+| Issue/PR text unavailable (`gh` fails, no issue) | Note it and continue — don't block on a read failure |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
 | PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands |
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
@@ -478,6 +519,9 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 ## Notes
 
 - This command complements `/shipit` - use `/shipit` to create PR, `/cleanup` after merge
+- Before removing the worktree, the issue and PR bodies are scanned for manual post-merge
+  validations (test plans, unchecked checklists, "verify in staging" notes) and raised to the
+  user — the worktree is the last natural checkpoint for that context
 - When the PR is merged, cleanup pulls `main` (ff-only) and runs the same checks
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
