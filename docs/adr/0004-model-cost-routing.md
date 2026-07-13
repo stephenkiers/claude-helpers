@@ -29,15 +29,17 @@ Route each step to the cheapest model that can do it well:
 
 Model choice is set per command/reviewer via frontmatter (`model:`), so it stays explicit and tunable.
 For `/expert-review`:
-- The Router is pinned to Sonnet in `agents/expert-scout.md` (judgment but economical)
+- The Router is pinned to Sonnet via an explicit `model: "sonnet"` override in the Step 2.5 Router
+  call (judgment but economical; uses expert-reviewer agent, not expert-scout)
 - Haiku mechanical roles are pinned to Haiku in `agents/expert-scout.md`
 - Panel roles (Pass 1, Carl, Pass 2, Amalgamator) inherit from the command's model, overrideable
   via `--model`
 
 **Per-invocation override:** `/expert-review --model <haiku|sonnet|opus|fable>` sets the model for the
-**judgment panel only** — Pass 1, Contrarian Carl, Pass 2, Amalgamator. The mechanical roles (Router,
-Q&A, Cody, Consistency Checker) stay at their pinned models regardless. So the flag scales the part
-of the bill that buys judgment expertise, and only that part.
+**judgment panel only** — Pass 1, Contrarian Carl, Pass 2, Amalgamator. The Router (judgment but
+narrow, pinned to Sonnet) and the mechanical roles (Q&A, Cody, Consistency Checker) stay at their
+pinned models regardless. So the flag scales the part of the bill that buys judgment expertise, and
+only that part.
 
 The tiers, cheapest to dearest (per 1M tokens, input/output): **Haiku 4.5** $1/$5 · **Sonnet 5** $3/$15
 · **Opus 4.8** $5/$25 · **Fable 5** $10/$50. Note the shape of that ladder: Fable is the *most

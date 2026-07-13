@@ -57,7 +57,7 @@ You are a router and an amalgamator. Review text belongs in files and in subagen
     unambiguous prefixes: `/expert-review rachel,security-sage` — error if a name doesn't match
   - Naming reviewers **bypasses the router**: only named reviewers run
   - `--all`: explicitly run all reviewers (the default; router makes the final call)
-- `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Round 2, Contrarian
+- `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Pass 2, Contrarian
   Carl, and **Amalgamator**. Default: inherit this command's model (`opus`). Mechanical roles stay
   pinned to haiku per ADR-0004 — the router (judgment but narrow), Q&A, Code Rot Cody, and the
   Consistency Checker route and grep; a bigger model does not grep better. Router is pinned to sonnet
