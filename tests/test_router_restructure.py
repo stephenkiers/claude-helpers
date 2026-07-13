@@ -8,34 +8,15 @@ Run with: python3 tests/test_router_restructure.py
 
 import os
 import re
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from _test_harness import REPO_ROOT, Harness
+
 PROMPTS_DIR = REPO_ROOT / "prompts"
 COMMANDS_DIR = REPO_ROOT / "commands"
 AGENTS_DIR = REPO_ROOT / "agents"
 
-pass_count = 0
-fail_count = 0
-failures = []
-
-def test_result(test_name, passed, message=""):
-    global pass_count, fail_count, failures
-    if passed:
-        print(f"✓ {test_name}")
-        pass_count += 1
-    else:
-        error_msg = f"✗ {test_name}"
-        if message:
-            error_msg += f": {message}"
-        print(error_msg)
-        failures.append(error_msg)
-        fail_count += 1
-
-print("=" * 70)
-print("EXPERT-REVIEW ROUTER RESTRUCTURE TEST SUITE")
-print("=" * 70)
-print()
+h = Harness("EXPERT-REVIEW ROUTER RESTRUCTURE TEST SUITE")
+test_result = h.test_result
 
 # ============================================================================
 # INVARIANT 1: tagger.md is gone (renamed/replaced)
@@ -390,26 +371,4 @@ if review_stats_exists:
         "Active tagger-collapse parsing found in review-stats" if has_active_tagger_collapse_parsing else ""
     )
 
-# ============================================================================
-# Summary
-# ============================================================================
-print()
-print("=" * 70)
-print("TEST SUMMARY")
-print("=" * 70)
-print(f"Passed: {pass_count}")
-print(f"Failed: {fail_count}")
-print()
-
-if failures:
-    print("FAILURES:")
-    for failure in failures:
-        print(f"  {failure}")
-    print()
-
-if fail_count == 0:
-    print("✓ All tests PASSED")
-    exit(0)
-else:
-    print("✗ Some tests FAILED")
-    exit(1)
+h.summarize_and_exit()
