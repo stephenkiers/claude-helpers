@@ -24,8 +24,8 @@ receive the full diff because their value is cross-cutting:
 - **Consistency Checker** — patterns across the whole diff.
 - **Contrarian Carl** — runs last, sees all findings to find what was missed.
 
-`--all` overrides routing to force every reviewer; `--full` reviews the whole codebase, not just the
-diff. Naming reviewers explicitly (`/expert-review rachel,security-sage`) *is* the routing decision
+`--all` overrides routing to force every reviewer. Naming reviewers explicitly
+(`/expert-review rachel,security-sage`) *is* the routing decision
 for judgment reviewers: it bypasses the router and skips its judgment call entirely. The four
 always-run reviewers above still participate — their domain is the whole diff by definition,
 independent of routing, so naming reviewers narrows the judgment panel, not the always-run set.

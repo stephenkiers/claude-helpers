@@ -1,6 +1,6 @@
 ---
 description: Smart expert code review with triage - works across all projects
-argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--full] [--all] [--force]
+argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
 allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(gh:*), Bash(ls:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write
 model: opus
 ---
@@ -60,7 +60,6 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   **Router** (Step 5) = sonnet (judgment, narrow, economical); **Mechanical roles** (Q&A, Code Rot Cody,
   Consistency Checker) = haiku (routing and grep are model-agnostic); **Judgment panel** (Pass 1, Carl,
   Pass 2, Amalgamator) = PANEL_MODEL (your `--model` choice, or inherited).
-- `--full`: review the entire codebase instead of just changed files
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
@@ -74,8 +73,10 @@ Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a s
 
 ## Checkpoint Files
 
-All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{short_hash}/`
-(persists across reboots; one subfolder per review enables comparing reviews):
+All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{short_hash}-{timestamp}/`
+(persists across reboots; one subfolder per *invocation* — the timestamp means two overlapping
+invocations against the same branch/commit never collide on the same directory, and re-running an
+already-reviewed commit never overwrites the prior run):
 
 | File | Written by | When |
 |------|-----------|------|
@@ -100,7 +101,8 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
    HASH=$(git rev-parse --short HEAD)
    PROJECT=$(basename "$(git rev-parse --show-toplevel)")
-   REVIEW_DIR="$HOME/.claude/reviews/${PROJECT}/${BRANCH}-${HASH}"
+   TIMESTAMP=$(date +%Y%m%dT%H%M%S)
+   REVIEW_DIR="$HOME/.claude/reviews/${PROJECT}/${BRANCH}-${HASH}-${TIMESTAMP}"
    mkdir -p "$REVIEW_DIR"
    ```
 
@@ -135,9 +137,10 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
        Checkpoint: {review.reviewDir}
      ```
      Then — unless `--force`/`-y` — ask before proceeding: same commit → "This exact commit was
-     already reviewed. Re-run anyway? (will overwrite prior results)"; different commit →
-     "Re-run for the current commit? (prior results in `{review.reviewDir}` are preserved; new
-     results go to a different folder)". Wait for explicit confirmation; exit cleanly if declined.
+     already reviewed. Re-run anyway? (prior results in `{review.reviewDir}` are preserved — the
+     timestamped `{REVIEW_DIR}` means this never overwrites them)"; different commit → "Re-run for
+     the current commit? (prior results in `{review.reviewDir}` are preserved; new results go to a
+     different folder)". Wait for explicit confirmation; exit cleanly if declined.
    - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
      also check for kanban files (`*-kanban.md`) in project root or docs/.
    - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
@@ -145,8 +148,7 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 
 ### Step 1: Determine Review Scope
 
-- Default (delta): `git diff --name-only main...HEAD`. If empty, inform the user and exit.
-- `--full`: review the entire `src/` directory.
+- `git diff --name-only main...HEAD`. If empty, inform the user and exit.
 - Write both diff artifacts once, so every later step passes a path instead of re-deriving or
   inlining the diff:
   ```bash
@@ -292,9 +294,9 @@ Then supply inline **only what you alone know** — none of it is on disk for th
 - `PROJECT_CONTEXT`, project modifiers, `DETECTED_LANGUAGES`, and the strict delta-scope rule below
 - `{REVIEW_DIR}` and their output path
 
-**The file is the contract — never ask a subagent to return its report.** Instruct each reviewer to
-Write its full review to `{REVIEW_DIR}/{reviewer}-pass1.md` in the framework's canonical format, and
-to return **only a one-line receipt** as its final message:
+**The file is the contract (rule #2 above) — never ask a subagent to return its report.** Instruct
+each reviewer to Write its full review to `{REVIEW_DIR}/{reviewer}-pass1.md` in the framework's
+canonical format, and to return **only a one-line receipt** as its final message:
 
 ```
 Write your complete review to {REVIEW_DIR}/{reviewer}-pass1.md using the Write tool.
@@ -304,20 +306,15 @@ Your final message must be ONLY this receipt line — NOT the review itself:
   {reviewer} | {SKIP|QUICK-SCAN|DEEP-DIVE} | findings: {n} ({c}C/{h}H/{m}M/{l}L) | open-questions: {n} | wrote: {path}
 ```
 
-A subagent's final message comes back to you *twice* — once as the `Task` tool result, and again in
-the `<result>` block of its completion notification. Returning a 5KB review from 20+ reviewers puts
-~130k tokens of text into your context that you do not need yet and will read from the files anyway
-later. The receipt carries everything downstream steps actually branch on (decision level,
-whether there are findings, whether there are open questions) — used by Step 8 (Q&A), Step 9 (Pass 2),
-and Step 10 (Amalgamator). If an agent dies without writing its file, verify the file after the join
-barrier and re-run that one reviewer — that is cheaper than taxing every run to insure against a rare
-failure.
+The receipt carries everything downstream steps actually branch on (decision level, whether there
+are findings, whether there are open questions) — used by Step 8 (Q&A), Step 9 (Pass 2), and Step 10
+(Amalgamator).
 
 **Blindness rule: Pass 1 prompts must NOT include Business Context, commit messages, or the PR
 description** — only the Technical Summary and the code. This is the point of running them as
 fresh subagents.
 
-Strict delta-scope rule (include in every prompt unless `--full`):
+Strict delta-scope rule (include in every prompt):
 ```
 SCOPE: STRICT DELTA REVIEW — only report issues INTRODUCED or WORSENED by this PR.
 Do NOT report pre-existing issues in unchanged code. If the PR makes an existing
@@ -487,8 +484,7 @@ echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > 
 ```
 
 `$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
-`reviewers` (names that actually ran), `panelModel`, `scope` (`"delta"`/`"full"`),
-`findings` (`{critical, high, medium, low}` counts).
+`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts).
 
 ---
 
@@ -503,8 +499,8 @@ report in the conversation**; the link is the contract.
 # Code Review Report
 
 **Date**: YYYY-MM-DD | **Branch**: … | **Commit**: … | **Project**: …
-**Scope**: Delta from main | Full codebase | **Files Reviewed**: N
-**Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}/
+**Scope**: Delta from main | **Files Reviewed**: N
+**Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}-{timestamp}/
 
 ## Executive Summary
 - **Reviewers Run**: N (names, router-selected or user-named)
@@ -567,7 +563,7 @@ accuracy.
 **Top recommended actions** (priority order):
 1. …
 
-📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}/final-report.md
+📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}-{timestamp}/final-report.md
 ```
 
 ---
@@ -588,6 +584,5 @@ accuracy.
 ```bash
 /expert-review                      # all reviewers, delta from main
 /expert-review contracts,concurrency
-/expert-review --full               # entire codebase
 /expert-review sam-system --force   # skip re-run confirmation
 ```

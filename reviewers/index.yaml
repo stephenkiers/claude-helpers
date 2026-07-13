@@ -13,7 +13,7 @@ reviewers:
     file: uncle-bob.yaml
     priority: high
     useWhen: Architecture, SOLID principles, clean code, resource management
-    triggers: [open, close, drop, dispose, acquire, release, shutdown, spawn, thread, finally, cleanup]
+    triggers: [open, close, drop, dispose, new, create, acquire, release, shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup]
 
   - name: Security Sage
     file: security-sage.yaml
@@ -25,7 +25,7 @@ reviewers:
     file: tara-typesafe.yaml
     priority: critical
     useWhen: Type design, contracts, validation, state machines, API boundaries
-    triggers: [interface, type, struct, trait, any, unknown, "as any", unsafe, Zod, schema, invariant]
+    triggers: [interface, type, struct, trait, any, unknown, as, "as any", unsafe, Zod, schema, invariant, assert, debug_assert, must, never, always, validate]
 
   - name: Sam System
     file: sam-system.yaml
@@ -45,7 +45,7 @@ reviewers:
     file: rachel.yaml
     priority: high
     useWhen: Concurrency, async code, shared state, locks, channels
-    triggers: [thread, spawn, async, await, Mutex, Arc, Atomic, lock, channel, mpsc, Send, Sync]
+    triggers: [thread, spawn, join, async, await, Future, Promise, Mutex, RwLock, Arc, Atomic, lock, unlock, synchronized, channel, mpsc, broadcast, Send, Sync, static mut, lazy_static, OnceCell, Rc, RefCell]
 
   - name: Eric Evans
     file: eric-evans.yaml
@@ -109,7 +109,7 @@ reviewers:
     file: frontend-fred.yaml
     priority: high
     useWhen: React/Svelte/Vue components, hooks, effects, subscriptions, imperative objects managed by component lifecycle
-    triggers: ["*.tsx", "*.svelte", "*.vue", useState, useEffect, useRef, useCallback, useMemo, onMount, onDestroy, $state, $effect]
+    triggers: ["*.tsx", "*.jsx", "*.svelte", "*.vue", useState, useEffect, useRef, useCallback, useMemo, useContext, useReducer, useMutation, useQuery, onMount, onDestroy, onCleanup, createSignal, createEffect, "$state", "$effect", "$derived", writable, readable, derived, subscribe, ref, reactive, computed, watch, watchEffect, onMounted, onUnmounted]
     note: "Component lifecycle specialist. Catches unmount races, stale closures, prop-change races, subscription leaks, and imperative-to-declarative boundary bugs. Born from a blind spot where no other reviewer covered React lifecycle semantics."
 
   - name: Scope Creep Steve
@@ -131,7 +131,7 @@ reviewers:
     file: fragile-feynman.yaml
     priority: high
     useWhen: Any diff touching business logic, data pipelines, config handling, or state management
-    triggers: [default, sorted, transform, pipeline, config, shared, singleton, retry, timeout, version, migrate, schema]
+    triggers: [default, assume, always, never, order, sorted, transform, pipeline, config, global, shared, singleton, retry, timeout, version, migrate, schema]
     note: "Pre-mortem fragility analyst. Runs the 10-category fragility catalogue against every diff and writes fictional post-mortems for FRAGILE/CRITICAL findings. Reads fragility.highRiskModules and fragility.knownFragilePatterns from .claude/project.yaml."
 
   - name: Contract Chris
