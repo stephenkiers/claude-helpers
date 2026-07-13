@@ -136,19 +136,24 @@ For each selected reviewer, map the sections of the diff that triggered them:
 3. **Name what you checked.** For each exclusion, state what you looked for in the index and diff
    that led to the "no" call.
 4. **Keep decisions brief**: One sentence per reviewer.
-5. **List every reviewer** from the index: either in a row or in SKIP. Don't omit any.
+5. **List every reviewer** from the index in the Panel Decision table — Yes or No, never omitted.
 
 ---
 
 ## Reviewer Index
 
-The reviewer index (from `~/.claude/reviewers/index.yaml`) will be provided when this prompt is used.
-It contains every reviewer's `name`, `priority`, `triggers`, `useWhen`, and `note`.
+Read the reviewer index from `~/.claude/reviewers/index.yaml` using the Read tool. It contains every
+reviewer's `name`, `priority`, `triggers`, `useWhen`, and `note`.
 
 ---
 
-## Diff Input
+## Reading Your Inputs
 
-The git diff will be provided below:
+Read the following files using the Read tool:
 
-[DIFF_PLACEHOLDER]
+1. **`{REVIEW_DIR}/full-diff.patch`** — the complete git diff for this change
+2. **`{REVIEW_DIR}/summary.md`** — summary and business context
+3. **`~/.claude/reviewers/index.yaml`** — the reviewer index with all triggers and interests
+
+These files are your routing intelligence. No diff or index will be substituted into this prompt text;
+you must read them directly.
