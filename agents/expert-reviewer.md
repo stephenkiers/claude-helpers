@@ -1,6 +1,6 @@
 ---
 name: expert-reviewer
-description: Runs a single reviewer persona against a diff and writes its own checkpoint file. Spawned by /expert-review for Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and the Amalgamator. The persona, sections, and output path all arrive in the prompt.
+description: Runs a single reviewer persona against a diff and writes its own checkpoint file. Spawned by /expert-review for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and the Amalgamator. The persona, sections, and output path all arrive in the prompt.
 tools: Read, Grep, Glob, Write, Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git rev-parse:*), Bash(ls *)
 permissionMode: bypassPermissions
 ---
