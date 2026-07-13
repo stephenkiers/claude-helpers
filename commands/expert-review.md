@@ -38,17 +38,15 @@ they are the difference between a ~180k review and a ~430k one:
    stays in your context for the whole run.
 2. **The file is the contract.** Every panel agent Writes its output to `{REVIEW_DIR}` and returns a
    one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
-   and again in the completion notification's `<result>` block. You read the files once, in Step 8.
+   and again in the completion notification's `<result>` block. The Amalgamator reads the files once; you never do.
 3. **Never poll.** No `ScheduleWakeup`, no `sleep`. Launch a batch in one message and let it return.
-4. **The diff is a file, not a string.** Write `full-diff.patch` and `diff-index.md` once (Step 1);
+4. **The diff is a file, not a string.** Write `full-diff.patch` once (Step 1);
    pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
    44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
    every subsequent turn. Note that passing a path only saves *your* context: the receiving subagent
-   pays the same tokens the moment it calls `Read`. The real lever on a subagent's cost is giving it
-   a smaller artifact to read, not just a path to a big one — that is why `diff-index.md` exists
-   (Step 1). The Router reads the full patch once; Pass 1 reviewers read their bounded sections.
+   pays the same tokens the moment it calls `Read`. The Router reads the full patch once; Pass 1 reviewers read their bounded sections. Also write `diff-index.md` (Step 1) as a quick orientation artifact: file list + hunk headers only, ~1/20th the size of the full patch — useful for skimming the review directory or reconstructing scope if a step needs re-running.
 
-You are a router and an amalgamator. Review text belongs in files and in subagents, not in you.
+You are a dispatcher: routing, review, and synthesis all happen in subagents. Review text belongs in files and in subagents, not in you.
 
 ## Arguments
 
@@ -58,10 +56,10 @@ You are a router and an amalgamator. Review text belongs in files and in subagen
   - Naming reviewers **bypasses the router**: only named reviewers run
   - `--all`: explicitly run all reviewers (the default; router makes the final call)
 - `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Pass 2, Contrarian
-  Carl, and **Amalgamator**. Default: inherit this command's model (`opus`). Mechanical roles stay
-  pinned to haiku per ADR-0004 — the router (judgment but narrow), Q&A, Code Rot Cody, and the
-  Consistency Checker route and grep; a bigger model does not grep better. Router is pinned to sonnet
-  (judgment but economical).
+  Carl, and **Amalgamator**. Default: inherit this command's model (`opus`). Three tiers per ADR-0004:
+  **Router** (Step 5) = sonnet (judgment, narrow, economical); **Mechanical roles** (Q&A, Code Rot Cody,
+  Consistency Checker) = haiku (routing and grep are model-agnostic); **Judgment panel** (Pass 1, Carl,
+  Pass 2, Amalgamator) = PANEL_MODEL (your `--model` choice, or inherited).
 - `--full`: review the entire codebase instead of just changed files
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
@@ -83,13 +81,13 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 |------|-----------|------|
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
-| `summary.md` | Summarizer | Step 2 — Technical Summary + Business Context |
-| `tagged-sections.md` | Router | Step 2.5 — section → reviewer routing with Panel Decision (includes/excludes) |
-| `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 3 (Consistency Checker + Cody included) |
-| `contrarian-carl-pass1.md` | Carl | Step 3.7 — no Pass 2, presented as-is |
-| `{reviewer}-questions-answered.md` | Haiku Q&A | Step 4 — only reviewers with open questions |
-| `{reviewer}-pass2.md` | Pass 2 subagents | Step 5 — only reviewers with findings, judgment reviewers only |
-| `final-report.md` | Amalgamator | Step 6 |
+| `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
+| `tagged-sections.md` | Router | Step 5 — section → reviewer routing with Panel Decision (includes/excludes) |
+| `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 6 (Consistency Checker + Cody included) |
+| `contrarian-carl-pass1.md` | Carl | Step 7 — no Pass 2, presented as-is |
+| `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
+| `{reviewer}-pass2.md` | Pass 2 subagents | Step 9 — only reviewers with findings, judgment reviewers only |
+| `final-report.md` | Amalgamator | Step 10 |
 
 ---
 
@@ -143,7 +141,7 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
    - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
      also check for kanban files (`*-kanban.md`) in project root or docs/.
    - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
-     Integration Concerns" (Step 5); cross-reference in the final report.
+     Integration Concerns" (Step 6); cross-reference in the final report.
 
 ### Step 1: Determine Review Scope
 
@@ -183,11 +181,11 @@ all reviewers, `NAMED_SELECTION=false` (Router makes the call).
 
 **Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. If absent,
 leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this
-command's model. `PANEL_MODEL` applies to Pass 1 (Step 3), Contrarian Carl (Step 3.7), Pass 2
-(Step 5), and Amalgamator (Step 6) — and to nothing else. Print the resolved panel model
+command's model. `PANEL_MODEL` applies to Pass 1 (Step 6), Contrarian Carl (Step 7), Pass 2
+(Step 9), and Amalgamator (Step 10) — and to nothing else. Print the resolved panel model
 with the reviewer count when the run starts.
 
-### Step 2: Summarizer → `summary.md`
+### Step 4: Summarizer → `summary.md`
 
 Spawn one subagent (`subagent_type: "Explore"`) with the summarizer prompt
 @~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
@@ -196,7 +194,7 @@ messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if availabl
 known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file contains
 `## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
 
-### Step 2.5: Router (sonnet) → `tagged-sections.md`
+### Step 5: Router (sonnet) → `tagged-sections.md`
 
 Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
 model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
@@ -227,7 +225,7 @@ The router is told these four are pre-seated and to treat them as included for t
 **Named reviewers:** If the user named specific reviewers (Step 3), skip the router entirely — the
 user's selection *is* the decision, and all four always-run reviewers still participate.
 
-### Step 3: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
+### Step 6: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
 Read `tagged-sections.md` and parse which reviewers were selected by the router. Launch all selected
 reviewers (routed by the router OR named by the user OR always-run) in ONE message. All run as
@@ -288,10 +286,11 @@ Your final message must be ONLY this receipt line — NOT the review itself:
 A subagent's final message comes back to you *twice* — once as the `Task` tool result, and again in
 the `<result>` block of its completion notification. Returning a 5KB review from 20+ reviewers puts
 ~130k tokens of text into your context that you do not need yet and will read from the files anyway
-in Step 8. The receipt carries everything Steps 5c/6/6.5/6.7 actually branch on (decision level,
-whether there are findings, whether there are open questions). If an agent dies without writing its
-file, Step 7 catches it and you re-run that one reviewer — that is cheaper than taxing every run to
-insure against a rare failure.
+later. The receipt carries everything downstream steps actually branch on (decision level,
+whether there are findings, whether there are open questions) — used by Step 8 (Q&A), Step 9 (Pass 2),
+and Step 10 (Amalgamator). If an agent dies without writing its file, verify the file after the join
+barrier and re-run that one reviewer — that is cheaper than taxing every run to insure against a rare
+failure.
 
 **Blindness rule: Pass 1 prompts must NOT include Business Context, commit messages, or the PR
 description** — only the Technical Summary and the code. This is the point of running them as
@@ -332,7 +331,7 @@ they read themselves; you do not need to know them here.)
   pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
   contradicted by the code. Its output format is defined in its own YAML.
 
-**Join barrier.** All Step 3 agents launched in one message with `run_in_background: false` means
+**Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
 they have all returned by the time you continue. Then verify `{REVIEW_DIR}/{reviewer}-pass1.md`
 exists for every selected reviewer. If a receipt came back but its file is missing, **re-run that one
 reviewer** — do not try to reconstruct the review from the receipt; the receipt is a status line, not
@@ -345,7 +344,7 @@ is large enough that you truly want it backgrounded, then **end your turn**: the
 you when the agents finish. Track per-reviewer status by checking for files, never by counting
 notifications.
 
-### Step 3.7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
+### Step 7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
 
 Carl runs **last** and is the one reviewer who is not blind to the panel. Spawn one subagent
 (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`) and, per "Pass paths, not contents",
@@ -368,7 +367,7 @@ carve-out). He writes `{REVIEW_DIR}/contrarian-carl-pass1.md` and returns a rece
 `contrarian-carl | findings: {n} | wrote: {path}` — like every other panel agent. He does NOT
 participate in Pass 2; his findings are presented as-is.
 
-### Step 4: Haiku Q&A (parallel) → `{reviewer}-questions-answered.md`
+### Step 8: Haiku Q&A (parallel) → `{reviewer}-questions-answered.md`
 
 Runs BEFORE Pass 2 so the re-evaluation is informed rather than speculative (ADR-0002). For each
 reviewer whose Pass 1 receipt reported `open-questions > 0`: spawn a subagent
@@ -382,7 +381,7 @@ It writes `{REVIEW_DIR}/{reviewer}-questions-answered.md` — **Answer** + **Evi
 per question — and returns a receipt only: `{reviewer} | answered: {n} | wrote: {path}`. Launch all
 Q&A agents in one message.
 
-### Step 5: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
+### Step 9: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
 
 **Only for judgment reviewers whose Pass 1 receipt reported findings > 0.** Mechanical roles
 (Code Rot Cody, Consistency Checker) skip Pass 2. Carl is not re-evaluated; his findings stand as-is.
@@ -410,7 +409,7 @@ receipt only:
 {reviewer} | pass2 | confirmed: {n} | resolved: {n} | downgraded: {n} | wrote: {path}
 ```
 
-### Step 6: Amalgamator (one expensive agent) → `final-report.md`
+### Step 10: Amalgamator (one expensive agent) → `final-report.md`
 
 **Before spawning the Amalgamator,** verify all expected checkpoint files exist (pass1 for every
 routed reviewer, pass2 where findings, questions-answered where open questions).
@@ -447,7 +446,7 @@ polish-only?) and the finding count summary:
 amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
 ```
 
-### Step 9: Cache Review Metadata
+### Step 11: Cache Review Metadata
 
 Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
 
