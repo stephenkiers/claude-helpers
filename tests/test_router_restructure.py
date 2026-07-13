@@ -196,9 +196,9 @@ router_mentions_sonnet = False
 if expert_review_exists:
     expert_review_content = expert_review_file.read_text()
 
-    # Find the router step/section - look for "### Step 2.5" (the router step number)
+    # Find the router step/section - look for "### Step N: Router" (the router step heading)
     # Extract everything until the next step heading (### Step)
-    router_section_pattern = r"### Step 2\.5.*?\n(.*?)(?=\n### Step|\Z)"
+    router_section_pattern = r"### Step \d+: Router.*?\n(.*?)(?=\n### Step|\Z)"
     router_section_match = re.search(router_section_pattern, expert_review_content, re.DOTALL | re.IGNORECASE)
 
     if router_section_match:
