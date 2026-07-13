@@ -117,10 +117,11 @@ take precedence over these defaults (see [ADR-0005](docs/adr/0005-three-layer-co
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
   (used by `/implement-with-haiku`).
 - `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
-  for Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from the
-  caller (`--model`).
-- `expert-scout` — the pinned mechanical roles: Router (Sonnet; narrow judgment), Q&A (Haiku),
-  Code Rot Cody (Haiku), Consistency Checker (Haiku).
+  for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from
+  the caller (`--model`), except Router which is pinned to sonnet.
+- `expert-scout` — the pinned mechanical roles: Q&A (Haiku), Code Rot Cody (Haiku), and Consistency
+  Checker (Haiku). Router (Sonnet; narrow judgment) is spawned as expert-reviewer with an explicit
+  model override.
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory
