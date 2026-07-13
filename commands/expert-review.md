@@ -1,52 +1,94 @@
 ---
 description: Smart expert code review with triage - works across all projects
-argument-hint: [reviewers...] [--full] [--all] [--force]
+argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
 allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(gh:*), Bash(ls:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write
 model: opus
 ---
 
 # Expert Code Review
 
-A checkpoint-based code review system that:
-1. **Summarizer** analyzes the diff → saves to `~/.claude/reviews/{project}/{branch}-{hash}/summary.md`
-2. **Tagger** (haiku) routes diff sections to reviewers → saves to `.../{hash}/tagged-sections.md`
-3. **Consistency Checker** (haiku) scans for pattern inconsistencies → saves to `.../{hash}/consistency-checker-pass1.md`
-4. **Pass 1 reviewers** (main thread, sequential, ALL reviewers) → each saves to `.../{reviewer}-pass1.md` — includes Open Questions and Proposals
-5. **Code Rot Cody** (haiku) greps entire repo to verify new symbols have callers and removed symbols are cleaned up → saves to `.../{hash}/code-rot-cody-pass1.md`
-6. **Pass 2 re-evaluation** (main thread, sequential) → saves to `.../{reviewer}-pass2.md`
-7. **Haiku Q&A** (haiku, per reviewer) → answers each reviewer's open questions → `.../{reviewer}-questions-answered.md`
-8. **Expert Cross-Review** (main thread, DEEP-DIVE reviewers only) → each expert reviews all others' findings → `.../{reviewer}-cross-review.md`
-9. **Verify** all expected files exist
-10. **Amalgamate** from checkpoint files
-11. **Cache review metadata** to `.claude/github-cache.json`
+A checkpoint-based, parallel code review pipeline:
 
-**Why checkpoints?** If any agent fails, work from other agents is preserved. Each step produces inspectable artifacts.
+1. **Summarizer** analyzes the diff (subagent)
+2. **Router** (sonnet) judges which reviewers meet the threshold for this diff
+3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (incl. Sam System, Code
+   Rot Cody, Consistency Checker), each writing its own checkpoint file
+4. **Contrarian Carl** — after all Pass 1 files exist, sees everything, finds what was missed
+5. **Haiku Q&A** — parallel haiku subagents answer each reviewer's open questions
+6. **Pass 2 re-evaluations** — parallel subagents, **fresh skeptic-verifier framing**, business context
+   + Q&A answers revealed. Judgment reviewers only (mechanical roles get no Pass 2).
+7. **Amalgamator** (PANEL_MODEL) — one expensive agent replaces quadratic cross-review; deduplicates,
+   severity-ranks, resolves conflicts, writes final-report.md
+8. **Verify → Cache metadata** (main thread)
 
-**Why subfolders?** Each review gets its own folder (`{branch}-{short_hash}/`), enabling comparison between reviews and avoiding conflicts. Reviews live under `~/.claude/reviews/` so they persist across reboots (unlike `/tmp`).
+**Why checkpoints?** Every step writes an inspectable artifact to the review directory; if any
+agent fails, the others' work is preserved and only the missing step re-runs.
+
+**Why subagents (not main thread)?** Two reasons. *Blindness*: a Pass 1 reviewer running in the
+main thread can see every earlier reviewer's output sitting in context — a fresh subagent cannot.
+*Quality*: sequential main-thread review accumulates enormous context by the twentieth reviewer;
+each subagent starts clean. Parallelism is the bonus, not the reason.
+
+**Context discipline (orchestrator).** Subagents isolate *their* work from you; they do not isolate
+themselves from you automatically. Three rules keep this pipeline from ballooning your context —
+they are the difference between a ~180k review and a ~430k one:
+
+1. **Pass paths, not contents.** Never read a reviewer's YAML or the expert framework yourself, and
+   never paste them into a prompt. Name the file; the subagent reads it. Every prompt you write
+   stays in your context for the whole run.
+2. **The file is the contract.** Every panel agent Writes its output to `{REVIEW_DIR}` and returns a
+   one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
+   and again in the completion notification's `<result>` block. The Amalgamator reads the files once; you never do.
+3. **Never poll.** No `ScheduleWakeup`, no `sleep`. Launch a batch in one message and let it return.
+4. **The diff is a file, not a string.** Write `full-diff.patch` once (Step 1);
+   pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
+   44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
+   every subsequent turn. Note that passing a path only saves *your* context: the receiving subagent
+   pays the same tokens the moment it calls `Read`. The Router reads the full patch once; Pass 1 reviewers read their bounded sections. Also write `diff-index.md` (Step 1) as a quick orientation artifact: file list + hunk headers only, ~1/20th the size of the full patch — useful for skimming the review directory or reconstructing scope if a step needs re-running.
+
+You are a dispatcher: routing, review, and synthesis all happen in subagents. Review text belongs in files and in subagents, not in you.
 
 ## Arguments
 
-- `$1...`: Reviewer selection (default: all available reviewers)
-  - No args: Run all discovered reviewers
-  - `--all`: Explicitly run all reviewers
-  - Comma-separated names: `contracts,concurrency,callback-safety`
-  - Single name: `contracts`
+- `$1...`: Reviewer selection (default: all discovered reviewers, router-selected)
+  - Comma- or space-separated names matched case-insensitively against `index.yaml` — full names or
+    unambiguous prefixes: `/expert-review rachel,security-sage` — error if a name doesn't match
+  - Naming reviewers **bypasses the router**: only named reviewers run
+  - `--all`: explicitly run all reviewers (the default; router makes the final call)
+- `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Pass 2, Contrarian
+  Carl, and **Amalgamator**. Default: inherit this command's model (`opus`). Three tiers per ADR-0004:
+  **Router** (Step 5) = sonnet (judgment, narrow, economical); **Mechanical roles** (Q&A, Code Rot Cody,
+  Consistency Checker) = haiku (routing and grep are model-agnostic); **Judgment panel** (Pass 1, Carl,
+  Pass 2, Amalgamator) = PANEL_MODEL (your `--model` choice, or inherited).
+- `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
-- `--full`: Review entire codebase instead of just changed files
+  Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
+  · **fable** $10/$50. Fable is the most capable *and* the most expensive — 2× Opus — it is the
+  deliberate expensive step, used by the Amalgamator to resolve conflicts and severity-rank findings.
+  Opus is the default panel tier.
 
-- `--force` (alias `-y`): Skip the re-run confirmation prompt if a prior review exists for this branch in `.claude/github-cache.json`. Without this flag, the command pauses and asks before overwriting prior results.
+Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a smoke test) ·
+`/expert-review rachel,security-sage` (two reviewers, no router) ·
+`/expert-review --model fable` (use fable for the amalgamator and panel)
 
-## File Checkpoint Locations
+## Checkpoint Files
 
-All artifacts saved to `~/.claude/reviews/{project}/{branch}-{short_hash}/`:
-- `summary.md` - Summarizer output (Technical Summary + Business Context)
-- `tagged-sections.md` - Tagger output (section → reviewer routing)
-- `consistency-checker-pass1.md` - Consistency Checker output (pattern inconsistencies + PR desc cross-ref)
-- `{reviewer}-pass1.md` - Pass 1 blind review output (only for non-skipped reviewers)
-- `code-rot-cody-pass1.md` - Code Rot Cody output (dead code, orphaned refs, unused config)
-- `{reviewer}-pass2.md` - Pass 2 re-evaluation output (only if findings exist)
+All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{short_hash}-{timestamp}/`
+(persists across reboots; one subfolder per *invocation* — the timestamp means two overlapping
+invocations against the same branch/commit never collide on the same directory, and re-running an
+already-reviewed commit never overwrites the prior run):
 
-Example: `~/.claude/reviews/my-project/feature-foo-abc1234/`
+| File | Written by | When |
+|------|-----------|------|
+| `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
+| `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
+| `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
+| `tagged-sections.md` | Router | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); not written when `NAMED_SELECTION=true` |
+| `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 6 (Consistency Checker + Cody included) |
+| `contrarian-carl-pass1.md` | Carl | Step 7 — no Pass 2, presented as-is |
+| `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
+| `{reviewer}-pass2.md` | Pass 2 subagents | Step 9 — only reviewers with findings, judgment reviewers only |
+| `final-report.md` | Amalgamator | Step 10 |
 
 ---
 
@@ -54,955 +96,493 @@ Example: `~/.claude/reviews/my-project/feature-foo-abc1234/`
 
 ### Step 0: Setup
 
-1. Get branch name and commit hash:
+1. Resolve paths and create the checkpoint directory:
    ```bash
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
    HASH=$(git rev-parse --short HEAD)
    PROJECT=$(basename "$(git rev-parse --show-toplevel)")
-   REVIEW_DIR="$HOME/.claude/reviews/${PROJECT}/${BRANCH}-${HASH}"
-   ```
-
-2. Create checkpoint directory:
-   ```bash
+   TIMESTAMP=$(date +%Y%m%dT%H%M%S)
+   REVIEW_DIR="$HOME/.claude/reviews/${PROJECT}/${BRANCH}-${HASH}-${TIMESTAMP}"
    mkdir -p "$REVIEW_DIR"
    ```
 
-3. Determine current working directory and git root
+2. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
+   and pass to all reviewer prompts. Key extractions:
+   - `techStack.language` → primary language (skips detection in step 3)
+   - `fragility.*` → Fragile Feynman; `docStyle` → Contract Chris;
+     `typeChecker`, `propertyTestingLib` → Tara TypeSafe
+   - `adrs`, `invariants`, `redLines`, `terminology` → all reviewers
 
-4. **Read `.claude/project.yaml`** (if it exists in the project root):
-   - Use the `Read` tool on `.claude/project.yaml`
-   - Store as `PROJECT_CONTEXT` — pass it to all reviewer prompts as context
-   - Extract `techStack.language` → use as primary language (skips file-extension detection below)
-   - Extract `techStack.framework`, `techStack.testing`, `techStack.platform`
-   - Extract `fragility.highRiskModules`, `fragility.knownFragilePatterns` → pass to Fragile Feynman
-   - Extract `docStyle` → pass to Contract Chris
-   - Extract `typeChecker`, `propertyTestingLib` → pass to Tara TypeSafe
-   - Extract `adrs`, `invariants`, `redLines`, `terminology` → pass to all reviewers
-   - If `project.yaml` not found, fall through to file-extension detection below
+3. **Detect project languages** (skip if `techStack.language` set): `Cargo.toml` → rust,
+   `package.json` → typescript; otherwise majority file extension among changed files
+   (`.go`, `.rb`, `.py`, …). A diff can have multiple languages; collect all that appear as
+   `DETECTED_LANGUAGES`.
 
-5. **Detect project type** (skip if `techStack.language` was set in step 4):
-   - Check for `Cargo.toml` → Rust → `DETECTED_LANGUAGES=["rust"]`
-   - Check for `package.json` → Node/TypeScript → `DETECTED_LANGUAGES=["typescript"]`
-   - Otherwise check file extensions in changed files — majority extension wins:
-     - `*.go` → `DETECTED_LANGUAGES=["go"]`
-     - `*.rb` → `DETECTED_LANGUAGES=["ruby"]`
-     - `*.py` → `DETECTED_LANGUAGES=["python"]`
-   - A diff can have multiple languages (e.g. Go + Ruby); collect all that appear
+4. **Detect project modifiers** from CLAUDE.md or `.claude/review-config.md`: a
+   `## Review Modifiers` section, or phrases like "pre-release" / "greenfield" / "backwards
+   compatibility is not a concern" → `greenfield: true`; `internal: true` for internal tools.
+   These are defined in the expert framework (Project Modifiers section) — pass any detected
+   modifiers to every reviewer prompt.
 
-6. Identify project path for reviewer discovery
-
-7. **Detect project modifiers** from CLAUDE.md or `.claude/review-config.md`:
-   - Look for `## Review Modifiers` or `## Project Modifiers` section
-   - Common modifiers:
-     - `greenfield: true` - Pre-release project, backwards compatibility not required
-     - `internal: true` - Internal tool, less strict API stability requirements
-   - If CLAUDE.md contains phrases like "pre-release", "greenfield", "not yet released", or "backwards compatibility is not a concern", treat as `greenfield: true`
-   - Store detected modifiers for use in reviewer context
-
-8. **Store the REVIEW_DIR path** - you'll use it for all file operations
-
-8. **Gather plan/ticket context and review history (cache-first):**
-   - **First:** Use the `Read` tool on `.claude/github-cache.json` in the current worktree
-     - Parse the JSON content directly (no shell commands needed)
-     - If `issue.body` exists → use it as the plan/business context (most reliable source)
-     - If `issue.title` exists → include in summarizer prompt
-     - If `issue.url` exists → reference in report
-     - **Check for prior review:** If `review.lastRun` exists AND `review.branch` matches the current `BRANCH`, **STOP and confirm with the user before proceeding** (unless `--force` / `-y` was passed). Report:
-       ```
-       ℹ️ Previous review found on this branch:
-         Last run: {review.lastRun}
-         Commit: {review.commit}{" (current)" if matches HASH else " (older — current is {HASH})"}
-         Reviewers: {review.reviewers} (joined)
-         Findings: {review.findings.critical}C / {review.findings.high}H / {review.findings.medium}M / {review.findings.low}L
-         Checkpoint: {review.reviewDir}
-       ```
-       Then ask:
-       - If `review.commit` matches current `HASH`: "This exact commit was already reviewed. Re-run anyway? (will overwrite prior results)"
-       - If `review.commit` differs: "Re-run review for the current commit? (prior results in `{review.reviewDir}` will be preserved; new results go to a different folder)"
-       Wait for explicit user confirmation ("yes" / "go" / "proceed") before continuing to Step 1. If the user declines, exit cleanly without running any reviewers.
-       If `--force` or `-y` is in the arguments, skip the confirmation and proceed directly (still print the "Previous review found" block for visibility).
-   - **Fallback (only if no worktree cache):** Search `~/.claude/plans/*.md` files (read each to see if it mentions this branch or project)
-   - Also check for kanban files like `*-kanban.md`, `*-KANBAN.md` in project root or docs/
-   - Store relevant context for use in summarizer and Sam System
-
-9. **If plan context found (from cache or files):**
-   - Include relevant excerpts in the summarizer prompt (Step 4)
-   - Pass them to Sam System as "Known Integration Concerns" (Step 5.5)
-   - Cross-reference in final report (Step 8)
+5. **Gather plan/ticket context and review history (cache-first):**
+   - Read `.claude/github-cache.json`. If `issue.body` exists → business context; `issue.title`
+     → summarizer prompt; `issue.url` → report.
+   - **Prior-review check:** if `review.lastRun` exists AND `review.branch` == `BRANCH`, print:
+     ```
+     ℹ️ Previous review found on this branch:
+       Last run: {review.lastRun}
+       Commit: {review.commit}{" (current)" if == HASH else " (older — current is {HASH})"}
+       Reviewers: {review.reviewers joined}
+       Findings: {critical}C / {high}H / {medium}M / {low}L
+       Checkpoint: {review.reviewDir}
+     ```
+     Then — unless `--force`/`-y` — ask before proceeding: same commit → "This exact commit was
+     already reviewed. Re-run anyway? (prior results in `{review.reviewDir}` are preserved — the
+     timestamped `{REVIEW_DIR}` means this never overwrites them)"; different commit → "Re-run for
+     the current commit? (prior results in `{review.reviewDir}` are preserved; new results go to a
+     different folder)". Wait for explicit confirmation; exit cleanly if declined.
+   - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
+     also check for kanban files (`*-kanban.md`) in project root or docs/.
+   - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
+     Integration Concerns" (Step 6); cross-reference in the final report.
 
 ### Step 1: Determine Review Scope
 
-1. Check if `--full` is in the arguments
-2. If NOT `--full` (delta review):
-   - Run: `git diff --name-only main...HEAD` to get changed files
-   - If no files changed, inform user and exit
-   - Store the file list
-3. If `--full`:
-   - Review will cover entire `src/` directory
+- `git diff --name-only main...HEAD`. If empty, inform the user and exit.
+- Write both diff artifacts once, so every later step passes a path instead of re-deriving or
+  inlining the diff:
+  ```bash
+  git diff main...HEAD > "$REVIEW_DIR/full-diff.patch"
+  { echo "## Files"; git diff --stat main...HEAD;
+    echo; echo "## Hunks"; git diff main...HEAD | grep -E '^(\+\+\+|@@)'; } > "$REVIEW_DIR/diff-index.md"
+  ```
+  `diff-index.md` is the file list plus every hunk header — each one already carries its enclosing
+  function/section (`@@ -39,13 +39,16 @@ See the ADRs for…`) — at roughly 1/20th the size of the
+  full patch. The Router reads `full-diff.patch` (its line ranges in `tagged-sections.md` are
+  offsets into that file, which Pass 1 reviewers use for bounded reads). Sam System, Code Rot Cody,
+  and Consistency Checker read the full patch (their domain is the whole diff).
 
 ### Step 2: Discover Available Reviewers
 
-1. **Resolve home directory** (tilde doesn't expand in Glob tool):
-   ```bash
-   echo $HOME
+1. Resolve the home directory (`echo $HOME` — tilde doesn't expand in Glob).
+2. **Read `{HOME}/.claude/reviewers/index.yaml`** — the single source of `name`, `priority`,
+   `triggers`, `useWhen`, `note` for every reviewer. The Router consults ONLY this index.
+3. **Never read a reviewer's own YAML into this orchestrator context.** `index.yaml` is all you need
+   to understand reviewer domains. Each subagent reads its own persona file — that is the whole point
+   of ADR-0001. Loading 20+ personas here costs ~28k tokens you then re-read from cache on every
+   subsequent turn, for text you never reason about.
+4. **Project overrides:** Glob `{project-root}/.claude/reviewers/*-local.yaml` to learn *which*
+   overrides exist — record the paths, do not read the files. Pass the path to the owning subagent;
+   a local override augments (not replaces) the global reviewer of the same base name.
+
+### Step 3: Parse Reviewer Selection and Model
+
+**Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
+error on no match. Set `NAMED_SELECTION=true` (Router is bypassed). Otherwise (or `--all`) →
+all reviewers, `NAMED_SELECTION=false` (Router makes the call).
+
+**Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. If absent,
+leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this
+command's model. `PANEL_MODEL` applies to Pass 1 (Step 6), Contrarian Carl (Step 7), Pass 2
+(Step 9), and Amalgamator (Step 10) — and to nothing else. Print the resolved panel model
+with the reviewer count when the run starts.
+
+### Step 4: Summarizer → `summary.md`
+
+Spawn one subagent (`subagent_type: "Explore"`) with the summarizer prompt
+@~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
+diff text to summarize) rather than inlining `git diff` output, plus: changed-file list, commit
+messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if available, and any
+known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file contains
+`## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
+
+### Step 5: Router (sonnet) → `tagged-sections.md`
+
+Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
+model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
+- `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
+  that file, which later reviewers use for bounded reads)
+- The `{REVIEW_DIR}/summary.md` (Technical Summary and Business Context)
+- The plan/issue context (if any)
+- `reviewers/index.yaml` **ONLY** — the router must not load persona YAML files; progressive
+  disclosure means routing decisions are made from each expert's declared interest (`triggers`,
+  `useWhen` in the index), not their full personas
+
+The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
+1. `## Panel Decision` — a summary of which reviewers were selected and why, formatted as:
    ```
-   Store as `HOME_DIR` for use in paths below.
-
-2. **Load reviewer index** (lightweight meta — used for tagger routing):
+   | Reviewer | Selected | Reason |
+   | ... | Yes | {1-line justification} |
+   | ... | No | {1-line justification} |
    ```
-   Read: {HOME_DIR}/.claude/reviewers/index.yaml
-   ```
-   The index contains `name`, `priority`, `triggers`, `useWhen`, and `note` for every reviewer.
-   **Use this for the tagger (Step 4.5)** — no need to load heavy YAML files just for routing.
+2. Per-reviewer sections with line ranges, exactly as today's router outputs them, so Pass 1 reviewers
+   can use them for bounded reads.
 
-3. **Load generic reviewers** (full YAML — used for selected reviewers only):
-   ```
-   Glob: {HOME_DIR}/.claude/reviewers/*.yaml  (excluding index.yaml)
-   ```
-   Read each selected reviewer's full YAML lazily — only load what the tagger routes to.
+**Always-run set (never routed, pre-seated):**
+- Sam System, Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
+- Contrarian Carl (runs last, always).
 
-4. **Load project-specific reviewer overrides** (if project has them):
-   ```
-   Glob: {project-root}/.claude/reviewers/*-local.yaml
-   ```
-   Local overrides extend global reviewers with project-specific checks (see README.md).
+The router is told these four are pre-seated and to treat them as included for the decision table.
 
-5. **Merge**: Project local overrides augment (not replace) the global reviewer of the same base name.
+**Named reviewers:** If the user named specific reviewers (Step 3, `NAMED_SELECTION=true`), skip the
+router entirely — the user's selection *is* the decision, and all four always-run reviewers still
+participate. **No `tagged-sections.md` is written in this mode.** Step 6 branches on
+`NAMED_SELECTION`: named/always-run reviewers all read `{REVIEW_DIR}/full-diff.patch` directly
+instead of line ranges into it (there is no router output to offset into). This costs each named
+reviewer a full-patch read instead of a bounded one — acceptable, since named mode is already the
+smaller, more deliberate invocation.
 
-6. **For tagger routing**: Pass only the index entries (name + triggers) — not the full prompts.
-   **For review execution**: Load the full YAML for each selected reviewer on demand.
+### Step 6: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
-### Step 3: Parse Reviewer Selection
+**If `NAMED_SELECTION=true`:** skip reading `tagged-sections.md` (the router did not run and never
+wrote it). The selected reviewers are exactly the user's named reviewers plus the always-run four;
+every one of them reads `{REVIEW_DIR}/full-diff.patch` in full rather than a line-range offset into
+it — see the Step 5 named-reviewers note.
 
-If specific reviewers requested:
-- Parse comma-separated or space-separated list
-- Match against discovered reviewer names (case-insensitive)
-- Error if any requested reviewer not found
+**Otherwise:** read `tagged-sections.md` and parse which reviewers were selected by the router.
 
-If no specific reviewers (or `--all`):
-- Use all discovered reviewers
+Launch all selected reviewers (routed by the router OR named by the user OR always-run) in ONE
+message. All run as **`subagent_type: "expert-reviewer"`**, `run_in_background: false`,
+`model: PANEL_MODEL` from Step 3.
 
-### Step 4: Run Summarizer Agent → Save to File
+**Launch ALL Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant turn).
+One subagent per reviewer. They still run concurrently — the harness caps concurrency — and they have
+all returned by the time you continue.
 
-**Spawn a single summarizer agent.**
+**Why a custom agent, not `general-purpose`.** Twenty concurrent subagents reading persona files and
+writing checkpoints outside the working directory would produce twenty near-identical permission
+dialogs — the permission system does not deduplicate across concurrent agents, and this command's
+`allowed-tools` frontmatter does not propagate to subagents it spawns. `expert-reviewer` is
+capability-restricted instead of dialog-gated: `permissionMode: bypassPermissions`, but **no `Edit`
+tool and no write-capable Bash**, so a reviewer physically cannot modify the code it is reviewing.
+It reads the repo and writes one file. Same for `expert-scout` on the mechanical roles.
 
-Create a Task with `subagent_type: "Explore"` using the summarizer prompt:
-@~/.claude/prompts/summarizer.md
+`Write` itself is not path-scoped by the tool allowlist — a subagent instructed to write elsewhere
+could. When you verify checkpoint files after each join barrier (Steps 6, 8, 9), that check is doing
+double duty: confirming the expected file exists *and* implicitly that nothing unexpected showed up
+outside `{REVIEW_DIR}`. If you ever see a write outside `{REVIEW_DIR}` — a stray file, a modified
+file elsewhere in the repo — treat that run as compromised: stop, do not trust its findings, and
+report it rather than silently continuing.
 
-Provide to summarizer:
-- Git diff output (`git diff main...HEAD` for delta, or description for full)
-- List of changed files with categories
-- Commit messages (`git log main...HEAD --format="%s%n%n%b"`)
-- PR description if available
-- Known issues index if project has one
+**Pass paths, not contents.** A prompt is self-contained if the subagent can *reach* everything it
+needs, not if you paste everything into it. Every `Agent` prompt you write stays in your context for
+the rest of the run and is re-read from cache on every turn — so inlining a 11.4KB framework into 20+
+prompts costs you ~50k tokens and buys the subagent nothing it couldn't have read itself. Open each
+prompt with:
 
-**Wait for summarizer to complete.**
-
-**Save output to `{REVIEW_DIR}/summary.md`** using the Write tool.
-
-The summary file contains:
-- **Document A**: Technical Summary (what changed) - under `## Technical Summary`
-- **Document B**: Business Context (why it changed) - under `## Business Context`
-- **Suggested reviewers** - under `## Suggested Reviewers`
-
-### Step 4.5: Run Tagger Agent → Save to File
-
-**Spawn a tagger agent to route diff sections to reviewers.**
-
-Create a Task with:
-- `subagent_type: "general-purpose"`
-- `model: "haiku"`
-
-Using the tagger prompt:
-@~/.claude/prompts/tagger.md
-
-Provide to tagger:
-- Git diff output (`git diff main...HEAD`)
-- All reviewer names with their triggers (parsed from reviewer `.yaml` files in Step 2)
-
-**Wait for tagger to complete.**
-
-**Save output to `{REVIEW_DIR}/tagged-sections.md`** using the Write tool.
-
-The tagged sections file contains:
-- Sections mapped to each reviewer with line ranges and trigger matches
-- A SKIP section listing reviewers with no matching triggers
-
-### Step 4.7: Run Consistency Checker (haiku) → Save to File
-
-**Spawn a Consistency Checker agent to find pattern inconsistencies and cross-reference the PR description.**
-
-This is a mechanical pattern-matching pass, not a domain review. It catches:
-- Mixed error types for the same semantic purpose (e.g., `Error` vs `DOMException` for abort)
-- Inconsistent cleanup patterns (inline vs helper function)
-- PR description claims that contradict the code
-
-Create a Task with:
-- `subagent_type: "general-purpose"`
-- `model: "haiku"`
-
-Provide to the Consistency Checker:
-- The full diff (`git diff main...HEAD`)
-- The PR description (from `.claude/github-cache.json` issue body, or `gh pr view --json body`)
-- The Consistency Checker's `codeReview.prompt` from `consistency-checker.yaml`
-
-**Wait for completion.**
-
-**Save output to `{REVIEW_DIR}/consistency-checker-pass1.md`** using the Write tool.
-
-**Important**: Consistency Checker findings are included in the final report like any other reviewer. They participate in Pass 2 re-evaluation if they have findings. Unlike Contrarian Carl, their findings ARE subject to business context re-evaluation since a pattern inconsistency might be intentional.
-
-### Step 5: Run Pass 1 Reviews (Main Thread, Sequential) → Save to Files
-
-**First, read the tagged sections:**
-1. Read `{REVIEW_DIR}/tagged-sections.md`
-2. Parse which reviewers have sections assigned vs. which are in SKIP
-
-**For reviewers in SKIP section:**
-- Do NOT skip them entirely — run them with the **full diff** at `QUICK-SCAN` priority
-- They may still self-SKIP if they decide the changes are truly outside their domain, but they must explicitly decide
-- Note in final report: "{reviewer} ran on full diff (no tagger match)" vs "{reviewer} self-SKIPped after reviewing full diff"
-
-**For all reviewers, iterate sequentially in main thread:**
-
-For each reviewer with tagged sections:
-
-1. **Load context**:
-   - Read the expert framework: @~/.claude/prompts/expert-framework.md
-   - Read the reviewer's `codeReview.prompt` from their `.yaml` file
-   - If reviewer has tagged sections: extract ONLY those sections from `tagged-sections.md`
-   - If reviewer had no tagger match (was in SKIP section): provide the **full diff** and set initial priority to `QUICK-SCAN`
-   - Include any project modifiers detected in Step 0.6
-   - **Language extensions**: If the reviewer YAML has a `languageExtensions` field, check each key against `DETECTED_LANGUAGES`. For any match, append to the prompt:
-     ```
-     ## Language-Specific Checks ({language})
-     - [each entry verbatim as a bullet]
-     ```
-     Only append for languages that appear in the diff — unmatched languages are skipped entirely (zero token cost).
-
-2. **Apply the reviewer persona** and generate Pass 1 review:
-   - Adopt the reviewer's perspective from their prompt
-   - Review tagged sections (or full diff if no tagger match)
-   - You may read additional files if the code references them and you see risk indicators
-   - For delta review, remember: ONLY report issues INTRODUCED or WORSENED by this PR
-
-3. **Output in this format**:
-   ```markdown
-   # Pass 1 Review: {Reviewer Name}
-
-   ## Decision
-   [SKIP | QUICK-SCAN | DEEP-DIVE]
-
-   ## Reason
-   [Brief explanation of triage decision]
-
-   ## Files Examined
-   - [file1]
-   - [file2]
-
-   ## Findings
-
-   ### [SEVERITY] Finding Title
-   - **File**: path/to/file:123
-   - **Issue**: Description
-   - **Impact**: What could go wrong
-   - **Recommendation**: How to fix
-
-   [repeat for each finding, or "No findings" if none]
-
-   ## Summary
-   - Critical: N
-   - High: N
-   - Medium: N
-   - Low: N
-   ```
-
-4. **Save to checkpoint file**: Write output to `{REVIEW_DIR}/{reviewer}-pass1.md`
-
-5. **Move to next reviewer** and repeat
-
-> **Output format is canonical, not per-persona.** Standard reviewer `.yaml` files no longer
-> carry their own `OUTPUT FORMAT` block — the format above is the single source of truth, defined
-> in `@~/.claude/prompts/expert-framework.md` and loaded in Step 1. The only personas that define
-> their own output shape are the self-formatting carve-outs run in their own steps below:
-> Sam System (Step 5.5), Code Rot Cody (Step 5.6), and Contrarian Carl (Step 5.7).
-
-**Important**: Do NOT include Business Context yet - this is blind review (WHAT changed, not WHY).
-
-For delta review, apply this scope rule to each review:
 ```
-SCOPE: STRICT DELTA REVIEW - Only report issues INTRODUCED or WORSENED by this PR.
-
-RULES:
-1. ONLY report issues in the changed lines or new code
-2. Do NOT report pre-existing issues in unchanged code
-3. If you see an existing issue that the PR makes worse, report it
-4. If you see an existing issue that the PR doesn't touch, SKIP IT
+Before reviewing, read these files with the Read tool:
+  1. ~/.claude/prompts/expert-framework.md  — the canonical output format, response levels,
+     severity definitions, scope-expansion and when-not-to-flag rules. Follow it exactly.
+  2. ~/.claude/reviewers/{name}.yaml        — your persona. Use `codeReview.prompt` as your
+     review lens. If it has a `languageExtensions` key with entries matching any of
+     {DETECTED_LANGUAGES}, apply those too, under "Language-Specific Checks ({language})".
+  3. {path to {name}-local.yaml}            — only if one was found in Step 2; it augments (2).
 ```
 
-**If project modifiers are present, include them in reviewer context:**
+Then supply inline **only what you alone know** — none of it is on disk for the subagent to find:
+
+- Their tagged sections — as line ranges into `{REVIEW_DIR}/full-diff.patch`, plus:
+  ```
+  Your sections are line ranges into {REVIEW_DIR}/full-diff.patch. Read ONLY those ranges
+  (the Read tool takes offset/limit). Reading whole source files when a finding needs
+  surrounding context is expected and correct — reading the whole patch file is not.
+  ```
+  (`NAMED_SELECTION=true`: no router output exists to offset into — tell the reviewer to read
+  `{REVIEW_DIR}/full-diff.patch` in full instead.)
+- The **Technical Summary** from `summary.md`
+- `PROJECT_CONTEXT`, project modifiers, `DETECTED_LANGUAGES`, and the strict delta-scope rule below
+- `{REVIEW_DIR}` and their output path
+
+**The file is the contract (rule #2 above) — never ask a subagent to return its report.** Instruct
+each reviewer to Write its full review to `{REVIEW_DIR}/{reviewer}-pass1.md` in the framework's
+canonical format, and to return **only a one-line receipt** as its final message:
+
 ```
-PROJECT MODIFIERS:
-- greenfield: [true/false] - If true, backwards compatibility is NOT a concern.
-  Do NOT flag: breaking API changes, removed exports, renamed functions,
-  changed signatures, or any "breaking change" issues.
-- internal: [true/false] - If true, relaxed API stability requirements.
-```
+Write your complete review to {REVIEW_DIR}/{reviewer}-pass1.md using the Write tool.
 
-### Step 5.5: Run Sam System Integration Review (Main Thread) → Save to File
+Your final message must be ONLY this receipt line — NOT the review itself:
 
-**Sam System is a special reviewer that examines cross-file composition and data flow.**
-
-Unlike other reviewers who receive only their tagged sections, Sam System receives:
-1. The full Technical Summary from `{REVIEW_DIR}/summary.md`
-2. The **full diff** (not just tagged sections) - they need to trace data across files
-3. Any plan context files found in Step 0.8 as "Known Integration Concerns"
-
-**Process:**
-
-1. **Check if Sam System is in the reviewer list**
-   - Sam System is `critical` priority, so included by default
-   - Can be explicitly requested: `/expert-review sam-system`
-   - Can be excluded by specifying other reviewers: `/expert-review tara-typesafe,uncle-bob`
-
-2. **Load Sam System context**:
-   - Read the expert framework: @~/.claude/prompts/expert-framework.md
-   - Read Sam System's `codeReview.prompt` from `sam-system.yaml`
-   - Include the full diff (NOT just tagged sections)
-   - Include any plan context files as "Known Integration Concerns"
-
-3. **Critical instruction for Sam System**:
-   ```
-   You MUST trace data flow across files. If you see:
-   - A factory passing parameters to another factory
-   - An event bus being created and passed
-   - Config objects flowing through multiple layers
-
-   You MUST read the related files to verify:
-   - Parameters passed are actually destructured and used
-   - Event buses are connected (emitters have subscribers)
-   - Config options are respected, not ignored
-   ```
-
-4. **Sam System reviews composition**:
-   - Focus on factory composition (what gets passed vs used)
-   - Trace event bus wiring (emitters connected to subscribers?)
-   - Check config parameter usage (all passed options respected?)
-   - Look for the critical pattern: "Parameter passed but ignored"
-
-5. **Output format** (same as other reviewers):
-   ```markdown
-   # Pass 1 Review: Sam System
-
-   ## Decision
-   [DEEP-DIVE - Sam System always does integration analysis]
-
-   ## Reason
-   [Brief explanation of integration concerns found or not found]
-
-   ## Files Examined
-   - [file1] - reason for examining
-   - [file2] - reason for examining
-
-   ## Findings
-
-   ### [SEVERITY] Integration Issue: [Title]
-   - **Flow**: A → B → C (trace the data path)
-   - **File A** (`path/to/file.ts:line`): What it passes/expects
-   - **File B** (`path/to/file.ts:line`): What it actually does
-   - **Expected**: What should happen
-   - **Actual**: What the code does
-   - **Impact**: What breaks as a result
-   - **Recommendation**: How to fix
-
-   [repeat for each finding, or "No integration concerns found" if none]
-
-   ## Summary
-   - Critical: N
-   - High: N
-   - Medium: N
-   - Low: N
-   ```
-
-6. **Save to checkpoint file**: Write output to `{REVIEW_DIR}/sam-system-pass1.md`
-
-**Note**: Sam System participates in Pass 2 re-evaluation like other reviewers if they have findings.
-
-### Step 5.6: Run Code Rot Cody (Main Thread) → Save to File
-
-**Code Rot Cody is a mechanical dead-code and orphan detector. He greps the entire repo to verify every new symbol is called and every removed symbol is fully cleaned up.**
-
-Unlike domain reviewers who evaluate design and correctness, Cody does one thing: "Find All References" on every symbol the PR introduces or removes. He catches what no domain reviewer looks for — functions defined but never called, config fields stored but never read, removed APIs with lingering references.
-
-**Process:**
-
-1. **Check if Code Rot Cody is in the reviewer list**
-   - Cody is `high` priority, so included by default
-   - Can be explicitly requested: `/expert-review code-rot-cody`
-   - Can be excluded by specifying other reviewers: `/expert-review uncle-bob,rachel`
-
-2. **Load Cody's context**:
-   - Read Cody's `codeReview.prompt` from `code-rot-cody.yaml`
-   - Include the full diff
-   - **Language extensions**: If `DETECTED_LANGUAGES` includes a language Cody has extensions for (go, rust, typescript), append those language-specific checks
-   - Include the list of changed files
-
-3. **Cody's critical instruction**:
-   ```
-   You MUST use grep to verify every claim. Do NOT guess whether something has callers.
-
-   For each new symbol in the diff:
-   1. Grep the ENTIRE repo for usage (exclude the definition site)
-   2. Note whether callers are in production code, test code, or both
-   3. Flag zero-caller symbols as DEAD CODE
-
-   For each removed symbol:
-   1. Grep the ENTIRE repo for lingering references
-   2. Flag any remaining references as ORPHANED
-
-   For each new config field:
-   1. Verify it is stored, read, validated, and documented
-   2. Flag stored-but-never-read as DEAD CONFIG
-   ```
-
-4. **Output format**:
-   ```markdown
-   # Code Rot Report
-
-   ## Symbol Inventory
-   | Symbol | File | Type | Status |
-   |--------|------|------|--------|
-   | `FuncName` | path:line | New function | [CONNECTED / DEAD / TEST-ONLY] |
-
-   ## Findings
-
-   ### [SEVERITY] [Finding Type]: [Symbol Name]
-   - **Defined at**: path/to/file:line
-   - **Expected callers**: [where you'd expect it to be used]
-   - **Actual callers**: [what grep found, or "none"]
-   - **Evidence**: [grep command and result summary]
-   - **Recommendation**: [remove it / add caller / make private]
-
-   ## Clean Symbols (no issues)
-   - `symbol1` — N callers found across M files
-   - `symbol2` — used in production and test code
-
-   ## Summary
-   - Dead code: N
-   - Orphaned references: N
-   - Dead config: N
-   - Unused parameters: N
-   - Clean symbols: N
-   ```
-
-5. **Save to checkpoint file**: Write output to `{REVIEW_DIR}/code-rot-cody-pass1.md`
-
-**Note**: Cody participates in Pass 2 re-evaluation if he has findings (dead code might be intentionally staged for a follow-up PR). His findings are also visible to Contrarian Carl.
-
-### Step 5.7: Run Contrarian Carl (Main Thread, Last) → Save to File
-
-**Contrarian Carl runs LAST and receives ALL prior findings. His job is to find what everyone else missed.**
-
-Unlike other reviewers who do blind review, Carl explicitly sees what others found and must find something DIFFERENT.
-
-**Process:**
-
-1. **Check if Contrarian Carl is in the reviewer list**
-   - Carl is `low` priority, so runs last by default
-   - Can be explicitly excluded: `/expert-review uncle-bob,rachel` (doesn't include Carl)
-   - Can be explicitly requested: `/expert-review contrarian-carl`
-
-2. **Gather all prior findings**:
-   - Read ALL `{REVIEW_DIR}/*-pass1.md` files
-   - Compile a summary of what each reviewer found
-   - Note which areas/files each reviewer examined
-
-3. **Load Carl's context**:
-   - Read the expert framework: @~/.claude/prompts/expert-framework.md
-   - Read Carl's `codeReview.prompt` from `contrarian-carl.yaml`
-   - Include the full diff
-   - Include the compiled summary of all prior findings
-
-4. **Carl's special instruction**:
-   ```
-   You have access to what EVERY other reviewer found.
-   Your job is to find something DIFFERENT.
-
-   DO NOT repeat any finding already raised.
-   DO look where others didn't look.
-   DO question assumptions everyone shared.
-
-   You MUST raise at least one concern nobody else mentioned.
-   It's okay if your concern gets rejected later — that's expected.
-   Your value is ensuring we CONSIDERED the angle.
-   ```
-
-5. **Output format**:
-   ```markdown
-   # Contrarian Review: Carl
-
-   ## What Others Covered
-   [Summary of themes from prior reviewers]
-
-   ## What Everyone Missed
-
-   ### [SEVERITY] [Issue Title]
-   - **The gap**: What wasn't examined
-   - **My concern**: What could go wrong
-   - **Confidence**: Low/Medium/High
-   - **Verification**: How to prove/disprove
-
-   ## Shared Assumptions I'm Questioning
-   - [Assumption that might be wrong]
-
-   ## The Question Nobody Asked
-   - [Probing question]
-
-   ## Verdict
-   [BLOCKING / WORTH DISCUSSING / PROBABLY FINE BUT...]
-   ```
-
-6. **Save to checkpoint file**: Write output to `{REVIEW_DIR}/contrarian-carl-pass1.md`
-
-**Note**: Carl does NOT participate in Pass 2 re-evaluation. His findings are presented as-is for the team to accept or reject. His value is raising the question, not defending the answer.
-
-### Step 6: Run Pass 2 Re-evaluations (Main Thread, Sequential) → Save to Files
-
-**Only for reviewers WITH findings from Pass 1.**
-
-For each reviewer that has findings in their `-pass1.md` file, iterate sequentially in main thread:
-
-1. **Load context**:
-   - Read `{REVIEW_DIR}/{reviewer}-pass1.md` (their Pass 1 findings)
-   - Read the Business Context section from `{REVIEW_DIR}/summary.md`
-   - Read the pass2-reevaluation prompt: @~/.claude/prompts/pass2-reevaluation.md
-
-2. **Re-evaluate findings**:
-   - Consider the Business Context (WHY the changes were made)
-   - For each finding from Pass 1, determine if it's still valid given the intent
-   - You may read referenced files if needed to resolve uncertainty
-
-3. **Output in this format**:
-   ```markdown
-   # Pass 2 Re-evaluation: {Reviewer Name}
-
-   ## Business Context Received
-   [Summary of the business context]
-
-   ## Additional Context Gathered
-   [If any files were read to resolve uncertainty, list them. Otherwise: "None needed"]
-
-   ## Re-evaluated Findings
-
-   ### Finding: [Original Title]
-   - **Original Severity**: [CRITICAL/HIGH/MEDIUM/LOW]
-   - **Re-evaluation**: [CONFIRMED | RESOLVED | DOWNGRADED]
-   - **Reason**: [Why this assessment changed or stayed the same]
-   - **Final Severity**: [Same or new severity if downgraded]
-
-   [repeat for each finding]
-
-   ## Summary
-   - CONFIRMED: N
-   - RESOLVED: N
-   - DOWNGRADED: N
-   ```
-
-4. **Save to checkpoint file**: Write output to `{REVIEW_DIR}/{reviewer}-pass2.md`
-
-5. **Move to next reviewer** and repeat
-
-### Step 6.5: Haiku Question Answering → Save to Files
-
-**For each reviewer whose `pass1.md` contains Open Questions (not "None"):**
-
-1. Extract all questions from `{REVIEW_DIR}/{reviewer}-pass1.md` under `## Open Questions`
-2. Create a Task with:
-   - `subagent_type: "general-purpose"`
-   - `model: "haiku"`
-3. Provide to the Haiku agent:
-   - The reviewer's name and role summary (from their `.yaml`)
-   - The open questions verbatim (including any file hints)
-   - The reviewer's tagged sections (or full diff if they had no tagger match)
-   - Instruction: "Read the files indicated by file hints, plus any other files needed to answer these questions concretely. For each question, provide a definitive answer. If a question cannot be determined from static code analysis, say so clearly and explain what runtime evidence would be needed."
-4. Haiku may use Read/Grep tools to investigate.
-5. **Save output to `{REVIEW_DIR}/{reviewer}-questions-answered.md`**
-
-**Output format:**
-```markdown
-# Questions Answered: {Reviewer Name}
-
-## Q: {Question verbatim}
-- **Answer**: [concrete answer, or "Cannot determine from static analysis — needs runtime verification"]
-- **Evidence**: path/to/file:line — [what was read to reach this answer]
-
-[repeat per question]
+  {reviewer} | {SKIP|QUICK-SCAN|DEEP-DIVE} | findings: {n} ({c}C/{h}H/{m}M/{l}L) | open-questions: {n} | wrote: {path}
 ```
 
-Run all Haiku Q&A agents sequentially in main thread (cheap; keep it simple).
+The receipt carries everything downstream steps actually branch on (decision level, whether there
+are findings, whether there are open questions) — used by Step 8 (Q&A), Step 9 (Pass 2), and Step 10
+(Amalgamator).
 
-### Step 6.7: Expert Cross-Review → Save to Files
+**Blindness rule: Pass 1 prompts must NOT include Business Context, commit messages, or the PR
+description** — only the Technical Summary and the code. This is the point of running them as
+fresh subagents.
 
-**For each reviewer who returned `DEEP-DIVE` in their `pass1.md`:**
-
-1. **Gather all other reviewers' findings:**
-   - Read all `{REVIEW_DIR}/*-pass1.md` files **except** this reviewer's own
-   - Read all `{REVIEW_DIR}/*-pass2.md` files for re-evaluation context
-
-2. **Run the reviewer in main thread** with:
-   - Their full persona from their `.yaml`
-   - The full diff
-   - Compiled findings from all other reviewers
-   - This cross-review instruction:
-     ```
-     You have now seen what every other expert found. From your domain ({domain}):
-     - AGREE with or CHALLENGE each finding that intersects your domain
-     - Identify SYNERGIES: findings that compound each other
-     - Identify GAPS: angles no reviewer covered from your domain perspective
-     Keep it focused — skip findings that don't touch your domain at all.
-     ```
-
-3. **Save to `{REVIEW_DIR}/{reviewer}-cross-review.md`**
-
-**Output format:**
-```markdown
-# Cross-Review: {Reviewer Name}
-
-## Agreements
-- [{Other Reviewer} / {Finding Title}]: [1-sentence agreement + any reinforcement]
-
-## Challenges
-- [{Other Reviewer} / {Finding Title}]: [1-sentence challenge with reasoning]
-
-## Synergies
-- [{Finding A} + {Finding B}]: [Why these compound and what the combined impact means]
-
-## Gaps Nobody Covered (from my domain)
-- [What angle was missed from this reviewer's domain perspective]
+Strict delta-scope rule (include in every prompt):
+```
+SCOPE: STRICT DELTA REVIEW — only report issues INTRODUCED or WORSENED by this PR.
+Do NOT report pre-existing issues in unchanged code. If the PR makes an existing
+issue worse, report it; if it doesn't touch it, skip it.
 ```
 
-Only DEEP-DIVE reviewers run cross-review (reviewers who self-SKIPped or did QUICK-SCAN with no findings add little value here).
+Three reviewers **always run and are never gated** (the router does not route them; their domain is
+the whole diff by definition). They get special inputs but run in the same parallel batch — and they
+follow the same rules as everyone else: they read their own YAML by path, and they return a receipt,
+not a report. (Their output *formats* differ — those formats are defined in their own YAMLs, which
+they read themselves; you do not need to know them here.)
 
-Run sequentially in main thread.
+- **Sam System** (integration): gets `{REVIEW_DIR}/full-diff.patch` (not tagged sections — his
+  domain is the whole diff, so he reads the whole file), the Technical Summary, and any plan context
+  as "Known Integration Concerns". He must trace data flow across files — read both ends of every
+  factory/event-bus/config connection and flag parameters passed but never used. Output: canonical
+  format (he is NOT an ADR-0006 carve-out); each finding's **Issue** field starts with the data-flow
+  trace, e.g.
+  `Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
+  Decision is always DEEP-DIVE.
 
-### Step 7: Verify Checkpoint Files
+- **Code Rot Cody** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
+  `{REVIEW_DIR}/full-diff.patch` + changed-file list. He greps the ENTIRE repo to verify every
+  claim — never guesses. New symbols: grep for callers (excluding definition site), flag zero-caller
+  symbols DEAD. Removed symbols: grep for lingering references, flag ORPHANED. New config fields:
+  verify stored, read, validated, documented. His output format (symbol-inventory table) and his
+  `languageExtensions` are in his own YAML, which he reads.
 
-Before amalgamation, verify all expected files exist:
+- **Consistency Checker** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
+  `{REVIEW_DIR}/full-diff.patch` + the PR description (from cache or `gh pr view --json body`); it
+  reads its own persona file for the review lens, like every other subagent. Mechanical pattern
+  pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
+  contradicted by the code. Its output format is defined in its own YAML.
 
-1. Check `{REVIEW_DIR}/summary.md` exists
-2. For each selected reviewer: check `{REVIEW_DIR}/{reviewer}-pass1.md` exists
-3. If Code Rot Cody was in the reviewer list: check `{REVIEW_DIR}/code-rot-cody-pass1.md` exists
-4. For each reviewer with findings: check `{REVIEW_DIR}/{reviewer}-pass2.md` exists
-5. For each reviewer with Open Questions: check `{REVIEW_DIR}/{reviewer}-questions-answered.md` exists
-6. For each DEEP-DIVE reviewer: check `{REVIEW_DIR}/{reviewer}-cross-review.md` exists
-7. After Step 8.5: check `{REVIEW_DIR}/final-report.md` exists
+**Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
+they have all returned by the time you continue. Then verify `{REVIEW_DIR}/{reviewer}-pass1.md`
+exists for every selected reviewer. If a receipt came back but its file is missing, **re-run that one
+reviewer once** — do not try to reconstruct the review from the receipt; the receipt is a status
+line, not a report. If the re-run also fails to produce its file, stop — report that reviewer as
+failed and continue the pipeline without it rather than retrying indefinitely.
 
-If any are missing, report which agents failed and suggest retry.
+**Never poll.** Do not use `ScheduleWakeup`, `sleep`, or repeated status checks to wait for
+subagents. A timed wakeup re-reads your *entire* context from cache and learns nothing you would not
+have learned by waiting — in one observed run, 14 such wakeups each re-read ~430k tokens. If a panel
+is large enough that you truly want it backgrounded, then **end your turn**: the harness re-invokes
+you when the agents finish. Track per-reviewer status by checking for files, never by counting
+notifications.
 
-### Step 8: Amalgamate Results from Files
+### Step 7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
 
-1. Read all `{REVIEW_DIR}/*-pass1.md` files
-2. Read all `{REVIEW_DIR}/*-pass2.md` files (for reviewers with findings)
-3. Read all `{REVIEW_DIR}/*-questions-answered.md` files
-4. Read all `{REVIEW_DIR}/*-cross-review.md` files
-5. Collect all CONFIRMED findings (from Pass 2) and all findings from reviewers who SKIPPED Pass 2 (no findings = no re-evaluation needed)
-6. Group by severity (Critical > High > Medium > Low)
-7. De-duplicate overlapping findings
-8. Cross-reference against known issues (if project has them)
-9. Flag matches as "Known: #XXX"
-10. Note which reviewers SKIPPED (and why) or found no issues
-11. Include answered questions and cross-review commentary in the final report
+Carl runs **last** and is the one reviewer who is not blind to the panel. Spawn one subagent
+(`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`) and, per "Pass paths, not contents",
+point him at the files rather than inlining them: his persona (`~/.claude/reviewers/contrarian-carl.yaml`),
+the other reviewers' `{REVIEW_DIR}/*-pass1.md` files (including Cody's and the Consistency Checker's).
+Supply the diff scope inline. His instruction:
 
-### Step 8.5: Write consolidated `final-report.md` to checkpoint dir
+```
+You have access to what EVERY other reviewer found. Your job is to find something
+DIFFERENT. Do not repeat any finding already raised; look where others didn't look;
+question assumptions everyone shared. Raise the strongest concern nobody else
+mentioned — or, if after genuine effort you find none, name the strongest candidate
+concern you considered and explain why you rejected it. Do NOT manufacture a finding
+just to have one.
+```
 
-The amalgamated report from Step 8 must be saved as a single file so the user can re-open it without re-running the review or opening every per-reviewer checkpoint file.
+His contrastive output format (What Others Covered / What Everyone Missed / Assumptions I'm
+Questioning / The Question Nobody Asked / Verdict) is defined in his own YAML (ADR-0006
+carve-out). He writes `{REVIEW_DIR}/contrarian-carl-pass1.md` and returns a receipt only —
+`contrarian-carl | findings: {n} | wrote: {path}` — like every other panel agent. He does NOT
+participate in Pass 2; his findings are presented as-is.
 
-1. **Write to `{REVIEW_DIR}/final-report.md`** using the Write tool. Use the same template as the "Output Format" section below, but with all findings expanded with full detail (not the truncated in-conversation version).
+### Step 8: Haiku Q&A (parallel) → `{reviewer}-questions-answered.md`
 
-2. **Include in the file:**
-   - Executive summary (counts, verdict)
-   - Every Medium/High/Critical finding with: what, where (file:line), why it matters, fix options (concrete choices, not just "do something"), recommendation
-   - Every Low finding grouped by theme (documentation, test ergonomics, code style, defensive/observability, out-of-scope), each with the same structure as Mediums but more concise
-   - Open Questions Resolved (from `questions-answered.md`)
-   - Cross-Review consensus themes (from `*-cross-review.md` files)
-   - Sign-off checklist at the end so the user can mark which findings to act on
+Runs BEFORE Pass 2 so the re-evaluation is informed rather than speculative (ADR-0002). For each
+reviewer whose Pass 1 receipt reported `open-questions > 0`: spawn a subagent
+(`subagent_type: "expert-scout"`) and point it at `{REVIEW_DIR}/{reviewer}-pass1.md` — it reads
+the Open Questions itself, so you never have to load them. Supply the reviewer's name and role
+summary (from `index.yaml`) and their tagged sections, plus: "Read the hinted files plus whatever
+else is needed to answer concretely. If a question can't be settled by static analysis, say so and
+name the runtime evidence needed."
 
-3. **Do NOT write the report to the worktree root** — it pollutes `git status`. Keep it in `~/.claude/reviews/{project}/{branch}-{hash}/` where the rest of the checkpoints live.
+It writes `{REVIEW_DIR}/{reviewer}-questions-answered.md` — **Answer** + **Evidence** (`path:line`)
+per question — and returns a receipt only: `{reviewer} | answered: {n} | wrote: {path}`. Launch all
+Q&A agents in one message.
 
-4. **The in-conversation response (the assistant message after running this command)** must be much shorter than the file:
-   - Brief actionable summary (counts + the 1–3 most important findings)
-   - Top 3–5 recommended next actions
-   - End the response with: `📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}/final-report.md`
+**Join barrier.** All Q&A agents run with `run_in_background: false`, so they have all returned
+before Step 9 starts — Step 9 must not launch a reviewer's Pass 2 until its Q&A file (if one was
+expected) exists. Before Step 9, verify `{REVIEW_DIR}/{reviewer}-questions-answered.md` exists for
+every reviewer whose Pass 1 receipt reported `open-questions > 0`; re-run just the missing Q&A
+agent(s) and wait for them before proceeding — do not let Pass 2 start without the answers it exists
+to use.
 
-   Do NOT inline the full report in the response — the user can `cat` or open the file if they want detail. The link is the contract.
+### Step 9: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
 
-### Step 9: Cache Review Metadata
+**Only for judgment reviewers whose Pass 1 receipt reported findings > 0.** Mechanical roles
+(Code Rot Cody, Consistency Checker) skip Pass 2. Carl is not re-evaluated; his findings stand as-is.
 
-After amalgamation, write review metadata to `.claude/github-cache.json` so `/shipit` and future `/expert-review` runs know a review was performed.
+Launch one subagent per eligible reviewer, in one message (`subagent_type: "expert-reviewer"`,
+`model: PANEL_MODEL`). Pass paths, not contents — each prompt names the files to Read:
 
-1. **Read** the existing `.claude/github-cache.json` (may already have `issue`, `pr`, `branch` sections)
-2. **Merge** a `review` section into it, preserving all other sections:
-   ```json
-   {
-     "review": {
-       "lastRun": "2024-01-15T10:30:00Z",
-       "commit": "abc1234",
-       "branch": "feature-foo",
-       "reviewDir": "/Users/you/.claude/reviews/my-project/feature-foo-abc1234",
-       "reviewers": ["uncle-bob", "security-sage", "tara-typesafe"],
-       "scope": "delta",
-       "findings": {
-         "critical": 0,
-         "high": 1,
-         "medium": 2,
-         "low": 0
-       }
-     }
-   }
-   ```
-3. **Write** the merged JSON back:
-   ```bash
-   EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-   echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > .claude/github-cache.json
-   ```
-   Where `$REVIEW_JSON` is constructed from the review's actual values:
-   - `lastRun`: current ISO 8601 timestamp
-   - `commit`: the `HASH` from Step 0
-   - `branch`: the `BRANCH` from Step 0
-   - `reviewDir`: the `REVIEW_DIR` path
-   - `reviewers`: array of reviewer names that actually ran (not self-skipped)
-   - `scope`: `"delta"` or `"full"` based on `--full` flag
-   - `findings`: severity counts from the amalgamated results
+- `~/.claude/prompts/pass2-reevaluation.md` — the pass2 prompt and output format
+- `{REVIEW_DIR}/{reviewer}-pass1.md` — their own Pass 1
+- `{REVIEW_DIR}/{reviewer}-questions-answered.md` — if one exists
+- Permission to read any file referenced in their findings, to resolve uncertainty
 
-**Important**: Use `jq` merge (`. + {review: $review}`) to PRESERVE existing `issue`, `pr`, and `branch` sections.
+Supply inline only the **Business Context** section from `summary.md` — revealed now for the first
+time, and the whole point of Pass 2. Also supply the plan/issue context if available.
+
+**Reframed as skeptic-verifier (anti-anchoring).** The prompt's framing changes from "continue your
+review" to "another engineer submitted this review; given the context, which findings hold up to
+your standards?" — third-person, minimal context, explicitly designed to prevent sunk-cost defense.
+
+Each re-evaluates every finding as CONFIRMED / RESOLVED / DOWNGRADED (with reason and final
+severity), writes `{REVIEW_DIR}/{reviewer}-pass2.md` in the pass2 prompt's format, and returns a
+receipt only:
+
+```
+{reviewer} | pass2 | confirmed: {n} | resolved: {n} | downgraded: {n} | wrote: {path}
+```
+
+### Step 10: Amalgamator (one expensive agent) → `final-report.md`
+
+**Before spawning the Amalgamator,** verify all expected checkpoint files exist (pass1 for every
+routed reviewer, pass2 where findings, questions-answered where open questions).
+If any are missing, re-run only those agents **once**. If a re-run still fails to produce its file,
+stop retrying — report the specific agent(s) still missing and proceed to the Amalgamator without
+them rather than looping. A stuck reviewer should never block or infinitely retry the pipeline.
+
+The Amalgamator is **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`; this
+is the step where `--model fable` earns its cost). Its job: synthesis, not review. It reads:
+- All `{REVIEW_DIR}/*-pass1.md` files (including Carl's)
+- All `{REVIEW_DIR}/*-pass2.md` files (re-evaluation verdicts)
+- All `{REVIEW_DIR}/*-questions-answered.md` files
+- The `{REVIEW_DIR}/tagged-sections.md` (router's Panel Decision)
+- The plan/issue context (if any)
+
+Its mandate (in the prompt):
+```
+You are synthesizing a code review from specialists who have already reported. Your job is NOT to
+add new findings or re-review the code — it is to:
+
+1. DEDUPLICATE — if multiple reviewers flagged the same issue, report it once, noting who agreed
+   and why their angles differed.
+2. SEVERITY-RANK — given each CONFIRMED finding and its evidence, assign final severity
+   (CRITICAL > HIGH > MEDIUM > LOW) and prioritize (most critical first).
+3. RESOLVE CONFLICTS — where reviewers disagree, note who is right and why. Reference their
+   pass1/pass2 reasoning.
+4. SEPARATE SIGNAL FROM NOISE — DOWNGRADED findings vs CONFIRMED; findings from Carl (who sees all
+   priors) vs the blind panel.
+5. WRITE final-report.md in the template format below.
+```
+
+It writes `{REVIEW_DIR}/final-report.md` and returns a receipt with a short verdict (ship-blocking?
+polish-only?) and the finding count summary:
+
+```
+amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
+```
+
+### Step 11: Cache Review Metadata
+
+Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
+
+```bash
+EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
+echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > .claude/github-cache.json
+```
+
+`$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
+`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts).
 
 ---
 
 ## Output Format
 
-There are **two** outputs from this command:
-
-1. **`{REVIEW_DIR}/final-report.md`** — written in Step 8.5 — contains the full report (template below).
-2. **The in-conversation assistant message** — must be SHORT: actionable summary (counts, top 3 findings, top 3–5 recommended actions) followed by a closing line `📄 Full report: {REVIEW_DIR}/final-report.md`.
-
-Do NOT inline the full template below in the assistant message. The user will open the file if they want detail.
+Two outputs — the file is complete, the conversation message is short. **Do not inline the full
+report in the conversation**; the link is the contract.
 
 ### Template for `final-report.md`
 
 ```markdown
 # Code Review Report
 
-**Date**: YYYY-MM-DD
-**Branch**: [current branch name]
-**Commit**: [short hash]
-**Project**: [detected project name]
-**Scope**: Delta from main | Full codebase
-**Files Reviewed**: N files
-**Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}/
+**Date**: YYYY-MM-DD | **Branch**: … | **Commit**: … | **Project**: …
+**Scope**: Delta from main | **Files Reviewed**: N
+**Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}-{timestamp}/
 
 ## Executive Summary
-
-- **Reviewers Run**: N (list names)
-- **Reviewers Skipped**: N (list names with reasons)
-- **Total Findings**: N
-  - Critical: N
-  - High: N
-  - Medium: N
-  - Low: N
-- **Context Re-evaluation**:
-  - CONFIRMED: N
-  - RESOLVED: N
-  - DOWNGRADED: N
+- **Reviewers Run**: N (names, router-selected or user-named)
+- **Panel model**: {PANEL_MODEL or "inherited (opus)"}
+- **Total Findings**: N — Critical: N, High: N, Medium: N, Low: N
+- **Context Re-evaluation**: CONFIRMED: N, RESOLVED: N, DOWNGRADED: N
 
 ## Technical Summary
-
-[Include the summarizer's Technical Summary - what changed]
+[from summary.md — what changed]
 
 ## Findings by Severity
 
-### Critical
+### Critical / High / Medium / Low (repeat per severity)
 
 #### [Finding Title]
-- **Reviewer**: [name]
-- **File**: path/to/file:123
-- **Issue**: Description
-- **Impact**: What could go wrong
-- **Recommendation**: How to fix
-- **Context Re-evaluation**: CONFIRMED | RESOLVED | DOWNGRADED
-- **Re-evaluation Notes**: [if changed after seeing business context]
+- **Reviewer**: … | **File**: path:line
+- **Issue** / **Impact** / **Recommendation**
+- **Context Re-evaluation**: CONFIRMED | RESOLVED | DOWNGRADED (+ notes if changed)
 - **Known Issue**: #NNN (if matches)
-
-[repeat for each finding]
-
-### High
-[same format]
-
-### Medium
-[same format]
-
-### Low
-[same format]
 
 ## Reviewer Summary
 
-| Reviewer | Decision | Findings | Re-evaluated | Cross-Review | Notes |
-|----------|----------|----------|--------------|--------------|-------|
-| Contracts | DEEP-DIVE | 2 | 2 CONFIRMED | Yes | Found invariant violations |
-| Concurrency | FULL-DIFF-QUICKSCAN | 0 | - | No | No triggers matched, self-cleared after full diff |
-| Security-Input | QUICK-SCAN | 0 | - | No | Checked tagged sections, no concerns |
-| Resource-Cleanup | SELF-SKIP | 0 | - | No | Reviewer chose to skip after reviewing full diff |
-| Code Rot Cody | CODE-ROT | 1 | 1 CONFIRMED | No | Found dead code: `unusedFunc()` |
-| Contrarian Carl | CONTRARIAN | 1 | N/A | No | Found observability gap |
+| Reviewer | Decision | Findings | Confirmed | Notes |
+|----------|----------|----------|-----------|-------|
 
-**Decision legend**:
-- `FULL-DIFF-QUICKSCAN`: No tagger triggers matched; reviewer ran on full diff at QUICK-SCAN priority
-- `SELF-SKIP`: Reviewer ran on full diff and explicitly decided to skip (no relevant changes)
-- `QUICK-SCAN`: Reviewer did a quick review of tagged sections
-- `DEEP-DIVE`: Reviewer did thorough investigation
-- `CODE-ROT`: Mechanical grep-based verification of symbol connectivity (dead code, orphans, unused config)
-- `CONTRARIAN`: Ran last with all prior findings, found something different (no re-eval)
+Decision legend: `DEEP-DIVE` thorough investigation · `QUICK-SCAN` quick look at tagged sections ·
+`ROUTED` selected by router · `ALWAYS-RUN` (Sam System, Code Rot Cody, Consistency Checker, Carl) ·
+`CODE-ROT` mechanical grep verification · `CONTRARIAN` ran last with all prior findings
+
+## Routing Accuracy
+
+| Reviewer | Router said | Selected | Reason |
+|----------|-------------|----------|--------|
+
+The routing decision table: every reviewer in the index, marked Selected/Not Selected, with the
+router's one-line justification. This table is the input to `/review-stats` for evaluating router
+accuracy.
 
 ## Answered Questions
-
-| Reviewer | Question | Answer |
-|----------|----------|--------|
-| [name] | [question text] | [answer or "needs runtime verification"] |
-
-(omit table if no reviewers raised open questions)
-
-## Cross-Review Commentary
-
-### {Reviewer A} — Cross-Domain Observations
-**Agreements**: ...
-**Challenges**: ...
-**Synergies**: ...
-**Gaps**: ...
-
-[repeat for each DEEP-DIVE reviewer with cross-review content]
-
-(omit section if no reviewers did DEEP-DIVE)
-
-## Checkpoint Files
-
-All review artifacts saved to `{REVIEW_DIR}/`:
-- `summary.md` - Summarizer output (Technical Summary + Business Context)
-- `tagged-sections.md` - Tagger output (section → reviewer routing)
-- `consistency-checker-pass1.md` - Consistency Checker output (pattern + PR desc cross-ref)
-- `{reviewer}-pass1.md` - Pass 1 outputs (all reviewers run; tagger-unmatched get full diff)
-- `code-rot-cody-pass1.md` - Cody's dead code / orphan report (grep-verified, participates in pass2)
-- `{reviewer}-pass2.md` - Pass 2 re-evaluations (only for reviewers with findings)
-- `contrarian-carl-pass1.md` - Carl's contrarian findings (no pass2, presented as-is)
-- `{reviewer}-questions-answered.md` - Haiku's answers to each reviewer's open questions
-- `{reviewer}-cross-review.md` - DEEP-DIVE reviewer cross-domain commentary on all other findings
+| Reviewer | Question | Answer |   (omit if none)
 
 ## Recommended Next Steps
-
-1. [Prioritized action items based on CONFIRMED findings]
-2. ...
+1. [prioritized actions from CONFIRMED findings]
 
 ## Sign-off Checklist
-
 | Item | Severity | Recommendation | Decision |
-|------|----------|---------------|----------|
-| [Finding 1 title] | M / L | [my recommendation] | ☐ |
-| ... | ... | ... | ... |
 ```
 
-### Template for the in-conversation assistant message
+### Template for the in-conversation message
 
 ```
-{Brief one-paragraph verdict: ship-blocking? polish-only? regressions vs prior?}
+{One-paragraph verdict: ship-blocking? polish-only? regressions vs prior review?}
 
-**Findings**: 0 Critical, 0 High, N Medium, M Low.
+**Findings**: N Critical, N High, N Medium, N Low.
 
 **Top items requiring attention**:
-1. [most important Medium/High] — file:line — one-sentence what
-2. [next] — file:line — one sentence
-3. [next, optional] — file:line — one sentence
+1. [most important] — file:line — one sentence
+2. …
 
-**Top recommended actions** (in priority order):
-1. ...
-2. ...
-3. ...
+**Top recommended actions** (priority order):
+1. …
 
-📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}/final-report.md
+📄 Full report: ~/.claude/reviews/{project}/{branch}-{hash}-{timestamp}/final-report.md
 ```
 
 ---
+
+## Recovery & Comparison
+
+- **A subagent failed:** `ls {REVIEW_DIR}/` shows what completed; re-run only the missing
+  reviewer(s), once. Pass 1 files present → resume from Pass 2. Checkpoints mean completed work is
+  never lost. If a re-run fails again, stop retrying that reviewer and report it missing rather than
+  looping — an unattended run (e.g. via `/expert-implement-with-haiku-and-ship`) has no one to
+  notice an infinite retry loop.
+- **Compare reviews:** each review has its own folder —
+  `diff ~/.claude/reviews/{project}/{a}/ ~/.claude/reviews/{project}/{b}/`;
+  clean up old reviews with `rm -rf` when desired.
 
 ## Example Usage
 
 ```bash
-# Review changes from main with all available reviewers
-/expert-review
-
-# Review with specific reviewers only
+/expert-review                      # all reviewers, delta from main
 /expert-review contracts,concurrency
-
-# Review entire codebase
-/expert-review --full
-
-# Specific reviewers on full codebase
-/expert-review callback-safety,panic-safety --full
+/expert-review sam-system --force   # skip re-run confirmation
 ```
-
----
-
-## Reviewer Locations
-
-**Generic Reviewers** (user config, all projects):
-- `$HOME/.claude/reviewers/`
-- Note: Use `echo $HOME` to resolve path - tilde doesn't expand in Glob tool
-
-**Project-Specific Reviewers** (override generic):
-- `{project-root}/.claude/reviewers/`
-
-Project reviewers with the same filename override the generic ones.
-
----
-
-## Recovery from Failures
-
-If an agent fails mid-review:
-
-1. **Check what completed**: `ls {REVIEW_DIR}/`
-2. **Retry failed step**: Re-run only the missing reviewer(s)
-3. **Resume from Pass 2**: If Pass 1 files exist, skip directly to Pass 2
-4. **Inspect artifacts**: Read any `-pass1.md` file to see what was found
-
-The checkpoint pattern means you never lose completed work.
-
----
-
-## Comparing Reviews
-
-Each review gets its own subfolder, enabling comparison:
-
-```bash
-# Compare two reviews
-diff ~/.claude/reviews/my-project/main-abc1234/ ~/.claude/reviews/my-project/feature-bar-def5678/
-
-# List all reviews for a project
-ls ~/.claude/reviews/my-project/
-
-# Clean up old reviews (optional — reviews persist until you delete them)
-rm -rf ~/.claude/reviews/my-project/
-```
-
----
-
-## Notes
-
-- **Subfolder per review**: `{branch}-{short_hash}/` enables comparison, avoids conflicts
-- **File checkpoints**: Each step produces artifacts that can be inspected, retried, resumed
-- **Tagger routes sections, no longer skips reviewers**: Tagger-unmatched reviewers now receive the full diff at QUICK-SCAN priority rather than being dropped; they may still self-SKIP if truly irrelevant
-- **Consistency Checker** (haiku): Mechanical pattern-matching pass that catches mixed error types, inconsistent cleanup patterns, and PR description vs code contradictions. Runs on haiku for cost efficiency. Participates in Pass 2 re-evaluation.
-- **Code Rot Cody** (haiku): Mechanical dead-code and orphan detector. Greps the entire repo to verify every new symbol has callers, every removed symbol is cleaned up, and every new config field is end-to-end connected. Runs after Pass 1 domain reviewers (Step 5.6) so his findings are available to Contrarian Carl. Participates in Pass 2 re-evaluation (dead code might be intentionally staged for a follow-up PR).
-- **Blind-first review**: Reviewers see WHAT changed before WHY, to catch rationalized issues
-- **Main thread execution**: Pass 1, Pass 2, Haiku Q&A, and Cross-Review all run sequentially in main thread
-- **Open Questions + Proposals**: Every Pass 1 review ends with explicit open questions (for Haiku to answer) and concrete implementation proposals for HIGH/CRITICAL findings
-- **Haiku Q&A** (Step 6.5): After Pass 2, a Haiku agent reads the actual files to answer each reviewer's open questions — turning uncertainty into evidence
-- **Expert Cross-Review** (Step 6.7): After Haiku Q&A, each DEEP-DIVE reviewer reads all other experts' findings and cross-comments from their domain — surfacing synergies, conflicts, and gaps
-- **Scope expansion**: Reviewers can read referenced files if they see risk indicators
-- **Delta review is strict**: Only issues introduced or worsened by the PR
-- **Project modifiers**: Detected from CLAUDE.md or `.claude/review-config.md` to adjust review scope (e.g., `greenfield` skips backwards compatibility concerns)

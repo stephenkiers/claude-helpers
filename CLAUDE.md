@@ -32,20 +32,25 @@ See the ADRs for the full rationale:
 - [ADR-0001 Progressive disclosure](docs/adr/0001-progressive-disclosure.md) — experts load lazily;
   only relevant personas run, and each loads its own context on demand.
 - [ADR-0002 Blind-first, two-pass review](docs/adr/0002-blind-first-two-pass-review.md)
-- [ADR-0003 Tagger-based routing](docs/adr/0003-tagger-routing.md)
+- [ADR-0003 Reviewer routing](docs/adr/0003-tagger-routing.md) — superseded by a single judgment
+  Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone.
 - [ADR-0004 Model cost routing](docs/adr/0004-model-cost-routing.md) — Haiku for mechanical work.
 - [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md)
 
 ## Commands
 
 **Review & planning**
-- `/expert-review` — multi-persona, blind-first code review with tagger routing and triage
+- `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, judgment
+  router for reviewer selection (Sonnet), single Amalgamator for synthesis (replaces quadratic
+  cross-review). Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
+  and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
 - `/pr-comments` — review PR comments and decide how to respond
 - `/expert-pre-mortem` — standalone fragility pre-mortem (Fragile Feynman)
 - `/expert-rebase` — rebase on origin/main; convene experts on conflicting hunks
+- `/review-stats` — aggregate past reviews into per-reviewer confirmed-vs-rejected rates (eval loop)
 
 **Hardening** (take a review persona, switch it to edit mode)
 - `/expert-harden-types` — tighten type annotations
@@ -56,7 +61,7 @@ See the ADRs for the full rationale:
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
 - `/implement-with-haiku` — parallel Haiku implementers → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → spec-blind test author → adversary review
-- `/shipit` — run CI checks locally, commit, open a PR (`/shipit-reference` for details)
+- `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/cleanup` — clean up a worktree after a PR is merged
 - `/fork-planning` — fork a planning session
@@ -70,6 +75,11 @@ See the ADRs for the full rationale:
 - `/expert-write` — edit a document with expert writing personas + accumulated prose rules
 - `/style-google-doc` — apply a standard Google Doc visual style
 - `/search-claude` — search prior Claude Code transcripts; returns resume commands
+
+**Reference docs are not commands.** Every `.md` file in `~/.claude/commands/` is registered as an
+invocable slash command — frontmatter or not. So the lazy-loaded companion docs
+(`prompts/shipit-reference.md`, `prompts/worktree-reference.md`) live in `prompts/`, and the
+commands that need them read them by path. Put a new reference doc in `prompts/`, not `commands/`.
 
 ## Reviewers (personas)
 
@@ -107,3 +117,25 @@ take precedence over these defaults (see [ADR-0005](docs/adr/0005-three-layer-co
 
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
   (used by `/implement-with-haiku`).
+- `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
+  for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from
+  the caller (`--model`), except Router which is pinned to sonnet.
+- `expert-scout` — the pinned mechanical roles: Q&A (Haiku), Code Rot Cody (Haiku), and Consistency
+  Checker (Haiku). Router (Sonnet; narrow judgment) is spawned as expert-reviewer with an explicit
+  model override.
+
+**Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
+20 concurrent subagents reading personas and writing checkpoints outside the working directory
+otherwise means 20 near-identical permission prompts (the permission system does not deduplicate
+across concurrent agents, and a command's `allowed-tools` does not propagate to subagents it spawns).
+The `tools:` list is the meaningful part of this: **no `Edit` tool and no write-capable Bash**, so a
+reviewer cannot modify the code it is reviewing under any circumstances — that half is a real,
+technical control. But the plain `Write` tool in that same list is *not* path-scoped (Claude Code's
+tool-allowlist syntax has no directory-prefix form for `Write`, unlike the `Bash(git diff:*)`-style
+prefix scoping used elsewhere in that list) — so "writes exactly one file" is a prompt-level
+convention the subagent is instructed to follow, not something the tool grant enforces. Both agent
+prompts tell the subagent to treat diff/PR content as data, not instructions, precisely because that
+content is attacker-influenceable and `bypassPermissions` removes the confirmation dialog that would
+otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/Bash restriction and
+the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a
+residual, not eliminated, risk.

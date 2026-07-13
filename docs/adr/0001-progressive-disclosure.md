@@ -21,17 +21,19 @@ Load experts progressively — lazily and in layers — rather than all-at-once:
 1. **Discovery, not preloading.** Reviewers are discovered from `reviewers/` and described by the
    lightweight `reviewers/index.yaml` (name, triggers, useWhen). The full persona file is read only
    when that persona is actually going to run.
-2. **Routing before depth.** A cheap **tagger** pass (see [ADR-0003](0003-tagger-routing.md)) maps
-   diff sections to the handful of relevant reviewers. Personas with no matching sections are skipped
-   entirely — their full prompt is never loaded.
+2. **Routing before depth.** A single judgment **Router** (see [ADR-0003](0003-tagger-routing.md),
+   superseded decision ADR-0003.2) reads the diff, the plan context, and `index.yaml`, and decides
+   which reviewers meet the threshold for this diff. Personas it excludes are skipped entirely —
+   their full prompt is never loaded.
 3. **Each expert loads its own context on demand.** When a reviewer runs, it reads only the
    project-local context relevant to it (e.g. Contract Chris reads `docStyle`, Fragile Feynman reads
    `fragility.*`, North Star Nick reads the ADR index). See
    [ADR-0005](0005-three-layer-context-cascade.md).
-4. **Offload mechanical work to cheap background subagents.** Summarizing, tagging, consistency
-   checking, dead-code scanning, and per-reviewer Q&A run as separate Haiku subagents (the `Task`
-   tool), keeping the expensive main thread focused on expert judgment. See
-   [ADR-0004](0004-model-cost-routing.md).
+4. **Offload mechanical work to cheap background subagents.** Summarizing, consistency checking,
+   dead-code scanning, and per-reviewer Q&A run as separate Haiku subagents (the `Task` tool);
+   routing itself is judgment work and runs on Sonnet, not Haiku (see
+   [ADR-0004](0004-model-cost-routing.md)) — keeping the expensive panel-tier thread focused on
+   expert judgment.
 
 The direction of travel is *more* of this: push as much expert work as possible into on-demand
 background workers, and keep the foreground thread thin.
