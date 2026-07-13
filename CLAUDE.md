@@ -39,13 +39,16 @@ See the ADRs for the full rationale:
 ## Commands
 
 **Review & planning**
-- `/expert-review` — multi-persona, blind-first code review with tagger routing and triage
+- `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, tagger
+  routing with a Haiku confirm-gate for un-routed reviewers. Takes `[reviewers...]` and
+  `--model haiku|sonnet|opus|fable` (panel tier; mechanical roles stay Haiku per ADR-0004)
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
 - `/pr-comments` — review PR comments and decide how to respond
 - `/expert-pre-mortem` — standalone fragility pre-mortem (Fragile Feynman)
 - `/expert-rebase` — rebase on origin/main; convene experts on conflicting hunks
+- `/review-stats` — aggregate past reviews into per-reviewer confirmed-vs-rejected rates (eval loop)
 
 **Hardening** (take a review persona, switch it to edit mode)
 - `/expert-harden-types` — tighten type annotations
@@ -56,7 +59,7 @@ See the ADRs for the full rationale:
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
 - `/implement-with-haiku` — parallel Haiku implementers → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → spec-blind test author → adversary review
-- `/shipit` — run CI checks locally, commit, open a PR (`/shipit-reference` for details)
+- `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/cleanup` — clean up a worktree after a PR is merged
 - `/fork-planning` — fork a planning session
@@ -70,6 +73,11 @@ See the ADRs for the full rationale:
 - `/expert-write` — edit a document with expert writing personas + accumulated prose rules
 - `/style-google-doc` — apply a standard Google Doc visual style
 - `/search-claude` — search prior Claude Code transcripts; returns resume commands
+
+**Reference docs are not commands.** Every `.md` file in `~/.claude/commands/` is registered as an
+invocable slash command — frontmatter or not. So the lazy-loaded companion docs
+(`prompts/shipit-reference.md`, `prompts/worktree-reference.md`) live in `prompts/`, and the
+commands that need them read them by path. Put a new reference doc in `prompts/`, not `commands/`.
 
 ## Reviewers (personas)
 
@@ -107,3 +115,15 @@ take precedence over these defaults (see [ADR-0005](docs/adr/0005-three-layer-co
 
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
   (used by `/implement-with-haiku`).
+- `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
+  for Pass 1, Carl, Pass 2, cross-review). Model comes from the caller (`--model`).
+- `expert-scout` — the pinned-Haiku mechanical roles: tagger, confirm-gate, Q&A, Code Rot Cody,
+  Consistency Checker.
+
+**Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
+20 concurrent subagents reading personas and writing checkpoints outside the working directory
+otherwise means 20 near-identical permission prompts (the permission system does not deduplicate
+across concurrent agents, and a command's `allowed-tools` does not propagate to subagents it spawns).
+Safety lives in the `tools:` list instead: **no `Edit` tool and no write-capable Bash**, so a reviewer
+cannot modify the code it is reviewing. It reads the repo and writes exactly one file. Keep it that
+way when adding a panel agent — the restriction is the safety model.

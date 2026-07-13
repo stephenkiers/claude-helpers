@@ -100,8 +100,9 @@ Load Project Context is centralized so a change to how context loads happens in 
 **If it clears the guardrail, the checklist:**
 
 - [ ] Create `reviewers/{kebab-name}.yaml` with: `name`, `priority`, `summary` (with nested
-      `character` + `voice`), `triggers` (`filePatterns` / `keywords` / `riskIndicators`),
-      `principles`, and `codeReview.prompt` (containing an `INVESTIGATE:` body).
+      `character` + `voice`), `principles`, and `codeReview.prompt` (containing an `INVESTIGATE:`
+      body). Do **not** add a `triggers` block to the persona file — routing triggers live only in
+      [`index.yaml`](index.yaml) (ADR-0003), on the persona's index entry.
 - [ ] Do **not** add a per-persona `OUTPUT FORMAT` block — the canonical format lives in
       [`prompts/expert-framework.md`](../prompts/expert-framework.md). Only add one if your persona
       genuinely needs a different shape (see the existing carve-outs).

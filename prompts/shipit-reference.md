@@ -1,5 +1,8 @@
 # Shipit Reference Documentation
 
+<!-- Lives in prompts/, not commands/: every .md file in ~/.claude/commands/ is registered as an
+     invocable slash command regardless of frontmatter, and this is a reference doc, not a command. -->
+
 This file contains detailed documentation for edge cases, maintenance, and customization. The main `shipit.md` handles the happy path. Read this when:
 - A command fails unexpectedly
 - You need to customize behavior for a project
@@ -9,7 +12,8 @@ This file contains detailed documentation for edge cases, maintenance, and custo
 
 ## Extending This Command
 
-This is a **global command** installed in `~/.claude/commands/`. Projects can override or extend it:
+`/shipit` is a **global command** installed in `~/.claude/commands/` (this reference doc lives in
+`~/.claude/prompts/`). Projects can override or extend it:
 
 ### Full Override
 Create `.claude/commands/shipit.md` in the project root. This completely replaces the global version for that project.
@@ -34,42 +38,9 @@ To customize behavior without replacing the entire command:
 
 ## Repository Cache
 
-### Full Schema
-
-```json
-{
-  "version": 2,
-  "detected": {
-    "packageManager": "bun|npm|yarn|pnpm|none",
-    "languages": ["typescript", "rust", "go", "python"],
-    "monorepo": true,
-    "ciConfig": ".github/workflows/ci.yml",
-    "buildTool": "make|just|npm|cargo|go"
-  },
-  "commands": {
-    "install": "bun install",
-    "format": "bun run format",
-    "lint": "bun run lint",
-    "vet": null,
-    "typecheck": "bun run typecheck",
-    "test": "bun test",
-    "build": "bun run build",
-    "check": "bun run check"
-  },
-  "gotchas": [
-    {
-      "issue": "node_modules symlinks break workspace links",
-      "resolution": "always run install, never symlink",
-      "addedAt": "2024-01-15T10:30:00Z",
-      "lastVerified": "2024-01-15T10:30:00Z",
-      "hitCount": 3
-    }
-  ],
-  "parallelizable": ["lint", "typecheck", "test"],
-  "lastUpdated": "2024-01-15T10:30:00Z",
-  "lastFullRefresh": "2024-01-15T10:30:00Z"
-}
-```
+The full cache schema lives in `shipit.md` (Step 1). The one field detailed only here is the
+`gotchas` array — each entry is `{issue, resolution, addedAt, lastVerified, hitCount}` (see
+Self-Correction & Learning below).
 
 ### Cache Lifecycle
 
@@ -120,48 +91,8 @@ Monthly Maintenance Checklist:
 
 ## Tooling Detection
 
-Detection discovers commands from four sources, in priority order:
-
-### Priority 1: CLAUDE.md
-
-Read the project's `CLAUDE.md`. It often documents the exact commands required before committing (e.g., `make test`, `make lint`). Extract commands from code blocks and command headings.
-
-### Priority 2: Build tool files
-
-| File | Detects | How to parse |
-|------|---------|--------------|
-| `Makefile` | make targets | `grep -E '^\w+:' Makefile` — map `fmt`→format, `lint`→lint, `vet`→vet, `test`→test, `build`→build |
-| `justfile` | just recipes | `just --list` — same mapping as Makefile |
-| `package.json` | npm/bun/yarn scripts | Parse `scripts` object — map `check`, `lint`, `format`, `typecheck`, `test`, `build` |
-| `Cargo.toml` | rust | `cargo clippy`, `cargo test`, `cargo fmt --check`, `cargo build` |
-| `go.mod` | go | Only as fallback if no Makefile — `go vet`, `go test`, `go build` |
-| `pyproject.toml` | python | Check for ruff, pytest, mypy |
-| `requirements.txt` | python | Same as pyproject.toml |
-
-**Key rule:** Store the build-tool command (e.g., `make lint`), not the underlying tool (e.g., `golangci-lint run`). This way, if the Makefile changes what a target does, we pick it up on next refresh.
-
-### Priority 3: CI config
-
-| File | Detects |
-|------|---------|
-| `.github/workflows/*.yml` | GitHub Actions steps |
-| `.gitlab-ci.yml` | GitLab CI jobs |
-| `Jenkinsfile` | Jenkins stages |
-| `.circleci/config.yml` | CircleCI jobs |
-
-Cross-reference CI steps against discovered commands. If CI runs a check not yet in the cache (e.g., `golangci-lint` in a GitHub Action but no Makefile target), add it.
-
-### Priority 4: Language defaults (fill gaps only)
-
-Only used for command types not discovered from any other source:
-
-| Language | format | lint | vet | test | build |
-|----------|--------|------|-----|------|-------|
-| Go | `gofmt -l .` | `golangci-lint run` | `go vet ./...` | `go test -race ./...` | `go build ./...` |
-| Rust | `cargo fmt --check` | `cargo clippy -- -D warnings` | - | `cargo test` | `cargo build` |
-| TypeScript | - | `npx eslint .` | - | `npx vitest run` | `npx tsc --noEmit` |
-| Python | `ruff format --check .` | `ruff check .` | - | `pytest` | - |
-| Ruby | `bundle exec rubocop --format quiet` | - | - | `bundle exec rspec` | - |
+The detection sources, priority order, and language-default tables live in `shipit.md`
+(Step 1.5, Sources 0–4). Only the lockfile mapping below is not covered there.
 
 ### Lockfile → Package Manager
 
@@ -297,14 +228,9 @@ chore(deps): update dependencies
 
 ## Failure Handling
 
+The common scenarios are in `shipit.md`'s Quick Reference. Additional cases:
+
 | Scenario | Action |
 |----------|--------|
-| No cache | Detect tooling, create cache |
-| Stale cache (>7 days) | Re-detect, update cache |
-| Dependencies missing | Install using detected package manager |
-| CI check fails | Stop, report error, do not commit |
-| No changes | Report "nothing to commit", stop |
 | Already committed | Skip to push/PR |
-| PR exists | Report existing PR URL |
-| Not on feature branch | Warn user, suggest branching |
 | Command not found | Update cache gotchas, try alternatives |

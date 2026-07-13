@@ -47,7 +47,15 @@ For each hunk in the diff:
 
 ## Tagging Rules
 
-- **Be inclusive**: If unsure, tag it. Reviewers can skip if not relevant.
+- **Literal triggers only**: Match against the trigger keywords and file patterns you were given,
+  verbatim. Never infer, synthesize, or invent a trigger a reviewer does not have. When you list
+  **Triggers matched**, every keyword there must appear both in that reviewer's trigger list and in
+  the diff — if you cannot name one that does, the reviewer belongs in SKIP.
+- **Only reviewers you were given**: The reviewer definitions below are the complete roster. Never
+  tag a persona that is not in that list (personas without a code-review role are excluded from it
+  on purpose).
+- **Be inclusive within those bounds**: If a real trigger matches and you are unsure whether the
+  section is relevant, tag it. Reviewers can skip if not relevant.
 - **Use diff line numbers**: Reference the `+` lines (new code) for line ranges
 - **Overlap is expected**: Same lines can go to multiple reviewers
 - **Group by file**: Within each reviewer, group sections by file path
@@ -120,9 +128,14 @@ Match triggers from reviewer definitions:
 ## Important Notes
 
 1. **Speed over perfection**: This is a routing step, not a review. Quick pattern matching is fine.
-2. **Err on the side of inclusion**: Better to route too much than miss something.
+2. **Err on the side of inclusion — but only on real matches.** Routing too much is cheap; a made-up
+   trigger match is not, because it sends a reviewer to code that has nothing for them.
 3. **Keep context brief**: One sentence max per section.
-4. **List ALL reviewers**: Either in a section or in SKIP. Don't omit any.
+4. **List ALL reviewers** you were given: either in a section or in SKIP. Don't omit any, and don't
+   add any.
+5. **SKIP reasons get read.** Each SKIP-listed reviewer is handed your stated reason and asked to
+   verify it against the diff. Say what you actually checked ("no async/lock/thread keywords in the
+   diff"), not a vague dismissal — a wrong reason gets caught and costs a re-review.
 
 ---
 

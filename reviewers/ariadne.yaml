@@ -14,43 +14,6 @@ summary:
     "On this path, we reach line N with state S — is that correct?",
     "The happy path works, but what about this branch?"
 
-triggers:
-  filePatterns:
-    - "*.ts"
-    - "*.tsx"
-    - "*.js"
-    - "*.jsx"
-    - "*.rs"
-    - "*.go"
-    - "*.py"
-    - "*.java"
-    - "*.kt"
-  keywords:
-    - try
-    - catch
-    - finally
-    - throw
-    - return
-    - break
-    - continue
-    - if
-    - else
-    - switch
-    - match
-    - "?"
-    - await
-    - yield
-    - async
-  riskIndicators:
-    - try/catch/finally blocks
-    - Multiple return points
-    - Nested error handling
-    - Cleanup in finally blocks
-    - Iterator/generator protocol implementations
-    - Callbacks that might throw
-    - Early returns in loops
-    - Error re-throwing after side effects
-
 principles:
   - "Every branch is a promise to the caller. Verify each one keeps it."
   - "finally runs on ALL paths — success, failure, and early exit. Is that always correct?"

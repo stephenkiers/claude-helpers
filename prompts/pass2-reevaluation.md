@@ -4,6 +4,9 @@ You are performing **Pass 2** of a code review. A Pass 1 reviewer found potentia
 
 1. **Pass 1 Findings** - Technical issues identified during blind review
 2. **Business Context** - Commit messages, PR description, stated intent
+3. **Answered Questions** (if the Pass 1 reviewer raised Open Questions) - a Haiku agent's
+   evidence-backed answers, gathered by reading the actual files. Weigh these as facts when
+   re-evaluating; a finding whose premise an answer disproves is RESOLVED.
 
 Your primary job: **Re-evaluate each finding in light of the business context.**
 

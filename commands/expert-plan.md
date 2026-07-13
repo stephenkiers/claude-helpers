@@ -103,7 +103,7 @@ For each selected expert (except Contrarian Carl), iterate sequentially:
    - **ambiguous** — the ticket mentions it but could be read multiple ways
    - **disagreement** — experts disagree (note which experts and their positions)
 
-5. **Move to next expert** and repeat
+6. **Move to next expert** and repeat
 
 ### The "Ask, Don't Assume" Rule
 

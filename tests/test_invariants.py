@@ -136,6 +136,26 @@ test_result(
 )
 
 # ============================================================================
+# INVARIANT 3.5: Triggers are single-sourced in index.yaml (ADR-0003)
+# ============================================================================
+print()
+print("[Invariant 3.5] No persona file carries its own triggers")
+
+trigger_violations = [
+    file.name
+    for file in REVIEWERS_DIR.glob("*.yaml")
+    if file.name != "index.yaml"
+    and re.search(r"^\s*triggers\s*:", file.read_text(), re.MULTILINE)
+]
+
+test_result(
+    "Triggers live only in index.yaml",
+    len(trigger_violations) == 0,
+    f"triggers: found in {', '.join(trigger_violations)} — routing reads index.yaml only, "
+    "so these would silently drift" if trigger_violations else ""
+)
+
+# ============================================================================
 # INVARIANT 4: Index completeness (reviewer files <-> index entries)
 # ============================================================================
 print()

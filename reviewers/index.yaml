@@ -1,56 +1,57 @@
 # Reviewer Index
 # Quick reference for all available reviewers with their triggers and use cases
+# Single source of truth for routing triggers (ADR-0003). Persona files do not carry triggers; edit them here.
 
 reviewers:
   - name: Know-It-All Nigel
     file: know-it-all-nigel.yaml
     priority: high
     useWhen: Any code changes - polyglot idiom checker for language-specific best practices
-    triggers: ["*.ts", "*.rs", "*.go", "*.py", async, await, match, unwrap]
+    triggers: ["*.ts", "*.rs", "*.go", "*.py", "*.js", def, async, await, match, unwrap]
 
   - name: Uncle Bob
     file: uncle-bob.yaml
     priority: high
     useWhen: Architecture, SOLID principles, clean code, resource management
-    triggers: [function, fn, open, close, drop, dispose, spawn, thread]
+    triggers: [open, close, drop, dispose, acquire, release, shutdown, spawn, thread, finally, cleanup]
 
   - name: Security Sage
     file: security-sage.yaml
     priority: critical
     useWhen: APIs, auth, user input, secrets, external systems, error handling
-    triggers: [parse, deserialize, env, exec, spawn, secret, token, password, unwrap]
+    triggers: [parse, deserialize, env, exec, spawn, secret, token, password, unwrap, path, url, sanitize]
 
   - name: Tara TypeSafe
     file: tara-typesafe.yaml
     priority: critical
     useWhen: Type design, contracts, validation, state machines, API boundaries
-    triggers: [interface, type, struct, trait, any, unknown, Zod, schema, invariant]
+    triggers: [interface, type, struct, trait, any, unknown, "as any", unsafe, Zod, schema, invariant]
 
   - name: Sam System
     file: sam-system.yaml
     priority: critical
     useWhen: Cross-file composition, factory wiring, event bus connections, data flow tracing
-    triggers: [createSession, createService, factory, bus, eventBus, config, options, inject]
+    triggers: [createSession, createService, factory, bus, eventBus, config, options, inject, provider, compose]
     note: "Special reviewer - receives FULL diff, not just tagged sections. Traces data flow across files."
 
   - name: North Star Nick
     file: north-star-nick.yaml
     priority: high
     useWhen: Any architectural change, new modules, scope-affecting work, pattern decisions
-    triggers: [new files, package.json, Cargo.toml, ADR, milestone, phase, scope, architecture]
+    triggers: [new files, package.json, Cargo.toml, ADR, milestone, phase, scope, architecture, migrate, refactor]
     note: "Strategic alignment reviewer. Loads ADRs, issues index, and product docs. Cross-references diff against documented decisions."
 
   - name: Rachel
     file: rachel.yaml
     priority: high
     useWhen: Concurrency, async code, shared state, locks, channels
-    triggers: [thread, spawn, async, await, Mutex, Arc, channel, mpsc, Send, Sync]
+    triggers: [thread, spawn, async, await, Mutex, Arc, Atomic, lock, channel, mpsc, Send, Sync]
 
   - name: Eric Evans
     file: eric-evans.yaml
     priority: medium
     useWhen: Domain modeling, bounded contexts, naming, cross-package imports
-    triggers: [import, use, from, interface, type, struct, contracts/, core/, services/]
+    triggers: [import, use, from, interface, type, struct, trait, contracts/, core/, services/]
 
   - name: Business Beth
     file: business-beth.yaml
@@ -68,32 +69,32 @@ reviewers:
     file: curious-casey.yaml
     priority: medium
     useWhen: Test coverage, clarity, documentation, onboarding friction
-    triggers: [test, describe, expect, assert, mock, complex logic]
+    triggers: [test, "#[test]", describe, expect, assert, mock, complex logic]
 
   - name: Vera Verifier
     file: vera-verifier.yaml
     priority: high
     useWhen: Test files in diff — verifies tests actually test what they claim by desk-checking execution against implementation
-    triggers: [describe, it, test, expect, assert, vi.fn, mock, yield, AsyncGenerator, Symbol.asyncIterator, "for await", "as never"]
+    triggers: ["*.test.*", "*.spec.*", "*_test.rs", describe, it, test, expect, assert, vi.fn, mock, yield, "for await"]
     note: "Desk-checks tests by mentally executing them step-by-step against the implementation. Catches tests that pass for the wrong reason, comment/name inaccuracies, protocol misunderstandings (async generators, iterator done vs chunk type), and mock fidelity issues. Complements Casey (coverage) and Ariadne (production paths)."
 
   - name: Danielle the Designer
     file: danielle-designer.yaml
     priority: medium
     useWhen: UI/UX, user flows, error messages, forms, CLI interfaces
-    triggers: [button, input, form, modal, error, message, navigate, --help]
+    triggers: [button, input, form, modal, dialog, toast, error, message, loading, navigate, --help]
 
   - name: Dependency Skeptic
     file: dependency-skeptic.yaml
     priority: high
     useWhen: New dependencies, version changes, platform-specific code, FFI
-    triggers: [Cargo.toml, package.json, cfg, extern, platform-specific paths]
+    triggers: [Cargo.toml, package.json, pyproject.toml, requirements.txt, go.mod, cfg, extern, platform-specific paths]
 
   - name: Mozart
     file: mozart-eda.yaml
     priority: high
     useWhen: Composition/orchestration of independent pieces, and event-driven architecture — pub/sub, event buses, channels, callbacks, message passing
-    triggers: [event, EventBus, Subject, Observable, subscribe, emit, channel, mpsc, broadcast, callback, handler, compose, orchestrate, coordinate, wire]
+    triggers: [event, EventBus, Subject, Observable, subscribe, publish, emit, dispatch, channel, broadcast, handler, compose]
     note: "Composition + EDA specialist. Project-specific extensions live in your project's .claude/reviewers/mozart-local.yaml"
 
 
@@ -108,14 +109,14 @@ reviewers:
     file: frontend-fred.yaml
     priority: high
     useWhen: React/Svelte/Vue components, hooks, effects, subscriptions, imperative objects managed by component lifecycle
-    triggers: [useState, useEffect, useRef, useCallback, useMemo, onMount, onDestroy, $state, $effect, ref, watch, subscribe]
+    triggers: ["*.tsx", "*.svelte", "*.vue", useState, useEffect, useRef, useCallback, useMemo, onMount, onDestroy, $state, $effect]
     note: "Component lifecycle specialist. Catches unmount races, stale closures, prop-change races, subscription leaks, and imperative-to-declarative boundary bugs. Born from a blind spot where no other reviewer covered React lifecycle semantics."
 
   - name: Scope Creep Steve
     file: scope-creep-steve.yaml
     priority: high
     useWhen: Protocols, handshakes, lifecycle coordination, session management, timeouts, acks, state machines
-    triggers: [timeout, retry, handshake, ack, protocol, session, lifecycle, oneshot, channel, notify, transition, cleanup, shutdown, finalize, queue, pool, cache, limit]
+    triggers: [handshake, ack, protocol, session, lifecycle, backoff]
     note: "Production readiness at scale. Asks 'what breaks with 1,000 users?' Proposes scope creep when the fix is cheap now and expensive later. Labels findings as FIX NOW / TRACK / DEFER. Penny Pincher's natural adversary."
 
   - name: Code Rot Cody
@@ -123,21 +124,21 @@ reviewers:
     priority: high
     model: haiku
     useWhen: Any PR — verifies new symbols have callers, removed symbols are fully cleaned up, config fields are end-to-end connected
-    triggers: [func, function, fn, def, class, struct, type, interface, const, export, pub]
-    note: "Mechanical dead code and orphan detector. Greps the entire repo to verify every new symbol is called and every removed symbol is fully cleaned up. Catches dead code, unused config fields, and widowed helpers that no domain reviewer looks for."
+    triggers: ["new exported symbols", "removed symbols", "config fields"]
+    note: "Mechanical dead code and orphan detector. Always runs on the FULL diff (ADR-0003 full-diff exception) — triggers above are descriptive, not routing filters. Greps the entire repo to verify every new symbol is called and every removed symbol is fully cleaned up. Catches dead code, unused config fields, and widowed helpers that no domain reviewer looks for."
 
   - name: Fragile Feynman
     file: fragile-feynman.yaml
     priority: high
     useWhen: Any diff touching business logic, data pipelines, config handling, or state management
-    triggers: [default, assume, order, sorted, transform, pipeline, config, global, shared, singleton, retry, timeout, version, migrate, schema]
+    triggers: [default, sorted, transform, pipeline, config, shared, singleton, retry, timeout, version, migrate, schema]
     note: "Pre-mortem fragility analyst. Runs the 10-category fragility catalogue against every diff and writes fictional post-mortems for FRAGILE/CRITICAL findings. Reads fragility.highRiskModules and fragility.knownFragilePatterns from .claude/project.yaml."
 
   - name: Contract Chris
     file: contract-chris.yaml
     priority: high
     useWhen: New or modified public functions, service layer changes, library code, data validation, external system calls
-    triggers: [def, fn, func, function, "async def", "pub fn", raises, throws, Optional, Result, except, catch, unwrap, validate, precondition]
+    triggers: [def, fn, "pub fn", raises, throws, Optional, Result, except, catch, unwrap, validate, precondition]
     note: "Contract completeness reviewer. Applies 4-question analysis per function: input invariants, violation behavior (explicit vs implicit), external state errors, silenced errors. Suggests docstrings in the project's docStyle from .claude/project.yaml."
 
   - name: Ariadne
@@ -184,5 +185,5 @@ reviewers:
     file: fact-check-fiona.yaml
     priority: high
     useWhen: New or modified KB claims (facts, quotes, proposals, problems, source summaries, person attributions) — audits whether each claim's wording is fully supported by its cited source.
-    triggers: [kb/facts, kb/quotes, kb/proposals, kb/problems, kb/sources-registry, fact, claim, summary, confidence, evidence_type, source_refs, confirmed, complete, all, every, always, never, resolved, fully, unlike]
+    triggers: [kb/facts, kb/quotes, kb/proposals, kb/problems, kb/sources-registry, confidence, evidence_type, source_refs, confirmed, always, never, unlike]
     note: "Epistemic claim auditor for knowledge bases. Complements Data Scientist Dana (structural integrity) by checking claim-strength-vs-evidence: overstatement, unsourced clauses, inference-as-fact, confidence calibration."

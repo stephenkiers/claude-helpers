@@ -13,22 +13,6 @@ summary:
     for the same purpose", "Inconsistency: X here but Y there",
     "PR description says X, code does Y."
 
-triggers:
-  # Triggers on everything — consistency checking applies to all code
-  filePatterns:
-    - "*"
-  keywords:
-    - function
-    - fn
-    - class
-    - struct
-    - impl
-    - async
-    - const
-    - let
-  riskIndicators:
-    - Any code change
-
 principles:
   - "Consistency reduces bugs: mixed patterns invite copy-paste errors."
   - "Mechanical, not opinionated: flag the inconsistency, don't judge which pattern is better."

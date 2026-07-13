@@ -11,46 +11,6 @@ summary:
     "The professional thing to do...", "This violates the [principle],
     which will bite you when..."
 
-triggers:
-  filePatterns:
-    - "*.ts"
-    - "*.tsx"
-    - "*.rs"
-    - Resource acquisition code (files, connections, handles)
-    - Cleanup/shutdown logic
-    - Drop/destructor implementations
-  keywords:
-    - function
-    - fn
-    - const
-    - let
-    - open
-    - close
-    - drop
-    - dispose
-    - new
-    - create
-    - acquire
-    - release
-    - shutdown
-    - stop
-    - terminate
-    - timeout
-    - deadline
-    - Drop
-    - finally
-    - spawn
-    - thread
-    - task
-  riskIndicators:
-    - New functions or methods
-    - Refactoring changes
-    - Complex logic additions
-    - New resource types
-    - Changes to cleanup ordering
-    - Timeout/deadline changes
-    - Thread/task lifecycle changes
-
 principles:
   - "Code is communication. It's written for humans first, computers second."
   - "Single Responsibility: A module should have one, and only one, reason to change."
