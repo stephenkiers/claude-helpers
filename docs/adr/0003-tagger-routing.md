@@ -39,8 +39,9 @@ judgment call at routing time.
 
 ## Amendment — judgment router (ADR-0003.2)
 
-The confirm-gate is removed. A single **judgment router** (Sonnet; pinned in the agent definition,
-not the panel model — narrow judgment, not deep expertise) runs once after the summarizer:
+The confirm-gate is removed. A single **judgment router** (Sonnet; pinned to Sonnet via an explicit
+`model: "sonnet"` parameter when the command spawns the router subagent, not the panel model — narrow
+judgment, not deep expertise) runs once after the summarizer:
 
 ```
 Reads: full diff, summary + business context, reviewers/index.yaml (ONLY)
