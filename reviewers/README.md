@@ -56,7 +56,7 @@ rather than re-listing the generic files.
 | Location | Naming | Purpose |
 |----------|--------|---------|
 | `~/.claude/reviewers/` | `{expert}.yaml` | Global expert definition |
-| `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (tagger routing) |
+| `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (router reads this only) |
 | `project/.claude/` | `project.yaml` | Project-wide context — all experts + /shipit |
 | `project/.claude/reviewers/` | `{expert}-local.yaml` | Expert-specific project overrides |
 
@@ -100,15 +100,21 @@ Load Project Context is centralized so a change to how context loads happens in 
 **If it clears the guardrail, the checklist:**
 
 - [ ] Create `reviewers/{kebab-name}.yaml` with: `name`, `priority`, `summary` (with nested
-      `character` + `voice`), `triggers` (`filePatterns` / `keywords` / `riskIndicators`),
-      `principles`, and `codeReview.prompt` (containing an `INVESTIGATE:` body).
+      `character` + `voice`), `principles`, and `codeReview.prompt` (containing an `INVESTIGATE:`
+      body). Do **not** add a `triggers` block to the persona file — routing triggers live only in
+      [`index.yaml`](index.yaml) (ADR-0003), on the persona's index entry.
 - [ ] Do **not** add a per-persona `OUTPUT FORMAT` block — the canonical format lives in
       [`prompts/expert-framework.md`](../prompts/expert-framework.md). Only add one if your persona
       genuinely needs a different shape (see the existing carve-outs).
 - [ ] Do **not** add a per-persona "Load Project Context" block unless you load context differently
       from the default — that step is centralized in `expert-framework.md`.
-- [ ] Add a matching entry to [`index.yaml`](index.yaml) (the tagger routes from this index; a
-      persona missing here never runs).
+- [ ] Add a matching entry to [`index.yaml`](index.yaml) (the router reads only this index; a
+      persona missing here never runs). If you're migrating a persona's existing `triggers:` block
+      into its index entry rather than writing one from scratch, diff the two — a prior migration
+      silently dropped keywords for five personas (Fragile Feynman, Uncle Bob, Tara TypeSafe,
+      Frontend Fred, Rachel) before it was caught in review. `index.yaml` is now the *sole* signal
+      the judgment router sees for that persona's domain (there is no fallback gate to catch a miss),
+      so a dropped keyword is a silent routing blind spot, not a cosmetic loss.
 - [ ] Run `python3 tests/test_invariants.py` — the index/file mapping must stay bidirectional and
       the count invariant must hold.
 - [ ] Re-run `/setup-local` so the new file gets symlinked into `~/.claude/reviewers/`.
@@ -132,8 +138,8 @@ both, and the YAML body carries the matching review block.
 `codeReview.prompt`. The current three are **Demosthenes** (`editor-audience.yaml`, audience fit),
 **Shakespeare** (`editor-cadence.yaml`, rhythm and pacing), and **Strunk** (`editor-signal.yaml`,
 signal over noise). They have **no diff
-`triggers`**, so the code-review tagger never routes to them — their `index.yaml` `note` marks them
-`for /expert-write`. A persona with only an `editReview` block is not a valid `/expert-review`
+`triggers`**, so the `/expert-review` router never selects them — their `index.yaml` `note` marks
+them `for /expert-write`. A persona with only an `editReview` block is not a valid `/expert-review`
 target; do not request one there.
 
 ## Creating Project Context

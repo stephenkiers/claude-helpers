@@ -8,33 +8,14 @@ Run with: python3 tests/test_invariants.py
 
 import os
 import re
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from _test_harness import REPO_ROOT, Harness
+
 REVIEWERS_DIR = REPO_ROOT / "reviewers"
 PROMPTS_DIR = REPO_ROOT / "prompts"
 
-pass_count = 0
-fail_count = 0
-failures = []
-
-def test_result(test_name, passed, message=""):
-    global pass_count, fail_count, failures
-    if passed:
-        print(f"✓ {test_name}")
-        pass_count += 1
-    else:
-        error_msg = f"✗ {test_name}"
-        if message:
-            error_msg += f": {message}"
-        print(error_msg)
-        failures.append(error_msg)
-        fail_count += 1
-
-print("=" * 60)
-print("REVIEWER-PERSONA SCAFFOLDING TEST SUITE")
-print("=" * 60)
-print()
+h = Harness("REVIEWER-PERSONA SCAFFOLDING TEST SUITE")
+test_result = h.test_result
 
 # ============================================================================
 # INVARIANT 1: No dead field investigationAreas
@@ -133,6 +114,26 @@ test_result(
     "All reviewer YAML files are valid",
     len(yaml_issues) == 0,
     "; ".join(yaml_issues) if yaml_issues else ""
+)
+
+# ============================================================================
+# INVARIANT 3.5: Triggers are single-sourced in index.yaml (ADR-0003)
+# ============================================================================
+print()
+print("[Invariant 3.5] No persona file carries its own triggers")
+
+trigger_violations = [
+    file.name
+    for file in REVIEWERS_DIR.glob("*.yaml")
+    if file.name != "index.yaml"
+    and re.search(r"^\s*triggers\s*:", file.read_text(), re.MULTILINE)
+]
+
+test_result(
+    "Triggers live only in index.yaml",
+    len(trigger_violations) == 0,
+    f"triggers: found in {', '.join(trigger_violations)} — routing reads index.yaml only, "
+    "so these would silently drift" if trigger_violations else ""
 )
 
 # ============================================================================
@@ -317,26 +318,4 @@ test_result(
     "Checklist/guidance not found" if readme_exists and not has_checklist else ""
 )
 
-# ============================================================================
-# Summary
-# ============================================================================
-print()
-print("=" * 60)
-print("TEST SUMMARY")
-print("=" * 60)
-print(f"Passed: {pass_count}")
-print(f"Failed: {fail_count}")
-print()
-
-if failures:
-    print("FAILURES:")
-    for failure in failures:
-        print(f"  {failure}")
-    print()
-
-if fail_count == 0:
-    print("✓ All tests PASSED")
-    exit(0)
-else:
-    print("✗ Some tests FAILED")
-    exit(1)
+h.summarize_and_exit()

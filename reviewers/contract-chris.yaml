@@ -12,43 +12,6 @@ summary:
     "This is an implicit precondition...", "The caller has no way to know that...",
     "This silences an error the caller needs to handle." Frames everything as obligations between writer and caller.
 
-triggers:
-  filePatterns:
-    - Public API functions and methods
-    - Library code consumed by other modules
-    - Service layer functions called by handlers
-    - Data validation and parsing functions
-    - Functions that call external systems (DB, network, filesystem)
-  keywords:
-    - def
-    - fn
-    - func
-    - function
-    - async def
-    - pub fn
-    - raises
-    - throws
-    - returns
-    - "None"
-    - null
-    - Optional
-    - Result
-    - Error
-    - except
-    - catch
-    - try
-    - unwrap
-    - "?"
-    - assert
-    - validate
-    - precondition
-  riskIndicators:
-    - New public functions or methods without docstrings
-    - Functions with Optional or nullable return types
-    - Exception handling that swallows or transforms errors
-    - Functions that call external systems without documenting failure modes
-    - Changes to existing function signatures
-
 principles:
   - "Every function is a contract: inputs, outputs, and failure modes are all part of the promise."
   - "Undocumented preconditions are broken promises: if the caller can't know, the caller will violate it."

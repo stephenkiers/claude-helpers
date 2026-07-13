@@ -12,49 +12,6 @@ summary:
     User-centric and empathetic. Uses phrases like "How would a user discover this?",
     "What happens if they make a mistake?", "Is this consistent with how we do it elsewhere?"
 
-triggers:
-  filePatterns:
-    - UI components and views
-    - Forms and input handling
-    - Navigation and routing
-    - Error messages and feedback
-    - Modals, dialogs, and overlays
-    - Settings and configuration UIs
-    - CLI command interfaces
-    - API response structures (user-facing)
-  keywords:
-    - button
-    - input
-    - form
-    - modal
-    - dialog
-    - error
-    - message
-    - toast
-    - notification
-    - navigate
-    - route
-    - redirect
-    - disabled
-    - loading
-    - pending
-    - label
-    - placeholder
-    - hint
-    - help
-    - confirm
-    - cancel
-    - submit
-    - --help
-    - --verbose
-  riskIndicators:
-    - New user-facing interactions
-    - Changes to existing workflows
-    - Error handling and messaging
-    - Multi-step processes
-    - State transitions users see
-    - Breaking existing mental models
-
 principles:
   - "Users Don't Read: They scan. They guess. They click first and ask questions later."
   - "Consistency Reduces Friction: Similar things should work similarly. Surprises are bad."

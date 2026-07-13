@@ -38,27 +38,9 @@ When the project root has both a `plans/` directory and an array-format `issues.
 
 ### Detection
 
-```bash
-# Detect project root
-MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-PARENT_BASENAME=$(basename "$(dirname "$MAIN_WORKTREE")")
-if [ "$PARENT_BASENAME" = "worktrees" ]; then
-  PROJECT_ROOT=$(dirname "$(dirname "$MAIN_WORKTREE")")
-else
-  PROJECT_ROOT="$MAIN_WORKTREE"
-fi
-
-PLANS_DIR="${PROJECT_ROOT}/plans"
-PROJECT_ISSUES="${PROJECT_ROOT}/issues.json"
-
-LOCAL_MODE=false
-if [ -d "$PLANS_DIR" ] && [ -f "$PROJECT_ISSUES" ]; then
-  IS_ARRAY=$(jq 'type == "array"' "$PROJECT_ISSUES" 2>/dev/null)
-  if [ "$IS_ARRAY" = "true" ]; then
-    LOCAL_MODE=true
-  fi
-fi
-```
+Run the **Project Detection** and **Local Plan Mode Detection** blocks from
+`~/.claude/prompts/worktree-reference.md` (sets `MAIN_WORKTREE`, `PROJECT_ROOT`, `PLANS_DIR`,
+`PROJECT_ISSUES`, `LOCAL_MODE`).
 
 If `LOCAL_MODE` is false, fall through to the normal GitHub flow.
 
@@ -112,17 +94,8 @@ echo "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
 
 Before calling `gh issue view` or `gh issue list`, check the local JSON cache:
 
-1. Detect issue cache from worktree layout:
-   ```bash
-   MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-   SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
-   if [ -n "$SECOND_WORKTREE" ]; then
-     WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
-   else
-     WORKTREE_PARENT="${MAIN_WORKTREE}/.claude/worktrees"
-   fi
-   CACHE_FILE="${WORKTREE_PARENT}/issues.json"
-   ```
+1. Detect the issue cache: `CACHE_FILE` from the **Project Detection** block in
+   `~/.claude/prompts/worktree-reference.md` (already set if detection ran earlier)
 2. Read the cache file and look up the issue number in the `issues` object
 3. If found in cache, use that data — **skip the `gh` API call**
 4. Only fall back to `gh issue view` if the issue is **not in the cache**
@@ -151,16 +124,7 @@ Update `lastSynced` to the current timestamp when writing back.
 BRANCH=$(git branch --show-current)
 ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
 
-# Detect cache path from worktree layout
-MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
-if [ -n "$SECOND_WORKTREE" ]; then
-  WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
-else
-  WORKTREE_PARENT="${MAIN_WORKTREE}/.claude/worktrees"
-fi
-CACHE_FILE="${WORKTREE_PARENT}/issues.json"
-
+# CACHE_FILE comes from Project Detection (worktree-reference.md)
 # Check local cache first
 if [ -n "$ISSUE_NUM" ]; then
   # Try cache first, fall back to API

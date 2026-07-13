@@ -29,10 +29,13 @@ this default; otherwise this section governs.
 
 ## Reviewer-Specific Input Scope
 
-Most reviewers receive only the diff sections the tagger routed to them. One exception:
+Most reviewers receive only the diff sections the router selected for them. Three exceptions receive
+the full diff by domain definition:
 
-- **Sam System** receives the **full diff** (not just tagged sections), because his job is to trace
-  data flow across files — he needs to see both ends of every cross-file connection.
+- **Sam System** receives the **full diff** because his job is to trace data flow across files — he
+  needs to see both ends of every cross-file connection.
+- **Code Rot Cody** receives the **full diff** because he greps the entire repo for orphaned symbols.
+- **Consistency Checker** receives the **full diff** to check patterns across the whole diff.
 
 ## Pass 1: Blind Review
 
@@ -247,6 +250,28 @@ Changes to core invariant-critical code
 
 ---
 
+## When NOT to Flag (all reviewers)
+
+Every rule of thumb in a persona prompt has legitimate exceptions. Before reporting a finding,
+check it against these guards — a finding that fails them is noise that Pass 2 has to clean up:
+
+1. **Idiomatic exceptions beat generic rules.** Heuristics like "functions under 20 lines",
+   "no `any`", "no unwrap" yield to the language's and project's idioms: a long but linear
+   config/match/dispatch function, `any` at a genuinely untyped third-party boundary (with
+   narrowing), `unwrap` on an invariant established immediately above. If the code follows a
+   pattern used consistently elsewhere in this project, flag the pattern once at LOW or not at all.
+2. **Don't flag what the compiler/type-checker/linter already enforces.** If the project's
+   tooling would reject the failure mode, it isn't a finding.
+3. **Intent signals count.** A comment, test, or naming that shows the author considered the
+   trade-off turns "bug" into (at most) a question — raise it under Open Questions, not Findings.
+4. **No speculative severity.** CRITICAL/HIGH require a concrete failure path you can articulate
+   ("when X happens, Y breaks"), not "this could theoretically…". If you can't name the trigger,
+   cap at MEDIUM and say what evidence would raise it.
+5. **One finding per root cause.** Ten call sites of the same mistake are one finding with a list,
+   not ten findings.
+
+---
+
 ## Severity Definitions
 
 - **CRITICAL**: Could cause data loss, security breach, or crash in production
@@ -265,7 +290,7 @@ You have been provided with **targeted sections** that triggered your reviewer d
 - You MUST note which files you expanded to in "Files Examined"
 - You SHOULD only expand if you see concrete risk indicators
 
-**Do NOT expand speculatively.** The tagger identified your sections for a reason. Only expand if the code you're reviewing explicitly references other files and those references raise concerns in your domain.
+**Do NOT expand speculatively.** The router selected your sections for a reason. Only expand if the code you're reviewing explicitly references other files and those references raise concerns in your domain.
 
 ---
 
@@ -299,8 +324,14 @@ If no modifiers are provided, assume a released project where backwards compatib
 ## What Happens Next
 
 If you find issues, a separate **Pass 2 agent** will:
-1. Read your findings
+1. Read your findings as a skeptic-verifier (third-person framing, anti-anchoring)
 2. Receive the Business Context (commit messages, PR description, intent)
 3. Re-evaluate each finding as CONFIRMED / RESOLVED / DOWNGRADED
 
-You don't need to do Pass 2 - just output your Pass 1 findings in the required format.
+Then a single expensive **Amalgamator agent** will:
+1. Read all Pass 1 findings and Pass 2 re-evaluations across the entire panel
+2. Deduplicate, severity-rank, and resolve conflicts between reviewers
+3. Write the final report and decide which findings go public
+
+You don't need to do Pass 2 or any follow-on work — just output your Pass 1 findings in the required
+format. The Amalgamator has the last word on what makes it into the report and how it is prioritized.

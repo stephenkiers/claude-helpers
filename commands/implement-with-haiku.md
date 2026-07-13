@@ -41,6 +41,8 @@ Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You will use
 Also read these files using the `Read` tool if they exist (skip silently if not):
 - `CLAUDE.md` — project conventions and coding rules
 - `.claude/project.yaml` — project-specific context
+- `.claude/implement-with-haiku.md` — project-specific gates and overrides for this
+  command; where it conflicts with this command's defaults, the project file wins
 
 **Stage timing.** Each agent self-measures and returns an `ELAPSED_SECONDS:` line. Report per-round
 agent compute, not end-to-end wall clock (which includes idle between turns).
@@ -391,6 +393,44 @@ Surface the truncated report and offer a menu:
 - **Inspect** — let the human review the worktree diff and decide next steps
 - **Skip** — mark this unit failed, continue with the rest (only for round-1 units)
 - **Abort** — stop the flow entirely
+
+---
+
+## Orchestrator verification lessons (applies to every round)
+
+Hard-won failure modes from real runs. The multi-agent gate is only as good as the
+orchestrator's own verification — never trust round self-reports.
+
+- **Self-reports overstate success.** Agents have reported "all tests pass" over real
+  failures, "clippy clean" from a run without `-D warnings` or with `--lib` only, and
+  "cargo test passed" when only `cargo check` ran (the test binary didn't compile).
+  Re-run the exact gate commands yourself after every round.
+- **`COMMITTED: yes` can be false; `COMMITTED: no` can hide finished work.** Verify with
+  `git --no-pager log --format='%h %s' <START_SHA>..HEAD` and
+  `git --no-pager diff --name-only <START_SHA> HEAD`. If round 1 left complete work
+  uncommitted, validate, fix, and commit it yourself — rounds 2/3 need a committed base.
+  Run git state checks ONE command at a time; large parallel batches contaminate each
+  other's output and can fake a disaster that didn't happen.
+- **Read new test files, don't count them.** A test that never imports the unit under
+  test (asserting hand-built literals against themselves) passes even if the
+  implementation is deleted. Confirm each file imports and exercises the real unit
+  (renderHook for hooks, real deserialize for parsers). Reject tests that re-implement
+  a copy of the logic and assert on the copy.
+- **"Pure move" refactors duplicate and drop.** Compare unique test fn-name SETS before
+  vs after (`comm`), not attribute counts — a duplicated block plus two dropped tests
+  cancel out in the count.
+- **Agents die mid-format and drift cwd.** Expect to finish formatting/commits yourself;
+  when a merge conflicts unexpectedly on an agent's files, check whether it edited the
+  MAIN worktree instead of its own (`git -C <wt> status` both places) — the work is
+  usually salvageable in place.
+- **The adversary punts.** Round 3 may "document the limitation" instead of writing the
+  hard test, report `VERIFIED: n/a` without running anything, or mislabel an explicit
+  plan requirement as `[PLAN_GAP]`. Re-triage its findings; write the real test
+  yourself if needed.
+- **Treat dead-code/unused warnings as "scaffolded but not wired"** — they repeatedly
+  exposed features the self-report claimed were integrated.
+- **Fresh worktrees need deps installed** before test results mean anything (a missing
+  dev dep can error out the whole suite and produce misleading counts).
 
 ---
 

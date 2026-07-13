@@ -10,46 +10,6 @@ summary:
     Careful and methodical. Uses phrases like "What happens if two threads...",
     "Is this lock ordering consistent?", "Could this state change between check and use?"
 
-triggers:
-  filePatterns:
-    - Multi-threaded code
-    - Async/await code
-    - Shared state management
-    - Channel/queue implementations
-    - Lock/mutex usage
-  keywords:
-    - thread
-    - spawn
-    - join
-    - async
-    - await
-    - Future
-    - Promise
-    - Mutex
-    - RwLock
-    - Arc
-    - Atomic
-    - channel
-    - mpsc
-    - broadcast
-    - Send
-    - Sync
-    - lock
-    - unlock
-    - synchronized
-    - static mut
-    - lazy_static
-    - OnceCell
-    - Rc
-    - RefCell
-  riskIndicators:
-    - New shared state
-    - Lock ordering changes
-    - Channel/queue modifications
-    - Atomic operations
-    - New async code
-    - Callback registrations
-
 principles:
   - "Concurrent bugs are hard to reproduce: They depend on timing, load, and luck."
   - "Easy to introduce: One missing lock, one wrong ordering."

@@ -13,28 +13,6 @@ summary:
     "Removed from A but still referenced in B", "Exported but only used internally",
     "Config field added but never validated", "Parameter accepted but never read."
 
-triggers:
-  # Triggers on everything — dead code can appear anywhere
-  filePatterns:
-    - "*"
-  keywords:
-    - func
-    - function
-    - fn
-    - def
-    - class
-    - struct
-    - type
-    - interface
-    - const
-    - export
-    - pub
-  riskIndicators:
-    - New exported symbols
-    - Removed functions or types
-    - New config fields
-    - Changed function signatures
-
 principles:
   - "Every new symbol must have at least one caller outside its own test file."
   - "Every removed symbol must leave no dangling references."
@@ -43,7 +21,7 @@ principles:
   - "Exported but internally-used symbols are unnecessary public API surface."
 
 codeReview:
-  runOrder: after-pass1  # Runs after other reviewers so it can reference their findings
+  runOrder: always-run  # part of the Step 6 parallel batch, gets the full diff by domain (ADR-0003.2)
   requiresFullDiff: true  # Needs full diff to track all symbols
 
   prompt: |
