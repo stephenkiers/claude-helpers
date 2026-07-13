@@ -10,27 +10,34 @@ sections by keyword, grep for uncalled symbols, answer a yes/no question about t
 everything on the most capable model is needlessly expensive; running everything on a cheap model
 loses the judgment that makes the review worth doing.
 
-## Decision
+## Decision (Revised)
 
 Route each step to the cheapest model that can do it well:
 
-- **Haiku** for mechanical/throughput steps: summarizer, tagger, consistency checker, Code Rot Cody
-  (dead-code grep), and per-reviewer Q&A. These are declared with `model: haiku` (e.g. `shipit`,
-  `code-rot-cody`) or run as Haiku subagents.
-- **Opus** for the judgment-heavy work where persona expertise actually lives: the `expert-review`
-  orchestrator and its per-reviewer Pass 1/Pass 2/cross-review subagents (which inherit the
-  orchestrator's model), and `expert-plan`.
+- **Haiku** for mechanical/throughput steps: Q&A (answer questions), Code Rot Cody (dead-code grep),
+  and Consistency Checker (pattern matching). These are declared with `model: haiku` in
+  `agents/expert-scout.md`.
+- **Sonnet** for narrow judgment: the **Router** that decides which reviewers to include. This is
+  judgment (not mechanical), but narrow (not deep expertise), so Sonnet is right-sized: capable at
+  1/3 the Opus cost.
+- **Panel model** (default Opus; override with `--model`) for the judgment-heavy work where persona
+  expertise lives: the `expert-review` orchestrator and its Pass 1/Pass 2/Contrarian Carl subagents
+  (which inherit the orchestrator's model), and the single **Amalgamator** that synthesizes all
+  findings.
+- **Fable** is available as the deliberate expensive step: use `--model fable` when the diff is
+  particularly gnarly and you want maximum synthesis capability on the Amalgamator.
 
 Model choice is set per command/reviewer via frontmatter (`model:`), so it stays explicit and tunable.
-For `/expert-review` the Haiku pin now lives in the agent definition — `agents/expert-scout.md` carries
-`model: claude-haiku-4-5`, and every mechanical role is dispatched to it — rather than being repeated
-as a `model:` argument at each spawn site.
+For `/expert-review`:
+- The Router is pinned to Sonnet in `agents/expert-scout.md` (judgment but economical)
+- Haiku mechanical roles are pinned to Haiku in `agents/expert-scout.md`
+- Panel roles (Pass 1, Carl, Pass 2, Amalgamator) inherit from the command's model, overrideable
+  via `--model`
 
 **Per-invocation override:** `/expert-review --model <haiku|sonnet|opus|fable>` sets the model for the
-**judgment panel only** — Pass 1, escalated Pass 1, Contrarian Carl, Pass 2, cross-review. The
-mechanical roles stay pinned to Haiku regardless: the tagger, the confirm-gate (ADR-0003), Q&A, Code
-Rot Cody, and the Consistency Checker route and grep, and a larger model does not grep better. So the
-flag scales the part of the bill that buys judgment, and only that part.
+**judgment panel only** — Pass 1, Contrarian Carl, Pass 2, Amalgamator. The mechanical roles (Router,
+Q&A, Cody, Consistency Checker) stay at their pinned models regardless. So the flag scales the part
+of the bill that buys judgment expertise, and only that part.
 
 The tiers, cheapest to dearest (per 1M tokens, input/output): **Haiku 4.5** $1/$5 · **Sonnet 5** $3/$15
 · **Opus 4.8** $5/$25 · **Fable 5** $10/$50. Note the shape of that ladder: Fable is the *most
@@ -41,40 +48,38 @@ the cheap option, which was simply false.
 
 ## Consequences
 
-- **Good:** Most token volume (summarizing, routing, grepping, Q&A) runs cheap; expensive models are
-  reserved for where they change the outcome.
-- **Cost:** Cheap models occasionally mis-summarize or mis-route, feeding the expensive thread slightly
-  wrong inputs. Acceptable because the expert passes re-read the actual diff, not just the summary.
+- **Good:** Most token volume (Q&A, grepping, pattern matching) runs cheap; expensive models are
+  reserved for judgment where they change the outcome. Routing is judgment but economical (Sonnet).
+  Synthesis (Amalgamator) is the deliberately expensive step, made explicit by `--model fable`.
+- **Cost:** Sonnet occasionally mis-judges which reviewers to include, feeding the panel slightly
+  wrong members. Acceptable because each panel member re-reads the actual diff, and the Amalgamator
+  deduplicates/conflicts-resolves; a mild routing miss is caught downstream.
 - **Cost:** Parallel per-reviewer subagents (ADR-0002) multiply *input* tokens — every reviewer
-  re-receives the framework, its persona, and its sections. Narrow triggers plus the Haiku
-  confirm-gate keep that multiplier applied to a smaller panel; `--model` scales what remains.
+  re-receives the framework, its persona, and its sections. The Router narrows the initial panel to
+  only truly relevant reviewers, so the multiplier is applied to fewer subagents than keyword-routing
+  would produce.
+- **No cross-review:** The old cross-review stage (each DEEP-DIVE reviewer reacted to others' findings)
+  was quadratic in panel size (17 agents × 175k tokens each) and produced the least-valuable output.
+  The Amalgamator replaces it: one expensive agent reads all findings and synthesizes (deduplicates,
+  severity-ranks, conflicts-resolves) for the final report. Simpler, cheaper, and better.
 - **Forking note:** If you fork, retune `model:` frontmatter to your budget — there is no global
   switch; it is intentionally per-step.
 
-### The diff-replication problem, and why `diff-index.md` exists
+### Routing cost optimization
 
-Prompt caching does not cross subagents. The old sequential design ran every reviewer in one main
-thread, so the diff was paid for once and every later turn was a cheap cache hit. The parallel
-rewrite (ADR-0002) buys blindness and quality, correctly — but each of the ~20+ subagents opens a
-*fresh* context, so a diff handed to N subagents is paid for N times at full price. Nobody costed
-that when the parallel design shipped.
+The Router reads the full `full-diff.patch` once, emits line ranges into it, and passes those ranges
+to Pass 1 reviewers for bounded reads. One agent pays full diff price; many agents read their
+sections only. The previous design (Haiku tagger + Haiku confirm-gate per unrouted reviewer) meant:
 
-Measured on `claude-helpers` itself (a branch that rewrites most of `commands/` and `reviewers/`,
-so the diff is unusually large relative to the repo — 44k tokens against a 122k-token repo, 36%):
-the tagger routed 2 of 21 reviewers and skipped 19, and Step 5b (the confirm-gate) handed each of
-those 19 the **full 44k-token diff** — ~1.1M tokens spent on Haiku to produce 19 one-line
-"not my domain" verdicts. Cheap per-token (Haiku, ≈$1), but a genuinely wasteful wall-clock and
-design smell: broadcasting the whole diff to agents whose entire job is a routing decision.
+- **Tagger:** reads full patch once (unavoidable; line ranges are byte offsets)
+- **Confirm-gate:** 19 parallel agents, each reading the full 44k-token patch, to render a yes/no
+  routing decision. Measured: ~1.1M tokens on Haiku to produce 19 verdicts.
 
-**The fix is not "pass a path instead of contents."** Passing a path only moves where the tokens are
-counted — the receiving subagent pays the identical cost the instant it calls `Read` on that path.
-The only real lever on a subagent's cost is handing it something *smaller to read*. That's what
-`{REVIEW_DIR}/diff-index.md` is: `git diff --stat` + hunk headers only (each header already carries
-its enclosing function/section), about 1/20th the size of the full patch. The confirm-gate (Step 5b)
-reads that instead of `full-diff.patch`, with an escape hatch to pull one file's diff if something
-looks in-domain. It's a soft control — the gate still *can* read the full patch — but it removes the
-default reason to.
+The new design (single Sonnet Router):
 
-The tagger itself still needs the full patch: the line ranges it emits in `tagged-sections.md` are
-byte offsets into `full-diff.patch`, which Pass 1 reviewers then use for bounded `Read(offset,
-limit)` calls instead of reading the whole file. That's one agent paying full price, not nineteen.
+- **Router:** reads full patch + summary once, routes based on judgment + index signals
+- **Pass 1 reviewers:** read their bounded sections (not the whole patch)
+
+Sonnet is 3× the cost of Haiku per token, but the Router runs once instead of 19 times. Token math:
+Router at 1 run (full patch) vs. gate at 19 runs (full patch × 19): 1 Sonnet call is cheaper than
+~6 Haiku calls for the same tokens. Routing accuracy (judgment vs. keywords) is a bonus.

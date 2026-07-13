@@ -39,9 +39,10 @@ See the ADRs for the full rationale:
 ## Commands
 
 **Review & planning**
-- `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, tagger
-  routing with a Haiku confirm-gate for un-routed reviewers. Takes `[reviewers...]` and
-  `--model haiku|sonnet|opus|fable` (panel tier; mechanical roles stay Haiku per ADR-0004)
+- `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, judgment
+  router for reviewer selection (Sonnet), single Amalgamator for synthesis (replaces quadratic
+  cross-review). Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
+  and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
@@ -116,9 +117,10 @@ take precedence over these defaults (see [ADR-0005](docs/adr/0005-three-layer-co
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
   (used by `/implement-with-haiku`).
 - `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
-  for Pass 1, Carl, Pass 2, cross-review). Model comes from the caller (`--model`).
-- `expert-scout` — the pinned-Haiku mechanical roles: tagger, confirm-gate, Q&A, Code Rot Cody,
-  Consistency Checker.
+  for Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from the
+  caller (`--model`).
+- `expert-scout` — the pinned mechanical roles: Router (Sonnet; narrow judgment), Q&A (Haiku),
+  Code Rot Cody (Haiku), Consistency Checker (Haiku).
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory

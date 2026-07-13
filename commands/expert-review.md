@@ -10,15 +10,16 @@ model: opus
 A checkpoint-based, parallel code review pipeline:
 
 1. **Summarizer** analyzes the diff (subagent)
-2. **Tagger** (haiku) routes diff sections to reviewers
-3. **Pass 1 blind reviews** — one **parallel subagent per routed reviewer** (incl. Sam System, Code
-   Rot Cody, Consistency Checker), each writing its own checkpoint file. Un-routed reviewers get a
-   cheap **haiku confirm-gate** that can escalate them back into a full review
+2. **Router** (sonnet) judges which reviewers meet the threshold for this diff
+3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (incl. Sam System, Code
+   Rot Cody, Consistency Checker), each writing its own checkpoint file
 4. **Contrarian Carl** — after all Pass 1 files exist, sees everything, finds what was missed
 5. **Haiku Q&A** — parallel haiku subagents answer each reviewer's open questions
-6. **Pass 2 re-evaluations** — parallel subagents, business context + Q&A answers revealed
-7. **Expert Cross-Review** — parallel subagents for DEEP-DIVE reviewers only
-8. **Verify → Amalgamate → final-report.md → cache metadata** (main thread)
+6. **Pass 2 re-evaluations** — parallel subagents, **fresh skeptic-verifier framing**, business context
+   + Q&A answers revealed. Judgment reviewers only (mechanical roles get no Pass 2).
+7. **Amalgamator** (PANEL_MODEL) — one expensive agent replaces quadratic cross-review; deduplicates,
+   severity-ranks, resolves conflicts, writes final-report.md
+8. **Verify → Cache metadata** (main thread)
 
 **Why checkpoints?** Every step writes an inspectable artifact to the review directory; if any
 agent fails, the others' work is preserved and only the missing step re-runs.
@@ -45,31 +46,33 @@ they are the difference between a ~180k review and a ~430k one:
    every subsequent turn. Note that passing a path only saves *your* context: the receiving subagent
    pays the same tokens the moment it calls `Read`. The real lever on a subagent's cost is giving it
    a smaller artifact to read, not just a path to a big one — that is why `diff-index.md` exists
-   (Step 1) and why Step 5b hands it to the gate instead of the full patch.
+   (Step 1). The Router reads the full patch once; Pass 1 reviewers read their bounded sections.
 
 You are a router and an amalgamator. Review text belongs in files and in subagents, not in you.
 
 ## Arguments
 
-- `$1...`: Reviewer selection (default: all discovered reviewers, tagger-routed)
+- `$1...`: Reviewer selection (default: all discovered reviewers, router-selected)
   - Comma- or space-separated names matched case-insensitively against `index.yaml` — full names or
     unambiguous prefixes: `/expert-review rachel,security-sage` — error if a name doesn't match
-  - Naming reviewers **is** the routing decision: only they run, and the confirm-gate (Step 5b) is
-    skipped entirely
-  - `--all`: explicitly run all reviewers (the default)
-- `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, escalated Pass 1,
-  Contrarian Carl, Pass 2, cross-review. Default: inherit this command's model (`opus`).
-  Mechanical roles stay pinned to haiku per ADR-0004 — the tagger, the confirm-gate, Q&A, Code Rot
-  Cody, and the Consistency Checker route and grep; a bigger model does not grep better.
+  - Naming reviewers **bypasses the router**: only named reviewers run
+  - `--all`: explicitly run all reviewers (the default; router makes the final call)
+- `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Round 2, Contrarian
+  Carl, and **Amalgamator**. Default: inherit this command's model (`opus`). Mechanical roles stay
+  pinned to haiku per ADR-0004 — the router (judgment but narrow), Q&A, Code Rot Cody, and the
+  Consistency Checker route and grep; a bigger model does not grep better. Router is pinned to sonnet
+  (judgment but economical).
 - `--full`: review the entire codebase instead of just changed files
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
-  · **fable** $10/$50. Fable is the most capable *and* the most expensive — 2× Opus — so reach for it
-  on a gnarly diff, not by default.
+  · **fable** $10/$50. Fable is the most capable *and* the most expensive — 2× Opus — it is the
+  deliberate expensive step, used by the Amalgamator to resolve conflicts and severity-rank findings.
+  Opus is the default panel tier.
 
 Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a smoke test) ·
-`/expert-review rachel,security-sage --model fable` (two reviewers, no gate, maximum capability)
+`/expert-review rachel,security-sage` (two reviewers, no router) ·
+`/expert-review --model fable` (use fable for the amalgamator and panel)
 
 ## Checkpoint Files
 
@@ -79,16 +82,14 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 | File | Written by | When |
 |------|-----------|------|
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
-| `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller; feeds the confirm-gate (Step 5b), which makes a routing decision and doesn't need hunk bodies |
-| `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
-| `tagged-sections.md` | Tagger | Step 4.5 — section → reviewer routing + SKIP list |
-| `skipped.md` | Main thread | Step 5b — un-routed reviewers whose haiku gate confirmed the skip |
-| `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 5 (Consistency Checker + Cody included) |
-| `contrarian-carl-pass1.md` | Carl | Step 5.7 — no Pass 2, presented as-is |
-| `{reviewer}-questions-answered.md` | Haiku Q&A | Step 6 — only reviewers with open questions |
-| `{reviewer}-pass2.md` | Pass 2 subagents | Step 6.5 — only reviewers with findings |
-| `{reviewer}-cross-review.md` | Cross-review subagents | Step 6.7 — DEEP-DIVE reviewers only |
-| `final-report.md` | Main thread | Step 8.5 |
+| `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
+| `summary.md` | Summarizer | Step 2 — Technical Summary + Business Context |
+| `tagged-sections.md` | Router | Step 2.5 — section → reviewer routing with Panel Decision (includes/excludes) |
+| `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 3 (Consistency Checker + Cody included) |
+| `contrarian-carl-pass1.md` | Carl | Step 3.7 — no Pass 2, presented as-is |
+| `{reviewer}-questions-answered.md` | Haiku Q&A | Step 4 — only reviewers with open questions |
+| `{reviewer}-pass2.md` | Pass 2 subagents | Step 5 — only reviewers with findings, judgment reviewers only |
+| `final-report.md` | Amalgamator | Step 6 |
 
 ---
 
@@ -157,21 +158,19 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
   ```
   `diff-index.md` is the file list plus every hunk header — each one already carries its enclosing
   function/section (`@@ -39,13 +39,16 @@ See the ADRs for…`) — at roughly 1/20th the size of the
-  full patch. It exists for the confirm-gate (Step 5b): a **routing** decision that normally doesn't
-  need hunk bodies, made by up to 19 parallel agents where the full patch would be re-paid 19 times.
-  Every other consumer (tagger, Sam System, Code Rot Cody, Consistency Checker, routed Pass 1
-  reviewers) reads `full-diff.patch` — the tagger in particular needs it because the line ranges it
-  emits in `tagged-sections.md` are offsets into that file (Step 5a's bounded reads depend on this).
+  full patch. The Router reads `full-diff.patch` (its line ranges in `tagged-sections.md` are
+  offsets into that file, which Pass 1 reviewers use for bounded reads). Sam System, Code Rot Cody,
+  and Consistency Checker read the full patch (their domain is the whole diff).
 
 ### Step 2: Discover Available Reviewers
 
 1. Resolve the home directory (`echo $HOME` — tilde doesn't expand in Glob).
 2. **Read `{HOME}/.claude/reviewers/index.yaml`** — the single source of `name`, `priority`,
-   `triggers`, `useWhen`, `note` for every reviewer. The tagger uses ONLY this index.
+   `triggers`, `useWhen`, `note` for every reviewer. The Router consults ONLY this index.
 3. **Never read a reviewer's own YAML into this orchestrator context.** `index.yaml` is all you need
-   to route, gate, and dispatch. Each subagent reads its own persona file (Step 5a) — that is the
-   whole point of ADR-0001. Loading 20+ personas here costs ~28k tokens you then re-read from cache
-   on every subsequent turn, for text you never reason about.
+   to understand reviewer domains. Each subagent reads its own persona file — that is the whole point
+   of ADR-0001. Loading 20+ personas here costs ~28k tokens you then re-read from cache on every
+   subsequent turn, for text you never reason about.
 4. **Project overrides:** Glob `{project-root}/.claude/reviewers/*-local.yaml` to learn *which*
    overrides exist — record the paths, do not read the files. Pass the path to the owning subagent;
    a local override augments (not replaces) the global reviewer of the same base name.
@@ -179,16 +178,16 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 ### Step 3: Parse Reviewer Selection and Model
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
-error on no match. Set `NAMED_SELECTION=true` (Step 5 then runs no gate). Otherwise (or `--all`) →
-all reviewers, `NAMED_SELECTION=false`.
+error on no match. Set `NAMED_SELECTION=true` (Router is bypassed). Otherwise (or `--all`) →
+all reviewers, `NAMED_SELECTION=false` (Router makes the call).
 
 **Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. If absent,
 leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this
-command's model. `PANEL_MODEL` applies to Pass 1 (Step 5a), escalated Pass 1 (5c), Contrarian Carl
-(5.7), Pass 2 (6.5), and cross-review (6.7) — and to nothing else. Print the resolved panel model
+command's model. `PANEL_MODEL` applies to Pass 1 (Step 3), Contrarian Carl (Step 3.7), Pass 2
+(Step 5), and Amalgamator (Step 6) — and to nothing else. Print the resolved panel model
 with the reviewer count when the run starts.
 
-### Step 4: Summarizer → `summary.md`
+### Step 2: Summarizer → `summary.md`
 
 Spawn one subagent (`subagent_type: "Explore"`) with the summarizer prompt
 @~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
@@ -197,41 +196,46 @@ messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if availabl
 known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file contains
 `## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
 
-### Step 4.5: Tagger (haiku) → `tagged-sections.md`
+### Step 2.5: Router (sonnet) → `tagged-sections.md`
 
-Spawn a subagent (`subagent_type: "expert-scout"` — haiku is pinned in the agent definition) with the
-tagger prompt @~/.claude/prompts/tagger.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs
-the full patch, not `diff-index.md`: the line ranges it emits are offsets into that file, which
-Step 5a later uses for bounded reads) and the reviewer names + triggers **from index.yaml only**.
-Save output to `{REVIEW_DIR}/tagged-sections.md`: sections mapped to each reviewer with line ranges,
-plus a SKIP section for reviewers with no trigger match.
+Spawn a subagent (`subagent_type: "expert-scout"` — sonnet is pinned in the agent definition for
+judgment) with the router prompt @~/.claude/prompts/router.md. The router reads:
+- `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
+  that file, which later reviewers use for bounded reads)
+- The `{REVIEW_DIR}/summary.md` (Technical Summary and Business Context)
+- The plan/issue context (if any)
+- `reviewers/index.yaml` **ONLY** — the router must not load persona YAML files; progressive
+  disclosure means routing decisions are made from each expert's declared interest (`triggers`,
+  `useWhen` in the index), not their full personas
 
-**Tagger-collapse guard.** After the tagger returns, compute the SKIP fraction: `skipped reviewers /
-routable reviewers`. If it exceeds **60%**, this is not 19 independent routing decisions — it is
-tagger abstention (e.g. trigger keywords not matching a docs/prompts-heavy repo). Print:
-```
-⚠️  TAGGER COLLAPSE — routed {n}/{total}, skipped {m}/{total} ({pct}%).
-    Falling back to the confirm-gate for all {m}. Recorded for /review-stats.
-```
-Behavior doesn't change — the gate (Step 5b) already runs for every SKIP either way — but note the
-collapse in `final-report.md`'s Routing Accuracy table so `/review-stats` can see it and the run
-isn't silently 19 gate calls with no signal that the tagger barely routed anything.
+The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
+1. `## Panel Decision` — a summary of which reviewers were selected and why, formatted as:
+   ```
+   | Reviewer | Selected | Reason |
+   | ... | Yes | {1-line justification} |
+   | ... | No | {1-line justification} |
+   ```
+2. Per-reviewer sections with line ranges, exactly as today's tagger outputs them, so Pass 1 reviewers
+   can use them for bounded reads.
 
-### Step 5: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
+**Always-run set (never routed, pre-seated):**
+- Sam System, Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
+- Contrarian Carl (runs last, always).
 
-Read `tagged-sections.md` and parse which reviewers have sections (**routed**) vs. are in SKIP
-(**un-routed**). Routed reviewers go to Step 5a; un-routed reviewers go to the gate in Step 5b.
+The router is told these four are pre-seated and to treat them as included for the decision table.
 
-**If specific reviewers were named** (Step 3): they are all treated as routed — naming them *is* the
-routing decision. Run no gate. Reviewers the user didn't name simply don't run.
+**Named reviewers:** If the user named specific reviewers (Step 3), skip the router entirely — the
+user's selection *is* the decision, and all four always-run reviewers still participate.
 
-#### Step 5a: Routed reviewers → full Pass 1
+### Step 3: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
-**Launch ALL routed Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant
-turn; `subagent_type: "expert-reviewer"`; `run_in_background: false`; `model: PANEL_MODEL` from
-Step 3). One subagent per reviewer. They still run concurrently — the harness caps concurrency — and
-they have all returned by the time you continue, which makes the Step 5c join barrier free. See
-"Never poll" there.
+Read `tagged-sections.md` and parse which reviewers were selected by the router. Launch all selected
+reviewers (routed by the router OR named by the user OR always-run) in ONE message. All run as
+**`subagent_type: "expert-reviewer"`**, `run_in_background: false`, `model: PANEL_MODEL` from Step 3.
+
+**Launch ALL Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant turn).
+One subagent per reviewer. They still run concurrently — the harness caps concurrency — and they have
+all returned by the time you continue.
 
 **Why a custom agent, not `general-purpose`.** Twenty concurrent subagents reading persona files and
 writing checkpoints outside the working directory would produce twenty near-identical permission
@@ -259,8 +263,7 @@ Before reviewing, read these files with the Read tool:
 
 Then supply inline **only what you alone know** — none of it is on disk for the subagent to find:
 
-- Their tagged sections (escalated reviewers from Step 5c get the sections their gate named) — as
-  line ranges into `{REVIEW_DIR}/full-diff.patch`, plus:
+- Their tagged sections — as line ranges into `{REVIEW_DIR}/full-diff.patch`, plus:
   ```
   Your sections are line ranges into {REVIEW_DIR}/full-diff.patch. Read ONLY those ranges
   (the Read tool takes offset/limit). Reading whole source files when a finding needs
@@ -329,80 +332,11 @@ they read themselves; you do not need to know them here.)
   pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
   contradicted by the code. Its output format is defined in its own YAML.
 
-#### Step 5b: Un-routed reviewers → haiku confirm-gate → `skipped.md`
-
-The tagger is a keyword heuristic, not an oracle — it has been caught inventing matches, and
-keywords are only a proxy for a domain. So an un-routed reviewer is not dropped on the tagger's word
-alone: each gets a **cheap haiku second opinion that can escalate**.
-
-Launch these in the **same parallel batch** as Step 5a — one subagent
-(`subagent_type: "expert-scout"`; haiku is pinned there) per SKIP-listed reviewer. This is a routing
-decision, not a review, so the prompt gets the reviewer's `name`, `useWhen`, and `triggers` **from
-`index.yaml` only** — do NOT load the full persona YAML.
-
-**Starve the gate — point it at `diff-index.md`, never `full-diff.patch`.** This step runs up to 19
-times in parallel; handing each copy the full diff (measured: ~44k tokens on a mid-size PR) is what
-made a gate exist to save money cost *more* than the panel it was gating. Give it the cheap artifact
-and an explicit escape hatch instead:
-
-```
-Read {REVIEW_DIR}/diff-index.md — the changed files and every hunk header, each with its
-enclosing function/section. That is deliberately not the diff body: yours is a ROUTING
-decision, and the file list plus hunk context is normally enough to make it.
-
-The tagger did not route any section to you. Its stated reason:
-  "{tagger reason}"
-
-That is a keyword-matching heuristic and it has been wrong before — treat it as a
-hypothesis to check, not a verdict. Scan the index yourself for anything in YOUR
-domain ({useWhen}). Trigger keywords are only a proxy: a problem in your domain can
-be present with none of them in the diff, and present with all of them and still not
-be yours.
-
-If — and only if — a specific file looks like it might touch your domain, pull that
-ONE file's diff: `git diff main...HEAD -- <path>`. Do not read the whole patch.
-
-Respond in exactly this format:
-## Verdict
-[AGREE-SKIP | ESCALATE]
-## Scanned
-[the files/areas you actually looked at]
-## Reason
-[AGREE-SKIP: why nothing here is in your domain.
- ESCALATE: file:line of what is, and why it's yours.]
-```
-
-Return the verdict as the final message; the orchestrator collects them (gate agents write no files).
-
-This is a **soft control** — the agent still has `Read` and `Bash(git diff:*)`, and nothing stops it
-reading the full patch if it decides to. What discourages that is never being handed the patch path
-and being told the cheaper move explicitly. If a run shows gate agents ballooning back toward
-full-diff size, that means the soft control isn't holding and it needs to become a hard one (e.g.
-strip `Bash(git diff:*)` down to a per-file form only the escalation path can use).
-
-#### Step 5c: Escalation
-
-Every `ESCALATE` is promoted to a **real Pass 1 review** — `subagent_type: "expert-reviewer"`,
-`model: PANEL_MODEL` — run exactly as Step 5a but seeded with the sections the gate named instead of
-tagger sections. It writes the normal `{reviewer}-pass1.md` and joins Q&A / Pass 2 / cross-review
-like any other reviewer.
-
-Every `AGREE-SKIP` becomes one row in a single `{REVIEW_DIR}/skipped.md` (written by the
-orchestrator) — not 14 near-empty pass1 files:
-
-```markdown
-# Skipped Reviewers (gate-confirmed)
-
-| Reviewer | Scanned | Reason |
-|----------|---------|--------|
-| Rachel | src/api/*.ts, src/db.ts | No shared state, threads, or async coordination introduced |
-```
-
-**Join barrier.** Launching Step 5a/5b/5c agents in one message with `run_in_background: false` means
-they have all returned by the time you continue — the barrier costs you nothing. Then verify
-`{REVIEW_DIR}/{reviewer}-pass1.md` exists for every routed and escalated reviewer. If a receipt came
-back but its file is missing, **re-run that one reviewer** — do not try to reconstruct the review from
-the receipt; the receipt is a status line, not a report.
+**Join barrier.** All Step 3 agents launched in one message with `run_in_background: false` means
+they have all returned by the time you continue. Then verify `{REVIEW_DIR}/{reviewer}-pass1.md`
+exists for every selected reviewer. If a receipt came back but its file is missing, **re-run that one
+reviewer** — do not try to reconstruct the review from the receipt; the receipt is a status line, not
+a report.
 
 **Never poll.** Do not use `ScheduleWakeup`, `sleep`, or repeated status checks to wait for
 subagents. A timed wakeup re-reads your *entire* context from cache and learns nothing you would not
@@ -411,21 +345,13 @@ is large enough that you truly want it backgrounded, then **end your turn**: the
 you when the agents finish. Track per-reviewer status by checking for files, never by counting
 notifications.
 
-**The escalation list is the tagger's error log.** Record it in the final report as
-`{reviewer} — escalated by gate (tagger missed: {reason})`, and let `/review-stats` track the
-escalation rate per reviewer. A gate that never escalates across many reviews is either a
-correctly-narrow persona or a rubber stamp; the confirmed-finding rate of its escalations tells you
-which.
-
-### Step 5.7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
+### Step 3.7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
 
 Carl runs **last** and is the one reviewer who is not blind to the panel. Spawn one subagent
 (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`) and, per "Pass paths, not contents",
-point him at the files rather than
-inlining them: his persona (`~/.claude/reviewers/contrarian-carl.yaml`), the other reviewers'
-`{REVIEW_DIR}/*-pass1.md` files (including Cody's and the Consistency Checker's), and
-`{REVIEW_DIR}/skipped.md` — who *didn't* review this diff is exactly the kind of blind spot he
-exists to find. Supply the diff scope inline. His instruction:
+point him at the files rather than inlining them: his persona (`~/.claude/reviewers/contrarian-carl.yaml`),
+the other reviewers' `{REVIEW_DIR}/*-pass1.md` files (including Cody's and the Consistency Checker's).
+Supply the diff scope inline. His instruction:
 
 ```
 You have access to what EVERY other reviewer found. Your job is to find something
@@ -442,7 +368,7 @@ carve-out). He writes `{REVIEW_DIR}/contrarian-carl-pass1.md` and returns a rece
 `contrarian-carl | findings: {n} | wrote: {path}` — like every other panel agent. He does NOT
 participate in Pass 2; his findings are presented as-is.
 
-### Step 6: Haiku Q&A (parallel) → `{reviewer}-questions-answered.md`
+### Step 4: Haiku Q&A (parallel) → `{reviewer}-questions-answered.md`
 
 Runs BEFORE Pass 2 so the re-evaluation is informed rather than speculative (ADR-0002). For each
 reviewer whose Pass 1 receipt reported `open-questions > 0`: spawn a subagent
@@ -456,10 +382,12 @@ It writes `{REVIEW_DIR}/{reviewer}-questions-answered.md` — **Answer** + **Evi
 per question — and returns a receipt only: `{reviewer} | answered: {n} | wrote: {path}`. Launch all
 Q&A agents in one message.
 
-### Step 6.5: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
+### Step 5: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
 
-**Only for reviewers whose Pass 1 receipt reported findings > 0** (Carl excluded). Launch one
-subagent per such reviewer, in one message (`subagent_type: "expert-reviewer"`,
+**Only for judgment reviewers whose Pass 1 receipt reported findings > 0.** Mechanical roles
+(Code Rot Cody, Consistency Checker) skip Pass 2. Carl is not re-evaluated; his findings stand as-is.
+
+Launch one subagent per eligible reviewer, in one message (`subagent_type: "expert-reviewer"`,
 `model: PANEL_MODEL`). Pass paths, not contents — each prompt names the files to Read:
 
 - `~/.claude/prompts/pass2-reevaluation.md` — the pass2 prompt and output format
@@ -468,7 +396,11 @@ subagent per such reviewer, in one message (`subagent_type: "expert-reviewer"`,
 - Permission to read any file referenced in their findings, to resolve uncertainty
 
 Supply inline only the **Business Context** section from `summary.md` — revealed now for the first
-time, and the whole point of Pass 2.
+time, and the whole point of Pass 2. Also supply the plan/issue context if available.
+
+**Reframed as skeptic-verifier (anti-anchoring).** The prompt's framing changes from "continue your
+review" to "another engineer submitted this review; given the context, which findings hold up to
+your standards?" — third-person, minimal context, explicitly designed to prevent sunk-cost defense.
 
 Each re-evaluates every finding as CONFIRMED / RESOLVED / DOWNGRADED (with reason and final
 severity), writes `{REVIEW_DIR}/{reviewer}-pass2.md` in the pass2 prompt's format, and returns a
@@ -478,47 +410,42 @@ receipt only:
 {reviewer} | pass2 | confirmed: {n} | resolved: {n} | downgraded: {n} | wrote: {path}
 ```
 
-### Step 6.7: Expert Cross-Review (parallel subagents) → `{reviewer}-cross-review.md`
+### Step 6: Amalgamator (one expensive agent) → `final-report.md`
 
-Only for reviewers whose Pass 1 receipt said `DEEP-DIVE` (QUICK-SCAN reviewers add little here).
-Launch one subagent per DEEP-DIVE reviewer, in one message (`subagent_type: "expert-reviewer"`,
-`model: PANEL_MODEL`). Pass paths, not
-contents: point each at its own `~/.claude/reviewers/{name}.yaml` and at the other reviewers'
-`{REVIEW_DIR}/*-pass1.md` / `*-pass2.md` files, plus the diff scope, and:
+**Before spawning the Amalgamator,** verify all expected checkpoint files exist (pass1 for every
+routed + escalated reviewer, pass2 where findings, questions-answered where open questions).
+If any are missing, report which agents failed and re-run only those.
+
+The Amalgamator is **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`; this
+is the step where `--model fable` earns its cost). Its job: synthesis, not review. It reads:
+- All `{REVIEW_DIR}/*-pass1.md` files (including Carl's)
+- All `{REVIEW_DIR}/*-pass2.md` files (re-evaluation verdicts)
+- All `{REVIEW_DIR}/*-questions-answered.md` files
+- The `{REVIEW_DIR}/tagged-sections.md` (router's Panel Decision)
+- The plan/issue context (if any)
+
+Its mandate (in the prompt):
+```
+You are synthesizing a code review from specialists who have already reported. Your job is NOT to
+add new findings or re-review the code — it is to:
+
+1. DEDUPLICATE — if multiple reviewers flagged the same issue, report it once, noting who agreed
+   and why their angles differed.
+2. SEVERITY-RANK — given each CONFIRMED finding and its evidence, assign final severity
+   (CRITICAL > HIGH > MEDIUM > LOW) and prioritize (most critical first).
+3. RESOLVE CONFLICTS — where reviewers disagree, note who is right and why. Reference their
+   pass1/pass2 reasoning.
+4. SEPARATE SIGNAL FROM NOISE — DOWNGRADED findings vs CONFIRMED; findings from Carl (who sees all
+   priors) vs the blind panel.
+5. WRITE final-report.md in the template format below.
+```
+
+It writes `{REVIEW_DIR}/final-report.md` and returns a receipt with a short verdict (ship-blocking?
+polish-only?) and the finding count summary:
 
 ```
-You have now seen what every other expert found. From your domain ({domain}):
-AGREE with or CHALLENGE each finding that intersects your domain; identify
-SYNERGIES (findings that compound) and GAPS (angles nobody covered from your
-domain). Skip findings that don't touch your domain.
+amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
 ```
-
-Each writes `{REVIEW_DIR}/{reviewer}-cross-review.md` with sections Agreements / Challenges /
-Synergies / Gaps Nobody Covered, and returns a receipt only:
-`{reviewer} | cross-review | agreements: {n} | challenges: {n} | gaps: {n} | wrote: {path}`.
-
-### Step 7: Verify Checkpoint Files
-
-Against the Checkpoint Files table above, verify every expected file exists for the reviewers that
-ran (pass1 for every routed + escalated reviewer; pass2 where findings; questions-answered where
-open questions; cross-review where DEEP-DIVE). Every reviewer in the panel must be accounted for
-exactly once — either a `pass1.md` or a row in `skipped.md`. If any are missing, report which
-agents failed and re-run only those.
-
-### Step 8: Amalgamate (main thread)
-
-1. Read all pass1/pass2/questions-answered/cross-review files.
-2. Collect CONFIRMED findings (from Pass 2) plus findings from reviewers who had none to
-   re-evaluate; group by severity (Critical > High > Medium > Low); de-duplicate overlaps.
-3. Cross-reference known issues (flag matches as "Known: #NNN").
-4. Note which reviewers SKIPPED or found nothing, and why.
-
-### Step 8.5: Write `final-report.md`
-
-Write the full report to `{REVIEW_DIR}/final-report.md` using the template in **Output Format**
-below, with every finding expanded (what, where `file:line`, why it matters, concrete fix options,
-recommendation; Lows grouped by theme), answered questions, cross-review consensus themes, and a
-sign-off checklist. **Never write the report into the worktree** — it pollutes `git status`.
 
 ### Step 9: Cache Review Metadata
 
@@ -530,8 +457,8 @@ echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > 
 ```
 
 `$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
-`reviewers` (names that actually ran, not gate-skipped), `panelModel`, `escalated` (names the gate
-promoted), `scope` (`"delta"`/`"full"`), `findings` (`{critical, high, medium, low}` counts).
+`reviewers` (names that actually ran), `panelModel`, `scope` (`"delta"`/`"full"`),
+`findings` (`{critical, high, medium, low}` counts).
 
 ---
 
@@ -550,7 +477,7 @@ report in the conversation**; the link is the contract.
 **Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}/
 
 ## Executive Summary
-- **Reviewers Run**: N (names) / **Gate-skipped**: N (names) / **Escalated by gate**: N (names)
+- **Reviewers Run**: N (names, router-selected or user-named)
 - **Panel model**: {PANEL_MODEL or "inherited (opus)"}
 - **Total Findings**: N — Critical: N, High: N, Medium: N, Low: N
 - **Context Re-evaluation**: CONFIRMED: N, RESOLVED: N, DOWNGRADED: N
@@ -570,29 +497,24 @@ report in the conversation**; the link is the contract.
 
 ## Reviewer Summary
 
-| Reviewer | Decision | Findings | Re-evaluated | Cross-Review | Notes |
-|----------|----------|----------|--------------|--------------|-------|
+| Reviewer | Decision | Findings | Confirmed | Notes |
+|----------|----------|----------|-----------|-------|
 
 Decision legend: `DEEP-DIVE` thorough investigation · `QUICK-SCAN` quick look at tagged sections ·
-`ESCALATED` no tagger match, but the confirm-gate found something in-domain and promoted it to a
-full review · `GATE-SKIP` no tagger match, gate scanned the diff and confirmed nothing in-domain
-(see `skipped.md`) · `CODE-ROT` mechanical grep verification · `CONTRARIAN` ran last with all prior
-findings
+`ROUTED` selected by router · `ALWAYS-RUN` (Sam System, Code Rot Cody, Consistency Checker, Carl) ·
+`CODE-ROT` mechanical grep verification · `CONTRARIAN` ran last with all prior findings
 
 ## Routing Accuracy
-[If the tagger-collapse guard (Step 4.5) fired: **⚠️ TAGGER COLLAPSE** — routed {n}/{total},
-skipped {m}/{total} ({pct}%). All SKIPs fell through to the confirm-gate. (Omit if it didn't fire.)]
 
-| Reviewer | Tagger said | Gate said | Escalated finding confirmed? |
+| Reviewer | Router said | Selected | Reason |
+|----------|-------------|----------|--------|
 
-Every `ESCALATED` row is a tagger miss; every escalation that produced no confirmed finding is a
-gate false-positive. This table is the input to `/review-stats`. (Omit if no reviewer was gated.)
+The routing decision table: every reviewer in the index, marked Selected/Not Selected, with the
+router's one-line justification. This table is the input to `/review-stats` for evaluating router
+accuracy.
 
 ## Answered Questions
 | Reviewer | Question | Answer |   (omit if none)
-
-## Cross-Review Commentary
-Per DEEP-DIVE reviewer: Agreements / Challenges / Synergies / Gaps.  (omit if none)
 
 ## Recommended Next Steps
 1. [prioritized actions from CONFIRMED findings]

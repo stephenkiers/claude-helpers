@@ -29,10 +29,13 @@ this default; otherwise this section governs.
 
 ## Reviewer-Specific Input Scope
 
-Most reviewers receive only the diff sections the tagger routed to them. One exception:
+Most reviewers receive only the diff sections the router selected for them. Three exceptions receive
+the full diff by domain definition:
 
-- **Sam System** receives the **full diff** (not just tagged sections), because his job is to trace
-  data flow across files — he needs to see both ends of every cross-file connection.
+- **Sam System** receives the **full diff** because his job is to trace data flow across files — he
+  needs to see both ends of every cross-file connection.
+- **Code Rot Cody** receives the **full diff** because he greps the entire repo for orphaned symbols.
+- **Consistency Checker** receives the **full diff** to check patterns across the whole diff.
 
 ## Pass 1: Blind Review
 
@@ -287,7 +290,7 @@ You have been provided with **targeted sections** that triggered your reviewer d
 - You MUST note which files you expanded to in "Files Examined"
 - You SHOULD only expand if you see concrete risk indicators
 
-**Do NOT expand speculatively.** The tagger identified your sections for a reason. Only expand if the code you're reviewing explicitly references other files and those references raise concerns in your domain.
+**Do NOT expand speculatively.** The router selected your sections for a reason. Only expand if the code you're reviewing explicitly references other files and those references raise concerns in your domain.
 
 ---
 
@@ -321,8 +324,14 @@ If no modifiers are provided, assume a released project where backwards compatib
 ## What Happens Next
 
 If you find issues, a separate **Pass 2 agent** will:
-1. Read your findings
+1. Read your findings as a skeptic-verifier (third-person framing, anti-anchoring)
 2. Receive the Business Context (commit messages, PR description, intent)
 3. Re-evaluate each finding as CONFIRMED / RESOLVED / DOWNGRADED
 
-You don't need to do Pass 2 - just output your Pass 1 findings in the required format.
+Then a single expensive **Amalgamator agent** will:
+1. Read all Pass 1 findings and Pass 2 re-evaluations across the entire panel
+2. Deduplicate, severity-rank, and resolve conflicts between reviewers
+3. Write the final report and decide which findings go public
+
+You don't need to do Pass 2 or any follow-on work — just output your Pass 1 findings in the required
+format. The Amalgamator has the last word on what makes it into the report and how it is prioritized.
