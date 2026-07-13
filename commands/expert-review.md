@@ -413,7 +413,7 @@ receipt only:
 ### Step 6: Amalgamator (one expensive agent) → `final-report.md`
 
 **Before spawning the Amalgamator,** verify all expected checkpoint files exist (pass1 for every
-routed + escalated reviewer, pass2 where findings, questions-answered where open questions).
+routed reviewer, pass2 where findings, questions-answered where open questions).
 If any are missing, report which agents failed and re-run only those.
 
 The Amalgamator is **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`; this
