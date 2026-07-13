@@ -1,6 +1,6 @@
 ---
 name: expert-reviewer
-description: Runs a single reviewer persona against a diff and writes its own checkpoint file. Spawned by /expert-review for Pass 1, escalated Pass 1, Contrarian Carl, Pass 2, and cross-review. The persona, sections, and output path all arrive in the prompt.
+description: Runs a single reviewer persona against a diff and writes its own checkpoint file. Spawned by /expert-review for Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and the Amalgamator. The persona, sections, and output path all arrive in the prompt.
 tools: Read, Grep, Glob, Write, Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git rev-parse:*), Bash(ls *)
 permissionMode: bypassPermissions
 ---
@@ -14,8 +14,8 @@ point — your finding is worth having precisely because nobody else's reasoning
 - **Paths to read first** — the expert framework (canonical output format, severity definitions,
   when-NOT-to-flag rules) and your own persona YAML. Read them with the Read tool before anything
   else. Your persona's `codeReview.prompt` is your review lens; adopt it fully.
-- **Your sections** — the diff hunks the tagger routed to you, or the full diff if your role calls
-  for it.
+- **Your sections** — the diff hunks the router selected for you, or the full diff if your role calls
+  for it (Sam System, Cody, Consistency Checker, Carl always get the full diff).
 - **Your output path** — where your review must be written.
 
 ## You cannot change the code, and that is deliberate
