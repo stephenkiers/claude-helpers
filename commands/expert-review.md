@@ -82,7 +82,7 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
-| `tagged-sections.md` | Router | Step 5 — section → reviewer routing with Panel Decision (includes/excludes) |
+| `tagged-sections.md` | Router | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); not written when `NAMED_SELECTION=true` |
 | `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 6 (Consistency Checker + Cody included) |
 | `contrarian-carl-pass1.md` | Carl | Step 7 — no Pass 2, presented as-is |
 | `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
@@ -222,14 +222,26 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
 
 The router is told these four are pre-seated and to treat them as included for the decision table.
 
-**Named reviewers:** If the user named specific reviewers (Step 3), skip the router entirely — the
-user's selection *is* the decision, and all four always-run reviewers still participate.
+**Named reviewers:** If the user named specific reviewers (Step 3, `NAMED_SELECTION=true`), skip the
+router entirely — the user's selection *is* the decision, and all four always-run reviewers still
+participate. **No `tagged-sections.md` is written in this mode.** Step 6 branches on
+`NAMED_SELECTION`: named/always-run reviewers all read `{REVIEW_DIR}/full-diff.patch` directly
+instead of line ranges into it (there is no router output to offset into). This costs each named
+reviewer a full-patch read instead of a bounded one — acceptable, since named mode is already the
+smaller, more deliberate invocation.
 
 ### Step 6: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
-Read `tagged-sections.md` and parse which reviewers were selected by the router. Launch all selected
-reviewers (routed by the router OR named by the user OR always-run) in ONE message. All run as
-**`subagent_type: "expert-reviewer"`**, `run_in_background: false`, `model: PANEL_MODEL` from Step 3.
+**If `NAMED_SELECTION=true`:** skip reading `tagged-sections.md` (the router did not run and never
+wrote it). The selected reviewers are exactly the user's named reviewers plus the always-run four;
+every one of them reads `{REVIEW_DIR}/full-diff.patch` in full rather than a line-range offset into
+it — see the Step 5 named-reviewers note.
+
+**Otherwise:** read `tagged-sections.md` and parse which reviewers were selected by the router.
+
+Launch all selected reviewers (routed by the router OR named by the user OR always-run) in ONE
+message. All run as **`subagent_type: "expert-reviewer"`**, `run_in_background: false`,
+`model: PANEL_MODEL` from Step 3.
 
 **Launch ALL Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant turn).
 One subagent per reviewer. They still run concurrently — the harness caps concurrency — and they have
@@ -242,6 +254,13 @@ dialogs — the permission system does not deduplicate across concurrent agents,
 capability-restricted instead of dialog-gated: `permissionMode: bypassPermissions`, but **no `Edit`
 tool and no write-capable Bash**, so a reviewer physically cannot modify the code it is reviewing.
 It reads the repo and writes one file. Same for `expert-scout` on the mechanical roles.
+
+`Write` itself is not path-scoped by the tool allowlist — a subagent instructed to write elsewhere
+could. When you verify checkpoint files after each join barrier (Steps 6, 8, 9), that check is doing
+double duty: confirming the expected file exists *and* implicitly that nothing unexpected showed up
+outside `{REVIEW_DIR}`. If you ever see a write outside `{REVIEW_DIR}` — a stray file, a modified
+file elsewhere in the repo — treat that run as compromised: stop, do not trust its findings, and
+report it rather than silently continuing.
 
 **Pass paths, not contents.** A prompt is self-contained if the subagent can *reach* everything it
 needs, not if you paste everything into it. Every `Agent` prompt you write stays in your context for
@@ -267,6 +286,8 @@ Then supply inline **only what you alone know** — none of it is on disk for th
   (the Read tool takes offset/limit). Reading whole source files when a finding needs
   surrounding context is expected and correct — reading the whole patch file is not.
   ```
+  (`NAMED_SELECTION=true`: no router output exists to offset into — tell the reviewer to read
+  `{REVIEW_DIR}/full-diff.patch` in full instead.)
 - The **Technical Summary** from `summary.md`
 - `PROJECT_CONTEXT`, project modifiers, `DETECTED_LANGUAGES`, and the strict delta-scope rule below
 - `{REVIEW_DIR}` and their output path
@@ -334,8 +355,9 @@ they read themselves; you do not need to know them here.)
 **Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
 they have all returned by the time you continue. Then verify `{REVIEW_DIR}/{reviewer}-pass1.md`
 exists for every selected reviewer. If a receipt came back but its file is missing, **re-run that one
-reviewer** — do not try to reconstruct the review from the receipt; the receipt is a status line, not
-a report.
+reviewer once** — do not try to reconstruct the review from the receipt; the receipt is a status
+line, not a report. If the re-run also fails to produce its file, stop — report that reviewer as
+failed and continue the pipeline without it rather than retrying indefinitely.
 
 **Never poll.** Do not use `ScheduleWakeup`, `sleep`, or repeated status checks to wait for
 subagents. A timed wakeup re-reads your *entire* context from cache and learns nothing you would not
@@ -381,6 +403,13 @@ It writes `{REVIEW_DIR}/{reviewer}-questions-answered.md` — **Answer** + **Evi
 per question — and returns a receipt only: `{reviewer} | answered: {n} | wrote: {path}`. Launch all
 Q&A agents in one message.
 
+**Join barrier.** All Q&A agents run with `run_in_background: false`, so they have all returned
+before Step 9 starts — Step 9 must not launch a reviewer's Pass 2 until its Q&A file (if one was
+expected) exists. Before Step 9, verify `{REVIEW_DIR}/{reviewer}-questions-answered.md` exists for
+every reviewer whose Pass 1 receipt reported `open-questions > 0`; re-run just the missing Q&A
+agent(s) and wait for them before proceeding — do not let Pass 2 start without the answers it exists
+to use.
+
 ### Step 9: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
 
 **Only for judgment reviewers whose Pass 1 receipt reported findings > 0.** Mechanical roles
@@ -413,7 +442,9 @@ receipt only:
 
 **Before spawning the Amalgamator,** verify all expected checkpoint files exist (pass1 for every
 routed reviewer, pass2 where findings, questions-answered where open questions).
-If any are missing, report which agents failed and re-run only those.
+If any are missing, re-run only those agents **once**. If a re-run still fails to produce its file,
+stop retrying — report the specific agent(s) still missing and proceed to the Amalgamator without
+them rather than looping. A stuck reviewer should never block or infinitely retry the pipeline.
 
 The Amalgamator is **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`; this
 is the step where `--model fable` earns its cost). Its job: synthesis, not review. It reads:
@@ -544,8 +575,10 @@ accuracy.
 ## Recovery & Comparison
 
 - **A subagent failed:** `ls {REVIEW_DIR}/` shows what completed; re-run only the missing
-  reviewer(s). Pass 1 files present → resume from Pass 2. Checkpoints mean completed work is
-  never lost.
+  reviewer(s), once. Pass 1 files present → resume from Pass 2. Checkpoints mean completed work is
+  never lost. If a re-run fails again, stop retrying that reviewer and report it missing rather than
+  looping — an unattended run (e.g. via `/expert-implement-with-haiku-and-ship`) has no one to
+  notice an infinite retry loop.
 - **Compare reviews:** each review has its own folder —
   `diff ~/.claude/reviews/{project}/{a}/ ~/.claude/reviews/{project}/{b}/`;
   clean up old reviews with `rm -rf` when desired.

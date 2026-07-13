@@ -42,8 +42,8 @@ For each `{reviewer}-pass2.md`, the `## Summary` counts of CONFIRMED / RESOLVED 
   - Reviewers Selected=Yes who ended up with findings → router was right
   - Reviewers Selected=Yes who found nothing → router over-inclusive (minor, costs one agent)
   - Reviewers Selected=No who do not appear in any findings → router was right
-  - Reviewers not selected but have findings in cross-reviewer collaboration → potential router miss
-    (rare; likely the reviewer's domain intersects with a selected reviewer's findings)
+  - The Amalgamator attributes a finding to a domain whose reviewer was Selected=No → potential
+    router miss (rare; check whether that domain's `useWhen` in `index.yaml` needs broadening)
 
 **Format carve-outs** (ADR-0006 — these do NOT use the canonical `## Summary` block; parse them
 explicitly rather than dropping them into `unparsed`):

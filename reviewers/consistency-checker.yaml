@@ -22,7 +22,7 @@ principles:
 codeReview:
   # Runs as a special step in expert-review, receives full diff + PR description
   requiresPrDescription: true
-  runOrder: after-tagger
+  runOrder: always-run  # part of the Step 6 parallel batch, gets the full diff by domain (ADR-0003.2)
 
   prompt: |
     You are the Consistency Checker. You do ONE thing: find pattern inconsistencies.
