@@ -32,7 +32,8 @@ See the ADRs for the full rationale:
 - [ADR-0001 Progressive disclosure](docs/adr/0001-progressive-disclosure.md) — experts load lazily;
   only relevant personas run, and each loads its own context on demand.
 - [ADR-0002 Blind-first, two-pass review](docs/adr/0002-blind-first-two-pass-review.md)
-- [ADR-0003 Tagger-based routing](docs/adr/0003-tagger-routing.md)
+- [ADR-0003 Reviewer routing](docs/adr/0003-tagger-routing.md) — superseded by a single judgment
+  Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone.
 - [ADR-0004 Model cost routing](docs/adr/0004-model-cost-routing.md) — Haiku for mechanical work.
 - [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md)
 
@@ -127,6 +128,14 @@ take precedence over these defaults (see [ADR-0005](docs/adr/0005-three-layer-co
 20 concurrent subagents reading personas and writing checkpoints outside the working directory
 otherwise means 20 near-identical permission prompts (the permission system does not deduplicate
 across concurrent agents, and a command's `allowed-tools` does not propagate to subagents it spawns).
-Safety lives in the `tools:` list instead: **no `Edit` tool and no write-capable Bash**, so a reviewer
-cannot modify the code it is reviewing. It reads the repo and writes exactly one file. Keep it that
-way when adding a panel agent — the restriction is the safety model.
+The `tools:` list is the meaningful part of this: **no `Edit` tool and no write-capable Bash**, so a
+reviewer cannot modify the code it is reviewing under any circumstances — that half is a real,
+technical control. But the plain `Write` tool in that same list is *not* path-scoped (Claude Code's
+tool-allowlist syntax has no directory-prefix form for `Write`, unlike the `Bash(git diff:*)`-style
+prefix scoping used elsewhere in that list) — so "writes exactly one file" is a prompt-level
+convention the subagent is instructed to follow, not something the tool grant enforces. Both agent
+prompts tell the subagent to treat diff/PR content as data, not instructions, precisely because that
+content is attacker-influenceable and `bypassPermissions` removes the confirmation dialog that would
+otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/Bash restriction and
+the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a
+residual, not eliminated, risk.

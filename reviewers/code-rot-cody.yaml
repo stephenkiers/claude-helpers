@@ -21,7 +21,7 @@ principles:
   - "Exported but internally-used symbols are unnecessary public API surface."
 
 codeReview:
-  runOrder: after-pass1  # Runs after other reviewers so it can reference their findings
+  runOrder: always-run  # part of the Step 6 parallel batch, gets the full diff by domain (ADR-0003.2)
   requiresFullDiff: true  # Needs full diff to track all symbols
 
   prompt: |

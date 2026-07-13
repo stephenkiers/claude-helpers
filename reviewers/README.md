@@ -56,7 +56,7 @@ rather than re-listing the generic files.
 | Location | Naming | Purpose |
 |----------|--------|---------|
 | `~/.claude/reviewers/` | `{expert}.yaml` | Global expert definition |
-| `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (tagger routing) |
+| `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (router reads this only) |
 | `project/.claude/` | `project.yaml` | Project-wide context — all experts + /shipit |
 | `project/.claude/reviewers/` | `{expert}-local.yaml` | Expert-specific project overrides |
 
@@ -108,7 +108,7 @@ Load Project Context is centralized so a change to how context loads happens in 
       genuinely needs a different shape (see the existing carve-outs).
 - [ ] Do **not** add a per-persona "Load Project Context" block unless you load context differently
       from the default — that step is centralized in `expert-framework.md`.
-- [ ] Add a matching entry to [`index.yaml`](index.yaml) (the tagger routes from this index; a
+- [ ] Add a matching entry to [`index.yaml`](index.yaml) (the router reads only this index; a
       persona missing here never runs).
 - [ ] Run `python3 tests/test_invariants.py` — the index/file mapping must stay bidirectional and
       the count invariant must hold.
@@ -133,8 +133,8 @@ both, and the YAML body carries the matching review block.
 `codeReview.prompt`. The current three are **Demosthenes** (`editor-audience.yaml`, audience fit),
 **Shakespeare** (`editor-cadence.yaml`, rhythm and pacing), and **Strunk** (`editor-signal.yaml`,
 signal over noise). They have **no diff
-`triggers`**, so the code-review tagger never routes to them — their `index.yaml` `note` marks them
-`for /expert-write`. A persona with only an `editReview` block is not a valid `/expert-review`
+`triggers`**, so the `/expert-review` router never selects them — their `index.yaml` `note` marks
+them `for /expert-write`. A persona with only an `editReview` block is not a valid `/expert-review`
 target; do not request one there.
 
 ## Creating Project Context

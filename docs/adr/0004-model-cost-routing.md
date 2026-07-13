@@ -29,7 +29,7 @@ Route each step to the cheapest model that can do it well:
 
 Model choice is set per command/reviewer via frontmatter (`model:`), so it stays explicit and tunable.
 For `/expert-review`:
-- The Router is pinned to Sonnet via an explicit `model: "sonnet"` override in the Step 2.5 Router
+- The Router is pinned to Sonnet via an explicit `model: "sonnet"` override in the Step 5 Router
   call (judgment but economical; uses expert-reviewer agent, not expert-scout)
 - Haiku mechanical roles are pinned to Haiku in `agents/expert-scout.md`
 - Panel roles (Pass 1, Carl, Pass 2, Amalgamator) inherit from the command's model, overrideable
@@ -83,5 +83,7 @@ The new design (single Sonnet Router):
 - **Pass 1 reviewers:** read their bounded sections (not the whole patch)
 
 Sonnet is 3× the cost of Haiku per token, but the Router runs once instead of 19 times. Token math:
-Router at 1 run (full patch) vs. gate at 19 runs (full patch × 19): 1 Sonnet call is cheaper than
-~6 Haiku calls for the same tokens. Routing accuracy (judgment vs. keywords) is a bonus.
+one Sonnet call over the full patch costs about as much as 3 Haiku calls over the same patch; the old
+gate ran 19 Haiku calls over the same patch. 3 vs. 19 is a ~6× cost reduction for the routing step —
+not a measured figure (the gate's ~1.1M-token cost above is measured; the Router's is a model, not
+yet benchmarked against a real run). Routing accuracy (judgment vs. keywords) is a bonus on top.
