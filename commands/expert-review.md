@@ -198,8 +198,8 @@ known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file conta
 
 ### Step 2.5: Router (sonnet) → `tagged-sections.md`
 
-Spawn a subagent (`subagent_type: "expert-scout"` — sonnet is pinned in the agent definition for
-judgment) with the router prompt @~/.claude/prompts/router.md. The router reads:
+Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
+model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
 - `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
   that file, which later reviewers use for bounded reads)
 - The `{REVIEW_DIR}/summary.md` (Technical Summary and Business Context)
@@ -215,7 +215,7 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
    | ... | Yes | {1-line justification} |
    | ... | No | {1-line justification} |
    ```
-2. Per-reviewer sections with line ranges, exactly as today's tagger outputs them, so Pass 1 reviewers
+2. Per-reviewer sections with line ranges, exactly as today's router outputs them, so Pass 1 reviewers
    can use them for bounded reads.
 
 **Always-run set (never routed, pre-seated):**
@@ -304,7 +304,7 @@ Do NOT report pre-existing issues in unchanged code. If the PR makes an existing
 issue worse, report it; if it doesn't touch it, skip it.
 ```
 
-Three reviewers **always run and are never gated** (the tagger does not route them; their domain is
+Three reviewers **always run and are never gated** (the router does not route them; their domain is
 the whole diff by definition). They get special inputs but run in the same parallel batch — and they
 follow the same rules as everyone else: they read their own YAML by path, and they return a receipt,
 not a report. (Their output *formats* differ — those formats are defined in their own YAMLs, which

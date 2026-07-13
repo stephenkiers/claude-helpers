@@ -33,5 +33,4 @@ prompt gives you an output format, follow it exactly; the orchestrator parses yo
 ## The file is the contract (when you're given a path)
 
 If your prompt names an output path, Write your result there and return **only a one-line receipt**.
-If it doesn't (the tagger and the gate return their result directly), keep the returned text tight —
-it lands in the orchestrator's context and stays there for the rest of the run.
+Keep the receipt tight — it lands in the orchestrator's context and stays there for the rest of the run.
