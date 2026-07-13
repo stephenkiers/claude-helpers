@@ -22,6 +22,24 @@ Run each reviewer in two passes:
 Open questions raised in Pass 1 are answered by a cheap Haiku Q&A subagent before Pass 2, so the
 re-evaluation is informed rather than speculative.
 
+## Execution model — blindness is architectural
+
+Every reviewer runs as its own **subagent**, one per reviewer, launched in parallel; only merge and
+amalgamation happen in the main thread.
+
+This is what makes Pass 1 *actually* blind. Reviewers used to run sequentially in the main
+conversation, each one able to see every earlier reviewer's output sitting in context — blindness was
+an instruction they were asked to honor, not a property of the system. It also meant the twentieth
+reviewer worked in a context window stuffed with nineteen other reviews. A fresh subagent can only
+see what it is handed. Parallelism is the bonus; isolation is the reason.
+
+Two roles are deliberately *not* blind and run after the barrier: **Contrarian Carl** (sees every
+finding, and the list of who never reviewed, in order to find what the panel missed) and
+**cross-review** (each DEEP-DIVE reviewer reacts to the others' findings).
+
+Cost: each subagent re-receives the framework, its persona, and its sections, so input tokens
+multiply with panel size. `--model` (ADR-0004) is the knob for that.
+
 ## Consequences
 
 - **Good:** Catches issues a context-first reviewer would rationalize away, while Pass 2 filters out

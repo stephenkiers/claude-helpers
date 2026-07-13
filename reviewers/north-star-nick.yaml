@@ -13,37 +13,6 @@ summary:
     this does Y", "This isn't in the v0.1.0 spec — is it intentional?", "Issue #42
     already tracks this", "Which milestone does this belong to?"
 
-triggers:
-  filePatterns:
-    - New files or modules
-    - Package-level changes (package.json, Cargo.toml)
-    - Configuration changes
-    - Architecture-affecting files
-    - ADR documents
-    - Migration files
-  keywords:
-    - feature
-    - refactor
-    - migrate
-    - ADR
-    - milestone
-    - phase
-    - scope
-    - architecture
-    - design
-    - pattern
-    - config
-    - implement
-    - create
-    - add
-  riskIndicators:
-    - New modules or services
-    - Architectural pattern changes
-    - Dependency additions
-    - Multi-package changes
-    - New configuration options
-    - Changes spanning multiple bounded contexts
-
 principles:
   - "Documented decisions are contracts: If you want to deviate, update the ADR first."
   - "Scope is a feature: Work outside the current milestone is a cost, not a bonus."

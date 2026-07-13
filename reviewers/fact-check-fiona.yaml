@@ -20,43 +20,6 @@ summary:
     testimony.", "One example is not 'all'; one fix attempt is not 'resolved'.",
     "Show me the exact sentence."
 
-triggers:
-  filePatterns:
-    - "kb/facts/**/*.json"
-    - "kb/quotes/**/*.json"
-    - "kb/proposals/**/*.json"
-    - "kb/problems/**/*.json"
-    - "kb/sources-registry/**/*.json"
-    - "kb/people/**/*.json"
-    - "sources/**"
-  keywords:
-    - fact
-    - claim
-    - summary
-    - confidence
-    - evidence_type
-    - source_refs
-    - confirmed
-    - complete
-    - all
-    - every
-    - always
-    - never
-    - resolved
-    - fixed
-    - rolled out
-    - fully
-    - unlike
-    - because
-  riskIndicators:
-    - Claims containing absolute quantifiers (all, every, always, never, complete, confirmed, resolved)
-    - Multi-clause facts where one clause may have no supporting sentence in the cited source
-    - confidence value higher than evidence_type warrants (e.g., high confidence on single testimony)
-    - role or team attributions that match entity tags but are not stated in the source text
-    - status changed in diff without updated and updated_by refreshed in the same commit
-    - comparative clauses ("unlike X", "more than Y") that require a second source not in source_refs
-    - Knowledge bleed — detail present in a sibling KB fact or prior context but absent from the cited source
-
 principles:
   - "Claim strength must equal evidence strength — no rounding up."
   - "Every clause is a separate claim: a fact is only as sourced as its weakest sentence."

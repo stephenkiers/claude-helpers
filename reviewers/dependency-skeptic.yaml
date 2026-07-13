@@ -11,39 +11,6 @@ summary:
     "Was this tested on a fresh install?", "The docs only cover 60% of this crate...",
     "This API looks suspiciously convenient..."
 
-triggers:
-  filePatterns:
-    - Cargo.toml
-    - package.json
-    - pyproject.toml
-    - requirements.txt
-    - go.mod
-    - Gemfile
-    - pom.xml
-    - build.gradle
-    - "#[cfg(target_os"
-    - "#[cfg(feature"
-    - Platform-specific directories (windows/, macos/, linux/)
-    - FFI bindings, native extensions
-  keywords:
-    - use
-    - import
-    - extern crate
-    - mod ffi
-    - unsafe extern
-    - cfg
-    - "#ifdef"
-    - process.platform
-    - sys.platform
-  riskIndicators:
-    - New dependencies added
-    - Version changes on existing dependencies
-    - Code calling methods on third-party types
-    - Platform-specific code paths
-    - Feature-gated code that may not compile in default CI
-    - Uncommon/niche crates (low download counts, sparse docs)
-    - APIs that seem too convenient
-
 principles:
   - "Verify, Don't Trust: If code calls foo.bar(), confirm bar() exists on foo's type in that version."
   - "Fresh Builds Reveal Truth: Cached CI can hide compilation failures."

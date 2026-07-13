@@ -165,7 +165,7 @@ fi
 cd "$MAIN_WORKTREE"
 
 # Graft detection: run the Graft Detection block PLUS its cleanup variant from
-# ~/.claude/commands/worktree-reference.md here (sets USE_GRAFT, GRAFT_REPO_NAME,
+# ~/.claude/prompts/worktree-reference.md here (sets USE_GRAFT, GRAFT_REPO_NAME,
 # GRAFT_WORKTREE_NAME — the cleanup variant verifies graft tracks $CURRENT_WORKTREE).
 
 echo "CURRENT_WORKTREE=$CURRENT_WORKTREE"
@@ -338,7 +338,7 @@ and move on without prompting.
 After confirming merge/close status, check if the **project root** contains an `issues.json` that is a **JSON array** with objects that have `id`, `title`, and `status` fields. If found, update the matching entry's `status` to `"done"`.
 
 Detect `PROJECT_ROOT` per the **Project Detection** block in
-`~/.claude/commands/worktree-reference.md` (step 6 — parent of `worktrees/` structure, or the main
+`~/.claude/prompts/worktree-reference.md` (step 6 — parent of `worktrees/` structure, or the main
 worktree itself).
 
 **Matching logic** (in priority order):

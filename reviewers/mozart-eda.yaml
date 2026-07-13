@@ -17,40 +17,6 @@ summary:
     "What happens when the consumer is slow?", "Can you replay this event safely?",
     "Where does backpressure manifest?", "Is an event-driven approach justified here?"
 
-triggers:
-  filePatterns:
-    - Event bus implementations
-    - Pub/sub systems
-    - Message handlers
-    - Event type definitions
-    - Channel/queue implementations
-    - Callback registrations
-  keywords:
-    - event
-    - EventBus
-    - eventBus
-    - Subject
-    - Observable
-    - subscribe
-    - publish
-    - emit
-    - channel
-    - mpsc
-    - broadcast
-    - queue
-    - backpressure
-    - callback
-    - listener
-    - handler
-    - dispatch
-  riskIndicators:
-    - New event type definitions
-    - Event flow changes
-    - Channel capacity changes
-    - Callback registration patterns
-    - Pub/sub topology changes
-    - Queue/buffer modifications
-
 principles:
   - "Counterpoint over cacophony: Independent voices should compose into a coherent whole, each legible on its own."
   - "Composition clarity: How pieces are wired together should be as discoverable as the pieces themselves."

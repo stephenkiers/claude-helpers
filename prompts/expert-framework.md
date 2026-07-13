@@ -247,6 +247,28 @@ Changes to core invariant-critical code
 
 ---
 
+## When NOT to Flag (all reviewers)
+
+Every rule of thumb in a persona prompt has legitimate exceptions. Before reporting a finding,
+check it against these guards — a finding that fails them is noise that Pass 2 has to clean up:
+
+1. **Idiomatic exceptions beat generic rules.** Heuristics like "functions under 20 lines",
+   "no `any`", "no unwrap" yield to the language's and project's idioms: a long but linear
+   config/match/dispatch function, `any` at a genuinely untyped third-party boundary (with
+   narrowing), `unwrap` on an invariant established immediately above. If the code follows a
+   pattern used consistently elsewhere in this project, flag the pattern once at LOW or not at all.
+2. **Don't flag what the compiler/type-checker/linter already enforces.** If the project's
+   tooling would reject the failure mode, it isn't a finding.
+3. **Intent signals count.** A comment, test, or naming that shows the author considered the
+   trade-off turns "bug" into (at most) a question — raise it under Open Questions, not Findings.
+4. **No speculative severity.** CRITICAL/HIGH require a concrete failure path you can articulate
+   ("when X happens, Y breaks"), not "this could theoretically…". If you can't name the trigger,
+   cap at MEDIUM and say what evidence would raise it.
+5. **One finding per root cause.** Ten call sites of the same mistake are one finding with a list,
+   not ten findings.
+
+---
+
 ## Severity Definitions
 
 - **CRITICAL**: Could cause data loss, security breach, or crash in production

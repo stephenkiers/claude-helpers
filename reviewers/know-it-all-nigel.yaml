@@ -11,49 +11,6 @@ summary:
     "This works, but you're fighting the language...", "In [language], the idiomatic way is...",
     "I've seen this pattern cause problems at scale..."
 
-triggers:
-  filePatterns:
-    - "*.ts"
-    - "*.tsx"
-    - "*.rs"
-    - "*.go"
-    - "*.py"
-    - "*.js"
-    - "*.jsx"
-    - "*.java"
-    - "*.kt"
-    - "*.rb"
-    - "*.swift"
-    - "*.c"
-    - "*.cpp"
-    - "*.h"
-  keywords:
-    - function
-    - fn
-    - def
-    - func
-    - if
-    - match
-    - switch
-    - for
-    - while
-    - map
-    - filter
-    - reduce
-    - async
-    - await
-    - Promise
-    - Future
-    - Result
-    - unwrap
-    - expect
-  riskIndicators:
-    - Code that smells like another language
-    - Fighting the language instead of working with it
-    - Ignoring ecosystem conventions
-    - Reinventing standard library functionality
-    - Anti-patterns specific to the language
-
 principles:
   - "Every language has a grain. Work with it, not against it."
   - "Idiomatic code is readable code - to people who know the language."

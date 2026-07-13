@@ -29,58 +29,10 @@ Creates a GitHub issue (or local plan file) from the plan, generates a branch na
 
 ## Project Detection
 
-```bash
-# 1. Repo identity
-REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
-
-# 2. Main worktree (first entry is always main)
-MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-
-# 3. Detect worktree parent from existing worktrees
-SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
-if [ -n "$SECOND_WORKTREE" ]; then
-  WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
-else
-  WORKTREE_PARENT="${MAIN_WORKTREE}/.claude/worktrees"
-fi
-
-# 4. Issue cache at worktree parent level
-CACHE_FILE="${WORKTREE_PARENT}/issues.json"
-
-# 5. Current GitHub user for assignment
-ASSIGNEE=$(gh api user -q '.login' 2>/dev/null || echo "")
-```
-
-```bash
-# 6. Detect project root (parent of worktrees/ structure, or main worktree itself)
-PARENT_BASENAME=$(basename "$(dirname "$MAIN_WORKTREE")")
-if [ "$PARENT_BASENAME" = "worktrees" ]; then
-  PROJECT_ROOT=$(dirname "$(dirname "$MAIN_WORKTREE")")
-else
-  PROJECT_ROOT="$MAIN_WORKTREE"
-fi
-```
-
-### Graft Detection
-
-After resolving `MAIN_WORKTREE`, check if graft is installed and the current repo is registered with it.
-
-```bash
-USE_GRAFT=false
-GRAFT_REPO_NAME=""
-if command -v graft >/dev/null 2>&1; then
-  GRAFT_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/graft/config.json"
-  if [ -f "$GRAFT_CONFIG" ]; then
-    GRAFT_REPO_NAME=$(jq -r --arg path "$MAIN_WORKTREE" '
-      .repos // {} | to_entries[] |
-      select(.value.path == $path) | .key
-    ' "$GRAFT_CONFIG" 2>/dev/null | head -1)
-    if [ -n "$GRAFT_REPO_NAME" ]; then
-      USE_GRAFT=true
-    fi
-  fi
-fi
-```
+Run the **Project Detection** and **Graft Detection** blocks from
+`~/.claude/prompts/worktree-reference.md` (read that file for the bash). This sets `REPO`,
+`MAIN_WORKTREE`, `WORKTREE_PARENT`, `CACHE_FILE`, `ASSIGNEE`, `PROJECT_ROOT`, `USE_GRAFT`,
+and `GRAFT_REPO_NAME`.
 
 **If not in a git repo or no GitHub remote:** Error with message about needing to be in a git repository with a GitHub remote.
 
@@ -90,19 +42,7 @@ When the project root has both a `plans/` directory and an array-format `issues.
 
 ### Detection
 
-```bash
-PLANS_DIR="${PROJECT_ROOT}/plans"
-PROJECT_ISSUES="${PROJECT_ROOT}/issues.json"
-
-LOCAL_MODE=false
-if [ -d "$PLANS_DIR" ] && [ -f "$PROJECT_ISSUES" ]; then
-  IS_ARRAY=$(jq 'type == "array"' "$PROJECT_ISSUES" 2>/dev/null)
-  if [ "$IS_ARRAY" = "true" ]; then
-    LOCAL_MODE=true
-  fi
-fi
-```
-
+Run the **Local Plan Mode Detection** block from `~/.claude/prompts/worktree-reference.md`.
 If `LOCAL_MODE` is false, fall through to the normal GitHub flow ([Pivot Detection](#pivot-detection) → [Duplicate Detection](#duplicate-detection) → [Creating the Issue](#creating-the-issue)).
 
 ### Local Duplicate Detection
@@ -207,17 +147,9 @@ When `/track-and-start` is called from a worktree that's already linked to an is
 
 ### Step 4a: Detect Current Worktree's Linked Issue
 
-First, check if we're in a non-main worktree:
+First, run the **In-Worktree Check** from `~/.claude/prompts/worktree-reference.md`.
 
-```bash
-COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
-if [ "$COMMON_DIR" = "$GIT_DIR" ]; then
-  # We're in the main worktree — skip pivot detection
-fi
-```
-
-**If in main worktree:** Skip pivot detection entirely, fall through to Step 5 (Duplicate Detection).
+**If in main worktree** (`IN_WORKTREE=false`): Skip pivot detection entirely, fall through to Step 5 (Duplicate Detection).
 
 If in a non-main worktree, look for a linked issue:
 
@@ -367,44 +299,17 @@ Proceed directly to issue creation — no user prompt needed.
 
 ### "Pivot to existing" Flow
 
-If the user chooses to pivot to an existing issue (archive old body, replace with plan):
+If the user chooses to pivot to an existing issue, execute **steps 1–2 of
+[Pivot Detection Step 4d](#step-4d-execute-pivot)** (archive-then-replace, same ordering guarantee,
+same abort-on-comment-failure rule) against `$EXISTING_ISSUE_NUM` — fetching its body first if not
+already available (`gh issue view "$EXISTING_ISSUE_NUM" --repo "$REPO" --json body -q '.body'`).
 
-This follows the same archive-then-replace pattern as [Pivot Detection Step 4d](#step-4d-execute-pivot), but applied to an issue found during duplicate detection rather than a worktree's linked issue.
+Then, instead of 4d's steps 3–6 (this pivot targets a duplicate-detection match, not the current
+worktree's issue):
 
-**CRITICAL: Operations must execute in this exact order.** The comment (archiving old body) MUST succeed before the edit (replacing body). This ensures no data loss.
-
-1. **Fetch the existing issue body** if not already available:
-   ```bash
-   OLD_BODY=$(gh issue view "$EXISTING_ISSUE_NUM" --repo "$REPO" --json body -q '.body')
-   ```
-
-2. **Archive old body as a comment:**
-   ```bash
-   gh issue comment "$EXISTING_ISSUE_NUM" --repo "$REPO" --body "$(cat <<'EOF'
-   ## Superseded Plan
-
-   _This was the original issue description before it was replaced with the implementation plan on YYYY-MM-DD._
-
-   ---
-
-   <old issue body, verbatim>
-   EOF
-   )"
-   ```
-   **If this fails:** Abort — the old body is still on the issue. Error: "Failed to archive old issue body. Aborting pivot to avoid losing the original content."
-
-3. **Replace issue body with the new plan:**
-   ```bash
-   gh issue edit "$EXISTING_ISSUE_NUM" --repo "$REPO" --body "$(cat <<'EOF'
-   <new plan content - unmodified>
-   EOF
-   )"
-   ```
-
-4. **Skip issue creation** — use the existing issue number
-5. **Use the existing issue number** for branch naming: `{type}/{existing-issue#}-{slug}`
-6. **Update `$CACHE_FILE`** with the new issue body so future duplicate detection runs against the current plan
-7. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number
+1. **Skip issue creation** — use the existing issue number for branch naming: `{type}/{existing-issue#}-{slug}`
+2. **Update `$CACHE_FILE`** with the new issue body so future duplicate detection runs against the current plan
+3. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number
 
 ### "Link to existing" Flow
 
@@ -659,19 +564,5 @@ The user will:
 | Branch already exists | Ask: "Branch `<name>` exists. Use existing branch or create new?" |
 | gh CLI not authenticated | Error: "GitHub CLI not authenticated. Run `gh auth login`" |
 
-## Quick Reference
-
-| Step | Command/Action |
-|------|----------------|
-| Read plan | Preserve original content for issue/plan file |
-| Detect project | `gh repo view`, `git worktree list`, detect worktree parent and project root |
-| **Local mode check** | If `plans/` + array `issues.json` exist at project root → local plan mode |
-| Local: save plan | Write plan to `plans/{id}-{slug}.md`, update `issues.json` → `in_progress` |
-| GitHub: pivot detection | Check if current worktree has linked issue overlapping with plan |
-| GitHub: pivot (if chosen) | Archive old plan as comment, update issue body + caches, call ExitPlanMode |
-| GitHub: check duplicates | Scan `$CACHE_FILE` for open issues overlapping with plan |
-| GitHub: create issue | `gh issue create --assignee "$ASSIGNEE"` (or link to existing) |
-| Generate branch | `{type}/{id}-{slug}` (id = local ID or GitHub issue number) |
-| Create worktree | Graft repo: `graft new <dir> --no-setup -r <repo>` (fallback: `git worktree add`) |
-| Finish (local) | Output handoff: `cd <worktree> && claude "Implement the plan at <plan-path>"` |
-| Finish (GitHub) | Output handoff: `cd <worktree> && claude "Implement <issue-url>"` |
+(The numbered **Behavior** list at the top is the workflow reference — the sections above are the
+detail for each step.)

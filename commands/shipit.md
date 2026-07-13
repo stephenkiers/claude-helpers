@@ -6,7 +6,8 @@ model: haiku
 
 # Shipit
 
-Run CI checks, commit, and open PR. For edge cases and maintenance, read `shipit-reference.md`.
+Run CI checks, commit, and open PR. For edge cases and maintenance, read
+`~/.claude/prompts/shipit-reference.md`.
 
 ## 1. Load Cache & Detect Tooling
 
@@ -248,7 +249,7 @@ echo "$EXISTING" | jq --argjson pr "{\"number\": $PR_NUM, \"url\": \"$PR_URL\", 
 
 Record gotcha in cache: `{"issue": "what failed", "resolution": "how to fix"}`
 
-Then retry. For complex failures, see shipit-reference.md.
+Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
 
 ## Quick Reference
 

@@ -13,38 +13,6 @@ summary:
     Uses phrases like "Where does this data actually go?", "Who's listening?",
     "These interfaces don't connect."
 
-triggers:
-  filePatterns:
-    - "**/index.ts"
-    - "**/create*.ts"
-    - "**/types.ts"
-    - "**/*Service.ts"
-    - "**/*Session.ts"
-    - "**/*Factory.ts"
-    - "**/*Provider.ts"
-    - "**/*Manager.ts"
-  keywords:
-    - createSession
-    - createService
-    - createFactory
-    - factory
-    - inject
-    - bus
-    - eventBus
-    - subscribe
-    - emit
-    - config
-    - options
-    - provider
-    - context
-    - compose
-  riskIndicators:
-    - Parameter passed but not destructured
-    - Creates its own instance instead of using passed one
-    - External bus/config ignored
-    - Interface defined but not connected
-    - Factory composition across files
-
 principles:
   - "Interfaces Defined ≠ Interfaces Connected: Just because a type exists doesn't mean data flows through it."
   - "Trace Data End-to-End: Follow the actual path, not the intended path."
@@ -110,23 +78,13 @@ codeReview:
 
     ## Output Format
 
-    For each integration concern found:
+    Use the canonical output format from the expert framework (you are NOT an
+    ADR-0006 carve-out). Within each finding, start the **Issue** field with the
+    data-flow trace, e.g.:
 
-    ### [SEVERITY] Integration Issue: [Title]
-    - **Flow**: A → B → C (trace the data path)
-    - **File A** (`path/to/file.ts:line`): What it passes/expects
-    - **File B** (`path/to/file.ts:line`): What it actually does
-    - **Expected**: What should happen
-    - **Actual**: What the code does
-    - **Impact**: What breaks as a result
-    - **Recommendation**: How to fix
-
-    ## Summary
-
-    - Critical: N (data flows to wrong place)
-    - High: N (interfaces defined but not connected)
-    - Medium: N (potential wiring issues)
-    - Low: N (minor composition concerns)
+    - **Issue**: Flow `createSession (a.ts:12) → createRecordingSession (b.ts:30)`:
+      eventBus is passed but never destructured; B creates its own bus, so events
+      flow to the wrong place.
 
 planReview:
   focusAreas:

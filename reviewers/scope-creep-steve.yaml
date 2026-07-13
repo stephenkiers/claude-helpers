@@ -16,48 +16,6 @@ summary:
     "The fix is 20 lines now or a week-long incident later", "What happens on the
     second run? The tenth? The thousandth?", "At scale, unlikely becomes inevitable."
 
-triggers:
-  filePatterns:
-    - "*.ts"
-    - "*.tsx"
-    - "*.rs"
-    - "*.go"
-    - Protocol/handshake implementations
-    - State machine transitions
-    - Shutdown/cleanup logic
-    - Session/connection lifecycle
-  keywords:
-    - timeout
-    - retry
-    - backoff
-    - handshake
-    - ack
-    - protocol
-    - session
-    - connection
-    - lifecycle
-    - oneshot
-    - channel
-    - notify
-    - state
-    - transition
-    - cleanup
-    - shutdown
-    - finalize
-    - queue
-    - pool
-    - cache
-    - limit
-  riskIndicators:
-    - Coordination protocols between components
-    - Request/response patterns without correlation IDs
-    - Global command endpoints that service sequential instances
-    - Timeouts that assume single-instance operation
-    - State machines that can overlap temporally
-    - Resources identified by position rather than identity
-    - Uncapped growth (unbounded buffers, logs, queues)
-    - Sequential assumptions in concurrent environments
-
 principles:
   - "At scale, unlikely becomes inevitable: A 0.1% race condition hits 10 times a day with 10,000 users."
   - "Correlate everything: Every response must prove it belongs to its request. Global endpoints servicing sequential instances is a ticking time bomb."

@@ -13,28 +13,6 @@ summary:
     "Removed from A but still referenced in B", "Exported but only used internally",
     "Config field added but never validated", "Parameter accepted but never read."
 
-triggers:
-  # Triggers on everything — dead code can appear anywhere
-  filePatterns:
-    - "*"
-  keywords:
-    - func
-    - function
-    - fn
-    - def
-    - class
-    - struct
-    - type
-    - interface
-    - const
-    - export
-    - pub
-  riskIndicators:
-    - New exported symbols
-    - Removed functions or types
-    - New config fields
-    - Changed function signatures
-
 principles:
   - "Every new symbol must have at least one caller outside its own test file."
   - "Every removed symbol must leave no dangling references."

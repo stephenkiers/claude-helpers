@@ -39,6 +39,13 @@ they are the difference between a ~180k review and a ~430k one:
    one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
    and again in the completion notification's `<result>` block. You read the files once, in Step 8.
 3. **Never poll.** No `ScheduleWakeup`, no `sleep`. Launch a batch in one message and let it return.
+4. **The diff is a file, not a string.** Write `full-diff.patch` and `diff-index.md` once (Step 1);
+   pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
+   44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
+   every subsequent turn. Note that passing a path only saves *your* context: the receiving subagent
+   pays the same tokens the moment it calls `Read`. The real lever on a subagent's cost is giving it
+   a smaller artifact to read, not just a path to a big one — that is why `diff-index.md` exists
+   (Step 1) and why Step 5b hands it to the gate instead of the full patch.
 
 You are a router and an amalgamator. Review text belongs in files and in subagents, not in you.
 
@@ -57,8 +64,12 @@ You are a router and an amalgamator. Review text belongs in files and in subagen
 - `--full`: review the entire codebase instead of just changed files
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
-Examples: `/expert-review --model fable` (whole panel, cheaper tier) ·
-`/expert-review rachel,security-sage --model opus` (two reviewers, no gate, top tier)
+  Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
+  · **fable** $10/$50. Fable is the most capable *and* the most expensive — 2× Opus — so reach for it
+  on a gnarly diff, not by default.
+
+Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a smoke test) ·
+`/expert-review rachel,security-sage --model fable` (two reviewers, no gate, maximum capability)
 
 ## Checkpoint Files
 
@@ -67,6 +78,8 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 
 | File | Written by | When |
 |------|-----------|------|
+| `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
+| `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller; feeds the confirm-gate (Step 5b), which makes a routing decision and doesn't need hunk bodies |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Tagger | Step 4.5 — section → reviewer routing + SKIP list |
 | `skipped.md` | Main thread | Step 5b — un-routed reviewers whose haiku gate confirmed the skip |
@@ -135,6 +148,20 @@ All artifacts live in `{REVIEW_DIR}` = `~/.claude/reviews/{project}/{branch}-{sh
 
 - Default (delta): `git diff --name-only main...HEAD`. If empty, inform the user and exit.
 - `--full`: review the entire `src/` directory.
+- Write both diff artifacts once, so every later step passes a path instead of re-deriving or
+  inlining the diff:
+  ```bash
+  git diff main...HEAD > "$REVIEW_DIR/full-diff.patch"
+  { echo "## Files"; git diff --stat main...HEAD;
+    echo; echo "## Hunks"; git diff main...HEAD | grep -E '^(\+\+\+|@@)'; } > "$REVIEW_DIR/diff-index.md"
+  ```
+  `diff-index.md` is the file list plus every hunk header — each one already carries its enclosing
+  function/section (`@@ -39,13 +39,16 @@ See the ADRs for…`) — at roughly 1/20th the size of the
+  full patch. It exists for the confirm-gate (Step 5b): a **routing** decision that normally doesn't
+  need hunk bodies, made by up to 19 parallel agents where the full patch would be re-paid 19 times.
+  Every other consumer (tagger, Sam System, Code Rot Cody, Consistency Checker, routed Pass 1
+  reviewers) reads `full-diff.patch` — the tagger in particular needs it because the line ranges it
+  emits in `tagged-sections.md` are offsets into that file (Step 5a's bounded reads depend on this).
 
 ### Step 2: Discover Available Reviewers
 
@@ -164,17 +191,31 @@ with the reviewer count when the run starts.
 ### Step 4: Summarizer → `summary.md`
 
 Spawn one subagent (`subagent_type: "Explore"`) with the summarizer prompt
-@~/.claude/prompts/summarizer.md, providing: the diff (`git diff main...HEAD`), changed-file list,
-commit messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if available, and any
+@~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
+diff text to summarize) rather than inlining `git diff` output, plus: changed-file list, commit
+messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if available, and any
 known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file contains
 `## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
 
 ### Step 4.5: Tagger (haiku) → `tagged-sections.md`
 
-Spawn a subagent (`subagent_type: "general-purpose"`, `model: "haiku"`) with the tagger prompt
-@~/.claude/prompts/tagger.md, providing the diff and the reviewer names + triggers **from
-index.yaml only**. Save output to `{REVIEW_DIR}/tagged-sections.md`: sections mapped to each
-reviewer with line ranges, plus a SKIP section for reviewers with no trigger match.
+Spawn a subagent (`subagent_type: "expert-scout"` — haiku is pinned in the agent definition) with the
+tagger prompt @~/.claude/prompts/tagger.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs
+the full patch, not `diff-index.md`: the line ranges it emits are offsets into that file, which
+Step 5a later uses for bounded reads) and the reviewer names + triggers **from index.yaml only**.
+Save output to `{REVIEW_DIR}/tagged-sections.md`: sections mapped to each reviewer with line ranges,
+plus a SKIP section for reviewers with no trigger match.
+
+**Tagger-collapse guard.** After the tagger returns, compute the SKIP fraction: `skipped reviewers /
+routable reviewers`. If it exceeds **60%**, this is not 19 independent routing decisions — it is
+tagger abstention (e.g. trigger keywords not matching a docs/prompts-heavy repo). Print:
+```
+⚠️  TAGGER COLLAPSE — routed {n}/{total}, skipped {m}/{total} ({pct}%).
+    Falling back to the confirm-gate for all {m}. Recorded for /review-stats.
+```
+Behavior doesn't change — the gate (Step 5b) already runs for every SKIP either way — but note the
+collapse in `final-report.md`'s Routing Accuracy table so `/review-stats` can see it and the run
+isn't silently 19 gate calls with no signal that the tagger barely routed anything.
 
 ### Step 5: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
@@ -187,9 +228,18 @@ routing decision. Run no gate. Reviewers the user didn't name simply don't run.
 #### Step 5a: Routed reviewers → full Pass 1
 
 **Launch ALL routed Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant
-turn; `run_in_background: false`; `model: PANEL_MODEL` from Step 3). One subagent per reviewer. They
-still run concurrently — the harness caps concurrency — and they have all returned by the time you
-continue, which makes the Step 5c join barrier free. See "Never poll" there.
+turn; `subagent_type: "expert-reviewer"`; `run_in_background: false`; `model: PANEL_MODEL` from
+Step 3). One subagent per reviewer. They still run concurrently — the harness caps concurrency — and
+they have all returned by the time you continue, which makes the Step 5c join barrier free. See
+"Never poll" there.
+
+**Why a custom agent, not `general-purpose`.** Twenty concurrent subagents reading persona files and
+writing checkpoints outside the working directory would produce twenty near-identical permission
+dialogs — the permission system does not deduplicate across concurrent agents, and this command's
+`allowed-tools` frontmatter does not propagate to subagents it spawns. `expert-reviewer` is
+capability-restricted instead of dialog-gated: `permissionMode: bypassPermissions`, but **no `Edit`
+tool and no write-capable Bash**, so a reviewer physically cannot modify the code it is reviewing.
+It reads the repo and writes one file. Same for `expert-scout` on the mechanical roles.
 
 **Pass paths, not contents.** A prompt is self-contained if the subagent can *reach* everything it
 needs, not if you paste everything into it. Every `Agent` prompt you write stays in your context for
@@ -209,7 +259,13 @@ Before reviewing, read these files with the Read tool:
 
 Then supply inline **only what you alone know** — none of it is on disk for the subagent to find:
 
-- Their tagged sections (escalated reviewers from Step 5c get the sections their gate named)
+- Their tagged sections (escalated reviewers from Step 5c get the sections their gate named) — as
+  line ranges into `{REVIEW_DIR}/full-diff.patch`, plus:
+  ```
+  Your sections are line ranges into {REVIEW_DIR}/full-diff.patch. Read ONLY those ranges
+  (the Read tool takes offset/limit). Reading whole source files when a finding needs
+  surrounding context is expected and correct — reading the whole patch file is not.
+  ```
 - The **Technical Summary** from `summary.md`
 - `PROJECT_CONTEXT`, project modifiers, `DETECTED_LANGUAGES`, and the strict delta-scope rule below
 - `{REVIEW_DIR}` and their output path
@@ -251,25 +307,27 @@ follow the same rules as everyone else: they read their own YAML by path, and th
 not a report. (Their output *formats* differ — those formats are defined in their own YAMLs, which
 they read themselves; you do not need to know them here.)
 
-- **Sam System** (integration): gets the **full diff** (not tagged sections), the Technical
-  Summary, and any plan context as "Known Integration Concerns". He must trace data flow across
-  files — read both ends of every factory/event-bus/config connection and flag parameters passed
-  but never used. Output: canonical format (he is NOT an ADR-0006 carve-out); each finding's
-  **Issue** field starts with the data-flow trace, e.g.
+- **Sam System** (integration): gets `{REVIEW_DIR}/full-diff.patch` (not tagged sections — his
+  domain is the whole diff, so he reads the whole file), the Technical Summary, and any plan context
+  as "Known Integration Concerns". He must trace data flow across files — read both ends of every
+  factory/event-bus/config connection and flag parameters passed but never used. Output: canonical
+  format (he is NOT an ADR-0006 carve-out); each finding's **Issue** field starts with the data-flow
+  trace, e.g.
   `Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
   Decision is always DEEP-DIVE.
 
-- **Code Rot Cody** (haiku, ADR-0006 carve-out): gets the full diff + changed-file list. He greps
-  the ENTIRE repo to verify every claim — never guesses. New symbols: grep for callers (excluding
-  definition site), flag zero-caller symbols DEAD. Removed symbols: grep for lingering references,
-  flag ORPHANED. New config fields: verify stored, read, validated, documented. His output format
-  (symbol-inventory table) and his `languageExtensions` are in his own YAML, which he reads.
+- **Code Rot Cody** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
+  `{REVIEW_DIR}/full-diff.patch` + changed-file list. He greps the ENTIRE repo to verify every
+  claim — never guesses. New symbols: grep for callers (excluding definition site), flag zero-caller
+  symbols DEAD. Removed symbols: grep for lingering references, flag ORPHANED. New config fields:
+  verify stored, read, validated, documented. His output format (symbol-inventory table) and his
+  `languageExtensions` are in his own YAML, which he reads.
 
-- **Consistency Checker** (haiku, ADR-0006 carve-out): gets the full diff + the PR description
-  (from cache or `gh pr view --json body`); it reads its own persona file for the review lens, like
-  every other subagent. Mechanical pattern pass: mixed error types for the same purpose,
-  inconsistent cleanup patterns, PR-description claims contradicted by the code. Its output format
-  is defined in its own YAML.
+- **Consistency Checker** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
+  `{REVIEW_DIR}/full-diff.patch` + the PR description (from cache or `gh pr view --json body`); it
+  reads its own persona file for the review lens, like every other subagent. Mechanical pattern
+  pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
+  contradicted by the code. Its output format is defined in its own YAML.
 
 #### Step 5b: Un-routed reviewers → haiku confirm-gate → `skipped.md`
 
@@ -277,21 +335,32 @@ The tagger is a keyword heuristic, not an oracle — it has been caught inventin
 keywords are only a proxy for a domain. So an un-routed reviewer is not dropped on the tagger's word
 alone: each gets a **cheap haiku second opinion that can escalate**.
 
-Launch these in the **same parallel batch** as Step 5a — one haiku subagent
-(`subagent_type: "general-purpose"`, `model: "haiku"`) per SKIP-listed reviewer. This is a routing
+Launch these in the **same parallel batch** as Step 5a — one subagent
+(`subagent_type: "expert-scout"`; haiku is pinned there) per SKIP-listed reviewer. This is a routing
 decision, not a review, so the prompt gets the reviewer's `name`, `useWhen`, and `triggers` **from
-`index.yaml` only** — do NOT load the full persona YAML. Plus the full diff, the changed-file list,
-and:
+`index.yaml` only** — do NOT load the full persona YAML.
+
+**Starve the gate — point it at `diff-index.md`, never `full-diff.patch`.** This step runs up to 19
+times in parallel; handing each copy the full diff (measured: ~44k tokens on a mid-size PR) is what
+made a gate exist to save money cost *more* than the panel it was gating. Give it the cheap artifact
+and an explicit escape hatch instead:
 
 ```
+Read {REVIEW_DIR}/diff-index.md — the changed files and every hunk header, each with its
+enclosing function/section. That is deliberately not the diff body: yours is a ROUTING
+decision, and the file list plus hunk context is normally enough to make it.
+
 The tagger did not route any section to you. Its stated reason:
   "{tagger reason}"
 
 That is a keyword-matching heuristic and it has been wrong before — treat it as a
-hypothesis to check, not a verdict. Scan the diff yourself for anything in YOUR
+hypothesis to check, not a verdict. Scan the index yourself for anything in YOUR
 domain ({useWhen}). Trigger keywords are only a proxy: a problem in your domain can
 be present with none of them in the diff, and present with all of them and still not
 be yours.
+
+If — and only if — a specific file looks like it might touch your domain, pull that
+ONE file's diff: `git diff main...HEAD -- <path>`. Do not read the whole patch.
 
 Respond in exactly this format:
 ## Verdict
@@ -305,11 +374,18 @@ Respond in exactly this format:
 
 Return the verdict as the final message; the orchestrator collects them (gate agents write no files).
 
+This is a **soft control** — the agent still has `Read` and `Bash(git diff:*)`, and nothing stops it
+reading the full patch if it decides to. What discourages that is never being handed the patch path
+and being told the cheaper move explicitly. If a run shows gate agents ballooning back toward
+full-diff size, that means the soft control isn't holding and it needs to become a hard one (e.g.
+strip `Bash(git diff:*)` down to a per-file form only the escalation path can use).
+
 #### Step 5c: Escalation
 
-Every `ESCALATE` is promoted to a **real Pass 1 subagent on `PANEL_MODEL`**, run exactly as Step 5a
-but seeded with the sections the gate named instead of tagger sections. It writes the normal
-`{reviewer}-pass1.md` and joins Q&A / Pass 2 / cross-review like any other reviewer.
+Every `ESCALATE` is promoted to a **real Pass 1 review** — `subagent_type: "expert-reviewer"`,
+`model: PANEL_MODEL` — run exactly as Step 5a but seeded with the sections the gate named instead of
+tagger sections. It writes the normal `{reviewer}-pass1.md` and joins Q&A / Pass 2 / cross-review
+like any other reviewer.
 
 Every `AGREE-SKIP` becomes one row in a single `{REVIEW_DIR}/skipped.md` (written by the
 orchestrator) — not 14 near-empty pass1 files:
@@ -344,7 +420,8 @@ which.
 ### Step 5.7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
 
 Carl runs **last** and is the one reviewer who is not blind to the panel. Spawn one subagent
-(`model: PANEL_MODEL`) and, per "Pass paths, not contents", point him at the files rather than
+(`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`) and, per "Pass paths, not contents",
+point him at the files rather than
 inlining them: his persona (`~/.claude/reviewers/contrarian-carl.yaml`), the other reviewers'
 `{REVIEW_DIR}/*-pass1.md` files (including Cody's and the Consistency Checker's), and
 `{REVIEW_DIR}/skipped.md` — who *didn't* review this diff is exactly the kind of blind spot he
@@ -368,8 +445,8 @@ participate in Pass 2; his findings are presented as-is.
 ### Step 6: Haiku Q&A (parallel) → `{reviewer}-questions-answered.md`
 
 Runs BEFORE Pass 2 so the re-evaluation is informed rather than speculative (ADR-0002). For each
-reviewer whose Pass 1 receipt reported `open-questions > 0`: spawn a haiku subagent
-(`general-purpose`, `model: "haiku"`) and point it at `{REVIEW_DIR}/{reviewer}-pass1.md` — it reads
+reviewer whose Pass 1 receipt reported `open-questions > 0`: spawn a subagent
+(`subagent_type: "expert-scout"`) and point it at `{REVIEW_DIR}/{reviewer}-pass1.md` — it reads
 the Open Questions itself, so you never have to load them. Supply the reviewer's name and role
 summary (from `index.yaml`) and their tagged sections, plus: "Read the hinted files plus whatever
 else is needed to answer concretely. If a question can't be settled by static analysis, say so and
@@ -382,8 +459,8 @@ Q&A agents in one message.
 ### Step 6.5: Pass 2 Re-evaluations (parallel subagents) → `{reviewer}-pass2.md`
 
 **Only for reviewers whose Pass 1 receipt reported findings > 0** (Carl excluded). Launch one
-subagent per such reviewer, in one message (`model: PANEL_MODEL`). Pass paths, not contents — each
-prompt names the files to Read:
+subagent per such reviewer, in one message (`subagent_type: "expert-reviewer"`,
+`model: PANEL_MODEL`). Pass paths, not contents — each prompt names the files to Read:
 
 - `~/.claude/prompts/pass2-reevaluation.md` — the pass2 prompt and output format
 - `{REVIEW_DIR}/{reviewer}-pass1.md` — their own Pass 1
@@ -404,7 +481,8 @@ receipt only:
 ### Step 6.7: Expert Cross-Review (parallel subagents) → `{reviewer}-cross-review.md`
 
 Only for reviewers whose Pass 1 receipt said `DEEP-DIVE` (QUICK-SCAN reviewers add little here).
-Launch one subagent per DEEP-DIVE reviewer, in one message (`model: PANEL_MODEL`). Pass paths, not
+Launch one subagent per DEEP-DIVE reviewer, in one message (`subagent_type: "expert-reviewer"`,
+`model: PANEL_MODEL`). Pass paths, not
 contents: point each at its own `~/.claude/reviewers/{name}.yaml` and at the other reviewers'
 `{REVIEW_DIR}/*-pass1.md` / `*-pass2.md` files, plus the diff scope, and:
 
@@ -502,6 +580,9 @@ full review · `GATE-SKIP` no tagger match, gate scanned the diff and confirmed 
 findings
 
 ## Routing Accuracy
+[If the tagger-collapse guard (Step 4.5) fired: **⚠️ TAGGER COLLAPSE** — routed {n}/{total},
+skipped {m}/{total} ({pct}%). All SKIPs fell through to the confirm-gate. (Omit if it didn't fire.)]
+
 | Reviewer | Tagger said | Gate said | Escalated finding confirmed? |
 
 Every `ESCALATED` row is a tagger miss; every escalation that produced no confirmed finding is a

@@ -10,34 +10,6 @@ summary:
     Humble but persistent. Uses phrases like "I'm not sure I understand...",
     "Why do we do it this way?", "Is there documentation for this?"
 
-triggers:
-  filePatterns:
-    - Test files (*_test.rs, *.test.ts, tests/)
-    - New feature implementations
-    - Bug fixes (should have regression tests)
-    - Complex logic
-    - New patterns or approaches
-  keywords:
-    - "#[test]"
-    - "#[cfg(test)]"
-    - describe
-    - it
-    - test
-    - expect
-    - mock
-    - stub
-    - fake
-    - spy
-    - assert
-    - should
-  riskIndicators:
-    - New code without corresponding tests
-    - Complex logic without edge case tests
-    - Error handling without error path tests
-    - Unfamiliar patterns
-    - Implicit knowledge assumptions
-    - Jargon without explanation
-
 principles:
   - "Fresh eyes are valuable: You see implicit knowledge that should be explicit."
   - "Question everything: Patterns that 'everyone knows' but nobody documented."
