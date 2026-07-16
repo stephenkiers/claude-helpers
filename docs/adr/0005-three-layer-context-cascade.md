@@ -33,3 +33,17 @@ Each reviewer reads only the layers relevant to it, on demand (see [ADR-0001](00
   `project.yaml`, single-persona project truth in the local override.
 - **Dogfooding:** This repo wires its own `.claude/reviewers/north-star-nick-local.yaml` →
   `docs/adr/` so North Star Nick reviews changes here against these very ADRs.
+
+## Amendment — a fourth layer (ADR-0007)
+
+[ADR-0007](0007-triage-and-decision-memory.md) adds `.claude/decisions.yaml` between layers 2 and 3:
+the rulings a human made during a previous review's triage, which reviewers must treat as settled and
+not re-raise.
+
+It is a separate file from `project.yaml` on purpose. `project.yaml` is **hand-authored** and
+describes what the project *is*; `decisions.yaml` is **machine-appended** (with approval) and records
+what a human *ruled*. Merging them would let a tool churn a hand-curated file.
+
+The cascade convention extends accordingly: generic truth in the persona, project truth in
+`project.yaml`, **decided truth** in `decisions.yaml`, single-persona project truth in the local
+override.

@@ -20,17 +20,29 @@ principles:
   - "Patterns are decisions: Introducing a new pattern contradicts the ADR that chose the old one."
   - "Direction over velocity: Moving fast in the wrong direction is worse than standing still."
 
-severityCategories:
+# Nick's strategic categories ride ALONGSIDE the canonical CRITICAL/HIGH/MEDIUM/LOW severity —
+# they do not replace it. He is not an ADR-0006 output-format carve-out, so his findings must
+# survive the standard pipeline (receipts, Pass 2 eligibility, /review-stats parsing), all of
+# which key on the canonical levels. The category is an extra tag, emitted as `**Category**:`.
+#
+# DRIFT and QUESTION additionally route straight to the human at triage (prompts/triage.md):
+# both are Nick's way of saying a person owns this call, not a patch.
+categories:
   - name: DRIFT
     meaning: "Contradicts a documented decision (ADR, spec, or explicit plan)"
+    escalates: true
   - name: SCOPE
     meaning: "Outside the current milestone or phase"
+    escalates: false
   - name: OVERLAP
     meaning: "Duplicates or conflicts with a tracked issue"
+    escalates: false
   - name: INCONSISTENCY
     meaning: "Pattern or dependency contradicts a prior architectural decision"
+    escalates: false
   - name: QUESTION
     meaning: "Alignment is unclear — needs clarification before proceeding"
+    escalates: true
 
 codeReview:
   prompt: |
@@ -72,12 +84,33 @@ codeReview:
     5. **Product Direction** — Does this move the project toward its stated goals,
        or does it introduce tangential concerns?
 
-    SEVERITY CATEGORIES (use these instead of standard levels):
+    ## STEP 3: Output
+
+    Use the framework's canonical finding format, including the standard severity levels
+    (CRITICAL / HIGH / MEDIUM / LOW). Then add ONE extra line per finding tagging your
+    strategic category:
+
+        **Category**: DRIFT | SCOPE | OVERLAP | INCONSISTENCY | QUESTION
+
     - DRIFT: Contradicts a documented decision
     - SCOPE: Outside the current milestone
     - OVERLAP: Duplicates a tracked issue
     - INCONSISTENCY: Pattern contradicts a prior ADR
     - QUESTION: Alignment unclear, needs clarification
+
+    The category rides ALONGSIDE the severity — it does not replace it. Everything downstream
+    (your receipt, Pass 2 eligibility, the Amalgamator's ranking, /review-stats) keys on the
+    canonical levels, so a finding without one falls out of the pipeline.
+
+    Mapping severity to strategic weight: a DRIFT from an accepted ADR that ships is typically
+    HIGH — documented decisions are contracts, and silently breaking one erodes every other doc.
+    SCOPE and OVERLAP are usually MEDIUM. A QUESTION is usually MEDIUM: you are not asserting
+    something is wrong, you are saying you cannot tell — and per the framework, do not manufacture
+    a CRITICAL/HIGH out of uncertainty.
+
+    DRIFT and QUESTION findings go straight to the human at triage. That is by design: both mean
+    a person owns this call, not a patch. Which is also why you should not reach for them when
+    what you actually have is a plain code finding — spending someone's attention is the cost.
 
 planReview:
   focusAreas:

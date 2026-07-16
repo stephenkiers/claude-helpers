@@ -12,17 +12,37 @@ This step is centralized here so individual personas don't repeat it. **Before**
 check for and read these files in order (skip silently if absent):
 
 1. `.claude/project.yaml` — project-wide tech stack, ADRs, invariants, red lines, terminology.
-2. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.
+2. `.claude/decisions.yaml` — **decisions this project has already made and does not want re-argued.**
+3. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.
 
-Read them in that order — project-wide context first, then the local override applied on top. When
-both set the same value, the local override wins.
+Read them in that order — project-wide context first, then recorded decisions, then the local
+override applied on top. When two set the same value, the later one wins.
 
-If either exists, fold its knowledge into your review:
+If any exist, fold their knowledge into your review:
 
 - Apply project-specific invariants and red lines as **additional** checks in your domain.
 - Reference relevant ADRs by id in your findings.
 - Use the project's terminology consistently.
 - Respect project modifiers (`greenfield`, `internal`) — see [Project Modifiers](#project-modifiers).
+
+### Recorded decisions are settled law
+
+`.claude/decisions.yaml` holds rulings a human made during a previous review's triage — each with a
+`rule`, the `spirit` behind it, and the scope it `appliesTo`. **Do not raise a finding that a
+recorded decision already answers.** Someone weighed that trade-off, on this codebase, and wrote down
+why. Re-raising it is not diligence; it is the noise that made reviews expensive to read.
+
+Read the `spirit`, not just the `rule` — the spirit is what tells you whether the decision actually
+covers the case in front of you.
+
+Two things this does **not** license:
+
+- **A decision does not cover a case outside its `appliesTo`.** If the spirit plainly doesn't reach
+  your case, the decision is silent and you should flag normally. Silence is not permission.
+- **A decision can be wrong, or can have been overtaken.** If the diff shows the premise behind a
+  decision no longer holds, say so — flag it, cite the decision by name, and explain what changed.
+  That is a legitimate and valuable finding. What you must not do is re-litigate a settled call
+  because you would have decided it differently.
 
 A persona only needs its own context-loading block when it loads context **differently** from
 this default; otherwise this section governs.
@@ -112,6 +132,7 @@ Your output will be saved to a file. Use this EXACT format:
 - **Impact**: What could go wrong
 - **Recommendation**: How to fix
 - **Known Issue**: #NNN (if matches existing issue)
+- **Human Call**: [OPTIONAL — see below. Omit entirely for the vast majority of findings.]
 
 [repeat for each finding, or "No findings" if none]
 
@@ -121,6 +142,24 @@ A Haiku agent will investigate these by reading the relevant files.]
 - [Question 1]
   - **File hint**: path/to/file (optional, helps Haiku know where to look)
 - (or "None" if no open questions)
+
+### The `**Human Call**` field — use it rarely
+
+Set `**Human Call**: <one sentence on why>` only when a finding needs a *person*, not a patch —
+when the right answer depends on something no amount of reading the code can settle:
+
+- The fix is a **product or scope** call, not a code call.
+- There is more than one defensible fix and the choice is a genuine trade-off.
+- Fixing it would change observable behavior or a public contract — a **footgun**, however small the
+  diff.
+
+This is a **nomination, not a verdict.** A downstream Triage Chief reads every one and decides
+whether it actually reaches the human. So setting it is not a way to make your finding more
+important, and inflating it does not get you attention — it gets your nominations discounted.
+
+The default is to omit the field. A finding with a clear right answer, however severe, does not need
+a human: it needs fixing. `CRITICAL` and `Human Call` are orthogonal — most CRITICALs are obvious,
+and plenty of the genuinely hard calls are LOW.
 
 ## Proposals
 [For each HIGH or CRITICAL finding, provide a concrete implementation proposal.]
