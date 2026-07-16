@@ -1,0 +1,52 @@
+# Recorded Decisions
+#
+# Copy to `.claude/decisions.yaml` in your project. Git-track it — it is project truth,
+# not machine scratch.
+#
+# WHAT THIS IS
+# The rulings you made during `/expert-review` triage, written down so the panel stops asking
+# you the same question every run. Reviewers read this file at Pass 1 (see the "Load Project
+# Context" step in prompts/expert-framework.md), which means a decision recorded here makes the
+# NEXT review shorter. That is the whole point: the report shrinks as the project's judgment
+# accumulates.
+#
+# `/expert-review` appends to this file, but only with your approval, and only after proposing
+# the exact wording. You can (and should) edit it by hand.
+#
+# THE BAR — patterns only
+# Record the pattern and the SPIRIT behind it, not the instance that provoked it.
+# If it wouldn't survive being explained to a new engineer as "how we think here," it does not
+# belong in this file.
+#
+#   YES  "Errors cross a module boundary as typed values, never as exceptions — callers should
+#          not need to read our source to know what can go wrong."
+#   NO   "Use `const` on line 42 of auth.ts."
+#   NO   "Prefer `map` over `for` loops."          (taste, not a decision)
+#   YES  "We accept unbounded memory in the batch importer; it runs offline against a bounded
+#          input, and the complexity of streaming isn't worth it until that stops being true."
+#
+# A file full of nits is WORSE than an empty one. Reviewers treat these as settled law and will
+# stop raising real findings that brush against them. Keep it short. Prune it.
+#
+# When a decision changes how the system is SHAPED rather than how it is written, it is an ADR,
+# not an entry here. Triage will tell you when it thinks it's crossed that line.
+
+decisions:
+  - name: <the pattern, in a few words — not the instance>
+
+    rule: >
+      What we do, stated as a pattern that generalizes beyond the finding that provoked it.
+
+    spirit: >
+      WHY. The intent behind the rule — the thing that lets a reader apply it to a case you
+      never anticipated, and recognize when it does NOT apply. This field is load-bearing.
+      A rule without its spirit gets cargo-culted into places it was never meant to go, and
+      then someone deletes it because it produced a stupid result.
+
+    appliesTo: >
+      Where this holds — and, just as importantly, where it does not. Scope keeps a good
+      decision from metastasizing into a bad one.
+
+    source: review <REVIEW_DIR basename>, YYYY-MM-DD
+
+    supersedes: []   # optional — names of earlier decisions this replaces
