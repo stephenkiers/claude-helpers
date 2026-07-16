@@ -51,7 +51,7 @@ chance to rule on it:
 
 **Date**: YYYY-MM-DD | **Branch**: … | **Commit**: … | **Project**: …
 **Scope**: Delta from main | **Files Reviewed**: N
-**Checkpoint Directory**: ~/.claude/reviews/{project}/{branch}-{hash}-{timestamp}/
+**Checkpoint Directory**: ~/.claude/reviews/{repo-key}/{branch}-{hash}-{timestamp}/
 
 ## Executive Summary
 - **Reviewers Run**: N (names, router-selected or user-named)

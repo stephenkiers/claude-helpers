@@ -1,6 +1,10 @@
-# ADR-0005: Three-layer context cascade
+# ADR-0005: Context cascade
 
 **Status:** Accepted
+
+> Titled "Three-layer context cascade" when accepted; [ADR-0007](0007-triage-and-decision-memory.md)
+> added a fourth layer (see the Amendment below), so the heading now reads "Context cascade." The
+> filename is unchanged to avoid breaking inbound links.
 
 ## Context
 
@@ -36,13 +40,19 @@ Each reviewer reads only the layers relevant to it, on demand (see [ADR-0001](00
 
 ## Amendment — a fourth layer (ADR-0007)
 
-[ADR-0007](0007-triage-and-decision-memory.md) adds `.claude/decisions.yaml` between layers 2 and 3:
-the rulings a human made during a previous review's triage, which reviewers must treat as settled and
-not re-raise.
+[ADR-0007](0007-triage-and-decision-memory.md) adds a `decisions.yaml` layer, logically between
+layers 2 and 3: the rulings a human made during a previous review's triage, which reviewers must
+treat as settled and not re-raise.
 
 It is a separate file from `project.yaml` on purpose. `project.yaml` is **hand-authored** and
 describes what the project *is*; `decisions.yaml` is **machine-appended** (with approval) and records
 what a human *ruled*. Merging them would let a tool churn a hand-curated file.
+
+Note the one way this fourth layer breaks the cascade's shape: it does **not** live in the project's
+`.claude/`. Per ADR-0007's own amendment, it sits outside the working tree at a repo-keyed path
+(`~/.claude/reviews/{owner-repo}/decisions.yaml`), because a decision suppresses findings and an
+in-tree file would let a branch license the review of itself. The orchestrator passes each reviewer
+the path; conceptually it is still the "decided truth" layer, it just cannot be a tracked file.
 
 The cascade convention extends accordingly: generic truth in the persona, project truth in
 `project.yaml`, **decided truth** in `decisions.yaml`, single-persona project truth in the local
