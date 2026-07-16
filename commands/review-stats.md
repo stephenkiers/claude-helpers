@@ -6,11 +6,17 @@ model: haiku
 
 # Review Stats — Reviewer Eval Loop
 
-`/expert-review` leaves a full audit trail under `~/.claude/reviews/{project}/{branch}-{hash}/`.
-This command aggregates it into per-reviewer signal rates: how often each persona runs, finds
-anything, and how its findings survive Pass 2 (CONFIRMED vs RESOLVED/DOWNGRADED). Use it to tune
-the panel — a persona that never produces CONFIRMED findings is either mis-triggered, redundant,
-or needs a sharper prompt.
+`/expert-review` leaves a full audit trail under
+`~/.claude/reviews/{repo-key}/{branch}-{hash}-{timestamp}/`, plus an append-only
+`~/.claude/reviews/{repo-key}/ledger.jsonl` recording what was actually *done* about each finding.
+The `{repo-key}` is the repository's identity (`owner-repo`), so one repo's history stays together
+across every branch and worktree.
+
+This command aggregates both. Per-reviewer signal rates — how often each persona runs, finds
+anything, and how its findings survive Pass 2 (CONFIRMED vs RESOLVED/DOWNGRADED) — tune the panel:
+a persona that never produces CONFIRMED findings is either mis-triggered, redundant, or needs a
+sharper prompt. The ledger tunes something different: it shows which themes keep coming back, which
+is a fact about the codebase rather than about the reviewers.
 
 ## Arguments
 
@@ -92,7 +98,54 @@ suggestions** section:
 State the sample size prominently — with fewer than ~5 reviews, say the data is too thin to act
 on and skip the suggestions.
 
+### 4. Themes over time
+
+The tables above evaluate the **panel**. This section evaluates the **codebase** — what keeps coming
+back, and whether anything is being done about it.
+
+Read every ledger in scope — `~/.claude/reviews/*/ledger.jsonl` (one per repo), or just
+`~/.claude/reviews/$1/ledger.jsonl` when `$1` narrows to one, matching Step 1. Skip the whole section
+if none exist — the ledger accumulates only as triaged reviews happen. One JSON object per line,
+appended by `/expert-review` Step 13:
+`{date, commit, reviewDir, reviewer, severity, title, bucket, disposition, decision, nominated}`.
+There is **no `category` field** — only one reviewer ever produced one, so grouping is by `reviewer`
+plus title similarity instead.
+
+Report:
+
+- **Recurring themes** — group by `reviewer` + similar `title`s. Count **distinct `commit` values**,
+  never rows: a `--force` re-run of the same commit is one appearance, not two. Which themes appear
+  across ≥3 distinct commits? Rank by count, and show the split between `disposition: accepted`/`planned`
+  (being acted on) and `deferred`/`dropped` (not).
+- **The deferral backlog** — everything with `bucket: deferred`, oldest first. This is the "what's
+  coming up" list, and it is the one that quietly rots if nobody looks at it.
+- **Decision coverage** — how many escalations (`bucket: needs-you`) produced a recorded decision
+  (`disposition: decided`) versus a one-off ruling. A project with many escalations and few recorded
+  decisions is re-answering the same questions every review — which is precisely the cost triage
+  exists to eliminate.
+- **Suppression audit** — group `bucket: settled` findings by their `decision`. This is how you tell
+  a decision that is quietly doing its job from one that has gone too broad: a decision suppressing a
+  steady trickle of would-be findings across reviews is working; one suppressing an accelerating pile
+  — especially anything that *should* have been raised — is a candidate to narrow or retire. (By the
+  framework's floor, no CRITICAL or security finding can appear here at all.)
+
+Then the one judgment that matters here:
+
+> **A theme on its third appearance is not three bugs. It is one missing decision.**
+
+If a theme recurs across ≥3 distinct commits and keeps getting fixed one instance at a time, say so plainly
+and recommend recording a decision (or an ADR) that settles the class — that is what stops it coming
+back a fourth time. Name the theme and draft the rule in one sentence.
+
+Two guards, because this section is the easiest place in the command to fabricate insight:
+
+- **Do not invent a theme from two data points.** Say the data is thin instead.
+- **A recurring theme is not automatically bad.** A reviewer correctly catching the same real bug
+  class in genuinely new code is the system working. The signal to act on is a recurring theme whose
+  *right answer never changes* — that is the one worth writing down once instead of relitigating.
+
 ## Output
 
-A single table + suggestions in the conversation (no file written — this is a read-only report).
-End with: "Tune triggers in `~/.claude/reviewers/index.yaml`; tune prompts in the persona YAMLs."
+A single table + suggestions + themes in the conversation (no file written — this is a read-only
+report). End with: "Tune triggers in `~/.claude/reviewers/index.yaml`; tune prompts in the persona
+YAMLs; settle recurring themes in the repo's recorded-decisions file (`~/.claude/reviews/{repo-key}/decisions.yaml`)."

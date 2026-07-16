@@ -35,14 +35,62 @@ See the ADRs for the full rationale:
 - [ADR-0003 Reviewer routing](docs/adr/0003-tagger-routing.md) — superseded by a single judgment
   Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone.
 - [ADR-0004 Model cost routing](docs/adr/0004-model-cost-routing.md) — Haiku for mechanical work.
-- [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md)
+- [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md) — amended by
+  ADR-0007 with a fourth layer.
+- [ADR-0006 Reviewer output-format carve-outs](docs/adr/0006-reviewer-output-format-carve-outs.md)
+- [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
+  ends in triage, not synthesis; rulings are recorded and become settled law.
+
+## Triage: the review ends with decisions, not findings
+
+The panel got good enough that reading its output became the expensive part. So `/expert-review` no
+longer ends at the Amalgamator's `final-report.md` — a **Triage Chief** (`prompts/triage.md`) reads
+that report and writes `action-plan.md`, which is the file a human actually opens. Every CONFIRMED
+finding lands in one of **four buckets** — *doing it*, *needs you*, *deferred*, *already settled*:
+
+- **Doing it** — the default, and where ~85% of findings land. Skim it. (No *decision* needed — but
+  these still need doing; apply them or hand the plan to `/implement-with-haiku`.)
+- **Needs you** — escalations only, under a deliberately narrow test. Over-escalation is treated as
+  the failure mode, not the safe default: a *needs you* list long enough to skim is one nobody reads.
+  Every escalation must offer *leave as-is* as a real option.
+- **Deferred** — what genuinely should not happen now, each with a reason that survives being read
+  aloud.
+- **Already settled** — findings a recorded decision covers, split into `(withheld)` (a reviewer
+  stayed silent, and said so under `## Suppressed by decision`) and `(raised anyway)`. No CRITICAL or
+  security finding is ever here — the floor below forbids it.
+
+The **gut check** is not a bucket; it is the cross-cutting analysis no single-lens reviewer can do:
+*do these findings share one bad premise? is this drifting from an ADR? did the panel genuinely
+disagree? have we seen this theme before?* A bounded *declined nominations* list watches the opposite
+failure — a `**Human Call**` waved through without escalating.
+
+`final-report.md` is unchanged and one click away. It is still the gut-check instrument of record —
+triage sits **in front of** it, not over it.
+
+**Decisions are recorded and reviewers obey them.** Rulings land in a repo-keyed `decisions.yaml`
+that lives **outside the repo** (`~/.claude/reviews/{owner-repo}/decisions.yaml`; fourth context
+layer, template in `prompts/decisions.yaml.template`) — outside so that no diff can add an entry that
+silences the review of itself. `prompts/expert-framework.md` instructs every reviewer not to re-raise
+what a recorded decision already settles, and to record what it suppressed. That is the loop: each
+ruling makes the *next* report shorter, so noise falls as the project's judgment accumulates instead
+of rising as the panel improves. A hard floor bounds the mechanism: a decision **demotes, never
+deletes** — it can never suppress a CRITICAL or a security finding, and `project.yaml` red lines
+outrank it.
+
+The bar for a recorded decision is **patterns and the spirit behind them — never nits.** A
+`decisions.yaml` full of nits is worse than an empty one, because reviewers read it as settled law
+and it will start suppressing real findings. When a ruling changes how the system is *shaped*, it
+becomes an ADR instead. `~/.claude/reviews/{owner-repo}/ledger.jsonl` (keyed on repo identity, beside
+the decisions file) records every finding's disposition, and `/review-stats` mines it for recurring
+themes — a theme on its third appearance is not three bugs, it is one missing decision.
 
 ## Commands
 
 **Review & planning**
 - `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, judgment
   router for reviewer selection (Sonnet), single Amalgamator for synthesis (replaces quadratic
-  cross-review). Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
+  cross-review), then a **Triage Chief** that turns the report into a decision list and records what
+  you rule. Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
   and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
