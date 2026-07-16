@@ -1,0 +1,78 @@
+# Recorded Decisions
+#
+# WHERE THIS LIVES
+# NOT in your repo. `/expert-review` writes and reads this file at a repo-keyed path OUTSIDE the
+# working tree — `~/.claude/reviews/{owner-repo}/decisions.yaml` (the key comes from the repo's
+# identity, e.g. `gh repo view --json nameWithOwner`). It is deliberately untracked and un-committed.
+#
+# Why outside the repo: a decision suppresses reviewer findings. If this file lived in the tree, a
+# branch could add an entry that silences the review OF THAT SAME BRANCH — a change licensing itself.
+# Keeping it out of every diff closes that hole structurally: the panel reads the decisions that were
+# settled BEFORE the change under review, never ones the change smuggled in. Copy this template to
+# that path (or let `/expert-review` create it on first ruling); edit it by hand any time.
+#
+# WHAT THIS IS
+# The rulings you made during `/expert-review` triage, written down so the panel stops asking
+# you the same question every run. Reviewers read this file at Pass 1 (see the "Load Project
+# Context" step in prompts/expert-framework.md), which means a decision recorded here makes the
+# NEXT review shorter. That is the whole point: the report shrinks as the project's judgment
+# accumulates.
+#
+# `/expert-review` appends to this file, but only with your approval, and only after proposing
+# the exact wording.
+#
+# THE BAR — patterns only
+# Record the pattern and the SPIRIT behind it, not the instance that provoked it.
+# If it wouldn't survive being explained to a new engineer as "how we think here," it does not
+# belong in this file.
+#
+#   YES  "Errors cross a module boundary as typed values, never as exceptions — callers should
+#          not need to read our source to know what can go wrong."
+#   NO   "Use `const` on line 42 of auth.ts."
+#   NO   "Prefer `map` over `for` loops."          (taste, not a decision)
+#   YES  "We accept unbounded memory in the batch importer; it runs offline against a bounded
+#          input, and the complexity of streaming isn't worth it until that stops being true."
+#
+# A file full of nits is WORSE than an empty one. Reviewers treat these as settled law and will
+# stop raising real findings that brush against them. Keep it short. Prune it.
+#
+# EVERY ENTRY HERE IS LIVE. To overturn a decision, EDIT or DELETE the entry in place — never
+# append a replacement beside it. There is no `supersedes` field: history lives in git (of this
+# file's own directory) and in the ledger, not in the file's live rows. Two entries that disagree
+# is a bug, because a reviewer cannot tell which one binds.
+#
+# WHAT A DECISION CANNOT DO
+# A recorded decision DEMOTES; it never DELETES. It can lower a finding's priority or mark it
+# accepted, but it can never suppress a CRITICAL, and never suppress a finding in the security
+# domain. Those still surface, annotated with the decision that covers them. `project.yaml`
+# `invariants` and `redLines` also outrank anything here.
+#
+# When a decision changes how the system is SHAPED rather than how it is written, it is an ADR,
+# not an entry here. Triage will tell you when it thinks it's crossed that line.
+
+decisions:
+  - name: <the pattern, in a few words — not the instance>   # required
+
+    rule: >          # required
+      What we do, stated as a pattern that generalizes beyond the finding that provoked it.
+
+    spirit: >        # required — load-bearing
+      WHY. The intent behind the rule — the thing that lets a reader apply it to a case you
+      never anticipated, and recognize when it does NOT apply. A rule without its spirit gets
+      cargo-culted into places it was never meant to go, and then someone deletes it because it
+      produced a stupid result. An entry missing `spirit` is not settled law — a reviewer treats
+      it as advisory and flags normally.
+
+    appliesTo: >     # required — the HARD boundary
+      Where this holds — and, just as importantly, where it does not. This is the outer wall:
+      OUTSIDE it the decision is silent, full stop. Inside it, `spirit` decides whether it actually
+      reaches the case in front of the reviewer. An entry missing `appliesTo` is not settled law —
+      it is treated as advisory, never as universally scoped. Scope keeps a good decision from
+      metastasizing into a bad one.
+
+    revisitIf: >     # optional — the staleness trigger
+      The condition under which this decision stops being true (e.g. "the importer starts taking
+      untrusted input"). When a reviewer sees the diff make this condition hold, the decision no
+      longer binds — flag the finding, cite this entry by name, and say what changed.
+
+    source: review <REVIEW_DIR basename>, YYYY-MM-DD   # provenance — where this ruling came from

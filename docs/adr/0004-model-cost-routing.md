@@ -22,8 +22,10 @@ Route each step to the cheapest model that can do it well:
   1/3 the Opus cost.
 - **Panel model** (default Opus; override with `--model`) for the judgment-heavy work where persona
   expertise lives: the `expert-review` orchestrator and its Pass 1/Pass 2/Contrarian Carl subagents
-  (which inherit the orchestrator's model), and the single **Amalgamator** that synthesizes all
-  findings.
+  (which inherit the orchestrator's model), the single **Amalgamator** that synthesizes all findings,
+  and the **Triage Chief** ([ADR-0007](0007-triage-and-decision-memory.md)) that decides what a human
+  must rule on — deciding that wrong in either direction costs more than the model does, so it rides
+  the panel tier deliberately.
 - **Fable** is available as the deliberate expensive step: use `--model fable` when the diff is
   particularly gnarly and you want maximum synthesis capability on the Amalgamator.
 
@@ -32,13 +34,13 @@ For `/expert-review`:
 - The Router is pinned to Sonnet via an explicit `model: "sonnet"` override in the Step 5 Router
   call (judgment but economical; uses expert-reviewer agent, not expert-scout)
 - Haiku mechanical roles are pinned to Haiku in `agents/expert-scout.md`
-- Panel roles (Pass 1, Carl, Pass 2, Amalgamator) inherit from the command's model, overrideable
-  via `--model`
+- Panel roles (Pass 1, Carl, Pass 2, Amalgamator, Triage Chief) inherit from the command's model,
+  overrideable via `--model`
 
 **Per-invocation override:** `/expert-review --model <haiku|sonnet|opus|fable>` sets the model for the
-**judgment panel only** — Pass 1, Contrarian Carl, Pass 2, Amalgamator. The Router (judgment but
-narrow, pinned to Sonnet) and the mechanical roles (Q&A, Cody, Consistency Checker) stay at their
-pinned models regardless. So the flag scales the part of the bill that buys judgment expertise, and
+**judgment panel only** — Pass 1, Contrarian Carl, Pass 2, Amalgamator, Triage Chief. The Router
+(judgment but narrow, pinned to Sonnet) and the mechanical roles (Q&A, Cody, Consistency Checker) stay
+at their pinned models regardless. So the flag scales the part of the bill that buys judgment expertise, and
 only that part.
 
 The tiers, cheapest to dearest (per 1M tokens, input/output): **Haiku 4.5** $1/$5 · **Sonnet 5** $3/$15
