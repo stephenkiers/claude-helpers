@@ -229,7 +229,7 @@ resolved panel model with the reviewer count when the run starts.
 
 ### Step 4: Summarizer → `summary.md`
 
-Spawn one subagent (`subagent_type: "Explore"`) with the summarizer prompt
+Spawn one subagent (`subagent_type: "general-purpose"`) with the summarizer prompt
 @~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
 diff text to summarize) rather than inlining `git diff` output, plus: changed-file list, commit
 messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if available, and any
