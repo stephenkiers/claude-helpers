@@ -25,24 +25,22 @@ principles:
 # survive the standard pipeline (receipts, Pass 2 eligibility, /review-stats parsing), all of
 # which key on the canonical levels. The category is an extra tag, emitted as `**Category**:`.
 #
-# DRIFT and QUESTION additionally route straight to the human at triage (prompts/triage.md):
-# both are Nick's way of saying a person owns this call, not a patch.
+# DRIFT and QUESTION additionally route straight to the human at triage — but which categories
+# escalate is defined ONCE, in prompts/triage.md (escalation test 6), which is the only file that
+# reads it. Persona YAML is not among Triage's inputs, so an `escalates:` flag here would be config
+# no consumer reads — two sources of truth that agree only by luck. It is deliberately omitted; the
+# `meaning` of each category is all Nick needs to tag correctly.
 categories:
   - name: DRIFT
     meaning: "Contradicts a documented decision (ADR, spec, or explicit plan)"
-    escalates: true
   - name: SCOPE
     meaning: "Outside the current milestone or phase"
-    escalates: false
   - name: OVERLAP
     meaning: "Duplicates or conflicts with a tracked issue"
-    escalates: false
   - name: INCONSISTENCY
     meaning: "Pattern or dependency contradicts a prior architectural decision"
-    escalates: false
   - name: QUESTION
     meaning: "Alignment is unclear — needs clarification before proceeding"
-    escalates: true
 
 codeReview:
   prompt: |

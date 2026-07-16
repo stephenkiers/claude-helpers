@@ -90,3 +90,22 @@ A persona may define its own `OUTPUT FORMAT` block only if **all three of the fo
 - **Dogfooding:** This repo wires [North Star Nick](../../reviewers/north-star-nick.yaml) to review
   changes against `docs/adr/` (see [ADR-0005](0005-three-layer-context-cascade.md)). Future
   carve-out proposals will be flagged against this ADR on code review.
+
+## Amendment — additive fields (ADR-0007)
+
+[ADR-0007](0007-triage-and-decision-memory.md) introduced fields that ride *alongside* the canonical
+block rather than replacing it: North Star Nick's `**Category**` tag, and the optional `**Human
+Call**` nomination available to every reviewer. These are **not** format carve-outs and do not need
+to clear the three-criteria bar above.
+
+The distinction is precise: a **carve-out** replaces the canonical Decision / Files / Findings /
+Severity schema with an incompatible shape (and must satisfy all three criteria). An **additive
+field** leaves the canonical block fully intact and appends an extra line. An additive field is
+permitted when — and only when — it has a **named downstream consumer** that reads it; a field no
+component reads is not additive, it is noise, and is removed rather than left dangling. The three
+additive fields in play and their consumers: `**Category**` (Triage's escalation test 6 and the gut
+check), `**Human Call**` (the Triage Chief, which decides whether it reaches the human), and
+`## Suppressed by decision` (Triage's *Already settled* bucket and `/review-stats`' suppression
+audit). Because the canonical block is untouched, Pass 2, amalgamation, and `/review-stats` parse
+these reviewers exactly as they parse any other — which is why North Star Nick is not, and does not
+need to be, a carve-out.
