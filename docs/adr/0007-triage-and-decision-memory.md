@@ -103,10 +103,11 @@ parsing.
   the file as settled law — a nit recorded there will *suppress real findings*. Guarded by the
   patterns-only bar, the required `spirit` field, per-entry human approval, and a hard floor: a
   decision can never suppress a CRITICAL or a security finding (see the Amendment). Prune it.
-- **The command is no longer purely read-only.** `/expert-review` may now write `decisions.yaml` and
-  draft an ADR — never source code, never without approval, and never from a subagent. The `Edit`
-  grant is a red line scoped in the orchestrator to exactly those two targets. Reviewer agents still
-  have no `Edit` tool at all; that control is unchanged and remains technical, not conventional.
+- **The command is no longer purely read-only.** `/expert-review` may now write `action-plan.md`'s own
+  ruling lines, `decisions.yaml`, and draft an ADR — never source code, never without approval, and
+  never from a subagent. The `Edit` grant is a red line scoped in the orchestrator to exactly those
+  three targets (see the Amendment below). Reviewer agents still have no `Edit` tool at all; that
+  control is unchanged and remains technical, not conventional.
 
 ## Amendment — read semantics, floor, and store location (dogfooded rulings)
 
@@ -146,3 +147,10 @@ were ruled on; the resulting refinements amend the Decision above:
 - **Additive fields are permitted** (North Star Nick's canonical severity **plus** a `Category` tag)
   under the rule now stated in [ADR-0006](0006-reviewer-output-format-carve-outs.md)'s amendment: an
   intact canonical block plus a named-consumer field is not a format carve-out.
+- **The `Edit` red line's third target is `action-plan.md` itself, scoped to the ruling line.** Step 12
+  puts each escalation to the human via `AskUserQuestion`, then records the answer by editing that
+  item's `- **Ruling**:` line in `{REVIEW_DIR}/action-plan.md` — not `decisions.yaml` and not an ADR,
+  since most rulings don't generalize into either. This target stays inside the control's spirit: it
+  is `{REVIEW_DIR}` (a file the command already writes freely in Step 11), the write is scoped to a
+  single line the human just answered, and the two writes that leave the working tree — `decisions.yaml`
+  and an ADR — are unchanged. Consequences above now correctly names three targets, not two.
