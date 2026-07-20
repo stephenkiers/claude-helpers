@@ -44,35 +44,41 @@
 # WHAT A DECISION CANNOT DO
 # A recorded decision DEMOTES; it never DELETES. It can lower a finding's priority or mark it
 # accepted, but it can never suppress a CRITICAL, and never suppress a finding in the security
-# domain. Those still surface, annotated with the decision that covers them. `project.yaml`
-# `invariants` and `redLines` also outrank anything here.
+# domain (i.e. any finding whose output carries `**Domain**: security`). Those still surface,
+# annotated with the decision that covers them. `project.yaml` `invariants` and `redLines`
+# also outrank anything here.
 #
 # When a decision changes how the system is SHAPED rather than how it is written, it is an ADR,
 # not an entry here. Triage will tell you when it thinks it's crossed that line.
 
 decisions:
-  - name: <the pattern, in a few words — not the instance>   # required
-
-    rule: >          # required
-      What we do, stated as a pattern that generalizes beyond the finding that provoked it.
-
-    spirit: >        # required — load-bearing
-      WHY. The intent behind the rule — the thing that lets a reader apply it to a case you
-      never anticipated, and recognize when it does NOT apply. A rule without its spirit gets
-      cargo-culted into places it was never meant to go, and then someone deletes it because it
-      produced a stupid result. An entry missing `spirit` is not settled law — a reviewer treats
-      it as advisory and flags normally.
-
-    appliesTo: >     # required — the HARD boundary
-      Where this holds — and, just as importantly, where it does not. This is the outer wall:
-      OUTSIDE it the decision is silent, full stop. Inside it, `spirit` decides whether it actually
-      reaches the case in front of the reviewer. An entry missing `appliesTo` is not settled law —
-      it is treated as advisory, never as universally scoped. Scope keeps a good decision from
-      metastasizing into a bad one.
-
-    revisitIf: >     # optional — the staleness trigger
-      The condition under which this decision stops being true (e.g. "the importer starts taking
-      untrusted input"). When a reviewer sees the diff make this condition hold, the decision no
-      longer binds — flag the finding, cite this entry by name, and say what changed.
-
-    source: review <REVIEW_DIR basename>, YYYY-MM-DD   # provenance — where this ruling came from
+# Placeholder entry — commented out so /expert-review can append the first real ruling without
+# having to remove it. If you see a live entry whose `name` or fields still contain angle-bracket
+# placeholders (e.g. <the pattern>), that entry was appended without substitution — treat it as
+# advisory only until the placeholders are replaced with real text.
+#
+#  - name: <the pattern, in a few words — not the instance>   # required
+#
+#    rule: >          # required
+#      What we do, stated as a pattern that generalizes beyond the finding that provoked it.
+#
+#    spirit: >        # required — load-bearing
+#      WHY. The intent behind the rule — the thing that lets a reader apply it to a case you
+#      never anticipated, and recognize when it does NOT apply. A rule without its spirit gets
+#      cargo-culted into places it was never meant to go, and then someone deletes it because it
+#      produced a stupid result. An entry missing `spirit` is not settled law — a reviewer treats
+#      it as advisory and flags normally.
+#
+#    appliesTo: >     # required — the HARD boundary
+#      Where this holds — and, just as importantly, where it does not. This is the outer wall:
+#      OUTSIDE it the decision is silent, full stop. Inside it, `spirit` decides whether it actually
+#      reaches the case in front of the reviewer. An entry missing `appliesTo` is not settled law —
+#      it is treated as advisory, never as universally scoped. Scope keeps a good decision from
+#      metastasizing into a bad one.
+#
+#    revisitIf: >     # optional — the staleness trigger
+#      The condition under which this decision stops being true (e.g. "the importer starts taking
+#      untrusted input"). When a reviewer sees the diff make this condition hold, the decision no
+#      longer binds — flag the finding, cite this entry by name, and say what changed.
+#
+#    source: review <REVIEW_DIR basename>, YYYY-MM-DD   # provenance — where this ruling came from

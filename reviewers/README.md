@@ -112,9 +112,12 @@ Load Project Context is centralized so a change to how context loads happens in 
       persona missing here never runs). If you're migrating a persona's existing `triggers:` block
       into its index entry rather than writing one from scratch, diff the two — a prior migration
       silently dropped keywords for five personas (Fragile Feynman, Uncle Bob, Tara TypeSafe,
-      Frontend Fred, Rachel) before it was caught in review. `index.yaml` is now the *sole* signal
-      the judgment router sees for that persona's domain (there is no fallback gate to catch a miss),
-      so a dropped keyword is a silent routing blind spot, not a cosmetic loss.
+      Frontend Fred, Rachel) before it was caught in review. A later migration additionally dropped
+      keywords for **Contract Chris** (lost: `precondition`, `postcondition`, `assert`) and
+      **Scope Creep Steve** (lost: `state-machine`, `timeout`, `keepalive`) — verify both entries if
+      you touch them. `index.yaml` is now the *sole* signal the judgment router sees for that persona's
+      domain (there is no fallback gate to catch a miss), so a dropped keyword is a silent routing
+      blind spot, not a cosmetic loss.
 - [ ] Run `python3 tests/test_invariants.py` — the index/file mapping must stay bidirectional and
       the count invariant must hold.
 - [ ] Re-run `/setup-local` so the new file gets symlinked into `~/.claude/reviewers/`.

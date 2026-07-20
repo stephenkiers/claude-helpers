@@ -77,6 +77,9 @@ Add this section to your output (omit it, or write "None", when nothing was supp
 - [would-be SEVERITY] {one-line finding} — settled by decision: {decision name}
 ```
 
+`{decision name}` is the value of the `name` field in the matching `decisions.yaml` entry — the
+short slug at the top of the entry, e.g. `cross-run memory keys on repo identity, never on a path`.
+
 This costs a reviewer with nothing to suppress exactly one word, and it is what lets triage and
 `/review-stats` tell a healthy shrinking report apart from a silently blinded one.
 
@@ -85,13 +88,17 @@ this default; otherwise this section governs.
 
 ## Reviewer-Specific Input Scope
 
-Most reviewers receive only the diff sections the router selected for them. Three exceptions receive
-the full diff by domain definition:
+Most reviewers receive only the diff sections the router selected for them. Four exceptions receive
+the full diff by domain definition (ADR-0003.2):
 
 - **Sam System** receives the **full diff** because his job is to trace data flow across files — he
   needs to see both ends of every cross-file connection.
 - **Code Rot Cody** receives the **full diff** because he greps the entire repo for orphaned symbols.
 - **Consistency Checker** receives the **full diff** to check patterns across the whole diff.
+- **Contrarian Carl** receives the **full diff** because his contrastive role requires reading past
+  the Pass 1 selection window — he must see what others did not get tagged on in order to find what
+  everyone missed. (Note: Carl is also "not-blind" per ADR-0002's amendment, which is a distinct
+  property from receiving the full diff.)
 
 ## Pass 1: Blind Review
 
@@ -168,6 +175,9 @@ Your output will be saved to a file. Use this EXACT format:
 - **Impact**: What could go wrong
 - **Recommendation**: How to fix
 - **Known Issue**: #NNN (if matches existing issue)
+- **Domain**: security [OPTIONAL — set this tag when the finding is in the security domain, so
+  the floor rule ("a decision can never suppress a security finding") can be applied
+  machine-checkably rather than by LLM judgment alone. Omit for non-security findings.]
 - **Human Call**: [OPTIONAL — see below. Omit entirely for the vast majority of findings.]
 
 [repeat for each finding, or "No findings" if none]

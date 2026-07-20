@@ -115,8 +115,11 @@ Report:
 
 - **Recurring themes** — group by `reviewer` + similar `title`s. Count **distinct `commit` values**,
   never rows: a `--force` re-run of the same commit is one appearance, not two. Which themes appear
-  across ≥3 distinct commits? Rank by count, and show the split between `disposition: accepted`/`planned`
-  (being acted on) and `deferred`/`dropped` (not).
+  across ≥3 distinct commits? Rank by count, and show the split between `disposition: accepted`/`planned`/`decided`
+  (being acted on — `decided` means a recorded decision now covers it, which is an action even when
+  no code changed) and `deferred`/`dropped` (not). A theme that keeps landing in `decided` but
+  recurs anyway means the decision's `spirit` or `appliesTo` is too narrow; worth narrowing the
+  ledger search and checking.
 - **The deferral backlog** — everything with `bucket: deferred`, oldest first. This is the "what's
   coming up" list, and it is the one that quietly rots if nobody looks at it.
 - **Decision coverage** — how many escalations (`bucket: needs-you`) produced a recorded decision
