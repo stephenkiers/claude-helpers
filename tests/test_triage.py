@@ -152,7 +152,7 @@ t("triage.md names over-escalation as the failure mode",
   re.search(r"over-escalat\w+ is (not the safe choice|the failure)", TRIAGE, re.I) is not None,
   "the guard that keeps 'Needs you' short")
 t("triage.md resolves uncertainty toward NOT escalating",
-  "it does not" in TRIAGE.lower() and "uncertain" in TRIAGE.lower())
+  re.search(r"uncertain[^.\n]*?:\s*\*\*it does not", TRIAGE, re.I) is not None)
 t("the over-escalation guard is absolute-count based, not ratio-only",
   "needs-you >= 5" in EXPERT_REVIEW and "needs-you >= 5" in TRIAGE,
   "a pure 20% ratio trips on tidy 3-finding reviews and misses 40-finding ones")
@@ -218,7 +218,8 @@ t("expert-framework.md scopes decisions by appliesTo (hard boundary)",
 t("framework floor: a decision demotes, it never deletes",
   "demotes; it never deletes" in FRAMEWORK)
 t("framework floor: never suppresses a CRITICAL or a security finding",
-  "security domain" in FRAMEWORK and re.search(r"never\S*\s*suppress", FRAMEWORK) is not None)
+  "security domain" in FRAMEWORK
+  and re.search(r"never\W+suppress", FRAMEWORK) is not None)
 t("project.yaml invariants/redLines outrank recorded decisions",
   "outrank" in FRAMEWORK)
 
@@ -326,17 +327,26 @@ t("Triage serializes ledger lines (orchestrator never shell-quotes model text)",
 
 # Append-only: every redirect to the ledger must be `>>`, at ANY spelling of the path. A single `>`
 # would silently erase history. Capture the operator before $LEDGER_FILE or any *ledger.jsonl path.
-ledger_redirects = re.findall(r"(>>?)\s*\"?(?:\$LEDGER_FILE|[^\"\n]*ledger\.jsonl)", EXPERT_REVIEW)
+# Restrict pre-context to shell-command-shaped lines (lines containing `cat` or `>>`) so a prose
+# mention of ledger.jsonl doesn't widen the match.
+ledger_redirects = re.findall(
+    r"(>>?)\s*\"?(?:\$LEDGER_FILE|(?:[^\"'\n]*?)ledger\.jsonl)",
+    EXPERT_REVIEW
+)
 t("expert-review.md redirects to the ledger at least once", len(ledger_redirects) > 0,
   "the unconditional Step 13 ledger append must exist")
 t("every ledger redirect is append (>>), never truncate (>)",
   set(ledger_redirects) == {">>"},
   f"found redirect operators {sorted(set(ledger_redirects))} — a single > erases history")
 
+step13_section = re.search(r"### Step 13:.*?(?=\n### Step|\Z)", EXPERT_REVIEW, re.S)
 t("the ledger append is unconditional (runs even on a clean review)",
-  "unconditional" in EXPERT_REVIEW,
+  step13_section is not None and "unconditional" in step13_section.group(0),
   "the most common review — zero escalations — must still be recorded")
-t("review-stats.md reads the ledger", "ledger.jsonl" in REVIEW_STATS)
+# Anchor the ledger check to the Themes or Instructions section of review-stats.md
+t("review-stats.md reads the ledger",
+  re.search(r"^#+\s+.*(?:Theme|Instruction|ledger)", REVIEW_STATS, re.M | re.I) is not None
+  and "ledger.jsonl" in REVIEW_STATS)
 t("review-stats.md draws the missing-decision conclusion",
   "missing decision" in REVIEW_STATS.lower())
 t("review-stats.md globs every repo's ledger, not one hard-coded project",
