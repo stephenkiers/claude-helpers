@@ -86,12 +86,12 @@ Decision legend: `DEEP-DIVE` thorough investigation · `QUICK-SCAN` quick look a
 
 ## Routing Accuracy
 
-| Reviewer | Router said | Selected | Reason |
-|----------|-------------|----------|--------|
+| Reviewer | Selected | Reason |
+|----------|----------|--------|
 
-The routing decision table: every reviewer in the index, marked Selected/Not Selected, with the
-router's one-line justification. This table is the input to `/review-stats` for evaluating router
-accuracy.
+The routing decision table: every reviewer in the index, marked Yes/No, with the router's one-line
+justification — populated verbatim from `tagged-sections.md`'s `## Panel Decision` table.
+This table is the input to `/review-stats` for evaluating router accuracy.
 
 ## Answered Questions
 | Reviewer | Question | Answer |   (omit if none)

@@ -19,15 +19,22 @@ include and exclude.
    are *signals of interest*, not rules)
 
 **CRITICAL: Never load a reviewer's persona YAML.** Progressive disclosure means routing decisions
-come from each expert's declared interests (`triggers`, `useWhen`), not their full personas. The index
-gives you everything you need.
+come from each expert's declared interests (`triggers`, `useWhen` in `index.yaml`), not their full
+personas. `index.yaml` gives you everything you need; loading the persona files would cost tokens
+the subagent pays when it actually runs the review.
 
 ## Your Output
 
-Produce a structured routing decision in `{REVIEW_DIR}/tagged-sections.md`:
+Produce a structured routing decision in `{REVIEW_DIR}/tagged-sections.md`.
+
+> **Why "tagged-sections.md"?** The filename predates ADR-0003.2's Router design (it was the
+> Tagger's output file). Keeping it avoids updating every downstream reference; treat it as a
+> stable artifact name, not a description of the Router's role.
 
 ```markdown
-# Panel Decision
+# Routing Decision
+
+## Panel Decision
 
 | Reviewer | Selected | Reason |
 |----------|----------|--------|
@@ -95,7 +102,9 @@ For each selected reviewer, map the sections of the diff that triggered them:
 ## Example Output
 
 ```markdown
-# Panel Decision
+# Routing Decision
+
+## Panel Decision
 
 | Reviewer | Selected | Reason |
 |----------|----------|--------|
@@ -137,6 +146,20 @@ For each selected reviewer, map the sections of the diff that triggered them:
    that led to the "no" call.
 4. **Keep decisions brief**: One sentence per reviewer.
 5. **List every reviewer** from the index in the Panel Decision table — Yes or No, never omitted.
+
+---
+
+## Receipt
+
+Write `{REVIEW_DIR}/tagged-sections.md`, then return **only** this line — never the routing table
+itself:
+
+```
+router | selected: {n}/{total} | always-run: 4 | wrote: {path}
+```
+
+`{n}` is the count of routed reviewers selected (excluding the four always-run); `{total}` is the
+count of reviewers evaluated (all entries in the index). Return only this line — never the table.
 
 ---
 
