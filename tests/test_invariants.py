@@ -47,15 +47,18 @@ carve_outs = {
 }
 special_cases = carve_outs | {"sam-system.yaml"}
 
-# Check that the three carve-out files DO have OUTPUT FORMAT
+# Check that the three carve-out files DO have an OUTPUT FORMAT section (heading or YAML key)
 carve_out_violations = []
 for file_name in carve_outs:
     file_path = REVIEWERS_DIR / file_name
     if file_path.exists():
         content = file_path.read_text()
-        has_output = "OUTPUT" in content
+        has_output = bool(re.search(
+            r"(?:^\s*#+\s+OUTPUT\b|\bOUTPUT\s+FORMAT\s*:)",
+            content, re.MULTILINE
+        ))
         if not has_output:
-            carve_out_violations.append(f"{file_name} (missing OUTPUT)")
+            carve_out_violations.append(f"{file_name} (missing OUTPUT FORMAT section)")
     else:
         carve_out_violations.append(f"{file_name} (file not found)")
 
@@ -65,26 +68,28 @@ test_result(
     ", ".join(carve_out_violations) if carve_out_violations else ""
 )
 
-# Check that sam-system.yaml has NO OUTPUT FORMAT
+# Check that sam-system.yaml has NO OUTPUT FORMAT section
 sam_system = REVIEWERS_DIR / "sam-system.yaml"
 sam_has_output = False
 if sam_system.exists():
     content = sam_system.read_text()
-    sam_has_output = "OUTPUT" in content
+    sam_has_output = bool(re.search(
+        r"(?:^\s*#+\s+OUTPUT\b|\bOUTPUT\s+FORMAT\s*:)", content, re.MULTILINE
+    ))
 
 test_result(
     "sam-system.yaml has no OUTPUT FORMAT",
     not sam_has_output,
-    "Found OUTPUT in sam-system.yaml" if sam_has_output else ""
+    "Found OUTPUT FORMAT heading in sam-system.yaml" if sam_has_output else ""
 )
 
-# Check all other reviewers don't have OUTPUT FORMAT
+# Check all other reviewers don't have OUTPUT FORMAT section heading
 other_output_files = []
 for file in REVIEWERS_DIR.glob("*.yaml"):
     if file.name in special_cases | {"index.yaml", "README.md"}:
         continue
     content = file.read_text()
-    if "OUTPUT" in content:
+    if re.search(r"(?:^\s*#+\s+OUTPUT\b|\bOUTPUT\s+FORMAT\s*:)", content, re.MULTILINE):
         other_output_files.append(file.name)
 
 test_result(
@@ -297,8 +302,9 @@ has_checklist = False
 
 if readme_exists:
     content = reviewers_readme.read_text()
-    has_schema_doc = bool(re.search(r"(schema|structure|format)", content, re.IGNORECASE))
-    has_checklist = bool(re.search(r"(adding|new).*reviewer", content, re.IGNORECASE))
+    # Anchor to a heading so a stray word in prose doesn't pass a structural check.
+    has_schema_doc = bool(re.search(r"^#+\s+.*(?:Schema|Structure|Format|Field)", content, re.MULTILINE | re.IGNORECASE))
+    has_checklist = bool(re.search(r"^#+\s+.*(?:Add|New|Creating).*[Rr]eviewer", content, re.MULTILINE | re.IGNORECASE))
 
 test_result(
     "reviewers/README.md exists",

@@ -1,5 +1,6 @@
 """Shared harness for this repo's invariant test scripts (no pytest dependency)."""
 
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -7,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 class Harness:
     def __init__(self, title):
+        """Initialise a named test suite and print its banner."""
         self.pass_count = 0
         self.fail_count = 0
         self.failures = []
@@ -16,6 +18,7 @@ class Harness:
         print()
 
     def test_result(self, test_name, passed, message=""):
+        """Record one test result, printing a checkmark or failure line."""
         if passed:
             print(f"✓ {test_name}")
             self.pass_count += 1
@@ -28,6 +31,7 @@ class Harness:
             self.fail_count += 1
 
     def summarize_and_exit(self):
+        """Print the pass/fail summary and exit with an appropriate status code."""
         print()
         print("=" * 60)
         print("TEST SUMMARY")
@@ -44,7 +48,7 @@ class Harness:
 
         if self.fail_count == 0:
             print("✓ All tests PASSED")
-            exit(0)
+            sys.exit(0)
         else:
             print("✗ Some tests FAILED")
-            exit(1)
+            sys.exit(1)
