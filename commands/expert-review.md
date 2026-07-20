@@ -124,13 +124,14 @@ shell string.
 
    # Shell helpers — any variable that is unset or any file write that is silently truncated
    # fails loud here rather than propagating empty downstream.
+   # $1 must be a valid bash identifier (no hyphens, cannot start with a digit)
    require_var() {
      [ -n "${!1:-}" ] || { echo "ERROR: $1 is unset or empty" >&2; exit 1; }
    }
    sentinel_or_fail() {
      local file=$1 sentinel=$2
-     grep -qF "$sentinel" "$file" 2>/dev/null \
-       || { echo "ERROR: sentinel '${sentinel}' not found in ${file} — write may be truncated" >&2; exit 1; }
+     tail -1 "$file" 2>/dev/null | grep -qF "$sentinel" \
+       || { echo "ERROR: sentinel '${sentinel}' not found at end of ${file} — write may be truncated" >&2; exit 1; }
    }
 
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
@@ -233,8 +234,9 @@ shell string.
 ### Step 3: Parse Reviewer Selection and Model
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
-error on no match. Set `NAMED_SELECTION=true` (Router is bypassed). Otherwise (or `--all`) →
-all reviewers, `NAMED_SELECTION=false` (Router makes the call).
+error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in
+`NAMED_REVIEWERS` (a bash variable, space-separated lowercased names) — consumed in Step 5's
+synthesis loop. Otherwise (or `--all`) → all reviewers, `NAMED_SELECTION=false` (Router makes the call).
 
 **Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. If absent,
 leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this
@@ -303,7 +305,9 @@ input:
     echo "| $r | Yes | Named by user |"
   done
   for r in sam-system code-rot-cody consistency-checker contrarian-carl; do
-    echo "| $r | Yes | Always-run |"
+    if ! echo "$NAMED_REVIEWERS" | grep -qw "$r"; then
+      echo "| $r | Yes | Always-run |"
+    fi
   done
   echo ""
   echo "# Tagged Sections"
@@ -439,9 +443,9 @@ they read themselves; you do not need to know them here.)
 
 **Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
 they have all returned by the time you continue. For every selected reviewer, the join condition is
-**both** true simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists
+**all three** simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists
 on disk AND the file ends with the sentinel `<!-- pass1-end -->` (which every reviewer appends as its
-last line — its absence means the write was truncated, not just missing). If either half is false,
+last line — its absence means the write was truncated, not just missing). If any of the three conditions fails,
 **re-run that one reviewer once** — do not try to reconstruct the review from the receipt; the
 receipt is a status line, not a report. If the re-run also fails the joint condition, do not retry a
 third time — write a stand-in file so downstream globs find something rather than nothing:
@@ -715,12 +719,14 @@ mkdir -p "$(dirname "$LEDGER_FILE")"
 LEDGER_LOCK="$(dirname "$LEDGER_FILE")/.ledger-lock"
 stale_age=60  # seconds; a lock older than this is certainly from a crashed run
 if [ -d "$LEDGER_LOCK" ]; then
-  lock_age=$(( $(date +%s) - $(stat -c %Y "$LEDGER_LOCK" 2>/dev/null || stat -f %m "$LEDGER_LOCK") ))
+  lock_mtime=$(stat -c %Y "$LEDGER_LOCK" 2>/dev/null || stat -f %m "$LEDGER_LOCK" 2>/dev/null || echo 0)
+  lock_age=$(( $(date +%s) - lock_mtime ))
   [ "$lock_age" -gt "$stale_age" ] && rmdir "$LEDGER_LOCK" 2>/dev/null || true
 fi
 until mkdir "$LEDGER_LOCK" 2>/dev/null; do sleep 0.1; done
+trap 'rmdir "$LEDGER_LOCK" 2>/dev/null || true' EXIT INT TERM
 # Triage pre-serialized each finding as one JSON line; append verbatim, never rewrite.
-cat "$REVIEW_DIR/ledger-lines.jsonl" >> "$LEDGER_FILE"
+cat "$REVIEW_DIR/ledger-lines.jsonl" >> "$LEDGER_FILE" || { echo "ERROR: ledger append failed" >&2; }
 rmdir "$LEDGER_LOCK"
 ```
 
@@ -728,7 +734,7 @@ Each line's shape (schema owned by `prompts/triage.md`): `date`, `commit`, `revi
 `severity`, `title`, `bucket` (`doing|needs-you|deferred|settled`), `disposition` — the *intended*
 next action, `planned|accepted|pending|deferred|dropped|decided` (intent, not a claim that a fix
 already landed; this command never touches source) — `decision` (the decision's `name` field from
-`decisions.yaml`, or `null` if none), and `nominated` (`true` for a `**Human Call**` finding, so
+`decisions.yaml`, or `null` if none — always include the field, never omit it; uniform keyset), and `nominated` (`true` for a `**Human Call**` finding, so
 `/review-stats` can track the decline rate). There is **no `category` field**: only North Star Nick
 produces one, so it has no value for the other reviewers, and recurrence is grouped on `reviewer` +
 title similarity instead.

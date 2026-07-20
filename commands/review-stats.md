@@ -117,15 +117,15 @@ Report:
   never rows: a `--force` re-run of the same commit is one appearance, not two. Which themes appear
   across ≥3 distinct commits? Rank by count, and show the split between `disposition: accepted`/`planned`/`decided`
   (being acted on — `decided` means a recorded decision now covers it, which is an action even when
-  no code changed) and `deferred`/`dropped` (not). A theme that keeps landing in `decided` but
+  no code changed), `pending` (escalated but awaiting ruling — unresolved), and `deferred`/`dropped` (not). A theme that keeps landing in `decided` but
   recurs anyway means the decision's `spirit` or `appliesTo` is too narrow; worth narrowing the
   ledger search and checking.
 - **The deferral backlog** — everything with `bucket: deferred`, oldest first. This is the "what's
   coming up" list, and it is the one that quietly rots if nobody looks at it.
-- **Decision coverage** — how many escalations (`bucket: needs-you`) produced a recorded decision
-  (`disposition: decided`) versus a one-off ruling. A project with many escalations and few recorded
-  decisions is re-answering the same questions every review — which is precisely the cost triage
-  exists to eliminate.
+- **Decision coverage** — how many findings were settled by a recorded decision (`bucket: settled`,
+  `disposition: decided`) versus escalations that produced only a one-off ruling. A project with many
+  escalations and few settled decisions is re-answering the same questions every review — which is
+  precisely the cost triage exists to eliminate.
 - **Suppression audit** — group `bucket: settled` findings by their `decision`. This is how you tell
   a decision that is quietly doing its job from one that has gone too broad: a decision suppressing a
   steady trickle of would-be findings across reviews is working; one suppressing an accelerating pile
