@@ -239,6 +239,7 @@ It is read top to bottom; the ordering is the product.
   - **C — Leave as-is**: {do nothing} · Pro: … · Con: …
     {MANDATORY on any footgun (test 5) or scope call (test 3) — it may be the recommended option.}
 - **Recommendation**: A, because …
+- **Ruling**: _(pending your call — recorded here after you decide)_
 - **Proposed decision**: {draft decisions.yaml entry — omit if this ruling won't generalize.
   Match the schema in `decisions.yaml.template`: `name`/`rule`/`spirit`/`appliesTo` required,
   `source` for provenance, optional `revisitIf`; no `supersedes` field.}
