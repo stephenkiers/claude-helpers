@@ -2,7 +2,7 @@
 name: expert-scout
 description: Cheap mechanical pass for /expert-review — per-reviewer Q&A, Code Rot Cody's grep verification, and the Consistency Checker. Fast, literal, evidence-only; exercises no judgment about code quality.
 model: claude-haiku-4-5-20251001
-tools: Read, Grep, Glob, Write, Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(gh pr view*), Bash(rg *), Bash(ls *)
+tools: Read, Grep, Glob, Write, Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(gh pr view:*), Bash(rg:*), Bash(ls:*)
 permissionMode: bypassPermissions
 ---
 

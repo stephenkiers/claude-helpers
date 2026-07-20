@@ -6,7 +6,6 @@ Verifies the plan to replace tagger/confirm-gate/cross-review with Router/Amalga
 Run with: python3 tests/test_router_restructure.py
 """
 
-import os
 import re
 
 from _test_harness import REPO_ROOT, Harness
@@ -60,16 +59,20 @@ if router_exists:
         re.MULTILINE | re.IGNORECASE
     ))
 
-    # Check for rule about loading only index.yaml, not persona files
-    has_index_yaml_rule = bool(re.search(
-        r"(index\.yaml|load.*index|only.*index)",
-        router_content,
-        re.IGNORECASE
-    )) and bool(re.search(
-        r"(not.*persona|don't.*persona|never.*persona|without.*persona|persona.*file)",
-        router_content,
-        re.IGNORECASE
-    ))
+    # Check for a paragraph that both names index.yaml and forbids loading persona files.
+    # Require both halves inside the same paragraph (split on blank lines) so a stray
+    # mention of "index.yaml" in a caption and "never load personas" in a footer don't
+    # produce a spurious pass.
+    has_index_yaml_rule = False
+    for para in re.split(r"\n{2,}", router_content):
+        has_index = bool(re.search(r"index\.yaml", para, re.IGNORECASE))
+        has_no_persona = bool(re.search(
+            r"(?:not|don't|never|without).*persona|persona.*(?:file|yaml).*(?:not|never)",
+            para, re.IGNORECASE | re.DOTALL
+        ))
+        if has_index and has_no_persona:
+            has_index_yaml_rule = True
+            break
 
 test_result(
     "router.md has Panel Decision section",
@@ -186,10 +189,10 @@ if expert_review_exists:
         router_section = router_section_match.group(1)
 
         # Check that expert-reviewer is mentioned in the router section
-        router_uses_correct_agent = bool(re.search(r"expert.reviewer|expert-reviewer", router_section, re.IGNORECASE))
+        router_uses_correct_agent = bool(re.search(r"expert-reviewer", router_section, re.IGNORECASE))
 
         # Check that expert-scout is NOT mentioned as the agent type for the router
-        router_avoids_scout = not bool(re.search(r"expert.scout|expert-scout", router_section, re.IGNORECASE))
+        router_avoids_scout = not bool(re.search(r"expert-scout", router_section, re.IGNORECASE))
 
         # Check for sonnet reference (could be "sonnet", "model.*sonnet", "Sonnet", etc.)
         router_mentions_sonnet = bool(re.search(r"\bsonnet\b", router_section, re.IGNORECASE))
@@ -353,7 +356,7 @@ if review_stats_exists:
 
     # Be conservative: look for a line that suggests active computation/parsing of tagger collapse
     has_active_tagger_collapse_parsing = bool(re.search(
-        r"(?:parse|count|metric|check|compute|check).*tagger\s+collapse|tagger\s+collapse.*(?:parse|count|metric|check|compute)",
+        r"(?:parse|count|metric|compute).*tagger\s+collapse|tagger\s+collapse.*(?:parse|count|metric|compute)",
         review_stats_content,
         re.IGNORECASE
     ))

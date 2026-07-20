@@ -77,7 +77,9 @@ straight, because they come from different places:
   trace, and "the report got shorter" must never be indistinguishable from "a reviewer went blind."
 
 A recorded decision can never move a `CRITICAL` or a security finding here — those surface normally,
-annotated with the decision, per the framework's demote-never-delete floor.
+annotated with the decision, per the framework's demote-never-delete floor. A finding is in the
+security domain if it carries `**Domain**: security` in its output (set by the reviewer) — key the
+floor off this tag, not solely off LLM judgment about what "security" means.
 
 ---
 
@@ -164,9 +166,11 @@ Four questions. Answer each in prose, in a sentence or three:
 - **Recurring?** Has this theme appeared in past reviews of this project (`ledger.jsonl`)? Group by
   **reviewer + title similarity** — the ledger carries no theme taxonomy, so match on who raised it
   and what they called it. Count **distinct `commit` values**, never rows: two reviews of the same
-  commit (a `--force` re-run) are one appearance, not two. A theme on its third *distinct-commit*
-  appearance is not three bugs — it is one missing decision, and the fix is to record the decision,
-  not to fix it a third time.
+  commit (a `--force` re-run) are one appearance, not two. On a rebased or cherry-picked branch
+  the commit hashes change, so treat the count as a floor (the true appearance count may be higher)
+  rather than a precise figure — the conclusion ("one missing decision") is still valid even at a
+  floor of 3. A theme on its third *distinct-commit* appearance is not three bugs — it is one missing
+  decision, and the fix is to record the decision, not to fix it a third time.
 
 **If none of the four apply, say so in one line and move on.** A manufactured concern here is worse
 than no concern: it is exactly the kind of noise that teaches a reader to stop reading this section,
@@ -306,10 +310,22 @@ Each line's fields:
 - `reviewer`, `severity` (`CRITICAL|HIGH|MEDIUM|LOW`), `title`
 - `bucket` — `doing | needs-you | deferred | settled`
 - `disposition` — the *intended* next action, not a claim a fix already landed (this command never
-  touches source): `planned | accepted | deferred | dropped | decided`
-- `decision` — the covering decision's name, if one settled or demoted the finding; else omit or `null`
+  touches source). Legal mapping by bucket:
+  - `doing` → `planned` (the default) or `accepted` (a LOW the author explicitly accepts as-is)
+  - `needs-you` → `pending` (waiting on the human's ruling — use this until Step 13 resolves it)
+  - `deferred` → `deferred`
+  - `settled` → `decided` (a recorded decision already covers it) or `dropped` (resolved in Pass 2)
+- `decision` — the covering decision's `name` field from `decisions.yaml`, if one settled or demoted
+  the finding; else `null` (always `null`, never omit — uniform per-line keyset)
 - `nominated` — `true` if the finding arrived with `**Human Call**` (so `/review-stats` can track the
   decline rate); else `false`
+
+**Withheld findings** (those a reviewer suppressed under `## Suppressed by decision`) **do produce
+ledger lines**, with `bucket: settled` and `disposition: decided`. The `settled` counter in the
+receipt sums both `(withheld)` and `(raised anyway)` findings. This is what lets `/review-stats`
+tell a decision that is quietly doing its job from one that is suppressing too aggressively — the
+withheld path leaves a trace, making "the report got shorter" distinguishable from "a reviewer went
+blind."
 
 There is **no `category` field** — only one reviewer ever produces a category, so it has no value for
 the rest; recurrence is grouped on `reviewer` + title similarity instead.
@@ -319,7 +335,7 @@ the rest; recurrence is grouped on `reviewer` + title similarity instead.
 Write both files, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote: {path}
+triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
 ```
 
 `clusters` is the number of gut-check questions that came back with a real answer (0–4); `declined`

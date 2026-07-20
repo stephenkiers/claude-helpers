@@ -93,7 +93,7 @@ already-reviewed commit never overwrites the prior run):
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
-| `tagged-sections.md` | Router | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); not written when `NAMED_SELECTION=true` |
+| `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
 | `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 6 (Consistency Checker + Cody included) |
 | `contrarian-carl-pass1.md` | Carl | Step 7 — no Pass 2, presented as-is |
 | `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
@@ -120,10 +120,26 @@ shell string.
 
 1. Resolve paths and create the checkpoint directory:
    ```bash
+   set -euo pipefail
+
+   # Shell helpers — any variable that is unset or any file write that is silently truncated
+   # fails loud here rather than propagating empty downstream.
+   # $1 must be a valid bash identifier (no hyphens, cannot start with a digit)
+   require_var() {
+     [ -n "${!1:-}" ] || { echo "ERROR: $1 is unset or empty" >&2; exit 1; }
+   }
+   sentinel_or_fail() {
+     local file=$1 sentinel=$2
+     tail -1 "$file" 2>/dev/null | grep -qF "$sentinel" \
+       || { echo "ERROR: sentinel '${sentinel}' not found at end of ${file} — write may be truncated" >&2; exit 1; }
+   }
+
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
    HASH=$(git rev-parse --short HEAD)
    PROJECT_ROOT=$(git rev-parse --show-toplevel)
-   TIMESTAMP=$(date +%Y%m%dT%H%M%S)
+   # Add a random suffix so two invocations in the same second never collide on the same dir.
+   # $RANDOM is a bash builtin (no subshell); printf pads to 5 digits for stable sort order.
+   TIMESTAMP=$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)
 
    # REPO_KEY identifies the repository, NOT a directory. This repo's own /track-and-start creates
    # worktrees named after the branch and /cleanup deletes them — so `basename $PROJECT_ROOT` would
@@ -218,8 +234,9 @@ shell string.
 ### Step 3: Parse Reviewer Selection and Model
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
-error on no match. Set `NAMED_SELECTION=true` (Router is bypassed). Otherwise (or `--all`) →
-all reviewers, `NAMED_SELECTION=false` (Router makes the call).
+error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in
+`NAMED_REVIEWERS` (a bash variable, space-separated lowercased names) — consumed in Step 5's
+synthesis loop. Otherwise (or `--all`) → all reviewers, `NAMED_SELECTION=false` (Router makes the call).
 
 **Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. If absent,
 leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this
@@ -266,18 +283,45 @@ The router is told these four are pre-seated and to treat them as included for t
 
 **Named reviewers:** If the user named specific reviewers (Step 3, `NAMED_SELECTION=true`), skip the
 router entirely — the user's selection *is* the decision, and all four always-run reviewers still
-participate. **No `tagged-sections.md` is written in this mode.** Step 6 branches on
-`NAMED_SELECTION`: named/always-run reviewers all read `{REVIEW_DIR}/full-diff.patch` directly
-instead of line ranges into it (there is no router output to offset into). This costs each named
-reviewer a full-patch read instead of a bounded one — acceptable, since named mode is already the
-smaller, more deliberate invocation.
+participate. Step 6 branches on `NAMED_SELECTION`: named/always-run reviewers all read
+`{REVIEW_DIR}/full-diff.patch` directly instead of line ranges into it (there is no router output to
+offset into). This costs each named reviewer a full-patch read instead of a bounded one — acceptable,
+since named mode is already the smaller, more deliberate invocation.
+
+**Synthesize `tagged-sections.md` in named mode.** The Amalgamator (Step 10) reads
+`tagged-sections.md` for the `## Panel Decision` table it populates in `final-report.md`. Even
+though the router didn't run, synthesize a minimal record so downstream steps have a consistent
+input:
+
+```bash
+{
+  echo "# Routing Decision"
+  echo ""
+  echo "## Panel Decision"
+  echo ""
+  echo "| Reviewer | Selected | Reason |"
+  echo "|----------|----------|--------|"
+  for r in $NAMED_REVIEWERS; do
+    echo "| $r | Yes | Named by user |"
+  done
+  for r in sam-system code-rot-cody consistency-checker contrarian-carl; do
+    if ! echo "$NAMED_REVIEWERS" | grep -qw "$r"; then
+      echo "| $r | Yes | Always-run |"
+    fi
+  done
+  echo ""
+  echo "# Tagged Sections"
+  echo ""
+  echo "## (Named selection: all reviewers read full-diff.patch directly — no line-range offsets)"
+} > "$REVIEW_DIR/tagged-sections.md"
+```
 
 ### Step 6: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
-**If `NAMED_SELECTION=true`:** skip reading `tagged-sections.md` (the router did not run and never
-wrote it). The selected reviewers are exactly the user's named reviewers plus the always-run four;
-every one of them reads `{REVIEW_DIR}/full-diff.patch` in full rather than a line-range offset into
-it — see the Step 5 named-reviewers note.
+**If `NAMED_SELECTION=true`:** the router did not run; Step 5 synthesized a minimal
+`tagged-sections.md` as a routing record (see above). The selected reviewers are exactly the user's
+named reviewers plus the always-run four; every one of them reads `{REVIEW_DIR}/full-diff.patch`
+in full rather than a line-range offset into it.
 
 **Otherwise:** read `tagged-sections.md` and parse which reviewers were selected by the router.
 
@@ -344,6 +388,10 @@ canonical format, and to return **only a one-line receipt** as its final message
 
 ```
 Write your complete review to {REVIEW_DIR}/{reviewer}-pass1.md using the Write tool.
+The VERY LAST LINE of the file must be exactly:
+  <!-- pass1-end -->
+This sentinel lets the join barrier detect a truncated write — its absence means the barrier will
+treat your output as failed even if the file exists.
 
 Your final message must be ONLY this receipt line — NOT the review itself:
 
@@ -394,11 +442,37 @@ they read themselves; you do not need to know them here.)
   contradicted by the code. Its output format is defined in its own YAML.
 
 **Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
-they have all returned by the time you continue. Then verify `{REVIEW_DIR}/{reviewer}-pass1.md`
-exists for every selected reviewer. If a receipt came back but its file is missing, **re-run that one
-reviewer once** — do not try to reconstruct the review from the receipt; the receipt is a status
-line, not a report. If the re-run also fails to produce its file, stop — report that reviewer as
-failed and continue the pipeline without it rather than retrying indefinitely.
+they have all returned by the time you continue. For every selected reviewer, the join condition is
+**all three** simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists
+on disk AND the file ends with the sentinel `<!-- pass1-end -->` (which every reviewer appends as its
+last line — its absence means the write was truncated, not just missing). If any of the three conditions fails,
+**re-run that one reviewer once** — do not try to reconstruct the review from the receipt; the
+receipt is a status line, not a report. If the re-run also fails the joint condition, do not retry a
+third time — write a stand-in file so downstream globs find something rather than nothing:
+
+```bash
+cat > "$REVIEW_DIR/${reviewer}-pass1.md" <<'EOF'
+# Pass 1 Review: {reviewer}
+
+## Decision
+FAILED
+
+## Reason
+Agent returned no output or a truncated write after two attempts.
+
+## Findings
+No findings (reviewer failed)
+
+## Summary
+- Critical: 0
+- High: 0
+- Medium: 0
+- Low: 0
+<!-- pass1-end -->
+EOF
+```
+
+Then report that reviewer as failed and continue the pipeline without it.
 
 **Never poll.** Do not use `ScheduleWakeup`, `sleep`, or repeated status checks to wait for
 subagents. A timed wakeup re-reads your *entire* context from cache and learns nothing you would not
@@ -523,7 +597,7 @@ JSON line per triaged finding, ready for Step 13 to append verbatim — the Chie
 no finding-derived text is ever interpolated into a shell command). It returns:
 
 ```
-triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote: {path}
+triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
 ```
 
 **Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `settled`). If
@@ -621,8 +695,10 @@ doesn't generalize skips is a `decisions.yaml` entry. A decisions file full of n
 empty one: reviewers read it as settled law and will stop raising real findings that brush against it.
 If the file doesn't exist, create it from
 `~/.claude/prompts/decisions.yaml.template` (header comments included — they carry the bar) at
-`$DECISIONS_FILE`; the template ships one placeholder entry — **replace** it with the first approved
-ruling, never append the ruling below it.
+`$DECISIONS_FILE`; the template's placeholder entry is commented out — append the first approved
+ruling directly. If you notice any live entry whose fields still contain angle-bracket placeholders
+(e.g. `<the pattern>`), treat it as advisory only and note it to the user — do not append below it,
+correct the placeholders in place first.
 
 **2. An ADR, when the ruling is architectural** *(conditional)*. If Triage marked an escalation
 `**Rises to**: ADR`, draft `docs/adr/NNNN-{slug}.md` in the project's existing ADR format and add it
@@ -639,18 +715,32 @@ in the Chief and not here:
 
 ```bash
 mkdir -p "$(dirname "$LEDGER_FILE")"
+# Use a mkdir lock for atomic append — mkdir is POSIX-atomic, so two concurrent reviews
+# cannot interleave partial writes. The lock directory is ephemeral; if a previous run
+# crashed and left it, remove it first (stale lock is safe to remove; the ledger is
+# append-only, not a transaction log).
+LEDGER_LOCK="$(dirname "$LEDGER_FILE")/.ledger-lock"
+stale_age=60  # seconds; a lock older than this is certainly from a crashed run
+if [ -d "$LEDGER_LOCK" ]; then
+  lock_mtime=$(stat -c %Y "$LEDGER_LOCK" 2>/dev/null || stat -f %m "$LEDGER_LOCK" 2>/dev/null || echo 0)
+  lock_age=$(( $(date +%s) - lock_mtime ))
+  [ "$lock_age" -gt "$stale_age" ] && rmdir "$LEDGER_LOCK" 2>/dev/null || true
+fi
+until mkdir "$LEDGER_LOCK" 2>/dev/null; do sleep 0.1; done
+trap 'rmdir "$LEDGER_LOCK" 2>/dev/null || true' EXIT INT TERM
 # Triage pre-serialized each finding as one JSON line; append verbatim, never rewrite.
-cat "$REVIEW_DIR/ledger-lines.jsonl" >> "$LEDGER_FILE"
+cat "$REVIEW_DIR/ledger-lines.jsonl" >> "$LEDGER_FILE" || { echo "ERROR: ledger append failed" >&2; }
+rmdir "$LEDGER_LOCK"
 ```
 
 Each line's shape (schema owned by `prompts/triage.md`): `date`, `commit`, `reviewDir`, `reviewer`,
 `severity`, `title`, `bucket` (`doing|needs-you|deferred|settled`), `disposition` — the *intended*
-next action, `planned|accepted|deferred|dropped|decided` (intent, not a claim that a fix already
-landed; this command never touches source) — `decision` (the decision name, if one covers it), and
-`nominated` (`true` for a `**Human Call**` finding, so `/review-stats` can track the decline rate).
-There is **no `category` field**: only North Star Nick produces one, so it has no value for the other
-reviewers, and recurrence is grouped on `reviewer` + title similarity instead. Append-only JSONL, so
-two concurrent reviews cannot clobber each other's history.
+next action, `planned|accepted|pending|deferred|dropped|decided` (intent, not a claim that a fix
+already landed; this command never touches source) — `decision` (the decision's `name` field from
+`decisions.yaml`, or `null` if none — always include the field, never omit it; uniform keyset), and `nominated` (`true` for a `**Human Call**` finding, so
+`/review-stats` can track the decline rate). There is **no `category` field**: only North Star Nick
+produces one, so it has no value for the other reviewers, and recurrence is grouped on `reviewer` +
+title similarity instead.
 
 ### Step 14: Cache Review Metadata
 
