@@ -8,13 +8,20 @@ They check that "Needs you" escalations carry a placeholder line that triage.md
 emits and that expert-review.md Step 12 targets, and that the Step 13 red line's
 allow-list and deny-list stay on their own sides of the line as the file changes.
 
-Both regressions this suite exists to catch (issue #18, twice) were the
-orchestrator failing to *execute* the Step 12 edit — the instruction was present
-in prose both times, so a suite that only checks "is the instruction text still
-here" cannot by itself guard against a repeat. The load-bearing guard for that
-failure mode is Step 12's own pre-Step-13 post-condition (re-read action-plan.md,
-confirm no placeholder remains) — this suite is a text-drift tripwire alongside
-it, not a replacement for it.
+On the classification of the two prior regressions (issue #18, twice): neither
+was the orchestrator failing to execute a present instruction. Both occurred
+against the version of commands/expert-review.md at f397320, which had no
+`- **Ruling**:` placeholder and no Step 12 edit instruction at all — Step 12
+ended at "ask in successive calls rather than dropping any." The mechanism was
+absent, not un-executed.
+
+That makes text-drift a live failure mode rather than a hypothetical one: the
+mechanism now exists, so deleting it returns the system to exactly the state
+that produced both regressions, and that is the deletion these invariants catch.
+The mode this suite is structurally blind to — instruction present, orchestrator
+does not execute it — has not yet occurred, and is guarded instead by Step 12's
+own pre-Step-13 post-condition (re-read action-plan.md, confirm no placeholder
+remains). The two guards cover different halves; neither replaces the other.
 
 Run with: python3 tests/test_ruling_capture.py
 """
