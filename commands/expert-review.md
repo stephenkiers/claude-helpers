@@ -554,6 +554,11 @@ reasoning — the user's note if they provided one, otherwise the option's own r
 plan. Runs **unconditionally whenever `needs-you > 0`**, independent of whether the ruling also becomes
 a `decisions.yaml` entry. Leave the options list above it untouched.
 
+When there are multiple escalations, **include surrounding context** to make each edit unique: replace
+the block from `- **Recommendation**: ...` through `- **Ruling**: ...` (and ending with the line before
+`- **Proposed decision**:` or `- **Rises to**:`). This ensures each edit targets the exact item and
+avoids ambiguity when multiple identical placeholder lines exist in the file.
+
 ### Step 13: Record the rulings
 
 Three writes. **This is the only step in the entire command that writes outside `{REVIEW_DIR}`, and
