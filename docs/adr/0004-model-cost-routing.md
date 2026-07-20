@@ -43,6 +43,7 @@ For `/expert-review`:
 at their pinned models regardless. So the flag scales the part of the bill that buys judgment expertise, and
 only that part.
 
+<!-- Pricing verified: 2026-07-17, source: https://www.anthropic.com/pricing -->
 The tiers, cheapest to dearest (per 1M tokens, input/output): **Haiku 4.5** $1/$5 · **Sonnet 5** $3/$15
 · **Opus 4.8** $5/$25 · **Fable 5** $10/$50. Note the shape of that ladder: Fable is the *most
 capable and most expensive* model, at 2× Opus — it is not a cheap tier, and the default (inherit the
@@ -55,6 +56,10 @@ the cheap option, which was simply false.
 - **Good:** Most token volume (Q&A, grepping, pattern matching) runs cheap; expensive models are
   reserved for judgment where they change the outcome. Routing is judgment but economical (Sonnet).
   Synthesis (Amalgamator) is the deliberately expensive step, made explicit by `--model fable`.
+  The Triage Chief ([ADR-0007](0007-triage-and-decision-memory.md)) is a net addition to the
+  pipeline — it rides the panel tier by design (deciding what a human must rule on is a judgment
+  call), but it does not replace any existing step, so the panel's previous cost is a floor, not
+  a comparison point.
 - **Cost:** Sonnet occasionally mis-judges which reviewers to include, feeding the panel slightly
   wrong members. Acceptable because each panel member re-reads the actual diff, and the Amalgamator
   deduplicates/conflicts-resolves; a mild routing miss is caught downstream.
@@ -86,6 +91,7 @@ The new design (single Sonnet Router):
 
 Sonnet is 3× the cost of Haiku per token, but the Router runs once instead of 19 times. Token math:
 one Sonnet call over the full patch costs about as much as 3 Haiku calls over the same patch; the old
-gate ran 19 Haiku calls over the same patch. 3 vs. 19 is a ~6× cost reduction for the routing step —
-not a measured figure (the gate's ~1.1M-token cost above is measured; the Router's is a model, not
-yet benchmarked against a real run). Routing accuracy (judgment vs. keywords) is a bonus on top.
+gate ran 19 Haiku calls over the same patch. 3 vs. 19 yields a modeled ~6× cost reduction for the
+routing step (unmeasured; the gate's ~1.1M-token cost is the measured baseline, while the Router's
+cost is a model estimate not yet benchmarked against a real run). Routing accuracy (judgment vs.
+keywords) is a bonus on top.

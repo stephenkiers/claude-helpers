@@ -164,9 +164,14 @@ fi
 # Switch to main if not already there
 cd "$MAIN_WORKTREE"
 
-# Graft detection: run the Graft Detection block PLUS its cleanup variant from
-# ~/.claude/prompts/worktree-reference.md here (sets USE_GRAFT, GRAFT_REPO_NAME,
-# GRAFT_WORKTREE_NAME — the cleanup variant verifies graft tracks $CURRENT_WORKTREE).
+# Graft detection: read the Graft Detection block PLUS its cleanup variant from
+# ~/.claude/prompts/worktree-reference.md, then execute it here.
+# Fail loudly if the file is missing — the block is required, not optional.
+# The block sets USE_GRAFT, GRAFT_REPO_NAME, GRAFT_WORKTREE_NAME; the cleanup
+# variant verifies graft tracks $CURRENT_WORKTREE.
+#
+# Read ~/.claude/prompts/worktree-reference.md now (required). If it is absent,
+# set USE_GRAFT=false and warn — do NOT proceed silently with unset variables.
 
 echo "CURRENT_WORKTREE=$CURRENT_WORKTREE"
 echo "CURRENT_BRANCH=$CURRENT_BRANCH"
@@ -245,7 +250,11 @@ if [ -n "$ISSUE_NUM" ]; then
   #      e.g. workspace/project/issues.json next to workspace/project/main/
   # Use --path-format=absolute: --git-common-dir alone can return a relative
   # ".git", which would silently resolve the cache to the wrong directory.
-  GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  # --path-format=absolute requires git ≥ 2.31; fall back to resolving the
+  # relative path manually for older installations.
+  GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
+    || (cd "$(git rev-parse --git-common-dir 2>/dev/null)" && pwd))
+  [ -z "$GIT_COMMON_DIR" ] && echo "WARN: could not resolve GIT_COMMON_DIR" >&2
   CACHE_FILE=""
   for CANDIDATE in \
     "$(dirname "$GIT_COMMON_DIR")/issues.json" \
@@ -255,7 +264,11 @@ if [ -n "$ISSUE_NUM" ]; then
       break
     fi
   done
-  [ -n "$CACHE_FILE" ] && echo "Issue cache: $CACHE_FILE"
+  if [ -n "$CACHE_FILE" ]; then
+    echo "Issue cache: $CACHE_FILE"
+  else
+    echo "WARN: no issues.json found in expected locations; issue-state cache will be skipped"
+  fi
 
   # Check worktree cache first (most specific), then project-level cache
   if [ "$CACHED_ISSUE_STATE" = "closed" ]; then
@@ -303,13 +316,25 @@ Fetch the text (cheap, read-only — no confirmation needed):
 # Issue title + body only (if an issue was detected in 2b). Deliberately skip comments —
 # validation checklists live in the body/test plan, and comment threads can be huge
 # (bots, review chatter). Cap size as a token-cost safety net.
+# Use awk for a codepoint-safe byte cap (head -c can split UTF-8 sequences mid-character).
+# Cap output at ~8000 bytes. length($0) counts bytes on stock macOS/BSD awk (UTF-8 unaware) and
+# codepoints on gawk — on either, 8000 is a conservative safety net, not a strict byte budget.
+_cap8k() { awk 'BEGIN{n=0} {b=length($0)+1; if(n+b>8000){print substr($0,1,8000-n);exit} print; n+=b}'; }
+
 if [ -n "$ISSUE_NUM" ]; then
-  ISSUE_TEXT=$(gh issue view "$ISSUE_NUM" --json title,body \
-    -q '.title, .body' 2>/dev/null | head -c 8000 || echo "")
+  RAW_ISSUE=$(gh issue view "$ISSUE_NUM" --json title,body -q '.title, .body' 2>/dev/null || echo "")
+  ISSUE_TEXT=$(echo "$RAW_ISSUE" | _cap8k)
+  if [ "${#RAW_ISSUE}" -gt 8000 ]; then
+    echo "WARN: issue #$ISSUE_NUM body truncated to ~8000 bytes for token safety"
+  fi
 fi
 
 # PR body (may contain a test-plan / checklist section)
-PR_BODY=$(gh pr view "$CURRENT_BRANCH" --json body -q '.body' 2>/dev/null | head -c 8000 || echo "")
+RAW_PR=$(gh pr view "$CURRENT_BRANCH" --json body -q '.body' 2>/dev/null || echo "")
+PR_BODY=$(echo "$RAW_PR" | _cap8k)
+if [ "${#RAW_PR}" -gt 8000 ]; then
+  echo "WARN: PR body truncated to ~8000 bytes for token safety"
+fi
 ```
 
 Then **read the fetched text yourself** (don't grep-and-dump) and look for anything that

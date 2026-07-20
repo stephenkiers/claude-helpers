@@ -14,7 +14,9 @@ to North Star Nick).
 
 - [ADR-0001: Progressive disclosure of experts](0001-progressive-disclosure.md)
 - [ADR-0002: Blind-first, two-pass review](0002-blind-first-two-pass-review.md)
-- [ADR-0003: Tagger-based reviewer routing](0003-tagger-routing.md)
+- [ADR-0003: Tagger-based reviewer routing](0003-tagger-routing.md) — amended by ADR-0003.2
+  (single-judgment Router replaces the keyword tagger + confirm-gate; see the Amendment section
+  in that file)
 - [ADR-0004: Model cost routing (Haiku for mechanical work)](0004-model-cost-routing.md)
 - [ADR-0005: Context cascade](0005-three-layer-context-cascade.md) — amended by ADR-0007 (a fourth
   layer; the heading dropped "Three-layer" but the filename is kept for inbound links)
