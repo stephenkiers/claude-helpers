@@ -561,15 +561,18 @@ record, so an executor skimming the file meets only the chosen answer, not the d
    or `- **Rises to**:`, whichever comes first — or through `- **Ruling**:` itself if neither trailing
    field is present (both are optional per `triage.md`, so a boundary anchored on them alone is not
    reliable). Anchor the whole match on the item's own `### N. [Title]` heading first, to keep multiple
-   escalations from colliding when their option text is similar.
-2. Write a single `- **Ruling**: {Option} — {reasoning}` line in its place — the user's own note if
-   they gave one, otherwise the chosen option's rationale from the action plan — directly under
-   `- **Recommendation**: ...`.
-3. Preserve the rejected options as record, not delete them: fold them into a collapsed block right
-   after the ruling line —
-   `<details><summary>Options considered and rejected (record only — do not act on these)</summary>`
-   … the non-chosen options, each with its original Pro/Con … `</details>`. This is the only place the
-   rejected options live once an item is ruled; do not also leave a live copy above the ruling.
+   escalations from colliding when their option text is similar. Note that this span **contains**
+   the `- **Recommendation**: ...` line, so the replacement text below has to re-emit it.
+2. The replacement text is exactly three parts, in this order:
+   1. the item's `- **Recommendation**: ...` line, carried over **verbatim** — it is inside the
+      replaced span, and dropping it loses the panel's recommendation;
+   2. a single `- **Ruling**: {Option} — {reasoning}` line — the user's own note if they gave one,
+      otherwise the chosen option's rationale from the action plan;
+   3. the rejected options, preserved as record rather than deleted: folded into a collapsed block —
+      `<details><summary>Options considered and rejected (record only — do not act on these)</summary>`
+      … the non-chosen options, each with its original Pro/Con … `</details>`.
+   The `<details>` block is the only place the rejected options live once an item is ruled; do not
+   also leave a live copy above the ruling.
 
 Runs **unconditionally whenever `needs-you > 0`**, independent of whether the ruling also becomes a
 `decisions.yaml` entry.
