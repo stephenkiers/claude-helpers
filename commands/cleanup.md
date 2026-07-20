@@ -253,7 +253,8 @@ if [ -n "$ISSUE_NUM" ]; then
   # --path-format=absolute requires git ≥ 2.31; fall back to resolving the
   # relative path manually for older installations.
   GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
-    || (cd "$(git rev-parse --git-common-dir)" && pwd))
+    || (cd "$(git rev-parse --git-common-dir 2>/dev/null)" && pwd))
+  [ -z "$GIT_COMMON_DIR" ] && echo "WARN: could not resolve GIT_COMMON_DIR" >&2
   CACHE_FILE=""
   for CANDIDATE in \
     "$(dirname "$GIT_COMMON_DIR")/issues.json" \
@@ -316,6 +317,8 @@ Fetch the text (cheap, read-only — no confirmation needed):
 # validation checklists live in the body/test plan, and comment threads can be huge
 # (bots, review chatter). Cap size as a token-cost safety net.
 # Use awk for a codepoint-safe byte cap (head -c can split UTF-8 sequences mid-character).
+# Cap output at ~8000 bytes. length($0) counts bytes on stock macOS/BSD awk (UTF-8 unaware) and
+# codepoints on gawk — on either, 8000 is a conservative safety net, not a strict byte budget.
 _cap8k() { awk 'BEGIN{n=0} {b=length($0)+1; if(n+b>8000){print substr($0,1,8000-n);exit} print; n+=b}'; }
 
 if [ -n "$ISSUE_NUM" ]; then

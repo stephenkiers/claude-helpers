@@ -68,7 +68,7 @@ if router_exists:
         has_index = bool(re.search(r"index\.yaml", para, re.IGNORECASE))
         has_no_persona = bool(re.search(
             r"(?:not|don't|never|without).*persona|persona.*(?:file|yaml).*(?:not|never)",
-            para, re.IGNORECASE
+            para, re.IGNORECASE | re.DOTALL
         ))
         if has_index and has_no_persona:
             has_index_yaml_rule = True

@@ -44,9 +44,11 @@
 # WHAT A DECISION CANNOT DO
 # A recorded decision DEMOTES; it never DELETES. It can lower a finding's priority or mark it
 # accepted, but it can never suppress a CRITICAL, and never suppress a finding in the security
-# domain (i.e. any finding whose output carries `**Domain**: security`). Those still surface,
-# annotated with the decision that covers them. `project.yaml` `invariants` and `redLines`
-# also outrank anything here.
+# domain. The security floor has two layers: LLM judgment is primary (any finding the Triage Chief
+# reads as security-domain is protected, tagged or not); the `**Domain**: security` tag is a
+# supplemental machine-checkable layer (a tagged finding is always protected). Both layers must
+# coexist: a missed tag is a training gap, not a license to suppress. `project.yaml` `invariants`
+# and `redLines` also outrank anything here.
 #
 # When a decision changes how the system is SHAPED rather than how it is written, it is an ADR,
 # not an entry here. Triage will tell you when it thinks it's crossed that line.

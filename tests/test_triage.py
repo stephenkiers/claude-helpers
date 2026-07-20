@@ -327,8 +327,8 @@ t("Triage serializes ledger lines (orchestrator never shell-quotes model text)",
 
 # Append-only: every redirect to the ledger must be `>>`, at ANY spelling of the path. A single `>`
 # would silently erase history. Capture the operator before $LEDGER_FILE or any *ledger.jsonl path.
-# Restrict pre-context to shell-command-shaped lines (lines containing `cat` or `>>`) so a prose
-# mention of ledger.jsonl doesn't widen the match.
+# Restrict to lines containing a redirect operator (`>>` or `>`) so a prose mention of ledger.jsonl
+# doesn't widen the match.
 ledger_redirects = re.findall(
     r"(>>?)\s*\"?(?:\$LEDGER_FILE|(?:[^\"'\n]*?)ledger\.jsonl)",
     EXPERT_REVIEW
@@ -339,7 +339,7 @@ t("every ledger redirect is append (>>), never truncate (>)",
   set(ledger_redirects) == {">>"},
   f"found redirect operators {sorted(set(ledger_redirects))} — a single > erases history")
 
-step13_section = re.search(r"### Step 13:.*?(?=\n### Step|\Z)", EXPERT_REVIEW, re.S)
+step13_section = re.search(r"### Step \d+:.*?\*\(unconditional\)\*.*?(?=\n### Step|\Z)", EXPERT_REVIEW, re.S)
 t("the ledger append is unconditional (runs even on a clean review)",
   step13_section is not None and "unconditional" in step13_section.group(0),
   "the most common review — zero escalations — must still be recorded")
@@ -349,6 +349,12 @@ t("review-stats.md reads the ledger",
   and "ledger.jsonl" in REVIEW_STATS)
 t("review-stats.md draws the missing-decision conclusion",
   "missing decision" in REVIEW_STATS.lower())
+t("triage.md documents the 'pending' disposition for needs-you bucket",
+  "pending" in TRIAGE,
+  "needs-you findings wait for a human ruling; their ledger disposition must be 'pending'")
+t("triage.md requires 'decision' field always present (never omitted)",
+  re.search(r"decision.*always.*null|null.*never.*omit|never omit", TRIAGE, re.I) is not None,
+  "uniform keyset: 'decision: null' is required even when no decision covers the finding")
 t("review-stats.md globs every repo's ledger, not one hard-coded project",
   "reviews/*/ledger.jsonl" in REVIEW_STATS,
   "the default (no-arg) invocation had no project and read nothing")

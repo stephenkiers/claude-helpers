@@ -304,7 +304,7 @@ if readme_exists:
     content = reviewers_readme.read_text()
     # Anchor to a heading so a stray word in prose doesn't pass a structural check.
     has_schema_doc = bool(re.search(r"^#+\s+.*(?:Schema|Structure|Format|Field)", content, re.MULTILINE | re.IGNORECASE))
-    has_checklist = bool(re.search(r"^#+\s+.*(?:Add|New|Creating).*[Rr]eviewer", content, re.MULTILINE | re.IGNORECASE))
+    has_checklist = bool(re.search(r"^#+\s+.*(?:Add|New|Creating).*reviewer", content, re.MULTILINE | re.IGNORECASE))
 
 test_result(
     "reviewers/README.md exists",
@@ -322,6 +322,35 @@ test_result(
     "reviewers/README.md has guidance on creating/adding reviewers",
     has_checklist,
     "Checklist/guidance not found" if readme_exists and not has_checklist else ""
+)
+
+print()
+print("[Invariant 8] Sentinel contract and shell helper invariants")
+
+EXPERT_REVIEW_PATH = REPO_ROOT / "commands" / "expert-review.md"
+EXPERT_REVIEW = EXPERT_REVIEW_PATH.read_text() if EXPERT_REVIEW_PATH.exists() else ""
+FRAMEWORK_PATH = REPO_ROOT / "prompts" / "expert-framework.md"
+FRAMEWORK = FRAMEWORK_PATH.read_text() if FRAMEWORK_PATH.exists() else ""
+
+test_result(
+    "pass1-end sentinel appears in expert-review join barrier",
+    "pass1-end" in EXPERT_REVIEW,
+    "join barrier relies on this sentinel to detect truncated writes"
+)
+test_result(
+    "pass1-end sentinel appears in expert-review stub heredoc",
+    EXPERT_REVIEW.count("pass1-end") >= 2,
+    "stub file must also write the sentinel so the join barrier doesn't reject it"
+)
+test_result(
+    "pass1-end sentinel instruction appears in expert-framework.md",
+    "pass1-end" in FRAMEWORK,
+    "reviewers must know to append this sentinel as their final line"
+)
+test_result(
+    "require_var and sentinel_or_fail are both defined in expert-review.md",
+    "require_var" in EXPERT_REVIEW and "sentinel_or_fail" in EXPERT_REVIEW,
+    "shell helpers enforce fail-fast discipline; both must be present"
 )
 
 h.summarize_and_exit()

@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,7 +31,7 @@ class Harness:
             self.failures.append(error_msg)
             self.fail_count += 1
 
-    def summarize_and_exit(self):
+    def summarize_and_exit(self) -> NoReturn:
         """Print the pass/fail summary and exit with an appropriate status code."""
         print()
         print("=" * 60)
