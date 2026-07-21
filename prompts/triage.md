@@ -56,8 +56,8 @@ Only what genuinely should not happen now. Each needs a reason that survives bei
 
 A finding goes to **Needs you** if — and only if — at least one of these holds:
 
-1. **It contradicts a recorded decision.** A documented ADR, a `project.yaml` invariant or red line,
-   or an entry in the recorded-decisions file. The system does not get to quietly overrule the human.
+1. **It contradicts a documented ADR or a `project.yaml` invariant or red line.** The system does
+   not get to quietly overrule the human.
 2. **The panel genuinely disagreed** and Pass 2 did not settle it (`**Panel Conflict**: unresolved`).
 3. **The fix is a product or scope call, not a code call.** Anything whose right answer depends on
    what the product is *for*.
