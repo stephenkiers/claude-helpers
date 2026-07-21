@@ -184,6 +184,20 @@ try:
         mtime=now,
     )
 
+    # Test 8b: Regex metacharacter in query must be treated as a literal string,
+    # not a regex — "a.b" must match "a.b" but must NOT match "aXb" (which "."
+    # would match as a regex wildcard).
+    fixture.add_session(
+        "literal-dot-match",
+        f'{{"type":"user","message":{{"content":"contains a.b literally"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
+        mtime=now,
+    )
+    fixture.add_session(
+        "regex-wildcard-decoy",
+        f'{{"type":"user","message":{{"content":"contains aXb not a dot"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
+        mtime=now,
+    )
+
     # Test 9: File older than --days cutoff (400 days old)
     old_mtime = now - (400 * day)
     old_ts = ts_from_seconds(old_mtime)
@@ -503,6 +517,23 @@ try:
             f"exit={code} (SIGPIPE is 141)",
         )
 
+        # Test 13b: Query with a regex metacharacter is matched literally
+        code, out, err = run(
+            interpreter,
+            ["a.b"],
+            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+        )
+        t(
+            f"{interpreter}: literal 'a.b' query matches literal 'a.b' text",
+            "literal-dot-match" in out,
+            f"literal-dot-match not found in output",
+        )
+        t(
+            f"{interpreter}: literal 'a.b' query does not regex-match 'aXb'",
+            "regex-wildcard-decoy" not in out,
+            f"regex-wildcard-decoy appeared in output (dot matched as wildcard)",
+        )
+
         # Test 14: Unicode handling
         code, out, err = run(
             interpreter,
@@ -531,9 +562,15 @@ t("Script contains no rg invocation", " rg " not in script_src and " rg\n" not i
 t("Script uses grep, not rg", "grep" in script_src,
   "grep not found")
 
-# Check for bare array indexing (but allow shift/[@], which are safe)
+# Check for bare array indexing (but allow shift/[@], which are safe).
+# Excludes the embedded jq program (JQ_BATCH_FILTER='...'): jq's own
+# array-indexing syntax ($parts[0], etc.) is a different, safe language,
+# not a bash array access, and would otherwise false-positive here.
+script_src_no_jq = re.sub(
+    r"JQ_BATCH_FILTER='.*?'\n", "", script_src, flags=re.DOTALL
+)
 bare_index_pattern = r'\$\{?.*\[\d+\]\}?'
-bare_indices = re.findall(bare_index_pattern, script_src)
+bare_indices = re.findall(bare_index_pattern, script_src_no_jq)
 # Filter out false positives like [$i], [${...}], [$((...))]
 bare_indices = [
     idx
