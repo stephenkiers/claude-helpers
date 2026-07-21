@@ -110,17 +110,12 @@ Write `.claude/github-cache.json` in the new worktree with local plan data:
 
 ```bash
 mkdir -p "${WORKTREE_PATH}/.claude"
-cat > "${WORKTREE_PATH}/.claude/github-cache.json" <<CACHEEOF
-{
-  "branch": "${BRANCH}",
-  "localPlan": {
-    "id": ${ISSUE_NUM},
-    "title": "${ISSUE_TITLE}",
-    "plan": "${PLAN_FILE}",
-    "status": "in_progress"
-  }
-}
-CACHEEOF
+jq -n --arg branch "${BRANCH}" \
+      --argjson id "${ISSUE_NUM}" \
+      --arg title "${ISSUE_TITLE}" \
+      --arg plan "${PLAN_FILE}" \
+      '{branch: $branch, localPlan: {id: $id, title: $title, plan: $plan, status: "in_progress"}}' \
+      > "${WORKTREE_PATH}/.claude/github-cache.json"
 ```
 
 ### Handoff (Local Mode)
@@ -455,18 +450,13 @@ After creating the issue and worktree, write the issue data to `.claude/github-c
 # Write cache into the NEW worktree
 mkdir -p "${WORKTREE_PATH}/.claude"
 
-cat > "${WORKTREE_PATH}/.claude/github-cache.json" <<CACHEEOF
-{
-  "branch": "${BRANCH}",
-  "issue": {
-    "number": ${ISSUE_NUM},
-    "url": "${ISSUE_URL}",
-    "title": "${ISSUE_TITLE}",
-    "body": $(echo "$PLAN_CONTENT" | jq -Rs .),
-    "state": "open"
-  }
-}
-CACHEEOF
+jq -n --arg branch "${BRANCH}" \
+      --argjson number "${ISSUE_NUM}" \
+      --arg url "${ISSUE_URL}" \
+      --arg title "${ISSUE_TITLE}" \
+      --arg body "$PLAN_CONTENT" \
+      '{branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' \
+      > "${WORKTREE_PATH}/.claude/github-cache.json"
 ```
 
 **Why the new worktree?** The current session is in main (or another worktree). The new worktree is where implementation will happen, so that's where commands like `/shipit` and `/expert-review` will read from.
