@@ -210,20 +210,40 @@ try:
         )
 
     # Test 41: Snippet from tool_use.input only (not text block)
+    # Real schema: tool_use is inside message.content array with object-valued input
     fixture.add_session(
         "tool-use-only",
-        f'{{"type":"assistant","tool_use":{{"input":"search_term_in_input"}},"timestamp":"{ts_from_seconds(now)}"}}\n',
+        f'{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"Bash","input":{{"command":"search_term_in_input"}}}}]}},"timestamp":"{ts_from_seconds(now)}"}}\n',
+        mtime=now,
+    )
+
+    # Test 41b: Snippet from thinking block
+    fixture.add_session(
+        "thinking-only",
+        f'{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"I should search_term_in_input next"}}]}},"timestamp":"{ts_from_seconds(now)}"}}\n',
         mtime=now,
     )
 
     # Test 42: File whose mtime is newer than matching line's timestamp (bug 11)
+    # This file has an OLD line timestamp (3 days ago) but NEWER mtime (1 day ago)
     stale_line_ts_sec = now - (3 * day)  # 3 days old
     newer_mtime = now - (1 * day)  # 1 day old
     stale_ts = ts_from_seconds(stale_line_ts_sec)
     fixture.add_session(
-        "stale-line-newer-mtime",
-        f'{{"type":"user","message":{{"content":"stale line search"}},"timestamp":"{stale_ts}"}}\n',
+        "ranking-test-old-timestamp",
+        f'{{"type":"user","message":{{"content":"ranking test compare"}},"timestamp":"{stale_ts}"}}\n',
         mtime=newer_mtime,
+    )
+
+    # Test 42b: Companion file with NEWER timestamp but OLDER mtime (bug 11 verification)
+    # This file has a RECENT line timestamp (1 day ago) but OLDER mtime (3 days ago)
+    recent_line_ts_sec = now - (1 * day)  # 1 day old (more recent than the other file's line)
+    older_mtime = now - (3 * day)  # 3 days old (older mtime than the other file)
+    recent_ts = ts_from_seconds(recent_line_ts_sec)
+    fixture.add_session(
+        "ranking-test-new-timestamp",
+        f'{{"type":"user","message":{{"content":"ranking test compare"}},"timestamp":"{recent_ts}"}}\n',
+        mtime=older_mtime,
     )
 
     # Test 43: Test --days filtering (exactly at boundary)
@@ -391,39 +411,85 @@ try:
             f"got {result_count} results",
         )
 
-        # Test 11: Snippet extraction from tool_use
+        # Test 11: Snippet extraction from tool_use.input and thinking blocks
         code, out, err = run(
             interpreter,
             ["search_term_in_input"],
             {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
         )
+        t(
+            f"{interpreter}: tool-use-only session appears in results",
+            "tool-use-only" in out,
+            f"tool-use-only not found in output",
+        )
         if "tool-use-only" in out:
-            snippet_present = "search_term_in_input" in out or "(match in non-text field)" not in out
-            t(
-                f"{interpreter}: snippet extracted from tool_use.input",
-                snippet_present or code == 0,
-                f"snippet extraction failed",
-            )
+            # Extract the line with tool-use-only
+            tool_use_lines = [l for l in out.strip().split('\n') if 'tool-use-only' in l]
+            if tool_use_lines:
+                # Format: mtime|timestamp|cwd|session_id|kind|first_prompt|snippet
+                fields = tool_use_lines[0].split('|')
+                if len(fields) >= 7:
+                    snippet = fields[6]
+                    t(
+                        f"{interpreter}: tool_use.input snippet extracted (not sentinel)",
+                        snippet != "(match in non-text field)",
+                        f"got sentinel instead of snippet: {snippet}",
+                    )
 
-        # Test 12: Ranking by match timestamp, not file mtime
+        # Test 11b: Snippet extraction from thinking blocks
         code, out, err = run(
             interpreter,
-            ["stale"],
+            ["search_term_in_input"],
             {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
         )
-        if code == 0 and "stale-line-newer-mtime" in out:
-            lines = [l for l in out.strip().split('\n') if l]
-            if lines:
+        t(
+            f"{interpreter}: thinking-only session appears in results",
+            "thinking-only" in out,
+            f"thinking-only not found in output",
+        )
+        if "thinking-only" in out:
+            # Extract the line with thinking-only
+            thinking_lines = [l for l in out.strip().split('\n') if 'thinking-only' in l]
+            if thinking_lines:
                 # Format: mtime|timestamp|cwd|session_id|kind|first_prompt|snippet
-                fields = lines[0].split('|')
-                if len(fields) >= 2:
-                    # Timestamp field (index 1) should be the line's timestamp, not file's
-                    reported_ts = fields[1]
+                fields = thinking_lines[0].split('|')
+                if len(fields) >= 7:
+                    snippet = fields[6]
                     t(
-                        f"{interpreter}: ranking uses match timestamp, not file mtime",
-                        "T" in reported_ts and ":" in reported_ts,  # ISO format check
-                        f"timestamp: {reported_ts}",
+                        f"{interpreter}: thinking block snippet extracted (not sentinel)",
+                        snippet != "(match in non-text field)",
+                        f"got sentinel instead of snippet: {snippet}",
                     )
+
+        # Test 12: Ranking by match timestamp, not file mtime
+        # Query matches both files; verify the one with more recent timestamp ranks first
+        code, out, err = run(
+            interpreter,
+            ["ranking", "test", "compare"],
+            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+        )
+        t(
+            f"{interpreter}: ranking-test-old-timestamp appears in results",
+            "ranking-test-old-timestamp" in out,
+            f"ranking-test-old-timestamp not found",
+        )
+        t(
+            f"{interpreter}: ranking-test-new-timestamp appears in results",
+            "ranking-test-new-timestamp" in out,
+            f"ranking-test-new-timestamp not found",
+        )
+        if code == 0 and "ranking-test-new-timestamp" in out and "ranking-test-old-timestamp" in out:
+            lines = [l for l in out.strip().split('\n') if l and ('ranking-test-new-timestamp' in l or 'ranking-test-old-timestamp' in l)]
+            if len(lines) >= 2:
+                # First result should be the one with more recent timestamp (ranking-test-new-timestamp)
+                # not the one with newer mtime (ranking-test-old-timestamp)
+                first_result = lines[0]
+                second_result = lines[1]
+                t(
+                    f"{interpreter}: newer match timestamp ranks first (not newer mtime)",
+                    "ranking-test-new-timestamp" in first_result and "ranking-test-old-timestamp" in second_result,
+                    f"order wrong: first={first_result.split('|')[3]}, second={second_result.split('|')[3]}",
+                )
 
         # Test 13: No SIGPIPE on broad query
         code, out, err = run(
