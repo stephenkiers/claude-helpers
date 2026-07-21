@@ -110,14 +110,42 @@ extract_snippet() {
   local line="$1"
   local snippet
 
-  # Try to extract from .message.content (text blocks)
+  # Try text-type content block's .text field
+  snippet=$(printf '%s' "$line" | jq -r '.message.content[]? | select(.type=="text") | .text' 2>/dev/null | head -1)
+  if [ -n "$snippet" ] && [ "$snippet" != "null" ]; then
+    printf '%.120s' "$snippet"
+    return
+  fi
+
+  # Try tool_use block's .input (convert to string since it's often an object)
+  snippet=$(printf '%s' "$line" | jq -r '.message.content[]? | select(.type=="tool_use") | .input | tostring' 2>/dev/null | head -1)
+  if [ -n "$snippet" ] && [ "$snippet" != "null" ] && [ "$snippet" != "{}" ]; then
+    printf '%.120s' "$snippet"
+    return
+  fi
+
+  # Try tool_result block's .content (may be string or array)
+  snippet=$(printf '%s' "$line" | jq -r '.message.content[]? | select(.type=="tool_result") | .content | if type=="array" then tostring else . end' 2>/dev/null | head -1)
+  if [ -n "$snippet" ] && [ "$snippet" != "null" ]; then
+    printf '%.120s' "$snippet"
+    return
+  fi
+
+  # Try thinking block's .thinking field
+  snippet=$(printf '%s' "$line" | jq -r '.message.content[]? | select(.type=="thinking") | .thinking' 2>/dev/null | head -1)
+  if [ -n "$snippet" ] && [ "$snippet" != "null" ]; then
+    printf '%.120s' "$snippet"
+    return
+  fi
+
+  # Fallback: try plain string content (older-style messages)
   snippet=$(printf '%s' "$line" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4)
   if [ -n "$snippet" ]; then
     printf '%.120s' "$snippet"
     return
   fi
 
-  # Fallback
+  # No match found
   printf '%s' "(match in non-text field)"
 }
 
@@ -159,6 +187,18 @@ find "$PROJECTS_DIR" -name "*.jsonl" -print0 2>/dev/null | while IFS= read -r -d
     continue
   fi
 
+  # Extract file-level metadata once (before the loop to avoid shellcheck SC2094)
+  file_mtime=$(get_mtime "$filepath")
+  cwd=$(extract_cwd "$filepath")
+  first_prompt=$(extract_first_prompt "$filepath")
+
+  # Determine kind (session or subagent)
+  if [ "$IS_SUBAGENT" -eq 1 ]; then
+    kind="subagent"
+  else
+    kind="session"
+  fi
+
   # Now process each line of the file
   while IFS= read -r line; do
     # Skip empty lines
@@ -194,24 +234,14 @@ find "$PROJECTS_DIR" -name "*.jsonl" -print0 2>/dev/null | while IFS= read -r -d
       continue
     fi
 
-    # Extract metadata
-    file_mtime=$(get_mtime "$filepath")
-    cwd=$(extract_cwd "$filepath")
-    first_prompt=$(extract_first_prompt "$filepath")
+    # Extract snippet from this line
     snippet=$(extract_snippet "$line")
-
-    # Determine kind (session or subagent)
-    if [ "$IS_SUBAGENT" -eq 1 ]; then
-      kind="subagent"
-    else
-      kind="session"
-    fi
 
     # Output result
     if [ -n "$line_ts" ]; then
       printf '%s|%s|%s|%s|%s|%s|%s\n' "$file_mtime" "$line_ts" "$cwd" "$PARENT_SESSION_ID" "$kind" "$first_prompt" "$snippet"
     fi
   done < "$filepath"
-done | sort -t'|' -k1 -rn | head -n "$LIMIT"
+done | sort -t'|' -k2 -r | head -n "$LIMIT"
 
 exit 0
