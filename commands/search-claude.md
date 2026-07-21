@@ -1,169 +1,145 @@
 ---
 description: Search prior Claude Code conversation transcripts across all projects. Use when the user says /search-claude or wants to find and resume a past Claude conversation by topic, keyword, or remembered phrase.
-allowed-tools: Bash(rg:*), Bash(find:*), Bash(jq:*), Bash(stat:*), Bash(date:*), Bash(sort:*), Bash(head:*), Bash(awk:*), Bash(sed:*), Bash(wc:*), Bash(basename:*), Bash(dirname:*), Bash(printf:*), Bash(cut:*), Bash(tr:*)
+allowed-tools: Bash(~/.claude/scripts/search-claude.sh:*), Bash(grep:*), Bash(find:*), Bash(stat:*), Bash(date:*), Bash(sort:*), Bash(head:*), Bash(wc:*), Bash(basename:*), Bash(dirname:*), Bash(printf:*), Bash(cut:*)
 ---
 
 # Search Claude Transcripts
 
 Search prior Claude Code conversation transcripts and return copy-pasteable resume commands.
 
-Run this bash script, then output a one-line preamble like "Searched last 30 days across N project dirs:" followed by the script output verbatim. Nothing after.
+Invokes `~/.claude/scripts/search-claude.sh` to run a deterministic, portable search (no `rg`
+dependency, works in bash and zsh), then presents the results with judgment about what to surface.
+
+## Usage
+
+```
+/search-claude <query-words...> [--days N] [--all]
+```
+
+- `<query-words>` — Search for all these words (AND matching, case-insensitive). Wrap in quotes for
+  exact phrase: `/search-claude "quoted phrase"` matches only the exact phrase verbatim.
+- `--days N` — Search only the last N days (default: 30). Must be a positive integer.
+- `--all` — Search full history (no time limit).
+
+## Examples
+
+```
+/search-claude tray icon color          # Find sessions with all three words
+/search-claude "exact phrase" --all     # Find exact phrase in all history
+/search-claude bug --days 7             # Find "bug" in last week
+```
+
+## How it works
+
+The script emits pipe-delimited records with: mtime, timestamp, cwd, session_id, kind
+(session|subagent), first_prompt, snippet. Present top-level session hits as primary results;
+include subagent hits only when they add signal for the query (this is a judgment call — feel free
+to omit noisy subagent rows). Always include the parent session id so the user can resume.
+
+When a query returns nothing, say plainly why (too narrow? too old?) and suggest ways to widen the
+search.
 
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
 
 ARGS="$ARGUMENTS"
+PROJECTS_DIR="${HOME}/.claude/projects"
 
 # --- Parse arguments ---
-QUERY=""
-DAYS=30
+QUERY_WORDS=()
+DAYS_FLAG=()
+ALL_FLAG=()
 
-args_array=($ARGS)
-i=0
-while [ $i -lt ${#args_array[@]} ]; do
-  arg="${args_array[$i]}"
+for arg in $ARGS; do
   case "$arg" in
     --all)
-      DAYS=10950  # ~30 years
+      ALL_FLAG=( "--all" )
       ;;
     --days)
-      i=$((i + 1))
-      DAYS="${args_array[$i]}"
-      ;;
-    --*)
-      # unknown flag, skip
+      # The next arg is the value; we'll pass both through
+      DAYS_FLAG=( "--days" )
       ;;
     *)
-      QUERY="${QUERY:+$QUERY }$arg"
+      QUERY_WORDS+=( "$arg" )
       ;;
   esac
-  i=$((i + 1))
 done
 
-QUERY="${QUERY# }"
-
-# --- Usage guard ---
-if [ -z "$QUERY" ]; then
-  echo "Usage: /search-claude <query> [--days N] [--all]"
-  echo ""
-  echo "  <query>    Keywords to search for (literal string match)"
-  echo "  --days N   Search last N days (default: 30)"
-  echo "  --all      Search full history (no time limit)"
-  echo ""
-  echo "Example: /search-claude staging --all"
-  exit 0
+# Handle --days value extraction (the next word after --days in the original args)
+if [ ${#DAYS_FLAG[@]} -gt 0 ]; then
+  # Find --days in ARGS and get the next token
+  next_is_value=0
+  for arg in $ARGS; do
+    if [ "$next_is_value" -eq 1 ]; then
+      DAYS_FLAG+=( "$arg" )
+      next_is_value=0
+    fi
+    if [ "$arg" = "--days" ]; then
+      next_is_value=1
+    fi
+  done
 fi
 
-PROJECTS_DIR="$HOME/.claude/projects"
-
-if [ ! -d "$PROJECTS_DIR" ]; then
-  echo "No Claude projects directory found at $PROJECTS_DIR"
+# --- Invoke the script ---
+if ! ~/.claude/scripts/search-claude.sh "${QUERY_WORDS[@]}" "${DAYS_FLAG[@]}" "${ALL_FLAG[@]}" > /tmp/search-results.$$ 2>&1; then
+  # Script failed (e.g., bad --days value)
+  cat /tmp/search-results.$$
+  rm -f /tmp/search-results.$$
   exit 1
 fi
 
-# --- Grep for matching files ---
-# NOTE: rg is a shell function in Claude Code (not a PATH binary), so
-# `find ... | xargs rg` fails silently ("xargs: rg: No such file or directory").
-# Use rg's own recursive walk + globs instead, then filter by mtime/size in bash.
-mapfile -t RAW_MATCHES < <(rg -i -l -F \
-  --max-filesize 50M \
-  -g '*.jsonl' \
-  -g '!*/subagents/*' \
-  -- "$QUERY" "$PROJECTS_DIR" 2>/dev/null || true)
+SCRIPT_OUTPUT=$(cat /tmp/search-results.$$)
+rm -f /tmp/search-results.$$
 
-# Apply time window (mtime) in bash, since rg can't filter by age.
-declare -a MATCHES
-if [ "$DAYS" -lt 10000 ]; then
-  now=$(date +%s)
-  cutoff=$(( now - DAYS * 86400 ))
-else
-  cutoff=0
-fi
-for f in "${RAW_MATCHES[@]}"; do
-  [ -n "$f" ] || continue
-  mt=$(stat -f %m "$f" 2>/dev/null || echo 0)
-  if [ "$mt" -ge "$cutoff" ]; then
-    MATCHES+=("$f")
-  fi
-done
-
-MATCH_COUNT=${#MATCHES[@]}
-
-if [ "$MATCH_COUNT" -eq 0 ]; then
-  if [ "$DAYS" -lt 10000 ]; then
-    echo "No matches in last ${DAYS} days. Try --all or a different query."
+# --- Present results ---
+if [ -z "$SCRIPT_OUTPUT" ]; then
+  # No matches found
+  if echo "$ARGS" | grep -q "\--all"; then
+    echo "No matches found for: $(echo "${QUERY_WORDS[@]}" | head -c 60)"
+    echo ""
+    echo "Try a different search term or check the transcript directory:"
+    echo "  ls ~/.claude/projects/"
   else
-    echo "No matches found for: $QUERY"
+    echo "No matches in last 30 days for: $(echo "${QUERY_WORDS[@]}" | head -c 60)"
+    echo ""
+    echo "Try one of:"
+    echo "  /search-claude ${QUERY_WORDS[@]} --all         (search full history)"
+    echo "  /search-claude ${QUERY_WORDS[0]} --days 7    (search last week instead)"
   fi
   exit 0
 fi
 
-# --- Extract metadata and rank by mtime ---
-declare -a RESULTS
-
-for f in "${MATCHES[@]}"; do
-  mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
-
-  session_id=$(basename "$f" .jsonl)
-
-  # cwd: first line with a .cwd field
-  cwd=$(jq -r 'select(.cwd != null) | .cwd' "$f" 2>/dev/null | head -1)
-  if [ -z "$cwd" ]; then
-    # decode from directory name: ~/.claude/projects/-Users-foo-bar -> /Users/foo/bar
-    dir_encoded=$(basename "$(dirname "$f")")
-    cwd=$(printf '%s' "$dir_encoded" | sed 's|^-|/|; s|-|/|g')
+echo "Search results for: $(echo "${QUERY_WORDS[@]}" | head -c 60)"
+if ! echo "$ARGS" | grep -q "\--all"; then
+  if ! echo "$ARGS" | grep -q "\--days"; then
+    echo "(last 30 days; use --all to search full history)"
   fi
-
-  # first user prompt (string content only)
-  first_prompt=$(jq -r '
-    select(.type == "user") |
-    .message.content |
-    if type == "string" then .
-    elif type == "array" then
-      (map(select(.type == "text") | .text) | first) // ""
-    else "" end
-  ' "$f" 2>/dev/null | head -1 | head -c 80)
-  if [ -z "$first_prompt" ]; then
-    first_prompt="(no user prompt yet)"
-  fi
-
-  # match snippet: first line containing query, flattened to text
-  match_snippet=$(rg -i -m 1 --max-filesize 50M -F -- "$QUERY" "$f" 2>/dev/null | \
-    jq -r '(.message.content // .) | if type == "string" then . elif type == "array" then (map(select(.type == "text") | .text) | join(" ")) else tostring end' 2>/dev/null | \
-    head -c 120 || echo "")
-  if [ -z "$match_snippet" ]; then
-    match_snippet="(match in non-text field)"
-  fi
-
-  # ISO-8601 timestamp from mtime
-  ts=$(date -r "$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown")
-
-  RESULTS+=("${mtime}|${ts}|${cwd}|${session_id}|${first_prompt}|${match_snippet}")
-done
-
-# --- Sort by mtime descending, take top 10 ---
-mapfile -t SORTED < <(printf '%s\n' "${RESULTS[@]}" | sort -t'|' -k1 -rn | head -10)
-
-SHOWN=${#SORTED[@]}
-WINDOW_DESC="${DAYS} days"
-if [ "$DAYS" -ge 10000 ]; then
-  WINDOW_DESC="full history"
 fi
-
-echo "Found ${MATCH_COUNT} match(es) (showing top ${SHOWN}, ${WINDOW_DESC}). Use --all for full history."
 echo ""
 
+# Parse and present each result
 rank=1
-for entry in "${SORTED[@]}"; do
-  IFS='|' read -r _mtime ts cwd session_id first_prompt match_snippet <<< "$entry"
+last_session=""
+while IFS='|' read -r mtime ts cwd session_id kind first_prompt snippet; do
+  # Only show subagent results if they're notably different from the parent
+  if [ "$kind" = "subagent" ]; then
+    if [ "$session_id" = "$last_session" ]; then
+      continue  # Skip duplicate parent in output (subagent already shown)
+    fi
+  fi
+  last_session="$session_id"
 
   printf '%d. %s  %s\n' "$rank" "$ts" "$cwd"
-  printf '   Prompt: "%s"\n' "$first_prompt"
-  printf '   Match:  "%s"\n' "$match_snippet"
-  printf '   Resume: cd %s && claude --resume %s\n' "$cwd" "$session_id"
+  printf '   Session: %s (%s)\n' "$session_id" "$kind"
+  printf '   Prompt:  "%.60s"\n' "$first_prompt"
+  printf '   Match:   "%.60s"\n' "$snippet"
+  printf '   Resume:  cd %s && claude --resume %s\n' "$cwd" "$session_id"
   echo ""
 
   rank=$((rank + 1))
-done
+done <<< "$SCRIPT_OUTPUT"
+
+if [ "$rank" -eq 1 ]; then
+  echo "(No results to display.)"
+fi
 ```
