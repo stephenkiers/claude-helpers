@@ -84,8 +84,11 @@ If in a non-main worktree, write `.claude/github-cache.json` with local plan dat
 mkdir -p .claude
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 echo "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
-  --argjson localPlan "{\"id\": $ISSUE_NUM, \"title\": \"$TITLE\", \"plan\": \"$PLAN_FILE\", \"status\": \"planned\"}" \
-  '. + {branch: $branch, localPlan: $localPlan}' > .claude/github-cache.json
+  --argjson id "$ISSUE_NUM" \
+  --arg title "$TITLE" \
+  --arg plan "$PLAN_FILE" \
+  '. + {branch: $branch, localPlan: {id: $id, title: $title, plan: $plan, status: "planned"}}' \
+  > .claude/github-cache.json
 ```
 
 ---
