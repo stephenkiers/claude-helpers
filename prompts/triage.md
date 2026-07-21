@@ -100,8 +100,8 @@ trip both — e.g. it's a footgun (5) *and* nobody has the number yet (7) — fi
 measurement**, since the human can't meaningfully choose an option (test 5's job) until the
 measurement exists; note the other tripped test in **Why this needs measurement** so it isn't lost.
 
-1. **It contradicts a recorded decision.** A documented ADR, a `project.yaml` invariant or red line,
-   or an entry in the recorded-decisions file. The system does not get to quietly overrule the human.
+1. **It contradicts a documented ADR or a `project.yaml` invariant or red line.** The system does
+   not get to quietly overrule the human.
 2. **The panel genuinely disagreed** and Pass 2 did not settle it (`**Panel Conflict**: unresolved`).
 3. **The fix is a product or scope call, not a code call.** Anything whose right answer depends on
    what the product is *for*.
