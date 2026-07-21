@@ -144,7 +144,13 @@ The schema for the `premortem` object:
    ```bash
    jq --argjson pm '<premortem-json>' '. + {premortem: $pm}' .claude/github-cache.json > /tmp/cache-tmp.json && mv /tmp/cache-tmp.json .claude/github-cache.json
    ```
-3. If jq is unavailable or the file doesn't exist, use the Write tool — but read the existing file first and merge manually so existing keys (`issue`, `pr`, `review`, `branch`) are preserved.
+3. If jq is unavailable or the file doesn't exist:
+   - Read `.claude/github-cache.json` first (if it exists) to preserve existing keys (`issue`, `pr`, `review`, `branch`).
+   - **Pre-escape free-text values using jq before constructing JSON:**
+     ```bash
+     ASSESSMENT_JSON=$(printf '%s' "$ASSESSMENT" | jq -Rs .)
+     ```
+   - Use the Write tool to construct the JSON, splicing the pre-escaped values. For example, use a heredoc with the escaped `$ASSESSMENT_JSON` variable (not the raw `$ASSESSMENT` string).
 
 Do not log or print the raw JSON — just confirm "Pre-mortem cached." after writing.
 
