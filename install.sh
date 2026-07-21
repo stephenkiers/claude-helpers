@@ -17,7 +17,7 @@ echo "Installing Claude helpers from $REPO_DIR"
 
 mkdir -p "$CLAUDE_DIR"
 
-for dir in commands reviewers prompts agents; do
+for dir in commands reviewers prompts agents scripts; do
     target_dir="$CLAUDE_DIR/$dir"
     source_dir="$REPO_DIR/$dir"
 
@@ -67,4 +67,4 @@ fi
 echo ""
 echo "Claude helpers installed!"
 echo ""
-echo "Verify with: ls -la ~/.claude/commands/ ~/.claude/reviewers/ ~/.claude/prompts/ ~/.claude/agents/"
+echo "Verify with: ls -la ~/.claude/commands/ ~/.claude/reviewers/ ~/.claude/prompts/ ~/.claude/agents/ ~/.claude/scripts/"

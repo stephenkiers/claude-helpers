@@ -1,6 +1,6 @@
 ---
 name: setup-local
-description: Use when the user says "/setup-local", "setup this machine", "re-sync", or "install claude-helpers". Symlinks this repo's commands, reviewers, prompts, and agents into ~/.claude/ so they're available everywhere. Idempotent and safe to re-run.
+description: Use when the user says "/setup-local", "setup this machine", "re-sync", or "install claude-helpers". Symlinks this repo's commands, reviewers, prompts, agents, and scripts into ~/.claude/ so they're available everywhere. Idempotent and safe to re-run.
 ---
 
 # Setup Local
@@ -11,7 +11,7 @@ repo files. This is idempotent — safe to run any time.
 
 ## What it does
 
-For each directory in `commands`, `reviewers`, `prompts`, `agents`:
+For each directory in `commands`, `reviewers`, `prompts`, `agents`, `scripts`:
 
 1. Determine `{repo}` = the absolute path of this repository (the directory containing this file's
    repo root). Determine `{dir}` = each of the four directories above.
@@ -31,8 +31,8 @@ files untouched.
 ## Steps
 
 1. Resolve the repo root (the directory this command lives in, walked up to the git root).
-2. Perform the symlinking described above for all four directories.
-3. **Verify** by listing the four target directories and confirming the new symlinks resolve.
+2. Perform the symlinking described above for all five directories.
+3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
 4. Report a concise summary: how many files were linked, skipped, or backed up per directory.
 
 A no-Claude fallback exists: running `./install.sh` from the repo root does the same thing.
