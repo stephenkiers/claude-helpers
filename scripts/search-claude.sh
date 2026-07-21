@@ -183,7 +183,7 @@ find "$PROJECTS_DIR" -name "*.jsonl" -print0 2>/dev/null | while IFS= read -r -d
     first_pattern="$pw"
     break
   done
-  if ! grep -qi "$(printf '%s\n' "$first_pattern" | sed 's/[&/\]/\\&/g')" "$filepath" 2>/dev/null; then
+  if ! grep -qiF "$first_pattern" "$filepath" 2>/dev/null; then
     continue
   fi
 
@@ -209,7 +209,7 @@ find "$PROJECTS_DIR" -name "*.jsonl" -print0 2>/dev/null | while IFS= read -r -d
     # Check if all patterns match this line (case-insensitive AND matching)
     matches_all=1
     for pattern in "${QUERY_WORDS[@]}"; do
-      if ! printf '%s' "$line" | grep -qi "$(printf '%s\n' "$pattern" | sed 's/[&/\]/\\&/g')"; then
+      if ! printf '%s' "$line" | grep -qiF "$pattern"; then
         matches_all=0
         break
       fi
@@ -242,6 +242,6 @@ find "$PROJECTS_DIR" -name "*.jsonl" -print0 2>/dev/null | while IFS= read -r -d
       printf '%s|%s|%s|%s|%s|%s|%s\n' "$file_mtime" "$line_ts" "$cwd" "$PARENT_SESSION_ID" "$kind" "$first_prompt" "$snippet"
     fi
   done < "$filepath"
-done | sort -t'|' -k2 -r | head -n "$LIMIT"
+done | LC_ALL=C sort -t'|' -k2 -r | head -n "$LIMIT"
 
 exit 0
