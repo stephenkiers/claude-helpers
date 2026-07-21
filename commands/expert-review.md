@@ -673,6 +673,22 @@ every ruling had been written.
 
 ### Step 13: Record the rulings
 
+**Re-derive `REPO_KEY`, `LEDGER_FILE`, and `DECISIONS_FILE` at the top of this step** — recompute them
+the same way Step 0 did, rather than reusing values carried in your own context across the intervening
+steps:
+
+```bash
+REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')
+[ -z "$REPO_KEY" ] && REPO_KEY=$(basename "$(git rev-parse --show-toplevel)")
+LEDGER_FILE="$HOME/.claude/reviews/${REPO_KEY}/ledger.jsonl"
+DECISIONS_FILE="$HOME/.claude/reviews/${REPO_KEY}/decisions.yaml"
+```
+
+This is the practical form of the Step 0 principle: never bridge Bash's lack of persistent shell state
+with a shared scratch file, and don't rely on the orchestrating session's memory to carry these values
+correctly across a long or compacted conversation either — recomputing them costs one more `gh repo
+view` call and is always cheap next to a ledger write landing in the wrong repo's history.
+
 Three writes here. **This is the only step that writes outside `{REVIEW_DIR}`, and it never touches
 source code.** Reviewer subagents have no `Edit` tool at all (`agents/expert-reviewer.md`) — that
 invariant is unchanged. The orchestrator's `Edit` grant is a **red line** with exactly three permitted
@@ -759,8 +775,7 @@ Merge a `review` section into `.claude/github-cache.json`, preserving existing s
 ```bash
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" \
-  && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.

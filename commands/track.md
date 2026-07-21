@@ -83,6 +83,8 @@ If in a non-main worktree, write `.claude/github-cache.json` with local plan dat
 ```bash
 mkdir -p .claude
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
+# Write to a temp file and mv on success so a jq failure never truncates the existing cache
+# (a bare `> github-cache.json` redirect truncates the file before jq runs).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
 echo "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
   --argjson id "$ISSUE_NUM" \
