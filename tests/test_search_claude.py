@@ -664,4 +664,214 @@ t("SEARCH_CLAUDE_WORKERS=1 respects limit (bulk results)",
   result_count_single == result_count_default and result_count_single <= 5,
   f"default: {result_count_default}, single-worker: {result_count_single}, limit: 5")
 
+# --- Parallelization worker count clamping tests ---
+# Test worker count clamping above max (8)
+code_default, out_default, err_default = run(
+    "/bin/bash",
+    ["tray", "icon"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+code_high, out_high, err_high = run(
+    "/bin/bash",
+    ["tray", "icon"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "100"},
+)
+t("SEARCH_CLAUDE_WORKERS=100 (clamped to 8) produces same results",
+  out_default == out_high and code_default == code_high,
+  f"default: {len(out_default)} chars, workers=100: {len(out_high)} chars")
+
+# Test worker count clamping below min (1)
+code_zero, out_zero, err_zero = run(
+    "/bin/bash",
+    ["tray", "icon"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "0"},
+)
+t("SEARCH_CLAUDE_WORKERS=0 (clamped to 1) produces same results",
+  out_default == out_zero and code_default == code_zero,
+  f"default: {len(out_default)} chars, workers=0: {len(out_zero)} chars")
+
+# Test negative worker count
+code_neg, out_neg, err_neg = run(
+    "/bin/bash",
+    ["tray", "icon"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "-5"},
+)
+t("SEARCH_CLAUDE_WORKERS=-5 (clamped to 1) produces same results",
+  out_default == out_neg and code_default == code_neg,
+  f"default: {len(out_default)} chars, workers=-5: {len(out_neg)} chars")
+
+# Test intermediate worker counts produce consistent results
+# Use a query that will match across multiple files (bulk)
+code_workers_2, out_workers_2, err_workers_2 = run(
+    "/bin/bash",
+    ["bulk"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
+)
+code_workers_4, out_workers_4, err_workers_4 = run(
+    "/bin/bash",
+    ["bulk"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
+)
+code_workers_6, out_workers_6, err_workers_6 = run(
+    "/bin/bash",
+    ["bulk"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "6"},
+)
+code_default_bulk, out_default_bulk, err_default_bulk = run(
+    "/bin/bash",
+    ["bulk"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+t("SEARCH_CLAUDE_WORKERS=2 matches default results",
+  out_workers_2 == out_default_bulk and code_workers_2 == code_default_bulk,
+  f"default: {len(out_default_bulk)} chars, workers=2: {len(out_workers_2)} chars")
+t("SEARCH_CLAUDE_WORKERS=4 matches default results",
+  out_workers_4 == out_default_bulk and code_workers_4 == code_default_bulk,
+  f"default: {len(out_default_bulk)} chars, workers=4: {len(out_workers_4)} chars")
+t("SEARCH_CLAUDE_WORKERS=6 matches default results",
+  out_workers_6 == out_default_bulk and code_workers_6 == code_default_bulk,
+  f"default: {len(out_default_bulk)} chars, workers=6: {len(out_workers_6)} chars")
+
+# Test that all worker counts produce same result count
+count_2 = len([l for l in out_workers_2.strip().split('\n') if l])
+count_4 = len([l for l in out_workers_4.strip().split('\n') if l])
+count_6 = len([l for l in out_workers_6.strip().split('\n') if l])
+count_default = len([l for l in out_default_bulk.strip().split('\n') if l])
+t("All worker counts return same number of results",
+  count_2 == count_4 == count_6 == count_default,
+  f"count_2={count_2}, count_4={count_4}, count_6={count_6}, default={count_default}")
+
+# Test empty result set (query with no matches) doesn't error
+code_no_match, out_no_match, err_no_match = run(
+    "/bin/bash",
+    ["xyzabc123notfound"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+t("Empty result set (no matches) exits 0 or 1 (not error)",
+  code_no_match in [0, 1],
+  f"exit={code_no_match}")
+
+# Test empty result set with workers=2 still doesn't error
+code_no_match_2, out_no_match_2, err_no_match_2 = run(
+    "/bin/bash",
+    ["xyzabc123notfound"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
+)
+t("Empty result set with workers=2 exits cleanly",
+  code_no_match_2 in [0, 1],
+  f"exit={code_no_match_2}")
+
+# Test result ranking is consistent across worker counts
+# Use the ranking test files which test timestamp-based ordering
+code_rank_default, out_rank_default, err_rank_default = run(
+    "/bin/bash",
+    ["ranking", "test"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+code_rank_4, out_rank_4, err_rank_4 = run(
+    "/bin/bash",
+    ["ranking", "test"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
+)
+t("Result ordering consistent between default and workers=4",
+  out_rank_default == out_rank_4 and code_rank_default == code_rank_4,
+  f"default: {len(out_rank_default)} chars, workers=4: {len(out_rank_4)} chars")
+
+# Extract ranking order from default to verify it matches workers=4
+if code_rank_default == 0 and out_rank_default and code_rank_4 == 0 and out_rank_4:
+    lines_default = [l for l in out_rank_default.strip().split('\n') if l and 'ranking' in l]
+    lines_4 = [l for l in out_rank_4.strip().split('\n') if l and 'ranking' in l]
+    if len(lines_default) >= 2 and len(lines_4) >= 2:
+        first_default = lines_default[0].split('|')[3] if '|' in lines_default[0] else None
+        first_4 = lines_4[0].split('|')[3] if '|' in lines_4[0] else None
+        t("First ranking result identical across default and workers=4",
+          first_default == first_4,
+          f"default first: {first_default}, workers=4 first: {first_4}")
+
+# Test with very broad query across many files
+code_the_default, out_the_default, err_the_default = run(
+    "/bin/bash",
+    ["test"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+code_the_8, out_the_8, err_the_8 = run(
+    "/bin/bash",
+    ["test"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "8"},
+)
+t("Broad query (many files) consistent at max worker count (8)",
+  out_the_default == out_the_8 and code_the_default == code_the_8,
+  f"default: {len(out_the_default)} chars, workers=8: {len(out_the_8)} chars")
+
+# Test with limit enforcement across worker counts
+code_limit_default, out_limit_default, err_limit_default = run(
+    "/bin/bash",
+    ["test"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7"},
+)
+code_limit_4, out_limit_4, err_limit_4 = run(
+    "/bin/bash",
+    ["test"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7", "SEARCH_CLAUDE_WORKERS": "4"},
+)
+count_limit_default = len([l for l in out_limit_default.strip().split('\n') if l])
+count_limit_4 = len([l for l in out_limit_4.strip().split('\n') if l])
+t("Limit is enforced identically across default and workers=4",
+  count_limit_default == count_limit_4 and count_limit_4 <= 7,
+  f"default: {count_limit_default}, workers=4: {count_limit_4}, limit: 7")
+
+# Test exact result equality (byte-for-byte) across workers=1,2,4 with a specific query
+code_exact_1, out_exact_1, err_exact_1 = run(
+    "/bin/bash",
+    ["unicode", "emoji"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "1"},
+)
+code_exact_2, out_exact_2, err_exact_2 = run(
+    "/bin/bash",
+    ["unicode", "emoji"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
+)
+code_exact_4, out_exact_4, err_exact_4 = run(
+    "/bin/bash",
+    ["unicode", "emoji"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
+)
+t("Results are byte-identical for workers=1,2,4",
+  out_exact_1 == out_exact_2 == out_exact_4,
+  f"1: {len(out_exact_1)}, 2: {len(out_exact_2)}, 4: {len(out_exact_4)}")
+
+# Test that non-numeric SEARCH_CLAUDE_WORKERS falls back to auto-detection
+code_nonnumeric, out_nonnumeric, err_nonnumeric = run(
+    "/bin/bash",
+    ["tray"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "invalid"},
+)
+t("Non-numeric SEARCH_CLAUDE_WORKERS falls back to default without error",
+  code_nonnumeric in [0, 1],
+  f"exit={code_nonnumeric}")
+
+# Test that result format (pipe-delimited) is consistent across worker counts
+def verify_format(output_str):
+    """Verify pipe-delimited format with 7 fields per line."""
+    if not output_str.strip():
+        return True  # Empty output is valid
+    for line in output_str.strip().split('\n'):
+        if line:
+            parts = line.split('|')
+            if len(parts) < 7:
+                return False
+    return True
+
+t("Default results use pipe-delimited format (7+ fields)",
+  verify_format(out_default_bulk),
+  "format check failed")
+
+t("Workers=4 results use pipe-delimited format (7+ fields)",
+  verify_format(out_workers_4),
+  "format check failed")
+
+t("Workers=100 results use pipe-delimited format (7+ fields)",
+  verify_format(out_high),
+  "format check failed")
+
 h.summarize_and_exit()
