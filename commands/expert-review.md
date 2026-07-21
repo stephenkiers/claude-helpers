@@ -1,7 +1,7 @@
 ---
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Bash(DECISIONS_FILE=:*), Bash(LEDGER_FILE=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: opus
 ---
 
@@ -622,8 +622,7 @@ record, so an executor skimming the file meets only the chosen answer, not the d
    The `<details>` block is the only place the rejected options live once an item is ruled; do not
    also leave a live copy above the ruling.
 
-Runs **unconditionally whenever `needs-you > 0`**, independent of whether the ruling also becomes a
-`decisions.yaml` entry.
+Runs **unconditionally whenever `needs-you > 0`**.
 
 **Idempotent and fail-closed.** Before editing an item, check whether its `- **Ruling**:` line already
 reads anything other than the `_(pending your call` placeholder — if so, it was already recorded (e.g.

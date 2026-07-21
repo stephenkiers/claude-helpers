@@ -133,12 +133,6 @@ A Haiku agent will investigate these by reading the relevant files.]
   - **File hint**: path/to/file (optional, helps Haiku know where to look)
 - (or "None" if no open questions)
 
-## Suppressed by decision
-[Findings you would have raised but a recorded decision already settles — see "Report what a
-decision suppressed" above. One line each; "None" when nothing was suppressed.]
-- [would-be SEVERITY] {one-line finding} — settled by decision: {decision name}
-- (or "None")
-
 ### The `**Human Call**` field — use it rarely
 
 Set `**Human Call**: <one sentence on why>` only when a finding needs a *person*, not a patch —
@@ -153,13 +147,11 @@ This is a **nomination, not a verdict.** A downstream Triage Chief reads every o
 whether it actually reaches the human. So setting it is not a way to make your finding more
 important, and inflating it does not get you attention — it gets your nominations discounted.
 
-**Precondition — this field needs a reader.** `**Human Call**` and the suppression mechanism above
-both assume the pipeline has a Triage Chief and a step that records what was suppressed. Not every
-command that loads this framework does. If your invoking command has **no triage step**,
-`**Human Call**` has no one to read it — so say what you mean directly in the finding instead. And if
-your command reads recorded decisions but cannot report what it suppressed, do not silently withhold:
-note any decision-covered finding inline. `/expert-review` has both; `/expert-pr-comments` has
-neither (see ADR-0007, which scopes triage to `/expert-review` only).
+**Precondition — this field needs a reader.** `**Human Call**` assumes the pipeline has a Triage
+Chief. Not every command that loads this framework does. If your invoking command has **no triage
+step**, `**Human Call**` has no one to read it — so say what you mean directly in the finding
+instead. `/expert-review` has a Triage Chief; `/expert-pr-comments` does not (see ADR-0007, which
+scopes triage to `/expert-review` only).
 
 The default is to omit the field. A finding with a clear right answer, however severe, does not need
 a human: it needs fixing. `CRITICAL` and `Human Call` are orthogonal — most CRITICALs are obvious,
