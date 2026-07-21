@@ -84,8 +84,11 @@ If in a non-main worktree, write `.claude/github-cache.json` with local plan dat
 mkdir -p .claude
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 echo "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
-  --argjson localPlan "{\"id\": $ISSUE_NUM, \"title\": \"$TITLE\", \"plan\": \"$PLAN_FILE\", \"status\": \"planned\"}" \
-  '. + {branch: $branch, localPlan: $localPlan}' > .claude/github-cache.json
+  --argjson id "$ISSUE_NUM" \
+  --arg title "$TITLE" \
+  --arg plan "$PLAN_FILE" \
+  '. + {branch: $branch, localPlan: {id: $id, title: $title, plan: $plan, status: "planned"}}' \
+  > .claude/github-cache.json
 ```
 
 ---
@@ -211,8 +214,11 @@ EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 
 # Merge issue data into cache
 echo "$EXISTING" | jq --arg branch "$BRANCH" \
-  --argjson issue "{\"number\": $ISSUE_NUM, \"url\": \"$ISSUE_URL\", \"title\": \"$ISSUE_TITLE\", \"body\": $(echo "$ISSUE_BODY" | jq -Rs .), \"state\": \"open\"}" \
-  '. + {branch: $branch, issue: $issue}' > .claude/github-cache.json
+  --argjson number "$ISSUE_NUM" \
+  --arg url "$ISSUE_URL" \
+  --arg title "$ISSUE_TITLE" \
+  --arg body "$ISSUE_BODY" \
+  '. + {branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' > .claude/github-cache.json
 ```
 
 ## Workflow Integration
