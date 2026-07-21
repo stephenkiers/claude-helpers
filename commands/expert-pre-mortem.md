@@ -143,8 +143,7 @@ The schema for the `premortem` object:
 2. If `.claude/github-cache.json` exists, merge using jq:
    ```bash
    TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-   jq --argjson pm '<premortem-json>' '. + {premortem: $pm}' .claude/github-cache.json > "$TMP" \
-     && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+   jq --argjson pm '<premortem-json>' '. + {premortem: $pm}' .claude/github-cache.json > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
    ```
    Use a colocated `mktemp` temp file, not a fixed shared path like `/tmp/cache-tmp.json` — a
    predictable name collides with any other command or repo writing the same file concurrently.
