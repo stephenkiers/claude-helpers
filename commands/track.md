@@ -83,12 +83,13 @@ If in a non-main worktree, write `.claude/github-cache.json` with local plan dat
 ```bash
 mkdir -p .claude
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
+TMP=$(mktemp .claude/github-cache.json.XXXXXX)
 echo "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
   --argjson id "$ISSUE_NUM" \
   --arg title "$TITLE" \
   --arg plan "$PLAN_FILE" \
   '. + {branch: $branch, localPlan: {id: $id, title: $title, plan: $plan, status: "planned"}}' \
-  > .claude/github-cache.json
+  > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 ---
@@ -212,13 +213,16 @@ mkdir -p .claude
 # Read existing cache to preserve pr section (if any)
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 
-# Merge issue data into cache
+# Merge issue data into cache — write to a temp file and mv on success so a jq
+# failure never truncates the existing cache (a bare `> github-cache.json` redirect
+# truncates the file before jq runs, even if jq then errors out).
+TMP=$(mktemp .claude/github-cache.json.XXXXXX)
 echo "$EXISTING" | jq --arg branch "$BRANCH" \
   --argjson number "$ISSUE_NUM" \
   --arg url "$ISSUE_URL" \
   --arg title "$ISSUE_TITLE" \
   --arg body "$ISSUE_BODY" \
-  '. + {branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' > .claude/github-cache.json
+  '. + {branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 ## Workflow Integration

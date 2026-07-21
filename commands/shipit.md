@@ -237,8 +237,9 @@ PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 
 # Merge PR data into existing cache (preserves branch + issue sections)
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
+TMP=$(mktemp .claude/github-cache.json.XXXXXX)
 echo "$EXISTING" | jq --argjson pr "{\"number\": $PR_NUM, \"url\": \"$PR_URL\", \"state\": \"OPEN\"}" \
-  '. + {pr: $pr}' > .claude/github-cache.json
+  '. + {pr: $pr}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 **If PR exists:** Report URL and stop.
