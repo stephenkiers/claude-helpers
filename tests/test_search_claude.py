@@ -582,7 +582,9 @@ bare_indices = [
 t("Script avoids bare numeric array indexing", len(bare_indices) == 0,
   f"found: {bare_indices[:3]}")
 
-# --- Shellcheck ---
+# --- Shellcheck for both scripts ---
+WORKER_SCRIPT = REPO_ROOT / "scripts" / "search-claude-worker.sh"
+
 try:
     result = subprocess.run(
         ["shellcheck", str(SCRIPT)],
@@ -597,5 +599,69 @@ except FileNotFoundError:
       "shellcheck not found — install with: brew install shellcheck")
 except subprocess.TimeoutExpired:
     t("shellcheck completes quickly", False, "timeout")
+
+try:
+    result = subprocess.run(
+        ["shellcheck", str(WORKER_SCRIPT)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    t("Worker script passes shellcheck", result.returncode == 0,
+      f"shellcheck found issues in worker script")
+except FileNotFoundError:
+    t("shellcheck is installed for worker", False,
+      "shellcheck not found — install with: brew install shellcheck")
+except subprocess.TimeoutExpired:
+    t("shellcheck completes quickly for worker", False, "timeout")
+
+# --- Static guard: verify search-claude.sh doesn't have bare stdout writes in xargs section ---
+# The xargs-invoked worker processes must write to individual temp files, not
+# to a shared stdout/descriptor. This guard verifies the main script doesn't
+# regress to bare printf/echo in the parallel section.
+script_src = SCRIPT.read_text()
+# Extract the xargs invocation section (from "xargs" to the line after "exit 0")
+xargs_section = script_src[script_src.find("xargs"):script_src.find("exit 0")]
+# Check that we don't have bare printf/echo writing to stdout in this section
+# (allowed patterns: printf to variables, redirections, subshells)
+has_bare_printf = "| printf" in xargs_section and ">> \"$outfile\"" not in xargs_section
+has_bare_echo = "| echo" in xargs_section and ">> \"$outfile\"" not in xargs_section
+t("Parallel section writes to worker temp files, not shared stdout",
+  not (has_bare_printf or has_bare_echo),
+  f"bare printf/echo detected in xargs section (would corrupt concurrent output)")
+
+# --- Single-worker path verification ---
+# Verify that SEARCH_CLAUDE_WORKERS=1 produces identical results to default (multi-worker)
+# Re-use existing test case: multi-word AND matching
+code_default, out_default, err_default = run(
+    "/bin/bash",
+    ["tray", "icon", "color"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+code_single, out_single, err_single = run(
+    "/bin/bash",
+    ["tray", "icon", "color"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "1"},
+)
+t("SEARCH_CLAUDE_WORKERS=1 produces same results as default (multi-word AND)",
+  out_default == out_single and code_default == code_single,
+  f"default: {len(out_default)} chars, single-worker: {len(out_single)} chars")
+
+# Verify another scenario: limit truncation
+code_default, out_default, err_default = run(
+    "/bin/bash",
+    ["bulk"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5"},
+)
+code_single, out_single, err_single = run(
+    "/bin/bash",
+    ["bulk"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5", "SEARCH_CLAUDE_WORKERS": "1"},
+)
+result_count_default = len([l for l in out_default.strip().split('\n') if l])
+result_count_single = len([l for l in out_single.strip().split('\n') if l])
+t("SEARCH_CLAUDE_WORKERS=1 respects limit (bulk results)",
+  result_count_single == result_count_default and result_count_single <= 5,
+  f"default: {result_count_default}, single-worker: {result_count_single}, limit: 5")
 
 h.summarize_and_exit()
