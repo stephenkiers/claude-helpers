@@ -132,7 +132,7 @@ Three questions. Answer each in prose, in a sentence or three:
   reviewers is often not a bug in one of them — it is an unresolved design question the code has been
   papering over.
 
-**If none of the four apply, say so in one line and move on.** A manufactured concern here is worse
+**If none of the three apply, say so in one line and move on.** A manufactured concern here is worse
 than no concern: it is exactly the kind of noise that teaches a reader to stop reading this section,
 and this section is the one that has to survive.
 
