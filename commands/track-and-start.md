@@ -221,8 +221,11 @@ Only update `issue.body` — preserve everything else (`branch`, `issue.number`,
 
 ```bash
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
+# Write to a temp file and mv on success so a jq failure never truncates the existing cache
+# (a bare `> github-cache.json` redirect truncates the file before jq runs).
+TMP=$(mktemp .claude/github-cache.json.XXXXXX)
 echo "$EXISTING" | jq --arg body "<new plan content>" \
-  '.issue.body = $body' > .claude/github-cache.json
+  '.issue.body = $body' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 **4. Update project-level `issues.json` cache:**
