@@ -147,11 +147,17 @@ split("\u001f") as $parts
 # Each worker writes to its own unique temp file in $WORKDIR, avoiding
 # concurrent-write corruption that would occur if all workers wrote to
 # a single shared stdout or file.
+#
+# FIND_EXTRA_ARGS is empty in --all mode, and under bash 3.2 (macOS /bin/bash)
+# + set -u, expanding an empty array as "${a[@]}" is an unbound-variable error.
+# Hence the ${a[@]+"${a[@]}"} guard below: the outer ${...} is deliberately
+# unquoted so the empty case expands to nothing at all, while the inner
+# "${a[@]}" still quotes -newermt and its timestamp when they are present.
 FIND_EXTRA_ARGS=()
 if [ -n "$CUTOFF_ISO" ]; then
   FIND_EXTRA_ARGS=(-newermt "$CUTOFF_ISO")
 fi
-find "$PROJECTS_DIR" -name "*.jsonl" "${FIND_EXTRA_ARGS[@]}" -print0 2>/dev/null | \
+find "$PROJECTS_DIR" -name "*.jsonl" ${FIND_EXTRA_ARGS[@]+"${FIND_EXTRA_ARGS[@]}"} -print0 2>/dev/null | \
   xargs -0 -P "$WORKERS" -I {} bash "$WORKER_SCRIPT" {} "$WORKDIR" "$LIMIT" "$EXCLUDE_SESSION" "$HAVE_TAC" "${QUERY_WORDS[@]}"
 
 # Collect results from all worker output files and pipe through jq + sort + limit
