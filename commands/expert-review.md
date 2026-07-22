@@ -1,7 +1,7 @@
 ---
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Bash(DECISIONS_FILE=:*), Bash(LEDGER_FILE=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Bash(DECISIONS_FILE=:*), Bash(LEDGER_FILE=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: opus
 ---
 
@@ -161,6 +161,16 @@ shell string.
    findings, so if it lived in the repo a branch could add an entry that silences the review of that
    same branch. Outside the tree, no diff can carry it, and the escalation-test hole that would
    otherwise need guarding (a change licensing itself) is closed structurally.
+
+   **Do not cache these across Bash calls in a shared-path scratch file** (e.g. a fixed
+   `/tmp/*.sh` sourced by later steps). The Bash tool's working directory persists between calls but
+   its shell state does not, and it's tempting to bridge that gap with a scratch file — but a
+   predictable path is shared across every concurrent invocation on the machine, including ones
+   running against a *different* repo. A second `/expert-review` run overwriting that file mid-pipeline
+   will silently redirect this run's ledger/decision writes into the wrong repo's `~/.claude/reviews/`
+   tree. `REPO_KEY`, `BRANCH`, `HASH`, and `TIMESTAMP` are cheap to recompute (`git rev-parse` /
+   `gh repo view`); recompute them in each Bash block that needs them, or carry the already-known
+   literal values forward as text, rather than persisting them to disk.
 
 2. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
    and pass to all reviewer prompts. Key extractions:
@@ -663,6 +673,22 @@ every ruling had been written.
 
 ### Step 13: Record the rulings
 
+**Re-derive `REPO_KEY`, `LEDGER_FILE`, and `DECISIONS_FILE` at the top of this step** — recompute them
+the same way Step 0 did, rather than reusing values carried in your own context across the intervening
+steps:
+
+```bash
+REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')
+[ -z "$REPO_KEY" ] && REPO_KEY=$(basename "$(git rev-parse --show-toplevel)")
+LEDGER_FILE="$HOME/.claude/reviews/${REPO_KEY}/ledger.jsonl"
+DECISIONS_FILE="$HOME/.claude/reviews/${REPO_KEY}/decisions.yaml"
+```
+
+This is the practical form of the Step 0 principle: never bridge Bash's lack of persistent shell state
+with a shared scratch file, and don't rely on the orchestrating session's memory to carry these values
+correctly across a long or compacted conversation either — recomputing them costs one more `gh repo
+view` call and is always cheap next to a ledger write landing in the wrong repo's history.
+
 Three writes here. **This is the only step that writes outside `{REVIEW_DIR}`, and it never touches
 source code.** Reviewer subagents have no `Edit` tool at all (`agents/expert-reviewer.md`) — that
 invariant is unchanged. The orchestrator's `Edit` grant is a **red line** with exactly three permitted
@@ -748,8 +774,11 @@ Merge a `review` section into `.claude/github-cache.json`, preserving existing s
 
 ```bash
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > .claude/github-cache.json
+TMP=$(mktemp .claude/github-cache.json.XXXXXX)
+echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
+
+Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
 
 `$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
 `reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts).

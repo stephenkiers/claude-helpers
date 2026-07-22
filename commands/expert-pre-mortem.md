@@ -1,7 +1,7 @@
 ---
 description: Run a pre-mortem fragility analysis on the current diff. Scans 10 categories and writes fictional post-mortems for risky patterns.
 argument-hint: [--full] [--force]
-allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git status:*), Bash(echo:*), Bash(mkdir:*), Read, Glob, Grep, Write
+allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git status:*), Bash(echo:*), Bash(mkdir:*), Bash(mktemp:*), Bash(mv:*), Bash(jq:*), Bash(cat:*), Read, Glob, Grep, Write
 ---
 
 # Expert Pre-Mortem
@@ -142,8 +142,11 @@ The schema for the `premortem` object:
 1. Run `mkdir -p .claude` first.
 2. If `.claude/github-cache.json` exists, merge using jq:
    ```bash
-   jq --argjson pm '<premortem-json>' '. + {premortem: $pm}' .claude/github-cache.json > /tmp/cache-tmp.json && mv /tmp/cache-tmp.json .claude/github-cache.json
+   TMP=$(mktemp .claude/github-cache.json.XXXXXX)
+   jq --argjson pm '<premortem-json>' '. + {premortem: $pm}' .claude/github-cache.json > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
    ```
+   Use a colocated `mktemp` temp file, not a fixed shared path like `/tmp/cache-tmp.json` — a
+   predictable name collides with any other command or repo writing the same file concurrently.
 3. If jq is unavailable or the file doesn't exist:
    - Read `.claude/github-cache.json` first (if it exists) to preserve existing keys (`issue`, `pr`, `review`, `branch`).
    - **Pre-escape free-text values using jq before constructing JSON:**
