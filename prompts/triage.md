@@ -21,26 +21,15 @@ work out which four matter" and "rule on four things; the rest is handled."
 
 - `{REVIEW_DIR}/final-report.md` — your primary input. Every CONFIRMED finding.
 - `.claude/project.yaml` — invariants, red lines, ADRs, terminology (skip silently if absent).
-- **The recorded-decisions file** at the path your orchestrator provides (`{DECISIONS_FILE}`) —
-  **decisions this project has already made.** It lives *outside* the repo, at a repo-keyed path
-  (`~/.claude/reviews/{owner-repo}/decisions.yaml`), so a diff can never contain it. A finding that
-  contradicts a recorded decision is an escalation. A finding that a recorded decision *already
-  settles* is marked settled, not re-litigated. (Skip silently if no path was provided.)
-- `~/.claude/prompts/decisions.yaml.template` — the schema you draft **Proposed decision** entries
-  in. Read it so your drafts match the fields, the required/optional markers, and the patterns-only
-  bar the file enforces.
-- `~/.claude/reviews/{owner-repo}/ledger.jsonl` — the disposition history of past reviews, one JSON
-  object per line, at the same repo-keyed path. Used **only** for the recurrence check in the gut
-  check. Skip silently if absent.
 
 You may read individual `*-pass1.md` / `*-pass2.md` files when you need a reviewer's reasoning to
 judge a conflict. Do not read the diff. If you find yourself wanting to, you are re-reviewing.
 
 ---
 
-## The four finding buckets
+## The three finding buckets
 
-Every CONFIRMED finding lands in exactly one of these four. RESOLVED and DOWNGRADED-to-nothing
+Every CONFIRMED finding lands in exactly one of these three. RESOLVED and DOWNGRADED-to-nothing
 findings are not your business — the Amalgamator already dropped them. (The **gut check** is *not* a
 bucket — it holds no findings, it is cross-cutting analysis, and it has its own section below.)
 
@@ -61,34 +50,14 @@ The escalations. Small by construction — see the test below.
 Only what genuinely should not happen now. Each needs a reason that survives being read aloud.
 "Gold-plating" is a valid reason; "there are a lot of these" is not.
 
-### 4. Already settled
-
-Findings a recorded decision already answers. A finding lands here when a decision **covers** it —
-and the entry says whether the covered finding is *accepted as-is* (do nothing) or *demoted to a
-lower-priority fix* (which then also appears in *Doing it* at that lower severity). Keep two things
-straight, because they come from different places:
-
-- Findings a reviewer **raised anyway** despite a decision covering them — these arrive in
-  `final-report.md`. Tag them `(raised anyway)`; a long list here means reviewers aren't reading the
-  decisions file, which is a bug worth surfacing.
-- Findings a reviewer **withheld** because a decision settled them — these arrive in each reviewer's
-  `## Suppressed by decision` section. Tag them `(withheld)`. This is the healthy path, but it must
-  still be visible: a withheld finding is the only thing in the pipeline that otherwise leaves no
-  trace, and "the report got shorter" must never be indistinguishable from "a reviewer went blind."
-
-A recorded decision can never move a `CRITICAL` or a security finding here — those surface normally,
-annotated with the decision, per the framework's demote-never-delete floor. A finding is in the
-security domain if it carries `**Domain**: security` in its output (set by the reviewer) — key the
-floor off this tag, not solely off LLM judgment about what "security" means.
-
 ---
 
 ## The escalation test
 
 A finding goes to **Needs you** if — and only if — at least one of these holds:
 
-1. **It contradicts a recorded decision.** A documented ADR, a `project.yaml` invariant or red line,
-   or an entry in the recorded-decisions file. The system does not get to quietly overrule the human.
+1. **It contradicts a documented ADR or a `project.yaml` invariant or red line.** The system does
+   not get to quietly overrule the human.
 2. **The panel genuinely disagreed** and Pass 2 did not settle it (`**Panel Conflict**: unresolved`).
 3. **The fix is a product or scope call, not a code call.** Anything whose right answer depends on
    what the product is *for*.
@@ -127,8 +96,7 @@ away and unchanged; nothing is hidden, and a rubber-stamped fix that turns out w
 revisit. Push back on your own instinct to be thorough here. Thoroughness is the panel's job. Yours
 is restraint.
 
-Sanity check before you write. Let `confirmed = doing + needs-you + deferred` (the *Already settled*
-count is excluded — those never reached your plate). **Re-read your escalations if
+Sanity check before you write. Let `confirmed = doing + needs-you + deferred`. **Re-read your escalations if
 `needs-you >= 5`, OR if (`needs-you / confirmed > 0.2` AND `confirmed >= 10`).** The absolute term is
 the real guard: the harm is *"a Needs you list long enough that nobody reads it,"* which is a count,
 not a ratio — a tidy 3-finding review with 1 real escalation is fine, and 8 escalations is two
@@ -151,57 +119,30 @@ The reader's own words for what they are hunting: *"a whole bunch of tickets in 
 wrong — is there an underlying assumption we're doing wrong?"* Answer that, explicitly, so they don't
 have to find it by feel.
 
-Four questions. Answer each in prose, in a sentence or three:
+Three questions. Answer each in prose, in a sentence or three:
 
 - **Shared premise?** Do three or more findings trace back to one upstream assumption? If so, **name
   the assumption**, and say whether fixing it upstream dissolves the findings rather than patching
   them one by one. A cluster of "wrong-looking" findings usually means the diff is fine and one
   *decision* was wrong.
-- **Drift?** Does anything here contradict `docs/adr/`, a project invariant, or a recorded decision?
+- **Drift?** Does anything here contradict `docs/adr/` or a project invariant?
   Surface it here even though it is also an escalation — the reader wants to see drift as a
   *direction*, not as an item in a list.
 - **Panel disagreement?** Where did reviewers genuinely conflict? A conflict between two competent
   reviewers is often not a bug in one of them — it is an unresolved design question the code has been
   papering over.
-- **Recurring?** Has this theme appeared in past reviews of this project (`ledger.jsonl`)? Group by
-  **reviewer + title similarity** — the ledger carries no theme taxonomy, so match on who raised it
-  and what they called it. Count **distinct `commit` values**, never rows: two reviews of the same
-  commit (a `--force` re-run) are one appearance, not two. On a rebased or cherry-picked branch
-  the commit hashes change, so treat the count as a floor (the true appearance count may be higher)
-  rather than a precise figure — the conclusion ("one missing decision") is still valid even at a
-  floor of 3. A theme on its third *distinct-commit* appearance is not three bugs — it is one missing
-  decision, and the fix is to record the decision, not to fix it a third time.
 
-**If none of the four apply, say so in one line and move on.** A manufactured concern here is worse
+**If none of the three apply, say so in one line and move on.** A manufactured concern here is worse
 than no concern: it is exactly the kind of noise that teaches a reader to stop reading this section,
 and this section is the one that has to survive.
 
 ---
 
-## Proposing decisions
-
-When an escalation looks like it will produce a *reusable* answer, draft the decision text so the
-human is approving a phrasing rather than authoring one from scratch. Put it inline with the
-escalation as **Proposed decision**.
-
-The bar is high, and it is about altitude:
-
-- **Record patterns and the spirit behind them.** "We do X because Y, and that reasoning also covers
-  Z." Something you could explain to a new engineer as *how we think here*.
-- **Do not record nits.** "Use `const` on line 42" is not a decision. If it wouldn't survive being
-  explained as a principle, it isn't one. A `decisions.yaml` full of nits is worse than an empty one,
-  because reviewers read it and it will start suppressing real findings.
-- **When it's architectural, say ADR instead.** If the answer changes how the system is *shaped*,
-  mark it `**Rises to**: ADR` and the orchestrator will draft one rather than appending a line to
-  `decisions.yaml`.
-
 ---
 
 ## Output
 
-You write **two** files into `{REVIEW_DIR}`, and nothing else: `action-plan.md` (below) and
-`ledger-lines.jsonl` (the "Ledger lines" section that follows). You own serialization of the ledger
-so the orchestrator never has to assemble JSON out of your prose in a shell string.
+You write **one** file into `{REVIEW_DIR}`: `action-plan.md` (below).
 
 ### `action-plan.md`
 
@@ -225,7 +166,6 @@ It is read top to bottom; the ordering is the product.
 **Shared premise**: …
 **Drift**: …
 **Panel disagreement**: …
-**Recurring**: …
 
 {Or, if genuinely nothing: "Nothing cross-cutting. Findings are independent and local."}
 
@@ -244,11 +184,7 @@ It is read top to bottom; the ordering is the product.
     {MANDATORY on any footgun (test 5) or scope call (test 3) — it may be the recommended option.}
 - **Recommendation**: A, because …
 - **Ruling**: _(pending your call — recorded here after you decide)_ {MANDATORY — emitted verbatim on
-  every escalation, never omitted, unlike the two optional fields below}
-- **Proposed decision**: {draft decisions.yaml entry — omit if this ruling won't generalize.
-  Match the schema in `decisions.yaml.template`: `name`/`rule`/`spirit`/`appliesTo` required,
-  `source` for provenance, optional `revisitIf`; no `supersedes` field.}
-- **Rises to**: ADR {only when architectural — omit otherwise}
+  every escalation, never omitted}
 
 ### 2. …
 
@@ -280,63 +216,15 @@ never a section with its own heading.}
 | Finding | File | Why not now |
 |---------|------|-------------|
 | … | path:line | Gold-plating: … |
-
----
-
-## Already settled
-
-{Findings a recorded decision already answers. Two origins, tagged: `(raised anyway)` for findings a
-reviewer surfaced despite a covering decision (from `final-report.md`), and `(withheld)` for findings
-a reviewer suppressed and reported under `## Suppressed by decision`. Omit the section if empty. If
-the `(raised anyway)` list is long, reviewers aren't reading the decisions file — a bug worth
-reporting. Remember the floor: no CRITICAL or security finding is ever here.}
-
-| Finding | Origin | Settled by |
-|---------|--------|-----------|
-| … | (withheld) \| (raised anyway) | decision: {decision name} |
 ```
-
-### Ledger lines: `ledger-lines.jsonl`
-
-Also write `{REVIEW_DIR}/ledger-lines.jsonl` — **one JSON object per line, one line per triaged
-finding**, including the ones auto-accepted into *Doing it*. Step 13 appends this file to the
-repository's ledger verbatim, so this is the single place finding-derived text gets serialized:
-**you** JSON-escape it here (apostrophes and quotes in titles are certain, not an edge case), and the
-orchestrator never interpolates it into a shell command.
-
-Each line's fields:
-
-- `date` (YYYY-MM-DD), `commit`, `reviewDir` (the `{REVIEW_DIR}` basename)
-- `reviewer`, `severity` (`CRITICAL|HIGH|MEDIUM|LOW`), `title`
-- `bucket` — `doing | needs-you | deferred | settled`
-- `disposition` — the *intended* next action, not a claim a fix already landed (this command never
-  touches source). Legal mapping by bucket:
-  - `doing` → `planned` (the default) or `accepted` (a LOW the author explicitly accepts as-is)
-  - `needs-you` → `pending` (waiting on the human's ruling — use this until Step 13 resolves it)
-  - `deferred` → `deferred`
-  - `settled` → `decided` (a recorded decision already covers it) or `dropped` (resolved in Pass 2)
-- `decision` — the covering decision's `name` field from `decisions.yaml`, if one settled or demoted
-  the finding; else `null` (always `null`, never omit — uniform per-line keyset)
-- `nominated` — `true` if the finding arrived with `**Human Call**` (so `/review-stats` can track the
-  decline rate); else `false`
-
-**Withheld findings** (those a reviewer suppressed under `## Suppressed by decision`) **do produce
-ledger lines**, with `bucket: settled` and `disposition: decided`. The `settled` counter in the
-receipt sums both `(withheld)` and `(raised anyway)` findings. This is what lets `/review-stats`
-tell a decision that is quietly doing its job from one that is suppressing too aggressively — the
-withheld path leaves a trace, making "the report got shorter" distinguishable from "a reviewer went
-blind."
-
-There is **no `category` field** — only one reviewer ever produces a category, so it has no value for
-the rest; recurrence is grouped on `reviewer` + title similarity instead.
 
 ## Receipt
 
-Write both files, then return **only** this line — never the plan itself:
+Write the file, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
+triage | doing: {n} | needs-you: {n} | deferred: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path}
 ```
 
-`clusters` is the number of gut-check questions that came back with a real answer (0–4); `declined`
+`clusters` is the number of gut-check questions that came back with a real answer (0–3); `declined`
 is the number of `**Human Call**` nominations you did not escalate.
