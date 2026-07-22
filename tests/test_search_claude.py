@@ -23,6 +23,7 @@ Bugs tested:
 Run with: python3 tests/test_search_claude.py
 """
 
+import atexit
 import json
 import os
 import re
@@ -113,6 +114,7 @@ t = h.test_result
 
 # --- Build fixture tree ---
 fixture_root = tempfile.mkdtemp(prefix="search-claude-test-")
+atexit.register(shutil.rmtree, fixture_root, ignore_errors=True)
 fixture = FixtureBuilder(fixture_root)
 
 # Current time for relative mtime calculations
