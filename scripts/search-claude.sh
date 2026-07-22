@@ -90,7 +90,8 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # --- Determine worker count ---
 # Auto-detect from system if not set, but clamp to max of 8
 WORKERS="${SEARCH_CLAUDE_WORKERS:-}"
-if [ -z "$WORKERS" ]; then
+if [ -z "$WORKERS" ] || ! [[ "$WORKERS" =~ ^[0-9]+$ ]]; then
+  # Fall back to auto-detect if unset or non-numeric
   WORKERS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 fi
 # Clamp to [1, 8]

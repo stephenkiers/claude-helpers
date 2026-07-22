@@ -269,6 +269,19 @@ try:
         mtime=boundary_ts_sec,
     )
 
+    # Test 44: Two records with identical timestamp (for tie-break ordering test)
+    identical_ts = ts_from_seconds(now - (5 * day))
+    fixture.add_session(
+        "tiebreak-session-a",
+        f'{{"type":"user","message":{{"content":"tiebreak query"}},"timestamp":"{identical_ts}"}}\n',
+        mtime=now - (5 * day),
+    )
+    fixture.add_session(
+        "tiebreak-session-b",
+        f'{{"type":"user","message":{{"content":"tiebreak query"}},"timestamp":"{identical_ts}"}}\n',
+        mtime=now - (5 * day),
+    )
+
     fixture_root_path = fixture.finalize()
 
     # --- Test with both interpreters ---
@@ -547,8 +560,7 @@ try:
         )
 
 finally:
-    # Clean up fixture
-    shutil.rmtree(fixture_root, ignore_errors=True)
+    pass  # Cleanup deferred to end of file
 
 # --- Static guards (source code analysis) ---
 script_src = SCRIPT.read_text()
@@ -636,7 +648,7 @@ t("Parallel section writes to worker temp files, not shared stdout",
 code_default, out_default, err_default = run(
     "/bin/bash",
     ["tray", "icon", "color"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
 )
 code_single, out_single, err_single = run(
     "/bin/bash",
@@ -651,7 +663,7 @@ t("SEARCH_CLAUDE_WORKERS=1 produces same results as default (multi-word AND)",
 code_default, out_default, err_default = run(
     "/bin/bash",
     ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5"},
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5", "SEARCH_CLAUDE_WORKERS": ""},
 )
 code_single, out_single, err_single = run(
     "/bin/bash",
@@ -669,7 +681,7 @@ t("SEARCH_CLAUDE_WORKERS=1 respects limit (bulk results)",
 code_default, out_default, err_default = run(
     "/bin/bash",
     ["tray", "icon"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
 )
 code_high, out_high, err_high = run(
     "/bin/bash",
@@ -720,7 +732,7 @@ code_workers_6, out_workers_6, err_workers_6 = run(
 code_default_bulk, out_default_bulk, err_default_bulk = run(
     "/bin/bash",
     ["bulk"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
 )
 t("SEARCH_CLAUDE_WORKERS=2 matches default results",
   out_workers_2 == out_default_bulk and code_workers_2 == code_default_bulk,
@@ -747,9 +759,12 @@ code_no_match, out_no_match, err_no_match = run(
     ["xyzabc123notfound"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
 )
-t("Empty result set (no matches) exits 0 or 1 (not error)",
-  code_no_match in [0, 1],
+t("Empty result set (no matches) exits cleanly with exit code 0",
+  code_no_match == 0,
   f"exit={code_no_match}")
+t("Empty result set (no matches) produces empty output",
+  out_no_match == "",
+  f"got output: {repr(out_no_match)}")
 
 # Test empty result set with workers=2 still doesn't error
 code_no_match_2, out_no_match_2, err_no_match_2 = run(
@@ -787,12 +802,20 @@ if code_rank_default == 0 and out_rank_default and code_rank_4 == 0 and out_rank
         t("First ranking result identical across default and workers=4",
           first_default == first_4,
           f"default first: {first_default}, workers=4 first: {first_4}")
+    else:
+        t("Ranking result precondition met (at least 2 results in each variant)",
+          False,
+          f"precondition not met — expected >= 2 ranking results in each variant, got default={len(lines_default)}, workers=4={len(lines_4)}")
+else:
+    t("Ranking result precondition met (exit codes ok, output non-empty)",
+      False,
+      f"precondition not met — code_rank_default={code_rank_default}, out_rank_default empty={not out_rank_default}, code_rank_4={code_rank_4}, out_rank_4 empty={not out_rank_4}")
 
 # Test with very broad query across many files
 code_the_default, out_the_default, err_the_default = run(
     "/bin/bash",
     ["test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
 )
 code_the_8, out_the_8, err_the_8 = run(
     "/bin/bash",
@@ -807,7 +830,7 @@ t("Broad query (many files) consistent at max worker count (8)",
 code_limit_default, out_limit_default, err_limit_default = run(
     "/bin/bash",
     ["test"],
-    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7"},
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7", "SEARCH_CLAUDE_WORKERS": ""},
 )
 code_limit_4, out_limit_4, err_limit_4 = run(
     "/bin/bash",
@@ -820,24 +843,39 @@ t("Limit is enforced identically across default and workers=4",
   count_limit_default == count_limit_4 and count_limit_4 <= 7,
   f"default: {count_limit_default}, workers=4: {count_limit_4}, limit: 7")
 
+# Test tiebreak ordering (identical timestamps) is stable across worker counts
+code_tie_default, out_tie_default, err_tie_default = run(
+    "/bin/bash",
+    ["tiebreak", "query"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+)
+code_tie_4, out_tie_4, err_tie_4 = run(
+    "/bin/bash",
+    ["tiebreak", "query"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
+)
+t("Tiebreak ordering stable across default and workers=4",
+  out_tie_default == out_tie_4 and code_tie_default == code_tie_4,
+  f"default: {len(out_tie_default)} chars, workers=4: {len(out_tie_4)} chars")
+
 # Test exact result equality (byte-for-byte) across workers=1,2,4 with a specific query
 code_exact_1, out_exact_1, err_exact_1 = run(
     "/bin/bash",
-    ["unicode", "emoji"],
+    ["emoji"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "1"},
 )
 code_exact_2, out_exact_2, err_exact_2 = run(
     "/bin/bash",
-    ["unicode", "emoji"],
+    ["emoji"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "2"},
 )
 code_exact_4, out_exact_4, err_exact_4 = run(
     "/bin/bash",
-    ["unicode", "emoji"],
+    ["emoji"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "4"},
 )
 t("Results are byte-identical for workers=1,2,4",
-  out_exact_1 == out_exact_2 == out_exact_4,
+  len(out_exact_1) > 0 and out_exact_1 == out_exact_2 == out_exact_4,
   f"1: {len(out_exact_1)}, 2: {len(out_exact_2)}, 4: {len(out_exact_4)}")
 
 # Test that non-numeric SEARCH_CLAUDE_WORKERS falls back to auto-detection
@@ -846,13 +884,19 @@ code_nonnumeric, out_nonnumeric, err_nonnumeric = run(
     ["tray"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "invalid"},
 )
-t("Non-numeric SEARCH_CLAUDE_WORKERS falls back to default without error",
-  code_nonnumeric in [0, 1],
-  f"exit={code_nonnumeric}")
+# Also get the default output for comparison
+code_default_nonnumeric, out_default_nonnumeric, err_default_nonnumeric = run(
+    "/bin/bash",
+    ["tray"],
+    {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_WORKERS": "", "LIMIT": ""},
+)
+t("Non-numeric SEARCH_CLAUDE_WORKERS behaves identically to unset/default",
+  out_nonnumeric == out_default_nonnumeric and code_nonnumeric == code_default_nonnumeric,
+  f"nonnumeric: {len(out_nonnumeric)} chars, default: {len(out_default_nonnumeric)} chars")
 
 # Test that result format (pipe-delimited) is consistent across worker counts
 def verify_format(output_str):
-    """Verify pipe-delimited format with 7 fields per line."""
+    """Verify pipe-delimited format with 7+ fields per line."""
     if not output_str.strip():
         return True  # Empty output is valid
     for line in output_str.strip().split('\n'):
@@ -873,5 +917,8 @@ t("Workers=4 results use pipe-delimited format (7+ fields)",
 t("Workers=100 results use pipe-delimited format (7+ fields)",
   verify_format(out_high),
   "format check failed")
+
+# Clean up fixture (deferred from finally block so parallelization tests can use it)
+shutil.rmtree(fixture_root, ignore_errors=True)
 
 h.summarize_and_exit()
