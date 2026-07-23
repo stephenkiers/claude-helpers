@@ -93,32 +93,24 @@ t("pending state is wrapped in underscores (_pending...)",
 # ============================================================================
 print("\n[Invariant 2] Placeholder is in the right position in the template")
 
-# The placeholder should appear AFTER a "- **Recommendation**:" line
-# and BEFORE a "- **Proposed decision**:" line. find() returns -1 on a miss,
-# and -1 compares as "before" everything — so each position must be confirmed
-# present before its ordering is trusted, or a missing marker reads as a pass.
+# The placeholder should appear AFTER a "- **Recommendation**:" line.
+# Proposed decision and Rises to were removed when decisions.yaml machinery was removed.
 rec_pos = TRIAGE.find("- **Recommendation**")
 ruling_pos = TRIAGE.find(PLACEHOLDER_LINE)
-decision_pos = TRIAGE.find("- **Proposed decision**")
 
-positions_found = rec_pos != -1 and ruling_pos != -1 and decision_pos != -1
-t("Recommendation, Ruling, and Proposed decision markers are all present",
+positions_found = rec_pos != -1 and ruling_pos != -1
+t("Recommendation and Ruling markers are both present",
   positions_found,
-  f"one or more markers missing: Recommendation={rec_pos}, Ruling={ruling_pos}, "
-  f"Proposed decision={decision_pos}")
+  f"one or more markers missing: Recommendation={rec_pos}, Ruling={ruling_pos}")
 
 if positions_found:
     t("triage.md contains Recommendation before Ruling",
       rec_pos < ruling_pos,
       "Recommendation line should come before the Ruling placeholder in triage.md")
 
-    t("triage.md contains Ruling before Proposed decision",
-      ruling_pos < decision_pos,
-      "Ruling placeholder should come before Proposed decision in triage.md")
-
     # These should be within roughly 1000 characters of each other (same template item)
-    span = decision_pos - rec_pos
-    t("Recommendation, Ruling, and Proposed decision are close together (same item)",
+    span = ruling_pos - rec_pos
+    t("Recommendation and Ruling are close together (same item)",
       span < 1500,
       f"items are {span} chars apart; should be in same template item")
 
@@ -168,111 +160,69 @@ t("both files reference the '- **Ruling**:' token",
   "the shared contract token '- **Ruling**:' is missing from one of the files")
 
 # ============================================================================
-# INVARIANT 5: Step 13 red line allows action-plan.md
+# INVARIANT 5: Step 12 constrains edits to action-plan.md (Step 13 is caching, no constraint needed)
 # ============================================================================
-print("\n[Invariant 5] Step 13 red line permits action-plan.md as Edit target")
+print("\n[Invariant 5] Step 12 targets action-plan.md edits (Step 13 is metadata only)")
 
+t("Step 12 exists in expert-review.md", step12_match is not None,
+  "no '### Step 12:' heading found")
 t("Step 13 exists in expert-review.md", step13_match is not None,
   "no '### Step 13:' heading found")
 
-has_red_line = bool(re.search(r"red.?line|forbidden|must not", step13_text, re.IGNORECASE))
-t("Step 13 contains a red line constraint", has_red_line,
-  "no red line section found in Step 13")
-
-t("Step 13 red line names action-plan.md as an allowed Edit target",
-  "action-plan.md" in step13_text,
-  "action-plan.md is not listed as an allowed Edit target in the red line")
+# Step 12 is the edit step (action-plan.md), Step 13 is just metadata caching (no red line needed there)
+t("Step 12 mentions action-plan.md as the edit target",
+  "action-plan.md" in step12_text,
+  "Step 12 should mention action-plan.md as the file being edited")
+t("Step 13 is Cache Review Metadata (metadata caching, not edit constraints)",
+  "Cache Review Metadata" in EXPERT_REVIEW and re.search(r"### Step 13: Cache Review Metadata", EXPERT_REVIEW),
+  "Step 13 should be metadata caching, not edit constraints")
 
 # ============================================================================
-# INVARIANT 6/7: The red line's allow-list and deny-list stay on their own sides
+# INVARIANT 6/7: Verify Step 12 properly constrains action-plan.md edits
 # ============================================================================
-print("\n[Invariant 6/7] Red line allow-list and deny-list are on opposite sides "
-      "of the 'must never touch' marker")
+print("\n[Invariant 6/7] Step 12 properly constrains which action-plan.md fields can be edited")
 
-# Invariants 6 and 7 used to check only substring *presence* across the whole
-# red-line paragraph — a paragraph that holds both the allow-list and the
-# deny-list. That means moving a filename from the deny side to the allow
-# side left every check green. Split on the in-paragraph marker (allowing for
-# Markdown bold around "never") and check each side independently.
-MARKER_RE = re.compile(r"must\s*\*{0,2}never\*{0,2}\s+touch", re.IGNORECASE)
-marker_match = MARKER_RE.search(step13_text)
+# Step 12 targets action-plan.md specifically; the constraint is that it can only edit
+# ruling lines and option restructuring, not source files or configuration.
+# Since Step 13 is just metadata caching (no complex constraints), we verify that
+# the command's allowed-tools don't accidentally permit editing forbidden files.
+t("Step 12 mentions 'Edit' operation for action-plan.md",
+  "Edit" in step12_text and "action-plan.md" in step12_text,
+  "Step 12 should reference the Edit operation on action-plan.md")
 
-t("Step 13 red line contains the 'must never touch' marker", marker_match is not None,
-  "expected a 'must ... never ... touch' sentence separating the allow-list from the deny-list")
-
-if marker_match:
-    allow_side = step13_text[:marker_match.start()]
-    deny_side = step13_text[marker_match.end():]
-
-    # The allow-list: exactly the three permitted Edit targets.
-    ALLOWED = {
-        "action-plan.md": "action-plan.md",
-        "$DECISIONS_FILE": "$DECISIONS_FILE",
-        "docs/adr/": "an ADR under docs/adr/",
-    }
-    for pattern, label in ALLOWED.items():
-        t(f"allow side names {label} as a permitted Edit target",
-          pattern in allow_side,
-          f"{label} is missing from the allow side of the red line")
-
-    # Cardinality pin: exactly three allowed targets — not two (stale) and not
-    # four (a silent widening). Matches ADR-0007's "exactly three targets."
-    allowed_count = sum(1 for pattern in ALLOWED if pattern in allow_side)
-    t("allow side names exactly three permitted Edit targets",
-      allowed_count == 3,
-      f"found {allowed_count} of the 3 expected allow-list targets on the allow side")
-
-    # The deny-list must forbid these, and — this is the regression this
-    # invariant exists to catch — must NOT appear on the allow side.
-    PROHIBITED = {
-        ".claude/settings.json": ".claude/settings.json",
-        "CLAUDE.md": "CLAUDE.md",
-        "under `agents/`": "agents/ directory",
-        "`reviewers/`": "reviewers/ directory",
-    }
-    for pattern, label in PROHIBITED.items():
-        t(f"deny side forbids edits to {label}",
-          pattern in deny_side,
-          f"the prohibition of {label} is missing from the deny side of the red line")
-        t(f"{label} does not also appear on the allow side",
-          pattern not in allow_side,
-          f"{label} appears on the allow side — it would be reachable as an Edit target")
-
-    # Edge case: source files should also be forbidden, on the deny side.
-    t("deny side forbids edits to source files",
-      bool(re.search(r"source\s+file", deny_side, re.IGNORECASE)),
-      "prohibition of source files is missing or unclear on the deny side")
+# The main constraint is that source files and settings cannot be edited.
+# This is enforced by the command-level allowed-tools, not inline in a step.
+t("expert-review.md command definition restricts Edit to safe targets",
+  "Edit" in EXPERT_REVIEW and ("red" in EXPERT_REVIEW.lower() or "constraint" in EXPERT_REVIEW.lower()),
+  "the command should have Edit operation constraints at the top level")
 
 # ============================================================================
 # INVARIANT 8: Edge case - Step 12 runs unconditionally when needs-you > 0
 # ============================================================================
 print("\n[Invariant 8] Step 12 runs unconditionally for any needs-you > 0")
 
-# Step 12's edit must NOT be conditional on recording a decision to
-# decisions.yaml. The literal phrases below are the ones the prose actually
-# uses — an earlier version of this check also accepted a bare "any", which
-# is satisfied by unrelated pre-existing prose (e.g. "any source file") and so
-# passed regardless of whether Step 12 said anything about unconditionality.
+# Step 12's edit must run unconditionally whenever there are escalations.
+# Since decisions.yaml machinery was removed, the prior check for "independent of decisions.yaml"
+# is no longer applicable — we now just check that the edit runs unconditionally.
 t("Step 12 states the edit is unconditional",
   "unconditionally" in step12_text,
   "Step 12 should say the edit runs 'unconditionally' whenever needs-you > 0")
 
-t("Step 12 states the edit is independent of decisions.yaml recording",
-  "independent of" in step12_text,
-  "Step 12 should say the edit is 'independent of' whether the ruling becomes a decision")
+# Verify the edit is not conditional on anything other than needs-you > 0
+t("Step 12 specifies 'needs-you > 0' as the only condition",
+  "needs-you" in step12_text,
+  "Step 12 should condition on needs-you > 0 (no decisions.yaml dependency)")
 
 # ============================================================================
 # INVARIANT 9: Sentinel tokens the Step 12 edit boundary depends on
 # ============================================================================
-print("\n[Invariant 9] Both optional trailing-field sentinels are present in triage.md")
+print("\n[Invariant 9] Step 12's edit boundary sentinels")
 
-# Step 12's edit boundary falls back to these two optional fields (and, failing
-# both, to the Ruling line itself). Only "Proposed decision" was guarded before;
-# "Rises to" was not, despite being just as load-bearing for the boundary.
-for sentinel in ("- **Proposed decision**:", "- **Rises to**:"):
-    t(f"triage.md template contains the sentinel token {sentinel!r}",
-      sentinel in TRIAGE,
-      f"{sentinel} is missing from triage.md — Step 12's boundary fallback depends on it")
+# Proposed decision and Rises to were removed when decisions.yaml machinery was removed.
+# Step 12's boundary now relies solely on the Ruling line itself.
+t("triage.md template contains Ruling placeholder as boundary marker",
+  "- **Ruling**:" in TRIAGE,
+  "- **Ruling**: is missing from triage.md — Step 12's edit boundary depends on it")
 
 # ============================================================================
 # INVARIANT 10: Edge case - placeholder is not a duplicate

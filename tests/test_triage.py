@@ -61,7 +61,7 @@ for name in sorted(referenced):
     t(f"prompts/{name} exists in repo", (PROMPTS / name).exists(),
       f"expert-review.md names it but {PROMPTS / name} is missing")
 
-for required in ("triage.md", "amalgamator.md", "decisions.yaml.template"):
+for required in ("triage.md", "amalgamator.md"):
     t(f"expert-review.md references {required}", required in EXPERT_REVIEW,
       "the new step is unreachable without it")
 
@@ -92,7 +92,7 @@ t("amalgamator.md does not resurrect the Sign-off Checklist",
 # PAIRS first so a duplicate step number is visible — a dict would silently collapse it,
 # in the very PR that renumbered every step.
 # ============================================================================
-print("\n[Invariant 3] Pipeline order: Amalgamator -> Triage -> Rulings -> Record")
+print("\n[Invariant 3] Pipeline order: Amalgamator -> Triage -> Rulings (decisions.yaml/ledger removed)")
 
 pairs = [(int(m.group(1)), m.group(2))
          for m in re.finditer(r"^### Step (\d+): (.+)$", EXPERT_REVIEW, re.M)]
@@ -109,19 +109,16 @@ steps = dict(pairs)
 def step_of(substr):
     return next((n for n, title in steps.items() if substr.lower() in title.lower()), None)
 
-amalg, triage_step, rulings, record = (
-    step_of("Amalgamator"), step_of("Triage"), step_of("Rulings"), step_of("Record"))
+amalg, triage_step, rulings = (
+    step_of("Amalgamator"), step_of("Triage"), step_of("Rulings"))
 
 t("an Amalgamator step exists", amalg is not None)
 t("a Triage step exists", triage_step is not None)
 t("a Rulings step exists", rulings is not None)
-t("a Record step exists", record is not None)
-if all(x is not None for x in (amalg, triage_step, rulings, record)):
+if all(x is not None for x in (amalg, triage_step, rulings)):
     t("Triage runs after the Amalgamator", triage_step > amalg,
       "triage reads final-report.md — it cannot run first")
     t("Rulings run after Triage", rulings > triage_step)
-    t("Record runs after Rulings", record > rulings,
-      "you cannot record a decision the user has not made yet")
 
 # Receipts must be IDENTICAL in the command and the prompt — a drifted field name means the
 # orchestrator parses a receipt the agent never emits. Compare full lines, not an 11-char prefix.
@@ -163,20 +160,26 @@ t("the guard defines its denominator (confirmed = doing + needs-you + deferred)"
 
 # Anchor the bucket checks to the bucket-DEFINITION section. Checking the whole file would pass
 # even if the definitions were deleted, because the names survive downstream in the output template.
-bucket_section = re.search(r"## The four finding buckets(.*?)\n## The escalation test", TRIAGE, re.S)
+bucket_section = re.search(r"## The three finding buckets(.*?)\n## The escalation test", TRIAGE, re.S)
 t("triage.md still has a bucket-definition section", bucket_section is not None)
 if bucket_section:
     body = bucket_section.group(1)
-    for i, bucket in enumerate(("Doing it", "Needs you", "Deferred", "Already settled"), start=1):
+    for i, bucket in enumerate(("Doing it", "Needs you", "Deferred"), start=1):
         t(f"bucket #{i} '{bucket}' is defined in the bucket section",
           re.search(rf"### {i}\. {re.escape(bucket)}", body) is not None,
           "deleting the definition must not still ship green")
+    t("Already settled bucket is not present in the bucket section",
+      "Already settled" not in body,
+      "Already settled bucket should have been removed")
     t("Gut check is NOT numbered as a finding bucket",
       re.search(r"### \d+\. Gut check", body) is None,
       "it holds no findings — it is cross-cutting analysis")
 
-for question in ("Shared premise", "Drift", "Panel disagreement", "Recurring"):
+for question in ("Shared premise", "Drift", "Panel disagreement"):
     t(f"gut check asks '{question}'", question in TRIAGE)
+
+t("gut check does not ask 'Recurring'", "Recurring" not in TRIAGE,
+  "Recurring question was removed when ledger machinery was removed")
 
 # The load-reduction extras ADR-0007's amendment adds.
 t("every footgun/scope escalation must offer 'Leave as-is'", "Leave as-is" in TRIAGE,
@@ -185,62 +188,13 @@ t("triage records declined nominations (the under-escalation instrument)",
   "Declined nominations" in TRIAGE)
 
 # ============================================================================
-# INVARIANT 5: The learning loop is closed AND bounded. Reviewers must READ the
-# decisions file, obey it, report what it suppressed, and never let it blind them.
+# INVARIANT 5: Decisions and ledger machinery was removed - no longer applicable
 # ============================================================================
-print("\n[Invariant 5] Reviewers read, obey, bound, and observe the decisions file")
+print("\n[Invariant 5] Decisions/ledger machinery has been removed from the pipeline")
 
-# Must appear in the NUMBERED LOAD LIST, not merely somewhere in the file.
-load_list = re.search(
-    r"check for and read these files in order.*?(?=\n\n[A-Z]|\nRead them in that order)",
-    FRAMEWORK, re.S)
-t("expert-framework.md still has a numbered project-context load list", load_list is not None)
-if load_list:
-    ll = load_list.group(0)
-    t("the load list references the recorded-decisions file",
-      "recorded-decisions" in ll or "DECISIONS_FILE" in ll,
-      "without this the memory is write-only and nothing ever gets quieter")
-    t("recorded decisions load before the per-reviewer local override",
-      ll.find("decisions.yaml") != -1 and ll.find("-local.yaml") != -1
-      and ll.find("decisions.yaml") < ll.find("-local.yaml"),
-      "cascade order: project truth, then decided truth, then persona override")
-
-t("expert-framework.md forbids re-raising settled findings",
-  re.search(r"do not raise a finding that a\s+recorded decision already answers", FRAMEWORK, re.I)
-  is not None)
-t("expert-framework.md still permits challenging an OUTDATED decision",
-  "no longer holds" in FRAMEWORK,
-  "settled != unfalsifiable; a decision whose premise died must be challengeable")
-t("expert-framework.md scopes decisions by appliesTo (hard boundary)",
-  "appliesTo" in FRAMEWORK and "Silence is not permission" in FRAMEWORK)
-
-# The floor (ADR-0007 amendment): a decision demotes, never deletes — never CRITICAL/security.
-t("framework floor: a decision demotes, it never deletes",
-  "demotes; it never deletes" in FRAMEWORK)
-t("framework floor: never suppresses a CRITICAL or a security finding",
-  "security domain" in FRAMEWORK
-  and re.search(r"never\W+suppress", FRAMEWORK) is not None)
-t("project.yaml invariants/redLines outrank recorded decisions",
-  "outrank" in FRAMEWORK)
-
-# Suppression is observable — the whole point is that a shrinking report != a blinded reviewer.
-t("reviewers emit a '## Suppressed by decision' section", "Suppressed by decision" in FRAMEWORK)
-t("triage tags withheld vs raised-anyway in Already settled",
-  "(withheld)" in TRIAGE and "(raised anyway)" in TRIAGE)
-
-# Human Call needs a reader; a command without triage must be told so (/expert-pr-comments).
-t("framework notes Human Call needs a triage step to have a reader",
-  "no triage step" in FRAMEWORK)
-
-# Template: required load-bearing fields, patterns-only bar, and NO dangling `supersedes`.
-t("decisions template requires the load-bearing 'spirit' field", "spirit:" in TEMPLATE)
-t("decisions template states the patterns-only bar",
-  "patterns only" in TEMPLATE.lower() and "worse than an empty one" in TEMPLATE.lower(),
-  "the bar, asserted on its actual words — not any word containing 'nit'")
-t("decisions template drops the dangling 'supersedes' field",
-  re.search(r"^\s*supersedes:", TEMPLATE, re.M) is None,
-  "declared but read by nobody — every entry in the file is live")
-t("decisions template documents the staleness trigger 'revisitIf'", "revisitIf" in TEMPLATE)
+# No assertions needed here — the machinery is gone. These checks would have verified
+# decision observability and cross-run memory, but decisions.yaml is no longer part
+# of the pipeline as of this PR.
 
 # ============================================================================
 # INVARIANT 6: Additive fields survive end to end. A field the panel emits and the
@@ -310,57 +264,12 @@ if esc_section:
       "the reciprocal half — nothing today asserts these stay OFF the human's plate")
 
 # ============================================================================
-# INVARIANT 8: The ledger and decisions store are cross-run memory OUTSIDE the repo,
-# keyed on repo identity, and appended (never truncated). Serialization lives in Triage.
+# INVARIANT 8: Ledger and decisions machinery has been removed
 # ============================================================================
-print("\n[Invariant 8] Cross-run memory: repo-keyed, outside the repo, append-only")
+print("\n[Invariant 8] Ledger and decisions machinery removed from pipeline")
 
-t("cross-run memory is keyed on repo identity, not a directory basename",
-  "nameWithOwner" in EXPERT_REVIEW and "REPO_KEY" in EXPERT_REVIEW,
-  "a worktree-name key is deleted by /cleanup and resets history to empty")
-t("ledger and decisions live outside the repo under reviews/{REPO_KEY}",
-  "reviews/${REPO_KEY}" in EXPERT_REVIEW,
-  "in-tree decisions would let a branch license the review of itself")
-t("Triage serializes ledger lines (orchestrator never shell-quotes model text)",
-  "ledger-lines.jsonl" in EXPERT_REVIEW and "ledger-lines.jsonl" in TRIAGE,
-  "hand-assembled JSON from apostrophe-bearing titles is a certainty, not an edge case")
-
-# Append-only: every redirect to the ledger must be `>>`, at ANY spelling of the path. A single `>`
-# would silently erase history. Capture the operator before $LEDGER_FILE or any *ledger.jsonl path.
-# Restrict to lines containing a redirect operator (`>>` or `>`) so a prose mention of ledger.jsonl
-# doesn't widen the match.
-ledger_redirects = re.findall(
-    r"(>>?)\s*\"?(?:\$LEDGER_FILE|(?:[^\"'\n]*?)ledger\.jsonl)",
-    EXPERT_REVIEW
-)
-t("expert-review.md redirects to the ledger at least once", len(ledger_redirects) > 0,
-  "the unconditional Step 13 ledger append must exist")
-t("every ledger redirect is append (>>), never truncate (>)",
-  set(ledger_redirects) == {">>"},
-  f"found redirect operators {sorted(set(ledger_redirects))} — a single > erases history")
-
-step13_section = re.search(r"### Step \d+:.*?\*\(unconditional\)\*.*?(?=\n### Step|\Z)", EXPERT_REVIEW, re.S)
-t("the ledger append is unconditional (runs even on a clean review)",
-  step13_section is not None and "unconditional" in step13_section.group(0),
-  "the most common review — zero escalations — must still be recorded")
-# Anchor the ledger check to the Themes or Instructions section of review-stats.md
-t("review-stats.md reads the ledger",
-  re.search(r"^#+\s+.*(?:Theme|Instruction|ledger)", REVIEW_STATS, re.M | re.I) is not None
-  and "ledger.jsonl" in REVIEW_STATS)
-t("review-stats.md draws the missing-decision conclusion",
-  "missing decision" in REVIEW_STATS.lower())
-t("triage.md documents the 'pending' disposition for needs-you bucket",
-  "pending" in TRIAGE,
-  "needs-you findings wait for a human ruling; their ledger disposition must be 'pending'")
-t("triage.md requires 'decision' field always present (never omitted)",
-  re.search(r"decision.*always.*null|null.*never.*omit|never omit", TRIAGE, re.I) is not None,
-  "uniform keyset: 'decision: null' is required even when no decision covers the finding")
-t("review-stats.md globs every repo's ledger, not one hard-coded project",
-  "reviews/*/ledger.jsonl" in REVIEW_STATS,
-  "the default (no-arg) invocation had no project and read nothing")
-t("recurrence counts distinct commits, not rows (replay-safe)",
-  "distinct" in REVIEW_STATS.lower() and "distinct" in TRIAGE.lower(),
-  "a --force re-run must not double-count toward the >=3 threshold")
+# Cross-run memory via ledger.jsonl and decisions.yaml was removed in this PR.
+# No assertions needed — the machinery is gone and review-stats.md is stubbed as non-functional.
 
 # ============================================================================
 # INVARIANT 9: ADR-0007 exists, is indexed, and every ADR it amends knows it.
