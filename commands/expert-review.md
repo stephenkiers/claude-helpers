@@ -592,10 +592,10 @@ amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | l
 
 The Amalgamator decided what is true. The Triage Chief decides **what the human has to look at** —
 sorting findings into *doing it* / *needs you* / *needs measurement* / *deferred*, and running the
-cross-cutting gut check (shared premise, drift, panel disagreement, recurrence) that no single-lens
-reviewer can perform. *Needs measurement* is for findings nobody can rule on yet because the honest
-answer requires running something and reading a result back — not a judgment call, so it never goes
-through `AskUserQuestion`.
+cross-cutting gut check (shared premise, drift, panel disagreement) that no single-lens reviewer can
+perform. *Needs measurement* is for findings nobody can rule on yet because the honest answer requires
+running something and reading a result back — not a judgment call, so it never goes through
+`AskUserQuestion`.
 
 **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`). Its mandate and the
 `action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it to read:
@@ -645,27 +645,23 @@ to finish first. A crash between batches must not leave an earlier batch's answe
 
 For each escalation whose answer just came back — and only that one; if the user made no selection for
 an item (e.g. they closed the batch early), leave that item's placeholder untouched and do not
-fabricate a ruling for it — **`Edit` `{REVIEW_DIR}/action-plan.md` in place** (this is covered by the
-`Edit` red line, Step 13 below — the ruling line of an already-answered escalation is its first
-permitted target). Restructure the item from an open options menu into a resolved question-and-answer
-record, so an executor skimming the file meets only the chosen answer, not the declined ones:
+fabricate a ruling for it — **`Edit` `{REVIEW_DIR}/action-plan.md` in place**.
 
-1. Replace the block starting at `- **Options**:` through the line before `- **Proposed decision**:`
-   or `- **Rises to**:`, whichever comes first — or through `- **Ruling**:` itself if neither trailing
-   field is present (both are optional per `triage.md`, so a boundary anchored on them alone is not
-   reliable). Anchor the whole match on the item's own `### N. [Title]` heading first, to keep multiple
-   escalations from colliding when their option text is similar. Note that this span **contains**
-   the `- **Recommendation**: ...` line, so the replacement text below has to re-emit it.
-2. The replacement text is exactly three parts, in this order:
-   1. the item's `- **Recommendation**: ...` line, carried over **verbatim** — it is inside the
-      replaced span, and dropping it loses the panel's recommendation;
-   2. a single `- **Ruling**: {Option} — {reasoning}` line — the user's own note if they gave one,
-      otherwise the chosen option's rationale from the action plan;
-   3. the rejected options, preserved as record rather than deleted: folded into a collapsed block —
-      `<details><summary>Options considered and rejected (record only — do not act on these)</summary>`
-      … the non-chosen options, each with its original Pro/Con … `</details>`.
-   The `<details>` block is the only place the rejected options live once an item is ruled; do not
-   also leave a live copy above the ruling.
+**Edit red line (security control — retain regardless of future changes):** The only permitted `Edit` targets in this command are: (1) the `- **Ruling**:` line of an already-answered escalation in `action-plan.md`; (2) `decisions.yaml` (if re-introduced); (3) a new ADR file. Prohibited targets: `settings.json`, `CLAUDE.md`, anything under `agents/`, `reviewers/`, or source files. If the Edit target does not match one of these, stop and report rather than proceeding.
+
+Restructure the item from an open options menu into a resolved question-and-answer record, so an executor skimming the file meets only the chosen answer, not the declined ones:
+
+1. Replace the block starting at `- **Options**:` through the line before `- **Ruling**:`.
+   Anchor the whole match on the item's own `### N. [Title]` heading first, to keep multiple
+   escalations from colliding when their option text is similar.
+2. Write a single `- **Ruling**: {Option} — {reasoning}` line in its place — the user's own note if
+   they gave one, otherwise the chosen option's rationale from the action plan — directly under
+   `- **Recommendation**: ...`.
+3. Preserve the rejected options as record, not delete them: fold them into a collapsed block right
+   after the ruling line —
+   `<details><summary>Options considered and rejected (record only — do not act on these)</summary>`
+   … the non-chosen options, each with its original Pro/Con … `</details>`. This is the only place the
+   rejected options live once an item is ruled; do not also leave a live copy above the ruling.
 
 Runs **unconditionally whenever `needs-you > 0`**.
 

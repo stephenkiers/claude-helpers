@@ -34,8 +34,8 @@ Amalgamator, and the Triage Chief. If your prompt names a **role prompt**
 - **The Triage Chief does not read the diff.** Its inputs are the finished report and the project's
   recorded context; if it finds itself wanting the diff, it is re-reviewing, which is not its job.
   (The Router and Amalgamator *do* read diff-derived artifacts — follow your role prompt.)
-- **A role may write more than one file** when its prompt says so (e.g. the Triage Chief writes both
-  `action-plan.md` and `ledger-lines.jsonl`). The "exactly one file" rule below is the persona
+- **A role may write more than one file** when its prompt says so (e.g. the Triage Chief writes
+  `action-plan.md`). The "exactly one file" rule below is the persona
   default; your role prompt is the authority on which files you write. Still write only the files it
   names, only under the given review directory.
 

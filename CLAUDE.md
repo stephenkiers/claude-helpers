@@ -36,10 +36,10 @@ See the ADRs for the full rationale:
   Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone.
 - [ADR-0004 Model cost routing](docs/adr/0004-model-cost-routing.md) — Haiku for mechanical work.
 - [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md) — amended by
-  ADR-0007 with a fourth layer.
+  ADR-0007 with a fourth layer (that layer was removed in chore/29; see ADR-0007's second amendment).
 - [ADR-0006 Reviewer output-format carve-outs](docs/adr/0006-reviewer-output-format-carve-outs.md)
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
-  ends in triage, not synthesis; rulings are recorded and become settled law.
+  ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 
 ## Triage: the review ends with decisions, not findings
 

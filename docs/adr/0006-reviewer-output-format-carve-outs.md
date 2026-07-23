@@ -102,10 +102,8 @@ The distinction is precise: a **carve-out** replaces the canonical Decision / Fi
 Severity schema with an incompatible shape (and must satisfy all three criteria). An **additive
 field** leaves the canonical block fully intact and appends an extra line. An additive field is
 permitted when — and only when — it has a **named downstream consumer** that reads it; a field no
-component reads is not additive, it is noise, and is removed rather than left dangling. The three
+component reads is not additive, it is noise, and is removed rather than left dangling. The two
 additive fields in play and their consumers: `**Category**` (Triage's escalation test 6 and the gut
-check), `**Human Call**` (the Triage Chief, which decides whether it reaches the human), and
-`## Suppressed by decision` (Triage's *Already settled* bucket and `/review-stats`' suppression
-audit). Because the canonical block is untouched, Pass 2, amalgamation, and `/review-stats` parse
-these reviewers exactly as they parse any other — which is why North Star Nick is not, and does not
-need to be, a carve-out.
+check), and `**Human Call**` (the Triage Chief, which decides whether it reaches the human). Because
+the canonical block is untouched, Pass 2 and amalgamation parse these reviewers exactly as they parse
+any other — which is why North Star Nick is not, and does not need to be, a carve-out.

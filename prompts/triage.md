@@ -15,7 +15,7 @@ finding, because the report is ordered by **severity** — an author's concept �
 someone actually has to decide** — a reader's concept.
 
 Your output is read *before* the full report. It is the difference between "read thirty findings and
-work out which four matter" and "rule on four things; the rest is handled."
+work out which three matter" and "rule on three things; the rest is handled."
 
 ## Read
 
@@ -66,7 +66,7 @@ you* — this is not a place to park findings that are merely inconvenient to in
 ### 4. Deferred
 
 Only what genuinely should not happen now. Each needs a reason that survives being read aloud.
-"Gold-plating" is a valid reason; "there are a lot of these" is not.
+"Gold-plating" is a valid reason; "there are a lot of these" is not. CRITICAL findings and findings tagged `**Domain**: security` may not land here — route them to Doing it or Needs you instead.
 
 ### 5. Already settled
 

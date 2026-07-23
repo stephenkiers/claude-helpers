@@ -173,19 +173,44 @@ above with a fifth:
   the finding, and leaves the item's `- **Ruling**:` line pending — same placeholder convention as
   *Needs you*, so the orchestrator's existing idempotent-edit machinery (Step 12) covers it without new
   logic, just a second placeholder string to recognize.
-- **It does not block the rest of the pipeline.** Step 13's ledger and cache writes proceed
-  unconditionally whether or not measurement items remain pending — a `bucket: measure` /
-  `disposition: pending-measurement` ledger line exists precisely so an unresolved measurement is
-  visible history, not a stalled run. A `decisions.yaml` entry can never be drafted directly from a
+- **It does not block the rest of the pipeline.** Cache writes proceed unconditionally whether or not
+  measurement items remain pending. A `decisions.yaml` entry can never be drafted directly from a
   *Needs measurement* item, because a decision records a ruling and a pending measurement has none yet
   — once a human supplies the result (by hand-editing the `Ruling` line, or by the pipeline re-running
   and Step 12 treating it as an already-answered item), it becomes eligible on the same terms as any
   other ruling.
 - **This stays synchronous and file-based — no background worker, no second thread.** The instinct
   that provoked this amendment was to spin the measurement off into its own async task so the review
-  could "come back later." Rejected: this repo's own `no-shared-tmp-scratch-state` lesson (Step 0,
-  amended into this same file's parent ADR discussion) is that the Bash tool has no persistent state
-  across invocations, and every value that needs to survive a boundary must be recomputed or carried
-  forward as a literal — a real background worker reintroduces exactly that state-handoff problem for
-  a feature whose entire job is "hold a pending answer until someone provides it," which a `- pending`
-  line in a file the human already has open does for free, with no new failure mode.
+  could "come back later." Rejected: the Bash tool has no persistent state across invocations, and
+  every value that needs to survive a boundary must be recomputed or carried forward as a literal — a
+  real background worker reintroduces exactly that state-handoff problem for a feature whose entire
+  job is "hold a pending answer until someone provides it," which a `- pending` line in a file the
+  human already has open does for free, with no new failure mode.
+
+## Amendment — ledger and decision-memory machinery removed (chore/29)
+
+PR `chore/29` removed the `decisions.yaml` and `ledger.jsonl` machinery described in the Decision
+section above.
+
+**What was removed:**
+- `DECISIONS_FILE` (`~/.claude/reviews/{owner-repo}/decisions.yaml`) — the fourth context layer
+- `LEDGER_FILE` (`~/.claude/reviews/{owner-repo}/ledger.jsonl`) — append-only finding history
+- `ledger-lines.jsonl` — Triage Chief's pre-serialized ledger output
+- Step 13 ("Record the rulings") from `/expert-review`
+- The "Already settled" bucket in Triage's escalation sort
+- The "Suppressed by decision" reviewer output field
+- `/review-stats` (now non-functional — listed in CLAUDE.md with a non-functional note)
+
+**What remains live:**
+- The Triage Chief and the full triage flow (doing it / needs you / needs measurement / deferred)
+- Escalations, `AskUserQuestion` ruling capture, and ruling recording into `action-plan.md`
+- The gut check (shared premise, drift, panel disagreement)
+- The over-escalation guard and declined-nominations list
+
+The ADR-0005 fourth-layer amendment (the `decisions.yaml` cascade layer) is correspondingly
+stranded — it described a layer that no longer exists. See the forward-pointer in
+[ADR-0005](0005-three-layer-context-cascade.md)'s Amendment section.
+
+**Rationale:** The ledger and decision-memory machinery added complexity whose maintenance cost
+outweighed the benefit at this stage. The triage flow itself (the load-reduction insight this ADR
+documents) is retained in full.
