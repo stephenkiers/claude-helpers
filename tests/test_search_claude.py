@@ -386,6 +386,27 @@ try:
             f"old-session appeared in results",
         )
 
+        # Test 7b: --all leaves FIND_EXTRA_ARGS empty. Under bash 3.2 + set -u,
+        # expanding an empty array as "${a[@]}" is an unbound-variable error that
+        # aborts the find pipeline while still exiting 0 (empty results, no error
+        # to the caller). Regression guard: --all must exit clean, emit nothing on
+        # stderr, and surface the old file that --days would have filtered out.
+        code, out, err = run(
+            interpreter,
+            ["old", "--all"],
+            {"CLAUDE_PROJECTS_DIR": str(fixture_root_path)},
+        )
+        t(
+            f"{interpreter}: --all runs without unbound-variable error",
+            code == 0 and "unbound variable" not in err,
+            f"exit={code}, stderr: {err[:120]}",
+        )
+        t(
+            f"{interpreter}: --all surfaces files older than the default window",
+            "old-session" in out,
+            f"old-session missing from --all results",
+        )
+
         # Test 8: --days with no value exits non-zero
         code, out, err = run(
             interpreter,
