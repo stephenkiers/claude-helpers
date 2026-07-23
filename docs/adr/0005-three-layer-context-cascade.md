@@ -57,3 +57,7 @@ the path; conceptually it is still the "decided truth" layer, it just cannot be 
 The cascade convention extends accordingly: generic truth in the persona, project truth in
 `project.yaml`, **decided truth** in `decisions.yaml`, single-persona project truth in the local
 override.
+
+**Note (chore/29 amendment):** The fourth layer (`decisions.yaml`) was subsequently removed. The
+cascade reverts to three layers. See [ADR-0007](0007-triage-and-decision-memory.md)'s second
+amendment for rationale.
