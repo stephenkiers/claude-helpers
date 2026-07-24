@@ -13,6 +13,12 @@ Plan: Remove decisions.yaml / ledger machinery from expert-review
 - Updates CLAUDE.md Triage section
 
 Run with: python3 tests/test_remove_decisions_ledger.py
+
+IMPORTANT — escape hatch: delete or narrow the forbidden-symbol checks in this file when a
+prompt-the-human ledger is reintroduced per the escape hatch in the ADR-0007 chore/29 amendment.
+The forbidden symbols (DECISIONS_FILE, LEDGER_FILE, etc.) are the *silent-suppression* design;
+a new prompt-the-human design will use different names and mechanisms and must not be blocked
+by these guards.
 """
 
 from _test_harness import REPO_ROOT, Harness

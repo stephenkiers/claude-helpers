@@ -202,7 +202,6 @@ It is read top to bottom; the ordering is the product.
 - **Recommendation**: A, because …
 - **Ruling**: _(pending your call — recorded here after you decide)_ {MANDATORY — emitted verbatim on
   every escalation, never omitted}
-- **Rises to**: ADR {only when architectural — omit otherwise}
 
 ### 2. …
 
@@ -225,8 +224,8 @@ been run.
 - **Resolves via**: {what result confirms the finding, what result refutes it — concrete thresholds
   where possible, e.g. "if p95 latency drops >20%, keep the change; if not, revert."}
 - **Ruling**: _(pending measurement — record the result here after running the command above, then
-  either edit this line by hand or re-run `/expert-review`)_ {MANDATORY — same placeholder
-  convention as *Needs you*, so the orchestrator's idempotent-edit check covers this bucket too}
+  edit this line by hand)_ {MANDATORY — same placeholder convention as *Needs you*, so the
+  orchestrator's idempotent-edit check covers this bucket too}
 
 ### 2. …
 

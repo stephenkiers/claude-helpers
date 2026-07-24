@@ -35,6 +35,10 @@ emitted a `QUESTION` severity meaning "alignment unclear, needs clarification" �
 
 ## Decision
 
+> **Historical note (chore/29 amendment):** The `decisions.yaml`, `ledger.jsonl`, and related
+> cross-run suppression mechanism described in this section were removed in chore/29. The
+> description below is the original design; what remains live is listed in the chore/29 amendment.
+
 **The review pipeline ends in triage, not synthesis.**
 
 A new role, the **Triage Chief** (`prompts/triage.md`), runs after the Amalgamator at the panel model
@@ -210,6 +214,31 @@ section above.
 The ADR-0005 fourth-layer amendment (the `decisions.yaml` cascade layer) is correspondingly
 stranded — it described a layer that no longer exists. See the forward-pointer in
 [ADR-0005](0005-three-layer-context-cascade.md)'s Amendment section.
+
+**Stranded passages in earlier amendments of this file.** Two passages in the amendments above
+still assert `decisions.yaml` as a live write target but are now stranded by this removal:
+
+- The first amendment's "Consequences" update that named three `Edit` targets ("three targets, not
+  two"), at lines ~150–156 — the `decisions.yaml` target in that list no longer exists.
+- The fifth-bucket amendment's ruling note that a `decisions.yaml` entry "can never be drafted
+  directly from a *Needs measurement* item", at lines ~176–181 — this constraint is vacuous without
+  the decisions file.
+
+These passages describe removed machinery. The Decision section above now carries a historical note
+to the same effect.
+
+**No measurement scan pass.** The *Needs measurement* bucket leaves its `- **Ruling**:` lines
+`_(pending measurement` in `action-plan.md`. There is deliberately no Step 0 scan that reads prior
+runs' `action-plan.md` files for pending lines — that would reintroduce the exact class of
+cross-run state this PR removed. Pending measurements are resolved by the human hand-editing the
+ruling line in the existing `action-plan.md` file; the orchestrator's idempotent-edit check (Step 12)
+covers already-written lines if the review is re-run. If the hand-edit friction proves too high in
+practice, a measurement scan pass could be added as a targeted opt-in per the escape hatch below.
+
+**Escape hatch.** A future *prompt-the-human* ledger design — one that surfaces past rulings as
+`AskUserQuestion` prompts rather than silently suppressing findings — is explicitly permitted by
+this removal. Any such reintroduction should open a new issue and update this ADR rather than
+restoring the removed machinery directly.
 
 **Rationale:** The ledger and decision-memory machinery added complexity whose maintenance cost
 outweighed the benefit at this stage. The triage flow itself (the load-reduction insight this ADR
