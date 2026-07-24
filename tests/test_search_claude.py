@@ -656,7 +656,11 @@ except subprocess.TimeoutExpired:
 # regress to bare printf/echo in the parallel section.
 script_src = SCRIPT.read_text()
 # Extract the xargs invocation section (from "xargs" to the line after "exit 0")
-xargs_section = script_src[script_src.find("xargs"):script_src.find("exit 0")]
+xargs_start = script_src.find("xargs")
+xargs_end = script_src.find("exit 0")
+assert xargs_start != -1, "sentinel 'xargs' not found in search-claude.sh — guard is broken"
+assert xargs_end != -1, "sentinel 'exit 0' not found in search-claude.sh — guard is broken"
+xargs_section = script_src[xargs_start:xargs_end]
 # Check that we don't have bare printf/echo writing to stdout in this section
 # (allowed patterns: printf to variables, redirections, subshells)
 has_bare_printf = "| printf" in xargs_section and ">> \"$outfile\"" not in xargs_section

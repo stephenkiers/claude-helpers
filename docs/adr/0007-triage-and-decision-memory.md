@@ -1,6 +1,6 @@
 # ADR-0007: Triage and decision memory
 
-**Status:** Accepted
+**Status:** Accepted, amended (see amendments below — chore/29 removed the decisions.yaml / ledger machinery)
 
 ## Context
 
@@ -34,6 +34,10 @@ emitted a `QUESTION` severity meaning "alignment unclear, needs clarification" �
 *needs-human-input* signal with nowhere to go.
 
 ## Decision
+
+> **Historical note (chore/29 amendment):** The `decisions.yaml`, `ledger.jsonl`, and related
+> cross-run suppression mechanism described in this section were removed in chore/29. The
+> description below is the original design; what remains live is listed in the chore/29 amendment.
 
 **The review pipeline ends in triage, not synthesis.**
 
@@ -173,19 +177,69 @@ above with a fifth:
   the finding, and leaves the item's `- **Ruling**:` line pending — same placeholder convention as
   *Needs you*, so the orchestrator's existing idempotent-edit machinery (Step 12) covers it without new
   logic, just a second placeholder string to recognize.
-- **It does not block the rest of the pipeline.** Step 13's ledger and cache writes proceed
-  unconditionally whether or not measurement items remain pending — a `bucket: measure` /
-  `disposition: pending-measurement` ledger line exists precisely so an unresolved measurement is
-  visible history, not a stalled run. A `decisions.yaml` entry can never be drafted directly from a
+- **It does not block the rest of the pipeline.** Cache writes proceed unconditionally whether or not
+  measurement items remain pending. A `decisions.yaml` entry can never be drafted directly from a
   *Needs measurement* item, because a decision records a ruling and a pending measurement has none yet
   — once a human supplies the result (by hand-editing the `Ruling` line, or by the pipeline re-running
   and Step 12 treating it as an already-answered item), it becomes eligible on the same terms as any
   other ruling.
 - **This stays synchronous and file-based — no background worker, no second thread.** The instinct
   that provoked this amendment was to spin the measurement off into its own async task so the review
-  could "come back later." Rejected: this repo's own `no-shared-tmp-scratch-state` lesson (Step 0,
-  amended into this same file's parent ADR discussion) is that the Bash tool has no persistent state
-  across invocations, and every value that needs to survive a boundary must be recomputed or carried
-  forward as a literal — a real background worker reintroduces exactly that state-handoff problem for
-  a feature whose entire job is "hold a pending answer until someone provides it," which a `- pending`
-  line in a file the human already has open does for free, with no new failure mode.
+  could "come back later." Rejected: the Bash tool has no persistent state across invocations, and
+  every value that needs to survive a boundary must be recomputed or carried forward as a literal — a
+  real background worker reintroduces exactly that state-handoff problem for a feature whose entire
+  job is "hold a pending answer until someone provides it," which a `- pending` line in a file the
+  human already has open does for free, with no new failure mode.
+
+## Amendment — ledger and decision-memory machinery removed (chore/29)
+
+PR `chore/29` removed the `decisions.yaml` and `ledger.jsonl` machinery described in the Decision
+section above.
+
+**What was removed:**
+- `DECISIONS_FILE` (`~/.claude/reviews/{owner-repo}/decisions.yaml`) — the fourth context layer
+- `LEDGER_FILE` (`~/.claude/reviews/{owner-repo}/ledger.jsonl`) — append-only finding history
+- `ledger-lines.jsonl` — Triage Chief's pre-serialized ledger output
+- Step 13 ("Record the rulings") from `/expert-review`
+- The "Already settled" bucket in Triage's escalation sort
+- The "Suppressed by decision" reviewer output field
+- `/review-stats` (now non-functional — listed in CLAUDE.md with a non-functional note)
+
+**What remains live:**
+- The Triage Chief and the full triage flow (doing it / needs you / needs measurement / deferred)
+- Escalations, `AskUserQuestion` ruling capture, and ruling recording into `action-plan.md`
+- The gut check (shared premise, drift, panel disagreement)
+- The over-escalation guard and declined-nominations list
+
+The ADR-0005 fourth-layer amendment (the `decisions.yaml` cascade layer) is correspondingly
+stranded — it described a layer that no longer exists. See the forward-pointer in
+[ADR-0005](0005-three-layer-context-cascade.md)'s Amendment section.
+
+**Stranded passages in earlier amendments of this file.** Two passages in the amendments above
+still assert `decisions.yaml` as a live write target but are now stranded by this removal:
+
+- The first amendment's "Consequences" update that named three `Edit` targets ("three targets, not
+  two"), at lines ~150–156 — the `decisions.yaml` target in that list no longer exists.
+- The fifth-bucket amendment's ruling note that a `decisions.yaml` entry "can never be drafted
+  directly from a *Needs measurement* item", at lines ~176–181 — this constraint is vacuous without
+  the decisions file.
+
+These passages describe removed machinery. The Decision section above now carries a historical note
+to the same effect.
+
+**No measurement scan pass.** The *Needs measurement* bucket leaves its `- **Ruling**:` lines
+`_(pending measurement` in `action-plan.md`. There is deliberately no Step 0 scan that reads prior
+runs' `action-plan.md` files for pending lines — that would reintroduce the exact class of
+cross-run state this PR removed. Pending measurements are resolved by the human hand-editing the
+ruling line in the existing `action-plan.md` file; the orchestrator's idempotent-edit check (Step 12)
+covers already-written lines if the review is re-run. If the hand-edit friction proves too high in
+practice, a measurement scan pass could be added as a targeted opt-in per the escape hatch below.
+
+**Escape hatch.** A future *prompt-the-human* ledger design — one that surfaces past rulings as
+`AskUserQuestion` prompts rather than silently suppressing findings — is explicitly permitted by
+this removal. Any such reintroduction should open a new issue and update this ADR rather than
+restoring the removed machinery directly.
+
+**Rationale:** The ledger and decision-memory machinery added complexity whose maintenance cost
+outweighed the benefit at this stage. The triage flow itself (the load-reduction insight this ADR
+documents) is retained in full.
