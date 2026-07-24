@@ -55,10 +55,12 @@ Invoke the `implement-with-haiku` skill via the `Skill` tool, forwarding any iss
 background rounds and reports across several notifications — the round-3 final summary block is
 the completion signal. Do not advance while rounds are still running.
 
-**Gate** — read the round-1 `COMMITTED:` line and round-3 `Final test status`:
+**Gate** — read the final summary's `ROUND 1` line and round-3 `Final test status`:
 
-- If round 1 reported `COMMITTED: no` (nothing was implemented) → **halt**, surface the report.
-  There is nothing to ship.
+- If round 1 reports `Applied clean: 0` with all units `Failed` (nothing was implemented —
+  `implement-with-haiku` now has the orchestrator apply and commit each unit's staged diff itself,
+  so a unit only ends up failed if its worktree was genuinely empty) → **halt**, surface the
+  report. There is nothing to ship.
 - If the final test status shows failing tests → **halt**, surface the report. Don't ship a red
   build. Tell the user to fix and re-run `/expert-implement-with-haiku-and-ship`.
 - Otherwise → continue.

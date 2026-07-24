@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(git worktree:*), Bash(git merge:*), Bash(git checkout:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
 ---
 
 # Implement with Haiku
@@ -11,10 +11,13 @@ off to spec-blind test writing and adversary review.
 
 The flow:
 
-1. **Round 1 — Implementer(s)** — one Haiku per work unit, in parallel worktrees
+1. **Round 1 — Implementer(s)** — one Haiku per work unit, in parallel worktrees, staging diffs
+   for the orchestrator to apply and commit
 2. **Integration gate** — orchestrator runs build/type-check + anti-cheat scan + bounded fix loop
-3. **Round 2 — Spec-blind test author** — writes tests from the plan without reading the implementation
-4. **Round 3 — Adversary** — assumes something is wrong, finds divergence and failure modes
+3. **Round sizing** — classify the run (mechanical / test-only / full) to skip rounds that don't apply
+4. **Round 2 — Spec-blind test author** (own worktree) and **Round 3 pass 1 — Adversary** (read-only)
+   run **concurrently**, alongside two read-only sweeps (duplication, doc-drift)
+5. **Round 3 follow-up** — short pass applying earlier findings and reviewing round 2's tests
 
 ## Step 1: Find the plan
 
@@ -37,6 +40,12 @@ find . -maxdepth 2 -name "tsconfig*.json" -o -name ".eslintrc*" -o -name "eslint
 ```
 
 Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You will use it throughout.
+
+Create one scratch directory for patch files, used by every apply-diff step below regardless of
+whether the run ends up single- or multi-unit:
+```bash
+SCRATCH=$(mktemp -d)
+```
 
 Also read these files using the `Read` tool if they exist (skip silently if not):
 - `CLAUDE.md` — project conventions and coding rules
@@ -91,7 +100,9 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
 
 **Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
 directly in the main working directory (background, `run_in_background: true`) with the same self-contained
-prompt described in Step 4b. Proceed to the Integration Gate when it completes.
+prompt described in Step 4b. The agent stages its changes (`git add -A`, no commit); you commit them
+yourself in the main worktree once `STAGED: yes` is confirmed via `git status --porcelain`. Proceed to
+the Integration Gate when it completes.
 
 ## Step 4a: Create one worktree per unit (multi-unit only)
 
@@ -128,37 +139,56 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - `OWNED FILES (only touch these):` — the unit's owned-files list
 - `FORBIDDEN FILES (do not read or modify):` — all other units' owned files
 - **"Do not write tests in this pass. A separate pass will write tests from the plan."**
+- **"Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
+  commits it."**
 - The verification commands from the plan (or `n/a` if none for this unit)
-- The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section)
+- The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section, which
+  ends in `STAGED: yes | no`, not a commit)
 
 Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for completions."
 
-## Step 4c: Process unit completions (serialized merge)
+## Step 4c: Process unit completions (serialized apply-and-commit)
 
 When each unit's `plan-implementer` agent returns, **immediately** process it before the next
-one arrives. The orchestrator serializes all merges — never concurrently.
+one arrives. The orchestrator serializes all applies/commits — never concurrently.
 
 **First: validate the report.** All four trailer lines must be present:
 - `ELAPSED_SECONDS: <n | unknown>`
 - `VERIFIED: pass | fail | n/a`
 - `FILES_TOUCHED:` (with paths on subsequent lines)
-- `COMMITTED: yes | no`
+- `STAGED: yes | no`
 
 If any trailer line is missing → **interrupted handoff**: surface the unit's report and offer:
 - Re-run this unit (re-launch with the same prompt in its existing worktree)
 - Inspect its worktree diff manually
 - Mark failed and continue with remaining units
 
-**If `COMMITTED: no`:** Mark unit `failed`. Leave its worktree in place for inspection. Surface
-the report and reason.
-
-**If `COMMITTED: yes`:** Merge from the main worktree (never cd into the unit's worktree):
+**Never trust the trailer — verify via git.** Regardless of what `STAGED:` says, check the
+worktree yourself first:
 ```bash
-# From main worktree, merge the unit's branch
-git merge --no-ff "$WT_BRANCH" -m "merge: round-1 unit ${UNIT_ID}"
+git -C "$WT_PATH" status --porcelain
+```
+If there is unstaged or untracked work sitting in the tree (the codified salvage step — an
+agent that reported `STAGED: no` may still have left good, unstaged work behind), stage it
+before deciding:
+```bash
+git -C "$WT_PATH" add -A
 ```
 
-- **Clean merge** → tear down the worktree:
+**If the worktree is genuinely empty** (no staged changes after the above): Mark unit `failed`.
+Leave its worktree in place for inspection. Surface the report and reason.
+
+**Otherwise, apply the unit's staged diff from the main worktree** (never cd into the unit's
+worktree; never merge or commit inside it):
+```bash
+git -C "$WT_PATH" diff --staged --binary > "$SCRATCH/unit-${UNIT_ID}.patch"
+git apply --index "$SCRATCH/unit-${UNIT_ID}.patch"
+git commit -m "round-1 unit ${UNIT_ID}: <summary>"
+```
+Committing here — in the main worktree — is what lets pre-commit hooks run correctly; this is
+the fix for the nested-worktree hook-resolution failures seen historically.
+
+- **Clean apply** → tear down the worktree:
   ```bash
   git worktree remove "$WT_PATH"
   git worktree prune
@@ -166,18 +196,18 @@ git merge --no-ff "$WT_BRANCH" -m "merge: round-1 unit ${UNIT_ID}"
   ```
   Mark unit `merged`.
 
-- **Conflict on an owned file** → resolve it yourself using full plan knowledge (you know both
-  units' intent). Commit the resolution. Tear down the worktree. Mark unit `merged`.
-
-- **Conflict on an unassigned/shared file** → **stop and ask the human** before resolving.
-  Leave the worktree in place until resolved.
+- **`git apply` fails (conflict)** — same rules as a merge conflict, since that's what this is:
+  - **Conflict on an owned file** → resolve it yourself using full plan knowledge (you know both
+    units' intent). Apply the resolved changes and commit. Tear down the worktree. Mark unit `merged`.
+  - **Conflict on an unassigned/shared file** → **stop and ask the human** before resolving.
+    Leave the worktree in place until resolved.
 
 ## Step 4d: Join barrier
 
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
 
-If any units are `failed` (committed: no), surface a summary and ask the human whether to:
+If any units are `failed` (worktree genuinely empty), surface a summary and ask the human whether to:
 - Abort the run
 - Proceed to the gate with the successfully-merged units only
 
@@ -227,6 +257,16 @@ grep -n "TODO\|FIXME\|unimplemented!()\|NotImplementedError\|raise NotImplemente
 Also flag functions/methods whose entire body is `pass`, `return`, or an empty block `{}` with no
 other statements (use judgment — a stub is different from an intentionally minimal implementation).
 
+**Wired but never called:** For each newly exported/public symbol the plan's deliverables call for
+(new functions, components, hooks, endpoints meant to be integrated — not internal helpers), `rg`
+the repo for at least one non-test call site:
+```bash
+rg -n "\b<symbol_name>\b" --glob '!*test*' --glob '!*spec*'
+```
+Zero references for a symbol the plan says to wire up is a real defect — build and gate can both
+pass while the feature is silently unreachable (seen in the corpus: a run shipped helper functions
+that were built but never connected to anything).
+
 **Any flag → gate failure.**
 
 ### Gate step 3: Determine outcome
@@ -244,10 +284,14 @@ Max **K = 3** iterations. On each iteration:
    HEAD (not START_SHA). Prompt it with:
    - The specific failures from the gate (compile errors, stub locations, tamper flags)
    - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
+   - "Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
+     commits it."
    - The owned files that need fixing
    - Full project context
-2. When it returns, validate its trailer (same incomplete-report check as Step 4c).
-3. Merge its branch back (same serialized merge pattern — no-ff, tear down worktree after).
+2. When it returns, validate its trailer (same incomplete-report check as Step 4c, `STAGED:` not
+   `COMMITTED:`).
+3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
+   fix worktree, `git apply --index` + commit in the main worktree, tear down worktree after).
 4. Re-run Gate steps 1–3 on the updated tree.
 5. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
@@ -257,19 +301,46 @@ Emit a line each time a fix-Haiku is dispatched: `GATE attempt <i>/<K>: dispatch
 
 ---
 
-## Round 2: Spec-blind test author
+## Round sizing
 
-Record the current HEAD before launching round 2:
+Before fanning out, classify the run from the round-1 diff (`git diff --name-only "$START_SHA"..HEAD`)
+and the plan. Record the classification for the final summary.
+
+- **Mechanical** — formatting/lint/config-only diff, no logic change (e.g. clippy/prettier churn,
+  dependency bumps). **Stop here.** No Round 2, no Round 3, no sweeps. Surface the final summary now.
+- **Test-only deliverable** — the plan's own output *is* tests (not application code). Skip Round 2
+  (there's nothing spec-blind to add); keep Round 3 to review the tests themselves.
+- **Everything else** — full pipeline below.
+
+The gate and anti-tamper scan are never skippable — they already ran.
+
+---
+
+## Post-gate fan-out: Round 2, Round 3 (pass 1), and sweeps — concurrent
+
+Launch all of the following **in a single message** (background, parallel) once round sizing says
+to proceed. Round 2 gets its own worktree with the diff-handoff protocol, which is what makes running
+it alongside Round 3 pass 1 safe — Round 3 pass 1 only reads the main worktree's round-1 result and
+never touches Round 2's tests.
+
+Record the current HEAD before launching:
 ```bash
 git rev-parse HEAD  # store as ROUND2_START_SHA
+IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files
 ```
 
-Get the list of files round 1 changed:
+Tell the user: "Gate passed (round sizing: <classification>). Launching round 2 (spec-blind tests),
+round 3 pass 1 (adversary), and post-gate sweeps in parallel."
+
+### Round 2: Spec-blind test author (own worktree)
+
 ```bash
-git diff --name-only "$START_SHA"..HEAD
+R2_BRANCH="${BRANCH}-haiku-round2"
+R2_WT_PATH="${WT_PARENT}/${R2_BRANCH}"
+git worktree add "$R2_WT_PATH" -b "$R2_BRANCH" "$ROUND2_START_SHA"
 ```
 
-Launch a background `plan-implementer` with a **spec-blind test author** prompt:
+Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test author** prompt:
 
 > Your job is to write tests for the plan below. The plan has already been implemented by a prior
 > pass — but you must **not** look at how it was implemented. Tests written from the implementation
@@ -279,8 +350,7 @@ Launch a background `plan-implementer` with a **spec-blind test author** prompt:
 > **Plan:**
 > [verbatim plan]
 >
-> **DO NOT read these files** (they are round 1's implementation):
-> [file list from git diff --name-only START_SHA..HEAD]
+> **DO NOT read these files** (they are round 1's implementation): [IMPL_FILES]
 >
 > **DO NOT run `git diff` or `git status`** — they would expose the implementation.
 >
@@ -291,102 +361,175 @@ Launch a background `plan-implementer` with a **spec-blind test author** prompt:
 >
 > Treat this as your plan:
 > 1. Identify the project's test framework and conventions.
-> 2. Identify what behavior the plan implies should be testable.
-> 3. Write tests covering that behavior — happy path plus at least one edge case per testable unit.
-> 4. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal.
-> 5. Commit the tests with a clear message.
-> 6. Report: framework used, test paths added, pass/fail summary, failure messages verbatim if any.
-> 7. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read
+> 2. **Before writing anything, grep existing test files for `describe`/`test`/`it`/`#[test]` blocks
+>    that already cover the plan's symbols.** List what you find. Do not add near-duplicate coverage
+>    for behavior something already tests — this is the single most common failure of this pass.
+> 3. Identify what behavior the plan implies should be testable that isn't already covered.
+> 4. Write tests covering that behavior — happy path plus at least one edge case per testable unit.
+>    **Every new test must import and call the real production symbol it claims to cover.** A test
+>    that asserts against a hand-built local copy of the logic, or that would still pass if the
+>    implementation were deleted, is not coverage — it's a defect.
+> 5. Run the tests. **Do not fix the implementation if tests fail** — failing tests are signal.
+> 6. **Stage your changes (`git add -A`) and do not commit.** The orchestrator applies your diff
+>    and commits it.
+> 7. Report: framework used, existing coverage found (step 2), test paths added, pass/fail summary,
+>    failure messages verbatim if any.
+> 8. **Self-check (required):** end your report with a line `SPEC_BLIND: yes` if you did not read
 >    any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you
 >    read and why. Be honest — this is for evaluating whether the spec-blind constraint holds.
 >
-> [Full report trailer per plan-implementer instructions]
+> [Full report trailer per plan-implementer instructions, ending in `STAGED: yes | no`]
 >
 > [Project conventions, project context]
 
-Tell the user: "Gate passed. Launching round 2 (spec-blind test author)."
+### Round 3 pass 1: Adversary, read-only (main worktree)
 
-### After round 2: machine-check spec-blind (Part C)
+Runs against the main worktree's round-1 result. May **propose** fixes in its report; must not
+apply them yet — Round 2's tests don't exist yet, and it must not touch the concurrently-running
+Round 2 worktree.
 
-Validate the report trailer (same incomplete-report check). Then machine-check spec-blindness:
+Launch a background `plan-implementer` (main worktree, read-only in practice — no edits) with:
 
-```bash
-# Files round 2 touched
-git diff --name-only "$ROUND2_START_SHA"..HEAD
-```
-
-Cross-reference against the round-1 implementation files (`git diff --name-only START_SHA..ROUND2_START_SHA`).
-If any round-2 file is also a round-1 implementation file → **SPEC_BLIND: VIOLATED (touched impl files)**.
-
-This is independent of the agent's self-reported `SPEC_BLIND:` line. Both are recorded in the summary.
-
-On violation → **flag round 2's signal as compromised** and **proceed to round 3** (do not block —
-this is an unattended background run; the adversary is the backstop).
-
----
-
-## Round 3: Adversary
-
-Collect the full file split:
-```bash
-IMPL_FILES=$(git diff --name-only "$START_SHA".."$ROUND2_START_SHA")
-TEST_FILES=$(git diff --name-only "$ROUND2_START_SHA"..HEAD)
-```
-
-Launch a background `plan-implementer` with an **adversary** prompt:
-
-> You are an adversarial reviewer. A prior pass implemented this plan, and a separate pass wrote
-> spec-blind tests. Your job is to find divergence between the implementation and the plan —
-> assume something is wrong somewhere. Don't confirm correctness; argue against it.
+> You are an adversarial reviewer. A prior pass implemented this plan. Your job is to find
+> divergence between the implementation and the plan — assume something is wrong somewhere. Don't
+> confirm correctness; argue against it.
 >
-> **Plan:**
-> [verbatim plan]
->
-> **Round 1 report (implementer):**
-> [report]
->
-> **Round 2 report (test author):**
-> [report]
-> **SPEC_BLIND machine-check result:** [verified by diff | VIOLATED — touched impl files]
->
-> **Implementation files (round 1):** [IMPL_FILES]
-> **Test files (round 2):** [TEST_FILES]
+> **Plan:** [verbatim plan]
+> **Round 1 report (implementer):** [report]
+> **Implementation files:** [IMPL_FILES]
 >
 > Treat this as your plan:
 > 1. Read the implementation files.
-> 2. Read the test files. Note which fail and why.
-> 3. Investigate divergence: where does the implementation drift from the plan? What did the
+> 2. Investigate divergence: where does the implementation drift from the plan? What did the
 >    implementer rationalize past? Where would this break in production? Consider edge cases,
 >    error paths, concurrent access, malformed input, resource leaks, missing validation.
-> 4. For each finding, decide:
->    - **Fix it** — only if it affects correctness AND the fix is unambiguous.
->    - **Flag it** — if ambiguous, or if it concerns plan quality rather than implementation.
-> 5. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
-> 6. If you fixed anything, re-run the tests and report results.
-> 7. Commit fixes (if any) with a clear message.
-> 8. Report: issues found (numbered). For **each** issue, label its source as one of:
->    - `[FROM_TEST]` — surfaced by a failing round 2 test
->    - `[INDEPENDENT]` — found by reading the code, not caught by any test
->    - `[PLAN_GAP]` — the plan itself was ambiguous or missing a constraint
+> 3. **Do not edit any files in this pass** — a second, shorter pass will apply fixes after tests
+>    exist. For each finding, write out the proposed fix (as a description, not a diff) and note
+>    whether it looks unambiguous or needs human judgment.
+> 4. Report: issues found (numbered), each as a proposed fix or a flag for ambiguity.
 >
->    Then state whether you fixed or flagged it (with reasoning), and report final test status.
->
-> [Full report trailer per plan-implementer instructions]
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`]
 >
 > [Project conventions, project context]
 
-Tell the user: "Round 2 complete — [N tests added, M failing | no tests committed]. Launching round 3 (adversary review)."
+### Sweeps (read-only, Haiku, findings only — never auto-fixed)
 
-### After round 3: validate and surface
+Two more background `plan-implementer` agents, both read-only against the main worktree, both
+reporting findings into the final summary only:
 
-Validate the round-3 trailer. Then surface the final summary.
+**Duplication sweep:**
+> From this diff's new/changed symbols [IMPL_FILES], `rg` the repo for the same logic shape
+> repeated at 3 or more call sites. Report each as: symbol/pattern, call sites (file:line), and a
+> one-line suggested extraction. Do not edit anything.
+>
+> [Full report trailer — `STAGED: no (read-only pass)`]
+
+**Doc-drift check:**
+> This diff is: [IMPL_FILES]. If it touches, or the plan below names, any ADR/CHANGELOG/README
+> file, verify each doc claim against the actual code — flag anything the doc asserts that the
+> diff contradicts or doesn't support. Also flag code changes that contradict an ADR named in the
+> plan even if that ADR wasn't touched. Report findings only; do not edit anything.
+>
+> **Plan:** [verbatim plan]
+>
+> [Full report trailer — `STAGED: no (read-only pass)`]
+
+---
+
+## After the fan-out: apply Round 2, machine-check, Round 3 follow-up
+
+### Apply Round 2's diff
+
+Same protocol as Step 4c — never trust the trailer:
+```bash
+git -C "$R2_WT_PATH" status --porcelain   # check for unstaged leftovers
+git -C "$R2_WT_PATH" add -A               # if any
+git -C "$R2_WT_PATH" diff --staged --binary > "$SCRATCH/round2.patch"
+git apply --index "$SCRATCH/round2.patch"
+git commit -m "round-2: spec-blind tests"
+git worktree remove "$R2_WT_PATH" && git worktree prune && git branch -D "$R2_BRANCH"
+```
+If the diff is empty and `STAGED: no` — inspect the worktree before declaring no tests were
+written; genuinely finished-but-unstaged work should still be applied.
+
+Then re-run the new tests yourself and record actual pass/fail counts — **never echo the agent's
+claimed counts into the summary uncorrected.**
+
+### Machine-check spec-blindness (Part C)
+
+```bash
+TEST_FILES=$(git diff --name-only "$ROUND2_START_SHA"..HEAD)
+```
+Cross-reference `TEST_FILES` against `IMPL_FILES`. Any overlap → **SPEC_BLIND: VIOLATED (touched
+impl files)**. This is independent of the agent's self-reported `SPEC_BLIND:` line — record both.
+On violation, don't block; flag round 2's signal as compromised and continue (the adversary is the
+backstop for an unattended run).
+
+**Additional Part C machine checks, orchestrator-run (not trusted from any report):**
+
+1. **Dedup check** — compare the set of test names in `TEST_FILES` against the set that existed at
+   `ROUND2_START_SHA` (`comm` on sorted unique test-fn-name lists, not a count — a duplicated block
+   plus a dropped test cancel out in a count). Near-duplicates → flag.
+2. **Reference check** — each file in `TEST_FILES` must reference at least one symbol from
+   `IMPL_FILES`. Zero references → flag as vacuous.
+3. **Bounded mutation smoke (one mutation)** — pick the file in `IMPL_FILES` referenced by the most
+   new tests:
+   ```bash
+   git checkout "$START_SHA" -- <that file>
+   # re-run only TEST_FILES
+   git checkout HEAD -- <that file>   # restore, always, even on failure
+   ```
+   Expect at least one new-test failure with the pre-round-1 version of the file. Zero failures
+   means the new tests cannot fail — flag as vacuous.
+
+These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
+final summary.
+
+### Round 3 follow-up (short)
+
+Collect: `TEST_FILES` (above), the Part C flags, and Round 3 pass 1's proposed fixes.
+
+Launch a background `plan-implementer` (main worktree) with:
+
+> You did an adversarial read-only pass earlier on this implementation and proposed fixes (below).
+> Since then, spec-blind tests were written. Your job now:
+>
+> **Your earlier findings and proposed fixes:** [Round 3 pass 1 report]
+> **New test files:** [TEST_FILES]
+> **Automated flags on the new tests:** [Part C flags, if any — dedup / vacuous / mutation-smoke]
+>
+> 1. Read the new test files. Note which fail against the current implementation and why.
+> 2. Apply your earlier proposed fixes now, if you still believe them correct given the tests.
+> 3. Review the automated flags on the new tests — are they real problems? If a flagged test is
+>    genuinely vacuous or duplicate, note it (do not delete another pass's tests unless clearly
+>    wrong).
+> 4. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
+> 5. Stage any fixes (`git add -A`, do not commit) and report.
+> 6. Report: issues found (numbered). For **each**, label its source:
+>    - `[FROM_TEST]` — surfaced by a failing round 2 test
+>    - `[INDEPENDENT]` — found by reading the code in pass 1, not caught by any test
+>    - `[PLAN_GAP]` — the plan itself was ambiguous or missing a constraint
+>
+>    State whether you fixed or flagged each, and report final test status.
+>
+> [Full report trailer per plan-implementer instructions, ending in `STAGED: yes | no`]
+>
+> [Project conventions, project context]
+
+**Applying and verifying Round 3's fixes:** same diff-apply pattern as Round 2 above. Before
+committing, validate scope — `git -C <its worktree or the diff> diff --staged --name-only` should
+touch only files the findings name. Then re-run gate step 1 (build/type-check) and the affected
+tests yourself before committing; a fix that breaks the build is not a fix.
+
+Tell the user: "Round 2 complete — [N tests added, M failing]. Round 3 complete — [K issues,
+J fixed]. Sweep findings: [duplication: N, doc-drift: N]."
 
 ---
 
 ## Incomplete report handling (applies to every round and every unit)
 
 A report missing any of the four required trailer lines (`ELAPSED_SECONDS`, `VERIFIED`,
-`FILES_TOUCHED`, `COMMITTED`) is an **interrupted handoff** — do not silently proceed.
+`FILES_TOUCHED`, `STAGED`) is an **interrupted handoff** — do not silently proceed.
 
 Surface the truncated report and offer a menu:
 - **Re-run** — re-launch with the same prompt (unit retains its worktree / state)
@@ -405,10 +548,9 @@ orchestrator's own verification — never trust round self-reports.
   failures, "clippy clean" from a run without `-D warnings` or with `--lib` only, and
   "cargo test passed" when only `cargo check` ran (the test binary didn't compile).
   Re-run the exact gate commands yourself after every round.
-- **`COMMITTED: yes` can be false; `COMMITTED: no` can hide finished work.** Verify with
-  `git --no-pager log --format='%h %s' <START_SHA>..HEAD` and
-  `git --no-pager diff --name-only <START_SHA> HEAD`. If round 1 left complete work
-  uncommitted, validate, fix, and commit it yourself — rounds 2/3 need a committed base.
+- **`STAGED: yes` can be false; `STAGED: no` can hide finished work.** Verify with
+  `git -C <worktree> status --porcelain` before trusting either. If an agent left complete work
+  unstaged, stage it, apply it, and commit it yourself — rounds 2/3 need a committed base.
   Run git state checks ONE command at a time; large parallel batches contaminate each
   other's output and can fake a disaster that didn't happen.
 - **Read new test files, don't count them.** A test that never imports the unit under
@@ -436,36 +578,45 @@ orchestrator's own verification — never trust round self-reports.
 
 ## Final summary
 
-Collect each round's `ELAPSED_SECONDS`. Format all as `mm:ss`. Sum = total agent compute.
+Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
+wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
 
 ```
+ROUND SIZING: <mechanical | test-only | full>
 ROUND 1 — Implementer (parallel)
-  Units: <N>   Merged clean: <c>   Conflicts resolved: <c>   Failed: <c>
+  Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>
 INTEGRATION GATE (trusted)
   Build/type-check: <pass | fail>   Convergence iterations: <i>/<K>
-  Tamper flags: tests-modified <c>  verify-neutered <c>  stubs <c>
+  Tamper flags: tests-modified <c>  verify-neutered <c>  stubs <c>  wired-but-uncalled <c>
+POST-GATE FAN-OUT (concurrent — round 2, round 3 pass 1, sweeps)
 ROUND 2 — Spec-blind test author
   SPEC_BLIND: <verified by diff | VIOLATED — touched impl files> (self-report: yes | no)
-  Tests added: <count, paths>   Pass/fail: <P passed, F failed>
-ROUND 3 — Adversary
+  Tests added: <count, paths>   Pass/fail (orchestrator re-run): <P passed, F failed>
+  Part C flags: dedup <c>  vacuous/no-reference <c>  mutation-smoke-survived <c>
+ROUND 3 — Adversary (pass 1 + follow-up)
   Issues found: <count>
     [FROM_TEST]:    <count>  ← signal that round 2 caught real divergence
     [INDEPENDENT]:  <count>  ← signal that adversary stance earned its keep
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
   Final test status: <P passed, F failed>
+SWEEPS
+  Duplication findings: <count>
+  Doc-drift findings: <count>
 TIMING (agent compute per round — self-measured; excludes idle between turns)
-  Round 1 (implement):  <mm:ss>  [<N> units in parallel]
-  Gate convergence:     <i> iteration(s)
-  Round 2 (tests):      <mm:ss>
-  Round 3 (adversary):  <mm:ss>
-  Total agent compute:  <mm:ss>
+  Round 1 (implement):        <mm:ss>  [<N> units in parallel]
+  Gate convergence:           <i> iteration(s)
+  Fan-out wall-clock:         <mm:ss>  [round 2 ∥ round 3 pass 1 ∥ 2 sweeps]
+  Round 2 (tests):            <mm:ss>
+  Round 3 (pass 1 + follow-up): <mm:ss>
+  Total agent compute:        <mm:ss>
 ```
 
 Then a one-line **timing read** naming the long pole (e.g. "Round 1 dominated at 6:12 of 9:40 total
-across 2 parallel units; wall-clock was approximately half that").
+across 2 parallel units; the round-2/round-3 fan-out ran concurrently and added only 1:50 to
+wall-clock despite 4:30 of combined agent compute").
 
-Then a one-line **experiment read**: which rounds produced signal, which didn't.
+Then a one-line **experiment read**: which rounds and sweeps produced signal, which didn't.
 
 Suggested next steps:
 - Review the diff and run `/expert-review`
@@ -473,3 +624,6 @@ Suggested next steps:
 - If round 3 flagged `[PLAN_GAP]` issues, revise the plan before re-running
 - If round 2's spec-blind was VIOLATED, treat round-3 findings with lower confidence (adversary
   may have had prior exposure to the implementation)
+- If Part C flagged tests as vacuous/no-reference and Round 3's follow-up didn't resolve them,
+  review those test files by hand before trusting their coverage
+- Review sweep findings (duplication, doc-drift) — they're informational, not auto-fixed
