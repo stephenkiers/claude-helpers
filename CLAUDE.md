@@ -93,7 +93,9 @@ triage sits **in front of** it, not over it.
 **Lifecycle**
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
-- `/implement-with-haiku` — parallel Haiku implementers → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → spec-blind test author → adversary review
+- `/implement-with-haiku` — parallel Haiku implementers (diff handoff; orchestrator applies + commits)
+  → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → round-sized, concurrent
+  spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/cleanup` — clean up a worktree after a PR is merged
