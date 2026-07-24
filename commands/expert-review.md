@@ -643,18 +643,15 @@ rather than re-asking or re-editing. If an item's anchors (`### N.`, `- **Option
 `- **Ruling**:`) are not uniquely present, do not widen the match to guess at the boundary — stop and
 report that item's ruling could not be recorded, and move on to the rest.
 
-**Before Step 13**, re-read `action-plan.md` and confirm no `_(pending your call` placeholder remains
-for any item you just ruled on. If one does, stop and report it rather than proceeding to Step 13 as if
-every ruling had been written.
+**Before proceeding**, re-read `action-plan.md` and confirm no `_(pending your call` placeholder
+remains for any item you just ruled on. If one does, stop and report it before moving on.
 
 **Needs measurement.** If `measure > 0`, do not wait for these before proceeding to Step 13 — nothing
 in this bucket blocks the rest of the pipeline. Instead, include each item's **Command** and
 **Resolves via** directly in the conversation message you send at the end of this run (not merely a
 pointer to `action-plan.md` — this is the one output category the human is expected to act on outside
-this conversation, so it shouldn't cost them a second file-open to discover). Each stays
-`_(pending measurement` in `action-plan.md` until the human runs the command and either hand-edits
-that item's `- **Ruling**:` line or re-runs `/expert-review`, at which point Step 12's idempotency
-check (extended to this placeholder text) picks it up like any other already-answered item.
+this conversation, so it shouldn't cost them a second file-open to discover). Each stays `_(pending measurement` in `action-plan.md` until the human runs the command and
+hand-edits that item's `- **Ruling**:` line.
 
 ### Step 13: Cache Review Metadata
 

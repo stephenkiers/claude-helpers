@@ -74,6 +74,7 @@ print("[Invariant 1] Exact placeholder line present in triage.md")
 
 # The exact placeholder line as specified in the plan
 PLACEHOLDER_LINE = "- **Ruling**: _(pending your call — recorded here after you decide)_"
+MEASUREMENT_PLACEHOLDER = "_(pending measurement"
 
 t("exact placeholder line is present in triage.md", PLACEHOLDER_LINE in TRIAGE,
   f"expected: {PLACEHOLDER_LINE!r}\nnot found in triage.md")
@@ -87,6 +88,14 @@ t("placeholder uses em dash (—) not regular hyphen (-)",
 t("pending state is wrapped in underscores (_pending...)",
   "_(pending your call" in TRIAGE,
   "underscores around the pending state are missing or malformed")
+
+# Measurement placeholder: the idempotency check in Step 12 covers both placeholder strings;
+# both must exist in triage.md for the orchestrator's skip-if-answered logic to apply to
+# Needs-measurement items without new logic.
+t("Needs-measurement placeholder is present in triage.md",
+  MEASUREMENT_PLACEHOLDER in TRIAGE,
+  f"Step 12 idempotency check is extended to cover this string; "
+  f"if it drifts, measurement items will be re-asked rather than skipped")
 
 # ============================================================================
 # INVARIANT 2: Placeholder position in the "Needs you" template
