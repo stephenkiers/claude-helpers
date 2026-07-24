@@ -160,11 +160,11 @@ t("the guard defines its denominator (confirmed = doing + needs-you + deferred)"
 
 # Anchor the bucket checks to the bucket-DEFINITION section. Checking the whole file would pass
 # even if the definitions were deleted, because the names survive downstream in the output template.
-bucket_section = re.search(r"## The three finding buckets(.*?)\n## The escalation test", TRIAGE, re.S)
+bucket_section = re.search(r"## The four finding buckets(.*?)\n## The escalation test", TRIAGE, re.S)
 t("triage.md still has a bucket-definition section", bucket_section is not None)
 if bucket_section:
     body = bucket_section.group(1)
-    for i, bucket in enumerate(("Doing it", "Needs you", "Deferred"), start=1):
+    for i, bucket in enumerate(("Doing it", "Needs you", "Needs measurement", "Deferred"), start=1):
         t(f"bucket #{i} '{bucket}' is defined in the bucket section",
           re.search(rf"### {i}\. {re.escape(bucket)}", body) is not None,
           "deleting the definition must not still ship green")

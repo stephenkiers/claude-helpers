@@ -1,6 +1,6 @@
 # ADR-0007: Triage and decision memory
 
-**Status:** Accepted
+**Status:** Accepted, amended (see amendments below — chore/29 removed the decisions.yaml / ledger machinery)
 
 ## Context
 

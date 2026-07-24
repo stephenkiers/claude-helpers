@@ -439,11 +439,13 @@ if __name__ == "__main__":
         "project.yaml should still be referenced in Load Project Context"
     )
 
-    # 8.3: triage.md should still have the three core buckets with correct headings
+    # 8.3: triage.md should still have the four core buckets with correct headings
+    # (Needs measurement was added upstream and stays — chore/29 only removed Already settled.)
     test_result(
-        "All three core buckets preserved",
-        "### 1. Doing it" in triage_content and "### 2. Needs you" in triage_content and "### 3. Deferred" in triage_content,
-        "Core buckets (1. Doing it, 2. Needs you, 3. Deferred) should all be present with proper headings"
+        "All four core buckets preserved",
+        "### 1. Doing it" in triage_content and "### 2. Needs you" in triage_content
+        and "### 3. Needs measurement" in triage_content and "### 4. Deferred" in triage_content,
+        "Core buckets (1. Doing it, 2. Needs you, 3. Needs measurement, 4. Deferred) should all be present with proper headings"
     )
 
     # 8.4: triage.md action-plan template should still exist
