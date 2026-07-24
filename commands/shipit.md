@@ -240,8 +240,8 @@ EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 # Write to a temp file and mv on success so a jq failure never truncates the existing cache
 # (a bare `> github-cache.json` redirect truncates the file before jq runs).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson pr "{\"number\": $PR_NUM, \"url\": \"$PR_URL\", \"state\": \"OPEN\"}" \
-  '. + {pr: $pr}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+echo "$EXISTING" | jq --argjson number "$PR_NUM" --arg url "$PR_URL" --arg state "OPEN" \
+  '. + {pr: {number: $number, url: $url, state: $state}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 **If PR exists:** Report URL and stop.
