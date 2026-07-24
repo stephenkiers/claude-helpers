@@ -154,3 +154,38 @@ were ruled on; the resulting refinements amend the Decision above:
   is `{REVIEW_DIR}` (a file the command already writes freely in Step 11), the write is scoped to a
   single line the human just answered, and the two writes that leave the working tree — `decisions.yaml`
   and an ADR — are unchanged. Consequences above now correctly names three targets, not two.
+
+## Amendment — a fifth bucket for findings nobody can rule on yet
+
+A live triage run surfaced findings whose true answer was "is this cache actually saving anything" —
+not a judgment call at all, but a question only a measurement can answer. Forcing it into *Needs you*
+put an `AskUserQuestion` in front of the human with no honest options to offer (every option was a
+guess dressed as a choice); forcing it into *Doing it* or *Deferred* silently discarded the "this is
+blocked on data, not a decision" signal. Neither existing bucket fit, so this amends the Decision
+above with a fifth:
+
+- **Needs measurement**, sorted by a new, seventh escalation test in `prompts/triage.md`: *the ruling
+  depends on data nobody has yet.* It is deliberately not a sixth reason to land in *Needs you* — the
+  two buckets differ in kind, not degree. *Needs you* items are answerable right now, from the report
+  alone, by picking an option; *Needs measurement* items are not answerable by anyone until a command
+  has been run and a result read back. The Triage Chief drafts the actual command (to the same
+  standard it already drafts `Options` for an escalation), states what result would confirm or refute
+  the finding, and leaves the item's `- **Ruling**:` line pending — same placeholder convention as
+  *Needs you*, so the orchestrator's existing idempotent-edit machinery (Step 12) covers it without new
+  logic, just a second placeholder string to recognize.
+- **It does not block the rest of the pipeline.** Step 13's ledger and cache writes proceed
+  unconditionally whether or not measurement items remain pending — a `bucket: measure` /
+  `disposition: pending-measurement` ledger line exists precisely so an unresolved measurement is
+  visible history, not a stalled run. A `decisions.yaml` entry can never be drafted directly from a
+  *Needs measurement* item, because a decision records a ruling and a pending measurement has none yet
+  — once a human supplies the result (by hand-editing the `Ruling` line, or by the pipeline re-running
+  and Step 12 treating it as an already-answered item), it becomes eligible on the same terms as any
+  other ruling.
+- **This stays synchronous and file-based — no background worker, no second thread.** The instinct
+  that provoked this amendment was to spin the measurement off into its own async task so the review
+  could "come back later." Rejected: this repo's own `no-shared-tmp-scratch-state` lesson (Step 0,
+  amended into this same file's parent ADR discussion) is that the Bash tool has no persistent state
+  across invocations, and every value that needs to survive a boundary must be recomputed or carried
+  forward as a literal — a real background worker reintroduces exactly that state-handoff problem for
+  a feature whose entire job is "hold a pending answer until someone provides it," which a `- pending`
+  line in a file the human already has open does for free, with no new failure mode.

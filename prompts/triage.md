@@ -38,9 +38,9 @@ judge a conflict. Do not read the diff. If you find yourself wanting to, you are
 
 ---
 
-## The four finding buckets
+## The five finding buckets
 
-Every CONFIRMED finding lands in exactly one of these four. RESOLVED and DOWNGRADED-to-nothing
+Every CONFIRMED finding lands in exactly one of these five. RESOLVED and DOWNGRADED-to-nothing
 findings are not your business — the Amalgamator already dropped them. (The **gut check** is *not* a
 bucket — it holds no findings, it is cross-cutting analysis, and it has its own section below.)
 
@@ -56,12 +56,19 @@ One line each. The reader is skimming to confirm nothing looks insane, not study
 
 The escalations. Small by construction — see the test below.
 
-### 3. Deferred
+### 3. Needs measurement
+
+The escalations that **no one can rule on yet** — not because it's a judgment call, but because the
+honest answer requires running something and reading a result back, not picking from options. See
+test 7 below and the dedicated template shape further down. Small by construction, same as *Needs
+you* — this is not a place to park findings that are merely inconvenient to investigate now.
+
+### 4. Deferred
 
 Only what genuinely should not happen now. Each needs a reason that survives being read aloud.
 "Gold-plating" is a valid reason; "there are a lot of these" is not.
 
-### 4. Already settled
+### 5. Already settled
 
 Findings a recorded decision already answers. A finding lands here when a decision **covers** it —
 and the entry says whether the covered finding is *accepted as-is* (do nothing) or *demoted to a
@@ -83,9 +90,15 @@ floor off this tag, not solely off LLM judgment about what "security" means.
 
 ---
 
-## The escalation test
+## The escalation tests
 
-A finding goes to **Needs you** if — and only if — at least one of these holds:
+A finding goes to **Needs you** if — and only if — at least one of tests 1–6 holds. A finding goes to
+**Needs measurement** instead if only test 7 holds — it is not a *needs you* dressed up differently;
+nothing in tests 1–6 needs a live measurement to answer, and test 7 is never answerable by picking an
+option, which is exactly why it gets its own bucket rather than an `AskUserQuestion`. A finding can
+trip both — e.g. it's a footgun (5) *and* nobody has the number yet (7) — file it under **Needs
+measurement**, since the human can't meaningfully choose an option (test 5's job) until the
+measurement exists; note the other tripped test in **Why this needs measurement** so it isn't lost.
 
 1. **It contradicts a recorded decision.** A documented ADR, a `project.yaml` invariant or red line,
    or an entry in the recorded-decisions file. The system does not get to quietly overrule the human.
@@ -100,7 +113,11 @@ A finding goes to **Needs you** if — and only if — at least one of these hol
 6. **North Star Nick tagged it `DRIFT` or `QUESTION`.** Drift from a documented decision, or explicit
    uncertainty about alignment. Both are his way of saying *a human owns this*, and they route here
    automatically. (`SCOPE`, `OVERLAP`, and `INCONSISTENCY` do **not** auto-escalate — judge them on
-   the five tests above.)
+   tests 1–5.)
+7. **The ruling depends on data nobody has yet** — a measurement, benchmark, or live check, not a
+   judgment call. Ask: *could the most informed person in the room rule on this right now, from the
+   report alone?* If the honest answer is "not without running something first," this test trips.
+   Routes to **Needs measurement**, not *Needs you* — see above.
 
 A reviewer may have nominated a finding with `**Human Call**: <why>`. Read it, then decide for
 yourself. It is a nomination, not a verdict — reviewers do not get to route themselves onto the
@@ -127,8 +144,10 @@ away and unchanged; nothing is hidden, and a rubber-stamped fix that turns out w
 revisit. Push back on your own instinct to be thorough here. Thoroughness is the panel's job. Yours
 is restraint.
 
-Sanity check before you write. Let `confirmed = doing + needs-you + deferred` (the *Already settled*
-count is excluded — those never reached your plate). **Re-read your escalations if
+Sanity check before you write. Let `confirmed = doing + needs-you + deferred` (both *Already settled*
+and *Needs measurement* are excluded — settled findings never reached your plate, and measurement
+items aren't something the human is being asked to *decide*, so they don't count against this guard
+either). **Re-read your escalations if
 `needs-you >= 5`, OR if (`needs-you / confirmed > 0.2` AND `confirmed >= 10`).** The absolute term is
 the real guard: the harm is *"a Needs you list long enough that nobody reads it,"* which is a count,
 not a ratio — a tidy 3-finding review with 1 real escalation is fine, and 8 escalations is two
@@ -254,6 +273,30 @@ It is read top to bottom; the ordering is the product.
 
 ---
 
+## Needs measurement: N
+
+{Omit the section entirely if empty.} Nobody can rule on these yet — not a decision, a missing
+number. Not put to `AskUserQuestion`; there's nothing to choose between until the command below has
+been run.
+
+### 1. [Title]
+- **Where**: path:line · **Severity**: HIGH · **Raised by**: Reviewer
+- **Why this needs measurement**: {one sentence — what can't be judged from the report alone; if a
+  test other than 7 also tripped (e.g. it's also a footgun), name it here}
+- **The finding**: {one paragraph}
+- **Command**: {a concrete, copy-pasteable command or script — never a bare instruction like
+  "benchmark this." Draft the actual command from what you can see in the diff/repo, to the same
+  standard as the `Options` you draft for *Needs you*.}
+- **Resolves via**: {what result confirms the finding, what result refutes it — concrete thresholds
+  where possible, e.g. "if p95 latency drops >20%, keep the change; if not, revert."}
+- **Ruling**: _(pending measurement — record the result here after running the command above, then
+  either edit this line by hand or re-run `/expert-review`)_ {MANDATORY — same placeholder
+  convention as *Needs you*, so the orchestrator's idempotent-edit check covers this bucket too}
+
+### 2. …
+
+---
+
 ## Doing it: N
 
 Accepted as written. No **decision** needed from you — but these still need doing (apply them
@@ -308,11 +351,13 @@ Each line's fields:
 
 - `date` (YYYY-MM-DD), `commit`, `reviewDir` (the `{REVIEW_DIR}` basename)
 - `reviewer`, `severity` (`CRITICAL|HIGH|MEDIUM|LOW`), `title`
-- `bucket` — `doing | needs-you | deferred | settled`
+- `bucket` — `doing | needs-you | measure | deferred | settled`
 - `disposition` — the *intended* next action, not a claim a fix already landed (this command never
   touches source). Legal mapping by bucket:
   - `doing` → `planned` (the default) or `accepted` (a LOW the author explicitly accepts as-is)
   - `needs-you` → `pending` (waiting on the human's ruling — use this until Step 13 resolves it)
+  - `measure` → `pending-measurement` (waiting on a human-run command, not a ruling — never
+    `decided`; a `decisions.yaml` entry can only be drafted once an actual ruling exists)
   - `deferred` → `deferred`
   - `settled` → `decided` (a recorded decision already covers it) or `dropped` (resolved in Pass 2)
 - `decision` — the covering decision's `name` field from `decisions.yaml`, if one settled or demoted
@@ -335,7 +380,7 @@ the rest; recurrence is grouped on `reviewer` + title similarity instead.
 Write both files, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
 ```
 
 `clusters` is the number of gut-check questions that came back with a real answer (0–4); `declined`

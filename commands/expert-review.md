@@ -19,8 +19,8 @@ A checkpoint-based, parallel code review pipeline:
    + Q&A answers revealed. Judgment reviewers only (mechanical roles get no Pass 2).
 7. **Amalgamator** (PANEL_MODEL) — one expensive agent replaces quadratic cross-review; deduplicates,
    severity-ranks, resolves conflicts, writes final-report.md
-8. **Triage Chief** (PANEL_MODEL) — sorts findings into *doing it* / *needs you* / *deferred*, runs the
-   cross-cutting gut check, writes action-plan.md
+8. **Triage Chief** (PANEL_MODEL) — sorts findings into *doing it* / *needs you* / *needs measurement*
+   / *deferred*, runs the cross-cutting gut check, writes action-plan.md
 9. **Rulings → Record → Cache metadata** (main thread) — ask the human only what only they can answer,
    then write the answers down so the panel stops asking
 
@@ -591,8 +591,11 @@ amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | l
 ### Step 11: Triage Chief (one agent) → `action-plan.md`
 
 The Amalgamator decided what is true. The Triage Chief decides **what the human has to look at** —
-sorting findings into *doing it* / *needs you* / *deferred*, and running the cross-cutting gut check
-(shared premise, drift, panel disagreement, recurrence) that no single-lens reviewer can perform.
+sorting findings into *doing it* / *needs you* / *needs measurement* / *deferred*, and running the
+cross-cutting gut check (shared premise, drift, panel disagreement, recurrence) that no single-lens
+reviewer can perform. *Needs measurement* is for findings nobody can rule on yet because the honest
+answer requires running something and reading a result back — not a judgment call, so it never goes
+through `AskUserQuestion`.
 
 **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`). Its mandate and the
 `action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it to read:
@@ -607,10 +610,12 @@ JSON line per triaged finding, ready for Step 13 to append verbatim — the Chie
 no finding-derived text is ever interpolated into a shell command). It returns:
 
 ```
-triage | doing: {n} | needs-you: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | settled: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path} | wrote-ledger: {ledger-lines path}
 ```
 
-**Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `settled`). If
+**Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `settled` and
+`measure` — measurement items aren't something the human is being asked to *decide*, so they don't
+count against this guard). If
 `needs-you >= 5`, OR (`needs-you / confirmed > 0.2` AND `confirmed >= 10`), the escalation test was
 applied too loosely — say so in the closing message rather than silently handing over a long list. A
 *Needs you* list long enough to skim is one nobody reads, which rebuilds the exact problem this step
@@ -622,7 +627,11 @@ from the receipt, so the orchestrator and the Chief cannot disagree on it.
 Read **only** `{REVIEW_DIR}/action-plan.md` — not the pass files, not the final report. This is the
 one file the orchestrator reads, and it is small by construction.
 
-If `needs-you: 0`, skip this step entirely. Do not manufacture a question to seem thorough.
+This step is scoped to the **Needs you** section only. **Needs measurement** items are never put to
+`AskUserQuestion` — there is nothing to choose between until the command in the item has been run, so
+`AskUserQuestion`'s options-shape does not fit them. They are surfaced separately, below.
+
+If `needs-you: 0`, skip the ruling loop entirely. Do not manufacture a question to seem thorough.
 
 Otherwise, present each escalation with **`AskUserQuestion`** — one question per item, the Triage
 Chief's recommended option **first and labeled `(recommended)`**, with the pros and cons from the
@@ -662,14 +671,25 @@ Runs **unconditionally whenever `needs-you > 0`**, independent of whether the ru
 `decisions.yaml` entry.
 
 **Idempotent and fail-closed.** Before editing an item, check whether its `- **Ruling**:` line already
-reads anything other than the `_(pending your call` placeholder — if so, it was already recorded (e.g.
-a prior partial run); skip it rather than re-asking or re-editing. If an item's anchors (`### N.`,
-`- **Options**:`, `- **Ruling**:`) are not uniquely present, do not widen the match to guess at the
-boundary — stop and report that item's ruling could not be recorded, and move on to the rest.
+reads anything other than the `_(pending your call` placeholder (or, for a **Needs measurement** item
+a human has since resolved by hand, the `_(pending measurement` placeholder) — if so, it was already
+recorded (e.g. a prior partial run, or a measurement result the human already wrote in); skip it
+rather than re-asking or re-editing. If an item's anchors (`### N.`, `- **Options**:`/`- **Command**:`,
+`- **Ruling**:`) are not uniquely present, do not widen the match to guess at the boundary — stop and
+report that item's ruling could not be recorded, and move on to the rest.
 
 **Before Step 13**, re-read `action-plan.md` and confirm no `_(pending your call` placeholder remains
 for any item you just ruled on. If one does, stop and report it rather than proceeding to Step 13 as if
 every ruling had been written.
+
+**Needs measurement.** If `measure > 0`, do not wait for these before proceeding to Step 13 — nothing
+in this bucket blocks the rest of the pipeline. Instead, include each item's **Command** and
+**Resolves via** directly in the conversation message you send at the end of this run (not merely a
+pointer to `action-plan.md` — this is the one output category the human is expected to act on outside
+this conversation, so it shouldn't cost them a second file-open to discover). Each stays
+`_(pending measurement` in `action-plan.md` until the human runs the command and either hand-edits
+that item's `- **Ruling**:` line or re-runs `/expert-review`, at which point Step 12's idempotency
+check (extended to this placeholder text) picks it up like any other already-answered item.
 
 ### Step 13: Record the rulings
 
@@ -706,7 +726,11 @@ when `needs-you` was 0 and Step 12 was skipped (the clean review is the most com
 belongs in the history).
 
 **1. `$DECISIONS_FILE`** *(conditional — only if a ruling generalizes)* — append the rulings that
-generalize, to the recorded-decisions file **outside the repo** (Step 0). The Triage Chief already
+generalize, to the recorded-decisions file **outside the repo** (Step 0). **Needs measurement** items
+never land here directly, however generalizable they look — a decision records a ruling, and a
+still-pending measurement has no ruling yet; once the human resolves one (edits its `Ruling` line, or
+this pipeline re-runs and Step 12 treats it as an already-answered item), it becomes eligible on the
+same terms as any other ruling. The Triage Chief already
 drafted each entry (**Proposed decision** in the action plan), so the user approves a phrasing, not
 authors one. Before writing: show the exact YAML **and state its blast radius** — *"this will
 suppress future findings matching X across all reviews of this repo"* — then get an explicit yes.
@@ -760,9 +784,10 @@ rmdir "$LEDGER_LOCK"
 ```
 
 Each line's shape (schema owned by `prompts/triage.md`): `date`, `commit`, `reviewDir`, `reviewer`,
-`severity`, `title`, `bucket` (`doing|needs-you|deferred|settled`), `disposition` — the *intended*
-next action, `planned|accepted|pending|deferred|dropped|decided` (intent, not a claim that a fix
-already landed; this command never touches source) — `decision` (the decision's `name` field from
+`severity`, `title`, `bucket` (`doing|needs-you|measure|deferred|settled`), `disposition` — the
+*intended* next action, `planned|accepted|pending|pending-measurement|deferred|dropped|decided`
+(intent, not a claim that a fix already landed; this command never touches source) — `decision` (the
+decision's `name` field from
 `decisions.yaml`, or `null` if none — always include the field, never omit it; uniform keyset), and `nominated` (`true` for a `**Human Call**` finding, so
 `/review-stats` can track the decline rate). There is **no `category` field**: only North Star Nick
 produces one, so it has no value for the other reviewers, and recurrence is grouped on `reviewer` +
@@ -819,6 +844,13 @@ outranks the counts:}
 ⚠️  {e.g. "Four findings share one premise — that the cache is single-writer. Fixing that upstream
     dissolves three of them."}
 
+{If measure > 0, one block per item — these are the one category the human is expected to act on
+outside this conversation, so the command itself belongs here, not just a link:}
+**Needs measurement**: N
+1. [Title] — {why this needs measurement, in one clause}
+   `{the command}`
+   Resolves via: {what result confirms it, what result refutes it}
+
 **Everything else — yours to apply**: N accepted as written (N Critical, N High, N Medium, N Low),
 N deferred. {If declined > 0: ", N nominations declined (see the action plan)."} These need doing,
 not deciding — apply them, or hand the action plan to `/implement-with-haiku`.
@@ -828,7 +860,8 @@ not deciding — apply them, or hand the action plan to `/implement-with-haiku`.
 ```
 
 When `needs-you: 0`, drop the Decisions header entirely and lead with the verdict — do not print an
-empty section, and do not invent a question to look diligent.
+empty section, and do not invent a question to look diligent. Same for `measure: 0` and the Needs
+measurement block.
 
 ---
 

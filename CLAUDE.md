@@ -46,13 +46,18 @@ See the ADRs for the full rationale:
 The panel got good enough that reading its output became the expensive part. So `/expert-review` no
 longer ends at the Amalgamator's `final-report.md` — a **Triage Chief** (`prompts/triage.md`) reads
 that report and writes `action-plan.md`, which is the file a human actually opens. Every CONFIRMED
-finding lands in one of **four buckets** — *doing it*, *needs you*, *deferred*, *already settled*:
+finding lands in one of **five buckets** — *doing it*, *needs you*, *needs measurement*, *deferred*,
+*already settled*:
 
 - **Doing it** — the default, and where ~85% of findings land. Skim it. (No *decision* needed — but
   these still need doing; apply them or hand the plan to `/implement-with-haiku`.)
 - **Needs you** — escalations only, under a deliberately narrow test. Over-escalation is treated as
   the failure mode, not the safe default: a *needs you* list long enough to skim is one nobody reads.
   Every escalation must offer *leave as-is* as a real option.
+- **Needs measurement** — findings nobody can rule on yet because the honest answer requires running
+  something and reading a result back, not picking from options — so it's never put to
+  `AskUserQuestion`. The Triage Chief drafts a concrete, runnable command and what result would
+  confirm or refute the finding; the ruling stays pending until a human supplies the result.
 - **Deferred** — what genuinely should not happen now, each with a reason that survives being read
   aloud.
 - **Already settled** — findings a recorded decision covers, split into `(withheld)` (a reviewer
@@ -160,6 +165,17 @@ for full examples, and `*-local-example-*.yaml` for per-reviewer overrides.
 
 Projects can override any command or reviewer by adding their own `.claude/` directory — project files
 take precedence over these defaults (see [ADR-0005](docs/adr/0005-three-layer-context-cascade.md)).
+
+## Shell conventions in command docs
+
+**Never build a JSON object by interpolating a shell variable into a string literal passed to
+`--argjson`** (e.g. `jq --argjson pr "{\"url\": \"$URL\"}"`). If the variable contains a quote or
+backslash, the resulting JSON is malformed or silently wrong. Always pass one variable per
+`--arg`/`--argjson` flag and let the `jq` filter assemble the object — `jq --arg url "$URL" '. +
+{pr: {url: $url}}'` — so `jq`, not the shell, owns the escaping. This bug class has been
+independently rediscovered three times in this repo's own command docs (`commands/track.md`, twice,
+and `commands/shipit.md`); if you find a fourth instance, fix it the same way rather than patching
+around it.
 
 ## Agents
 
