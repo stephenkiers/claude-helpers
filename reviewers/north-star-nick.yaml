@@ -82,6 +82,14 @@ codeReview:
     5. **Product Direction** — Does this move the project toward its stated goals,
        or does it introduce tangential concerns?
 
+    6. **Cross-Reference Check** — If this diff edits an ADR, does any open issue or
+       epic that cites that ADR's prior text now contradict the rewrite? An ADR edit
+       is a claim change, not just a doc tweak — check the issues index for anything
+       that quotes, restates, or depends on the sentence being changed, not only for
+       issues this diff might duplicate. This is a distinct check from Issue Overlap
+       (duplication) — you are checking for a *contradiction* left behind, not for
+       redundant work.
+
     ## STEP 3: Output
 
     Use the framework's canonical finding format, including the standard severity levels
@@ -133,6 +141,9 @@ redLines:
   - pattern: "Reimplementing something tracked in an open issue"
     why: "Duplicated effort and potential conflicts"
     fix: "Reference the issue, coordinate with its plan"
+  - pattern: "ADR rewrite leaves a cross-referenced issue/epic asserting the old, now-contradicted claim"
+    why: "A reader who opens the issue first inherits stale guidance the ADR no longer agrees with"
+    fix: "Update the issue's text in the same change, or at minimum leave a note flagging the drift"
 
 greenFlags:
   - "References specific ADR numbers in commit messages or comments"
@@ -147,3 +158,4 @@ keyQuestions:
   - "Is there an open issue for this already?"
   - "Does this introduce a pattern we haven't documented?"
   - "How does this connect to the product vision?"
+  - "If this edits an ADR, does any issue that cites it still agree with the new text?"
