@@ -46,19 +46,23 @@ reverse_stdin() {
 # --- Helper: extract cwd, first prompt, and sessionId in one pass ---
 extract_file_metadata() {
   local fpath="$1"
-  awk '
-    cwd == "" && match($0, /"cwd":"[^"]*"/) {
-      cwd = substr($0, RSTART + 7, RLENGTH - 8)
-    }
-    prompt == "" && /"type":"user"/ && match($0, /"text":"[^"]*"/) {
-      prompt = substr($0, RSTART + 8, RLENGTH - 9)
-    }
-    sid == "" && match($0, /"sessionId":"[^"]*"/) {
-      sid = substr($0, RSTART + 13, RLENGTH - 14)
-    }
-    cwd != "" && prompt != "" && sid != "" { exit }
-    END { print cwd "\x1f" prompt "\x1f" sid }
-  ' "$fpath" 2>/dev/null
+  local cwd="" prompt="" sid=""
+  # grep locates the first candidate line for each field; jq parses the JSON correctly.
+  # This replaces the former awk regex extraction, which could mis-parse values containing
+  # embedded quotes or JSON-like substrings.
+  local cwd_line prompt_line sid_line
+  cwd_line=$(grep -m1 '"cwd":' "$fpath" 2>/dev/null)
+  prompt_line=$(grep -m1 '"type":"user"' "$fpath" 2>/dev/null)
+  sid_line=$(grep -m1 '"sessionId":' "$fpath" 2>/dev/null)
+  [ -n "$cwd_line" ] && cwd=$(printf '%s' "$cwd_line" | jq -r '.cwd // empty' 2>/dev/null)
+  [ -n "$prompt_line" ] && prompt=$(printf '%s' "$prompt_line" \
+    | jq -r 'first(.. | objects | select(has("text")) | .text | select(type == "string" and length > 0)) // (.text? // empty)' \
+    2>/dev/null | head -1)
+  [ -n "$sid_line" ] && sid=$(printf '%s' "$sid_line" | jq -r '.sessionId // empty' 2>/dev/null)
+  # Validate: cwd must be an absolute path; sessionId must be hex/hyphens only (UUID shape)
+  [[ "${cwd:-}" =~ ^/ ]] || cwd=""
+  [[ "${sid:-}" =~ ^[0-9a-fA-F-]+$ ]] || sid=""
+  printf '%s\x1f%s\x1f%s' "${cwd:-}" "${prompt:-}" "${sid:-}"
 }
 
 # --- Helper: fallback cwd decode from directory name (rare path) ---
@@ -118,6 +122,8 @@ if [ -z "$first_prompt" ]; then
   first_prompt="(no user prompt yet)"
 fi
 first_prompt=$(printf '%.80s' "$first_prompt")
+# Strip ANSI/CSI escape sequences and C0 control characters before emitting to terminal
+first_prompt=$(printf '%s' "$first_prompt" | tr -d '\001-\037\177')
 
 # Determine kind and parent session id
 if [ "$IS_SUBAGENT" -eq 1 ]; then

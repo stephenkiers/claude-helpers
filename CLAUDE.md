@@ -36,18 +36,17 @@ See the ADRs for the full rationale:
   Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone.
 - [ADR-0004 Model cost routing](docs/adr/0004-model-cost-routing.md) — Haiku for mechanical work.
 - [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md) — amended by
-  ADR-0007 with a fourth layer.
+  ADR-0007 with a fourth layer (that layer was removed in chore/29; see ADR-0007's second amendment).
 - [ADR-0006 Reviewer output-format carve-outs](docs/adr/0006-reviewer-output-format-carve-outs.md)
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
-  ends in triage, not synthesis; rulings are recorded and become settled law.
+  ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 
 ## Triage: the review ends with decisions, not findings
 
 The panel got good enough that reading its output became the expensive part. So `/expert-review` no
 longer ends at the Amalgamator's `final-report.md` — a **Triage Chief** (`prompts/triage.md`) reads
 that report and writes `action-plan.md`, which is the file a human actually opens. Every CONFIRMED
-finding lands in one of **five buckets** — *doing it*, *needs you*, *needs measurement*, *deferred*,
-*already settled*:
+finding lands in one of **four buckets** — *doing it*, *needs you*, *needs measurement*, *deferred*:
 
 - **Doing it** — the default, and where ~85% of findings land. Skim it. (No *decision* needed — but
   these still need doing; apply them or hand the plan to `/implement-with-haiku`.)
@@ -60,34 +59,14 @@ finding lands in one of **five buckets** — *doing it*, *needs you*, *needs mea
   confirm or refute the finding; the ruling stays pending until a human supplies the result.
 - **Deferred** — what genuinely should not happen now, each with a reason that survives being read
   aloud.
-- **Already settled** — findings a recorded decision covers, split into `(withheld)` (a reviewer
-  stayed silent, and said so under `## Suppressed by decision`) and `(raised anyway)`. No CRITICAL or
-  security finding is ever here — the floor below forbids it.
 
 The **gut check** is not a bucket; it is the cross-cutting analysis no single-lens reviewer can do:
 *do these findings share one bad premise? is this drifting from an ADR? did the panel genuinely
-disagree? have we seen this theme before?* A bounded *declined nominations* list watches the opposite
-failure — a `**Human Call**` waved through without escalating.
+disagree?* A bounded *declined nominations* list watches the opposite failure — a `**Human Call**`
+waved through without escalating.
 
 `final-report.md` is unchanged and one click away. It is still the gut-check instrument of record —
 triage sits **in front of** it, not over it.
-
-**Decisions are recorded and reviewers obey them.** Rulings land in a repo-keyed `decisions.yaml`
-that lives **outside the repo** (`~/.claude/reviews/{owner-repo}/decisions.yaml`; fourth context
-layer, template in `prompts/decisions.yaml.template`) — outside so that no diff can add an entry that
-silences the review of itself. `prompts/expert-framework.md` instructs every reviewer not to re-raise
-what a recorded decision already settles, and to record what it suppressed. That is the loop: each
-ruling makes the *next* report shorter, so noise falls as the project's judgment accumulates instead
-of rising as the panel improves. A hard floor bounds the mechanism: a decision **demotes, never
-deletes** — it can never suppress a CRITICAL or a security finding, and `project.yaml` red lines
-outrank it.
-
-The bar for a recorded decision is **patterns and the spirit behind them — never nits.** A
-`decisions.yaml` full of nits is worse than an empty one, because reviewers read it as settled law
-and it will start suppressing real findings. When a ruling changes how the system is *shaped*, it
-becomes an ADR instead. `~/.claude/reviews/{owner-repo}/ledger.jsonl` (keyed on repo identity, beside
-the decisions file) records every finding's disposition, and `/review-stats` mines it for recurring
-themes — a theme on its third appearance is not three bugs, it is one missing decision.
 
 ## Commands
 
@@ -103,7 +82,8 @@ themes — a theme on its third appearance is not three bugs, it is one missing 
 - `/pr-comments` — review PR comments and decide how to respond
 - `/expert-pre-mortem` — standalone fragility pre-mortem (Fragile Feynman)
 - `/expert-rebase` — rebase on origin/main; convene experts on conflicting hunks
-- `/review-stats` — aggregate past reviews into per-reviewer confirmed-vs-rejected rates (eval loop)
+- `/review-stats` — **currently non-functional** (stub). The underlying ledger was removed in chore/29;
+  see `commands/review-stats.md` and the ADR-0007 amendment.
 
 **Hardening** (take a review persona, switch it to edit mode)
 - `/expert-harden-types` — tighten type annotations

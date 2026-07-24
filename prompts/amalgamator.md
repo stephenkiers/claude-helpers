@@ -96,17 +96,6 @@ This table is the input to `/review-stats` for evaluating router accuracy.
 ## Answered Questions
 | Reviewer | Question | Answer |   (omit if none)
 
-## Suppressed Findings
-
-Read each reviewer's pass1 and pass2 files for `## Suppressed by decision` sections. Copy their
-contents verbatim here so the Triage Chief can produce ledger lines for withheld findings — without
-this section, a reviewer staying silent leaves no trace, making "the report got shorter"
-indistinguishable from "a reviewer went blind." Omit this section if no reviewer suppressed anything.
-
-| Reviewer | Finding | Settled by |
-|----------|---------|-----------|
-| … | [would-be SEVERITY] {one-line finding} | decision: {decision name} |
-
 ## Recommended Next Steps
 1. [prioritized actions from CONFIRMED findings]
 ```
