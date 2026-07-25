@@ -25,6 +25,8 @@ to North Star Nick).
 - [ADR-0007: Triage and decision memory](0007-triage-and-decision-memory.md) — amends ADR-0004
   (Triage Chief tier), ADR-0005 (fourth context layer), and ADR-0006 (additive fields); carries its
   own Amendment recording the dogfooded rulings
+- [ADR-0008: Machine-enforced agent guardrails](0008-machine-enforced-agent-guardrails.md) —
+  destructive prose constraints on autonomous agents get a PreToolUse hook, not just a sentence
 
 ## Format
 
