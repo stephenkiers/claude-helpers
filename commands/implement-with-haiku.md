@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
 ---
 
 # Implement with Haiku
@@ -177,6 +177,12 @@ git -C "$WT_PATH" add -A
 
 **If the worktree is genuinely empty** (no staged changes after the above): Mark unit `failed`.
 Leave its worktree in place for inspection. Surface the report and reason.
+
+**The inverse is a lost-work anomaly, not a success:** if the worktree is genuinely empty (both
+`git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty) **but** the
+report claims `STAGED: yes` or otherwise claims work was done, do not shrug this off as "no
+changes needed" — treat it as an interrupted handoff (destructive git wiped the staged work mid-run
+is one known cause) and use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
 
 **Otherwise, apply the unit's staged diff from the main worktree** (never cd into the unit's
 worktree; never merge or commit inside it):
@@ -452,6 +458,10 @@ git worktree remove "$R2_WT_PATH" && git worktree prune && git branch -D "$R2_BR
 If the diff is empty and `STAGED: no` — inspect the worktree before declaring no tests were
 written; genuinely finished-but-unstaged work should still be applied.
 
+The inverse is a lost-work anomaly, not a success: if the diff is empty **and** `STAGED: yes` (or
+the report otherwise claims work was done), treat it as an interrupted handoff, not "no tests
+needed" — use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
+
 Then re-run the new tests yourself and record actual pass/fail counts — **never echo the agent's
 claimed counts into the summary uncorrected.**
 
@@ -592,6 +602,12 @@ Surface the truncated report and offer a menu:
 Hard-won failure modes from real runs. The multi-agent gate is only as good as the
 orchestrator's own verification — never trust round self-reports.
 
+- **Destructive git mid-run has wiped staged work while the run reported success.** Destructive
+  git subcommands (`reset`, `checkout` off-branch, `stash`, `clean`, etc.) are now hook-blocked
+  for plan-implementer ([ADR-0008](../docs/adr/0008-machine-enforced-agent-guardrails.md)), and
+  the mutation smoke above requires the target file to be clean before it runs. But those are
+  guardrails, not proof of absence — never treat an empty harvest as "no changes needed" when the
+  report's trailer claims otherwise; treat it as an anomaly per the rules above.
 - **Self-reports overstate success.** Agents have reported "all tests pass" over real
   failures, "clippy clean" from a run without `-D warnings` or with `--lib` only, and
   "cargo test passed" when only `cargo check` ran (the test binary didn't compile).
