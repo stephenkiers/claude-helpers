@@ -179,7 +179,7 @@ git -C "$WT_PATH" add -A
 Leave its worktree in place for inspection. Surface the report and reason.
 
 **The inverse is a lost-work anomaly, not a success:** if the worktree is genuinely empty (both
-`git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty) **but** the
+`git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty — worktree-wide check, not file-scoped) **but** the
 report claims `STAGED: yes` or otherwise claims work was done, do not shrug this off as "no
 changes needed" — treat it as an interrupted handoff (destructive git wiped the staged work mid-run
 is one known cause) and use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
