@@ -471,23 +471,53 @@ backstop for an unattended run).
    `ROUND2_START_SHA` (`comm` on sorted unique test-fn-name lists, not a count — a duplicated block
    plus a dropped test cancel out in a count). Near-duplicates → flag.
 2. **Reference check** — each file in `TEST_FILES` must reference at least one symbol from
-   `IMPL_FILES`. Zero references → flag as vacuous.
-3. **Bounded mutation smoke (one mutation)** — pick the file in `IMPL_FILES` referenced by the most
-   new tests:
+   `IMPL_FILES`. Zero references → flag as `vacuous`.
+3. **Bounded mutation smoke (two mutations)** — pick the file in `IMPL_FILES` referenced by the most
+   new tests. Run two mutations:
+   
+   **Precondition:** Before each mutation, run `git status --porcelain -- <file>`. If the file is
+   dirty, stop Part C's mutation checks entirely for this run, surface the dirty state in the summary,
+   and skip both mutations (do not attempt to stash or force-clean).
+   
+   **Mutation (a) — full-file revert:** Revert the file to its pre-round-1 state and re-run `TEST_FILES`:
    ```bash
    git checkout "$START_SHA" -- <that file>
    # re-run only TEST_FILES
    git checkout HEAD -- <that file>   # restore, always, even on failure
+   git status --porcelain -- <file>   # postcondition: must be empty
    ```
-   Expect at least one new-test failure with the pre-round-1 version of the file. Zero failures
-   means the new tests cannot fail — flag as vacuous.
+   Expect at least one new-test failure. Zero failures → flag as `vacuous`.
+   
+   **Note on "zero failures" ambiguity:** A `vacuous` or `weak-assertion` flag can indicate either
+   (a) the assertion form itself is too loose, or (b) the test's chosen input simply doesn't exercise
+   the actual boundary value (a coverage gap, not an assertion-quality defect). The automated Part C
+   flags catch the mechanism; step 3 of the Round 3 follow-up prompt (the "Actively hunt for weak
+   assertions" step) should be read as covering the assertion-quality half. A `weak-assertion` flag
+   with no matching `[WEAK_ASSERTION]` finding from step 3 likely indicates the boundary-coverage-gap
+   case rather than a genuinely weak assertion.
+   
+   **Mutation (b) — boundary operator flip:** In the same file, deterministically select the function
+   referenced by the most new tests, then find the first comparison/boundary operator (`==`/`!=`,
+   `<`/`<=`, `>`/`>=`) in source order within that function. Flip it (e.g. `<` → `<=`),
+   re-run `TEST_FILES`, then restore:
+   ```bash
+   # edit the file to flip the operator
+   # re-run only TEST_FILES
+   git checkout HEAD -- <that file>   # restore, always, even on failure
+   git status --porcelain -- <file>   # postcondition: must be empty
+   ```
+   Expect at least one new-test failure. Zero failures → flag as `weak-assertion`.
+   
+   **Outcome if no comparison/boundary operator found:** If the selected function contains no
+   comparison/boundary operator at all, mutation (b) is not applicable for this run; skip it and
+   do not flag `weak-assertion`.
 
 These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
 final summary.
 
 ### Round 3 follow-up (short)
 
-Collect: `TEST_FILES` (above), the Part C flags, and Round 3 pass 1's proposed fixes.
+Collect: `TEST_FILES` (above), the Part C flags (`dedup` / `vacuous` / `weak-assertion`), and Round 3 pass 1's proposed fixes.
 
 Launch a background `plan-implementer` (main worktree) with:
 
@@ -496,21 +526,39 @@ Launch a background `plan-implementer` (main worktree) with:
 >
 > **Your earlier findings and proposed fixes:** [Round 3 pass 1 report]
 > **New test files:** [TEST_FILES]
-> **Automated flags on the new tests:** [Part C flags, if any — dedup / vacuous / mutation-smoke]
+> **Automated flags on the new tests:** [Part C flags, if any — `dedup` / `vacuous` / `weak-assertion`]
 >
 > 1. Read the new test files. Note which fail against the current implementation and why.
 > 2. Apply your earlier proposed fixes now, if you still believe them correct given the tests.
-> 3. Review the automated flags on the new tests — are they real problems? If a flagged test is
->    genuinely vacuous or duplicate, note it (do not delete another pass's tests unless clearly
->    wrong).
-> 4. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
-> 5. Stage any fixes (`git add -A`, do not commit) and report.
-> 6. Report: issues found (numbered). For **each**, label its source:
+> 3. **Actively hunt for weak assertions** — independent of whatever Part C flagged. For each new
+>    test, ask: "what plausible broken implementation would this assertion still let through?" Flag
+>    tests that only check type, truthiness, non-null, or "no exception raised" instead of the
+>    actual expected value, and tests on boundary/comparison logic whose assertion doesn't pin the
+>    exact expected outcome (this is not an exhaustive list — use judgment for other weak-assertion
+>    shapes). Label each `[WEAK_ASSERTION]`.
+> 4. Review the automated flags on the new tests (`dedup`, `vacuous`, `weak-assertion`) — are they real
+>    problems? If a flagged test is genuinely `vacuous`, duplicate, or `weak-assertion` as you judged
+>    above, note it (do not delete another pass's tests unless clearly wrong).
+> 5. **Do not touch style, naming, formatting, or comments** unless they directly impact behavior.
+> 6. Stage any fixes (`git add -A`, do not commit) and report.
+> 7. Report findings in two sections:
+>
+>    **Implementation issues** (numbered): For **each**, label its source:
 >    - `[FROM_TEST]` — surfaced by a failing round 2 test
 >    - `[INDEPENDENT]` — found by reading the code in pass 1, not caught by any test
 >    - `[PLAN_GAP]` — the plan itself was ambiguous or missing a constraint
 >
->    State whether you fixed or flagged each, and report final test status.
+>    State whether you fixed or flagged each.
+>
+>    **Weak assertion findings** (numbered separately): Tests flagged as `[WEAK_ASSERTION]` (from step 3,
+>    or confirmed via Part C's weak-assertion flag). These are test-quality judgments, not implementation
+>    bugs — list them as their own section with brief description of the assertion gap. If a test is
+>    flagged by both Part C's mechanical check and your own step-3 hunt, list it once in this section,
+>    noting that both sources agree (do not double-count it).
+>    
+>    Emit this section's heading even when there are no findings, with body text "None found."
+>
+>    Report final test status.
 >
 > [Full report trailer per plan-implementer instructions, ending in `STAGED: yes | no`]
 >
@@ -522,7 +570,7 @@ touch only files the findings name. Then re-run gate step 1 (build/type-check) a
 tests yourself before committing; a fix that breaks the build is not a fix.
 
 Tell the user: "Round 2 complete — [N tests added, M failing]. Round 3 complete — [K issues,
-J fixed]. Sweep findings: [duplication: N, doc-drift: N]."
+J fixed, W weak assertions flagged]. Sweep findings: [duplication: N, doc-drift: N]."
 
 ---
 
@@ -592,13 +640,14 @@ POST-GATE FAN-OUT (concurrent — round 2, round 3 pass 1, sweeps)
 ROUND 2 — Spec-blind test author
   SPEC_BLIND: <verified by diff | VIOLATED — touched impl files> (self-report: yes | no)
   Tests added: <count, paths>   Pass/fail (orchestrator re-run): <P passed, F failed>
-  Part C flags: dedup <c>  vacuous/no-reference <c>  mutation-smoke-survived <c>
+  Part C flags: dedup <c>  vacuous <c>  weak-assertion <c>
 ROUND 3 — Adversary (pass 1 + follow-up)
   Issues found: <count>
     [FROM_TEST]:    <count>  ← signal that round 2 caught real divergence
     [INDEPENDENT]:  <count>  ← signal that adversary stance earned its keep
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
+  Weak assertion findings: <count>  ← test-quality signal
   Final test status: <P passed, F failed>
 SWEEPS
   Duplication findings: <count>
@@ -624,6 +673,6 @@ Suggested next steps:
 - If round 3 flagged `[PLAN_GAP]` issues, revise the plan before re-running
 - If round 2's spec-blind was VIOLATED, treat round-3 findings with lower confidence (adversary
   may have had prior exposure to the implementation)
-- If Part C flagged tests as vacuous/no-reference and Round 3's follow-up didn't resolve them,
-  review those test files by hand before trusting their coverage
+- If Part C flagged tests as `vacuous`, `weak-assertion`, or `dedup` and Round 3's follow-up didn't
+  resolve them, review those test files by hand before trusting their coverage
 - Review sweep findings (duplication, doc-drift) — they're informational, not auto-fixed
