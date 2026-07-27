@@ -15,6 +15,7 @@ anything not yet seen — is blocked.
 """
 
 import json
+import os
 import re
 import sys
 
@@ -27,17 +28,20 @@ ALLOWED_SUBCOMMANDS = {
     "show",
     "ls-files",
     "grep",
-    "rm",
-    "mv",
 }
 
-BLOCK_MESSAGE = (
-    "BLOCKED: git {subcmd} is not permitted for plan-implementer. You are staging-only: use "
-    "git rev-parse/add/status/diff/log/show/ls-files/grep/rm/mv. Destructive git operations "
-    "(reset/checkout/stash/clean) destroy the staged work the orchestrator harvests; "
-    "commits/pushes belong to the orchestrator. If genuinely blocked, report `STAGED: no` with "
-    "the reason."
-)
+def _build_block_message():
+    """Build BLOCK_MESSAGE from ALLOWED_SUBCOMMANDS to avoid duplication."""
+    allowed_list = ", ".join(sorted(ALLOWED_SUBCOMMANDS))
+    return (
+        "BLOCKED: git {subcmd} is not permitted for plan-implementer. You are staging-only: use "
+        f"git {allowed_list}. Destructive git operations "
+        "(reset/checkout/stash/clean) destroy the staged work the orchestrator harvests; "
+        "commits/pushes belong to the orchestrator. If genuinely blocked, report `STAGED: no` with "
+        "the reason."
+    )
+
+BLOCK_MESSAGE = _build_block_message()
 
 PARSE_ERROR_MESSAGE = "BLOCKED: git guard could not parse tool input; failing closed."
 
@@ -47,6 +51,11 @@ _METACHAR_RE = re.compile(r"([();&|`])")
 
 
 def tokenize(command):
+    """Split command into tokens, treating shell metacharacters as separate tokens.
+
+    Does not do shell-aware quote parsing; a command like "git 'add'" will not match
+    the `git` token after quote removal.
+    """
     spaced = _METACHAR_RE.sub(r" \1 ", command)
     return spaced.split()
 
@@ -58,7 +67,10 @@ def find_git_subcommands(command):
     i = 0
     n = len(tokens)
     while i < n:
-        if tokens[i].lower() == "git":
+        # Check if token is 'git' (case-insensitive), stripping quotes and using basename
+        # to catch quoted invocations ("git", 'git') and path-qualified ones (/usr/bin/git).
+        token_basename = os.path.basename(tokens[i].strip('\'"')).lower()
+        if token_basename == "git":
             j = i + 1
             while j < n:
                 tok = tokens[j]
@@ -72,7 +84,7 @@ def find_git_subcommands(command):
                     j += 1
                     continue
                 break
-            subcommands.append(tokens[j].lower() if j < n else None)
+            subcommands.append(tokens[j].lower() if j < n else "<none>")
             i = j
         else:
             i += 1
@@ -85,14 +97,14 @@ def main():
         command = payload["tool_input"]["command"]
         if not isinstance(command, str):
             raise ValueError("tool_input.command is not a string")
+
+        for subcmd in find_git_subcommands(command):
+            if subcmd not in ALLOWED_SUBCOMMANDS:
+                print(BLOCK_MESSAGE.format(subcmd=subcmd), file=sys.stderr)
+                sys.exit(2)
     except Exception:
         print(PARSE_ERROR_MESSAGE, file=sys.stderr)
         sys.exit(2)
-
-    for subcmd in find_git_subcommands(command):
-        if subcmd not in ALLOWED_SUBCOMMANDS:
-            print(BLOCK_MESSAGE.format(subcmd=subcmd), file=sys.stderr)
-            sys.exit(2)
 
     sys.exit(0)
 

@@ -23,7 +23,7 @@ AGENTS_DIR = REPO_ROOT / "agents"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 ADRS_DIR = REPO_ROOT / "docs" / "adr"
 
-GUARD_SCRIPT = SCRIPTS_DIR / "plan-implementer-git-guard.sh"
+GUARD_SCRIPT = SCRIPTS_DIR / "plan-implementer-git-guard.py"
 PLAN_IMPLEMENTER = AGENTS_DIR / "plan-implementer.md"
 ADR_README = ADRS_DIR / "README.md"
 ADR_0008 = ADRS_DIR / "0008-machine-enforced-agent-guardrails.md"
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     # ============================================================================
     print("[Section 1] Files exist and are wired")
 
-    test_result("guard script exists", GUARD_SCRIPT.exists(), "scripts/plan-implementer-git-guard.sh not found")
+    test_result("guard script exists", GUARD_SCRIPT.exists(), "scripts/plan-implementer-git-guard.py not found")
     test_result(
         "guard script is executable",
         GUARD_SCRIPT.exists() and GUARD_SCRIPT.stat().st_mode & 0o111 != 0,
@@ -83,7 +83,7 @@ if __name__ == "__main__":
 
     test_result(
         "plan-implementer.md frontmatter wires PreToolUse hook",
-        "PreToolUse" in PLAN_IMPLEMENTER_CONTENT and "plan-implementer-git-guard.sh" in PLAN_IMPLEMENTER_CONTENT,
+        "PreToolUse" in PLAN_IMPLEMENTER_CONTENT and "plan-implementer-git-guard.py" in PLAN_IMPLEMENTER_CONTENT,
         "PreToolUse hook wiring for the guard script not found in plan-implementer.md frontmatter",
     )
     test_result(
@@ -150,6 +150,9 @@ if __name__ == "__main__":
         "git -c alias.x='reset --hard' x",
         "git RESET",
         "multi\nline\ngit reset",
+        "git rm -f somefile",
+        "git mv a b",
+        "git --no-pager status",
     ]
     for cmd in blocked_commands:
         code, stderr = run_guard(payload(cmd))
@@ -161,6 +164,16 @@ if __name__ == "__main__":
     code, stderr = run_guard("{}")
     test_result("blocked: missing tool_input (fail-closed)", code == 2, f"expected exit 2, got {code}")
 
+    code, stderr = run_guard(json.dumps({"tool_input": {"command": 123}}))
+    test_result("blocked: non-string command (fail-closed)", code == 2, f"expected exit 2, got {code}")
+
+    code, stderr = run_guard(payload("git"))
+    test_result(
+        "blocked: git with no subcommand, does not render 'None'",
+        code == 2 and "None" not in stderr,
+        f"expected exit 2 and no 'None' in stderr, got code={code} stderr={stderr!r}",
+    )
+
     print()
 
     # ============================================================================
@@ -171,10 +184,11 @@ if __name__ == "__main__":
     allowed_commands = [
         "git add -A",
         "git status --porcelain",
-        'date +%s > "$(git rev-parse --git-dir)/iwh-agent-start")',
+        'date +%s > "$(git rev-parse --git-dir)/iwh-agent-start"',
         "cargo test",
         "git diff --staged",
         "git -C /tmp/wt add -A",
+        "git -c core.pager=cat status",
         "echo done",
     ]
     for cmd in allowed_commands:
@@ -207,6 +221,30 @@ if __name__ == "__main__":
     test_result(
         "find_git_subcommands: does not false-positive on --git-dir",
         guard_module.find_git_subcommands("git rev-parse --git-dir") == ["rev-parse"],
+    )
+    test_result(
+        "find_git_subcommands: attached -C form",
+        guard_module.find_git_subcommands("git -Cfoo add -A") == ["add"],
+    )
+    test_result(
+        "find_git_subcommands: attached -c form",
+        guard_module.find_git_subcommands("git -cuser.name=x status") == ["status"],
+    )
+    test_result(
+        "find_git_subcommands: -c with separate value",
+        guard_module.find_git_subcommands("git -c user.name=x status") == ["status"],
+    )
+    test_result(
+        "find_git_subcommands: quoted git invocation",
+        guard_module.find_git_subcommands("'git' add -A") == ["add"],
+    )
+    test_result(
+        "find_git_subcommands: path-qualified git",
+        guard_module.find_git_subcommands("/usr/bin/git status") == ["status"],
+    )
+    test_result(
+        "find_git_subcommands: git with no subcommand renders <none>",
+        guard_module.find_git_subcommands("git") == ["<none>"],
     )
 
     print()
