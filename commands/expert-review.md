@@ -581,13 +581,14 @@ running something and reading a result back — not a judgment call, so it never
 It writes `{REVIEW_DIR}/action-plan.md`. It returns:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | collapsed: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {action-plan path}
 ```
 
 **Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `measure` —
 measurement items aren't something the human is being asked to *decide*, so they don't count against
-this guard). If
-`needs-you >= 5`, OR (`needs-you / confirmed > 0.2` AND `confirmed >= 10`), the escalation test was
+this guard). Cluster-synthesized items count as `0.5` each — one cluster is not an independent decision ask.
+So `human_asks = max(0, needs-you - 0.5 * clusters-escalated)`. If
+`human_asks >= 5`, OR (`human_asks / confirmed > 0.2` AND `confirmed >= 10`), the escalation test was
 applied too loosely — say so in the closing message rather than silently handing over a long list. A
 *Needs you* list long enough to skim is one nobody reads, which rebuilds the exact problem this step
 exists to solve. The trip condition is stated identically here and in `triage.md`, computed straight

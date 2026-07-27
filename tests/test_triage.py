@@ -132,12 +132,12 @@ t("triage receipt is declared in both the command and the prompt",
 t("triage receipt is identical in both", tri_cmd == tri_prompt,
   f"command: {tri_cmd!r}\n      prompt: {tri_prompt!r}")
 
-# Canonical field order: doing → needs-you → measure → deferred → declined → clusters → collapsed → wrote-plan.
-# 'settled' was removed and 'measure' inserted in chore/29; 'collapsed' was added in #42; this guards against future drift.
-RECEIPT_FIELD_ORDER = ["doing:", "needs-you:", "measure:", "deferred:", "declined:", "clusters:", "collapsed:", "wrote-plan:"]
+# Canonical field order: doing → needs-you → measure → deferred → declined → clusters → clusters-escalated → collapsed → wrote-plan.
+# 'settled' was removed and 'measure' inserted in chore/29; 'clusters-escalated' added for cluster synthesis (#36); 'collapsed' added in #43.
+RECEIPT_FIELD_ORDER = ["doing:", "needs-you:", "measure:", "deferred:", "declined:", "clusters:", "clusters-escalated:", "collapsed:", "wrote-plan:"]
 if tri_prompt is not None:
     positions = [tri_prompt.find(f) for f in RECEIPT_FIELD_ORDER]
-    t("triage receipt fields appear in canonical order (doing→needs-you→measure→deferred→declined→clusters→collapsed→wrote-plan)",
+    t("triage receipt fields appear in canonical order (doing→needs-you→measure→deferred→declined→clusters→clusters-escalated→collapsed→wrote-plan)",
       all(p != -1 for p in positions) and positions == sorted(positions),
       f"field positions: {list(zip(RECEIPT_FIELD_ORDER, positions))}")
 
@@ -159,12 +159,17 @@ t("triage.md names over-escalation as the failure mode",
   "the guard that keeps 'Needs you' short")
 t("triage.md resolves uncertainty toward NOT escalating",
   re.search(r"uncertain[^.\n]*?:\s*\*\*it does not", TRIAGE, re.I) is not None)
+t("cluster-synthesized items are discounted toward the guard",
+  "0.5 * clusters-escalated" in TRIAGE,
+  "cluster items count as 0.5 each — one cluster is not N independent decision asks")
+t("the guard uses the discounted human_asks formula",
+  "human_asks = max(0, needs-you - 0.5 * clusters-escalated)" in TRIAGE,
+  "guard arithmetic must account for cluster discounting")
 t("the over-escalation guard is absolute-count based, not ratio-only",
-  "needs-you >= 5" in EXPERT_REVIEW and "needs-you >= 5" in TRIAGE,
+  "human_asks >= 5" in TRIAGE,
   "a pure 20% ratio trips on tidy 3-finding reviews and misses 40-finding ones")
 t("the guard defines its denominator (confirmed = doing + needs-you + deferred)",
-  "confirmed = doing + needs-you + deferred" in EXPERT_REVIEW
-  and "confirmed = doing + needs-you + deferred" in TRIAGE,
+  "confirmed = doing + needs-you + deferred" in TRIAGE,
   "an unspecified denominator lets two agents disagree on the same run")
 
 # Anchor the bucket checks to the bucket-DEFINITION section. Checking the whole file would pass
