@@ -61,3 +61,24 @@ override.
 **Note (chore/29 amendment):** The fourth layer (`decisions.yaml`) was subsequently removed. The
 cascade reverts to three layers. See [ADR-0007](0007-triage-and-decision-memory.md)'s second
 amendment for rationale.
+
+## Amendment — user preferences as a global lens layer
+
+Preferences.yaml adds a fourth layer at global-user scope, sitting **above** the three-layer
+project cascade. A reviewer loads preferences after project context but before per-reviewer local
+overrides. This supersedes the removed `decisions.yaml` fourth layer from ADR-0007's amendment.
+
+The cascade is now again four layers:
+
+1. **Global persona** — `reviewers/{name}.yaml` (generic, reusable).
+2. **Project context** — `.claude/project.yaml` (project-wide knowledge).
+3. **User preferences** — `~/.claude/preferences.yaml` (personal code review taste/style lens).
+4. **Per-reviewer local override** — `.claude/reviewers/{name}-local.yaml` (per-domain project overrides).
+
+Preferences are a **lens**, not a suppression list. They shape how findings are worded and
+prioritized but never eliminate findings. The hard floor is identical to what `decisions.yaml`
+held: preferences never dilute CRITICAL or security-flagged finding severity. Project-level rules
+win on conflict — preferences are personal defaults that projects can override.
+
+See [ADR-0007](0007-triage-and-decision-memory.md)'s second amendment, which removed `decisions.yaml`,
+for the rationale behind moving to a user-preference-based approach.
