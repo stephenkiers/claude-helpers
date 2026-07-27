@@ -39,11 +39,11 @@ nonzero exit.
 
 Applied here:
 
-- `scripts/plan-implementer-git-guard.sh` — a PreToolUse hook wired into
+- `scripts/plan-implementer-git-guard.py` — a PreToolUse hook wired into
   `agents/plan-implementer.md`. It parses every `Bash` command's `git` invocations (including ones
   inside `$(...)`, compound commands, and multi-line commands) and blocks (exit 2) any subcommand
   outside an explicit allowlist (`rev-parse`, `add`, `status`, `diff`, `log`, `show`, `ls-files`,
-  `grep`, `rm`, `mv`) — **allowlist, not blocklist**, so a git subcommand nobody thought to ban is
+  `grep`) — **allowlist, not blocklist**, so a git subcommand nobody thought to ban is
   blocked by default rather than slipping through. It fails closed: anything it can't confidently
   parse is treated as blocked, not allowed.
 - The orchestrator's own mutation smoke now requires `git status --porcelain -- <file>` to be

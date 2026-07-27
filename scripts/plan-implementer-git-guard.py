@@ -53,8 +53,8 @@ _METACHAR_RE = re.compile(r"([();&|`])")
 def tokenize(command):
     """Split command into tokens, treating shell metacharacters as separate tokens.
 
-    Does not do shell-aware quote parsing; a command like "git 'add'" will not match
-    the `git` token after quote removal.
+    Strips leading/trailing single and double quotes for matching, but does not do
+    full shell-aware quote/escape parsing (nested quotes, escaped quotes not handled).
     """
     spaced = _METACHAR_RE.sub(r" \1 ", command)
     return spaced.split()
