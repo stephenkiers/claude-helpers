@@ -66,7 +66,7 @@ value, since it was never a real gate to begin with. The hook is the single sour
 - **Good:** the "no destructive git" rule for plan-implementer is now enforced by an exit code,
   not a sentence the agent has to remember to obey. `tests/test_git_guard.py` cross-checks that
   the hook's allowlist and the agent's Constraints prose stay in sync, and exercises the guard
-  script directly (including fail-closed cases) so drift is caught in CI, not in a future incident.
+  script directly (including fail-closed cases) so drift is caught by the test suite (run manually or via the `/shipit` command's local checks before committing), not in a future incident.
 - **Good:** the mutation smoke's precondition and the empty-harvest anomaly rule close the
   orchestrator-side half of the incident, independent of whether the hook alone would have caught
   it.
