@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
 ---
 
 # Implement with Haiku
@@ -18,6 +18,8 @@ The flow:
 4. **Round 2 — Spec-blind test author** (own worktree) and **Round 3 pass 1 — Adversary** (read-only)
    run **concurrently**, alongside two read-only sweeps (duplication, doc-drift)
 5. **Round 3 follow-up** — short pass applying earlier findings and reviewing round 2's tests
+6. **Round 4 — Test cleanup** (orchestrator-run) — delete clearly-junk tests, relocate + rename the
+   survivors to the repo's own test layout/naming convention
 
 ## Step 1: Find the plan
 
@@ -313,10 +315,12 @@ Before fanning out, classify the run from the round-1 diff (`git diff --name-onl
 and the plan. Record the classification for the final summary.
 
 - **Mechanical** — formatting/lint/config-only diff, no logic change (e.g. clippy/prettier churn,
-  dependency bumps). **Stop here.** No Round 2, no Round 3, no sweeps. Surface the final summary now.
+  dependency bumps). **Stop here.** No Round 2, no Round 3, no Round 4, no sweeps. Surface the final
+  summary now.
 - **Test-only deliverable** — the plan's own output *is* tests (not application code). Skip Round 2
-  (there's nothing spec-blind to add); keep Round 3 to review the tests themselves.
-- **Everything else** — full pipeline below.
+  (there's nothing spec-blind to add); keep Round 3 to review the tests themselves; **Round 4 applies**
+  (relocating/cleaning the delivered tests to repo convention is the whole point).
+- **Everything else** — full pipeline below, **including Round 4**.
 
 The gate and anti-tamper scan are never skippable — they already ran.
 
@@ -584,6 +588,122 @@ J fixed, W weak assertions flagged]. Sweep findings: [duplication: N, doc-drift:
 
 ---
 
+## Round 4 — Test cleanup (orchestrator-run)
+
+Round 2's spec-blind author invents its own test filenames — the command gives it **no** naming
+scheme, so when a plan is organized into "Wave A / Wave B / …" units the author mirrors those labels
+into filenames like `tests/test_wave_a_spec.py`. That's an artifact of *this* orchestration process,
+not the repo's real convention, and nothing downstream has relocated or deleted them: Part C and
+Round 3 only **flag** `vacuous` / `weak-assertion` / `dedup` and are told never to delete another
+pass's tests unless clearly wrong. Round 4 closes that gap: the orchestrator (you, Sonnet) deletes
+clearly-junk tests and relocates + renames the survivors to the repo's own layout, so the committed
+suite looks like it was written by someone who knows the repo.
+
+You run this **directly in the main worktree** — no sub-agent, no worktree/diff handoff. Path/import
+rewrites are judgment-heavy and this matches how the Integration Gate and Part C already run. The
+same discipline still applies: **never trust a self-report; verify every claim via git and by
+re-running the tests yourself.**
+
+### 4.0 Applicability
+
+- **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
+- **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
+- **Test-only** run → Round 4 **applies** (relocating/cleaning the delivered tests is the point).
+- **Full** run → Round 4 **applies**.
+
+### 4.1 Enumerate the new tests (the working set)
+
+**Recompute** the working set at Round-4 time rather than reusing the `TEST_FILES` value from Part C:
+```bash
+TEST_FILES=$(git diff --name-only "$ROUND2_START_SHA"..HEAD)
+```
+HEAD has advanced since Part C computed `TEST_FILES` (right after Round 2's apply), so recomputing now
+naturally folds in **both** Round 2's tests **and** any test files Round 3's follow-up added — the
+stale cached value would miss the latter. This is the **working set** — Round 4 only ever touches
+files in it, never pre-existing tests.
+
+### 4.2 Learn the repo's convention (evidence, not assumption)
+
+Determine the target layout/naming by inspecting *sibling* tests that already existed at `START_SHA`.
+Step 2 already located the general project config (`pyproject.toml`, lint/format configs); read the
+framework's **test** config directly if not already in hand (`pytest.ini`/`pyproject.toml`
+`[tool.pytest]`, `vitest.config.*`, `jest.config.*`, `Cargo.toml` test sections, etc.) for its
+`testpaths`/`roots`/`include` globs. Establish, per language:
+
+- **Directory convention** — co-located (`foo.test.ts` next to `foo.ts`), mirrored tree (`tests/`
+  mirroring `src/`), or per-package `tests/` dir.
+- **Filename convention** — the dominant pattern among existing siblings (`test_<module>.py`,
+  `<module>_test.py`, `<Name>.spec.ts`, `#[cfg(test)]` inline, …). The correct name is derived from
+  the **module/symbol under test**, never from the plan's wave/unit slug.
+
+```bash
+# example discovery — adapt per detected framework
+git ls-tree -r --name-only "$START_SHA" | rg '(test|spec)' | rg '\.(py|ts|tsx|js|rs|swift)$'
+```
+
+If there are **zero** pre-existing tests to learn from, do not guess a bespoke layout — fall back to
+the framework's documented default and note in the final summary that no in-repo precedent existed.
+
+### 4.3 Classify each file in the working set
+
+- **Junk (delete) — only these three, each attributable to a specific file:**
+  - files carrying Part C's **reference-check** `vacuous` flag — the *per-file* check (each file in
+    `TEST_FILES` must reference ≥1 symbol from `IMPL_FILES`; zero references → `vacuous`). A test that
+    never touches production code tests nothing; delete it.
+  - tests that assert against a hand-built copy of the logic (the "would still pass if the
+    implementation were deleted" defect the Round 2 prompt already forbids),
+  - exact/near duplicates of coverage that existed at `START_SHA` (from the Part C dedup `comm` result).
+- **Not auto-deleted — surface, don't delete (fixable signal, not junk):**
+  - Part C's **mutation-smoke** `vacuous` flag is **suite-level, not per-file**: it reverts one impl
+    file and re-runs the *whole* `TEST_FILES` set, so a zero-failure result only proves the tests
+    covering *that one reverted file* were too weak to notice it vanish — it never names which file is
+    junk and says nothing about tests targeting other files. Treat it exactly like `weak-assertion`:
+    surface it (Round 3 already reports it), and at most hand the tests that *reference the reverted
+    file* to Round 3 to strengthen. **Never** expand a suite-level mutation-smoke flag into a `git rm`
+    — doing so deletes good tests for other modules on the strength of one weak test elsewhere.
+  - a `weak-assertion` flag — a weak assertion is fixable, not worthless.
+- **Useful (relocate/rename):** everything else.
+
+### 4.4 Delete the junk
+
+`git rm` each junk file (or delete the specific test fn if only part of a file is junk), one at a
+time, recording path + reason for the final summary.
+
+**Record what evidence was available.** Part C's mutation smoke can be skipped whole-cloth (dirty-file
+precondition, or no comparison operator found — see Part C). When it was skipped, the reference-check
+is Round 4's *only* machine-checked junk evidence, so a `Deleted (junk): 0` result means "not vetted
+by the smoke," not "vetted and clean." Note in the summary whether the mutation smoke ran or was
+skipped (with reason) so a human can tell those two cases apart.
+
+### 4.5 Relocate + rename the survivors
+
+Move each survivor to the 4.2 convention:
+
+- Move with `git mv` so history is preserved.
+- Rewrite the moved file's own imports for its new location, and update any references to it elsewhere
+  (test config include globs, `conftest.py`, barrel files) — grep for the old path/name first.
+- **Merge rather than clobber:** if a survivor's target path collides with an existing test file, fold
+  the new tests into the existing file under the repo's conventions instead of overwriting.
+
+### 4.6 Verify green, then commit
+
+Re-run the tests **yourself** — a **fresh full collection under the new layout**, not a path-scoped
+re-run of the pre-move set (the old paths no longer exist, and a stale include target would silently
+run the wrong set while still reporting a plausible count). Confirm the total matches pre-cleanup
+minus the deletions. **For any file merged in 4.5,** additionally confirm the target file's collected
+test count rose by exactly the folded-in count — a same-name collision (e.g. two `test_boundary()` in
+one module) silently shadows one test with no error, and only a per-file count check catches it.
+Re-run gate step 1 (build/type-check), since moves can break import paths. Only then:
+
+```bash
+git commit -m "round-4: relocate spec-blind tests to repo convention, drop vacuous tests"
+```
+
+If tests go red after a move, fix the import/path (that's the expected failure mode) — a relocation
+that changes pass/fail counts beyond the intended deletions is a mistake, not cleanup.
+
+---
+
 ## Incomplete report handling (applies to every round and every unit)
 
 A report missing any of the four required trailer lines (`ELAPSED_SECONDS`, `VERIFIED`,
@@ -664,7 +784,13 @@ ROUND 3 — Adversary (pass 1 + follow-up)
     [PLAN_GAP]:     <count>  ← signal that the plan needs sharpening
   Fixed: <count>   Flagged: <count>
   Weak assertion findings: <count>  ← test-quality signal
-  Final test status: <P passed, F failed>
+  Round-3 test status: <P passed, F failed>
+ROUND 4 — Test cleanup (orchestrator-run)
+  Convention detected: <co-located | mirrored-tree | tests-dir> / <naming pattern>
+  Junk-detection evidence: mutation-smoke <ran | skipped: reason>, reference-check ran
+  Deleted (junk): <count, paths + reason>
+  Relocated/renamed: <count>  (e.g. tests/test_wave_a_spec.py → <repo-convention path>)
+  Post-cleanup test status (orchestrator re-run — AUTHORITATIVE final status): <P passed, F failed>
 SWEEPS
   Duplication findings: <count>
   Doc-drift findings: <count>
@@ -674,6 +800,7 @@ TIMING (agent compute per round — self-measured; excludes idle between turns)
   Fan-out wall-clock:         <mm:ss>  [round 2 ∥ round 3 pass 1 ∥ 2 sweeps]
   Round 2 (tests):            <mm:ss>
   Round 3 (pass 1 + follow-up): <mm:ss>
+  Round 4 (cleanup — orchestrator): <mm:ss>
   Total agent compute:        <mm:ss>
 ```
 
@@ -691,4 +818,8 @@ Suggested next steps:
   may have had prior exposure to the implementation)
 - If Part C flagged tests as `vacuous`, `weak-assertion`, or `dedup` and Round 3's follow-up didn't
   resolve them, review those test files by hand before trusting their coverage
+- If Round 4 found **no in-repo test precedent**, the chosen layout/naming was a framework default,
+  not a learned convention — worth a human glance to confirm it matches your intent
+- If Round 4's `Junk-detection evidence` shows the **mutation smoke was skipped**, its junk detection
+  ran on the reference-check alone — eyeball the delivered tests' coverage by hand before trusting it
 - Review sweep findings (duplication, doc-drift) — they're informational, not auto-fixed

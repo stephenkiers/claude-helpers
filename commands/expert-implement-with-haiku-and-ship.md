@@ -51,11 +51,15 @@ it will halt at the first failure and hand the review back to them.
 
 Invoke the `implement-with-haiku` skill via the `Skill` tool, forwarding any issue-number arg.
 
-**Wait for the full 3-round summary before doing anything else.** `implement-with-haiku` launches
-background rounds and reports across several notifications — the round-3 final summary block is
-the completion signal. Do not advance while rounds are still running.
+**Wait for the Final summary before doing anything else.** `implement-with-haiku` launches
+background rounds and reports across several notifications — the Final summary block is the
+completion signal. Do not advance while rounds are still running.
 
-**Gate** — read the final summary's `ROUND 1` line and round-3 `Final test status`:
+**Gate** — read the final summary's `ROUND 1` line and the authoritative final test status: the
+`ROUND 4` **post-cleanup test status** when Round 4 ran, otherwise the `ROUND 3` test status (Round 4
+is skipped for `mechanical` runs and when no tests changed). Round 4 re-runs the suite after
+relocating/deleting tests, so its post-cleanup status — not the earlier Round-3 line — is the one that
+reflects the shippable tree:
 
 - If round 1 reports `Applied clean: 0` with all units `Failed` (nothing was implemented —
   `implement-with-haiku` now has the orchestrator apply and commit each unit's staged diff itself,
