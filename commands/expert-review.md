@@ -581,7 +581,7 @@ running something and reading a result back — not a judgment call, so it never
 It writes `{REVIEW_DIR}/action-plan.md`. It returns:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | collapsed: {n} | wrote-plan: {action-plan path}
 ```
 
 **Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `measure` —
