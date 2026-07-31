@@ -157,6 +157,37 @@ and this section is the one that has to survive.
 
 ---
 
+## Collapse pass
+
+After bucket assignment and before writing, scan the accepted findings once:
+
+**Does one policy or design decision — stateable in a single clause — resolve ≥2 findings?**
+
+If yes:
+- Promote the policy call to **Needs You** as its own escalation (use the standard Needs You
+  template; the policy decision is what needs a ruling, not the individual findings).
+- In Doing It, mark each subsumed finding: append `(Resolved by: <policy call> — fix drops if
+  you say yes; individual fix below applies if you say no)` to its Fix cell.
+- If the subsumed findings were themselves in Needs You (multiple option menus for the same root),
+  consolidate them under the single policy escalation and remove the individual escalations.
+
+**Guardrail — only collapse when:**
+- The resolving decision is nameable in one clause. If describing it takes more than ~15 words,
+  it is not one decision — leave the findings independent.
+- The findings genuinely go away if the policy is adopted. A policy that *reduces* but does not
+  *resolve* the findings does not qualify.
+- There are ≥2 findings, not just 1 large one. A single finding with multiple sub-problems is not
+  a collapse candidate.
+
+**Cap:** at most 2 collapse promotions per review. If you see 3 or more candidates, report only
+the two that subsume the most findings. Over-collapsing creates Needs You bloat by a different
+path — the same failure mode you exist to prevent.
+
+**If nothing collapses, skip this section silently.** No "nothing found" line. Do not manufacture
+a collapse to look thorough.
+
+---
+
 ## Output
 
 You write **one** file into `{REVIEW_DIR}`, and nothing else: `action-plan.md`.
@@ -265,7 +296,7 @@ never a section with its own heading.}
 Write the file, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | collapsed: {n} | wrote-plan: {action-plan path}
 ```
 
 `clusters` is the number of gut-check questions that came back with a real answer (0–3); `declined`
