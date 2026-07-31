@@ -300,4 +300,5 @@ triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: 
 ```
 
 `clusters` is the number of gut-check questions that came back with a real answer (0–3); `declined`
-is the number of `**Human Call**` nominations you did not escalate.
+is the number of `**Human Call**` nominations you did not escalate; `collapsed` is the number of
+collapse promotions you performed (0–2, per the cap in *Collapse pass*).
