@@ -132,12 +132,12 @@ t("triage receipt is declared in both the command and the prompt",
 t("triage receipt is identical in both", tri_cmd == tri_prompt,
   f"command: {tri_cmd!r}\n      prompt: {tri_prompt!r}")
 
-# Canonical field order: doing → needs-you → measure → deferred → declined → clusters → wrote-plan.
-# 'settled' was removed and 'measure' inserted in chore/29; this guards against future drift.
-RECEIPT_FIELD_ORDER = ["doing:", "needs-you:", "measure:", "deferred:", "declined:", "clusters:", "wrote-plan:"]
+# Canonical field order: doing → needs-you → measure → deferred → declined → clusters → collapsed → wrote-plan.
+# 'settled' was removed and 'measure' inserted in chore/29; 'collapsed' was added in #42; this guards against future drift.
+RECEIPT_FIELD_ORDER = ["doing:", "needs-you:", "measure:", "deferred:", "declined:", "clusters:", "collapsed:", "wrote-plan:"]
 if tri_prompt is not None:
     positions = [tri_prompt.find(f) for f in RECEIPT_FIELD_ORDER]
-    t("triage receipt fields appear in canonical order (doing→needs-you→measure→deferred→declined→clusters→wrote-plan)",
+    t("triage receipt fields appear in canonical order (doing→needs-you→measure→deferred→declined→clusters→collapsed→wrote-plan)",
       all(p != -1 for p in positions) and positions == sorted(positions),
       f"field positions: {list(zip(RECEIPT_FIELD_ORDER, positions))}")
 
