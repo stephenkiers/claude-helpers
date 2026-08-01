@@ -24,7 +24,9 @@ PROMPTS = REPO_ROOT / "prompts"
 
 
 def read(path):
-    """Return a file's text, or '' if missing."""
+    """Return a file's text, or '' if it is missing — so a moved/renamed file turns into a
+    failing assertion (see the non-empty guard below), never a suite-crashing exception that would
+    skip every later invariant."""
     try:
         return path.read_text()
     except OSError:
@@ -36,6 +38,18 @@ TRIAGE = read(PROMPTS / "triage.md")
 
 h = Harness("COLLAPSE PASS TEST SUITE (Issue #42)")
 t = h.test_result
+
+# ============================================================================
+# INVARIANT 0: The files under test exist and are non-empty. read() swallows a
+# missing file into '', which would otherwise make every "section missing" failure
+# below ambiguous — a moved file and a deleted section look identical. Fail loudly here.
+# ============================================================================
+print("[Invariant 0] Files under test are present and non-empty")
+t("prompts/triage.md is present and non-empty", bool(TRIAGE),
+  "file is missing or empty — every downstream invariant would be meaningless")
+t("commands/expert-review.md is present and non-empty", bool(EXPERT_REVIEW),
+  "file is missing or empty — the receipt-parity invariant would be meaningless")
+
 
 # ============================================================================
 # INVARIANT 1: "Collapse pass" section exists in triage.md
@@ -82,37 +96,33 @@ if collapse_section is not None:
     )
     section_body = section_match.group(1) if section_match else ""
 
-    # Core question: "Does one policy or design decision resolve ≥2 findings?"
-    t("Collapse pass asks about policy decisions resolving findings",
+    # Core question: one policy/design decision resolving >=2 findings. This is the ONE place the
+    # >=2 threshold is asserted structurally (a second copy in the guardrail block was a duplicate).
+    t("Collapse pass asks whether one policy/design decision resolves >=2 findings",
       bool(re.search(r"policy|design decision", section_body, re.I))
-      and bool(re.search(r"≥\s*2|>=\s*2|at least 2", section_body, re.I)),
-      "core question about policy decisions and 2+ findings is missing")
+      and bool(re.search(r"≥\s*2|>=\s*2|at least 2|two", section_body, re.I)),
+      "core question about a policy decision resolving 2+ findings is missing")
 
-    # "If yes" action: promote to Needs You
-    t("Collapse pass instructs to promote to Needs You",
-      bool(re.search(r"Needs You|needs.you|escalate", section_body, re.I)),
-      "the 'If yes' action to promote to Needs You is missing")
+    # Consolidation-only (Ruling #1, #42): the pass merges escalations already in Needs you; it does
+    # NOT promote accepted Doing-it fixes into new escalations, and writes no `Resolved by:` marking.
+    t("Collapse pass acts on escalations already in Needs you (consolidation-only)",
+      bool(re.search(r"Needs you|needs.you", section_body, re.I))
+      and bool(re.search(r"consolidat", section_body, re.I)),
+      "the consolidation instruction (merge existing Needs-you escalations) is missing")
+    t("Collapse pass does NOT reintroduce the dropped 'Resolved by:' Doing-it marking",
+      "Resolved by:" not in section_body,
+      "the Branch-A `Resolved by:` marking was dropped by Ruling #1 — it must not return")
 
-    # "Resolved by:" marking in Doing It
-    t("Collapse pass instructs to mark subsumed findings 'Resolved by:'",
-      "Resolved by:" in section_body,
-      "the instruction to mark subsumed findings is missing")
-
-    # Guardrail: one clause / ~15 words
+    # Guardrail: one clause / nameability
     t("Collapse pass contains guardrail about one-clause nameability",
       bool(re.search(r"clause|word|name", section_body, re.I)),
       "guardrail about nameability is missing")
 
-    # Guardrail: ≥2 findings
-    t("Collapse pass guardrail: ≥2 findings",
-      bool(re.search(r"≥\s*2|>=\s*2|at least 2", section_body, re.I)),
-      "guardrail about minimum 2 findings is missing")
-
-    # Cap: at most 2 collapse promotions
-    t("Collapse pass contains cap of at most 2 promotions",
-      bool(re.search(r"(?:at most|no more than|maximum|cap).*?2|2.*?(?:promotions|collapses|collapse)",
-                      section_body, re.I)),
-      "cap on collapse promotions is missing or incorrect")
+    # Cap: anchored on the '**Cap:**' phrasing so nearby prose can't false-positive it.
+    cap_match = re.search(r"\*\*Cap:\*\*(.*?)(?=\n\*\*|\Z)", section_body, re.S)
+    t("Collapse pass declares a cap of at most 2 consolidations",
+      cap_match is not None and "2" in cap_match.group(1),
+      "cap on collapse consolidations is missing, unanchored, or not set to 2")
 
     # Skip silently instruction
     t("Collapse pass contains instruction to skip silently when nothing collapses",
@@ -158,24 +168,35 @@ if tri_prompt is not None:
           positions == sorted(positions),
           f"field positions: {list(zip(RECEIPT_FIELD_ORDER, positions))}")
 
-        collapsed_idx = RECEIPT_FIELD_ORDER.index("collapsed:")
-        wrote_plan_idx = RECEIPT_FIELD_ORDER.index("wrote-plan:")
-        t("collapsed field is immediately before wrote-plan field",
-          collapsed_idx == wrote_plan_idx - 1,
-          "collapsed field must be the last numeric counter before wrote-plan")
+        # Adjacency must be checked against the REAL receipt string, not the Python list above
+        # (comparing indices into RECEIPT_FIELD_ORDER is tautological — it never reads the file).
+        # No other field may appear between collapsed: and wrote-plan: in the actual line.
+        between = tri_prompt[tri_prompt.find("collapsed:"):tri_prompt.find("wrote-plan:")]
+        intervening = [f for f in RECEIPT_FIELD_ORDER
+                       if f not in ("collapsed:", "wrote-plan:") and f in between]
+        t("collapsed: is immediately before wrote-plan: in the actual receipt line",
+          tri_prompt.find("collapsed:") < tri_prompt.find("wrote-plan:") and not intervening,
+          f"fields between collapsed: and wrote-plan: — {intervening}; line: {tri_prompt!r}")
 
 # ============================================================================
-# INVARIANT 6: Receipt parity: collapsed field is identical in both files
+# INVARIANT 6: Receipt parity: the receipt line is byte-identical in both files
 # ============================================================================
 print("\n[Invariant 6] Receipt parity across command and prompt")
 
-tri_cmd = receipt(EXPERT_REVIEW, "triage | doing:")
-t("triage receipt line exists in expert-review.md", tri_cmd is not None,
+def receipt_raw(text, head):
+    """Extract the receipt line WITHOUT stripping — so a trailing-whitespace divergence between
+    the two files is caught, not masked. The 'identical' claim is only true if it is byte-for-byte."""
+    m = re.search(r"^(" + re.escape(head) + r".*)$", text, re.M)
+    return m.group(1) if m else None
+
+tri_cmd_raw = receipt_raw(EXPERT_REVIEW, "triage | doing:")
+tri_prompt_raw = receipt_raw(TRIAGE, "triage | doing:")
+t("triage receipt line exists in expert-review.md", tri_cmd_raw is not None,
   "command file does not contain the triage receipt")
 
-if tri_cmd is not None and tri_prompt is not None:
-    t("triage receipt is identical in both command and prompt",
-      tri_cmd == tri_prompt,
-      f"command: {tri_cmd!r}\n      prompt: {tri_prompt!r}")
+if tri_cmd_raw is not None and tri_prompt_raw is not None:
+    t("triage receipt is byte-identical in both command and prompt (surrounding whitespace included)",
+      tri_cmd_raw == tri_prompt_raw,
+      f"command: {tri_cmd_raw!r}\n      prompt: {tri_prompt_raw!r}")
 
 h.summarize_and_exit()
