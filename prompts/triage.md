@@ -157,6 +157,44 @@ and this section is the one that has to survive.
 
 ---
 
+## Collapse pass
+
+After bucket assignment and before writing, look back at the escalations you have already placed in
+**Needs you**:
+
+**Do >=2 of those escalations resolve to one policy or design decision — stateable in a single clause?**
+
+This is where the gut check's *shared premise* becomes an action. The gut check *diagnoses* that
+several findings trace to one decision; this pass *acts* on it — but only ever by **consolidating
+escalations that are already in Needs you**. It never promotes a finding out of *Doing it*, and it
+never manufactures a decision where none was needed. Its only effect is to *reduce* the number of
+rulings the human faces, never to add one — which is how it stays honest against "over-escalation is
+the failure mode" by construction.
+
+If yes:
+- Replace those individual escalations with a **single** Needs you escalation whose ruling *is* the
+  policy decision (use the standard Needs you template; the policy call is what needs a ruling, not
+  each finding beneath it).
+- In that escalation's finding paragraph, name the individual findings it subsumes, so the reader
+  sees exactly what one ruling settles.
+
+**Guardrail — only collapse when:**
+- The resolving decision is nameable in one clause. If describing it takes more than ~15 words,
+  it is not one decision — leave the escalations independent.
+- The escalations genuinely go away if the policy is adopted. A policy that *reduces* but does not
+  *resolve* them does not qualify.
+- There are >=2 escalations already in Needs you, not just 1 large one. A single escalation with
+  multiple sub-problems is not a collapse candidate.
+
+**Cap:** at most 2 collapse consolidations per review. If you see 3 or more candidates, consolidate
+only the two that subsume the most escalations. Over-collapsing bundles unrelated rulings into one
+and muddies which decision settles what.
+
+**If nothing collapses, skip this section silently.** No "nothing found" line. Do not manufacture
+a collapse to look thorough.
+
+---
+
 ## Output
 
 You write **one** file into `{REVIEW_DIR}`, and nothing else: `action-plan.md`.
@@ -265,8 +303,9 @@ never a section with its own heading.}
 Write the file, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | collapsed: {n} | wrote-plan: {action-plan path}
 ```
 
 `clusters` is the number of gut-check questions that came back with a real answer (0–3); `declined`
-is the number of `**Human Call**` nominations you did not escalate.
+is the number of `**Human Call**` nominations you did not escalate; `collapsed` is the number of
+collapse consolidations you performed (0–2, per the cap in *Collapse pass*).

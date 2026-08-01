@@ -243,3 +243,42 @@ restoring the removed machinery directly.
 **Rationale:** The ledger and decision-memory machinery added complexity whose maintenance cost
 outweighed the benefit at this stage. The triage flow itself (the load-reduction insight this ADR
 documents) is retained in full.
+
+## Amendment — collapse pass (consolidation-only, #42)
+
+Comparing an automated review against a human's transcript showed the panel finds the right findings
+but misses when several of them share a **single upstream policy decision** that would make them all
+go away — the human's answer was one clause, and it was never on any option menu because no single
+finding saw the whole picture. The **collapse pass** (`prompts/triage.md`, between the gut check and
+Output) closes that gap.
+
+The first `/expert-review` run against this feature reviewed the feature itself, and its collapse
+pass fired on its own review — consolidating four findings into one ruling. That run's escalations
+were ruled on, and the resulting scope decision defines the pass as shipped:
+
+- **Consolidation-only.** The pass looks *only* at escalations already in *Needs you* and, when
+  `>=2` of them resolve to one policy decision nameable in a single clause, replaces them with a
+  single escalation whose ruling is that decision. It **never** promotes a finding out of *Doing it*
+  into a new escalation. The originally-specced "promote an accepted fix into a fresh decision"
+  direction (Branch A) was considered and dropped: it added escalations after the over-escalation
+  sanity check had already been evaluated (so the Chief's guard and the orchestrator's recomputed
+  guard would read different `needs-you` counts), could manufacture a decision where none was needed,
+  and — on a "yes" ruling — dropped the concrete *Doing it* fix while landing the policy work in no
+  bucket at all. Every problem the panel found in the feature was a Branch-A problem.
+- **It only ever reduces `needs-you`.** Because the pass merges existing escalations and adds none,
+  it is guard-safe by construction: it cannot trip the over-escalation guard it sits downstream of,
+  and it honors "over-escalation is the failure mode" rather than working against it. No
+  `(Resolved by: …)` marking is written into *Doing it* — that was a Branch-A artifact and is gone.
+- **Cap: at most 2 consolidations per review.** With Branch A dropped the cap no longer bounds
+  *bloat* (the pass can't create any); it bounds *muddiness* — bundling unrelated rulings into one
+  escalation obscures which decision settles what.
+- **Relationship to the gut check.** The two are deliberately separate operations, not one. The gut
+  check *diagnoses* a shared premise (it answers "do these findings mean something together?"); the
+  collapse pass *acts* on it (it re-routes escalations). Folding the action into the gut check's
+  prose was considered and rejected during the feature's design — interleaving a diagnostic question
+  with a mutation muddies both. The gut check therefore still surfaces a shared premise even on
+  reviews where nothing collapses, and remains the only place a shared premise across *Doing it*
+  items (which the consolidation-only pass never touches) gets named.
+
+Rollback is the same as before: revert the *Collapse pass* sub-section and the `collapsed:` receipt
+field. No other files carry the mechanism.
