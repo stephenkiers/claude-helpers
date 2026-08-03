@@ -110,10 +110,18 @@ the Integration Gate when it completes.
 
 For each unit, create a branch off `START_SHA` and a worktree:
 
+**Placement must be flat, never nested under `main/`.** A worktree nested inside the main
+worktree's own directory tree (e.g. `${MAIN_WT}/.claude/worktrees/...`) sits inside whatever
+build-tool root lives at `main/` — for a Cargo workspace, that's `main/Cargo.toml`. A build tool
+run inside that nested path can walk up, find the parent's manifest, and silently resolve against
+the wrong workspace instead of erroring — this cost a prior run a lost commit and a commit to the
+wrong branch (both self-reported as success). Flat siblings avoid the whole class of problem, for
+any build tool, in any project:
+
 ```bash
 BRANCH=$(git branch --show-current)
 MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-WT_PARENT="${MAIN_WT}/.claude/worktrees"
+WT_PARENT="$(dirname "$MAIN_WT")"
 mkdir -p "$WT_PARENT"
 
 # For each unit (replace UNIT_ID with the actual id):
@@ -131,7 +139,8 @@ Launch one background `plan-implementer` agent per unit simultaneously (`run_in_
 
 Each prompt must be **fully self-contained** (the agent has no other context). Include:
 - The unit's sub-task text (verbatim, from Step 3)
-- Absolute path of `WT_PATH` as the working directory
+- A literal line **`Working directory: <WT_PATH>`** (this exact prefix — `plan-implementer`'s
+  first step greps for it verbatim to `cd` there before doing anything else)
 - The branch name
 - The 5 most recent commit messages (for commit style)
 - Contents of `CLAUDE.md` if found (under a "Project conventions" heading)
@@ -177,14 +186,63 @@ before deciding:
 git -C "$WT_PATH" add -A
 ```
 
-**If the worktree is genuinely empty** (no staged changes after the above): Mark unit `failed`.
-Leave its worktree in place for inspection. Surface the report and reason.
+**Drift check — before deciding the worktree is empty, verify the main worktree is clean on this
+unit's owned files.** A drifted agent's edits may have landed in the main worktree instead. Check:
+```bash
+git status --porcelain -- <owned-files>
+git rev-parse HEAD  # vs the expected HEAD from after the last orchestrator commit
+```
+
+If the main worktree has uncommitted changes **on this unit's owned files** and the unit
+worktree is empty, this is **cwd drift** — proceed to the salvage procedure below instead of
+marking the unit failed. If the main worktree's HEAD has changed unexpectedly, surface that
+anomaly to the human before proceeding.
+
+If the main worktree is dirty on files owned by a **still-running** unit, do not apply/commit
+anything yet that would sweep those files in; note it and re-check at that unit's completion.
+
+**If the worktree is genuinely empty** (no staged changes after the above, and main worktree
+clean on this unit's files): Mark unit `failed`. Leave its worktree in place for inspection.
+Surface the report and reason.
 
 **The inverse is a lost-work anomaly, not a success:** if the worktree is genuinely empty (both
 `git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty — worktree-wide check, not file-scoped) **but** the
 report claims `STAGED: yes` or otherwise claims work was done, do not shrug this off as "no
-changes needed" — treat it as an interrupted handoff (destructive git wiped the staged work mid-run
-is one known cause) and use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
+changes needed" — **first check the main worktree for the unit's work** (`git status --porcelain
+-- <owned-files>` in main). If the work is sitting there, this is cwd drift, not lost work —
+proceed to the salvage procedure below. If main is clean on the unit's files, treat it as an
+interrupted handoff and use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
+
+### Salvage procedure for cwd drift
+
+When a drifted agent's work is in the main worktree (not the unit's own worktree):
+
+1. **Confirm no stray commits:** `git log --oneline <expected-HEAD>..HEAD` in main must be empty
+   (cwd drift creates uncommitted changes only, never new commits).
+2. **Scope the dirt:** `git status --porcelain` in main must touch **only this unit's owned files**.
+   Any overlap with other units' owned files → **stop and surface to the human** (concurrent
+   corruption risk).
+3. **Verify the drifted work is actually the unit's deliverable.** Read the diff against the
+   sub-task: does this match what the unit was supposed to do? Never assume drifted work is
+   complete.
+4. **Harvest to the scratch dir first, before any cleanup** (snapshot survives any later mistake):
+   ```bash
+   git add -A -- <owned-files>
+   git diff --staged --binary -- <owned-files> > "$SCRATCH/unit-${UNIT_ID}-drifted.patch"
+   ```
+5. **Commit in main as the unit's round-1 commit** (same message convention as the normal apply
+   path):
+   ```bash
+   git commit -m "round-1 unit ${UNIT_ID}: <summary>"
+   ```
+6. **Tear down the unit's empty worktree** (the work was already in main):
+   ```bash
+   git worktree remove "$WT_PATH"
+   git worktree prune
+   git branch -D "$WT_BRANCH"
+   ```
+   Mark unit `merged (salvaged-from-main)` and surface that label in the final summary's
+   round-1 line.
 
 **Otherwise, apply the unit's staged diff from the main worktree** (never cd into the unit's
 worktree; never merge or commit inside it):
@@ -290,6 +348,8 @@ Max **K = 3** iterations. On each iteration:
 
 1. Launch a fix `plan-implementer` agent (background) in an isolated worktree branched from current
    HEAD (not START_SHA). Prompt it with:
+   - A literal line **`Working directory: <path to this fix worktree>`** (same exact prefix as
+     Step 4b — required for `plan-implementer` to `cd` there)
    - The specific failures from the gate (compile errors, stub locations, tamper flags)
    - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
    - "Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
@@ -352,6 +412,9 @@ git worktree add "$R2_WT_PATH" -b "$R2_BRANCH" "$ROUND2_START_SHA"
 
 Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test author** prompt:
 
+> **`Working directory: $R2_WT_PATH`** (this exact prefix — required for `plan-implementer` to
+> `cd` there before doing anything else)
+>
 > Your job is to write tests for the plan below. The plan has already been implemented by a prior
 > pass — but you must **not** look at how it was implemented. Tests written from the implementation
 > just encode the implementer's assumptions; tests written from the plan alone are an independent
@@ -459,12 +522,21 @@ git apply --index "$SCRATCH/round2.patch"
 git commit -m "round-2: spec-blind tests"
 git worktree remove "$R2_WT_PATH" && git worktree prune && git branch -D "$R2_BRANCH"
 ```
+
+**Drift check — before deciding the worktree is empty, verify the main worktree is clean.**
+A drifted Round 2 agent's test files may have landed in the main worktree instead. If the
+R2 worktree is empty but `git status --porcelain` in main shows test files, this is cwd drift.
+Harvest the diff first via the salvage procedure (Step 4c's salvage steps 1–4, adapted for
+test files), then proceed to teardown and apply.
+
 If the diff is empty and `STAGED: no` — inspect the worktree before declaring no tests were
 written; genuinely finished-but-unstaged work should still be applied.
 
 The inverse is a lost-work anomaly, not a success: if the diff is empty **and** `STAGED: yes` (or
-the report otherwise claims work was done), treat it as an interrupted handoff, not "no tests
-needed" — use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
+the report otherwise claims work was done), **first check the main worktree for test files** before
+offering the menu. If the work is in main, this is cwd drift — salvage in place. If main is clean
+on test files, treat it as an interrupted handoff and use the Incomplete-report menu (Re-run /
+Inspect / Skip / Abort) below.
 
 Then re-run the new tests yourself and record actual pass/fail counts — **never echo the agent's
 claimed counts into the summary uncorrected.**
@@ -745,10 +817,12 @@ orchestrator's own verification — never trust round self-reports.
 - **"Pure move" refactors duplicate and drop.** Compare unique test fn-name SETS before
   vs after (`comm`), not attribute counts — a duplicated block plus two dropped tests
   cancel out in the count.
-- **Agents die mid-format and drift cwd.** Expect to finish formatting/commits yourself;
-  when a merge conflicts unexpectedly on an agent's files, check whether it edited the
-  MAIN worktree instead of its own (`git -C <wt> status` both places) — the work is
-  usually salvageable in place.
+- **Agents die mid-format and drift cwd.** A drifted agent's edits can land in the main
+  worktree instead of its own, presenting as an empty unit worktree but `STAGED: yes` (or
+  `STAGED: no` with unstaged work). Before offering Re-run, check the main worktree for the
+  unit's owned files (`git status --porcelain -- <owned-files>`). If the work is there, salvage
+  in place via the procedure in Step 4c's "Salvage procedure for cwd drift" section — never
+  Re-run without first checking main, as real incidents wasted duplicate runs that way.
 - **The adversary punts.** Round 3 may "document the limitation" instead of writing the
   hard test, report `VERIFIED: n/a` without running anything, or mislabel an explicit
   plan requirement as `[PLAN_GAP]`. Re-triage its findings; write the real test
