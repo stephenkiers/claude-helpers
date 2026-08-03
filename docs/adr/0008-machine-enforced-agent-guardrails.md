@@ -78,3 +78,38 @@ value, since it was never a real gate to begin with. The hook is the single sour
 - **Forking note:** if you fork this repo and add other autonomous, `bypassPermissions` agents
   that can reach genuinely destructive commands (not just git), apply the same pattern: an
   allowlist-based, fail-closed `PreToolUse` hook, not a prose rule alone.
+
+## Amendment: Cwd drift as a residual risk (2026-07-30)
+
+Real incidents (e.g., session 7F17AECE) exposed a second half of the lost-work failure:
+an agent's cwd drifting, causing its edits to land in the main worktree instead of its assigned
+worktree, while the run still reported success (`STAGED: yes` or `STAGED: no` with unstaged work).
+
+**Why this is not hook-enforceable:** The PreToolUse hook is static per-agent (bound at agent
+definition time), has no visibility into per-invocation state like the assigned worktree path
+(prompt-level only), and cannot influence the orchestrator's assignment of cwd to the main
+worktree before spawning the agent. A path-guard hook that blocked writes to main would also
+block the legitimate single-unit fallback and Round 3 follow-up pass, which run in the main
+worktree by design.
+
+**Root cause, found later:** the drift wasn't a spawning-mechanism limitation at all — the
+orchestrator passed the assigned path as a plain "Working directory: X" prompt line, but
+`plan-implementer`'s own instructions never consumed it (no `cd`, ever). Claude Code's Bash tool
+persists cwd across a single agent's calls, so a `cd` at the start of the agent's own instructions
+closes this for good — no hook, no orchestrator-side change needed. `plan-implementer.md` now has
+this as its first, load-bearing step: `cd` to the given path, verify with `pwd`, halt on mismatch.
+(A second, compounding cause was nesting worktrees under `main/.claude/worktrees/`, inside build
+tool workspace roots that then silently misresolved — fixed by defaulting to flat sibling
+placement instead.)
+
+**Detection + salvage remains as defense in depth**, not the primary fix: orchestrator-side
+detection at every harvest point (Step 4c, Round 2 apply, Round 3 follow-up apply) checks the
+main worktree state (`git status --porcelain` on the unit's owned files) against the agent's
+assigned worktree, and a **codified salvage procedure** (Step 4c, "Salvage procedure for cwd
+drift") applies the drifted work in place if found. Before offering Re-run as a response to an
+empty worktree with a success-claiming trailer, the orchestrator checks main first — real
+incidents wasted duplicate runs by Re-running without salvaging from main first.
+
+The fixed destructive-git half (this ADR's main scope), the `cd`-at-start prevention in
+`plan-implementer.md`, flat worktree placement, and the detection + salvage half (in
+`implement-with-haiku.md`) together close the incident class.
