@@ -115,10 +115,12 @@ is restraint.
 
 Sanity check before you write. Let `confirmed = doing + needs-you + deferred` (*Needs measurement*
 is excluded — measurement items aren't something the human is being asked to *decide*, so they don't
-count against this guard). **Re-read your escalations if
-`needs-you >= 5`, OR if (`needs-you / confirmed > 0.2` AND `confirmed >= 10`).** The absolute term is
-the real guard: the harm is *"a Needs you list long enough that nobody reads it,"* which is a count,
-not a ratio — a tidy 3-finding review with 1 real escalation is fine, and 8 escalations is two
+count against this guard). Cluster-synthesized items count as `0.5` toward the escalation count —
+one cluster item is not an independent decision ask. So `human_asks = max(0, needs-you - 0.5 * clusters-escalated)`.
+
+**Re-read your escalations if `human_asks >= 5`, OR if (`human_asks / confirmed > 0.2` AND `confirmed >= 10`).**
+The absolute term is the real guard: the harm is *"a Needs you list long enough that nobody reads it,"* which
+is a count, not a ratio — a tidy 3-finding review with 1 real escalation is fine, and 8 escalations is two
 rounds of questions no matter how large the review. When the check trips, look hardest at tests 4 and
 5, where "I can imagine an alternative" is not a trade-off and "the code changes" is not a behavior
 change — but do **not** let this check talk you out of a genuine test-5 footgun. Under-escalating a
@@ -143,7 +145,13 @@ Three questions. Answer each in prose, in a sentence or three:
 - **Shared premise?** Do three or more findings trace back to one upstream assumption? If so, **name
   the assumption**, and say whether fixing it upstream dissolves the findings rather than patching
   them one by one. A cluster of "wrong-looking" findings usually means the diff is fine and one
-  *decision* was wrong.
+  *decision* was wrong. When you identify **three or more confirmed findings** sharing one upstream
+  assumption, you **must synthesize exactly one `Needs you` cluster item** (template follows the
+  standard escalation shape with two additions: a **Dissolves** list naming the findings' titles,
+  and an **Or apply piecemeal** option that reads "apply each finding individually without fixing
+  the upstream assumption"). Those findings remain in *Doing it* as a sub-list under the note
+  `⤴ dissolves if cluster option A is chosen`. The cluster item itself counts as `0.5` against
+  the over-escalation guard (one cluster is not N independent questions).
 - **Drift?** Does anything here contradict `docs/adr/` or a project invariant? Surface it here even
   though it is also an escalation — the reader wants to see drift as a *direction*, not as an item
   in a list.
@@ -185,6 +193,11 @@ If yes:
   *resolve* them does not qualify.
 - There are >=2 escalations already in Needs you, not just 1 large one. A single escalation with
   multiple sub-problems is not a collapse candidate.
+- **A cluster item synthesized by the gut check is final — never a collapse candidate.** It is
+  already the consolidation of a shared premise, so re-folding it here would double-count it (once as
+  `clusters-escalated`, again as `collapsed`) and double-apply its `0.5` guard discount. Each Needs
+  you item is owned by exactly one mechanism: the gut check's cluster synthesis *or* this collapse
+  pass, never both. Leave cluster items untouched and collapse only ordinary escalations.
 
 **Cap:** at most 2 collapse consolidations per review. If you see 3 or more candidates, consolidate
 only the two that subsume the most escalations. Over-collapsing bundles unrelated rulings into one
@@ -303,9 +316,11 @@ never a section with its own heading.}
 Write the file, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | collapsed: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {action-plan path}
 ```
 
-`clusters` is the number of gut-check questions that came back with a real answer (0–3); `declined`
-is the number of `**Human Call**` nominations you did not escalate; `collapsed` is the number of
-collapse consolidations you performed (0–2, per the cap in *Collapse pass*).
+`clusters` is the number of gut-check questions that came back with a real answer (0–3);
+`clusters-escalated` is the number of `Needs you` items synthesized from shared-premise clusters
+(these count as `0.5` each toward the over-escalation guard); `collapsed` is the number of collapse
+consolidations you performed (0–2, per the cap in *Collapse pass*); `declined` is the number of
+`**Human Call**` nominations you did not escalate.

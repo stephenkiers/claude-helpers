@@ -153,7 +153,10 @@ if tri_prompt is not None:
 # ============================================================================
 print("\n[Invariant 5] Triage receipt field order (with collapsed)")
 
-# Canonical field order: doing → needs-you → measure → deferred → declined → clusters → collapsed → wrote-plan.
+# Full canonical field order (doing → needs-you → measure → deferred → declined → clusters →
+# clusters-escalated → collapsed → wrote-plan) is guarded in test_triage.py. Here we only assert the
+# subset this feature owns and that `collapsed` sits immediately before `wrote-plan`; the fields
+# below are a positional subset, not the complete list.
 RECEIPT_FIELD_ORDER = ["doing:", "needs-you:", "measure:", "deferred:", "declined:", "clusters:", "collapsed:", "wrote-plan:"]
 
 if tri_prompt is not None:
@@ -198,5 +201,26 @@ if tri_cmd_raw is not None and tri_prompt_raw is not None:
     t("triage receipt is byte-identical in both command and prompt (surrounding whitespace included)",
       tri_cmd_raw == tri_prompt_raw,
       f"command: {tri_cmd_raw!r}\n      prompt: {tri_prompt_raw!r}")
+
+# ============================================================================
+# INVARIANT 7: Collapse and cluster synthesis are mutually exclusive per item.
+# Both mechanisms act on a shared premise; a gut-check cluster item lands in
+# Needs you, so without an explicit rule the collapse pass could re-fold it —
+# double-counting it as clusters-escalated AND collapsed, and double-applying
+# its 0.5 guard discount. The collapse section must exclude cluster items.
+# ============================================================================
+print("\n[Invariant 7] Cluster items are not collapse candidates (no double-count)")
+
+if collapse_section is not None:
+    section_match = re.search(r"^## Collapse pass\b(.*?)(?=\n## |\Z)", TRIAGE, re.M | re.S)
+    section_body = section_match.group(1) if section_match else ""
+    t("Collapse pass excludes gut-check cluster items from consolidation",
+      bool(re.search(r"cluster item", section_body, re.I))
+      and bool(re.search(r"never a collapse candidate|not a collapse candidate|final", section_body, re.I)),
+      "a synthesized cluster item must be declared off-limits to the collapse pass")
+    t("The exclusion names the double-count it prevents",
+      bool(re.search(r"double-count", section_body, re.I))
+      and "clusters-escalated" in section_body and "collapsed" in section_body,
+      "the rationale (double-counting clusters-escalated and collapsed) must be stated so it isn't lost")
 
 h.summarize_and_exit()

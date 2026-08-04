@@ -32,8 +32,10 @@ files untouched.
 
 1. Resolve the repo root (the directory this command lives in, walked up to the git root).
 2. Perform the symlinking described above for all five directories.
-3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
-4. Report a concise summary: how many files were linked, skipped, or backed up per directory.
+3. Create `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if it does not
+   already exist. Must be idempotent — never overwrite an existing user file.
+4. **Verify** by listing the five target directories and confirming the new symlinks resolve.
+5. Report a concise summary: how many files were linked, skipped, or backed up per directory.
 
 A no-Claude fallback exists: running `./install.sh` from the repo root does the same thing.
 

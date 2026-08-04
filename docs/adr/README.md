@@ -19,7 +19,8 @@ to North Star Nick).
   in that file)
 - [ADR-0004: Model cost routing (Haiku for mechanical work)](0004-model-cost-routing.md)
 - [ADR-0005: Context cascade](0005-three-layer-context-cascade.md) — amended by ADR-0007 (a fourth
-  layer; the heading dropped "Three-layer" but the filename is kept for inbound links)
+  layer; the heading dropped "Three-layer" but the filename is kept for inbound links); amended again
+  with `preferences.yaml` as a global user-preference lens
 - [ADR-0006: Reviewer output-format carve-outs](0006-reviewer-output-format-carve-outs.md) — amended
   by ADR-0007 (additive fields are not carve-outs)
 - [ADR-0007: Triage and decision memory](0007-triage-and-decision-memory.md) — amends ADR-0004

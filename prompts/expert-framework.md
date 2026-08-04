@@ -12,9 +12,11 @@ This step is centralized here so individual personas don't repeat it. **Before**
 check for and read these files in order (skip silently if absent):
 
 1. `.claude/project.yaml` — project-wide tech stack, ADRs, invariants, red lines, terminology.
-2. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.
+2. `~/.claude/preferences.yaml` — global user taste applied as an additional review lens; never
+   suppress findings or dilute severity based on it; note when it shaped your wording.
+3. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.
 
-Read them in that order — project-wide context first, then the local override applied on top. When
+Read them in that order — project-wide context first, then user preferences, then the local override applied on top. When
 two set the same value, the later one generally wins.
 
 If any exist, fold their knowledge into your review:

@@ -68,6 +68,16 @@ waved through without escalating.
 `final-report.md` is unchanged and one click away. It is still the gut-check instrument of record —
 triage sits **in front of** it, not over it.
 
+## User preferences
+
+Create `~/.claude/preferences.yaml` to define personal code review taste and style. Preferences are
+a **lens** through which reviewers shape how findings are worded and prioritized — never a
+suppression list. A preference influences the emphasis and framing of a finding but never eliminates
+it. Hard floor: preferences never dilute CRITICAL or security-flagged findings. When `.claude/project.yaml`
+or a project-level ruling conflicts with a preference, the project-level rule wins; preferences are
+personal defaults that projects can override. Copy `prompts/preferences.yaml.template` from this repo
+to get started.
+
 ## Commands
 
 **Review & planning**

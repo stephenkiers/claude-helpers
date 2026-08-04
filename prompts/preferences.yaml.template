@@ -1,0 +1,69 @@
+# .claude/preferences.yaml — personal code review taste/style lens
+#
+# Copy this file to your home directory at: ~/.claude/preferences.yaml
+# All entries are optional and commented out. Uncomment and edit what applies to you.
+#
+# ─── What is this? ─────────────────────────────────────────────────────────
+#
+# Preferences are a LENS through which reviewers shape how findings are worded and
+# prioritized — they are never a suppression list. A preference influences *how* a
+# finding is framed and its emphasis in the report, but never eliminates a finding
+# or dilutes its severity.
+#
+# Hard floor: preferences never dilute CRITICAL or security-flagged finding severity.
+# This is the same floor that decisions.yaml held. When a finding is security-domain
+# or CRITICAL, it passes through unaffected.
+#
+# Project-level wins on conflict: when .claude/project.yaml or a project-level ruling
+# conflicts with a preference here, the project-level rule wins. Preferences are
+# personal defaults; projects can override them.
+#
+# Reviewers should note in their reasoning when a preference shaped their wording
+# (e.g., "per user preference `no-magic-strings`") so the review stays reproducible.
+#
+# ─── Schema ────────────────────────────────────────────────────────────────
+#
+# Each entry is a rule with the following fields:
+#
+# - name: A short identifier (kebab-case), matching [a-z0-9-]+
+# - rule: The rule itself, 1-2 sentences. What it is or what it asks for.
+# - spirit: The reasoning behind the rule. Why this matters to you.
+# - appliesTo: Which reviewers should apply it, or "all" for everyone.
+#   Examples: "all", "tara-typesafe", "uncle-bob,security-sage"
+# - revisitIf: A condition under which this rule should be questioned.
+#   Examples: "the project's type system is very dynamic",
+#             "strict perf is a hard requirement"
+
+# ─── Examples (uncomment and customize) ────────────────────────────────────
+
+# # Preference: no magic strings
+# - name: no-magic-strings
+#   rule: >
+#     Avoid magic strings in code. Extract them to named constants at the top of the file
+#     or in a constants module.
+#   spirit: >
+#     Magic strings are maintenance landmines. When the same string appears in tests, docs,
+#     and code, they drift. Naming them makes them visible, testable, and changeable.
+#   appliesTo: all
+#   revisitIf: the project has a string-heavy dynamic approach and constants would be overkill
+
+# # Preference: no `as` in TypeScript
+# - name: no-as-in-ts
+#   rule: >
+#     Avoid `as` type assertions in TypeScript. Use `satisfies` or narrow types with guards instead.
+#   spirit: >
+#     Type assertions bypass the type system. They hide bugs. A `satisfies` check or a proper
+#     type guard keeps the compiler in the loop.
+#   appliesTo: tara-typesafe
+#   revisitIf: you're at a third-party boundary where `as` is the only sane option
+
+# # Preference: readability over cleverness
+# - name: readability-over-cleverness
+#   rule: >
+#     Prefer explicit, readable code over clever one-liners. A loop that takes 5 lines is
+#     better than a nested comprehension that takes 1.
+#   spirit: >
+#     Code is read more than it is written. A clever line saves 4 lines of code but costs
+#     the next reader 10 minutes. Readability compounds.
+#   appliesTo: uncle-bob
+#   revisitIf: you're in a competitive programming context or performance is the only concern
