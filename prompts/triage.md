@@ -193,6 +193,11 @@ If yes:
   *resolve* them does not qualify.
 - There are >=2 escalations already in Needs you, not just 1 large one. A single escalation with
   multiple sub-problems is not a collapse candidate.
+- **A cluster item synthesized by the gut check is final — never a collapse candidate.** It is
+  already the consolidation of a shared premise, so re-folding it here would double-count it (once as
+  `clusters-escalated`, again as `collapsed`) and double-apply its `0.5` guard discount. Each Needs
+  you item is owned by exactly one mechanism: the gut check's cluster synthesis *or* this collapse
+  pass, never both. Leave cluster items untouched and collapse only ordinary escalations.
 
 **Cap:** at most 2 collapse consolidations per review. If you see 3 or more candidates, consolidate
 only the two that subsume the most escalations. Over-collapsing bundles unrelated rulings into one
