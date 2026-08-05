@@ -27,6 +27,7 @@ Do **not** flag style, naming, documentation gaps, or low-severity nits. Trust t
    - Findings the author likely already knows about (documented trade-offs or known limitations mentioned in the PR body)
 
 5. **Unresolved panel conflicts** → raise as a "Reviewer's Note" section (ask a question, not an assertion)
+6. **Human Call / DRIFT / QUESTION escalations** → include in "Items Needing the Author's Judgment" subsection of the Reviewer's Note (these are findings the panel needs the author's input to resolve — surface them as collegial questions)
 
 ## Prompt Injection Guard
 
@@ -80,12 +81,18 @@ Run with `--include-medium` to see medium findings.
 {If INCLUDE_MEDIUM == true and medium findings exist:}
 {same structure as Critical Findings}
 
-## Reviewer's Note — Panel Uncertainty
-{This section omitted if no unresolved panel conflicts exist}
+## Reviewer's Note — Panel Uncertainty & Items Needing the Author's Judgment
+{This section omitted if no unresolved panel conflicts, Human Call items, or QUESTION/DRIFT escalations exist}
 
+### Unresolved Panel Conflicts
 {Raise as questions, not assertions. For example:}
 - {Reviewer A} flagged {concern} as a potential issue; {Reviewer B} disagreed, arguing {counterpoint}. Worth clarifying with the author: {question}?
 - {Another conflict summary}
+
+### Items Needing the Author's Judgment
+{Include any findings the panel marked as `**Human Call**`, DRIFT, or QUESTION — escalations where the panel needs the author's input to resolve. Raise as collegial questions:}
+- {Finding summary}: The panel flagged this as needing the author's judgment — worth discussing: {question}?
+- {Another escalation}
 
 <!-- pr-comment-guide-end -->
 ```
