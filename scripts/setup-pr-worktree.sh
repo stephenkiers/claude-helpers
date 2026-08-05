@@ -51,7 +51,10 @@ for arg in "${@:2}"; do
 done
 
 # --- Step B: Fetch PR metadata ---
-PR_META=$(gh pr view "$PR_URL" --json baseRefName,headRefName,title,body,headRefOid 2>&1)
+PR_META=$(gh pr view "$PR_URL" --json baseRefName,headRefName,title,body,headRefOid) || {
+  echo "ERROR: gh pr view failed for ${PR_URL} (check auth / URL / access)." >&2
+  exit 1
+}
 BASE_BRANCH=$(echo "$PR_META" | jq -r '.baseRefName')
 HEAD_BRANCH=$(echo "$PR_META" | jq -r '.headRefName')
 PR_TITLE=$(echo "$PR_META" | jq -r '.title')
@@ -115,6 +118,9 @@ if mkdir -p "$REVIEW_DIR"; then
 fi
 
 # --- Step E: Create worktree (idempotent with staleness check) ---
+
+# Ensure the worktree parent exists before opening the lockfile there (first-run safe)
+mkdir -p "${WORKTREE_PARENT}"
 
 # Try to acquire non-blocking lock on worktree (guard against concurrent reviews)
 # shellcheck disable=SC2034
