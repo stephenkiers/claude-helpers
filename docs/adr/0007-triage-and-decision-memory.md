@@ -282,3 +282,7 @@ were ruled on, and the resulting scope decision defines the pass as shipped:
 
 Rollback is the same as before: revert the *Collapse pass* sub-section and the `collapsed:` receipt
 field. No other files carry the mechanism.
+
+## Amendment — scope note: Triage Chief is author-centric (ADR-0009)
+
+The Triage Chief and triage stage (doing it / needs you / needs measurement / deferred) described in this ADR apply to **author-centric** review via `/expert-review`. The peer-review command, `/expert-review-coworker`, deliberately **omits the Triage Chief** — it is a different orchestration optimized for collegial, high-bar escalation in a shared PR context. Instead of sorting findings into decision buckets, `/expert-review-coworker` surfaces panel escalations (`**Human Call**` / `DRIFT` / `QUESTION`) as collegial questions for the author inline in PR comments (via `prompts/pr-comment-guide.md`). This is a design choice reflecting different contexts and use cases, not a phasing plan. See [ADR-0009](0009-peer-review-and-shared-panel.md).
