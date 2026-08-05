@@ -16,9 +16,9 @@ Here, you **trust the author is competent**. You are not trying to find every bu
 Parse `$ARGUMENTS` for:
 
 1. **`--model <haiku|sonnet|opus|fable>`** — sets `PANEL_MODEL` (error if any other value; if absent, leave unset so subagents inherit this command's model, which is `opus`)
-2. **`--include-medium`** — parse this flag (default false → `INCLUDE_MEDIUM=false`)
+2. **`--include-medium`** — parse this flag (default false → `INCLUDE_MEDIUM=false`; if present → `INCLUDE_MEDIUM=true`)
 3. **`--all` or no named reviewers** → `NAMED_SELECTION=false` (all reviewers)
-4. **Named reviewers** — match case-insensitively against `~/.claude/reviewers/index.yaml` keys → `NAMED_SELECTION=true`, bypass the Router (Step 5)
+4. **Named reviewers** — match names case-insensitively against `~/.claude/reviewers/index.yaml` keys; error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names)
 
 Validate `--model` value; error if not one of the four permitted values.
 
@@ -29,12 +29,15 @@ The remaining argument is the PR URL; store it as `PR_URL`.
 One Bash call; no LLM tokens:
 
 ```bash
-eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL" ${INCLUDE_MEDIUM:+--include-medium})"
+MEDIUM_FLAG=""
+[[ "$INCLUDE_MEDIUM" == "true" ]] && MEDIUM_FLAG="--include-medium"
+setup_out="$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL" $MEDIUM_FLAG)" || exit 1
+eval "$setup_out"
 ```
 
-This exports (among others): `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`, `HEAD_SHA`, `TARGET_REPO`, `PR_NUMBER`, `PR_TITLE`, `CLONED_THIS_SESSION`, `INCLUDE_MEDIUM`.
+This exports (among others): `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`, `HEAD_SHA`, `TARGET_REPO`, `PR_NUMBER`, `PR_TITLE`, `CLONED_THIS_SESSION` (reserved for v2 auto-clone), `INCLUDE_MEDIUM`.
 
-**If the script exits non-zero** (bad URL, no local clone, empty diff), surface its stderr message and stop — it already cleaned up any partial worktree via its own trap.
+**If the script exits non-zero** (bad URL, no local clone, empty diff), the `|| exit 1` stops immediately; the script has sent its error message to stderr and cleaned up any partial worktree via its EXIT trap, which runs reliably on any failure exit.
 
 ## Step 2 — Project Context Detection
 
@@ -64,7 +67,7 @@ Output: `${REVIEW_DIR}/summary.md` (same format as `/expert-review`)
 
 ## Steps 5–10 — Expert Review Panel (Shared)
 
-Read `~/.claude/prompts/expert-review-panel.md` and follow those steps. You have already set: `REVIEW_DIR`, `PANEL_MODEL`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts.
+Read `~/.claude/prompts/expert-review-panel.md` and follow those steps. You have already set: `REVIEW_DIR`, `WORKTREE_PATH`, `PANEL_MODEL`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts.
 
 **Important**: The shared panel's Summarizer is its **Step 4**. Since Step 4 above already ran the Summarizer (with the PR-context addition), **begin the panel at Step 5 (Router)**. The `summary.md` already exists and must not be regenerated.
 
@@ -133,13 +136,15 @@ Options:
    ```
    AskUserQuestion: "What do you want to do?"
    Options:
-     1. "I'll post this"
+     1. "Keep this — I'll paste it into the PR myself"
      2. "Skip"
      3. "Done reviewing"
    ```
    "Done reviewing" exits the loop early.
 
-5. After the loop, write `${REVIEW_DIR}/posted-comments.md` with chosen comments as copy-pasteable blocks (one block per finding, in order chosen).
+5. After the loop, if the user selected/kept at least one comment, write `${REVIEW_DIR}/posted-comments.md` with chosen comments as copy-pasteable blocks (one block per finding, in order chosen). If no comments were selected, skip writing the file and note that nothing was selected.
+
+6. Print the path to `${REVIEW_DIR}/posted-comments.md` (if it exists) with a one-line next step: "Copy-paste each block into the corresponding PR comment thread."
 
 **If user chooses to read themselves**: Skip directly to Step 13.
 
