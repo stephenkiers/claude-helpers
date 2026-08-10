@@ -59,3 +59,7 @@ multiply with panel size. `--model` (ADR-0004) is the knob for that.
   severity-ranks, and resolves conflicts for the final report. This replaces the old quadratic
   cross-review stage (each DEEP-DIVE reviewer reacting to all others' findings), which added little
   value and was expensive.
+
+## Amendment — panel extracted to shared prompt (ADR-0009)
+
+The blind-first two-pass panel (Summarizer → Router → Pass 1 → Contrarian Carl → Q&A → Pass 2 → Amalgamator) is now located in `prompts/expert-review-panel.md` and consumed by both `/expert-review` and `/expert-review-coworker`. The decision and consequences above remain unchanged; the panel logic is shared and identical across both commands. See [ADR-0009](0009-peer-review-and-shared-panel.md).

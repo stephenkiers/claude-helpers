@@ -28,6 +28,9 @@ to North Star Nick).
   own Amendment recording the dogfooded rulings
 - [ADR-0008: Machine-enforced agent guardrails](0008-machine-enforced-agent-guardrails.md) —
   destructive prose constraints on autonomous agents get a PreToolUse hook, not just a sentence
+- [ADR-0009: Peer review and shared panel](0009-peer-review-and-shared-panel.md) — the blind-first
+  two-pass panel extracted to a shared prompt consumed by both `/expert-review` and
+  `/expert-review-coworker`; peer review is collegial and omits Triage Chief
 
 ## Format
 
