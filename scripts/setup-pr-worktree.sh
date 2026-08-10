@@ -122,26 +122,27 @@ fi
 # Ensure the worktree parent exists before opening the lockfile there (first-run safe)
 mkdir -p "${WORKTREE_PARENT}"
 
-# Try to acquire non-blocking lock on worktree (guard against concurrent reviews)
-# shellcheck disable=SC2034
-LOCK_ACQUIRED=false
+# Acquire a non-blocking lock and HOLD it for the rest of the script (guard against
+# concurrent reviews). Using `exec 9>` — not a redirect on the if-block — keeps fd 9 open
+# past this block; a redirect scoped to the compound statement would close the fd and
+# release the lock immediately, before any of the git work below runs.
 if command -v flock >/dev/null 2>&1; then
-  if flock -n 9 2>/dev/null; then
-    # shellcheck disable=SC2034
-    LOCK_ACQUIRED=true
-  else
+  exec 9>"${WORKTREE_PATH}.lock"
+  if ! flock -n 9; then
     echo "ERROR: Another review of PR #${PR_NUMBER} appears to be in progress" >&2
     exit 1
   fi
-  # Note: Lock only covers setup; concurrent reads during review window are possible but rare
 else
   # flock unavailable on this system; skip lock (best-effort only)
   echo "Note: flock unavailable; skipping lock on worktree" >&2
-fi 9>"${WORKTREE_PATH}.lock"
+fi
 
 git -C "${MAIN_WORKTREE}" fetch origin "${BASE_BRANCH}" >&2
 git -C "${MAIN_WORKTREE}" fetch origin "pull/${PR_NUMBER}/head:${BRANCH_NAME}" --force >&2
-# Force-fetch refreshes the branch if the PR has new commits since last run
+# Force-fetch refreshes the branch if the PR has new commits since last run.
+# The fetch above created (or updated) the local branch — mark it now so cleanup can
+# delete it even if the worktree-add below fails.
+BRANCH_CREATED=true
 
 # Exact-line match to avoid substring matches on prefix PR numbers
 if git -C "${MAIN_WORKTREE}" worktree list --porcelain 2>&1 | grep -Fxq "worktree ${WORKTREE_PATH}"; then
@@ -152,7 +153,6 @@ else
   git -C "${MAIN_WORKTREE}" worktree add "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
   WORKTREE_CREATED=true
 fi
-BRANCH_CREATED=true
 
 # --- Step F: Write diff artifacts ---
 git -C "${WORKTREE_PATH}" fetch origin "${BASE_BRANCH}" >&2 2>/dev/null || true
@@ -170,13 +170,15 @@ fi
 } > "${REVIEW_DIR}/diff-index.md"
 
 # --- Step G: Write pr-context.md ---
-# Neutralize any literal <!-- PR_BODY_START or <!-- PR_BODY_END in the fetched body
+# Neutralize any literal comment-open markers in the fetched body AND title — both are
+# attacker-controlled and land inside this markdown, so both can smuggle fence markers.
 NEUTRALIZED_PR_BODY="${PR_BODY//<!--/<! --}"
+NEUTRALIZED_PR_TITLE="${PR_TITLE//<!--/<! --}"
 
 cat > "${REVIEW_DIR}/pr-context.md" <<EOF
 # PR Context
 
-**PR**: #${PR_NUMBER} — ${PR_TITLE}
+**PR**: #${PR_NUMBER} — ${NEUTRALIZED_PR_TITLE}
 **URL**: ${PR_URL}
 **Author branch**: ${HEAD_BRANCH}
 **Base branch**: ${BASE_BRANCH}
@@ -206,3 +208,7 @@ printf '%s=%q\n' PR_TITLE "$PR_TITLE"
 # reserved for v2 auto-clone
 printf '%s=%q\n' CLONED_THIS_SESSION "${CLONED_THIS_SESSION:-false}"
 printf '%s=%q\n' INCLUDE_MEDIUM "$INCLUDE_MEDIUM"
+
+# Release the worktree lock (fd 9) now that setup is complete. Closing it on normal exit
+# would happen anyway, but doing it explicitly documents the intended lock lifetime.
+exec 9>&- 2>/dev/null || true

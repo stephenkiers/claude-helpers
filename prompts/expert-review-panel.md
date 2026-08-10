@@ -23,6 +23,10 @@ calling commands stay stable.
 
 ### Step 4: Summarizer → `summary.md`
 
+**Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller — e.g.
+`/expert-review-coworker` — may have produced it during setup), skip this step and reuse
+that file. Do not re-run the summarizer or overwrite it.
+
 Spawn one subagent (`subagent_type: "general-purpose"`) with the summarizer prompt
 @~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
 diff text to summarize) rather than inlining `git diff` output, plus: changed-file list, commit
