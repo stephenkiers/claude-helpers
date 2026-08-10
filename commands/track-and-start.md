@@ -11,19 +11,21 @@ Creates a GitHub issue (or local plan file) from the plan, generates a branch na
 
 - **Must be in plan mode** with a valid plan file
 - Current directory must be within a git repository with a GitHub remote
+- If called with a tracker ticket ID argument (`[A-Z]+-\d+`), a GitHub remote is **not** required.
 
 ## Behavior
 
-1. **Validate** plan mode and plan file exist
-2. **Read original plan** content (preserve for issue - no modifications)
-3. **Detect project** from git remote and worktree layout
-4. **Check for local plan mode** — if `plans/` directory and array-format `issues.json` exist at the project root, use [Local Plan Mode](#local-plan-mode) (replaces steps 5-7 with local equivalents)
-5. **Pivot detection** — if current worktree has a linked issue overlapping with the new plan, offer to pivot (see [Pivot Detection](#pivot-detection)). If pivot is accepted, skip steps 6-10.
-6. **Check for overlapping issues** in the issue cache (see [Duplicate Detection](#duplicate-detection))
-7. **Create GitHub issue** with ORIGINAL plan as body, assign to current GitHub user
-8. **Generate branch name** from issue type and title
-9. **Create worktree** in correct location
-10. **Output handoff commands** for user to start implementation in the new worktree
+1. Validate plan mode and plan file exist
+2. Read original plan content (preserve for cache — no modifications)
+3. Check args for tracker ticket ID → if argument matches [A-Z]+-\d+, enter Tracker Ticket mode (highest priority; skips steps 4–7)
+4. Detect project from git remote and worktree layout
+5. Check for local plan mode
+6. Pivot detection
+7. Duplicate detection
+8. Create GitHub issue with original plan as body
+9. Generate branch name from issue type and title
+10. Create worktree in correct location
+11. Output handoff commands for user to start implementation
 
 **Note:** This skill does NOT call ExitPlanMode or continue implementation, **except** in the pivot flow where the user is already in the correct worktree — in that case, ExitPlanMode is called so the user can approve and begin implementing immediately.
 
@@ -35,6 +37,8 @@ Run the **Project Detection** and **Graft Detection** blocks from
 and `GRAFT_REPO_NAME`.
 
 **If not in a git repo or no GitHub remote:** Error with message about needing to be in a git repository with a GitHub remote.
+
+**Exception:** If Tracker Ticket mode was activated in step 3, a missing GitHub remote is not an error — `REPO` will be empty and that is expected. Steps that follow must not call `gh` commands in this mode.
 
 ## Local Plan Mode
 
@@ -133,6 +137,136 @@ cd <worktree-path> && claude "/implement-with-haiku"
 ```
 
 **Do NOT** call ExitPlanMode, continue implementation, or create a GitHub issue.
+
+---
+
+## Tracker Ticket Mode
+
+Activates when `/track-and-start` is called with a ticket ID argument matching `[A-Z]+-\d+` (e.g., `PPS-166`). It looks up the ticket via MCP, uses the tracker's branch name, creates a worktree named from the lowercase ticket ID, writes the standard `github-cache.json` shape, and does not require a GitHub remote. Steps 1 and 2 (validate plan mode, read original plan) still run first — the plan content becomes the cache `body`. This mode is self-contained (like Local Plan Mode): its own detection, resolution, cache write, and handoff, merging back into the shared worktree creation block. Graft is explicitly skipped (the branch name comes from the tracker and must not be renamed).
+
+#### Detection
+
+```bash
+TICKET_ID=""
+if echo "${1:-}" | grep -qE '^[A-Z]+-[0-9]+$'; then
+  TICKET_ID="${1}"
+fi
+```
+
+If `TICKET_ID` is empty, fall through to step 4 (Project Detection) as normal.
+
+#### Tracker Resolution
+
+Try Linear first; if not found, try Jira.
+
+**Linear:**
+Call `mcp__linearv3__get_issue` with the ticket ID (e.g., `PPS-166`).
+
+On success, extract:
+- `BRANCH` ← `gitBranchName` field (see fallback below)
+- `TICKET_URL` ← `url` field
+- `TICKET_TITLE` ← `title` field
+- `TICKET_BODY` ← `description` field (used only if needed; plan content is the primary body)
+
+**Jira fallback:**
+If Linear returns an error or "not found", call `mcp__atlassian__getJiraIssue` with `issueIdOrKey: "$TICKET_ID"`.
+
+On success, extract:
+- `TICKET_TITLE` ← `fields.summary`
+- `TICKET_URL` ← constructed from base URL + ticket ID (e.g., `https://<workspace>.atlassian.net/browse/$TICKET_ID`)
+- No native `gitBranchName` in Jira — always use slug fallback (see below)
+
+**If both fail:** Error: `"Ticket $TICKET_ID not found in Linear or Jira. Check the ID and try again."`
+
+#### Branch Name
+
+Linear provides `gitBranchName` natively. Use it directly if non-empty:
+
+```bash
+BRANCH="${LINEAR_GIT_BRANCH_NAME}"
+```
+
+**Fallback** (Linear with empty `gitBranchName`, or Jira):
+```bash
+TICKET_ID_LOWER=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
+SLUG=$(echo "$TICKET_TITLE" | \
+  tr '[:upper:]' '[:lower:]' | \
+  sed 's/[^a-z0-9]/-/g' | \
+  sed 's/--*/-/g' | \
+  sed 's/^-//' | \
+  sed 's/-$//' | \
+  cut -c1-40)
+BRANCH="${TICKET_ID_LOWER}-${SLUG}"
+```
+
+#### Base Branch
+
+Ask the user what branch to base the worktree on. Detect the default:
+
+```bash
+DEFAULT_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
+```
+
+Present via `AskUserQuestion`:
+> What branch should this worktree be based on?
+> Default: `<DEFAULT_BASE>` — press Enter to accept, or type a branch name (e.g., `pps-165-some-feature` to stack on a predecessor).
+
+Set `BASE_BRANCH` to the user's answer, defaulting to `$DEFAULT_BASE` if blank.
+
+#### Worktree Dir
+
+Named from the lowercase ticket ID only — not the full branch slug:
+
+```bash
+WORKTREE_DIR=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
+# e.g., "pps-166"
+```
+
+#### Worktree Creation
+
+Run Project Detection and Graft Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly — **Graft is not used in Tracker Ticket mode** (the branch name comes from the tracker and must not be renamed):
+
+```bash
+cd "$MAIN_WORKTREE"
+WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
+git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
+```
+
+#### Cache Write
+
+Write `.claude/github-cache.json` in the new worktree. `issue.number` is the ticket ID string (e.g., `"PPS-166"`). Downstream commands that use `issue.number` for GitHub issue closing (`Closes #N`) will produce `Closes #PPS-166` in PR bodies — GitHub will not recognize this as a closing reference, which is expected and acceptable (there is no GitHub issue to auto-close in this mode).
+
+```bash
+mkdir -p "${WORKTREE_PATH}/.claude"
+jq -n \
+  --arg branch    "${BRANCH}" \
+  --arg number    "${TICKET_ID}" \
+  --arg url       "${TICKET_URL}" \
+  --arg title     "${TICKET_TITLE}" \
+  --arg body      "${PLAN_CONTENT}" \
+  '{branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' \
+  > "${WORKTREE_PATH}/.claude/github-cache.json"
+```
+
+`PLAN_CONTENT` is the original plan content read in step 2 — same as GitHub mode.
+
+#### Handoff Output
+
+Same format as today:
+
+```
+## Ready to implement!
+
+**Ticket:** <ticket-url>
+**Branch:** `<branch-name>`
+**Worktree:** `<worktree-path>`
+
+### Start implementation:
+
+cd <worktree-path> && claude "/implement-with-haiku"
+```
+
+**Do NOT** call `ExitPlanMode`, create a GitHub issue, or call any `gh` command.
 
 ---
 
@@ -556,6 +690,9 @@ The user will:
 | Worktree already exists | Error: "Worktree already exists at `<path>`. Use it or pick a different branch name." |
 | Branch already exists | Ask: "Branch `<name>` exists. Use existing branch or create new?" |
 | gh CLI not authenticated | Error: "GitHub CLI not authenticated. Run `gh auth login`" |
+| Ticket ID not found in Linear or Jira | Error: "Ticket $TICKET_ID not found in Linear or Jira. Check the ID and try again." |
+| `gitBranchName` empty in Linear response | Fall back to `${ticket-id-lower}-${title-slug}` (same slug generation used in GitHub mode) |
+| No GitHub remote (tracker-ticket mode) | Not an error — expected. `REPO` will be empty; no `gh` commands are called. |
 
 (The numbered **Behavior** list at the top is the workflow reference — the sections above are the
 detail for each step.)
