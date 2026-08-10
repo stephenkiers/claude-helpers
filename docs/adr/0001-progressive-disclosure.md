@@ -46,3 +46,7 @@ background workers, and keep the foreground thread thin.
   triggered. Mitigated by `--all` (force every reviewer) and by keeping `index.yaml` triggers broad.
 - **Constraint on contributors:** A new persona must register lightweight triggers in `index.yaml`, and
   must read its own context lazily rather than assuming everything is preloaded.
+
+## Amendment — shared panel now consumed by two commands (ADR-0009)
+
+The blind-first two-pass panel is now a shared component in `prompts/expert-review-panel.md`, consumed by both `/expert-review` (author-centric review) and `/expert-review-coworker` (peer review). Progressive disclosure still holds: experts load lazily and on demand. The panel's consumer count is now two instead of one. See [ADR-0009](0009-peer-review-and-shared-panel.md) for context and the design of the peer-review command.
