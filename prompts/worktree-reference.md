@@ -23,7 +23,7 @@ SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p
 if [ -n "$SECOND_WORKTREE" ]; then
   WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
 else
-  WORKTREE_PARENT="${MAIN_WORKTREE}/.claude/worktrees"
+  WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
 fi
 
 # 4. Issue cache at worktree parent level
