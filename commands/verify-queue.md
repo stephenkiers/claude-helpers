@@ -77,8 +77,10 @@ allowing previously-ignored rows to stay ignored):
 add_row() {
   local id="$1" status="$2" kind="$3" summary="$4" command="$5" plan="$6" result="$7"
   
-  # Skip if this id already exists in queue
-  if grep -q "^{.*\"id\":\"$(printf '%s\n' "$id" | sed 's/[[\.*^$/]/\\&/g')\"" "$QUEUE"; then
+  # Skip if this id already exists in queue.
+  # Fixed-string match (-qF): ids contain `/`, `::`, and can carry `.` (repo owner/name),
+  # all of which are regex metacharacters — grep -F sidesteps the escaping entirely.
+  if grep -qF "\"id\":\"$id\"" "$QUEUE"; then
     return 0
   fi
   
