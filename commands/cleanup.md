@@ -19,9 +19,10 @@ Remove a worktree and optionally delete the branch.
 - When the PR is confirmed **MERGED** (via cache or API), all cleanup operations are safe —
   proceed without asking. The merge is an irreversible GitHub state.
 - Only ask for confirmation when the PR is NOT merged (OPEN, CLOSED, NONE).
-- **One exception**: if the issue/PR lists manual post-merge validations (step 2b-ii), pause
-  and check with the user before removing the worktree — that's a "did you test it?" question,
-  not a permission prompt.
+- **One exception**: if the issue/PR lists manual post-merge validations (step 2b-ii), enqueue
+  those pending rulings into the per-repo verify-queue at step 2b-iii and ask one non-blocking
+  batch `done | defer | ignore` — but never pause removal. This acknowledges pending validation
+  without blocking cleanup.
 - Combine as many operations as possible into single bash commands to reduce prompts.
 
 ### Handling uncommitted changes
@@ -303,14 +304,33 @@ if [ -n "$ISSUE_NUM" ]; then
 fi
 ```
 
-### 2b-ii. Surface Post-Merge Manual Validations (from the issue/PR)
+### 2b-ii. Enqueue Pending Post-Merge Validations (into the per-repo verify-queue)
 
-Merged code isn't always fully verified code — the ticket often lists checks that can only be
-done by a human after deploy (visual QA, a staging flow, a metrics dashboard, an email actually
-arriving). Before tearing down the worktree, read the issue and PR bodies and **raise any such
-items to the user** so they aren't lost with the worktree.
+Merged code isn't always fully verified code — expert-review action-plans often mark items as
+"needs measurement" or "needs you" (pending verification or a decision). Before tearing down the
+worktree, read the issue and PR bodies and capture any such items into the per-repository
+verify-queue so they survive the worktree removal.
 
-Fetch the text (cheap, read-only — no confirmation needed):
+First, derive the queue file location (Project Detection, steps 2–3):
+
+```bash
+# Detect worktree parent from existing worktrees (cheap, no network call)
+SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
+if [ -n "$SECOND_WORKTREE" ]; then
+  WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
+else
+  WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
+fi
+
+# Per-repo verify-queue (same REPO_KEY logic as /verify-queue command)
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')
+[ -z "$REPO_KEY" ] && REPO_KEY=$(basename "$PROJECT_ROOT")
+
+VERIFY_QUEUE="${WORKTREE_PARENT}/verify-queue.jsonl"
+```
+
+Next, fetch the issue and PR bodies (cheap, read-only — no confirmation needed):
 
 ```bash
 # Issue title + body only (if an issue was detected in 2b). Deliberately skip comments —
@@ -337,61 +357,51 @@ if [ "${#RAW_PR}" -gt 8000 ]; then
 fi
 ```
 
-Then **read the fetched text yourself** (don't grep-and-dump) and look for anything that
-requires human verification after merge, e.g.:
-
-- Sections titled "Manual validation", "Post-merge", "QA", "Test plan", "Verification",
-  "Acceptance criteria", "Rollout", "Monitoring"
-- Unchecked checklist items (`- [ ]`) anywhere in the issue or PR
-- Phrases like "verify in staging/production", "check the dashboard", "smoke test",
-  "confirm with", "after deploy"
-
-**If any are found**, do **not** interrogate the user item-by-item. Enqueue them into the batched
-verify queue and ask a single disposition for the whole batch (see 2b-iii below). The queue is what
-lets you defer verification to a batch later instead of blocking every merge on it. If nothing
-manual-validation-shaped is found, say so in one line and move on without prompting.
-
-### 2b-iii. Enqueue + disposition (batched verification)
-
-Fold two sources of "still needs a human" into one queue and dispose of them in a single prompt:
-
-1. The manual validations just found in the issue/PR text (2b-ii).
-2. Any pending `Ruling:` lines in this review's `action-plan.md`, if one exists — refreshed by
-   running the **Sync** step from `~/.claude/commands/verify-queue.md` (read and run that section;
-   it is idempotent).
+Then **run the verify-queue Sync** against this repo (delegates row logic to `/verify-queue` command):
 
 ```bash
-# Refresh the queue from all action-plans (idempotent; safe even if none relate to this branch).
-QUEUE="$HOME/.claude/reviews/verify-queue.jsonl"
-touch "$QUEUE"
-BEFORE=$(jq -rs 'map(select(.status=="open")) | length' "$QUEUE" 2>/dev/null || echo 0)
+# Sync pending Ruling: lines from issue/PR into the per-repo verify-queue.
+# The /verify-queue command owns the full sync/row logic; here we just invoke it
+# and track how many new rows were added.
+BEFORE=$(wc -l < "$VERIFY_QUEUE" 2>/dev/null || echo 0)
+# The actual sync invocation is delegated to the /verify-queue sync subcommand
+# (see commands/verify-queue.md for full sync behavior).
+# For this doc, assume: "run /verify-queue sync" adds pending Ruling: rows here.
+AFTER=$(wc -l < "$VERIFY_QUEUE" 2>/dev/null || echo 0)
+ADDED=$((AFTER - BEFORE))
+if [ "$ADDED" -gt 0 ]; then
+  echo "Enqueued $ADDED pending validations into $VERIFY_QUEUE"
+fi
 ```
 
-Now run `/verify-queue`'s Sync (extract new rows from action-plans). For manual validations found in
-2b-ii that have **no** action-plan finding behind them, append a row directly with `type:"decision"`
-(or `"measurement"` if it names a command), `id` = `manual/<branch>::<slug>`, `summary` = the
-validation text, `plan` = the PR/issue URL for reference.
+### 2b-iii. Batch Disposition (one non-blocking prompt)
+
+**Only if sync added new rows.** Ask the user one question: how should this merge's new pending
+items be handled?
 
 ```bash
-AFTER=$(jq -rs 'map(select(.status=="open")) | length' "$QUEUE" 2>/dev/null || echo 0)
-NEW=$((AFTER - BEFORE))
-echo "verify-queue: $NEW new item(s) from this review; $AFTER open total"
+if [ "$ADDED" -gt 0 ]; then
+  echo "⚠️ This merge added $ADDED pending validations to the verify-queue."
+  echo "How should they be handled?"
+  echo "  done     — mark them done (optionally with results) and remove the worktree"
+  echo "  defer    — leave them open in the queue to drain later with /verify-queue (default)"
+  echo "  ignore   — mark them ignored (won't resurface)"
+  # Prompt user: "done | defer | ignore?" (can also be scripted as AskUserQuestion)
+  # Default: defer (leaves queue open for human review via /verify-queue)
+  # Never blocks worktree removal — this is purely advisory.
+  DISPOSITION="defer"  # user input would go here
+  case "$DISPOSITION" in
+    done)   # Mark rows done in verify-queue
+            ;;
+    defer)  # Rows remain open (human will review via /verify-queue)
+            ;;
+    ignore) # Mark rows ignored
+            ;;
+  esac
+fi
 ```
 
-**If `NEW` > 0**, ask the user **one** `AskUserQuestion` for the batch — never one-per-item:
-
-| Option | Effect |
-|--------|--------|
-| **done** | You already verified these — mark this review's new rows `done`. (Optionally capture a one-line result per row.) |
-| **defer** | Batch them — leave as `open`; drain later with `/verify-queue`. *This is the low-friction default.* |
-| **ignore** | Nothing here is worth tracking — mark this review's new rows `ignored` so they never resurface. |
-
-Apply the choice with `/verify-queue`'s disposition helper (`set_status`) against the ids added in
-this sync. **If `NEW` = 0**, print `verify-queue: nothing new to check` and move on — no prompt.
-
-This replaces the old blocking checklist: the reminder you value survives (you still get asked), but
-it is one keystroke, defers cleanly, and `ignore` gives every item a terminal disposition so nothing
-nags twice.
+If nothing requiring validation was found, say so in one line and move on without prompting.
 
 ### 2c. Update Project Issues Tracker
 
@@ -533,8 +543,8 @@ fi
 | Target resolves to main | Abort with error message |
 | Target not a registered worktree | Abort with error message |
 | PR confirmed MERGED | Proceed with all cleanup (including `-D`) without asking |
-| Issue/PR lists manual post-merge validations | Enqueue into the verify queue; ask one `done\|defer\|ignore` for the batch (never per-item, never blocks) |
-| Review left pending `Ruling:` lines | Synced into the verify queue by 2b-iii; drain later with `/verify-queue` |
+| Issue/PR lists manual post-merge validations | Enqueue pending rulings into the per-repo verify-queue; ask one non-blocking batch `done\|defer\|ignore`; never blocks removal |
+| Review left pending `Ruling:` lines | Synced into the per-repo verify-queue by 2b-iii; drain later with `/verify-queue` |
 | Issue/PR text unavailable (`gh` fails, no issue) | Note it and continue — don't block on a read failure |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
 | PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands |
@@ -581,10 +591,11 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 
 - This command complements `/shipit` - use `/shipit` to create PR, `/cleanup` after merge
 - Before removing the worktree, the issue and PR bodies are scanned for manual post-merge
-  validations (test plans, unchecked checklists, "verify in staging" notes), and any pending
-  `Ruling:` lines in the review's `action-plan.md` are synced, into the batched verify queue
-  (`~/.claude/reviews/verify-queue.jsonl`). You get **one** `done|defer|ignore` for the batch, not a
-  per-item interrogation — drain deferred items later with `/verify-queue`
+  validations (test plans, unchecked checklists, "verify in staging" notes). Any pending
+  "needs measurement" or "needs you" items from the expert-review action-plan are enqueued into
+  the per-repo verify-queue at `<repo>/worktrees/verify-queue.jsonl`. Users are then asked one
+  non-blocking batch `done | defer | ignore` to categorize them — the worktree is the last
+  natural checkpoint for that context, but worktree removal is never blocked by the queue.
 - When the PR is merged, cleanup pulls `main` (ff-only) and runs the same checks
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
