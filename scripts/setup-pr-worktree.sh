@@ -106,9 +106,29 @@ MAIN_WORKTREE=$(git -C "${TARGET_REPO_ROOT}" worktree list --porcelain 2>&1 \
 SECOND_WORKTREE=$(git -C "${TARGET_REPO_ROOT}" worktree list --porcelain 2>&1 \
   | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
 WORKTREE_PARENT=$([[ -n "${SECOND_WORKTREE:-}" ]] \
-  && dirname "$SECOND_WORKTREE" || echo "${MAIN_WORKTREE}/.claude/worktrees")
+  && dirname "$SECOND_WORKTREE" || echo "${MAIN_WORKTREE}/worktrees")
 BRANCH_NAME="coworker-review/pr-${PR_NUMBER}"
 WORKTREE_PATH="${WORKTREE_PARENT}/coworker-review-pr-${PR_NUMBER}"
+
+# --- Sparse gate: is this a large monorepo graft manages? ---
+# We do NOT create the worktree with graft: graft's `review` inference falls back to a FULL
+# checkout whenever it can't map changed files to a project marker (common), and it fetches the
+# branch by name from the remote (breaks for the local pull/N/head branch and for fork PRs).
+# Instead, presence of the repo in graft's config is used purely as a signal that this is a big
+# monorepo worth a sparse checkout — and we build that sparse worktree with native git
+# sparse-checkout scoped to exactly the PR's changed dirs. For any repo graft doesn't manage
+# (i.e. every public fork-and-adapt user without graft) this stays false and the path below is a
+# plain, unchanged `git worktree add`.
+USE_SPARSE=false
+if command -v graft >/dev/null 2>&1; then
+  GRAFT_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/graft/config.json"
+  if [ -f "$GRAFT_CONFIG" ]; then
+    GRAFT_REPO_NAME=$(jq -r --arg path "$MAIN_WORKTREE" \
+      '.repos // {} | to_entries[] | select(.value.path==$path) | .key' \
+      "$GRAFT_CONFIG" 2>/dev/null | head -1)
+    [ -n "$GRAFT_REPO_NAME" ] && USE_SPARSE=true
+  fi
+fi
 REPO_KEY=$(echo "${TARGET_REPO}" | tr '/' '-')
 BRANCH_SLUG=$(echo "${HEAD_BRANCH}" | tr '/' '-' | cut -c1-30)
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)
@@ -144,10 +164,39 @@ git -C "${MAIN_WORKTREE}" fetch origin "pull/${PR_NUMBER}/head:${BRANCH_NAME}" -
 # delete it even if the worktree-add below fails.
 BRANCH_CREATED=true
 
+# Compute the PR's changed top-level dirs for a sparse cone (only used when USE_SPARSE=true).
+# In cone mode git always materializes files in the repo *root* dir, so a changed root-level file
+# (dirname ".") is already present — we drop "." to avoid `sparse-checkout set .` widening the cone
+# to the whole tree (the exact trap that makes `graft review` fall back to a full checkout). The
+# diff resolves against the base merge-base; if it's somehow empty we fall back to a full checkout.
+apply_sparse_cone() {
+  local wt="$1"
+  local dirs
+  dirs=$(git -C "${wt}" diff --name-only "origin/${BASE_BRANCH}...HEAD" 2>/dev/null \
+    | xargs -n1 dirname 2>/dev/null | sort -u | grep -vx '\.' || true)
+  if [ -n "${dirs}" ]; then
+    # shellcheck disable=SC2086
+    git -C "${wt}" sparse-checkout set --cone ${dirs} >&2
+  else
+    git -C "${wt}" sparse-checkout disable >&2 2>/dev/null || true
+  fi
+}
+
 # Exact-line match to avoid substring matches on prefix PR numbers
 if git -C "${MAIN_WORKTREE}" worktree list --porcelain 2>&1 | grep -Fxq "worktree ${WORKTREE_PATH}"; then
   # Worktree exists — reset to latest fetch to avoid reviewing stale code
   git -C "${WORKTREE_PATH}" reset --hard "${BRANCH_NAME}" >&2
+  # Re-scope the cone in case the PR now touches different dirs (no-op for non-sparse worktrees).
+  [ "$USE_SPARSE" = "true" ] && apply_sparse_cone "${WORKTREE_PATH}"
+elif [ "$USE_SPARSE" = "true" ]; then
+  # Large monorepo: create a sparse worktree scoped to just the PR's changed dirs. Create without
+  # checkout, set the cone, then materialize — so the 33GB tree is never fully written to disk.
+  mkdir -p "${WORKTREE_PARENT}"
+  git -C "${MAIN_WORKTREE}" worktree add --no-checkout "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
+  WORKTREE_CREATED=true
+  git -C "${WORKTREE_PATH}" fetch origin "${BASE_BRANCH}" >&2 2>/dev/null || true
+  apply_sparse_cone "${WORKTREE_PATH}"
+  git -C "${WORKTREE_PATH}" checkout >&2
 else
   mkdir -p "${WORKTREE_PARENT}"
   git -C "${MAIN_WORKTREE}" worktree add "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2

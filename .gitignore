@@ -3,3 +3,5 @@
 .claude/github-cache.json
 .claude/github-cache.json.*
 __pycache__/
+# git worktrees live here (standard ./worktrees/<branch> layout)
+worktrees/
