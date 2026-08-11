@@ -236,19 +236,25 @@ if [ -z "$PLAN" ] || [ ! -f "$PLAN" ]; then
   exit 1
 fi
 
-# For each pending ruling in the plan matching this finding, mark it as APPROVED or REJECTED
-# This is judgment-specific — e.g., replace "Ruling: pending your call" with "Ruling: APPROVED"
-# Details depend on action-plan format; adjust as needed.
-if [ -n "$RESULT" ]; then
-  # Edit the plan: find the Ruling line for this finding and replace "pending …" with the result
-  # Example: sed -i.bak "s/Ruling: pending.*$/Ruling: $RESULT/" "$PLAN"
-  # (Exact editing depends on action-plan.md structure — review the actual format)
-  :
-fi
-
 echo "Marked $ID as done"
 [ -n "$RESULT" ] && echo "Result: $RESULT"
+echo "Now write the ruling back to: $PLAN"
 ```
+
+**Then write the ruling back into the plan (judgment step, not blind sed).** Open `$PLAN`, locate the
+`Ruling:` line belonging to *this* finding (match on the finding's `summary` / slug — a plan usually
+holds several rulings, so a global replace would corrupt the others), and replace its `pending your
+call` / `pending measurement` marker with the decision, including `$RESULT` when present. For example
+a line `Ruling: pending your call` becomes `Ruling: done — <result>`. When exactly one pending marker
+of the matching kind remains in the file, a scoped replacement is safe as a fallback:
+
+```bash
+# Fallback ONLY when a single matching pending marker remains in $PLAN:
+# sed -i.bak "s/Ruling: pending your call/Ruling: done — ${RESULT}/" "$PLAN" && rm -f "$PLAN.bak"
+```
+
+This write-back is what keeps `action-plan.md` (the gut-check instrument of record) in sync with the
+queue — so a re-sync no longer re-discovers a ruling you've already resolved.
 
 ### `defer <id>`
 
@@ -274,10 +280,11 @@ echo "Ignored $ID (will not appear again)"
 Marks all currently-open rows as `done`:
 
 ```bash
+# Count open rows BEFORE flipping them — afterwards the select would return 0.
+COUNT=$(jq -s '[.[] | select(.status == "open")] | length' "$QUEUE")
 jq -r 'select(.status == "open") | .id' "$QUEUE" | while read -r id; do
   set_status "$id" "done" ""
 done
-COUNT=$(jq '[select(.status == "open")] | length' "$QUEUE")
 echo "Marked all $COUNT rows as done"
 ```
 
@@ -286,10 +293,11 @@ echo "Marked all $COUNT rows as done"
 Marks all currently-open rows as `ignored`:
 
 ```bash
+# Count open rows BEFORE flipping them — afterwards the select would return 0.
+COUNT=$(jq -s '[.[] | select(.status == "open")] | length' "$QUEUE")
 jq -r 'select(.status == "open") | .id' "$QUEUE" | while read -r id; do
   set_status "$id" "ignored" ""
 done
-COUNT=$(jq '[select(.status == "open")] | length' "$QUEUE")
 echo "Ignored all $COUNT rows (will not reappear)"
 ```
 
