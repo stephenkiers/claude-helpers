@@ -29,6 +29,10 @@ def read(path):
 
 
 EXPERT_REVIEW = read(COMMANDS / "expert-review.md")
+# Steps 4–10 (Summarizer → Amalgamator) were extracted from expert-review.md into this shared
+# panel prompt in PR #46. Structural assertions about those steps read from here now; the command
+# file only owns the setup steps (0–3) and the triage tail (11–13).
+PANEL = read(PROMPTS / "expert-review-panel.md")
 TRIAGE = read(PROMPTS / "triage.md")
 AMALGAMATOR = read(PROMPTS / "amalgamator.md")
 FRAMEWORK = read(PROMPTS / "expert-framework.md")
@@ -48,13 +52,16 @@ t = h.test_result
 # INVARIANT 1: Every prompt path the orchestrator names actually exists.
 # A dangling path means the subagent silently reviews with no mandate.
 # ============================================================================
-print("[Invariant 1] Prompt paths referenced by expert-review.md resolve to real files")
+print("[Invariant 1] Prompt paths referenced by the pipeline resolve to real files")
 
+# The orchestrator delegates the panel to expert-review-panel.md, so the core prompt paths now live
+# there; collect from both files so a dangling path in either still fails.
 referenced = {
     name.rstrip(".,")  # strip sentence punctuation, keep the extension
-    for name in re.findall(r"~/\.claude/prompts/([A-Za-z0-9._-]+)", EXPERT_REVIEW)
+    for text in (EXPERT_REVIEW, PANEL)
+    for name in re.findall(r"~/\.claude/prompts/([A-Za-z0-9._-]+)", text)
 }
-t("expert-review.md references at least the 5 core prompts", len(referenced) >= 5,
+t("the pipeline references at least the 5 core prompts", len(referenced) >= 5,
   f"found {sorted(referenced)}")
 
 for name in sorted(referenced):
@@ -94,8 +101,11 @@ t("amalgamator.md does not resurrect the Sign-off Checklist",
 # ============================================================================
 print("\n[Invariant 3] Pipeline order: Amalgamator -> Triage -> Rulings (decisions.yaml/ledger removed)")
 
+# Steps span two files after the #46 extraction: 0–3 and 11–13 in the command, 4–10 in the panel.
+# Collect from both so the contiguity/ordering checks see the whole pipeline.
 pairs = [(int(m.group(1)), m.group(2))
-         for m in re.finditer(r"^### Step (\d+): (.+)$", EXPERT_REVIEW, re.M)]
+         for text in (EXPERT_REVIEW, PANEL)
+         for m in re.finditer(r"^### Step (\d+): (.+)$", text, re.M)]
 nums = [n for n, _ in pairs]
 
 t("no step number repeats", len(nums) == len(set(nums)),
@@ -141,11 +151,13 @@ if tri_prompt is not None:
       all(p != -1 for p in positions) and positions == sorted(positions),
       f"field positions: {list(zip(RECEIPT_FIELD_ORDER, positions))}")
 
-amg_cmd, amg_prompt = receipt(EXPERT_REVIEW, "amalgamator |"), receipt(AMALGAMATOR, "amalgamator |")
-t("amalgamator receipt is declared in both the command and the prompt",
-  amg_cmd is not None and amg_prompt is not None)
-t("amalgamator receipt is identical in both", amg_cmd == amg_prompt,
-  f"command: {amg_cmd!r}\n      prompt: {amg_prompt!r}")
+# The Amalgamator step lives in the panel prompt now (Step 10), so its receipt is declared there,
+# not in the command. Cross-check the panel against the amalgamator role prompt.
+amg_panel, amg_prompt = receipt(PANEL, "amalgamator |"), receipt(AMALGAMATOR, "amalgamator |")
+t("amalgamator receipt is declared in both the panel and the prompt",
+  amg_panel is not None and amg_prompt is not None)
+t("amalgamator receipt is identical in both", amg_panel == amg_prompt,
+  f"panel: {amg_panel!r}\n      prompt: {amg_prompt!r}")
 
 # ============================================================================
 # INVARIANT 4: Escalation-test integrity. Over-escalation is the failure mode
