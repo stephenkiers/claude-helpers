@@ -185,6 +185,16 @@ echo "Now in main worktree, safe to proceed"
 - If `pr.state` is `"MERGED"` → trust it (one-directional transition, always trustworthy)
 - If `pr.state` is `"OPEN"` or missing → verify via API (may be stale)
 
+**Cache schema (`.stack` section):** The cache also tracks stacked-PR metadata (transient, cleared on cleanup):
+```json
+"stack": {
+  "isStacked": true,
+  "parentBranch": "stephenkiers/pps-166-…",
+  "parentPr": 14,
+  "stackNumber": 18
+}
+```
+
 ```bash
 # Cache-first PR state check
 GITHUB_CACHE=$(cat "${CURRENT_WORKTREE}/.claude/github-cache.json" 2>/dev/null || echo '{}')
@@ -462,6 +472,134 @@ else
 fi
 ```
 
+### 2.6. Detect Stacked Children & Emit Restack Runbook
+
+**Only when `PR_STATE = "MERGED"`.** If the merged PR was the base of a stacked chain, detect
+child branches and emit a runbook for the user to restack them manually. `/cleanup` PRINTS the
+runbook; the user runs it (no auto-rebase, no auto-force-push).
+
+```bash
+if [ "$PR_STATE" = "MERGED" ]; then
+  # Run Stack Detection → Find children block from ~/.claude/prompts/worktree-reference.md
+  # This requires WORKTREE_PARENT (from Project Detection) and CURRENT_BRANCH
+  # Emits: CHILD_BRANCHES (space-separated list of "branch:pr_num")
+
+  REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
+  REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
+  REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
+
+  # Default branch for rebase target (after merge, children rebase to here)
+  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+  [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
+
+  # Detect children (scan worktree caches + fallback to gh pr list)
+  CHILD_BRANCHES=""
+
+  if [ -d "$WORKTREE_PARENT" ]; then
+    while IFS= read -r cache_file; do
+      [ ! -f "$cache_file" ] && continue
+      CACHED_PARENT=$(jq -r '.stack.parentBranch // empty' "$cache_file" 2>/dev/null)
+      if [ "$CACHED_PARENT" = "$CURRENT_BRANCH" ]; then
+        CHILD_WORKTREE=$(dirname "$cache_file" | xargs basename)
+        CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
+          $1 == "worktree" && $2 == wt { found=1 }
+          found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
+        ')
+        if [ -n "$CHILD_BRANCH" ]; then
+          CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
+          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE} "
+        fi
+      fi
+    done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
+  fi
+
+  # Fallback: check open PRs against this branch
+  if [ -z "$CHILD_BRANCHES" ]; then
+    OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number)"' 2>/dev/null || true)
+    if [ -n "$OPEN_PRS" ]; then
+      CHILD_BRANCHES=$(echo "$OPEN_PRS" | tr '\n' ' ')
+    fi
+  fi
+
+  # If children found, capture the merged tip SHA and emit runbook
+  if [ -n "$CHILD_BRANCHES" ]; then
+    echo ""
+    echo "=== Stacked children detected — restack runbook ==="
+    echo ""
+
+    MERGED_TIP=$(git rev-parse "$CURRENT_BRANCH" 2>/dev/null || echo "")
+    if [ -z "$MERGED_TIP" ]; then
+      echo "WARNING: Could not capture the merged branch tip SHA."
+      echo "After removing the branch in Step 3, restacking will be harder."
+    fi
+
+    # Emit restack commands for each child, bottom-up
+    echo "The PR #$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "?") that was just merged"
+    echo "was the base of a stacked chain. GitHub auto-retargets the immediate child's PR base to"
+    echo "'$DEFAULT_BRANCH', but you must manually restack children in their own worktrees."
+    echo ""
+    echo "For each child (bottom-up, in order):"
+    echo ""
+
+    # Parse children and emit runbook
+    CHILD_NUM=0
+    for CHILD_INFO in $CHILD_BRANCHES; do
+      CHILD_NUM=$((CHILD_NUM + 1))
+      CHILD_BRANCH=$(echo "$CHILD_INFO" | cut -d: -f1)
+      CHILD_PR=$(echo "$CHILD_INFO" | cut -d: -f2)
+      CHILD_WT=$(echo "$CHILD_INFO" | cut -d: -f3)
+
+      # If no worktree path, skip (can't rebase without knowing where)
+      if [ -z "$CHILD_WT" ]; then
+        continue
+      fi
+
+      # Capture child's pre-rebase tip for the next child up
+      CHILD_PRETIP=$(git -C "$CHILD_WT" rev-parse HEAD 2>/dev/null || echo "")
+
+      echo "**Child $CHILD_NUM: $CHILD_BRANCH (PR #$CHILD_PR)**"
+      echo ""
+      echo "\`\`\`bash"
+      echo "git -C '$CHILD_WT' fetch origin"
+      echo "git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
+      echo "# Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
+      echo "git -C '$CHILD_WT' push --force-with-lease"
+      if [ -n "$CHILD_PRETIP" ]; then
+        echo "CHILD_NEW=\$(git -C '$CHILD_WT' rev-parse HEAD)"
+        echo "# Next child (if any): rebase --onto \$CHILD_NEW $CHILD_PRETIP"
+      fi
+      echo "\`\`\`"
+      echo ""
+
+      MERGED_TIP="$CHILD_PRETIP"  # Next child's base is this child's pre-rebase tip
+    done
+
+    # Remote stack fixup (if this was part of a remote stack)
+    STACK_NUMBER=$(gh api graphql -f query='{repository(owner:"'"$REPO_OWNER"'",name:"'"$REPO_NAME"'"){pullRequest(number:'"$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")"'){stack{number}}}}' -q '.data.repository.pullRequest.stack.number' 2>/dev/null || echo "")
+
+    if [ -n "$STACK_NUMBER" ] && [ "$STACK_NUMBER" != "0" ]; then
+      echo "Then, after all children are restacked, unlink the remote stack:"
+      echo ""
+      echo "\`\`\`bash"
+      echo "gh stack unstack $STACK_NUMBER"
+      echo "# And re-link survivors (API-only, worktree-safe):"
+      echo "# gh stack link <survivor-pr> <next-survivor-pr>"
+      echo "\`\`\`"
+      echo ""
+    fi
+
+    echo "✓ After restacking, run /cleanup again on this merged branch to remove it."
+    echo ""
+  else
+    echo "No stacked children detected. Proceeding to worktree removal."
+  fi
+
+else
+  # PR not merged — skip stack detection
+  :
+fi
+```
+
 ### 3. Remove Worktree (from main)
 
 When PR_STATE is **MERGED**, use `git branch -D` (force delete). Squash merges mean the local
@@ -505,6 +643,8 @@ fi
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
 | Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
 | Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
+| Stacked children detected | Print a fully-substituted restack runbook (user runs it manually) |
+| No stacked children | Continue to worktree removal (unchanged flow) |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
 | **Shell stuck in deleted dir** | See recovery section below |
 
@@ -551,6 +691,10 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
   (run `/shipit` once to write it). Failures are reported but never block cleanup.
+- **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
+  child branches and prints a restack runbook (user runs it manually). No auto-rebase, no
+  auto-force-push — the runbook is emit-only, and the user controls restacking. This keeps
+  worktrees independent and safe for concurrent work.
 - Cache is committed to git, so no manual syncing needed
 - Safe to run multiple times (idempotent checks)
 - **Works from main or any worktree** — never cd's into the target, uses `git -C` instead
