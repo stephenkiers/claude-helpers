@@ -22,6 +22,9 @@ MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cu
 SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
 if [ -n "$SECOND_WORKTREE" ]; then
   WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
+elif [ "$(basename "$(dirname "$MAIN_WORKTREE")")" = "worktrees" ]; then
+  # Fresh /setup-repo clone: main worktree already sits under a worktrees/ dir, so siblings go there.
+  WORKTREE_PARENT=$(dirname "$MAIN_WORKTREE")
 else
   WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
 fi
