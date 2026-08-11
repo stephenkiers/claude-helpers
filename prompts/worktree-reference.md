@@ -221,6 +221,71 @@ else
 fi
 ```
 
+### Restack a child (after its parent merged)
+
+Canonical, worktree-safe algorithm for reconciling one stacked child after its parent PR merged.
+This is the **single source of truth** for the restack primitive; `/cleanup`'s Step 2.6 emits it
+verbatim (per child, bottom-up), substituting the four parameters below. It is **detect-then-branch**:
+the remote child may already have been rebased for you, so it leads with the reset/prove primitive and
+keeps rebase-and-force-push only for the "remote not yet rebased" branch and the non-empty-diff
+fallback.
+
+**Why this shape, not rebase-and-replay:** GitHub core retargets a child PR's *base pointer* when its
+parent merges, but it never rebases the *commits*. The force-push that actually rewrites the remote
+branch comes from a stacking tool (`gh stack sync`, Graphite, or the "Update branch" button) acting as
+you — so the remote child is often *already correct* and the **local worktree** is what's stale. In
+that case, replaying the pre-rebase local commits (identical messages, new SHAs) re-introduces the
+exact duplicate-change conflict you are escaping. The correct primitive is **snapshot →
+`reset --hard @{u}` → prove empty diff**. A correct rebase yields an identical final tree, so
+`git diff backup HEAD == empty` is a *provable* no-loss check — better than trusting SHAs or counts.
+`rebase --onto` is only the fallback, used when the branch has genuinely unique local commits.
+
+Parameterized on `<CHILD_WT>` (child worktree path), `<CHILD_BRANCH>`, `<MERGED_TIP>` (the merged
+parent's tip SHA, captured before deletion), and `<DEFAULT_BRANCH>`:
+
+```bash
+git -C <CHILD_WT> fetch origin
+
+# Clean tree required — if dirty, stash or bail (never reset over uncommitted work).
+[ -z "$(git -C <CHILD_WT> status --porcelain)" ] || { echo "uncommitted changes in <CHILD_WT>; stash first"; exit 1; }
+
+# Detect the force-push signature: histories diverged iff @{u} is NOT an ancestor of HEAD
+# AND HEAD is NOT an ancestor of @{u} (both merge-base --is-ancestor checks false).
+if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
+   && ! git -C <CHILD_WT> merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then
+  # DIVERGED — a stacking tool already rebased the remote; the local worktree is stale.
+  git -C <CHILD_WT> branch -f backup/<CHILD_BRANCH> HEAD   # snapshot — free, lossless
+  git -C <CHILD_WT> reset --hard '@{u}'                    # take the already-rebased remote
+  # PROOF of no data loss — MUST be empty (identical tree => safe).
+  if [ -z "$(git -C <CHILD_WT> diff --stat backup/<CHILD_BRANCH> HEAD)" ]; then
+    # Rebased branches can lose upstream tracking; re-link so @{u} keeps resolving.
+    git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>
+    echo "✓ <CHILD_BRANCH>: reset to already-rebased remote, empty diff proves no work lost"
+  else
+    # NON-empty diff: the branch has genuinely unique local commits. Reset back and replay them.
+    git -C <CHILD_WT> reset --hard backup/<CHILD_BRANCH>
+    git -C <CHILD_WT> rebase --onto '@{u}' <MERGED_TIP>
+    # Re-prove: after replaying only the unique commits, the diff vs backup must be empty.
+    [ -z "$(git -C <CHILD_WT> diff --stat backup/<CHILD_BRANCH> HEAD)" ] || echo "WARNING: <CHILD_BRANCH> diff non-empty after rebase — inspect before pushing"
+    git -C <CHILD_WT> push --force-with-lease
+  fi
+else
+  # NOT diverged — remote is still stacked on the old, now-merged base. Restack it yourself.
+  git -C <CHILD_WT> branch -f backup/<CHILD_BRANCH> HEAD   # snapshot before rewriting history
+  git -C <CHILD_WT> rebase --onto origin/<DEFAULT_BRANCH> <MERGED_TIP>
+  # Verify: run the same checks as /shipit (from .claude/repo-cache.json if present).
+  git -C <CHILD_WT> push --force-with-lease
+fi
+
+# Keep backup/<CHILD_BRANCH> until the child is confirmed correct, then delete it:
+#   git -C <CHILD_WT> branch -D backup/<CHILD_BRANCH>
+```
+
+**Worktree-safety:** this manual primitive exists precisely because `gh stack init/sync/checkout`
+check out each stack branch in one working copy and are **fatal under a worktree-per-branch layout**
+(branches are permanently checked out in sibling worktrees). Note too that `gh stack sync` fixes only
+the *remote* — it never touches your local worktree, so you reconcile local yourself with the above.
+
 ## Local Plan Mode Detection
 
 When the project root has both a `plans/` directory and an **array-format** `issues.json`, commands

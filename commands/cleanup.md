@@ -535,8 +535,15 @@ if [ "$PR_STATE" = "MERGED" ]; then
 
     # Emit restack commands for each child, bottom-up
     echo "The PR #$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "?") that was just merged"
-    echo "was the base of a stacked chain. GitHub auto-retargets the immediate child's PR base to"
-    echo "'$DEFAULT_BRANCH', but you must manually restack children in their own worktrees."
+    echo "was the base of a stacked chain. When a parent merges, GitHub retargets the child PR's"
+    echo "**base pointer** to '$DEFAULT_BRANCH' — but it never rebases the child's commits. The remote"
+    echo "child branch may or may not already be rebased (a stacking tool — Graphite, a stack-sync"
+    echo "command, or the 'Update branch' button — does that, acting as you), so the runbook below DETECTS"
+    echo "which case you're in per child, then branches: if the remote is already rebased, take it with a"
+    echo "reset and prove no work was lost; otherwise rebase-and-force-push yourself."
+    echo ""
+    echo "Key insight: after 'reset --hard @{u}', an empty 'git diff backup HEAD' proves the reset lost no"
+    echo "work — a correct rebase yields an identical final tree, so identical trees means nothing was lost."
     echo ""
     echo "For each direct child (in order):"
     echo ""
@@ -556,20 +563,45 @@ if [ "$PR_STATE" = "MERGED" ]; then
       echo ""
       echo "\`\`\`bash"
 
-      # If no worktree path (fallback only), emit placeholder
+      # If no worktree path (fallback only), emit a placeholder for the caller to substitute.
       if [ -z "$CHILD_WT" ]; then
         echo "# Worktree path unknown (detected via gh pr list fallback, not cache)."
-        echo "# Run these commands from <child-worktree-path> (substitute the actual path):"
-        echo "git fetch origin"
-        echo "git rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
-        echo "# Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
-        echo "git push --force-with-lease"
-      else
-        echo "git -C '$CHILD_WT' fetch origin"
-        echo "git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
-        echo "# Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
-        echo "git -C '$CHILD_WT' push --force-with-lease"
+        echo "# Substitute the actual child worktree path for <CHILD_WT> below."
+        CHILD_WT="<CHILD_WT>"
       fi
+
+      # Detect-then-branch restack primitive (see prompts/worktree-reference.md → "Restack a child").
+      echo "git -C '$CHILD_WT' fetch origin"
+      echo ""
+      echo "# Clean tree required — never reset over uncommitted work."
+      echo "[ -z \"\$(git -C '$CHILD_WT' status --porcelain)\" ] || { echo 'uncommitted changes; stash first'; exit 1; }"
+      echo ""
+      echo "# Detect the force-push signature: histories diverged iff neither @{u} nor HEAD is an"
+      echo "# ancestor of the other (a stacking tool already rebased the remote for you)."
+      echo "if ! git -C '$CHILD_WT' merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \\"
+      echo "   && ! git -C '$CHILD_WT' merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then"
+      echo "  # DIVERGED — remote already rebased; the local worktree is stale. Take the remote."
+      echo "  git -C '$CHILD_WT' branch -f backup/$CHILD_BRANCH HEAD   # snapshot — free, lossless"
+      echo "  git -C '$CHILD_WT' reset --hard '@{u}'"
+      echo "  if [ -z \"\$(git -C '$CHILD_WT' diff --stat backup/$CHILD_BRANCH HEAD)\" ]; then"
+      echo "    # Empty diff PROVES no work lost (identical tree). Re-link tracking (rebase can drop it)."
+      echo "    git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH"
+      echo "  else"
+      echo "    # NON-empty: branch has genuinely unique local commits. Reset back and replay only those."
+      echo "    git -C '$CHILD_WT' reset --hard backup/$CHILD_BRANCH"
+      echo "    git -C '$CHILD_WT' rebase --onto '@{u}' $MERGED_TIP"
+      echo "    git -C '$CHILD_WT' push --force-with-lease"
+      echo "  fi"
+      echo "else"
+      echo "  # NOT diverged — remote still stacked on the old, now-merged base. Restack it yourself."
+      echo "  git -C '$CHILD_WT' branch -f backup/$CHILD_BRANCH HEAD   # snapshot before rewriting history"
+      echo "  git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
+      echo "  # Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
+      echo "  git -C '$CHILD_WT' push --force-with-lease"
+      echo "fi"
+      echo ""
+      echo "# Keep backup/$CHILD_BRANCH until you've confirmed the child is correct, then:"
+      echo "#   git -C '$CHILD_WT' branch -D backup/$CHILD_BRANCH"
 
       echo "\`\`\`"
       echo ""
@@ -696,6 +728,16 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   child branches and prints a restack runbook (user runs it manually). No auto-rebase, no
   auto-force-push — the runbook is emit-only, and the user controls restacking. This keeps
   worktrees independent and safe for concurrent work.
+- **Restack runbook is detect-then-branch, not rebase-and-replay.** GitHub retargets a child PR's
+  *base pointer* when its parent merges but never rebases the *commits*; the force-push that rewrites
+  the remote comes from a stacking tool (`gh stack sync`, Graphite, "Update branch"), which may have
+  already corrected the remote — in which case the local worktree is what's stale. The runbook detects
+  the force-push signature (`merge-base --is-ancestor` both ways false) per child. If the remote is
+  already rebased it leads with `git branch -f backup/<child>` → `reset --hard @{u}` → prove
+  `git diff --stat backup <child> HEAD` is empty (an empty diff *proves* the reset lost no work,
+  since a correct rebase yields an identical tree), then re-links upstream with `--set-upstream-to`.
+  `rebase --onto` + `push --force-with-lease` is the fallback for the non-empty-diff (genuinely unique
+  local commits) case and for the remote-not-yet-rebased branch. Backups are kept until you confirm.
 - Cache is committed to git, so no manual syncing needed
 - Safe to run multiple times (idempotent checks)
 - **Works from main or any worktree** — never cd's into the target, uses `git -C` instead

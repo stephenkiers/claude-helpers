@@ -211,6 +211,39 @@ t("cleanup.md mentions 'push --force-with-lease' for safe force-push",
   has_force_with_lease,
   "expected 'push --force-with-lease' in restack runbook")
 
+# --- Corrected primitive: detect-then-branch (reset/prove before rebase/replay) ---
+
+# Should reset --hard to take the already-rebased remote
+t("cleanup.md mentions 'reset --hard' (take the already-rebased remote)",
+  "reset --hard" in CLEANUP,
+  "expected 'reset --hard' in the detect-then-branch restack runbook")
+
+# Should detect the force-push signature via merge-base --is-ancestor
+t("cleanup.md uses 'merge-base --is-ancestor' for divergence detection",
+  "merge-base --is-ancestor" in CLEANUP,
+  "expected 'merge-base --is-ancestor' to detect the force-push signature")
+
+# Should snapshot a backup branch before rewriting
+t("cleanup.md snapshots a 'backup/' branch before reset/rebase",
+  "backup/" in CLEANUP,
+  "expected a 'backup/<branch>' snapshot in the restack runbook")
+
+# Should prove the reset lost no work via an empty diff
+t("cleanup.md proves no data loss with an empty diff (git diff --stat)",
+  "diff --stat" in CLEANUP,
+  "expected 'git diff --stat backup HEAD' empty-diff proof")
+
+# Should re-link upstream tracking (rebased branches can lose it)
+t("cleanup.md re-links upstream with '--set-upstream-to'",
+  "--set-upstream-to" in CLEANUP,
+  "expected '--set-upstream-to' to re-link tracking after reset")
+
+# The shared primitive lives in worktree-reference.md
+has_restack_subblock = "### Restack" in WORKTREE_REF and "reset --hard" in WORKTREE_REF
+t("worktree-reference.md contains the shared '### Restack' sub-block",
+  has_restack_subblock,
+  "expected a '### Restack a child' sub-block with 'reset --hard' in worktree-reference.md")
+
 # Runbook should be emit-only (manual, user runs it)
 is_emit_only = "runbook" in CLEANUP.lower() or "you" in CLEANUP.lower()
 t("cleanup.md runbook is emit-only (manual, not auto-executed)",
