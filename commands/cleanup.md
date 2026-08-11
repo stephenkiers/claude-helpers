@@ -186,6 +186,23 @@ echo "Now in main worktree, safe to proceed"
 - If `pr.state` is `"MERGED"` → trust it (one-directional transition, always trustworthy)
 - If `pr.state` is `"OPEN"` or missing → verify via API (may be stale)
 
+**Cache schema (`.stack` section):** The cache tracks stacked-PR metadata (transient, cleared on cleanup).
+Two variants:
+```json
+"stack": {
+  "isStacked": true,
+  "parentBranch": "stephenkiers/pps-166-…",
+  "parentPr": 14,
+  "stackNumber": 18
+}
+```
+Or (non-stacked):
+```json
+"stack": {
+  "isStacked": false
+}
+```
+
 ```bash
 # Cache-first PR state check
 GITHUB_CACHE=$(cat "${CURRENT_WORKTREE}/.claude/github-cache.json" 2>/dev/null || echo '{}')
@@ -507,6 +524,200 @@ else
 fi
 ```
 
+### 2.6. Detect Stacked Children & Emit Restack Runbook
+
+**Only when `PR_STATE = "MERGED"`.** If the merged PR was the base of a stacked chain, detect
+child branches and emit a runbook for the user to restack them manually. This emits the canonical
+restack block from `~/.claude/prompts/worktree-reference.md` verbatim (per child, substituting
+`<CHILD_WT>`, `<CHILD_BRANCH>`, `<MERGED_TIP>`, `<DEFAULT_BRANCH>`). The user runs the emitted
+block manually (no auto-rebase, no auto-force-push).
+
+```bash
+if [ "$PR_STATE" = "MERGED" ]; then
+  # Run Stack Detection → Find children block from ~/.claude/prompts/worktree-reference.md
+  # This requires WORKTREE_PARENT (from Project Detection) and CURRENT_BRANCH
+  # Emits: CHILD_BRANCHES (space-separated list of "branch:pr:worktree" records)
+
+  REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
+  REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
+  REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
+
+  # Default branch for rebase target (after merge, children rebase to here)
+  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+  [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
+
+  # Detect children (scan worktree caches + fallback to gh pr list)
+  CHILD_BRANCHES=""
+
+  if [ -d "$WORKTREE_PARENT" ]; then
+    while IFS= read -r cache_file; do
+      [ ! -f "$cache_file" ] && continue
+      CACHED_PARENT=$(jq -r '.stack.parentBranch // empty' "$cache_file" 2>/dev/null)
+      if [ "$CACHED_PARENT" = "$CURRENT_BRANCH" ]; then
+        CHILD_WORKTREE=$(basename "$(dirname "$(dirname "$cache_file")")")
+        CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
+          /^worktree / { found=(substr($0, 10) == wt); next }   # match full path (handles spaces), reset per worktree
+          found && /^branch / { b=substr($0, 8); sub(/^refs\/heads\//, "", b); print b; exit }
+        ')
+        if [ -n "$CHILD_BRANCH" ]; then
+          CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
+          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE} "
+        fi
+      fi
+    done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
+  fi
+
+  # Fallback: check open PRs against this branch (no worktree path available)
+  if [ -z "$CHILD_BRANCHES" ]; then
+    OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null || true)
+    if [ -n "$OPEN_PRS" ]; then
+      CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
+    fi
+  fi
+
+  # If children found, capture the merged tip SHA and emit runbook
+  if [ -n "$CHILD_BRANCHES" ]; then
+    echo ""
+    echo "=== Stacked children detected — restack runbook ==="
+    echo ""
+
+    MERGED_TIP=$(git rev-parse "$CURRENT_BRANCH" 2>/dev/null || echo "")
+    if [ -z "$MERGED_TIP" ]; then
+      echo "ERROR: Could not capture the merged branch tip SHA. Cannot emit safe restack runbook."
+      echo "Please retry /cleanup after the branch is re-created or manually perform restack."
+      exit 1
+    fi
+
+    # Emit restack commands for each child, bottom-up
+    echo "The PR #$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "?") that was just merged"
+    echo "was the base of a stacked chain. When a parent merges, GitHub retargets the child PR's"
+    echo "**base pointer** to '$DEFAULT_BRANCH' — but it never rebases the child's commits. The remote"
+    echo "child branch may or may not already be rebased (a stacking tool — Graphite, a stack-sync"
+    echo "command, or the 'Update branch' button — does that, acting as you), so the runbook below DETECTS"
+    echo "which case you're in per child, then branches: if the remote is already rebased, take it with a"
+    echo "reset and prove no work was lost; otherwise rebase-and-force-push yourself."
+    echo ""
+    echo "**Canonical restack primitive** (from ~/.claude/prompts/worktree-reference.md):"
+    echo "You will run this for each child below. The runbook is emit-only — you paste and run it manually."
+    echo ""
+
+    # Parse children and emit runbook (emit-by-reference: substitute parameters into the canonical block)
+    CHILD_NUM=0
+    for CHILD_INFO in $CHILD_BRANCHES; do
+      CHILD_NUM=$((CHILD_NUM + 1))
+      # Parse "branch:pr:worktree" — handle paths with colons by reading field3 onwards
+      CHILD_BRANCH=$(echo "$CHILD_INFO" | cut -d: -f1)
+      CHILD_PR=$(echo "$CHILD_INFO" | cut -d: -f2)
+      CHILD_WT=$(echo "$CHILD_INFO" | cut -d: -f3-)
+
+      echo "**Child $CHILD_NUM: $CHILD_BRANCH (PR #$CHILD_PR)**"
+      echo ""
+      echo "\`\`\`bash"
+
+      # If no worktree path (fallback only), emit a placeholder for the caller to substitute.
+      if [ -z "$CHILD_WT" ]; then
+        echo "# Worktree path unknown (detected via gh pr list fallback, not cache)."
+        echo "# Substitute the actual child worktree path for <CHILD_WT> below."
+        CHILD_WT="<CHILD_WT>"
+      fi
+
+      # Emit the canonical restack block from worktree-reference.md, substituting the 4 parameters
+      # This is the exact block from prompts/worktree-reference.md "### Restack a child" with substitutions:
+      echo "git -C '$CHILD_WT' fetch origin"
+      echo ""
+      echo "# Clean tree required — if dirty, stash or bail (never reset over uncommitted work)."
+      echo "[ -z \"\$(git -C '$CHILD_WT' status --porcelain)\" ] || { echo 'uncommitted changes in $CHILD_WT; stash first'; exit 1; }"
+      echo ""
+      echo "# Verify @{u} resolves (tracking branch exists)"
+      echo "git -C '$CHILD_WT' rev-parse '@{u}' >/dev/null 2>&1 || { echo 'Branch $CHILD_BRANCH has no upstream tracking'; exit 1; }"
+      echo ""
+      echo "# Detect the force-push signature: histories diverged iff @{u} is NOT an ancestor of HEAD"
+      echo "# AND HEAD is NOT an ancestor of @{u} (both merge-base --is-ancestor checks false)."
+      echo "if ! git -C '$CHILD_WT' merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \\"
+      echo "   && ! git -C '$CHILD_WT' merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then"
+      echo "  # DIVERGED — a stacking tool already rebased the remote; the local worktree is stale."
+      echo "  git -C '$CHILD_WT' branch -f backup/$CHILD_BRANCH HEAD   # snapshot — free, lossless"
+      echo "  git -C '$CHILD_WT' reset --hard '@{u}'                    # take the already-rebased remote"
+      echo "  # PROOF of no data loss — MUST be empty (identical tree => safe)."
+      echo "  if [ -z \"\$(git -C '$CHILD_WT' diff --stat backup/$CHILD_BRANCH HEAD)\" ]; then"
+      echo "    # Rebased branches can lose upstream tracking; re-link so @{u} keeps resolving."
+      echo "    git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH"
+      echo "    echo \"✓ $CHILD_BRANCH: reset to already-rebased remote, empty diff proves no work lost\""
+      echo "  else"
+      echo "    # NON-empty diff: the branch has genuinely unique local commits. Reset back and replay them."
+      echo "    git -C '$CHILD_WT' reset --hard backup/$CHILD_BRANCH"
+      echo "    git -C '$CHILD_WT' rebase --onto '@{u}' $MERGED_TIP"
+      echo "    # Re-prove: after replaying only the unique commits, the diff vs backup must be empty."
+      echo "    if [ -n \"\$(git -C '$CHILD_WT' diff --stat backup/$CHILD_BRANCH HEAD)\" ]; then"
+      echo "      echo \"WARNING: $CHILD_BRANCH diff non-empty after rebase — inspect before pushing\""
+      echo "      exit 1"
+      echo "    fi"
+      echo "    git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH   # re-link tracking (symmetric with reset path)"
+      echo "    # Gate — force-push ONLY after the project's checks pass (a comment here would be silently skipped):"
+      echo "    CHECK_CMD=\$(jq -r '.commands.check // .commands.test // empty' '$CHILD_WT'/.claude/repo-cache.json 2>/dev/null)"
+      echo "    [ -n \"\$CHECK_CMD\" ] || { echo 'no check command in repo-cache — run your checks manually, then re-run this push'; exit 1; }"
+      echo "    ( cd '$CHILD_WT' && eval \"\$CHECK_CMD\" ) || { echo '$CHILD_BRANCH: checks failed — not force-pushing'; exit 1; }"
+      echo "    git -C '$CHILD_WT' push --force-with-lease"
+      echo "  fi"
+      echo "else"
+      echo "  # NOT diverged — remote is still stacked on the old, now-merged base. Restack it yourself."
+      echo "  git -C '$CHILD_WT' branch -f backup/$CHILD_BRANCH HEAD   # snapshot before rewriting history"
+      echo "  git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
+      echo "  git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH   # re-link tracking (symmetric with reset path)"
+      echo "  # Gate — force-push ONLY after the project's checks pass (a comment here would be silently skipped):"
+      echo "  CHECK_CMD=\$(jq -r '.commands.check // .commands.test // empty' '$CHILD_WT'/.claude/repo-cache.json 2>/dev/null)"
+      echo "  [ -n \"\$CHECK_CMD\" ] || { echo 'no check command in repo-cache — run your checks manually, then re-run this push'; exit 1; }"
+      echo "  ( cd '$CHILD_WT' && eval \"\$CHECK_CMD\" ) || { echo '$CHILD_BRANCH: checks failed — not force-pushing'; exit 1; }"
+      echo "  git -C '$CHILD_WT' push --force-with-lease"
+      echo "fi"
+      echo ""
+      echo "# Keep backup/$CHILD_BRANCH until the child is confirmed correct, then delete it:"
+      echo "#   git -C '$CHILD_WT' branch -D backup/$CHILD_BRANCH"
+
+      echo "\`\`\`"
+      echo ""
+    done
+
+    # Remote stack fixup (if this was part of a remote stack)
+    PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")
+    if [ "$PR_NUM" != "0" ] && [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ]; then
+      STACK_NUMBER=$(gh api graphql -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number="$PR_NUM" -q '.data.repository.pullRequest.stack.number // empty' 2>/dev/null << 'GRAPHQL'
+query ($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+      }
+    }
+  }
+}
+GRAPHQL
+)
+    fi
+
+    if [ -n "$STACK_NUMBER" ] && [ "$STACK_NUMBER" != "0" ] && [ "$STACK_NUMBER" != "null" ]; then
+      echo "Then, after all children are restacked, unlink the remote stack:"
+      echo ""
+      echo "\`\`\`bash"
+      echo "gh stack unstack $STACK_NUMBER"
+      echo "# And re-link survivors (API-only, worktree-safe):"
+      echo "# gh stack link <survivor-pr> <next-survivor-pr>"
+      echo "\`\`\`"
+      echo ""
+    fi
+
+    echo "✓ After restacking, run /cleanup again on this merged branch to remove it."
+    echo ""
+  else
+    echo "No stacked children detected. Proceeding to worktree removal."
+  fi
+
+else
+  # PR not merged — skip stack detection
+  :
+fi
+```
+
 ### 3. Remove Worktree (from main)
 
 When PR_STATE is **MERGED**, use `git branch -D` (force delete). Squash merges mean the local
@@ -551,6 +762,8 @@ fi
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
 | Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
 | Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
+| Stacked children detected | Print a fully-substituted restack runbook (user runs it manually) |
+| No stacked children | Continue to worktree removal (unchanged flow) |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
 | **Shell stuck in deleted dir** | See recovery section below |
 
@@ -600,6 +813,20 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
   (run `/shipit` once to write it). Failures are reported but never block cleanup.
+- **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
+  child branches and prints a restack runbook (user runs it manually). No auto-rebase, no
+  auto-force-push — the runbook is emit-only, and the user controls restacking. This keeps
+  worktrees independent and safe for concurrent work.
+- **Restack runbook is detect-then-branch, not rebase-and-replay.** GitHub retargets a child PR's
+  *base pointer* when its parent merges but never rebases the *commits*; the force-push that rewrites
+  the remote comes from a stacking tool (`gh stack sync`, Graphite, "Update branch"), which may have
+  already corrected the remote — in which case the local worktree is what's stale. The runbook detects
+  the force-push signature (`merge-base --is-ancestor` both ways false) per child. If the remote is
+  already rebased it leads with `git branch -f backup/<child>` → `reset --hard @{u}` → prove
+  `git diff --stat backup <child> HEAD` is empty (an empty diff *proves* the reset lost no work,
+  since a correct rebase yields an identical tree), then re-links upstream with `--set-upstream-to`.
+  `rebase --onto` + `push --force-with-lease` is the fallback for the non-empty-diff (genuinely unique
+  local commits) case and for the remote-not-yet-rebased branch. Backups are kept until you confirm.
 - Cache is committed to git, so no manual syncing needed
 - Safe to run multiple times (idempotent checks)
 - **Works from main or any worktree** — never cd's into the target, uses `git -C` instead
