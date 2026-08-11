@@ -233,7 +233,7 @@ When a drifted agent's work is in the main worktree (not the unit's own worktree
 5. **Commit in main as the unit's round-1 commit** (same message convention as the normal apply
    path):
    ```bash
-   git commit -m "round-1 unit ${UNIT_ID}: <summary>"
+   git commit -m "<summary>"
    ```
 6. **Tear down the unit's empty worktree** (the work was already in main):
    ```bash
@@ -246,10 +246,13 @@ When a drifted agent's work is in the main worktree (not the unit's own worktree
 
 **Otherwise, apply the unit's staged diff from the main worktree** (never cd into the unit's
 worktree; never merge or commit inside it):
+
+Write `<summary>` as a single imperative sentence describing what this unit implements, not the orchestration step it belongs to. It must stand alone in `git log` — no round numbers, no unit slugs. Lead with a strong verb: `add`, `implement`, `extract`, `refactor`. Example: `implement JWT authentication middleware` or `add user profile API endpoints`.
+
 ```bash
 git -C "$WT_PATH" diff --staged --binary > "$SCRATCH/unit-${UNIT_ID}.patch"
 git apply --index "$SCRATCH/unit-${UNIT_ID}.patch"
-git commit -m "round-1 unit ${UNIT_ID}: <summary>"
+git commit -m "<summary>"
 ```
 Committing here — in the main worktree — is what lets pre-commit hooks run correctly; this is
 the fix for the nested-worktree hook-resolution failures seen historically.
@@ -519,9 +522,11 @@ git -C "$R2_WT_PATH" status --porcelain   # check for unstaged leftovers
 git -C "$R2_WT_PATH" add -A               # if any
 git -C "$R2_WT_PATH" diff --staged --binary > "$SCRATCH/round2.patch"
 git apply --index "$SCRATCH/round2.patch"
-git commit -m "round-2: spec-blind tests"
+git commit -m "test: add spec-blind tests for <comma-separated feature areas>"
 git worktree remove "$R2_WT_PATH" && git worktree prune && git branch -D "$R2_BRANCH"
 ```
+
+Replace `<feature areas>` with the actual modules or features covered, e.g. `test: add spec-blind tests for auth, user profile, and session management`.
 
 **Drift check — before deciding the worktree is empty, verify the main worktree is clean.**
 A drifted Round 2 agent's test files may have landed in the main worktree instead. If the
@@ -655,6 +660,12 @@ committing, validate scope — `git -C <its worktree or the diff> diff --staged 
 touch only files the findings name. Then re-run gate step 1 (build/type-check) and the affected
 tests yourself before committing; a fix that breaks the build is not a fix.
 
+```bash
+git commit -m "test: fix weak assertions and coverage gaps from adversary review"
+```
+
+If the fixes are narrow, name the specific area, e.g. `test: tighten boundary assertions in auth tests`.
+
 Tell the user: "Round 2 complete — [N tests added, M failing]. Round 3 complete — [K issues,
 J fixed, W weak assertions flagged]. Sweep findings: [duplication: N, doc-drift: N]."
 
@@ -768,7 +779,7 @@ one module) silently shadows one test with no error, and only a per-file count c
 Re-run gate step 1 (build/type-check), since moves can break import paths. Only then:
 
 ```bash
-git commit -m "round-4: relocate spec-blind tests to repo convention, drop vacuous tests"
+git commit -m "test: relocate spec-blind tests to repo convention and drop vacuous tests"
 ```
 
 If tests go red after a move, fix the import/path (that's the expected failure mode) — a relocation
