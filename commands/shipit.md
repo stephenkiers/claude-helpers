@@ -53,6 +53,21 @@ Start these in parallel:
 }
 ```
 
+**Worktree cache (.claude/github-cache.json)** also stores stacked-PR metadata (transient):
+```json
+"pr": {
+  "number": 42,
+  "url": "https://github.com/…/pull/42",
+  "state": "OPEN"
+},
+"stack": {
+  "isStacked": true,
+  "parentBranch": "stephenkiers/pps-166-…",
+  "parentPr": 14,
+  "stackNumber": 18
+}
+```
+
 ## 1.5. Full Detection (No Cache or Stale Cache)
 
 **Goal:** Discover every check the project runs and store it so we never miss one again.
@@ -191,6 +206,15 @@ Write commit message:
 
 ## 5. Push & PR
 
+### Stack Detection (if stacked)
+
+Before pushing and creating the PR, run the **Stack Detection → Is-stacked** block from
+`~/.claude/prompts/worktree-reference.md` to detect whether this branch's parent is another
+worktree's branch. This resolves `STACK_IS_STACKED`, `STACK_PARENT_BRANCH`, and `STACK_PARENT_PR`.
+(See that reference doc for the full detection logic.)
+
+### Create PR (with correct base for stacked PRs)
+
 ```bash
 # Detect issue number: cache-first, then branch name regex fallback
 BRANCH=$(git branch --show-current)
@@ -202,46 +226,96 @@ fi
 
 git push -u origin "$BRANCH"
 
-# Build PR body with issue link if detected
+# Build PR body with issue link (and "Stacked on" note if applicable)
+PR_BODY="## Summary
+- <what changed>
+
+## Test plan
+- <how to verify>"
+
 if [ -n "$ISSUE_NUM" ]; then
-  gh pr create --title "<commit subject>" --body "$(cat <<'EOF'
-Closes #<issue_num>
+  PR_BODY="Closes #$ISSUE_NUM
 
-## Summary
-- <what changed>
+$PR_BODY"
+fi
 
-## Test plan
-- <how to verify>
-EOF
-)"
+if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
+  PR_BODY="$PR_BODY
+
+Stacked on #$STACK_PARENT_PR"
+fi
+
+# Create PR with correct base (stacked PRs use parent branch; non-stacked use repo default)
+if [ "$STACK_IS_STACKED" = "true" ]; then
+  gh pr create --title "<commit subject>" --base "$STACK_PARENT_BRANCH" --body "$PR_BODY"
 else
-  gh pr create --title "<commit subject>" --body "$(cat <<'EOF'
-## Summary
-- <what changed>
-
-## Test plan
-- <how to verify>
-EOF
-)"
+  gh pr create --title "<commit subject>" --body "$PR_BODY"
 fi
 ```
 
 ### Write PR Data to Worktree Cache
 
-After `gh pr create` succeeds, write PR data to `.claude/github-cache.json`:
+After `gh pr create` succeeds, write PR data (including stack metadata) to `.claude/github-cache.json`:
 
 ```bash
 # Extract PR number and URL from creation output
 PR_URL=$(gh pr view --json url -q '.url')
 PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 
+# If stacked, look up the remote stack number (needed for cleanup restack runbook)
+STACK_NUM=""
+if [ "$STACK_IS_STACKED" = "true" ]; then
+  REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
+  if [ -n "$REPO" ]; then
+    REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
+    REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
+    STACK_NUM=$(gh api graphql -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number="$PR_NUM" -q '.data.repository.pullRequest.stack.number // empty' 2>/dev/null << 'GRAPHQL'
+query ($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+      }
+    }
+  }
+}
+GRAPHQL
+)
+  fi
+fi
+
 # Merge PR data into existing cache (preserves branch + issue sections)
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 # Write to a temp file and mv on success so a jq failure never truncates the existing cache
 # (a bare `> github-cache.json` redirect truncates the file before jq runs).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson number "$PR_NUM" --arg url "$PR_URL" --arg state "OPEN" \
-  '. + {pr: {number: $number, url: $url, state: $state}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+if [ "$STACK_IS_STACKED" = "true" ]; then
+  # Stacked: write full stack metadata
+  echo "$EXISTING" | jq \
+    --argjson number "$PR_NUM" \
+    --arg url "$PR_URL" \
+    --arg state "OPEN" \
+    --arg parentBranch "$STACK_PARENT_BRANCH" \
+    --arg parentPr "$STACK_PARENT_PR" \
+    --arg stackNum "$STACK_NUM" \
+    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: (if $parentPr != "" then ($parentPr | tonumber) else null end), stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end)}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+else
+  # Not stacked: write isStacked=false
+  echo "$EXISTING" | jq \
+    --argjson number "$PR_NUM" \
+    --arg url "$PR_URL" \
+    --arg state "OPEN" \
+    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: false}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+fi
+
+# Link parent PR in the remote stack (worktree-safe: gh stack link is API-only)
+if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
+  if command -v gh-stack >/dev/null 2>&1; then
+    gh stack link "$STACK_PARENT_PR" "$PR_NUM"
+  else
+    echo "WARNING: gh-stack extension not found; skipping 'gh stack link'. Install via 'gh extension install .../gh-stack' or run manually: gh stack link $STACK_PARENT_PR $PR_NUM"
+  fi
+fi
 ```
 
 **If PR exists:** Report URL and stop.
@@ -267,3 +341,5 @@ Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
 | No changes | Report "nothing to commit" |
 | PR exists | Report URL |
 | On main branch | Warn, suggest branching |
+| Branch is stacked | Create PR with `--base "$STACK_PARENT_BRANCH"`, link parent PR, cache stack metadata |
+| Branch not stacked | Create PR with repo default base, mark `stack.isStacked=false` in cache |
