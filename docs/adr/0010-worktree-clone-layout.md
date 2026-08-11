@@ -22,7 +22,7 @@ The on-disk layout produced by `/setup-repo` and consumed by the worktree workfl
 <repos-root>/<repo>/worktrees/<issue-or-slug>/    ← sibling worktrees created later by /track-and-start
 ```
 
-Where `<repos-root>` defaults to `~/Repositories` and is user-overridable (e.g., via `REPOS_ROOT` env var in `/setup-repo`).
+Where `<repos-root>` defaults to `~/Repositories` and is user-overridable (via the `CLAUDE_REPOS_ROOT` env var or a `repos_root:` entry in `~/.claude/preferences.yaml`, as `/setup-repo` resolves it).
 
 **Key invariant:** the default-branch checkout is not at the repository root. Instead, it lives under a directory named exactly `worktrees` — the siblings created by `git worktree add` live alongside it, all under the same `worktrees/` parent. **Detection logic keys off this parent directory name: when the parent of the main worktree is named `worktrees`, that parent is the worktree parent; otherwise, the worktree parent is sibling-adjacent to the main worktree (detected from existing siblings).**
 

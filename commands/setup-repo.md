@@ -40,6 +40,7 @@ The argument is a git remote. Accept, in order:
 set -euo pipefail
 
 ARG="${1:-}"
+REMOTE=""   # initialize so `set -u` doesn't trip on the no-arg / bare-name paths below
 case "$ARG" in
   "")                       ;;  # no arg → ask the user what to clone
   *://*|git@*)  REMOTE="$ARG" ;;                         # full URL, use as-is
@@ -86,7 +87,7 @@ esac
    REPOS_ROOT="${REPOS_ROOT:-$HOME/Repositories}"
    # Expand leading tilde if config used one
    case "$REPOS_ROOT" in
-     "~"|"~/"*) REPOS_ROOT="${HOME}/${REPOS_ROOT#\~/}"; REPOS_ROOT="${REPOS_ROOT%/}";; 
+     "~"|"~/"*) REPOS_ROOT="${HOME}/${REPOS_ROOT#\~/}"; REPOS_ROOT="${REPOS_ROOT%/}";;
    esac
 
    REPO_DIR="${REPOS_ROOT}/${REPO_NAME}"
