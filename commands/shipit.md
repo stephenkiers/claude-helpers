@@ -227,11 +227,16 @@ fi
 git push -u origin "$BRANCH"
 
 # Build PR body with issue link (and "Stacked on" note if applicable)
-PR_BODY=""
+PR_BODY="## Summary
+- <what changed>
+
+## Test plan
+- <how to verify>"
+
 if [ -n "$ISSUE_NUM" ]; then
-  PR_BODY="Closes #$ISSUE_NUM"
-else
-  PR_BODY=""
+  PR_BODY="Closes #$ISSUE_NUM
+
+$PR_BODY"
 fi
 
 if [ "$STACK_IS_STACKED" = "true" ]; then
@@ -239,14 +244,6 @@ if [ "$STACK_IS_STACKED" = "true" ]; then
 
 Stacked on #$STACK_PARENT_PR"
 fi
-
-PR_BODY="$PR_BODY
-
-## Summary
-- <what changed>
-
-## Test plan
-- <how to verify>"
 
 # Create PR with correct base (stacked PRs use parent branch; non-stacked use repo default)
 if [ "$STACK_IS_STACKED" = "true" ]; then
@@ -288,9 +285,9 @@ if [ "$STACK_IS_STACKED" = "true" ]; then
     --arg url "$PR_URL" \
     --arg state "OPEN" \
     --arg parentBranch "$STACK_PARENT_BRANCH" \
-    --argjson parentPr "$STACK_PARENT_PR" \
+    --arg parentPr "$STACK_PARENT_PR" \
     --arg stackNum "$STACK_NUM" \
-    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: $parentPr, stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end)}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: (if $parentPr != "" then ($parentPr | tonumber) else null end), stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end)}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 else
   # Not stacked: write isStacked=false
   echo "$EXISTING" | jq \

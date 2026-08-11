@@ -517,7 +517,7 @@ if [ "$PR_STATE" = "MERGED" ]; then
   if [ -z "$CHILD_BRANCHES" ]; then
     OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number)"' 2>/dev/null || true)
     if [ -n "$OPEN_PRS" ]; then
-      CHILD_BRANCHES=$(echo "$OPEN_PRS" | tr '\n' ' ')
+      CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
     fi
   fi
 
@@ -538,7 +538,10 @@ if [ "$PR_STATE" = "MERGED" ]; then
     echo "was the base of a stacked chain. GitHub auto-retargets the immediate child's PR base to"
     echo "'$DEFAULT_BRANCH', but you must manually restack children in their own worktrees."
     echo ""
-    echo "For each child (bottom-up, in order):"
+    echo "For each direct child (in order):"
+    echo ""
+    echo "After all direct children below are restacked, deeper descendants (grandchildren, etc.)"
+    echo "will need their own restack in turn — run /cleanup on each restacked child to handle its children."
     echo ""
 
     # Parse children and emit runbook
@@ -549,29 +552,27 @@ if [ "$PR_STATE" = "MERGED" ]; then
       CHILD_PR=$(echo "$CHILD_INFO" | cut -d: -f2)
       CHILD_WT=$(echo "$CHILD_INFO" | cut -d: -f3)
 
-      # If no worktree path, skip (can't rebase without knowing where)
-      if [ -z "$CHILD_WT" ]; then
-        continue
-      fi
-
-      # Capture child's pre-rebase tip for the next child up
-      CHILD_PRETIP=$(git -C "$CHILD_WT" rev-parse HEAD 2>/dev/null || echo "")
-
       echo "**Child $CHILD_NUM: $CHILD_BRANCH (PR #$CHILD_PR)**"
       echo ""
       echo "\`\`\`bash"
-      echo "git -C '$CHILD_WT' fetch origin"
-      echo "git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
-      echo "# Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
-      echo "git -C '$CHILD_WT' push --force-with-lease"
-      if [ -n "$CHILD_PRETIP" ]; then
-        echo "CHILD_NEW=\$(git -C '$CHILD_WT' rev-parse HEAD)"
-        echo "# Next child (if any): rebase --onto \$CHILD_NEW $CHILD_PRETIP"
+
+      # If no worktree path (fallback only), emit placeholder
+      if [ -z "$CHILD_WT" ]; then
+        echo "# Worktree path unknown (detected via gh pr list fallback, not cache)."
+        echo "# Run these commands from <child-worktree-path> (substitute the actual path):"
+        echo "git fetch origin"
+        echo "git rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
+        echo "# Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
+        echo "git push --force-with-lease"
+      else
+        echo "git -C '$CHILD_WT' fetch origin"
+        echo "git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
+        echo "# Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
+        echo "git -C '$CHILD_WT' push --force-with-lease"
       fi
+
       echo "\`\`\`"
       echo ""
-
-      MERGED_TIP="$CHILD_PRETIP"  # Next child's base is this child's pre-rebase tip
     done
 
     # Remote stack fixup (if this was part of a remote stack)

@@ -179,9 +179,15 @@ if [ -d "$WORKTREE_PARENT" ]; then
     [ ! -f "$cache_file" ] && continue
     CACHED_PARENT=$(jq -r '.stack.parentBranch // empty' "$cache_file" 2>/dev/null)
     if [ "$CACHED_PARENT" = "$PARENT_BRANCH" ]; then
-      CHILD_BRANCH=$(dirname "$cache_file" | xargs basename)
-      CHILD_PR=$(jq -r '.stack.parentPr // ""' "$cache_file" 2>/dev/null)
-      CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR} "
+      CHILD_WORKTREE=$(dirname "$cache_file" | xargs basename)
+      CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
+        $1 == "worktree" && $2 == wt { found=1 }
+        found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
+      ')
+      if [ -n "$CHILD_BRANCH" ]; then
+        CHILD_PR=$(jq -r '.stack.parentPr // ""' "$cache_file" 2>/dev/null)
+        CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR} "
+      fi
     fi
   done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
 fi
@@ -189,7 +195,7 @@ fi
 # Fallback: scan open PRs against this branch
 if [ -z "$CHILD_BRANCHES" ]; then
   OPEN_PRS=$(gh pr list --base "$PARENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number)"' 2>/dev/null || true)
-  CHILD_BRANCHES=$(echo "$OPEN_PRS" | tr '\n' ' ' | xargs)
+  CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
 fi
 
 echo "Child branches of '$PARENT_BRANCH': $CHILD_BRANCHES"
