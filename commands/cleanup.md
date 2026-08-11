@@ -346,17 +346,52 @@ requires human verification after merge, e.g.:
 - Phrases like "verify in staging/production", "check the dashboard", "smoke test",
   "confirm with", "after deploy"
 
-**If any are found**, present them to the user as a short checklist and ask whether they've
-been done — e.g.:
+**If any are found**, do **not** interrogate the user item-by-item. Enqueue them into the batched
+verify queue and ask a single disposition for the whole batch (see 2b-iii below). The queue is what
+lets you defer verification to a batch later instead of blocking every merge on it. If nothing
+manual-validation-shaped is found, say so in one line and move on without prompting.
 
-> ⚠️ The issue/PR mentions manual post-merge validations. Have you verified these?
-> - [ ] Confirm the export email renders correctly in Gmail (issue #42)
-> - [ ] Check the p95 latency dashboard after deploy (PR test plan)
+### 2b-iii. Enqueue + disposition (batched verification)
 
-This is **advisory, not blocking**: if the user says they're done (or wants to skip), continue.
-But do wait for their answer before removing the worktree — this is the last natural checkpoint
-where the context still exists. If nothing manual-validation-shaped is found, say so in one line
-and move on without prompting.
+Fold two sources of "still needs a human" into one queue and dispose of them in a single prompt:
+
+1. The manual validations just found in the issue/PR text (2b-ii).
+2. Any pending `Ruling:` lines in this review's `action-plan.md`, if one exists — refreshed by
+   running the **Sync** step from `~/.claude/commands/verify-queue.md` (read and run that section;
+   it is idempotent).
+
+```bash
+# Refresh the queue from all action-plans (idempotent; safe even if none relate to this branch).
+QUEUE="$HOME/.claude/reviews/verify-queue.jsonl"
+touch "$QUEUE"
+BEFORE=$(jq -rs 'map(select(.status=="open")) | length' "$QUEUE" 2>/dev/null || echo 0)
+```
+
+Now run `/verify-queue`'s Sync (extract new rows from action-plans). For manual validations found in
+2b-ii that have **no** action-plan finding behind them, append a row directly with `type:"decision"`
+(or `"measurement"` if it names a command), `id` = `manual/<branch>::<slug>`, `summary` = the
+validation text, `plan` = the PR/issue URL for reference.
+
+```bash
+AFTER=$(jq -rs 'map(select(.status=="open")) | length' "$QUEUE" 2>/dev/null || echo 0)
+NEW=$((AFTER - BEFORE))
+echo "verify-queue: $NEW new item(s) from this review; $AFTER open total"
+```
+
+**If `NEW` > 0**, ask the user **one** `AskUserQuestion` for the batch — never one-per-item:
+
+| Option | Effect |
+|--------|--------|
+| **done** | You already verified these — mark this review's new rows `done`. (Optionally capture a one-line result per row.) |
+| **defer** | Batch them — leave as `open`; drain later with `/verify-queue`. *This is the low-friction default.* |
+| **ignore** | Nothing here is worth tracking — mark this review's new rows `ignored` so they never resurface. |
+
+Apply the choice with `/verify-queue`'s disposition helper (`set_status`) against the ids added in
+this sync. **If `NEW` = 0**, print `verify-queue: nothing new to check` and move on — no prompt.
+
+This replaces the old blocking checklist: the reminder you value survives (you still get asked), but
+it is one keystroke, defers cleanly, and `ignore` gives every item a terminal disposition so nothing
+nags twice.
 
 ### 2c. Update Project Issues Tracker
 
@@ -498,7 +533,8 @@ fi
 | Target resolves to main | Abort with error message |
 | Target not a registered worktree | Abort with error message |
 | PR confirmed MERGED | Proceed with all cleanup (including `-D`) without asking |
-| Issue/PR lists manual post-merge validations | Surface as a checklist, ask user before removing worktree (advisory, never blocks if user confirms) |
+| Issue/PR lists manual post-merge validations | Enqueue into the verify queue; ask one `done\|defer\|ignore` for the batch (never per-item, never blocks) |
+| Review left pending `Ruling:` lines | Synced into the verify queue by 2b-iii; drain later with `/verify-queue` |
 | Issue/PR text unavailable (`gh` fails, no issue) | Note it and continue — don't block on a read failure |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
 | PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands |
@@ -545,8 +581,10 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 
 - This command complements `/shipit` - use `/shipit` to create PR, `/cleanup` after merge
 - Before removing the worktree, the issue and PR bodies are scanned for manual post-merge
-  validations (test plans, unchecked checklists, "verify in staging" notes) and raised to the
-  user — the worktree is the last natural checkpoint for that context
+  validations (test plans, unchecked checklists, "verify in staging" notes), and any pending
+  `Ruling:` lines in the review's `action-plan.md` are synced, into the batched verify queue
+  (`~/.claude/reviews/verify-queue.jsonl`). You get **one** `done|defer|ignore` for the batch, not a
+  per-item interrogation — drain deferred items later with `/verify-queue`
 - When the PR is merged, cleanup pulls `main` (ff-only) and runs the same checks
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
