@@ -82,13 +82,15 @@ esac
    # Read repos root from env, preferences.yaml, or default
    REPOS_ROOT="${CLAUDE_REPOS_ROOT:-}"
    if [ -z "$REPOS_ROOT" ] && [ -f "$HOME/.claude/preferences.yaml" ]; then
-     REPOS_ROOT=$(sed -n 's/^repos_root:[[:space:]]*//p' "$HOME/.claude/preferences.yaml" | head -1)
+     # First `repos_root:` line; strip an inline comment, surrounding quotes, and stray whitespace.
+     # `grep -m1 … || true` keeps a no-match from tripping `set -e`/`pipefail`.
+     line=$(grep -m1 '^repos_root:' "$HOME/.claude/preferences.yaml" 2>/dev/null || true)
+     REPOS_ROOT=$(printf '%s\n' "$line" | sed -e 's/^repos_root:[[:space:]]*//' \
+       -e 's/[[:space:]][[:space:]]*#.*$//' -e 's/[[:space:]]*$//' \
+       -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
    fi
    REPOS_ROOT="${REPOS_ROOT:-$HOME/Repositories}"
-   # Expand leading tilde if config used one
-   case "$REPOS_ROOT" in
-     "~"|"~/"*) REPOS_ROOT="${HOME}/${REPOS_ROOT#\~/}"; REPOS_ROOT="${REPOS_ROOT%/}";;
-   esac
+   REPOS_ROOT="${REPOS_ROOT/#\~/$HOME}"   # expand a leading ~ (bare or ~/…) to $HOME
 
    REPO_DIR="${REPOS_ROOT}/${REPO_NAME}"
    ```
