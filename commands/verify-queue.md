@@ -1,151 +1,306 @@
 ---
 name: verify-queue
-description: Drain the batched verification queue — the pending measurements and decisions accumulated across expert-review action plans. Run with no args to see the checklist; `done|defer|ignore <id>` to disposition an item; `sync` to refresh from action plans.
+description: Per-repository batched verification queue — store pending rulings from action-plans in the repo's worktrees/ folder, sync and drain them, and record results back to action-plan.md
 ---
 
-# Verify Queue — Batched Post-Review Verification
+# Verify Queue — Per-Repository Verification Workflow
 
-Every `/expert-review` triage writes an `action-plan.md` whose *Needs measurement* and *Needs you*
-items carry `**Ruling**: _(pending …)_` lines — concrete things a human still has to run or rule on.
-Left alone, those lines are scattered across dozens of review directories, and `/cleanup` ends up
-interrogating you about them one merge at a time.
+Batched verification queue for pending rulings — **per-repository**, stored at `<repo>/worktrees/verify-queue.jsonl`
+beside `issues.json`. Collects *your-call* and *measurement* findings from `action-plan.md` files, surfaces them
+for review, and records your decisions back to the plans.
 
-This command turns that per-merge friction into **one drainable queue**. Items accumulate as you
-work; you knock out a batch when you're in the headspace for it — not when you're trying to close a
-worktree.
+**Must run from inside a git repo** (or one of its worktrees) — errors outside a git repository.
 
-## The queue file
+## Queue File & Helpers
 
-`~/.claude/reviews/verify-queue.jsonl` — one JSON object per line. Cheap to append, cheap to tick
-off. Each row is **self-sufficient** (carries its own summary + command) so it stays actionable even
-if the source action-plan is later removed; the `plan` path is the link back for full detail
-(options, resolves-via thresholds).
+Every bash step that touches the queue starts with Project Detection (from `~/.claude/prompts/worktree-reference.md`)
+to set `WORKTREE_PARENT`, then defines the queue location:
+
+```bash
+# 1. Repo identity
+REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
+
+# 2. Main worktree (first entry is always main)
+MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+
+# 3. Detect worktree parent from existing worktrees
+SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
+if [ -n "$SECOND_WORKTREE" ]; then
+  WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
+else
+  WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
+fi
+
+# 4. Queue file (per-repo, lives beside issues.json)
+QUEUE="${WORKTREE_PARENT}/verify-queue.jsonl"
+touch "$QUEUE"
+```
+
+The queue file is **untracked** (like `issues.json`) and lives in the repo's `worktrees/` folder. It is
+scoped to a single repository and cleaned up with that repo.
+
+### Queue Row Schema (JSONL format)
+
+Each line is a JSON object with exactly these fields:
 
 ```json
-{"id":"<repo-key>/<review-id>::<finding-slug>","plan":"/abs/path/action-plan.md","type":"measurement","summary":"one-line what to check","command":"<runnable cmd, or empty for decisions>","added":"YYYY-MM-DD","status":"open","result":""}
+{
+  "id": "<repo-key>/<review-id>::<finding-slug>",
+  "status": "open",
+  "kind": "your-call",
+  "summary": "Short human-readable description of the finding",
+  "command": "",
+  "plan": "/absolute/path/to/action-plan.md",
+  "result": ""
+}
 ```
 
-- **`id`** — stable: `<repo-key>/<review-id>::<kebab-slug-of-finding-title>`. Sync dedups on it, so
-  re-running never double-enqueues.
-- **`type`** — `measurement` (needs a run/number) or `decision` (needs your call).
-- **`status`** — `open` (default, shows in the drain view) · `done` (resolved) · `ignored`
-  (dispositioned, never surfaces again).
+**Field definitions:**
+- `id` (string): Globally unique identifier: `<repo-key>/<review-id>::<finding-slug>`. Repo-key is
+  derived from `gh repo view` (e.g., `acme-inc/claude-helpers`), and review-id is the review directory
+  name (e.g., `feature-x-abc123-1723456789`). Dedup key on `add_row` — if an id already exists in the
+  queue, skip it (re-sync is idempotent).
+- `status` (string): One of `open`, `done`, or `ignored`. Only `open` rows surface on drain.
+- `kind` (string): One of `your-call` (awaiting human judgment) or `measurement` (awaiting a test run).
+- `summary` (string): Human description of the finding. Copy from action-plan.md directly.
+- `command` (string): For `measurement` rows, the concrete runnable command to resolve the question;
+  empty string for `your-call` rows.
+- `plan` (string): Absolute path to the source `action-plan.md` file.
+- `result` (string): Filled when the row is marked `done` with `--result "…"`; otherwise empty string.
 
-## Dispatch on `$ARGUMENTS`
+### Helper: `add_row` (dedup append)
 
-- **empty** → **Drain view** (below)
-- **`sync`** → **Sync** (below), then report how many rows were added
-- **`done <id> [--result "…"]`** → set that row's `status` to `done`; if `--result` given, write it
-  into both the JSONL `result` field and the source action-plan's `Ruling:` line (see *Write-back*)
-- **`defer <id>`** → set `status` to `open` (explicit "keep it in the batch" — the no-op that stops
-  cleanup from re-asking)
-- **`ignore <id>`** → set `status` to `ignored`
-- **`done|ignore all`** → apply to every currently-open row (use sparingly)
-
-Always run **Sync** first (it is idempotent and cheap) so the view/disposition acts on current data.
-
-## Sync
-
-Find every pending ruling across all reviews and enqueue any not already tracked.
-
-**Step 1 — list candidate plans (bash):**
+Appends a new row to the queue, but skips if an id already exists (making re-sync idempotent and
+allowing previously-ignored rows to stay ignored):
 
 ```bash
-QUEUE="$HOME/.claude/reviews/verify-queue.jsonl"
-touch "$QUEUE"
-REVIEWS="$HOME/.claude/reviews"
-
-# action-plans that still have unfilled rulings, newest first
-find "$REVIEWS" -name action-plan.md 2>/dev/null -print0 \
-  | xargs -0 ls -t 2>/dev/null \
-  | while read -r f; do
-      grep -qE 'pending (your call|measurement)' "$f" && echo "$f"
-    done
-```
-
-**Step 2 — for each listed plan, extract its pending items (you, reading the file):**
-
-Read each plan and pull one queue row per unfilled ruling. Do **not** grep-and-dump — the summary and
-command need judgment:
-
-- **`id`** = `<repo-key>/<review-id>` (the two path segments under `~/.claude/reviews/`) + `::` +
-  a kebab slug of the finding's title.
-- **`type`** = `measurement` if the ruling reads `pending measurement`, else `decision`.
-- **`summary`** = the finding title compressed to one actionable line ("confirm p95 drop >20% after
-  cache change"), not the whole paragraph.
-- **`command`** = for a *measurement*, the concrete command from the finding's `Command:` field,
-  verbatim; for a *decision*, empty string.
-- **`added`** = today's date (`date +%Y-%m-%d`).
-- **`status`** = `open`, **`result`** = `""`.
-
-**Step 3 — append only new ids (bash, per row):**
-
-```bash
-add_row() {  # args: id plan type summary command added
-  local id="$1" plan="$2" typ="$3" summ="$4" cmd="$5" added="$6"
-  # dedup: skip if this id already exists in the queue (any status)
-  if grep -qF "\"id\":\"$id\"" "$QUEUE"; then return 0; fi
-  jq -cn --arg id "$id" --arg plan "$plan" --arg type "$typ" \
-        --arg summary "$summ" --arg command "$cmd" --arg added "$added" \
-        '{id:$id, plan:$plan, type:$type, summary:$summary, command:$command, added:$added, status:"open", result:""}' \
+add_row() {
+  local id="$1" status="$2" kind="$3" summary="$4" command="$5" plan="$6" result="$7"
+  
+  # Skip if this id already exists in queue
+  if grep -q "^{.*\"id\":\"$(printf '%s\n' "$id" | sed 's/[[\.*^$/]/\\&/g')\"" "$QUEUE"; then
+    return 0
+  fi
+  
+  # Append new row (let jq own the escaping via --arg)
+  jq -n \
+    --arg id "$id" \
+    --arg status "$status" \
+    --arg kind "$kind" \
+    --arg summary "$summary" \
+    --arg command "$command" \
+    --arg plan "$plan" \
+    --arg result "$result" \
+    '{id: $id, status: $status, kind: $kind, summary: $summary, command: $command, plan: $plan, result: $result}' \
     >> "$QUEUE"
 }
 ```
 
-Dedup is by exact `id` substring; because ids are stable, a re-sync of an already-tracked finding is
-a no-op — including one you previously `ignored` (it stays ignored, never resurfacing).
+### Helper: `set_status` (read-modify-write via temp file)
 
-Report: `synced | new: {n} | open total: {m}`.
-
-## Drain view (no args)
+Updates the status of a row (and optionally the result field) and writes the queue back:
 
 ```bash
-QUEUE="$HOME/.claude/reviews/verify-queue.jsonl"
-[ -s "$QUEUE" ] || { echo "Verify queue empty — nothing to check."; exit 0; }
-echo "=== NEEDS A RUN (measurement) ==="
-jq -r 'select(.status=="open" and .type=="measurement") | "• [\(.id)]\n    \(.summary)\n    $ \(.command)\n    plan: \(.plan)"' "$QUEUE"
-echo ""
-echo "=== NEEDS A CALL (decision) ==="
-jq -r 'select(.status=="open" and .type=="decision") | "• [\(.id)]\n    \(.summary)\n    plan: \(.plan)"' "$QUEUE"
-echo ""
-echo "open: $(jq -rs 'map(select(.status=="open")) | length' "$QUEUE") | done: $(jq -rs 'map(select(.status=="done")) | length' "$QUEUE") | ignored: $(jq -rs 'map(select(.status=="ignored")) | length' "$QUEUE")"
-```
-
-Present the two groups as a checklist. For each item offer the natural next step: run the command
-(measurement) or make the call (decision), then `done`. If a listed `plan` file no longer exists,
-show the row's own `summary`/`command` and tag it `(plan archived)` — the row is still actionable.
-
-## Disposition (`done` / `defer` / `ignore`)
-
-Update a row's status in place. `jq` can't edit JSONL streams atomically, so rewrite via a temp file.
-
-```bash
-QUEUE="$HOME/.claude/reviews/verify-queue.jsonl"
-set_status() {  # args: id new_status [result]
-  local id="$1" st="$2" res="${3:-}"
-  local tmp; tmp=$(mktemp "${QUEUE}.XXXXXX")
-  jq -c --arg id "$id" --arg st "$st" --arg res "$res" '
-    if .id == $id then .status = $st | (if $res != "" then .result = $res else . end) else . end
-  ' "$QUEUE" > "$tmp" && mv "$tmp" "$QUEUE" || rm -f "$tmp"
+set_status() {
+  local id="$1" new_status="$2" new_result="${3:-}"
+  
+  # Create temp file in same directory (ensures atomic rename)
+  TMP="$(mktemp "$(dirname "$QUEUE")/verify-queue.XXXXXX")"
+  
+  jq -r \
+    --arg id "$id" \
+    --arg status "$new_status" \
+    --arg result "$new_result" \
+    'if .id == $id then .status = $status | .result = $result else . end' \
+    "$QUEUE" > "$TMP" && mv "$TMP" "$QUEUE" || { rm -f "$TMP"; return 1; }
 }
 ```
 
-- `done <id> [--result "…"]` → `set_status "$id" done "$result"`
-- `defer <id>` → `set_status "$id" open` (keeps it batched; the point is it won't re-prompt at cleanup)
-- `ignore <id>` → `set_status "$id" ignored`
+## Dispatch on Arguments
 
-### Write-back (done with --result)
+Every path runs **sync first** (unless sync has already run this invocation). Then:
 
-When `done` carries `--result`, also update the source action-plan so the plan and queue stay
-consistent. Find the finding by its title in the `plan` file and replace its
-`**Ruling**: _(pending …)_` line with `**Ruling**: <result>`. If the plan file is gone, skip
-write-back silently — the JSONL `result` is the record of last resort.
+- **No arguments** → sync + drain (view all pending rulings)
+- `sync` → scan action-plans, discover new rulings, add to queue
+- `done <id> [--result "…"]` → mark row done, optionally record result, write back to action-plan
+- `defer <id>` → leave row open (no change to status; used for "will do this later")
+- `ignore <id>` → mark row ignored (never resurfaces on re-sync)
+- `done all` → mark all currently-open rows as done (no result recorded)
+- `ignore all` → mark all currently-open rows as ignored
+
+## Sync: Discover and Queue Rulings
+
+**Step 1 — Repo-scoped candidate discovery:**
+
+```bash
+# Derive REPO_KEY (identity, not directory path)
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')
+[ -z "$REPO_KEY" ] && REPO_KEY=$(basename "$PROJECT_ROOT")
+
+# Find all action-plans for this repo
+REVIEWS="$HOME/.claude/reviews/${REPO_KEY}"
+[ -d "$REVIEWS" ] || { echo "No reviews for this repo ($REPO_KEY) yet."; exit 0; }
+
+# Candidates: action-plan.md files with pending rulings, sorted by recency
+find "$REVIEWS" -name action-plan.md 2>/dev/null -print0 \
+  | xargs -0 ls -t 2>/dev/null \
+  | while read -r plan_file; do
+      grep -qE 'pending (your call|measurement)' "$plan_file" && echo "$plan_file"
+    done
+```
+
+**Step 2 — Extract rulings from each plan:**
+
+For each `action-plan.md` file, parse the sections (e.g., "Needs Your Call" or "Needs Measurement").
+For each pending ruling, extract:
+- `finding-slug`: a kebab-case slug of the finding title
+- `summary`: the finding description (copy from the plan, use judgment to shorten/clarify)
+- `kind`: `your-call` or `measurement` (infer from section heading or the `pending …` marker)
+- `command`: for `measurement` rows, draft or copy the concrete runnable command from the plan;
+  for `your-call` rows, use empty string
+- `review-id`: the review directory name (directory between `reviews/<repo-key>/` and `action-plan.md`)
+- `plan`: the absolute path to the action-plan.md file
+
+Build `id` as `<repo-key>/<review-id>::<finding-slug>` — globally unique.
+
+**Step 3 — Append to queue via `add_row`:**
+
+For each extracted ruling, call `add_row "$id" "open" "$kind" "$summary" "$command" "$plan" ""`.
+The dedup logic in `add_row` ensures re-sync is idempotent and preserves prior `ignore` decisions.
+
+## Drain View (no args after sync)
+
+After sync, display all open rows, grouped by kind:
+
+```bash
+# Group by kind: "needs a run" (measurement) first, then "needs a call" (your-call)
+if [ ! -s "$QUEUE" ]; then
+  echo "✓ Nothing to verify."
+  exit 0
+fi
+
+echo "# Pending Rulings"
+echo ""
+
+# Needs a run (measurement rows)
+MEASUREMENTS=$(jq -r 'select(.status == "open" and .kind == "measurement") | @json' "$QUEUE")
+if [ -n "$MEASUREMENTS" ]; then
+  echo "## Needs a run (test/measurement)"
+  echo ""
+  echo "$MEASUREMENTS" | jq -r '
+    "- [\(.id)](\(.plan)) — \(.summary)\n  Command: `\(.command)`"
+  '
+  echo ""
+fi
+
+# Needs a call (your-call rows)
+YOUR_CALLS=$(jq -r 'select(.status == "open" and .kind == "your-call") | @json' "$QUEUE")
+if [ -n "$YOUR_CALLS" ]; then
+  echo "## Needs your call (judgment)"
+  echo ""
+  echo "$YOUR_CALLS" | jq -r '
+    "- [\(.id)](\(.plan)) — \(.summary)"
+  '
+  echo ""
+fi
+
+# Summary count
+TOTAL=$(jq '[select(.status == "open")] | length' "$QUEUE")
+echo "Total pending: **$TOTAL**"
+```
+
+## Disposition Verbs
+
+### `done <id> [--result "…"]`
+
+Marks a row as `done`, optionally records a result, and writes the result back to the source action-plan:
+
+```bash
+ID="$2"
+RESULT=""
+
+# Parse --result flag if present
+if [ "$3" = "--result" ] && [ -n "$4" ]; then
+  RESULT="$4"
+fi
+
+# Update queue
+set_status "$ID" "done" "$RESULT"
+
+# Write result back to action-plan (read the plan, find the Ruling line, replace pending marker)
+# Extract plan path from queue
+PLAN=$(jq -r --arg id "$ID" 'select(.id == $id) | .plan' "$QUEUE" | head -1)
+if [ -z "$PLAN" ] || [ ! -f "$PLAN" ]; then
+  echo "ERROR: Could not find plan file for $ID"
+  exit 1
+fi
+
+# For each pending ruling in the plan matching this finding, mark it as APPROVED or REJECTED
+# This is judgment-specific — e.g., replace "Ruling: pending your call" with "Ruling: APPROVED"
+# Details depend on action-plan format; adjust as needed.
+if [ -n "$RESULT" ]; then
+  # Edit the plan: find the Ruling line for this finding and replace "pending …" with the result
+  # Example: sed -i.bak "s/Ruling: pending.*$/Ruling: $RESULT/" "$PLAN"
+  # (Exact editing depends on action-plan.md structure — review the actual format)
+  :
+fi
+
+echo "Marked $ID as done"
+[ -n "$RESULT" ] && echo "Result: $RESULT"
+```
+
+### `defer <id>`
+
+Leaves the row with status `open` (i.e., no change). Use when you want to handle it later:
+
+```bash
+ID="$2"
+echo "Deferred $ID (will resurface on next sync)"
+```
+
+### `ignore <id>`
+
+Marks a row as `ignored` — it will never resurface on re-sync:
+
+```bash
+ID="$2"
+set_status "$ID" "ignored" ""
+echo "Ignored $ID (will not appear again)"
+```
+
+### `done all`
+
+Marks all currently-open rows as `done`:
+
+```bash
+jq -r 'select(.status == "open") | .id' "$QUEUE" | while read -r id; do
+  set_status "$id" "done" ""
+done
+COUNT=$(jq '[select(.status == "open")] | length' "$QUEUE")
+echo "Marked all $COUNT rows as done"
+```
+
+### `ignore all`
+
+Marks all currently-open rows as `ignored`:
+
+```bash
+jq -r 'select(.status == "open") | .id' "$QUEUE" | while read -r id; do
+  set_status "$id" "ignored" ""
+done
+COUNT=$(jq '[select(.status == "open")] | length' "$QUEUE")
+echo "Ignored all $COUNT rows (will not reappear)"
+```
 
 ## Notes
 
-- **Idempotent.** `sync` and every disposition are safe to re-run. Ids are stable, dedup is by id.
-- **Persistence assumption.** Rows link to action-plans but never depend on them — the summary and
-  command are copied in, so an archived review doesn't orphan a queue item.
-- **Paired with `/cleanup`.** Cleanup runs `sync` at the end and, if the just-merged review left new
-  items, asks a single `done | defer | ignore` for the batch — non-blocking. This command is where
-  you drain the accumulated `defer`red items later.
+- **Queue is per-repository:** Stored in `<repo>/worktrees/verify-queue.jsonl`, scoped to one repo.
+  Untracked, like `issues.json`. Cleans up when the repo is removed.
+- **IDs are globally unique:** Built from repo-key + review-id + finding-slug. Same finding across
+  multiple reviews has different IDs (different review-id components).
+- **Dedup makes re-sync idempotent:** Running `sync` multiple times against the same action-plans does
+  not create duplicate rows. Previously-`ignored` rows stay ignored.
+- **No migration needed:** This is the first per-repo queue design. No global state to migrate.
+- **JSON safety:** All jq operations use `--arg` and `--argjson` flags; shell variables never interpolate
+  into JSON string literals (ensures proper escaping of quotes, backslashes, newlines).
