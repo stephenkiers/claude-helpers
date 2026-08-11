@@ -34,6 +34,14 @@
 #   Examples: "the project's type system is very dynamic",
 #             "strict perf is a hard requirement"
 
+# ─── Shared Configuration (not a preference lens) ────────────────────────────
+
+# repos_root: ~/Repositories
+#   Where /setup-repo clones repositories. Defaults to ~/Repositories.
+#   Can also be set via the CLAUDE_REPOS_ROOT environment variable (takes precedence).
+#   Give a plain path (a leading ~ is expanded). Surrounding quotes and a trailing
+#   `# comment` are tolerated, but a bare, unquoted path is simplest.
+
 # ─── Examples (uncomment and customize) ────────────────────────────────────
 
 # # Preference: no magic strings

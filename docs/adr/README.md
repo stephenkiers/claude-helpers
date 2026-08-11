@@ -31,6 +31,10 @@ to North Star Nick).
 - [ADR-0009: Peer review and shared panel](0009-peer-review-and-shared-panel.md) — the blind-first
   two-pass panel extracted to a shared prompt consumed by both `/expert-review` and
   `/expert-review-coworker`; peer review is collegial and omits Triage Chief
+- [ADR-0010: Worktree clone layout](0010-worktree-clone-layout.md) — the default-branch checkout
+  lives at `<repos-root>/<repo>/worktrees/<default-branch>`, not at the repo root; siblings created
+  by `/track-and-start` live alongside it; detection keys off the parent directory being named
+  `worktrees`
 
 ## Format
 
