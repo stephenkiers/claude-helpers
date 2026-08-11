@@ -102,17 +102,20 @@ as the nearest ancestor among other worktree branches. Emits `STACK_IS_STACKED` 
 ```bash
 # Check cache first (most specific)
 GITHUB_CACHE=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-CACHED_STACKED=$(echo "$GITHUB_CACHE" | jq -r '.stack.isStacked // empty' 2>/dev/null)
+CACHED_STACKED=$(echo "$GITHUB_CACHE" | jq -r '.stack.isStacked // "unset"' 2>/dev/null)
 
 STACK_IS_STACKED=false
 STACK_PARENT_BRANCH=""
 STACK_PARENT_PR=""
 
-if [ "$CACHED_STACKED" != "false" ] && [ -n "$CACHED_STACKED" ]; then
+if [ "$CACHED_STACKED" = "true" ]; then
   # Cache says stacked — use cached parent info
-  STACK_IS_STACKED=$(echo "$GITHUB_CACHE" | jq -r '.stack.isStacked // false')
+  STACK_IS_STACKED=true
   STACK_PARENT_BRANCH=$(echo "$GITHUB_CACHE" | jq -r '.stack.parentBranch // ""')
   STACK_PARENT_PR=$(echo "$GITHUB_CACHE" | jq -r '.stack.parentPr // ""')
+elif [ "$CACHED_STACKED" != "false" ] && [ "$CACHED_STACKED" != "unset" ]; then
+  # Cache explicitly says false — not stacked
+  STACK_IS_STACKED=false
 else
   # Cache says not stacked or missing — detect by looking at worktree branches
   # For each branch B from git worktree list (excluding main and current), test if B is an ancestor
@@ -120,18 +123,19 @@ else
   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
   [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
 
-  # Get all worktree branches
+  # Get all worktree branches (handle paths with spaces by matching the key, not field $2)
   WORKTREE_BRANCHES=$(git worktree list --porcelain | awk '
-    $1 == "worktree" { wt=$2; next }
-    $1 == "branch" && wt != "" { 
-      sub(/^refs\/heads\//, "", $2)
-      print $2
+    /^worktree / { wt=substr($0, 10); next }  # capture from "worktree " onwards
+    /^branch / && wt != "" { 
+      branch=substr($0, 8)  # capture from "branch " onwards
+      sub(/^refs\/heads\//, "", branch)
+      print branch
       wt=""
     }
   ')
 
   BEST_ANCESTOR=""
-  BEST_DISTANCE=999999
+  BEST_DISTANCE=""
 
   while IFS= read -r branch; do
     # Skip main, current branch, and empty entries
@@ -142,10 +146,11 @@ else
     # Test if this branch is an ancestor of HEAD
     if git merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
       # Count commits between ancestor and HEAD (tightest = fewest commits)
-      DISTANCE=$(git rev-list --count "$branch..HEAD" 2>/dev/null || echo 999999)
-      if [ "$DISTANCE" -lt "$BEST_DISTANCE" ]; then
-        BEST_ANCESTOR="$branch"
-        BEST_DISTANCE="$DISTANCE"
+      if DISTANCE=$(git rev-list --count "$branch..HEAD" 2>/dev/null); then
+        if [ -z "$BEST_DISTANCE" ] || [ "$DISTANCE" -lt "$BEST_DISTANCE" ]; then
+          BEST_ANCESTOR="$branch"
+          BEST_DISTANCE="$DISTANCE"
+        fi
       fi
     fi
   done <<< "$WORKTREE_BRANCHES"
@@ -168,7 +173,7 @@ Emits the list of child branches and PR numbers.
 
 ```bash
 # Requires: WORKTREE_PARENT and PARENT_BRANCH as inputs
-# Emits: CHILD_BRANCHES (space-separated list of branch names and PR#s)
+# Emits: CHILD_BRANCHES (space-separated list of "branch:pr:worktree" records)
 
 PARENT_BRANCH="$1"
 CHILD_BRANCHES=""
@@ -179,14 +184,14 @@ if [ -d "$WORKTREE_PARENT" ]; then
     [ ! -f "$cache_file" ] && continue
     CACHED_PARENT=$(jq -r '.stack.parentBranch // empty' "$cache_file" 2>/dev/null)
     if [ "$CACHED_PARENT" = "$PARENT_BRANCH" ]; then
-      CHILD_WORKTREE=$(dirname "$cache_file" | xargs basename)
+      CHILD_WORKTREE=$(basename "$(dirname "$(dirname "$cache_file")")")
       CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
         $1 == "worktree" && $2 == wt { found=1 }
         found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
       ')
       if [ -n "$CHILD_BRANCH" ]; then
-        CHILD_PR=$(jq -r '.stack.parentPr // ""' "$cache_file" 2>/dev/null)
-        CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR} "
+        CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
+        CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE} "
       fi
     fi
   done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
@@ -212,9 +217,23 @@ Query GitHub for the remote stack number of a PR. This is needed to run `gh stac
 REPO="$1"
 PR_NUM="$2"
 
-STACK_NUMBER=$(gh api graphql -f query='{repository(owner:"'"$(echo $REPO | cut -d/ -f1)"'",name:"'"$(echo $REPO | cut -d/ -f2)"'"){pullRequest(number:'"$PR_NUM"'){stack{number}}}}' -q '.data.repository.pullRequest.stack.number' 2>/dev/null || echo "")
+REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
+REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
 
-if [ -n "$STACK_NUMBER" ]; then
+STACK_NUMBER=$(gh api graphql -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number="$PR_NUM" -q '.data.repository.pullRequest.stack.number // empty' 2>/dev/null << 'GRAPHQL'
+query ($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+      }
+    }
+  }
+}
+GRAPHQL
+)
+
+if [ -n "$STACK_NUMBER" ] && [ "$STACK_NUMBER" != "null" ]; then
   echo "Stack number: $STACK_NUMBER"
 else
   echo "WARNING: Could not resolve stack number for PR #$PR_NUM"
@@ -249,6 +268,9 @@ git -C <CHILD_WT> fetch origin
 # Clean tree required — if dirty, stash or bail (never reset over uncommitted work).
 [ -z "$(git -C <CHILD_WT> status --porcelain)" ] || { echo "uncommitted changes in <CHILD_WT>; stash first"; exit 1; }
 
+# Verify @{u} resolves (tracking branch exists)
+git -C <CHILD_WT> rev-parse '@{u}' >/dev/null 2>&1 || { echo "Branch <CHILD_BRANCH> has no upstream tracking"; exit 1; }
+
 # Detect the force-push signature: histories diverged iff @{u} is NOT an ancestor of HEAD
 # AND HEAD is NOT an ancestor of @{u} (both merge-base --is-ancestor checks false).
 if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
@@ -266,14 +288,28 @@ if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
     git -C <CHILD_WT> reset --hard backup/<CHILD_BRANCH>
     git -C <CHILD_WT> rebase --onto '@{u}' <MERGED_TIP>
     # Re-prove: after replaying only the unique commits, the diff vs backup must be empty.
-    [ -z "$(git -C <CHILD_WT> diff --stat backup/<CHILD_BRANCH> HEAD)" ] || echo "WARNING: <CHILD_BRANCH> diff non-empty after rebase — inspect before pushing"
+    if [ -n "$(git -C <CHILD_WT> diff --stat backup/<CHILD_BRANCH> HEAD)" ]; then
+      echo "WARNING: <CHILD_BRANCH> diff non-empty after rebase — inspect before pushing"
+      exit 1
+    fi
+    git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
+    # Gate — force-push ONLY after the project's checks pass. A runnable gate, not a comment:
+    # a bare comment here would be silently skipped when the whole block is pasted and run.
+    CHECK_CMD=$(jq -r '.commands.check // .commands.test // empty' <CHILD_WT>/.claude/repo-cache.json 2>/dev/null)
+    [ -n "$CHECK_CMD" ] || { echo "no check command in <CHILD_WT>/.claude/repo-cache.json — run your checks manually, then re-run this push"; exit 1; }
+    ( cd <CHILD_WT> && eval "$CHECK_CMD" ) || { echo "<CHILD_BRANCH>: checks failed — not force-pushing"; exit 1; }
     git -C <CHILD_WT> push --force-with-lease
   fi
 else
   # NOT diverged — remote is still stacked on the old, now-merged base. Restack it yourself.
   git -C <CHILD_WT> branch -f backup/<CHILD_BRANCH> HEAD   # snapshot before rewriting history
   git -C <CHILD_WT> rebase --onto origin/<DEFAULT_BRANCH> <MERGED_TIP>
-  # Verify: run the same checks as /shipit (from .claude/repo-cache.json if present).
+  git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
+  # Gate — force-push ONLY after the project's checks pass. A runnable gate, not a comment:
+  # a bare comment here would be silently skipped when the whole block is pasted and run.
+  CHECK_CMD=$(jq -r '.commands.check // .commands.test // empty' <CHILD_WT>/.claude/repo-cache.json 2>/dev/null)
+  [ -n "$CHECK_CMD" ] || { echo "no check command in <CHILD_WT>/.claude/repo-cache.json — run your checks manually, then re-run this push"; exit 1; }
+  ( cd <CHILD_WT> && eval "$CHECK_CMD" ) || { echo "<CHILD_BRANCH>: checks failed — not force-pushing"; exit 1; }
   git -C <CHILD_WT> push --force-with-lease
 fi
 

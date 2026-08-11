@@ -185,13 +185,20 @@ echo "Now in main worktree, safe to proceed"
 - If `pr.state` is `"MERGED"` → trust it (one-directional transition, always trustworthy)
 - If `pr.state` is `"OPEN"` or missing → verify via API (may be stale)
 
-**Cache schema (`.stack` section):** The cache also tracks stacked-PR metadata (transient, cleared on cleanup):
+**Cache schema (`.stack` section):** The cache tracks stacked-PR metadata (transient, cleared on cleanup).
+Two variants:
 ```json
 "stack": {
   "isStacked": true,
   "parentBranch": "stephenkiers/pps-166-…",
   "parentPr": 14,
   "stackNumber": 18
+}
+```
+Or (non-stacked):
+```json
+"stack": {
+  "isStacked": false
 }
 ```
 
@@ -475,14 +482,16 @@ fi
 ### 2.6. Detect Stacked Children & Emit Restack Runbook
 
 **Only when `PR_STATE = "MERGED"`.** If the merged PR was the base of a stacked chain, detect
-child branches and emit a runbook for the user to restack them manually. `/cleanup` PRINTS the
-runbook; the user runs it (no auto-rebase, no auto-force-push).
+child branches and emit a runbook for the user to restack them manually. This emits the canonical
+restack block from `~/.claude/prompts/worktree-reference.md` verbatim (per child, substituting
+`<CHILD_WT>`, `<CHILD_BRANCH>`, `<MERGED_TIP>`, `<DEFAULT_BRANCH>`). The user runs the emitted
+block manually (no auto-rebase, no auto-force-push).
 
 ```bash
 if [ "$PR_STATE" = "MERGED" ]; then
   # Run Stack Detection → Find children block from ~/.claude/prompts/worktree-reference.md
   # This requires WORKTREE_PARENT (from Project Detection) and CURRENT_BRANCH
-  # Emits: CHILD_BRANCHES (space-separated list of "branch:pr_num")
+  # Emits: CHILD_BRANCHES (space-separated list of "branch:pr:worktree" records)
 
   REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
   REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
@@ -500,10 +509,10 @@ if [ "$PR_STATE" = "MERGED" ]; then
       [ ! -f "$cache_file" ] && continue
       CACHED_PARENT=$(jq -r '.stack.parentBranch // empty' "$cache_file" 2>/dev/null)
       if [ "$CACHED_PARENT" = "$CURRENT_BRANCH" ]; then
-        CHILD_WORKTREE=$(dirname "$cache_file" | xargs basename)
+        CHILD_WORKTREE=$(basename "$(dirname "$(dirname "$cache_file")")")
         CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
-          $1 == "worktree" && $2 == wt { found=1 }
-          found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
+          /^worktree / { found=(substr($0, 10) == wt); next }   # match full path (handles spaces), reset per worktree
+          found && /^branch / { b=substr($0, 8); sub(/^refs\/heads\//, "", b); print b; exit }
         ')
         if [ -n "$CHILD_BRANCH" ]; then
           CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
@@ -513,9 +522,9 @@ if [ "$PR_STATE" = "MERGED" ]; then
     done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
   fi
 
-  # Fallback: check open PRs against this branch
+  # Fallback: check open PRs against this branch (no worktree path available)
   if [ -z "$CHILD_BRANCHES" ]; then
-    OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number)"' 2>/dev/null || true)
+    OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null || true)
     if [ -n "$OPEN_PRS" ]; then
       CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
     fi
@@ -529,8 +538,9 @@ if [ "$PR_STATE" = "MERGED" ]; then
 
     MERGED_TIP=$(git rev-parse "$CURRENT_BRANCH" 2>/dev/null || echo "")
     if [ -z "$MERGED_TIP" ]; then
-      echo "WARNING: Could not capture the merged branch tip SHA."
-      echo "After removing the branch in Step 3, restacking will be harder."
+      echo "ERROR: Could not capture the merged branch tip SHA. Cannot emit safe restack runbook."
+      echo "Please retry /cleanup after the branch is re-created or manually perform restack."
+      exit 1
     fi
 
     # Emit restack commands for each child, bottom-up
@@ -542,22 +552,18 @@ if [ "$PR_STATE" = "MERGED" ]; then
     echo "which case you're in per child, then branches: if the remote is already rebased, take it with a"
     echo "reset and prove no work was lost; otherwise rebase-and-force-push yourself."
     echo ""
-    echo "Key insight: after 'reset --hard @{u}', an empty 'git diff backup HEAD' proves the reset lost no"
-    echo "work — a correct rebase yields an identical final tree, so identical trees means nothing was lost."
-    echo ""
-    echo "For each direct child (in order):"
-    echo ""
-    echo "After all direct children below are restacked, deeper descendants (grandchildren, etc.)"
-    echo "will need their own restack in turn — run /cleanup on each restacked child to handle its children."
+    echo "**Canonical restack primitive** (from ~/.claude/prompts/worktree-reference.md):"
+    echo "You will run this for each child below. The runbook is emit-only — you paste and run it manually."
     echo ""
 
-    # Parse children and emit runbook
+    # Parse children and emit runbook (emit-by-reference: substitute parameters into the canonical block)
     CHILD_NUM=0
     for CHILD_INFO in $CHILD_BRANCHES; do
       CHILD_NUM=$((CHILD_NUM + 1))
+      # Parse "branch:pr:worktree" — handle paths with colons by reading field3 onwards
       CHILD_BRANCH=$(echo "$CHILD_INFO" | cut -d: -f1)
       CHILD_PR=$(echo "$CHILD_INFO" | cut -d: -f2)
-      CHILD_WT=$(echo "$CHILD_INFO" | cut -d: -f3)
+      CHILD_WT=$(echo "$CHILD_INFO" | cut -d: -f3-)
 
       echo "**Child $CHILD_NUM: $CHILD_BRANCH (PR #$CHILD_PR)**"
       echo ""
@@ -570,37 +576,57 @@ if [ "$PR_STATE" = "MERGED" ]; then
         CHILD_WT="<CHILD_WT>"
       fi
 
-      # Detect-then-branch restack primitive (see prompts/worktree-reference.md → "Restack a child").
+      # Emit the canonical restack block from worktree-reference.md, substituting the 4 parameters
+      # This is the exact block from prompts/worktree-reference.md "### Restack a child" with substitutions:
       echo "git -C '$CHILD_WT' fetch origin"
       echo ""
-      echo "# Clean tree required — never reset over uncommitted work."
-      echo "[ -z \"\$(git -C '$CHILD_WT' status --porcelain)\" ] || { echo 'uncommitted changes; stash first'; exit 1; }"
+      echo "# Clean tree required — if dirty, stash or bail (never reset over uncommitted work)."
+      echo "[ -z \"\$(git -C '$CHILD_WT' status --porcelain)\" ] || { echo 'uncommitted changes in $CHILD_WT; stash first'; exit 1; }"
       echo ""
-      echo "# Detect the force-push signature: histories diverged iff neither @{u} nor HEAD is an"
-      echo "# ancestor of the other (a stacking tool already rebased the remote for you)."
+      echo "# Verify @{u} resolves (tracking branch exists)"
+      echo "git -C '$CHILD_WT' rev-parse '@{u}' >/dev/null 2>&1 || { echo 'Branch $CHILD_BRANCH has no upstream tracking'; exit 1; }"
+      echo ""
+      echo "# Detect the force-push signature: histories diverged iff @{u} is NOT an ancestor of HEAD"
+      echo "# AND HEAD is NOT an ancestor of @{u} (both merge-base --is-ancestor checks false)."
       echo "if ! git -C '$CHILD_WT' merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \\"
       echo "   && ! git -C '$CHILD_WT' merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then"
-      echo "  # DIVERGED — remote already rebased; the local worktree is stale. Take the remote."
+      echo "  # DIVERGED — a stacking tool already rebased the remote; the local worktree is stale."
       echo "  git -C '$CHILD_WT' branch -f backup/$CHILD_BRANCH HEAD   # snapshot — free, lossless"
-      echo "  git -C '$CHILD_WT' reset --hard '@{u}'"
+      echo "  git -C '$CHILD_WT' reset --hard '@{u}'                    # take the already-rebased remote"
+      echo "  # PROOF of no data loss — MUST be empty (identical tree => safe)."
       echo "  if [ -z \"\$(git -C '$CHILD_WT' diff --stat backup/$CHILD_BRANCH HEAD)\" ]; then"
-      echo "    # Empty diff PROVES no work lost (identical tree). Re-link tracking (rebase can drop it)."
+      echo "    # Rebased branches can lose upstream tracking; re-link so @{u} keeps resolving."
       echo "    git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH"
+      echo "    echo \"✓ $CHILD_BRANCH: reset to already-rebased remote, empty diff proves no work lost\""
       echo "  else"
-      echo "    # NON-empty: branch has genuinely unique local commits. Reset back and replay only those."
+      echo "    # NON-empty diff: the branch has genuinely unique local commits. Reset back and replay them."
       echo "    git -C '$CHILD_WT' reset --hard backup/$CHILD_BRANCH"
       echo "    git -C '$CHILD_WT' rebase --onto '@{u}' $MERGED_TIP"
+      echo "    # Re-prove: after replaying only the unique commits, the diff vs backup must be empty."
+      echo "    if [ -n \"\$(git -C '$CHILD_WT' diff --stat backup/$CHILD_BRANCH HEAD)\" ]; then"
+      echo "      echo \"WARNING: $CHILD_BRANCH diff non-empty after rebase — inspect before pushing\""
+      echo "      exit 1"
+      echo "    fi"
+      echo "    git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH   # re-link tracking (symmetric with reset path)"
+      echo "    # Gate — force-push ONLY after the project's checks pass (a comment here would be silently skipped):"
+      echo "    CHECK_CMD=\$(jq -r '.commands.check // .commands.test // empty' '$CHILD_WT'/.claude/repo-cache.json 2>/dev/null)"
+      echo "    [ -n \"\$CHECK_CMD\" ] || { echo 'no check command in repo-cache — run your checks manually, then re-run this push'; exit 1; }"
+      echo "    ( cd '$CHILD_WT' && eval \"\$CHECK_CMD\" ) || { echo '$CHILD_BRANCH: checks failed — not force-pushing'; exit 1; }"
       echo "    git -C '$CHILD_WT' push --force-with-lease"
       echo "  fi"
       echo "else"
-      echo "  # NOT diverged — remote still stacked on the old, now-merged base. Restack it yourself."
+      echo "  # NOT diverged — remote is still stacked on the old, now-merged base. Restack it yourself."
       echo "  git -C '$CHILD_WT' branch -f backup/$CHILD_BRANCH HEAD   # snapshot before rewriting history"
       echo "  git -C '$CHILD_WT' rebase --onto origin/$DEFAULT_BRANCH $MERGED_TIP"
-      echo "  # Verify: run the same checks as /shipit (from .claude/repo-cache.json if present)"
+      echo "  git -C '$CHILD_WT' branch --set-upstream-to=origin/$CHILD_BRANCH   # re-link tracking (symmetric with reset path)"
+      echo "  # Gate — force-push ONLY after the project's checks pass (a comment here would be silently skipped):"
+      echo "  CHECK_CMD=\$(jq -r '.commands.check // .commands.test // empty' '$CHILD_WT'/.claude/repo-cache.json 2>/dev/null)"
+      echo "  [ -n \"\$CHECK_CMD\" ] || { echo 'no check command in repo-cache — run your checks manually, then re-run this push'; exit 1; }"
+      echo "  ( cd '$CHILD_WT' && eval \"\$CHECK_CMD\" ) || { echo '$CHILD_BRANCH: checks failed — not force-pushing'; exit 1; }"
       echo "  git -C '$CHILD_WT' push --force-with-lease"
       echo "fi"
       echo ""
-      echo "# Keep backup/$CHILD_BRANCH until you've confirmed the child is correct, then:"
+      echo "# Keep backup/$CHILD_BRANCH until the child is confirmed correct, then delete it:"
       echo "#   git -C '$CHILD_WT' branch -D backup/$CHILD_BRANCH"
 
       echo "\`\`\`"
@@ -608,9 +634,23 @@ if [ "$PR_STATE" = "MERGED" ]; then
     done
 
     # Remote stack fixup (if this was part of a remote stack)
-    STACK_NUMBER=$(gh api graphql -f query='{repository(owner:"'"$REPO_OWNER"'",name:"'"$REPO_NAME"'"){pullRequest(number:'"$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")"'){stack{number}}}}' -q '.data.repository.pullRequest.stack.number' 2>/dev/null || echo "")
+    PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")
+    if [ "$PR_NUM" != "0" ] && [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ]; then
+      STACK_NUMBER=$(gh api graphql -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number="$PR_NUM" -q '.data.repository.pullRequest.stack.number // empty' 2>/dev/null << 'GRAPHQL'
+query ($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+      }
+    }
+  }
+}
+GRAPHQL
+)
+    fi
 
-    if [ -n "$STACK_NUMBER" ] && [ "$STACK_NUMBER" != "0" ]; then
+    if [ -n "$STACK_NUMBER" ] && [ "$STACK_NUMBER" != "0" ] && [ "$STACK_NUMBER" != "null" ]; then
       echo "Then, after all children are restacked, unlink the remote stack:"
       echo ""
       echo "\`\`\`bash"

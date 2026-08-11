@@ -53,11 +53,15 @@ def extract_bash_blocks(markdown_text):
     return blocks
 
 
-def get_line_index(text, heading):
-    """Return the line number where a heading appears, or -1 if not found."""
+def get_line_index(text: str, heading: str) -> int:
+    """
+    Return the line number where a heading appears, or -1 if not found.
+
+    Matches top-level (###) section headings exactly.
+    """
     lines = text.split("\n")
     for i, line in enumerate(lines):
-        if heading in line and line.lstrip().startswith("##"):
+        if line.lstrip().startswith("###") and heading in line:
             return i
     return -1
 
@@ -81,10 +85,14 @@ t = h.test_result
 # ============================================================================
 print("[Invariant 1] Worktree-safety: no hostile gh stack verbs in bash blocks")
 
-HOSTILE_VERBS = ["gh stack init", "gh stack sync", "gh stack checkout"]
+HOSTILE_VERBS: list[str] = ["gh stack init", "gh stack sync", "gh stack checkout"]
 
-def check_file_worktree_safe(content, filename):
-    """Check that hostile verbs don't appear in bash blocks of a file."""
+def check_file_worktree_safe(content: str, filename: str) -> list[str]:
+    """
+    Check that hostile verbs don't appear in bash blocks of a file.
+
+    Returns: list of violation strings (empty if no violations found)
+    """
     bash_blocks = extract_bash_blocks(content)
     violations = []
     for line_num, block_text in bash_blocks:
@@ -111,12 +119,11 @@ t("worktree-reference.md bash blocks are worktree-safe",
   f"found {len(ref_violations)} violations: {ref_violations}" if ref_violations else "")
 
 # Bonus: assert the warning prose exists in worktree-reference.md
-warning_exists = any(
-    verb in WORKTREE_REF for verb in HOSTILE_VERBS
-) and "worktree" in WORKTREE_REF.lower()
+# Must warn against the verbs and mention worktree safety specifically
+warning_phrasing = re.search(r"[Nn]ever use.*gh stack (init|sync|checkout)", WORKTREE_REF, re.DOTALL)
 t("worktree-reference.md explicitly warns against hostile verbs",
-  warning_exists,
-  "expected a prose warning about not using gh stack init/sync/checkout")
+  warning_phrasing is not None,
+  "expected a prose warning with phrasing like 'Never use ... gh stack init/sync/checkout'")
 
 print()
 
@@ -206,74 +213,78 @@ t("cleanup.md mentions 'rebase --onto' for restacking",
   "expected 'rebase --onto' in restack runbook")
 
 # Should mention push --force-with-lease
-has_force_with_lease = "push --force-with-lease" in CLEANUP or "force-with-lease" in CLEANUP
 t("cleanup.md mentions 'push --force-with-lease' for safe force-push",
-  has_force_with_lease,
-  "expected 'push --force-with-lease' in restack runbook")
+  "force-with-lease" in CLEANUP,
+  "expected 'force-with-lease' in restack runbook")
 
 # --- Corrected primitive: detect-then-branch (reset/prove before rebase/replay) ---
 
+# Confine high-stakes Invariant-5 checks to bash blocks (not prose)
+cleanup_bash_blocks = extract_bash_blocks(CLEANUP)
+cleanup_bash_text = "\n".join(block for _, block in cleanup_bash_blocks)
+
 # Should reset --hard to take the already-rebased remote
-t("cleanup.md mentions 'reset --hard' (take the already-rebased remote)",
-  "reset --hard" in CLEANUP,
-  "expected 'reset --hard' in the detect-then-branch restack runbook")
+t("cleanup.md restack bash block mentions 'reset --hard'",
+  "reset --hard" in cleanup_bash_text,
+  "expected 'reset --hard' in the detect-then-branch restack bash block")
 
 # Should detect the force-push signature via merge-base --is-ancestor
-t("cleanup.md uses 'merge-base --is-ancestor' for divergence detection",
-  "merge-base --is-ancestor" in CLEANUP,
-  "expected 'merge-base --is-ancestor' to detect the force-push signature")
+t("cleanup.md restack bash block uses 'merge-base --is-ancestor'",
+  "merge-base --is-ancestor" in cleanup_bash_text,
+  "expected 'merge-base --is-ancestor' in the restack bash block")
 
 # Should snapshot a backup branch before rewriting
-t("cleanup.md snapshots a 'backup/' branch before reset/rebase",
-  "backup/" in CLEANUP,
-  "expected a 'backup/<branch>' snapshot in the restack runbook")
+t("cleanup.md restack bash block snapshots 'backup/' branch",
+  "backup/" in cleanup_bash_text,
+  "expected 'backup/<branch>' snapshot in the restack bash block")
 
 # Should prove the reset lost no work via an empty diff
-t("cleanup.md proves no data loss with an empty diff (git diff --stat)",
-  "diff --stat" in CLEANUP,
-  "expected 'git diff --stat backup HEAD' empty-diff proof")
+t("cleanup.md restack bash block proves no data loss with 'diff --stat'",
+  "diff --stat" in cleanup_bash_text,
+  "expected 'git diff --stat backup HEAD' empty-diff proof in bash block")
 
 # Should re-link upstream tracking (rebased branches can lose it)
-t("cleanup.md re-links upstream with '--set-upstream-to'",
-  "--set-upstream-to" in CLEANUP,
-  "expected '--set-upstream-to' to re-link tracking after reset")
+t("cleanup.md restack bash block re-links upstream with '--set-upstream-to'",
+  "--set-upstream-to" in cleanup_bash_text,
+  "expected '--set-upstream-to' to re-link tracking in bash block")
 
 # The shared primitive lives in worktree-reference.md
-has_restack_subblock = "### Restack" in WORKTREE_REF and "reset --hard" in WORKTREE_REF
-t("worktree-reference.md contains the shared '### Restack' sub-block",
-  has_restack_subblock,
-  "expected a '### Restack a child' sub-block with 'reset --hard' in worktree-reference.md")
+restack_heading_idx = get_line_index(WORKTREE_REF, "Restack a child")
+worktree_ref_bash_blocks = extract_bash_blocks(WORKTREE_REF)
+worktree_ref_bash_text = "\n".join(block for _, block in worktree_ref_bash_blocks)
+
+t("worktree-reference.md contains the shared '### Restack a child' sub-block",
+  restack_heading_idx >= 0,
+  "expected a '### Restack a child' sub-block in worktree-reference.md")
+
+t("worktree-reference.md restack block contains 'reset --hard'",
+  "reset --hard" in worktree_ref_bash_text,
+  "expected 'reset --hard' in the worktree-reference.md restack bash block")
 
 # Runbook should be emit-only (manual, user runs it)
-is_emit_only = "runbook" in CLEANUP.lower() or "you" in CLEANUP.lower()
+# Key off specific emit-only signal like "emit-only" or "you run" phrasing
+is_emit_only = re.search(r"(emit-only|you.*run|user.*run)", CLEANUP.lower())
 t("cleanup.md runbook is emit-only (manual, not auto-executed)",
-  is_emit_only,
-  "expected language indicating user manually runs the runbook (e.g., 'runbook', 'you run')")
+  is_emit_only is not None,
+  "expected language indicating user manually runs the runbook (e.g., 'emit-only', 'you run')")
 
 # Runbook step should come BEFORE "Remove Worktree" step
-# Find the section headers
-runbook_idx = get_byte_index(CLEANUP, "restack") if "restack" in CLEANUP.lower() else -1
-remove_worktree_idx = get_byte_index(CLEANUP, "Remove Worktree")
+# Find the section headers using get_line_index (matches ### headings)
+runbook_idx = get_line_index(CLEANUP, "Detect Stacked Children")
+remove_worktree_idx = get_line_index(CLEANUP, "Remove Worktree")
+
+t("cleanup.md has '### Detect Stacked Children' section",
+  runbook_idx >= 0,
+  "expected '### Detect Stacked Children' section")
+
+t("cleanup.md has '### Remove Worktree' section",
+  remove_worktree_idx >= 0,
+  "expected '### Remove Worktree' section")
 
 if runbook_idx >= 0 and remove_worktree_idx >= 0:
-    t("cleanup.md runbook comes before 'Remove Worktree' step",
+    t("cleanup.md restack section comes before 'Remove Worktree' step",
       runbook_idx < remove_worktree_idx,
-      "runbook must capture tip before worktree is deleted")
-else:
-    # If we can't find clear section markers, just verify the concepts exist in the right order
-    cleanup_lines = CLEANUP.split("\n")
-    runbook_line = -1
-    remove_line = -1
-    for i, line in enumerate(cleanup_lines):
-        if "restack" in line.lower() or "merge" in line.lower():
-            if runbook_line < 0:
-                runbook_line = i
-        if "Remove Worktree" in line or "remove worktree" in line.lower():
-            remove_line = i
-
-    t("cleanup.md runbook concept comes before 'Remove Worktree'",
-      runbook_line >= 0 and (remove_line < 0 or runbook_line < remove_line),
-      "runbook/tip-capture must logically precede worktree removal")
+      "restack must capture tip before worktree is deleted")
 
 print()
 
@@ -308,9 +319,11 @@ t("shipit.md contains unstacked 'gh pr create' path",
   "expected 'gh pr create' for non-stacked PRs")
 
 # Verify that stack.isStacked can be false (non-stacked path)
-t("shipit.md mentions 'false' value for stack.isStacked",
-  "isStacked" in SHIPIT and ("false" in SHIPIT.lower() or "not stacked" in SHIPIT.lower()),
-  "expected support for non-stacked (isStacked=false) case")
+# Assert co-occurrence in one expression (avoid independent substrings)
+has_false_stacked = re.search(r"isStacked.*false", SHIPIT, re.DOTALL)
+t("shipit.md mentions 'isStacked: false' value for non-stacked PRs",
+  has_false_stacked is not None,
+  "expected support for non-stacked (isStacked: false) case")
 
 print()
 h.summarize_and_exit()

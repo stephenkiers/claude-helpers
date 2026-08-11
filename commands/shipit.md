@@ -239,7 +239,7 @@ if [ -n "$ISSUE_NUM" ]; then
 $PR_BODY"
 fi
 
-if [ "$STACK_IS_STACKED" = "true" ]; then
+if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
   PR_BODY="$PR_BODY
 
 Stacked on #$STACK_PARENT_PR"
@@ -269,7 +269,18 @@ if [ "$STACK_IS_STACKED" = "true" ]; then
   if [ -n "$REPO" ]; then
     REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
     REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
-    STACK_NUM=$(gh api graphql -f query='{repository(owner:"'"$REPO_OWNER"'",name:"'"$REPO_NAME"'"){pullRequest(number:'"$PR_NUM"'){stack{number}}}}' -q '.data.repository.pullRequest.stack.number' 2>/dev/null || echo "")
+    STACK_NUM=$(gh api graphql -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number="$PR_NUM" -q '.data.repository.pullRequest.stack.number // empty' 2>/dev/null << 'GRAPHQL'
+query ($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+      }
+    }
+  }
+}
+GRAPHQL
+)
   fi
 fi
 
@@ -299,7 +310,11 @@ fi
 
 # Link parent PR in the remote stack (worktree-safe: gh stack link is API-only)
 if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
-  gh stack link "$STACK_PARENT_PR" "$PR_NUM"
+  if command -v gh-stack >/dev/null 2>&1; then
+    gh stack link "$STACK_PARENT_PR" "$PR_NUM"
+  else
+    echo "WARNING: gh-stack extension not found; skipping 'gh stack link'. Install via 'gh extension install .../gh-stack' or run manually: gh stack link $STACK_PARENT_PR $PR_NUM"
+  fi
 fi
 ```
 

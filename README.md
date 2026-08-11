@@ -83,6 +83,20 @@ multiple expert passes, and Q&A subagents. Mechanical steps run on Haiku to keep
 Drop a `.claude/project.yaml` into any project to give the reviewers your tech stack, ADRs, invariants,
 and terminology. Copy [`prompts/project.yaml.template`](prompts/project.yaml.template) to begin.
 
+## Dependencies
+
+The `/shipit` and `/cleanup` commands support GitHub's **remote stack** feature (linking stacked PRs via
+GraphQL and `gh stack`). This is optional:
+
+- If `gh-stack` is not installed, `/shipit` will warn and skip the automatic `gh stack link` after PR creation
+  (you can still link manually: `gh stack link <parent-pr> <child-pr>`)
+- If the GraphQL `stack` field is unavailable, stack metadata is simply not cached or used
+
+**To enable remote stacking** (optional), install the gh-stack extension:
+```bash
+gh extension install github/gh-stack
+```
+
 ## License
 
 [MIT](LICENSE). Copy it, change it, keep it private — no attribution beyond the license text required.
