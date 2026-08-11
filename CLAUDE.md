@@ -105,9 +105,7 @@ to get started.
 
 **Lifecycle**
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
-- `/setup-repo` — clone a remote into the preferred `~/Repositories/<repo>/worktrees/<default-branch>`
-  layout so the worktree workflow (`/track-and-start`, `/shipit`, `/cleanup`) finds the worktree parent
-  where it expects it. Takes a full URL or `owner/name` (never assumes the org)
+- `/setup-repo` — clone a remote into the preferred layout (default `~/Repositories/<repo>/worktrees/<default-branch>`, configurable via `CLAUDE_REPOS_ROOT` or `~/.claude/preferences.yaml`) so the worktree workflow (`/track-and-start`, `/shipit`, `/cleanup`) finds the worktree parent where it expects it. Takes a full URL or `owner/name` (never assumes the org)
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
 - `/implement-with-haiku` — parallel Haiku implementers (diff handoff; orchestrator applies + commits)
   → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → round-sized, concurrent
