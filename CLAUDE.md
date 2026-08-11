@@ -111,7 +111,11 @@ to get started.
   spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
-- `/cleanup` — clean up a worktree after a PR is merged
+- `/cleanup` — clean up a worktree after a PR is merged; syncs any pending review rulings into the
+  verify queue and asks one non-blocking `done|defer|ignore` for the batch
+- `/verify-queue` — drain the batched verification queue: the pending measurements and decisions
+  accumulated across `action-plan.md` files (`~/.claude/reviews/verify-queue.jsonl`). Turns per-merge
+  "did you test this?" friction into one checklist you clear on your own schedule
 - `/fork-planning` — fork a planning session
 - `/handoff` — snapshot the current conversation into `~/.handoff/<timestamp>-<slug>/` so it can be resumed elsewhere (pair with Esc-Esc to rewind)
 - `/handoff-resume` — list recent handoffs, or load one (by name/prefix/query) into the current window
