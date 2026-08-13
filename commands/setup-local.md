@@ -11,18 +11,13 @@ repo files. This is idempotent — safe to run any time.
 
 ## What it does
 
-For each directory in `commands`, `reviewers`, `prompts`, `agents`, `scripts`:
-
-1. Determine `{repo}` = the absolute path of this repository (the directory containing this file's
-   repo root). Determine `{dir}` = each of the four directories above.
-2. Ensure `~/.claude/{dir}/` exists as a **real directory** (create it if missing). If
-   `~/.claude/{dir}` is itself a symlink (an old directory-level link), remove that symlink first
-   and replace it with a real directory.
-3. For every file in `{repo}/{dir}/`:
-   - If `~/.claude/{dir}/{file}` is already a correct symlink to `{repo}/{dir}/{file}` → skip.
-   - If it exists but points elsewhere or is a real file → back it up to `{file}.bak`, then create
-     the symlink.
-   - Otherwise → create the symlink `~/.claude/{dir}/{file}` → `{repo}/{dir}/{file}`.
+Runs `./install.sh` from the repo root, which:
+- Creates **file-level symlinks** from `~/.claude/{commands,reviewers,prompts,agents,scripts}/` into
+  this repo's corresponding directories, so your personal files can coexist alongside repo files.
+- Links only regular files (skips directories like `__pycache__`).
+- Prunes stale symlinks that point into this repo (dangling links or non-regular-file targets).
+- Creates `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if missing
+  (never overwrites an existing file).
 
 Because these are file-level symlinks (not directory symlinks), you can drop your own personal or
 project-specific commands/reviewers into `~/.claude/{dir}/` and they will coexist with the repo's
@@ -30,14 +25,12 @@ files untouched.
 
 ## Steps
 
-1. Resolve the repo root (the directory this command lives in, walked up to the git root).
-2. Perform the symlinking described above for all five directories.
-3. Create `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if it does not
-   already exist. Must be idempotent — never overwrite an existing user file.
-4. **Verify** by listing the five target directories and confirming the new symlinks resolve.
-5. Report a concise summary: how many files were linked, skipped, or backed up per directory.
-
-A no-Claude fallback exists: running `./install.sh` from the repo root does the same thing.
+1. Resolve the repo root (the directory this command lives in).
+2. Run `./install.sh` from the repo root (which performs all the symlinking, pruning, and
+   preferences bootstrapping described above).
+3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
+4. Report a concise summary: how many files were linked, how many were pruned, how many were backed
+   up, and whether `preferences.yaml` was created.
 
 ## Optional: Option+Arrow word jumping (opt-in)
 

@@ -12,12 +12,16 @@ Run `/setup-local` in this repo (or `./install.sh` for the no-Claude path). It i
 re-run any time.
 
 It creates **file-level symlinks** from `~/.claude/{dir}/` into this repo for each of `commands`,
-`reviewers`, `prompts`, and `agents`. File-level (not directory-level) symlinks let your own personal
-or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files:
+`reviewers`, `prompts`, `agents`, and `scripts`. File-level (not directory-level) symlinks let your
+own personal or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files:
 
 - Ensure `~/.claude/{dir}/` exists as a real directory (replace any old directory-level symlink).
 - For each file in `{repo}/{dir}/`: if `~/.claude/{dir}/{file}` is already the correct symlink, skip;
   if it's a real file or wrong link, back it up to `.bak`, then symlink; otherwise symlink.
+- Links only regular files; skips directories like `__pycache__`.
+- Prunes stale symlinks that point into this repo (dangling links or non-regular-file targets).
+- Creates `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if missing
+  (never overwrites an existing user file).
 
 Re-running after new files are added just creates the missing symlinks and leaves everything else
 untouched.

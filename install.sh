@@ -30,7 +30,7 @@ for dir in commands reviewers prompts agents scripts; do
     mkdir -p "$target_dir"
 
     for source_file in "$source_dir"/*; do
-        [ -e "$source_file" ] || continue
+        [ -f "$source_file" ] || continue
         fname="$(basename "$source_file")"
         target_file="$target_dir/$fname"
 
@@ -46,7 +46,26 @@ for dir in commands reviewers prompts agents scripts; do
         ln -sf "$source_file" "$target_file"
         echo "Linked $target_file -> $source_file"
     done
+
+    # Prune stale symlinks that point into this repo
+    for entry in "$target_dir"/*; do
+        [ -L "$entry" ] || continue
+        link_target=$(readlink "$entry")
+        case "$link_target" in
+            "$REPO_DIR"/*)
+                if [ ! -f "$link_target" ]; then
+                    echo "Pruned $entry (target gone: $link_target)"
+                    rm "$entry"
+                fi
+                ;;
+        esac
+    done
 done
+
+if [ ! -e "$CLAUDE_DIR/preferences.yaml" ]; then
+    cp "$REPO_DIR/prompts/preferences.yaml.template" "$CLAUDE_DIR/preferences.yaml"
+    echo "Created $CLAUDE_DIR/preferences.yaml from template"
+fi
 
 # Opt-in only: add Option+Arrow word jumping to ~/.zshrc (pass --with-zsh-keybindings)
 if [ "$WITH_ZSH_KEYBINDINGS" -eq 1 ]; then
