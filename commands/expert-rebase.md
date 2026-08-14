@@ -1,11 +1,15 @@
 ---
 description: Rebase the current branch on origin/main. If the rebase is clean, reports success and offers to force-push. If there are conflicts, engages expert reviewers to analyze each conflicting hunk and recommend a resolution strategy before applying.
-allowed-tools: Bash(git fetch:*), Bash(git rebase:*), Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git branch:*), Bash(git push:*), Bash(git add:*), Bash(cat:*), Bash(grep:*), Read, Glob, Grep, AskUserQuestion
+allowed-tools: Bash(git fetch:*), Bash(git rebase:*), Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git branch:*), Bash(git push:*), Bash(git add:*), Bash(git worktree:*), Bash(git ls-remote:*), Bash(cat:*), Bash(grep:*), Bash(gh stack:*), Read, Glob, Grep, AskUserQuestion
 ---
 
 # Expert Rebase
 
 Rebase the current branch on `origin/main`. If the rebase succeeds cleanly, offer to force-push. If conflicts arise, engage expert reviewers to analyze each conflicting hunk and recommend a resolution strategy — then apply with approval.
+
+## Step 0.5: Stack Detection
+
+**Stack Detection.** Run the **"Is-stacked"** block, then the **"Detect layout"** block, from `~/.claude/prompts/worktree-reference.md`. This resolves `STACK_IS_STACKED`, `STACK_PARENT_BRANCH`, and `STACK_LAYOUT`. If `STACK_IS_STACKED` is false, skip layout detection and treat everything below as the ordinary (non-stacked) path.
 
 ## Step 1: Safety Check
 
@@ -38,8 +42,18 @@ git fetch origin
 ## Step 3: Attempt the Rebase
 
 ```bash
-git rebase origin/main
+if [ "$STACK_IS_STACKED" != "true" ]; then
+  git rebase origin/main
+else
+  # Under single-driver layout, do NOT rebase locally — gh stack sync (in the push step)
+  # both rebases and pushes. Skip the local rebase entirely and go to the push step.
+  # Under per-branch layout, rebase onto the parent branch (origin fetched in Step 2
+  # already updated origin/<parent>):
+  git rebase origin/"$STACK_PARENT_BRANCH"
+fi
 ```
+
+For single-driver stacked branches, resolve `STACK_LAYOUT` first and skip the local rebase — delegate both rebase and push to `gh stack sync` in the push step below.
 
 Capture exit code. Two paths:
 
@@ -52,10 +66,10 @@ Use `AskUserQuestion` to ask:
 Do you want to force-push to origin?
 ```
 Options:
-- **Yes, force-push** — run `git push --force-with-lease origin <branch>`
+- **Yes, push** — if `STACK_IS_STACKED` is false, run `git push --force-with-lease origin <branch>`. If stacked, run the **"Push a stacked branch (new local work)"** block from `~/.claude/prompts/worktree-reference.md` (single-driver → `gh stack sync` does both rebase and push, so do not also run the local rebase from Step 3; per-branch → `git rebase --onto` + `--force-with-lease`).
 - **No, I'll push later** — stop here
 
-If force-push chosen, run it and report the result.
+If push chosen, run it and report the result.
 
 **Done.**
 
@@ -185,10 +199,12 @@ Use `AskUserQuestion`:
 Rebase complete. Force-push to origin?
 ```
 Options:
-- **Yes, force-push** — `git push --force-with-lease origin <branch>`
+- **Yes, force-push** — if `STACK_IS_STACKED` is false, run `git push --force-with-lease origin <branch>`. If stacked, run the **"Push a stacked branch (new local work)"** block from `~/.claude/prompts/worktree-reference.md` (single-driver → `gh stack sync` does both rebase and push, so do not also run the local rebase from Step 3; per-branch → `git rebase --onto` + `--force-with-lease`).
 - **No, I'll push later**
 
 If force-push chosen, run it and report.
+
+Under single-driver layout, `gh stack sync` cascades to child branches automatically. Under per-branch layout, child branches are not updated — use the "Restack a child" runbook in `~/.claude/prompts/worktree-reference.md` for each child.
 
 ---
 
