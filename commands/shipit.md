@@ -232,9 +232,10 @@ if [ "$STACK_IS_STACKED" != "true" ]; then
   git push -u origin "$BRANCH"
 else
   # Run the "Push a stacked branch (new local work)" block from
-  # ~/.claude/prompts/worktree-reference.md (routes on STACK_LAYOUT:
-  # gh stack sync for single-driver, git rebase --onto + --force-with-lease for per-branch).
-  :
+  # ~/.claude/prompts/worktree-reference.md (routes on STACK_LAYOUT: gh stack sync for
+  # single-driver, git rebase --onto + --force-with-lease for per-branch; stops on unknown).
+  echo "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
+  exit 1
 fi
 
 # Build PR body with issue link (and "Stacked on" note if applicable)
@@ -309,15 +310,14 @@ if [ "$STACK_IS_STACKED" = "true" ]; then
     --arg parentBranch "$STACK_PARENT_BRANCH" \
     --arg parentPr "$STACK_PARENT_PR" \
     --arg stackNum "$STACK_NUM" \
-    --arg layout "$STACK_LAYOUT" \
-    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: (if $parentPr != "" then ($parentPr | tonumber) else null end), stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end), layout: $layout}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: (if $parentPr != "" then ($parentPr | tonumber) else null end), stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end)}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || { rm -f "$TMP"; echo "WARNING: failed to update .claude/github-cache.json (jq/mv error); cache left unchanged." >&2; }
 else
   # Not stacked: write isStacked=false
   echo "$EXISTING" | jq \
     --argjson number "$PR_NUM" \
     --arg url "$PR_URL" \
     --arg state "OPEN" \
-    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: false}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: false}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || { rm -f "$TMP"; echo "WARNING: failed to update .claude/github-cache.json (jq/mv error); cache left unchanged." >&2; }
 fi
 
 # Link parent PR in the remote stack (worktree-safe: gh stack link is API-only)
@@ -353,5 +353,5 @@ Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
 | No changes | Report "nothing to commit" |
 | PR exists | Report URL |
 | On main branch | Warn, suggest branching |
-| Branch is stacked | Create PR with `--base "$STACK_PARENT_BRANCH"`, link parent PR, cache stack metadata incl. `layout`; push via `gh stack sync` (single-driver) or `--force-with-lease` (per-branch) |
+| Branch is stacked | Create PR with `--base "$STACK_PARENT_BRANCH"`, link parent PR, cache stack metadata; push via `gh stack sync` (single-driver) or `--force-with-lease` (per-branch) |
 | Branch not stacked | Create PR with repo default base, mark `stack.isStacked=false` in cache |
