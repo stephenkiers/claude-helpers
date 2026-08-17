@@ -250,6 +250,9 @@ Preconditions: `STACK_IS_STACKED=true`, `STACK_PARENT_BRANCH` (non-empty), `STAC
    **per-branch:** `gh stack sync`/`checkout`/`init` are fatal here (branches are checked out in sibling worktrees), and `gh stack push` also checks out branches — so use the manual git primitive. Baseline (simple case — parent NOT force-rebased). Precondition: `STACK_PARENT_BRANCH` is non-empty; if empty, fail loudly: "cannot determine parent branch — resolve manually".
 
 ```bash
+# Fail loudly if the parent is unknown — otherwise the rebase below expands to
+# `origin/` and dies with an opaque "ambiguous argument" error instead of this hint.
+[ -n "$STACK_PARENT_BRANCH" ] || { echo "ERROR: cannot determine parent branch — resolve manually." >&2; exit 1; }
 git fetch origin
 if git rebase --onto origin/"$STACK_PARENT_BRANCH" \
      "$(git merge-base HEAD "$STACK_PARENT_BRANCH")"; then
