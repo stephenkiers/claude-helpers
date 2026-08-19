@@ -331,15 +331,20 @@ EXPERT_REVIEW_PATH = REPO_ROOT / "commands" / "expert-review.md"
 EXPERT_REVIEW = EXPERT_REVIEW_PATH.read_text() if EXPERT_REVIEW_PATH.exists() else ""
 FRAMEWORK_PATH = REPO_ROOT / "prompts" / "expert-framework.md"
 FRAMEWORK = FRAMEWORK_PATH.read_text() if FRAMEWORK_PATH.exists() else ""
+# The join barrier and stub heredoc were extracted into expert-review-panel.md in #46 (so
+# /expert-review-coworker could reuse the panel). Source the sentinel from both places, the way
+# test_triage.py did after that extraction (#49).
+PANEL_PATH = REPO_ROOT / "prompts" / "expert-review-panel.md"
+PANEL = PANEL_PATH.read_text() if PANEL_PATH.exists() else ""
 
 test_result(
     "pass1-end sentinel appears in expert-review join barrier",
-    "pass1-end" in EXPERT_REVIEW,
+    "pass1-end" in EXPERT_REVIEW or "pass1-end" in PANEL,
     "join barrier relies on this sentinel to detect truncated writes"
 )
 test_result(
     "pass1-end sentinel appears in expert-review stub heredoc",
-    EXPERT_REVIEW.count("pass1-end") >= 2,
+    EXPERT_REVIEW.count("pass1-end") + PANEL.count("pass1-end") >= 2,
     "stub file must also write the sentinel so the join barrier doesn't reject it"
 )
 test_result(
