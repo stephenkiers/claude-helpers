@@ -19,9 +19,9 @@ Merge findings that share the same root cause. Ten call sites of the same bug = 
 
 ## Step 2 — Verify Evidence Anchors (CRITIC at Merge Layer)
 
-**This is the trust gap closer for haiku scouts.** For each candidate, re-run the cited tool command (e.g., `rg -n '<pattern>' <path>` against `${WORKTREE_PATH}`) and confirm the `path:line` reproduces. Drop any candidate whose anchor does not reproduce. A scout that can't be verified is not a finding.
+**This is the trust gap closer for haiku scouts.** You do not have a shell `rg`/`grep` — verify each anchor with your **`Grep` tool** (re-run the cited search: same pattern, same path under `${WORKTREE_PATH}`) and/or your **`Read` tool** (open the cited `file:line` and confirm the cited text/code is there). Drop any candidate whose anchor does not reproduce. A scout that can't be verified is not a finding.
 
-If the evidence command cannot be re-run (e.g., the tool isn't available), apply extra scrutiny — only promote if the finding is high-confidence on its face.
+If the cited evidence command cannot be reproduced through `Grep`/`Read` (e.g., it referenced a linter or type-checker you don't have), apply extra scrutiny — only promote if the finding is high-confidence on its face and you can confirm the cited line exists via `Read`.
 
 ## Step 3 — Apply the High Bar
 
