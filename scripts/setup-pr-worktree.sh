@@ -158,17 +158,12 @@ else
 fi
 
 git -C "${MAIN_WORKTREE}" fetch origin "${BASE_BRANCH}" >&2
-git -C "${MAIN_WORKTREE}" fetch origin "pull/${PR_NUMBER}/head:${BRANCH_NAME}" --force >&2
-# Force-fetch refreshes the branch if the PR has new commits since last run.
-# The fetch above created (or updated) the local branch — mark it now so cleanup can
-# delete it even if the worktree-add below fails.
-BRANCH_CREATED=true
 
 # Compute the PR's changed top-level dirs for a sparse cone (only used when USE_SPARSE=true).
 # In cone mode git always materializes files in the repo *root* dir, so a changed root-level file
 # (dirname ".") is already present — we drop "." to avoid `sparse-checkout set .` widening the cone
 # to the whole tree (the exact trap that makes `graft review` fall back to a full checkout). The
-# diff resolves against the base merge-base; if it's somehow empty we fall back to a full checkout.
+# diff resolves against the base merge-base; an empty diff yields a minimal root-only cone (see below).
 apply_sparse_cone() {
   local wt="$1"
   local dirs
@@ -178,29 +173,46 @@ apply_sparse_cone() {
     # shellcheck disable=SC2086
     git -C "${wt}" sparse-checkout set --cone ${dirs} >&2
   else
-    git -C "${wt}" sparse-checkout disable >&2 2>/dev/null || true
+    # Empty diff (PR merged into or synced with base). Set an empty cone — root-level files only —
+    # rather than `sparse-checkout disable`, which would materialize the entire 33GB tree. Step F
+    # errors out on the empty diff moments later and cleanup removes the worktree, so a minimal
+    # checkout here just avoids a pointless full-tree write in the meantime.
+    git -C "${wt}" sparse-checkout set --cone >&2 2>/dev/null || true
   fi
 }
 
 # Exact-line match to avoid substring matches on prefix PR numbers
 if git -C "${MAIN_WORKTREE}" worktree list --porcelain 2>&1 | grep -Fxq "worktree ${WORKTREE_PATH}"; then
-  # Worktree exists — reset to latest fetch to avoid reviewing stale code
-  git -C "${WORKTREE_PATH}" reset --hard "${BRANCH_NAME}" >&2
+  # Worktree already exists (re-review after the author pushed new commits). The branch is checked
+  # out here, so fetching pull/N/head straight into it fails ("refusing to fetch into checked-out
+  # branch"). Fetch to FETCH_HEAD instead, then reset the worktree — which advances the checked-out
+  # branch and working tree together — to the freshly fetched head.
+  git -C "${MAIN_WORKTREE}" fetch origin "pull/${PR_NUMBER}/head" >&2
+  # Resolve FETCH_HEAD to a SHA right after the pull fetch — reset --hard FETCH_HEAD directly would
+  # be ambiguous (the base-branch fetch above also wrote FETCH_HEAD).
+  PR_HEAD_SHA=$(git -C "${MAIN_WORKTREE}" rev-parse FETCH_HEAD)
+  git -C "${WORKTREE_PATH}" reset --hard "${PR_HEAD_SHA}" >&2
   # Re-scope the cone in case the PR now touches different dirs (no-op for non-sparse worktrees).
   [ "$USE_SPARSE" = "true" ] && apply_sparse_cone "${WORKTREE_PATH}"
-elif [ "$USE_SPARSE" = "true" ]; then
-  # Large monorepo: create a sparse worktree scoped to just the PR's changed dirs. Create without
-  # checkout, set the cone, then materialize — so the 33GB tree is never fully written to disk.
-  mkdir -p "${WORKTREE_PARENT}"
-  git -C "${MAIN_WORKTREE}" worktree add --no-checkout "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
-  WORKTREE_CREATED=true
-  git -C "${WORKTREE_PATH}" fetch origin "${BASE_BRANCH}" >&2 2>/dev/null || true
-  apply_sparse_cone "${WORKTREE_PATH}"
-  git -C "${WORKTREE_PATH}" checkout >&2
 else
-  mkdir -p "${WORKTREE_PARENT}"
-  git -C "${MAIN_WORKTREE}" worktree add "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
-  WORKTREE_CREATED=true
+  # Fresh review: create the local branch, then the worktree. Mark BRANCH_CREATED now so cleanup can
+  # delete the branch even if the worktree-add below fails.
+  git -C "${MAIN_WORKTREE}" fetch origin "pull/${PR_NUMBER}/head:${BRANCH_NAME}" --force >&2
+  BRANCH_CREATED=true
+  if [ "$USE_SPARSE" = "true" ]; then
+    # Large monorepo: create a sparse worktree scoped to just the PR's changed dirs. Create without
+    # checkout, set the cone, then materialize — so the 33GB tree is never fully written to disk.
+    mkdir -p "${WORKTREE_PARENT}"
+    git -C "${MAIN_WORKTREE}" worktree add --no-checkout "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
+    WORKTREE_CREATED=true
+    git -C "${WORKTREE_PATH}" fetch origin "${BASE_BRANCH}" >&2 2>/dev/null || true
+    apply_sparse_cone "${WORKTREE_PATH}"
+    git -C "${WORKTREE_PATH}" checkout >&2
+  else
+    mkdir -p "${WORKTREE_PARENT}"
+    git -C "${MAIN_WORKTREE}" worktree add "${WORKTREE_PATH}" "${BRANCH_NAME}" >&2
+    WORKTREE_CREATED=true
+  fi
 fi
 
 # --- Step F: Write diff artifacts ---

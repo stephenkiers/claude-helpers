@@ -177,25 +177,36 @@ router_uses_correct_agent = False
 router_avoids_scout = False
 router_mentions_sonnet = False
 
+# The Router step was extracted into expert-review-panel.md in #46 (so /expert-review-coworker
+# could reuse the panel). Search both the orchestrator and the panel for the step section, the
+# way test_triage.py did after that extraction (#49).
+panel_file = PROMPTS_DIR / "expert-review-panel.md"
+panel_content = panel_file.read_text() if panel_file.exists() else ""
+sources = []
 if expert_review_exists:
-    expert_review_content = expert_review_file.read_text()
+    sources.append(expert_review_file.read_text())
+if panel_content:
+    sources.append(panel_content)
 
-    # Find the router step/section - look for "### Step N: Router" (the router step heading)
-    # Extract everything until the next step heading (### Step)
-    router_section_pattern = r"### Step \d+: Router.*?\n(.*?)(?=\n### Step|\Z)"
-    router_section_match = re.search(router_section_pattern, expert_review_content, re.DOTALL | re.IGNORECASE)
-
+# Find the router step/section - look for "### Step N: Router" (the router step heading)
+# Extract everything until the next step heading (### Step)
+router_section_pattern = r"### Step \d+: Router.*?\n(.*?)(?=\n### Step|\Z)"
+router_section = ""
+for src in sources:
+    router_section_match = re.search(router_section_pattern, src, re.DOTALL | re.IGNORECASE)
     if router_section_match:
         router_section = router_section_match.group(1)
+        break
 
-        # Check that expert-reviewer is mentioned in the router section
-        router_uses_correct_agent = bool(re.search(r"expert-reviewer", router_section, re.IGNORECASE))
+if router_section:
+    # Check that expert-reviewer is mentioned in the router section
+    router_uses_correct_agent = bool(re.search(r"expert-reviewer", router_section, re.IGNORECASE))
 
-        # Check that expert-scout is NOT mentioned as the agent type for the router
-        router_avoids_scout = not bool(re.search(r"expert-scout", router_section, re.IGNORECASE))
+    # Check that expert-scout is NOT mentioned as the agent type for the router
+    router_avoids_scout = not bool(re.search(r"expert-scout", router_section, re.IGNORECASE))
 
-        # Check for sonnet reference (could be "sonnet", "model.*sonnet", "Sonnet", etc.)
-        router_mentions_sonnet = bool(re.search(r"\bsonnet\b", router_section, re.IGNORECASE))
+    # Check for sonnet reference (could be "sonnet", "model.*sonnet", "Sonnet", etc.)
+    router_mentions_sonnet = bool(re.search(r"\bsonnet\b", router_section, re.IGNORECASE))
 
 test_result(
     "Router step mentions expert-reviewer",
