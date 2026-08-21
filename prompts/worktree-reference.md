@@ -91,9 +91,11 @@ fi
 Detect and manage stacked PRs (branches whose parent is another worktree's branch, not the default
 branch). Used by `/shipit` to set the correct PR base and link parent PRs, and by `/cleanup` to
 detect children and emit a restack runbook. **IMPORTANT:** Only worktree-safe verbs are emitted here:
-`gh stack link`, `gh stack unstack`, and graphql reads. Never use `gh stack init`, `gh stack sync`,
-or `gh stack checkout` — those check out branches and are fatal when branches are held in sibling
-worktrees.
+`gh stack link`, `gh stack unstack`, and graphql reads. `gh stack init`, `gh stack checkout` are
+**fatal under per-branch layout** (branches are permanently checked out in sibling worktrees), but
+under **single-driver layout** (one working copy driving the whole stack via `gh stack checkout`)
+`gh stack sync` is the intended one-command path — use the "Detect layout" block to resolve
+`STACK_LAYOUT` before choosing.
 
 ### Is-stacked (this branch)
 
@@ -166,6 +168,112 @@ else
   fi
 fi
 ```
+
+### Detect layout
+
+Detect the worktree layout so stacked pushes route correctly. Self-contained — re-runs the worktree list unconditionally (cheap; ~5ms). Precondition: `STACK_IS_STACKED=true`, `STACK_PARENT_BRANCH` set. Emits `STACK_LAYOUT` (`single-driver` | `per-branch` | `unknown`). Value is re-derived each run (not cached).
+
+```bash
+# Detect worktree layout for stacked-push routing — STRUCTURAL, not commit-ancestry.
+# Precondition: STACK_IS_STACKED=true, STACK_PARENT_BRANCH set (run Is-stacked first).
+# Emits: STACK_LAYOUT="single-driver"|"per-branch"|"unknown"
+#
+# Layout turns on one structural fact: is any OTHER member of this stack checked out in a
+# sibling worktree? If yes, `gh stack sync`/`checkout` would try to check out an
+# already-checked-out branch -> fatal -> per-branch. If no member other than the current
+# branch is checked out anywhere, one working copy drives the stack -> single-driver.
+# Read from metadata (worktree branch list + each worktree's cached .stack.parentBranch),
+# never from `git merge-base --is-ancestor`.
+
+STACK_LAYOUT="unknown"
+CURRENT_BRANCH=$(git branch --show-current)
+DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+[ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
+
+# branch<TAB>worktree-path for every worktree (detached HEADs emit no branch line -> skipped)
+WORKTREE_LINES=$(git worktree list --porcelain | awk '
+  /^worktree / { wt=substr($0,10); next }
+  /^branch / && wt != "" { b=substr($0,8); sub(/^refs\/heads\//,"",b); print b "\t" wt; wt="" }')
+
+PER_BRANCH=false
+while IFS=$'\t' read -r b wt; do
+  [ -z "$b" ] && continue
+  [ "$b" = "$CURRENT_BRANCH" ] && continue      # exclude self by name
+  [ "$b" = "$DEFAULT_BRANCH" ] && continue      # exclude default branch by name
+  # This sibling worktree holds the current branch's parent?
+  if [ -n "$STACK_PARENT_BRANCH" ] && [ "$b" = "$STACK_PARENT_BRANCH" ]; then
+    PER_BRANCH=true; break
+  fi
+  # This sibling worktree holds a child of the current branch (per its own cache)?
+  SIB_PARENT=$(jq -r '.stack.parentBranch // empty' "$wt/.claude/github-cache.json" 2>/dev/null)
+  if [ "$SIB_PARENT" = "$CURRENT_BRANCH" ]; then
+    PER_BRANCH=true; break
+  fi
+done <<< "$WORKTREE_LINES"
+
+if [ "$PER_BRANCH" = "true" ]; then
+  STACK_LAYOUT="per-branch"
+elif [ -n "$STACK_PARENT_BRANCH" ]; then
+  # Stacked, and no stack member other than the current branch is checked out in any
+  # sibling worktree -> one working copy can drive the whole stack.
+  STACK_LAYOUT="single-driver"
+else
+  # Stacked flag set but no parent branch known and no sibling members found: cannot
+  # prove which layout applies -> fail closed.
+  STACK_LAYOUT="unknown"
+fi
+```
+
+**Edge cases:**
+- Parent checked out in a sibling worktree → `per-branch` (`gh stack sync` would try to check out the parent from the current worktree → fatal)
+- Child checked out in a sibling worktree → `per-branch` (`gh stack sync` would try to check out the child → fatal)
+- No stack member other than the current branch is checked out anywhere → `single-driver` (one working copy can safely drive the whole stack)
+- Detached-HEAD worktrees → awk outputs no `branch` line → correctly skipped
+- Cannot determine (stacked but no parent or sibling members found) → `unknown` (caller stops and asks)
+
+### Push a stacked branch (new local work)
+
+Preconditions: `STACK_IS_STACKED=true`, `STACK_PARENT_BRANCH` (non-empty), `STACK_LAYOUT` resolved (run Detect layout first), `BRANCH` set to the current branch name.
+
+**Safety guard:** If `STACK_LAYOUT="unknown"`, STOP and report: "cannot determine layout — resolve manually, do not guess an arm". Do not proceed.
+
+1. Check whether the remote ref is present: `git ls-remote --exit-code origin "$BRANCH"`.
+   - **If absent** (first push of a brand-new stacked branch): `git push -u origin "$BRANCH"` and you are done. The gotcha (no upstream / tip-behind) only applies to *updates* of an already-pushed stacked branch.
+   - **If present** (updating an existing stacked branch): branch on `STACK_LAYOUT`.
+
+   **single-driver:** Precondition: `command -v gh-stack >/dev/null 2>&1` (gh-stack is installed). Run `gh stack sync`. It fetches, cascade-rebases the whole stack onto the updated trunk, and pushes all branches atomically (`--force-with-lease --atomic`) — do NOT rebase locally first and then sync; let sync do both. On non-zero exit: stop and report; do not fall back (the stack may be partially synced, or sync aborted on a divergence it could not resolve non-interactively). Note that in a non-interactive terminal `gh stack sync` aborts without pushing if the local and remote stacks have diverged.
+
+   If `gh-stack` is not installed: emit an install-hint WARNING and stop. Do not silently fall through to per-branch.
+
+   **Recovery** (if `gh stack sync` was interrupted mid-cascade): Run `git rebase --abort` if a rebase is in progress. Verify each branch tip against origin. For each child, use the "### Restack a child (after its parent merged)" runbook.
+
+   **per-branch:** `gh stack sync`/`checkout`/`init` are fatal here (branches are checked out in sibling worktrees), and `gh stack push` also checks out branches — so use the manual git primitive. Baseline (simple case — parent NOT force-rebased). Precondition: `STACK_PARENT_BRANCH` is non-empty; if empty, fail loudly: "cannot determine parent branch — resolve manually".
+
+```bash
+# Fail loudly if the parent is unknown — otherwise the rebase below expands to
+# `origin/` and dies with an opaque "ambiguous argument" error instead of this hint.
+[ -n "$STACK_PARENT_BRANCH" ] || { echo "ERROR: cannot determine parent branch — resolve manually." >&2; exit 1; }
+git fetch origin
+if git rebase --onto origin/"$STACK_PARENT_BRANCH" \
+     "$(git merge-base HEAD "$STACK_PARENT_BRANCH")"; then
+  # --force-if-includes: the fetch above just moved the remote-tracking ref, which would
+  # otherwise defeat --force-with-lease's implicit lease.
+  git push --force-with-lease --force-if-includes origin HEAD
+else
+  echo "ERROR: rebase onto origin/$STACK_PARENT_BRANCH conflicted — resolve, complete the rebase, then push." >&2
+  echo "  git status; after resolving: git rebase --continue && git push --force-with-lease --force-if-includes origin HEAD" >&2
+  exit 1
+fi
+```
+
+   **Rebase ownership** (this per-branch arm OWNS the rebase for callers with new, un-rebased local work — e.g. `/shipit`). A caller that has ALREADY rebased locally (e.g. `/expert-rebase` Step 3) must NOT re-run this block's rebase — it should force-push only (`git push --force-with-lease --force-if-includes origin HEAD`).
+
+   If the rebase fails because the parent was force-rebased, direct the user to the "### Restack a child (after its parent merged)" runbook later in this same file.
+
+**Guardrails:**
+- Never `git push -u` to *update* a stacked branch — after a gh-stack rebase there is no local upstream and the tip is behind, so it cannot fast-forward.
+- Never `git reset --hard @{u}` when you have unpushed local commits — that is the *stale-local* case (see "Restack a child") and would drop new work.
+- Under single-driver, `gh stack sync` cascades to all child branches automatically. Under per-branch, child branches are NOT updated — use the "Restack a child" runbook for each child after the parent moves.
 
 ### Find children (of a branch)
 
