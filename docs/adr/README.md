@@ -34,7 +34,8 @@ to North Star Nick).
 - [ADR-0010: Worktree clone layout](0010-worktree-clone-layout.md) — the default-branch checkout
   lives at `<repos-root>/<repo>/worktrees/<default-branch>`, not at the repo root; siblings created
   by `/track-and-start` live alongside it; detection keys off the parent directory being named
-  `worktrees`
+  `worktrees` — cross-referenced by ADR-0011 (stacked-PR layout model)
+- [ADR-0011: Stacked-PR layout model (single-driver vs per-branch)](0011-stacked-pr-layout-model.md) — when `gh stack sync` is safe or fatal depends on whether all stack branches are driven from one working copy or checked out in sibling worktrees; reverses PR #55's blanket ban by correctly routing based on detected layout
 
 ## Format
 

@@ -73,7 +73,7 @@ reflects the shippable tree:
 
 Invoke the `shipit` skill via the `Skill` tool.
 
-`shipit` runs CI checks itself and stops on the first failing check without committing.
+`shipit` runs CI checks itself and stops on the first failing check without committing. Stacked-branch push handling (layout detection, `gh stack sync` vs `--force-with-lease`) lives in `/shipit` — do not duplicate it here.
 
 **Gate** — confirm a commit was pushed and a PR exists:
 

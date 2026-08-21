@@ -234,3 +234,5 @@ The common scenarios are in `shipit.md`'s Quick Reference. Additional cases:
 |----------|--------|
 | Already committed | Skip to push/PR |
 | Command not found | Update cache gotchas, try alternatives |
+
+**Stacked branches** — push errors on a stacked branch (no upstream, tip behind remote) mean the parent was force-rebased by gh-stack. See the "Push a stacked branch (new local work)" block in `~/.claude/prompts/worktree-reference.md`.

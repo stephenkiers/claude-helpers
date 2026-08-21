@@ -97,6 +97,8 @@ GraphQL and `gh stack`). This is optional:
 gh extension install github/gh-stack
 ```
 
+Both `/shipit` and `/expert-rebase` are layout-aware: they use `gh stack sync` under single-driver layout and manual `--force-with-lease` under per-branch (worktree-per-branch) layout.
+
 ## License
 
 [MIT](LICENSE). Copy it, change it, keep it private — no attribution beyond the license text required.
