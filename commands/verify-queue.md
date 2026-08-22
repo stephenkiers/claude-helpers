@@ -84,8 +84,8 @@ add_row() {
     return 0
   fi
   
-  # Append new row (let jq own the escaping via --arg)
-  jq -n \
+  # Append new row (let jq own the escaping via --arg; -c keeps it one JSONL line)
+  jq -nc \
     --arg id "$id" \
     --arg status "$status" \
     --arg kind "$kind" \
@@ -109,7 +109,7 @@ set_status() {
   # Create temp file in same directory (ensures atomic rename)
   TMP="$(mktemp "$(dirname "$QUEUE")/verify-queue.XXXXXX")"
   
-  jq -r \
+  jq -c \
     --arg id "$id" \
     --arg status "$new_status" \
     --arg result "$new_result" \
