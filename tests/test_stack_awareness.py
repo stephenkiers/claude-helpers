@@ -5,8 +5,11 @@ Test suite for stack-awareness invariants (issue #51).
 These tests verify that `/cleanup` and `/shipit` commands are gh-stack-aware
 and worktree-safe, using a shared "Stack Detection" block in prompts/worktree-reference.md.
 
-Tests assert:
-1. Worktree-safety: gh stack init/sync/checkout never invoked in bash blocks
+Tests assert (updated for ADR-0011, which reversed PR #55's blanket ban on
+`gh stack sync` and scoped the worktree-safety ban to per-branch layout):
+1. Worktree-safety: gh stack init/sync/checkout never *executed* as active
+   commands in bash blocks (comments/prose mentions are permitted; the
+   single-driver `gh stack sync` action is described in prose, not inlined)
 2. Shared Stack Detection block exists with defined variables
 3. Only worktree-safe verbs (gh stack link, unstack) used
 4. shipit.md opens stacked PRs correctly
@@ -81,24 +84,54 @@ h = Harness("STACK AWARENESS TEST SUITE (ISSUE #51)")
 t = h.test_result
 
 # ============================================================================
-# INVARIANT 1: Worktree-safety (no hostile verbs invoked in bash blocks)
+# INVARIANT 1: Worktree-safety (no hostile verbs *executed* in bash blocks)
 # ============================================================================
-print("[Invariant 1] Worktree-safety: no hostile gh stack verbs in bash blocks")
+# ADR-0011 reversed PR #55's blanket ban: `gh stack sync` is the intended
+# single-driver push command, and `gh stack init`/`checkout` are fatal under
+# per-branch layout. This repo's convention is that the single-driver
+# `gh stack sync` action is described in *prose* ("Run `gh stack sync`") and
+# never inlined as an active bash command, so bash blocks stay worktree-safe
+# (manual git primitives + API-only `gh stack link`/`unstack`). The guard
+# below flags hostile verbs only when they appear as *active command lines* —
+# not inside comments (explanatory) or echo/printf strings (emit-only runbooks
+# the user pastes manually).
+print("[Invariant 1] Worktree-safety: no hostile gh stack verbs as active commands in bash blocks")
 
 HOSTILE_VERBS: list[str] = ["gh stack init", "gh stack sync", "gh stack checkout"]
 
+def active_command_lines(block_text: str) -> list[str]:
+    """
+    Return lines that execute a command — not comments, blank lines, or
+    echo/printf string arguments (those are emit-only text the user pastes,
+    not invocations the block runs).
+    """
+    active = []
+    for line in block_text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # An echo/printf of a verb is emit-only (the runbook is paste-manual),
+        # not an execution — skip it.
+        if re.match(r"(echo|printf)\b", stripped):
+            continue
+        active.append(line)
+    return active
+
 def check_file_worktree_safe(content: str, filename: str) -> list[str]:
     """
-    Check that hostile verbs don't appear in bash blocks of a file.
+    Check that hostile verbs don't appear as active (non-comment, non-echo)
+    command lines in bash blocks of a file. Comments and prose mentions are
+    permitted.
 
     Returns: list of violation strings (empty if no violations found)
     """
     bash_blocks = extract_bash_blocks(content)
     violations = []
     for line_num, block_text in bash_blocks:
-        for verb in HOSTILE_VERBS:
-            if verb in block_text:
-                violations.append(f"{filename}:{line_num} contains '{verb}'")
+        for line in active_command_lines(block_text):
+            for verb in HOSTILE_VERBS:
+                if verb in line:
+                    violations.append(f"{filename}:{line_num} executes '{verb}'")
     return violations
 
 
@@ -118,12 +151,23 @@ t("worktree-reference.md bash blocks are worktree-safe",
   len(ref_violations) == 0,
   f"found {len(ref_violations)} violations: {ref_violations}" if ref_violations else "")
 
-# Bonus: assert the warning prose exists in worktree-reference.md
-# Must warn against the verbs and mention worktree safety specifically
-warning_phrasing = re.search(r"[Nn]ever use.*gh stack (init|sync|checkout)", WORKTREE_REF, re.DOTALL)
-t("worktree-reference.md explicitly warns against hostile verbs",
-  warning_phrasing is not None,
-  "expected a prose warning with phrasing like 'Never use ... gh stack init/sync/checkout'")
+# ADR-0011: the warning is now *scoped* — gh stack init/sync/checkout are fatal
+# under per-branch layout specifically, not a blanket "never use" ban. The docs
+# must carry that scoped warning and name `gh stack sync` as the safe
+# single-driver path (the deliberate reversal of PR #55's blanket ban).
+scoped_warning = re.search(
+    r"gh stack.{0,150}fatal under.{0,30}per-branch",
+    WORKTREE_REF, re.DOTALL)
+t("worktree-reference.md warns gh stack verbs are fatal under per-branch layout",
+  scoped_warning is not None,
+  "expected a scoped warning that gh stack init/sync/checkout are fatal under per-branch layout (per ADR-0011)")
+
+sync_single_driver = re.search(
+    r"gh stack sync.{0,80}(intended|single-driver)",
+    WORKTREE_REF, re.DOTALL)
+t("worktree-reference.md names 'gh stack sync' as the single-driver path (ADR-0011)",
+  sync_single_driver is not None,
+  "expected 'gh stack sync' identified as the intended single-driver command (ADR-0011 reversal of #55)")
 
 print()
 
