@@ -20,7 +20,7 @@ work out which three matter" and "rule on three things; the rest is handled."
 ## Read
 
 - `{REVIEW_DIR}/final-report.md` — your primary input. Every CONFIRMED finding.
-- `.claude/project.yaml` — invariants, red lines, ADRs, terminology (skip silently if absent).
+- `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist — invariants, red lines, ADRs, terminology (skip silently if absent).
 
 You may read individual `*-pass1.md` / `*-pass2.md` files when you need a reviewer's reasoning to
 judge a conflict. Do not read the diff. If you find yourself wanting to, you are re-reviewing.
@@ -69,7 +69,7 @@ trip both — e.g. it's a footgun (5) *and* nobody has the number yet (7) — fi
 measurement**, since the human can't meaningfully choose an option (test 5's job) until the
 measurement exists; note the other tripped test in **Why this needs measurement** so it isn't lost.
 
-1. **It contradicts a documented ADR or a `project.yaml` invariant or red line.** The system does
+1. **It contradicts a documented ADR or a project-context invariant or red line.** The system does
    not get to quietly overrule the human.
 2. **The panel genuinely disagreed** and Pass 2 did not settle it (`**Panel Conflict**: unresolved`).
 3. **The fix is a product or scope call, not a code call.** Anything whose right answer depends on

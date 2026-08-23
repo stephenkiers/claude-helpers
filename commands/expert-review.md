@@ -141,7 +141,7 @@ already-reviewed commit never overwrites the prior run):
    mkdir -p "$REVIEW_DIR"
    ```
 
-   `PROJECT_ROOT` is where the project's `.claude/project.yaml` lives (still read per-worktree).
+   `PROJECT_ROOT` is where the project's `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, lives (still read per-worktree).
    `REVIEW_DIR` is per-invocation, under `~/.claude/reviews/${REPO_KEY}/`.
 
    **Do not cache these across Bash calls in a shared-path scratch file** (e.g. a fixed
@@ -152,7 +152,7 @@ already-reviewed commit never overwrites the prior run):
    recompute (`git rev-parse` / `gh repo view`); recompute them in each Bash block that needs them,
    or carry the already-known literal values forward as text, rather than persisting them to disk.
 
-2. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
+2. **Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist** (if present in the project root). Store as `PROJECT_CONTEXT`
    and pass to all reviewer prompts. Key extractions:
    - `techStack.language` → primary language (skips detection in step 3)
    - `fragility.*` → Fragile Feynman; `docStyle` → Contract Chris;
@@ -254,7 +254,7 @@ running something and reading a result back — not a judgment call, so it never
 **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`). Its mandate and the
 `action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it to read:
 - `{REVIEW_DIR}/final-report.md` (its primary input)
-- `{PROJECT_ROOT}/.claude/project.yaml` (skip if absent)
+- `{PROJECT_ROOT}/.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (skip if absent)
 
 It writes `{REVIEW_DIR}/action-plan.md`. It returns:
 

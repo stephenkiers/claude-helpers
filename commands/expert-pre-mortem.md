@@ -64,7 +64,7 @@ Report the diff size (files changed, lines added/removed) before proceeding.
 
 Check for project-specific fragility configuration (best-effort, skip gracefully if not found):
 
-1. Read `.claude/project.yaml` — look for `fragility.highRiskModules` and `fragility.knownFragilePatterns`
+1. Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist — look for `fragility.highRiskModules` and `fragility.knownFragilePatterns`
 2. Read `.claude/reviewers/fragile-feynman-local.yaml` — project-specific fragility patterns
 
 If either file exists:
