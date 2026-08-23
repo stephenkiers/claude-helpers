@@ -147,7 +147,8 @@ target; do not request one there.
 
 ## Creating Project Context
 
-When setting up a new project, create `.claude/project.yaml`.
+When setting up a new project, create `.claude/project.yaml`, or `.claude/project-context.yaml` if
+that doesn't exist.
 Copy `~/.claude/prompts/project.yaml.template` and fill in what's relevant.
 See `~/.claude/prompts/project-example-{python,rust,typescript}.yaml` for full examples.
 
@@ -200,7 +201,7 @@ terminology:
 
 ## Creating Expert-Local Overrides
 
-Only create `{expert}-local.yaml` when you need expert-specific project knowledge beyond `project.yaml`:
+Only create `{expert}-local.yaml` when you need expert-specific project knowledge beyond the project context file:
 
 ```yaml
 extends: {expert-name}

@@ -15,7 +15,7 @@ read this file and follow these steps.
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
 All I/O is through `REVIEW_DIR` paths. Reviewer YAMLs live in `~/.claude/reviewers/` regardless of
-which repo is under review — this panel is completely repo-agnostic. When `WORKTREE_PATH` is set (coworker mode), project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`) and source-file reads are rooted at `${WORKTREE_PATH}`; when unset, they default to the orchestrator's cwd.
+which repo is under review — this panel is completely repo-agnostic. When `WORKTREE_PATH` is set (coworker mode), project-context reads (`.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, and `.claude/reviewers/*-local.yaml`) and source-file reads are rooted at `${WORKTREE_PATH}`; when unset, they default to the orchestrator's cwd.
 
 The steps below retain their original numbering (Step 4 … Step 10) so cross-references from the
 calling commands stay stable.
@@ -155,7 +155,7 @@ file elsewhere in the repo — treat that run as compromised: stop, do not trust
 report it rather than silently continuing.
 
 **Path roots (WORKTREE_PATH contract).** When `WORKTREE_PATH` is set (coworker mode), all reviewer
-prompts must root project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`)
+prompts must root project-context reads (`.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, and `.claude/reviewers/*-local.yaml`)
 and source-file reads at `${WORKTREE_PATH}`, not the orchestrator's cwd. When `WORKTREE_PATH` is
 unset (default `/expert-review` mode), reads default to the orchestrator's cwd. Reviewer YAML
 files themselves always live in `~/.claude/reviewers/` regardless.
