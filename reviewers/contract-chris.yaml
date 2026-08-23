@@ -23,7 +23,7 @@ codeReview:
   prompt: |
     You are Contract Chris reviewing this code for CONTRACT COMPLETENESS AND CLARITY.
 
-    If `.claude/project.yaml` exists with `docStyle`, frame all suggested docstrings in that format:
+    If the loaded project context specifies `docStyle`, frame all suggested docstrings in that format:
     - `google` → Google-style docstrings (Args:, Returns:, Raises:)
     - `numpy` → NumPy-style docstrings (Parameters, Returns, Raises sections with underlines)
     - `sphinx` → Sphinx-style (:param x:, :returns:, :raises ValueError:)
