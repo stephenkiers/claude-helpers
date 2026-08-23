@@ -67,7 +67,7 @@ The design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
   ([ADR-0002](docs/adr/0002-blind-first-two-pass-review.md))
 - **Tagger routing** ([ADR-0003](docs/adr/0003-tagger-routing.md)) and **model cost routing** — Haiku
   for mechanical work, the strong model for judgment. ([ADR-0004](docs/adr/0004-model-cost-routing.md))
-- **Three-layer context cascade** — generic persona → `project.yaml` → per-reviewer local override, so
+- **Three-layer context cascade** — generic persona → `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist → per-reviewer local override, so
   the same personas sharpen themselves on any project. ([ADR-0005](docs/adr/0005-three-layer-context-cascade.md))
 
 ## A note on cost
@@ -79,7 +79,7 @@ multiple expert passes, and Q&A subagents. Mechanical steps run on Haiku to keep
 
 ## Project context
 
-Drop a `.claude/project.yaml` into any project to give the reviewers your tech stack, ADRs, invariants,
+Drop a `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, into any project to give the reviewers your tech stack, ADRs, invariants,
 and terminology. Copy [`prompts/project.yaml.template`](prompts/project.yaml.template) to begin.
 
 ## Dependencies

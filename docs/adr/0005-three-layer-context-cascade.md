@@ -82,3 +82,9 @@ win on conflict — preferences are personal defaults that projects can override
 
 See [ADR-0007](0007-triage-and-decision-memory.md)'s second amendment, which removed `decisions.yaml`,
 for the rationale behind moving to a user-preference-based approach.
+
+## Amendment — project-context filename fallback
+
+Layer 2 (Project context) is now resolved as an ordered candidate list (`.claude/project.yaml`, then `.claude/project-context.yaml`), first match wins, no merge.
+
+This provides flexibility in project context file naming while maintaining full backward compatibility. The primary filename `.claude/project.yaml` is checked first; if it does not exist, the system falls back to `.claude/project-context.yaml`. Existing projects are unaffected. If both files exist in a project, only the primary is read.

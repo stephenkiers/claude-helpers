@@ -42,7 +42,7 @@ Experts follow a two-layer context loading pattern:
 
 Project-context loading is **centralized** in `prompts/expert-framework.md` under
 "Load Project Context (REQUIRED, all reviewers)". Every persona inherits it — they read
-`.claude/project.yaml` and `.claude/reviewers/{expert}-local.yaml` automatically. **Do not**
+`.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, and `.claude/reviewers/{expert}-local.yaml` automatically. **Do not**
 add a per-persona "Load Project Context" / STEP 1 block; that duplication is what the framework
 now owns (and contradicts the "Adding a New Reviewer" checklist).
 
@@ -57,7 +57,7 @@ rather than re-listing the generic files.
 |----------|--------|---------|
 | `~/.claude/reviewers/` | `{expert}.yaml` | Global expert definition |
 | `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (router reads this only) |
-| `project/.claude/` | `project.yaml` | Project-wide context — all experts + /shipit |
+| `project/.claude/` | `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist | Project-wide context — all experts + /shipit |
 | `project/.claude/reviewers/` | `{expert}-local.yaml` | Expert-specific project overrides |
 
 Templates for `project.yaml` and `{expert}-local.yaml` are in `~/.claude/prompts/`:

@@ -47,7 +47,7 @@
 # domain. The security floor has two layers: LLM judgment is primary (any finding the Triage Chief
 # reads as security-domain is protected, tagged or not); the `**Domain**: security` tag is a
 # supplemental machine-checkable layer (a tagged finding is always protected). Both layers must
-# coexist: a missed tag is a training gap, not a license to suppress. `project.yaml` `invariants`
+# coexist: a missed tag is a training gap, not a license to suppress. The project context file's `invariants`
 # and `redLines` also outrank anything here.
 #
 # When a decision changes how the system is SHAPED rather than how it is written, it is an ADR,

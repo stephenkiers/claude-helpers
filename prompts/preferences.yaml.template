@@ -14,7 +14,7 @@
 # This is the same floor that decisions.yaml held. When a finding is security-domain
 # or CRITICAL, it passes through unaffected.
 #
-# Project-level wins on conflict: when .claude/project.yaml or a project-level ruling
+# Project-level wins on conflict: when the project context file or a project-level ruling
 # conflicts with a preference here, the project-level rule wins. Preferences are
 # personal defaults; projects can override them.
 #

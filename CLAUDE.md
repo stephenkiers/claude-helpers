@@ -77,8 +77,7 @@ triage sits **in front of** it, not over it.
 Create `~/.claude/preferences.yaml` to define personal code review taste and style. Preferences are
 a **lens** through which reviewers shape how findings are worded and prioritized — never a
 suppression list. A preference influences the emphasis and framing of a finding but never eliminates
-it. Hard floor: preferences never dilute CRITICAL or security-flagged findings. When `.claude/project.yaml`
-or a project-level ruling conflicts with a preference, the project-level rule wins; preferences are
+it. Hard floor: preferences never dilute CRITICAL or security-flagged findings. When `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, or a project-level ruling conflicts with a preference, the project-level rule wins; preferences are
 personal defaults that projects can override. Copy `prompts/preferences.yaml.template` from this repo
 to get started.
 
@@ -157,7 +156,7 @@ commands that need them read them by path. Put a new reference doc in `prompts/`
 
 ## Project context
 
-Create `.claude/project.yaml` in any project to give reviewers and `/shipit` project-specific context.
+Create `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, in any project to give reviewers and `/shipit` project-specific context.
 Copy `prompts/project.yaml.template` to start; see `prompts/project-example-{python,rust,typescript}.yaml`
 for full examples, and `*-local-example-*.yaml` for per-reviewer overrides.
 
