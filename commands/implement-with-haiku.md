@@ -51,7 +51,7 @@ SCRATCH=$(mktemp -d)
 
 Also read these files using the `Read` tool if they exist (skip silently if not):
 - `CLAUDE.md` — project conventions and coding rules
-- `.claude/project.yaml` — project-specific context
+- `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist — project-specific context
 - `.claude/implement-with-haiku.md` — project-specific gates and overrides for this
   command; where it conflicts with this command's defaults, the project file wins
 
@@ -144,7 +144,7 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - The branch name
 - The 5 most recent commit messages (for commit style)
 - Contents of `CLAUDE.md` if found (under a "Project conventions" heading)
-- Contents of `.claude/project.yaml` if found (under a "Project context" heading)
+- Contents of `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (under a "Project context" heading)
 - Names of any style/lint/format config files found in Step 2
 - The shared contracts/interfaces extracted in Step 3
 - `OWNED FILES (only touch these):` — the unit's owned-files list

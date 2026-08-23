@@ -26,7 +26,7 @@ Report the file count and function count before proceeding.
 
 ## Step 2: Load Project Context
 
-Read `.claude/project.yaml` (best-effort, skip gracefully):
+Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (best-effort, skip gracefully):
 - `docStyle` — documentation format (`google`, `numpy`, `sphinx`, `jsdoc`, `rustdoc`, `godoc`)
 - `commands.test` — test command to run in Step 5
 
@@ -129,7 +129,7 @@ Added:
 
 ## Step 5: Verify
 
-Run the test suite using `commands.test` from `project.yaml`, or detect from conventions (pytest, cargo test, npx jest, go test ./...).
+Run the test suite using `commands.test` from the project context file, or detect from conventions (pytest, cargo test, npx jest, go test ./...).
 
 If the test suite fails:
 - Check if the failure is in a file you edited — it should not be possible since you only added docstrings

@@ -24,7 +24,7 @@ Report the file count before proceeding.
 
 ## Step 2: Load Project Context
 
-Read `.claude/project.yaml` (best-effort, skip gracefully if not found):
+Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (best-effort, skip gracefully if not found):
 - `techStack.language` — primary language (determines type idioms)
 - `typeChecker` — type checker to run after changes (`mypy`, `pyright`, `tsc`, `cargo check`, etc.)
 - `commands.typecheck` — override command for the type check step

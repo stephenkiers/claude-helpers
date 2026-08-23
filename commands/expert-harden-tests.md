@@ -28,13 +28,13 @@ Report the file count before proceeding.
 
 ## Step 2: Load Project Context
 
-Read `.claude/project.yaml` (best-effort, skip gracefully):
+Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (best-effort, skip gracefully):
 - `propertyTestingLib` — PBT library (`hypothesis`, `fast-check`, `proptest`, `testing/quick`)
 - `techStack.testing` — test framework (`pytest`, `jest`, `vitest`, `cargo-test`, `go-test`)
 - `techStack.language` — primary language
 - `commands.test` — test command
 
-**PBT library mapping (if not in project.yaml, detect from existing test files and imports):**
+**PBT library mapping (if not in the project context file, detect from existing test files and imports):**
 - **Python**: Hypothesis — `@given`, `st.*` strategies, `assume()` for constraints
 - **TypeScript/JS**: fast-check — `fc.property()`, `fc.*` arbitraries
 - **Rust**: proptest — `proptest!` macro, `prop_compose!` for strategies
