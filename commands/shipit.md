@@ -223,7 +223,9 @@ Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-ref
 # Detect issue number: cache-first, then branch name regex fallback
 BRANCH=$(git branch --show-current)
 GITHUB_CACHE=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-ISSUE_NUM=$(echo "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
+# printf, not echo: zsh's builtin echo interprets backslash escapes, turning a stored
+# \n back into a literal newline and making the JSON invalid before jq ever sees it.
+ISSUE_NUM=$(printf '%s' "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
 if [ -z "$ISSUE_NUM" ]; then
   ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
 fi
@@ -301,9 +303,11 @@ EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 # Write to a temp file and mv on success so a jq failure never truncates the existing cache
 # (a bare `> github-cache.json` redirect truncates the file before jq runs).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
+# printf, not echo: zsh's builtin echo interprets backslash escapes, turning a stored
+# \n back into a literal newline and making the JSON invalid before jq ever sees it.
 if [ "$STACK_IS_STACKED" = "true" ]; then
   # Stacked: write full stack metadata
-  echo "$EXISTING" | jq \
+  printf '%s' "$EXISTING" | jq \
     --argjson number "$PR_NUM" \
     --arg url "$PR_URL" \
     --arg state "OPEN" \
@@ -313,7 +317,7 @@ if [ "$STACK_IS_STACKED" = "true" ]; then
     '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: (if $parentPr != "" then ($parentPr | tonumber) else null end), stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end)}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || { rm -f "$TMP"; echo "WARNING: failed to update .claude/github-cache.json (jq/mv error); cache left unchanged." >&2; }
 else
   # Not stacked: write isStacked=false
-  echo "$EXISTING" | jq \
+  printf '%s' "$EXISTING" | jq \
     --argjson number "$PR_NUM" \
     --arg url "$PR_URL" \
     --arg state "OPEN" \
