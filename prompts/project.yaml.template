@@ -1,6 +1,8 @@
 # .claude/project.yaml — canonical project context for Claude Code reviewers and commands
 #
 # Copy this file to your project at: .claude/project.yaml
+# If .claude/project.yaml doesn't exist, .claude/project-context.yaml is also accepted as a fallback
+# filename (first-match-wins; if both exist, .claude/project.yaml wins).
 # All fields are optional. Omit what you don't need.
 # Reviewers and commands read this once per session and use it to skip auto-detection.
 #
