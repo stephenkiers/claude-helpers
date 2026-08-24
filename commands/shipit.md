@@ -334,6 +334,20 @@ if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
 fi
 ```
 
+### Sync stacked children (per-branch ongoing)
+
+If this PR is stacked AND `STACK_LAYOUT="per-branch"`, the push above advanced this branch
+past where its descendants branched off; per-branch children were NOT updated by the push.
+Invoke the `stack-sync` skill via the `Skill` tool, passing `--yes` so the push confirmation
+does not block the ship flow:
+
+> /stack-sync --yes "$BRANCH"
+
+stack-sync rebases each descendant onto this branch's updated tip inside each child's own
+worktree, runs the project check gate, and force-pushes with `--force-with-lease`. If the
+branch has no descendants, stack-sync is a clean no-op. Skip when `STACK_IS_STACKED=false`
+or `STACK_LAYOUT="single-driver"` (single-driver already cascaded via `gh stack sync`).
+
 **If PR exists:** Report URL and stop.
 **If on main/master:** Warn user, suggest creating a branch.
 **If branch has issue number:** Include "Closes #N" in PR body to auto-close issue on merge.

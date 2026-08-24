@@ -589,6 +589,10 @@ if [ "$PR_STATE" = "MERGED" ]; then
     fi
 
     # Emit restack commands for each child, bottom-up
+    if command -v claude >/dev/null 2>&1; then
+      echo "stack-sync will execute the restack — skipping the manual runbook emit."
+    else
+      # Fallback: emit the manual restack runbook (self-sufficiency outside the Skill harness)
     echo "The PR #$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "?") that was just merged"
     echo "was the base of a stacked chain. When a parent merges, GitHub retargets the child PR's"
     echo "**base pointer** to '$DEFAULT_BRANCH' — but it never rebases the child's commits. The remote"
@@ -677,6 +681,7 @@ if [ "$PR_STATE" = "MERGED" ]; then
       echo "\`\`\`"
       echo ""
     done
+    fi
 
     # Remote stack fixup (if this was part of a remote stack)
     PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")
@@ -706,7 +711,13 @@ GRAPHQL
       echo ""
     fi
 
-    echo "✓ After restacking, run /cleanup again on this merged branch to remove it."
+    # Execute the restack now (post-merge mode) instead of leaving a manual runbook.
+    # Invoke the `stack-sync` skill via the `Skill` tool with the merged branch as pivot:
+    #   /stack-sync "$CURRENT_BRANCH"
+    # stack-sync detects post-merge mode (PR merged) and routes on layout: single-driver
+    # delegates to gh stack sync; per-branch rebases each child onto origin/$DEFAULT_BRANCH
+    # (bottom-up), reusing the generalized Restack-a-child block.
+    echo "✓ After /stack-sync completes, run /cleanup again on this merged branch to remove it."
     echo ""
   else
     echo "No stacked children detected. Proceeding to worktree removal."
