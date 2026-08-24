@@ -1,8 +1,8 @@
 # Expert Review Panel (shared)
 
 This file contains the shared review panel — Summarizer → Router → Pass 1 → Contrarian Carl →
-Haiku Q&A → Pass 2 → Amalgamator (Steps 4–10). Both `/expert-review` and `/expert-review-coworker`
-read this file and follow these steps.
+Haiku Q&A → Pass 2 → Amalgamator (Steps 4–10). `/expert-review` reads this file and follows
+these steps.
 
 **Preconditions — the caller has already set these before invoking this panel:**
 - `REVIEW_DIR` — the checkpoint directory, created, with `full-diff.patch` and `diff-index.md` written (REQUIRED)
@@ -24,9 +24,8 @@ calling commands stay stable.
 
 ### Step 4: Summarizer → `summary.md`
 
-**Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller — e.g.
-`/expert-review-coworker` — may have produced it during setup), skip this step and reuse
-that file. Do not re-run the summarizer or overwrite it.
+**Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller may have produced it
+during setup), skip this step and reuse that file. Do not re-run the summarizer or overwrite it.
 
 Spawn one subagent (`subagent_type: "general-purpose"`) with the summarizer prompt
 @~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
@@ -385,15 +384,3 @@ It writes `{REVIEW_DIR}/final-report.md` and returns a receipt with the finding 
 ```
 amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
 ```
-
----
-
-### Coworker Mode (No Triage Chief)
-
-When the caller runs this panel WITHOUT a Triage Chief (the `/expert-review-coworker` case), panel
-escalations that require the author's judgment — findings marked `**Human Call**`, DRIFT, or
-QUESTION in the Amalgamator's report — are NOT triaged into decision buckets. Instead, they are
-surfaced downstream by the PR Comment Guide (`prompts/pr-comment-guide.md`) as collegial questions
-for the author, rather than silently dropped. This is deliberate, not accidental: the guide ensures
-these escalations reach the reviewer and author, even without a dedicated triage step.
-

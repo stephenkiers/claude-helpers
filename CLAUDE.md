@@ -90,9 +90,11 @@ to get started.
   cross-review), then a **Triage Chief** that turns the report into a decision list and records what
   you rule. Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
   and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
-- `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run the
-  same shared blind-first panel (`prompts/expert-review-panel.md`), then draft PR-ready comments you
-  paste yourself (never auto-posted). Takes a PR URL and `--include-medium`
+- `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run a
+  fast swarm of haiku scouts (2 per lens across 6 fixed lenses) merged by one sonnet agent, with an
+  automatic complexity gate routing oversized or architectural PRs to a single deep pass
+  (`--deep`/`--swarm` overrides), then draft PR-ready comments you paste yourself (never
+  auto-posted). Takes a PR URL and `--include-medium`
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
