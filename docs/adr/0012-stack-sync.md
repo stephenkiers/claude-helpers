@@ -41,11 +41,12 @@ structurally (single-driver / per-branch / unknown) using the same primitives as
    or the `.stack.parentBranch` cache, `/stack-sync` halts and prompts the user rather than assuming
    single-driver.
 
-**Descendants are ordered bottom-up by `git merge-base --is-ancestor`, not by the `.stack.parentBranch`
-cache.** The cache may be empty or stale (a freshly created sibling worktree has no `.stack.parentBranch`
-until something writes it). The reliable ordering is structural: an ancestor is rebased before its
-descendant. A cycle in the ancestry graph (A is ancestor of B and B is ancestor of A) is a hard error —
-`/stack-sync` aborts rather than guessing a topology.
+**Descendants are collected via a topological walk and verified (not ordered) by
+`git merge-base --is-ancestor`, not by the `.stack.parentBranch` cache.** The cache may be empty or stale
+(a freshly created sibling worktree has no `.stack.parentBranch` until something writes it). The reliable
+ordering is structural: an ancestor is rebased before its descendant. A cycle in the ancestry graph
+(A is ancestor of B and B is ancestor of A) is a hard error — `/stack-sync` aborts rather than guessing
+a topology.
 
 **The Restack-a-child block is generalized to `<NEW_BASE>` / `<OLD_BASE>`.** Rather than two separate blocks
 (one for ongoing mode where the parent advanced, one for post-merge mode where the parent was merged into
@@ -68,10 +69,10 @@ branches whose state has moved underneath the local view.
 - **One Restack-a-child primitive, two modes.** Ongoing-sync and post-merge share the `<NEW_BASE>` /
   `<OLD_BASE>` block. A future third mode would extend the same block rather than fork it; two blocks would
   inevitably drift, re-introducing gap #3 at the block level.
-- **Ordering correctness depends on `git merge-base --is-ancestor`, not on cache freshness.** Commands that
-  skip the structural ancestry check and trust `.stack.parentBranch` will mis-order 3+ level stacks when the
-  cache is empty. `/stack-sync`'s cycle-detection also means a corrupted `.stack` topology cannot cause a
-  non-terminating rebase loop.
+- **Ordering correctness depends on the topological walk (verified by `git merge-base --is-ancestor`), not
+  on cache freshness.** Commands that skip the structural ancestry check and trust `.stack.parentBranch`
+  will mis-order 3+ level stacks when the cache is empty. `/stack-sync`'s cycle-detection also means a
+  corrupted `.stack` topology cannot cause a non-terminating rebase loop.
 - **Does not re-push the pivot.** `/stack-sync` syncs descendants only. The pivot branch is pushed by
   `/shipit` / `/expert-rebase`. Calling `/stack-sync` before the pivot is pushed is a no-op for the pivot
   and a rebase-onto-trunk for descendants — which is correct, not a bug.

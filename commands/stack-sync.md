@@ -184,8 +184,8 @@ find_children_of() {
         local child_wt_dir child_branch child_pr
         child_wt_dir=$(basename "$(dirname "$(dirname "$cache_file")")")
         child_branch=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$child_wt_dir" '
-          $1 == "worktree" && $2 == wt { found=1 }
-          found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
+          /^worktree / { found=(substr($0, 10) == wt); next }
+          found && /^branch / { b=substr($0, 8); sub(/^refs\/heads\//, "", b); print b; exit }
         ')
         if [ -n "$child_branch" ]; then
           child_pr=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
@@ -215,7 +215,7 @@ resolve_worktree() {
   '
 }
 
-# walk <parent> <level> — DFS post-order so ancestors are emitted before their descendants.
+# walk <parent> <level> — DFS pre-order so ancestors are emitted before their descendants.
 walk() {
   local parent="$1" level="$2"
   case "$SEEN" in *":$parent:"*) CYCLE_DETECTED=true; return ;; esac
@@ -227,10 +227,11 @@ walk() {
     child_branch=$(echo "$rec" | cut -d: -f1)
     child_pr=$(echo "$rec" | cut -d: -f2)
     child_wt_cache=$(echo "$rec" | cut -d: -f3-)
-    # Recurse first (post-order) so deeper descendants append after this child.
-    walk "$child_branch" $((level + 1))
+    # Append this child first (pre-order) so ancestors precede their descendants.
     resolved_wt=$(resolve_worktree "$child_branch" "$child_wt_cache")
-    DESCENDANTS="${DESCENDANTS}${child_branch}:${child_pr}:${resolved_wt}:${parent}:${level} "
+    DESCENDANTS="${DESCENDANTS}${child_branch}:${child_pr}:${resolved_wt}:${parent}:$((level + 1)) "
+    # Recurse after so deeper descendants append after this child.
+    walk "$child_branch" $((level + 1))
   done
 }
 
@@ -270,7 +271,7 @@ uses the mode result; level-2+ use `origin/<parent>` (the just-synced parent's n
 first so every `origin/<parent>` ref is fresh.
 
 ```bash
-git fetch origin --prune
+[ "$DRY_RUN" = "true" ] || git fetch origin --prune
 
 echo "=== Per-child sync plan (ancestor-first) ==="
 for rec in $DESCENDANTS; do

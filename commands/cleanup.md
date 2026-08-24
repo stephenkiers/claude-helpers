@@ -527,10 +527,13 @@ fi
 ### 2.6. Detect Stacked Children & Emit Restack Runbook
 
 **Only when `PR_STATE = "MERGED"`.** If the merged PR was the base of a stacked chain, detect
-child branches and emit a runbook for the user to restack them manually. This emits the canonical
-restack block from `~/.claude/prompts/worktree-reference.md` verbatim (per child, substituting
-`<CHILD_WT>`, `<CHILD_BRANCH>`, `<MERGED_TIP>`, `<DEFAULT_BRANCH>`). The user runs the emitted
-block manually (no auto-rebase, no auto-force-push).
+child branches and restack them. When the `claude` binary is on PATH (the Skill harness is
+available), the restack is auto-executed via `/stack-sync` (see the "Sync stacked children"
+subsection below). When it is not, a fully-substituted restack runbook is emitted for the user
+to run manually (emit-only fallback). The canonical restack block from
+`~/.claude/prompts/worktree-reference.md` is used per child, substituting `<CHILD_WT>`,
+`<CHILD_BRANCH>`, `<NEW_BASE>`, and `<OLD_BASE>`, where post-merge sets
+`<NEW_BASE>=origin/$DEFAULT_BRANCH` and `<OLD_BASE>=$MERGED_TIP`.
 
 ```bash
 if [ "$PR_STATE" = "MERGED" ]; then
@@ -729,6 +732,20 @@ else
 fi
 ```
 
+### Sync stacked children (post-merge)
+
+When the `claude` binary is on PATH (the Skill harness is available), the restack is executed
+automatically rather than emitted as a manual runbook. Invoke the `stack-sync` skill via the
+`Skill` tool with the merged branch as the pivot:
+
+> /stack-sync "$CURRENT_BRANCH"
+
+stack-sync detects post-merge mode (PR merged) and routes on layout: `single-driver` delegates
+to `gh stack sync`; `per-branch` rebases each child onto `origin/$DEFAULT_BRANCH` (bottom-up),
+reusing the generalized Restack-a-child block. If the branch has no descendants, stack-sync is
+a clean no-op. When `claude` is NOT on PATH, the manual restack runbook emitted in the bash
+block above is the fallback — you paste and run it yourself (emit-only).
+
 ### 3. Remove Worktree (from main)
 
 When PR_STATE is **MERGED**, use `git branch -D` (force delete). Squash merges mean the local
@@ -773,7 +790,7 @@ fi
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
 | Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
 | Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
-| Stacked children detected | Print a fully-substituted restack runbook (user runs it manually) |
+| Stacked children detected | Auto-execute restack via /stack-sync when Skill harness is available; otherwise emit a fully-substituted restack runbook (user runs it manually, emit-only) |
 | No stacked children | Continue to worktree removal (unchanged flow) |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
 | **Shell stuck in deleted dir** | See recovery section below |
@@ -825,9 +842,10 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
   (run `/shipit` once to write it). Failures are reported but never block cleanup.
 - **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
-  child branches and prints a restack runbook (user runs it manually). No auto-rebase, no
-  auto-force-push — the runbook is emit-only, and the user controls restacking. This keeps
-  worktrees independent and safe for concurrent work.
+  child branches and restacks them via `/stack-sync` when the Skill harness is available
+  (`claude` on PATH). When it isn't, a fully-substituted restack runbook is emitted for the
+  user to run manually (emit-only fallback — you run it yourself; no auto-rebase, no
+  auto-force-push). This keeps worktrees independent and safe for concurrent work.
 - **Restack runbook is detect-then-branch, not rebase-and-replay.** GitHub retargets a child PR's
   *base pointer* when its parent merges but never rebases the *commits*; the force-push that rewrites
   the remote comes from a stacking tool (`gh stack sync`, Graphite, "Update branch"), which may have
