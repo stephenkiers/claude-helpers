@@ -11,11 +11,10 @@ these steps.
 - `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, project modifiers, and any plan/issue context — detected by the caller (REQUIRED)
 - `PANEL_MODEL` — the model for the judgment panel; may be unset → subagents inherit the caller's model (OPTIONAL)
 - `MODEL_EXPLICIT` — `true` when the caller passed `--model` explicitly, else `false` (REQUIRED)
-- `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
 All I/O is through `REVIEW_DIR` paths. Reviewer YAMLs live in `~/.claude/reviewers/` regardless of
-which repo is under review — this panel is completely repo-agnostic. When `WORKTREE_PATH` is set (coworker mode), project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`) and source-file reads are rooted at `${WORKTREE_PATH}`; when unset, they default to the orchestrator's cwd.
+which repo is under review — this panel is completely repo-agnostic.
 
 The steps below retain their original numbering (Step 4 … Step 10) so cross-references from the
 calling commands stay stable.
@@ -152,12 +151,6 @@ double duty: confirming the expected file exists *and* implicitly that nothing u
 outside `{REVIEW_DIR}`. If you ever see a write outside `{REVIEW_DIR}` — a stray file, a modified
 file elsewhere in the repo — treat that run as compromised: stop, do not trust its findings, and
 report it rather than silently continuing.
-
-**Path roots (WORKTREE_PATH contract).** When `WORKTREE_PATH` is set (coworker mode), all reviewer
-prompts must root project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`)
-and source-file reads at `${WORKTREE_PATH}`, not the orchestrator's cwd. When `WORKTREE_PATH` is
-unset (default `/expert-review` mode), reads default to the orchestrator's cwd. Reviewer YAML
-files themselves always live in `~/.claude/reviewers/` regardless.
 
 **Pass paths, not contents.** A prompt is self-contained if the subagent can *reach* everything it
 needs, not if you paste everything into it. Every `Agent` prompt you write stays in your context for

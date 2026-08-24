@@ -289,11 +289,62 @@ FIXTURE_SINGULAR_INFLECTIONS = (
 )
 
 
-def run_gate(fixture_text):
+FIXTURE_LINE_BOUNDARY_LOW = (
+    "## Files\n"
+    " src/big.py | 600 +++++-----\n"
+    " 1 file changed, 300 insertions(+), 300 deletions(-)\n"
+    "\n"
+    "## Hunks\n"
+    "+++ b/src/big.py\n"
+    "@@ -1,300 +1,300 @@\n"
+)
+
+FIXTURE_LINE_BOUNDARY_HIGH = (
+    "## Files\n"
+    " src/big.py | 601 +++++------\n"
+    " 1 file changed, 301 insertions(+), 300 deletions(-)\n"
+    "\n"
+    "## Hunks\n"
+    "+++ b/src/big.py\n"
+    "@@ -1,300 +1,301 @@\n"
+)
+
+FIXTURE_FILE_BOUNDARY_LOW = (
+    "## Files\n"
+    " src/a.py | 2 ++\n"
+    " src/b.py | 2 ++\n"
+    " src/c.py | 2 ++\n"
+    " src/d.py | 2 ++\n"
+    " src/e.py | 2 ++\n"
+    " 5 files changed, 10 insertions(+)\n"
+    "\n"
+    "## Hunks\n"
+    "+++ b/src/a.py\n"
+    "@@ -0,0 +1,2 @@\n"
+)
+
+FIXTURE_FILE_BOUNDARY_HIGH = (
+    "## Files\n"
+    " src/a.py | 2 ++\n"
+    " src/b.py | 2 ++\n"
+    " src/c.py | 2 ++\n"
+    " src/d.py | 2 ++\n"
+    " src/e.py | 2 ++\n"
+    " src/f.py | 2 ++\n"
+    " 6 files changed, 12 insertions(+)\n"
+    "\n"
+    "## Hunks\n"
+    "+++ b/src/a.py\n"
+    "@@ -0,0 +1,2 @@\n"
+)
+
+
+def run_gate(fixture_text, shell="bash"):
     """Run the gate's real bash fences against a synthetic diff-index.md and return the
     completed process. REVIEW_DIR and PR_TITLE are set the way setup-pr-worktree.sh's
     emitted variables would set them; the fixture lands at $REVIEW_DIR/diff-index.md
-    (and the cwd, for relative reads)."""
+    (and the cwd, for relative reads). The shell parameter exists so the zsh parity
+    check can run the same fences under the other harness shell."""
     with tempfile.TemporaryDirectory() as td:
         Path(td, "diff-index.md").write_text(fixture_text)
         script = (
@@ -302,9 +353,10 @@ def run_gate(fixture_text):
             "PR_TITLE='Add a small feature'\n"
             + "\n".join(gate_blocks)
             + '\necho "HARNESS_DIFF_LINES=${DIFF_LINES:-UNSET}"'
-            + '\necho "HARNESS_FILES_CHANGED=${FILES_CHANGED:-UNSET}"\n'
+            + '\necho "HARNESS_FILES_CHANGED=${FILES_CHANGED:-UNSET}"'
+            + '\necho "HARNESS_ROUTE=${ROUTE:-UNSET}"\n'
         )
-        return subprocess.run(["bash"], input=script,
+        return subprocess.run([shell], input=script,
                               capture_output=True, text=True, timeout=15)
 
 
@@ -352,6 +404,67 @@ t("gate handles singular '1 insertion(+), 1 deletion(-)' inflections: FILES_CHAN
 t("gate handles singular inflections: DIFF_LINES=2",
   dl == "2",
   f"got {dl!r}; stderr: {res.stderr.strip()[:200]}")
+
+# ============================================================================
+# INVARIANT 4b: Gate routing DECISION — boundary pinning + zsh parity
+# ============================================================================
+# Parsed counts alone do not pin the routing rule: an implementation with the
+# boundary operator flipped (`>` → `<=`) still parses every fixture correctly.
+# These assertions pin the route itself, including a pair straddling each
+# threshold, and re-run the fences under zsh — the harness shell where the
+# BASH_REMATCH parsing bug (round 3) only manifested.
+print()
+print("[Invariant 4b] Gate routing decision: boundary pinning and zsh parity")
+
+res = run_gate(FIXTURE_INSERTIONS_ONLY)
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("700-line fixture routes DEEP",
+  route == "deep",
+  f"got {route!r}; stderr: {res.stderr.strip()[:200]}")
+
+res = run_gate(FIXTURE_PLURAL)
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("small fixture (15 lines / 2 files) routes SWARM",
+  route == "swarm",
+  f"got {route!r}; stderr: {res.stderr.strip()[:200]}")
+
+res = run_gate(FIXTURE_LINE_BOUNDARY_LOW)
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("DIFF_LINES == DIFF_LINE_MAX (600) stays SWARM",
+  route == "swarm",
+  f"600 lines must not cross the line threshold; got {route!r}; stderr: {res.stderr.strip()[:200]}")
+
+res = run_gate(FIXTURE_LINE_BOUNDARY_HIGH)
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("DIFF_LINES == DIFF_LINE_MAX+1 (601) routes DEEP",
+  route == "deep",
+  f"601 lines must cross the line threshold; got {route!r}; stderr: {res.stderr.strip()[:200]}")
+
+res = run_gate(FIXTURE_FILE_BOUNDARY_LOW)
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("FILES_CHANGED == FILE_MAX (5) stays SWARM",
+  route == "swarm",
+  f"5 files must not cross the file threshold; got {route!r}; stderr: {res.stderr.strip()[:200]}")
+
+res = run_gate(FIXTURE_FILE_BOUNDARY_HIGH)
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("FILES_CHANGED == FILE_MAX+1 (6) routes DEEP",
+  route == "deep",
+  f"6 files must cross the file threshold; got {route!r}; stderr: {res.stderr.strip()[:200]}")
+
+res = run_gate(FIXTURE_PLURAL, shell="zsh")
+fc = harness_value(res.stdout, "HARNESS_FILES_CHANGED")
+dl = harness_value(res.stdout, "HARNESS_DIFF_LINES")
+route = harness_value(res.stdout, "HARNESS_ROUTE")
+t("gate parses under zsh (BASH_REMATCH regression guard): FILES_CHANGED=2",
+  fc == "2",
+  f"got {fc!r}; stderr: {res.stderr.strip()[:200]}")
+t("gate parses under zsh (BASH_REMATCH regression guard): DIFF_LINES=15",
+  dl == "15",
+  f"got {dl!r}; stderr: {res.stderr.strip()[:200]}")
+t("gate routes under zsh: small fixture → SWARM",
+  route == "swarm",
+  f"got {route!r}; stderr: {res.stderr.strip()[:200]}")
 
 # ============================================================================
 # INVARIANT 5: Wave 1 spawns two expert-scout agents per lens (12 for --all)
