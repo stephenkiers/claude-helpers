@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number, e.g. /merge-and-cleanup 1022.
 argument-hint: <PR number>
-allowed-tools: Read, Skill, AskUserQuestion, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git rev-list:*), Bash(git branch:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(printf:*), Bash(test:*)
+allowed-tools: Read, Skill, AskUserQuestion, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git branch:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(mv:*), Bash(printf:*), Bash(test:*)
 model: haiku
 ---
 
@@ -23,11 +23,16 @@ Merge a PR through the repo's merge gate (discovered automatically), then clean 
 
 ### Phase 0 — Resolve the PR
 
-Parse a bare integer from `$ARGUMENTS` (tolerate `1022`, `#1022`, `PR 1022`, or a URL — extract the first run of consecutive digits). Then verify the PR exists and is open.
+Parse a bare integer from `$ARGUMENTS` (tolerate `1022`, `#1022`, `PR 1022`, or a URL). Then verify the PR exists and is open.
 
 ```bash
-# Extract PR number from various formats
-PR_NUM=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1)
+# Extract PR number: prefer a URL's /pull/<n> segment (a repo or org name earlier
+# in the URL could itself be numeric, so the naive "first digit run" is not safe
+# for URLs); fall back to the first digit run for the bare/#/PR-prefixed forms.
+PR_NUM=$(echo "$ARGUMENTS" | grep -oE 'pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
+if [ -z "$PR_NUM" ]; then
+  PR_NUM=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1)
+fi
 
 if [ -z "$PR_NUM" ]; then
   echo "ERROR: No PR number found in '$ARGUMENTS'"
@@ -153,17 +158,15 @@ echo "=== Phase 3: Merge Gate ==="
 MERGE_GATE_USED=""
 
 # Path 1: just merge (if recipe exists in target worktree)
-if git -C "$WT" rev-parse -q --verify refs/heads/$HEAD_REF >/dev/null 2>&1; then
-  if [ -f "$WT/justfile" ] && just -f "$WT/justfile" --list 2>/dev/null | grep -q "^merge"; then
-    echo "Found 'just merge' recipe in $WT/justfile"
-    echo "(This may take many minutes if it invokes E2E build/test)"
-    if ( cd "$WT" && just merge ); then
-      MERGE_GATE_USED="just merge"
-      echo "✓ Merge succeeded via 'just merge'"
-    else
-      echo "ERROR: 'just merge' failed"
-      exit 1
-    fi
+if [ -f "$WT/justfile" ] && just -f "$WT/justfile" --list 2>/dev/null | grep -q "^merge"; then
+  echo "Found 'just merge' recipe in $WT/justfile"
+  echo "(This may take many minutes if it invokes E2E build/test)"
+  if ( cd "$WT" && just merge ); then
+    MERGE_GATE_USED="just merge"
+    echo "✓ Merge succeeded via 'just merge'"
+  else
+    echo "ERROR: 'just merge' failed"
+    exit 1
   fi
 fi
 
@@ -245,8 +248,10 @@ if [ "$MATCH_COUNT" -ne 1 ]; then
   exit 1
 fi
 
-echo "Invoking /cleanup with: $WT"
+echo "Path verified unambiguous — invoking /cleanup with: $WT"
 ```
+
+**Now actually invoke the `cleanup` skill via the `Skill` tool**, passing `$WT` (the absolute worktree path, no trailing slash) as its argument — this is a tool call the agent running this command makes directly, not a bash command, so it isn't inside the block above. Only proceed to this call after the bash block above exits 0.
 
 #### Non-duplication rules
 
