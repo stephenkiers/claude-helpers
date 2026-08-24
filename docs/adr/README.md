@@ -36,6 +36,7 @@ to North Star Nick).
   by `/track-and-start` live alongside it; detection keys off the parent directory being named
   `worktrees` — cross-referenced by ADR-0011 (stacked-PR layout model)
 - [ADR-0011: Stacked-PR layout model (single-driver vs per-branch)](0011-stacked-pr-layout-model.md) — when `gh stack sync` is safe or fatal depends on whether all stack branches are driven from one working copy or checked out in sibling worktrees; reverses PR #55's blanket ban by correctly routing based on detected layout
+- [ADR-0012: /stack-sync — layout-routed stack sync](0012-stack-sync.md) — the layout-routed **sync** mirror of ADR-0011's layout-routed push: single-driver delegates to `gh stack sync`, per-branch walks descendants bottom-up (ordered by `git merge-base --is-ancestor`, not cache) and rebases each via a generalized Restack-a-child block; unknown layout fails closed; force-push is gated on one confirmation plus the repo check gate
 
 ## Format
 
