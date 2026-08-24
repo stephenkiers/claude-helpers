@@ -64,7 +64,7 @@ DELETIONS="$(echo "$STAT_LINE" | rg -o '([0-9]+) deletion' -r '$1' || echo 0)"
 DIFF_LINES=$((INSERTIONS + DELETIONS))
 ```
 
-Architectural markers — any one firing routes to DEEP: (a) `PR_TITLE` matching `refactor` or `architect` (case-insensitive); (b) any changed file path matching schema/migration patterns (`migration`, `migrations/`, `schema`); (c) a new top-level module — a `^new file mode` entry in `full-diff.patch` whose path's first directory component did not exist at the base ref.
+Architectural markers — any one firing routes to DEEP: (a) `PR_TITLE` matching `refactor` or `architect` (case-insensitive); (b) a schema/migration **file** — a path inside a `migration(s)/` or `alembic/` directory, a `schema.*` file, or a `.sql` file (deliberately NOT a bare `migration|schema` substring: the 20-PR calibration on devxp-team-scripts fired on 18/20 PRs because that repo's top-level project dir is named `buildkite-docker-plugin-migration/` — component-anchored matching keeps the marker at its database-migration intent); (c) a new top-level module — a `^new file mode` entry in `full-diff.patch` whose path's first directory component did not exist at the base ref.
 
 ```bash
 CHANGED_PATHS="$(git -C "${WORKTREE_PATH}" diff --name-only "origin/${BASE_BRANCH}...HEAD")"
@@ -74,8 +74,8 @@ pr_title_lc="$(echo "$PR_TITLE" | tr '[:upper:]' '[:lower:]')"
 re_title='refactor|architect'
 [[ "$pr_title_lc" =~ $re_title ]] && MARKERS="PR title matches refactor/architect"
 
-SCHEMA_HIT="$(echo "$CHANGED_PATHS" | rg -i -m1 'migration|schema' || true)"
-[[ -n "$SCHEMA_HIT" ]] && MARKERS="${MARKERS:+$MARKERS; }schema/migration path: ${SCHEMA_HIT}"
+SCHEMA_HIT="$(echo "$CHANGED_PATHS" | rg -i -m1 '(^|/)(migrations?|alembic)/|(^|/)schemas?\.[^/]*$|\.sql$' || true)"
+[[ -n "$SCHEMA_HIT" ]] && MARKERS="${MARKERS:+$MARKERS; }schema/migration file: ${SCHEMA_HIT}"
 
 # New top-level module: a new file whose first path component is absent from the base ref's root tree.
 NEW_FILES="$(rg -A3 '^new file mode' "${REVIEW_DIR}/full-diff.patch" | rg -o '^\+\+\+ b/(.+)' -r '$1' || true)"
