@@ -20,7 +20,7 @@ Route each step to the cheapest model that can do it well:
 - **Sonnet** for narrow judgment: the **Router** that decides which reviewers to include. This is
   judgment (not mechanical), but narrow (not deep expertise), so Sonnet is right-sized: capable at
   1/3 the Opus cost.
-- **Panel model** (default Opus; override with `--model`) for the judgment-heavy work where persona
+- **Panel model** (default Sonnet; override with `--model`) for the judgment-heavy work where persona
   expertise lives: the `expert-review` orchestrator and its Pass 1/Pass 2/Contrarian Carl subagents
   (which inherit the orchestrator's model), the single **Amalgamator** that synthesizes all findings,
   and the **Triage Chief** ([ADR-0007](0007-triage-and-decision-memory.md)) that decides what a human
@@ -47,9 +47,24 @@ only that part.
 The tiers, cheapest to dearest (per 1M tokens, input/output): **Haiku 4.5** $1/$5 · **Sonnet 5** $3/$15
 · **Opus 4.8** $5/$25 · **Fable 5** $10/$50. Note the shape of that ladder: Fable is the *most
 capable and most expensive* model, at 2× Opus — it is not a cheap tier, and the default (inherit the
-orchestrator's Opus) is deliberately one rung below it. Verify pricing against the current model
-lineup before writing it into a doc; an earlier draft of this ADR's own command had Fable labelled as
-the cheap option, which was simply false.
+orchestrator's Sonnet) is deliberately two rungs below it. Opus is available as an explicit
+escalation via `--model opus` or through a new Router-flagged human-confirmed escalation path (see
+below). Verify pricing against the current model lineup before writing it into a doc; an earlier
+draft of this ADR's own command had Fable labelled as the cheap option, which was simply false.
+
+### Amendment: Sonnet as the new default panel tier (2026-08-23)
+
+Opus had not proven significantly better than Sonnet for most reviews in practice, and defaulting to
+it burned more credits than it was worth. The panel tier has flipped to Sonnet. Opus is now the
+exception, not the rule — available only when explicitly requested via `--model opus` or when a new
+escalation mechanism recommends it. That mechanism: the Router (which already reads the full diff and
+business context) judges whether this diff's difficulty exceeds what a Sonnet-tier panel should be
+trusted to review alone — signals include deep concurrency reasoning, security/crypto-critical
+correctness, novel distributed-systems logic, or unusually high blast radius. If the Router flags an
+escalation, the orchestrator asks the human via `AskUserQuestion` before upgrading to Opus — it
+never auto-escalates, since that would silently reintroduce the cost problem this flip fixes. See
+`prompts/router.md`'s new `## Escalation Recommendation` output section and `prompts/expert-review-panel.md`'s
+new `Step 5.5: Opus Escalation Check (human-confirmed)` for the mechanics.
 
 ## Consequences
 

@@ -2,7 +2,7 @@
 description: Peer PR review — high-bar, collegial review of a coworker's GitHub PR with human-in-the-loop comment selection
 argument-hint: <github-pr-url> [--include-medium] [--model haiku|sonnet|opus|fable] [--all]
 allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(eval:*), Bash(bash:*), Read, Glob, Grep, Task, Write, AskUserQuestion
-model: opus
+model: sonnet
 ---
 
 # Expert PR Review (Coworker)
@@ -15,7 +15,7 @@ Here, you **trust the author is competent**. You are not trying to find every bu
 
 Parse `$ARGUMENTS` for:
 
-1. **`--model <haiku|sonnet|opus|fable>`** — sets `PANEL_MODEL` (error if any other value; if absent, leave unset so subagents inherit this command's model, which is `opus`)
+1. **`--model <haiku|sonnet|opus|fable>`** — sets `PANEL_MODEL` and `MODEL_EXPLICIT=true`; if absent, leave `PANEL_MODEL` unset and set `MODEL_EXPLICIT=false` so subagents inherit this command's model, which is `sonnet` (error if any other value)
 2. **`--include-medium`** — parse this flag (default false → `INCLUDE_MEDIUM=false`; if present → `INCLUDE_MEDIUM=true`)
 3. **`--all` or no named reviewers** → `NAMED_SELECTION=false` (all reviewers)
 4. **Named reviewers** — match names case-insensitively against `~/.claude/reviewers/index.yaml` keys; error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names)
@@ -67,7 +67,7 @@ Output: `${REVIEW_DIR}/summary.md` (same format as `/expert-review`)
 
 ## Steps 5–10 — Expert Review Panel (Shared)
 
-Read `~/.claude/prompts/expert-review-panel.md` and follow those steps. You have already set: `REVIEW_DIR`, `WORKTREE_PATH`, `PANEL_MODEL`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts.
+Read `~/.claude/prompts/expert-review-panel.md` and follow those steps. You have already set: `REVIEW_DIR`, `WORKTREE_PATH`, `PANEL_MODEL`, `MODEL_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts.
 
 **Important**: The shared panel's Summarizer is its **Step 4**. Since Step 4 above already ran the Summarizer (with the PR-context addition), **begin the panel at Step 5 (Router)**. The `summary.md` already exists and must not be regenerated.
 
@@ -75,7 +75,7 @@ When the panel returns, `${REVIEW_DIR}/final-report.md` exists.
 
 ## Step 11 — PR Comment Guide Agent
 
-Spawn **ONE** `expert-reviewer` subagent (`model: ${PANEL_MODEL:-opus}`):
+Spawn **ONE** `expert-reviewer` subagent (`model: ${PANEL_MODEL:-sonnet}`):
 
 ```
 Read ~/.claude/prompts/pr-comment-guide.md for your mandate.

@@ -55,7 +55,7 @@ chance to rule on it:
 
 ## Executive Summary
 - **Reviewers Run**: N (names, router-selected or user-named)
-- **Panel model**: {PANEL_MODEL or "inherited (opus)"}
+- **Panel model**: {PANEL_MODEL or "inherited (sonnet)"}
 - **Total Findings**: N — Critical: N, High: N, Medium: N, Low: N
 - **Context Re-evaluation**: CONFIRMED: N, RESOLVED: N, DOWNGRADED: N
 

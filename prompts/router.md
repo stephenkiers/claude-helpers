@@ -31,6 +31,11 @@ Produce a structured routing decision in `{REVIEW_DIR}/tagged-sections.md`.
 > Tagger's output file). Keeping it avoids updating every downstream reference; treat it as a
 > stable artifact name, not a description of the Router's role.
 
+After making your panel-composition judgment (which reviewers to include), also judge whether this
+diff's difficulty exceeds what a Sonnet-tier panel should be trusted to review alone. Signals for
+escalation: deep concurrency reasoning, security/crypto-critical correctness, novel distributed-systems
+logic, unusually high blast radius. This should be rare — default to No, not a routine upsell.
+
 ```markdown
 # Routing Decision
 
@@ -54,6 +59,11 @@ Produce a structured routing decision in `{REVIEW_DIR}/tagged-sections.md`.
 
 ## {another-reviewer} (if selected)
 ...
+
+## Escalation Recommendation
+
+Escalate: Yes|No
+Reason: {1-2 sentences — only when Yes}
 ```
 
 ## Routing Philosophy
@@ -71,6 +81,15 @@ Produce a structured routing decision in `{REVIEW_DIR}/tagged-sections.md`.
 - Their triggers are about code patterns (e.g., concurrency keywords) and none appear; their domain
   is genuinely absent
 - You can name the files or patterns you checked and why they do not match
+
+**Escalation recommendation judgment:**
+After panel routing, judge whether this diff's difficulty exceeds what a Sonnet-tier panel should
+review alone. Escalate only when you see signals like: deep concurrency reasoning (complex locks,
+subtle race conditions, memory ordering), security or crypto-critical correctness requirements
+(encryption key management, protocol implementations), novel distributed-systems logic (consensus,
+replication, recovery), or unusually high blast radius (touches many systems, affects many users).
+Default to No — escalation should be rare. A borderline diff is fine at Sonnet; an obviously complex
+one warrants asking the human whether to upgrade.
 
 **Always-run set (never excluded):**
 - **Sam System** — data-flow tracing across files; full diff by role definition
@@ -135,6 +154,10 @@ For each selected reviewer, map the sections of the diff that triggered them:
 **Context**: New exported struct and methods
 
 ## (Sam System, Code Rot Cody, Consistency Checker, and Carl receive the full diff by role definition)
+
+## Escalation Recommendation
+
+Escalate: No
 ```
 
 ## Important Notes
@@ -155,11 +178,12 @@ Write `{REVIEW_DIR}/tagged-sections.md`, then return **only** this line — neve
 itself:
 
 ```
-router | selected: {n}/{total} | always-run: 4 | wrote: {path}
+router | selected: {n}/{total} | always-run: 4 | escalate: {yes|no} | wrote: {path}
 ```
 
 `{n}` is the count of routed reviewers selected (excluding the four always-run); `{total}` is the
-count of reviewers evaluated (all entries in the index). Return only this line — never the table.
+count of reviewers evaluated (all entries in the index); `escalate` is the escalation recommendation
+(yes if the Router judged this diff warrants Opus-tier review, no otherwise). Return only this line — never the table.
 
 ---
 
