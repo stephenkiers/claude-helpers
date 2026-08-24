@@ -6,17 +6,54 @@ Tests that all sites checking for .claude/project.yaml now also accept .claude/p
 Run with: python3 tests/test_project_context_fallback.py
 """
 
+import re
+
 from _test_harness import REPO_ROOT, Harness
 
 PROMPTS_DIR = REPO_ROOT / "prompts"
 COMMANDS_DIR = REPO_ROOT / "commands"
 REVIEWERS_DIR = REPO_ROOT / "reviewers"
+DOCS_DIR = REPO_ROOT / "docs"
 
 h = Harness("PROJECT CONTEXT FALLBACK TEST SUITE")
 test_result = h.test_result
 
+# A paired site names ".claude/project.yaml" before ".claude/project-context.yaml", close enough
+# together that they're clearly describing the same fallback, not two unrelated mentions. This
+# catches both a reversed reading order and a mention of one filename with no partner nearby —
+# things a plain "file contains substring X" check can't tell apart from a correct pairing.
+FALLBACK_PAIR_RE = re.compile(
+    r"\.claude/project\.yaml.{0,160}?\.claude/project-context\.yaml",
+    re.DOTALL,
+)
+
+
+def assert_fallback_pairs(file_label, content, exists):
+    """Every '.claude/project.yaml' mention in content must pair with a nearby, later
+    '.claude/project-context.yaml' mention, and vice versa: no orphan mention of either."""
+    project_count = content.count(".claude/project.yaml") if exists else 0
+    context_count = content.count(".claude/project-context.yaml") if exists else 0
+    pair_count = len(FALLBACK_PAIR_RE.findall(content)) if exists else 0
+
+    ok = exists and pair_count > 0 and pair_count == project_count == context_count
+    detail = (
+        "File not found"
+        if not exists
+        else ""
+        if ok
+        else f"project.yaml mentions={project_count}, project-context.yaml mentions={context_count}, "
+        f"ordered pairs={pair_count} (expected all three equal and > 0)"
+    )
+
+    test_result(
+        f"{file_label} pairs '.claude/project.yaml' with '.claude/project-context.yaml' in order",
+        ok,
+        detail,
+    )
+
+
 # ============================================================================
-# TEST 1: expert-framework.md contains both filenames
+# TEST 1: expert-framework.md contains both filenames, paired
 # ============================================================================
 print("[Test 1] expert-framework.md contains both project.yaml and project-context.yaml")
 
@@ -33,20 +70,10 @@ test_result(
     "File not found" if not framework_exists else ""
 )
 
-test_result(
-    "expert-framework.md contains '.claude/project.yaml'",
-    ".claude/project.yaml" in framework_content if framework_exists else False,
-    "Substring not found" if framework_exists else ""
-)
-
-test_result(
-    "expert-framework.md contains '.claude/project-context.yaml'",
-    ".claude/project-context.yaml" in framework_content if framework_exists else False,
-    "Substring not found" if framework_exists else ""
-)
+assert_fallback_pairs("expert-framework.md", framework_content, framework_exists)
 
 # ============================================================================
-# TEST 2: 10 command/prompt files contain both filenames
+# TEST 2: 15 command/prompt files contain both filenames, paired
 # ============================================================================
 print()
 print("[Test 2] Command/prompt files contain both project.yaml and project-context.yaml")
@@ -62,6 +89,11 @@ target_files = [
     ("commands/expert-harden-tests.md", COMMANDS_DIR / "expert-harden-tests.md"),
     ("commands/expert-review-coworker.md", COMMANDS_DIR / "expert-review-coworker.md"),
     ("commands/implement-with-haiku.md", COMMANDS_DIR / "implement-with-haiku.md"),
+    ("CLAUDE.md", REPO_ROOT / "CLAUDE.md"),
+    ("README.md", REPO_ROOT / "README.md"),
+    ("docs/adr/0005-three-layer-context-cascade.md", DOCS_DIR / "adr" / "0005-three-layer-context-cascade.md"),
+    ("prompts/expert-review-panel.md", PROMPTS_DIR / "expert-review-panel.md"),
+    ("reviewers/README.md", REVIEWERS_DIR / "README.md"),
 ]
 
 for file_label, file_path in target_files:
@@ -77,17 +109,7 @@ for file_label, file_path in target_files:
         "File not found" if not exists else ""
     )
 
-    test_result(
-        f"{file_label} contains '.claude/project.yaml'",
-        ".claude/project.yaml" in content if exists else False,
-        "Substring not found" if exists else ""
-    )
-
-    test_result(
-        f"{file_label} contains '.claude/project-context.yaml'",
-        ".claude/project-context.yaml" in content if exists else False,
-        "Substring not found" if exists else ""
-    )
+    assert_fallback_pairs(file_label, content, exists)
 
 # ============================================================================
 # TEST 3: project.yaml.template contains project-context.yaml
@@ -110,8 +132,8 @@ test_result(
 
 test_result(
     "project.yaml.template contains '.claude/project-context.yaml'",
-    ".claude/project-context.yaml" in template_content if template_exists else False,
-    "Substring not found" if template_exists else ""
+    ".claude/project-context.yaml" in template_content,
+    "Substring not found" if template_exists else "File not found"
 )
 
 # ============================================================================
@@ -135,7 +157,7 @@ test_result(
 
 test_result(
     "contract-chris.yaml does NOT contain '.claude/project.yaml'",
-    ".claude/project.yaml" not in contract_chris_content if contract_chris_exists else True,
+    ".claude/project.yaml" not in contract_chris_content,
     "Substring was found (but should not be present)" if contract_chris_exists and ".claude/project.yaml" in contract_chris_content else ""
 )
 

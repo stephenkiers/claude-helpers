@@ -11,7 +11,7 @@ You receive a **Technical Summary** (what changed, not why) and must review the 
 This step is centralized here so individual personas don't repeat it. **Before** reviewing,
 check for and read these files in order (skip silently if absent):
 
-1. `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist — project-wide tech stack, ADRs, invariants, red lines, terminology. Use whichever is found first; do not read both.
+1. `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist — project-wide tech stack, ADRs, invariants, red lines, terminology. Use whichever is found first; do not read both. If both `.claude/project.yaml` and `.claude/project-context.yaml` exist, note in your summary that the latter is being ignored.
 2. `~/.claude/preferences.yaml` — global user taste applied as an additional review lens; never
    suppress findings or dilute severity based on it; note when it shaped your wording.
 3. `.claude/reviewers/{your-file}-local.yaml` — overrides specific to your domain for this project.

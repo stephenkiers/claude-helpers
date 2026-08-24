@@ -254,7 +254,7 @@ running something and reading a result back — not a judgment call, so it never
 **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`). Its mandate and the
 `action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it to read:
 - `{REVIEW_DIR}/final-report.md` (its primary input)
-- `{PROJECT_ROOT}/.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (skip if absent)
+- `{PROJECT_ROOT}/.claude/project.yaml`, or `{PROJECT_ROOT}/.claude/project-context.yaml` if that doesn't exist (skip if absent)
 
 It writes `{REVIEW_DIR}/action-plan.md`. It returns:
 

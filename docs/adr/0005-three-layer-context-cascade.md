@@ -19,7 +19,8 @@ Context cascades through three layers, each optional and each overriding the one
 
 1. **Global persona** — `reviewers/{name}.yaml` in this repo (symlinked into `~/.claude/`). The
    reusable character and checklist. Knows nothing about your project.
-2. **Project context** — `.claude/project.yaml` in the project being reviewed (`techStack`, `adrs`,
+2. **Project context** — `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't
+   exist, in the project being reviewed (`techStack`, `adrs`,
    `invariants`, `redLines`, `terminology`, plus per-reviewer fields like `fragility.*`, `docStyle`).
    See `prompts/project.yaml.template` and the `project-example-*.yaml` files.
 3. **Per-reviewer local override** — `.claude/reviewers/{name}-local.yaml` in the project, for
@@ -71,7 +72,7 @@ overrides. This supersedes the removed `decisions.yaml` fourth layer from ADR-00
 The cascade is now again four layers:
 
 1. **Global persona** — `reviewers/{name}.yaml` (generic, reusable).
-2. **Project context** — `.claude/project.yaml` (project-wide knowledge).
+2. **Project context** — `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (project-wide knowledge).
 3. **User preferences** — `~/.claude/preferences.yaml` (personal code review taste/style lens).
 4. **Per-reviewer local override** — `.claude/reviewers/{name}-local.yaml` (per-domain project overrides).
 

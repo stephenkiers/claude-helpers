@@ -79,7 +79,7 @@ Start these in parallel:
 
 ### Source 0: `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist (highest priority)
 
-Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist at project root. If a `commands` section exists, it **wins immediately** — skip all other sources for any key that is explicitly set.
+Read `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist, at project root. If a `commands` section exists, it **wins immediately** — skip all other sources for any key that is explicitly set.
 
 ```yaml
 # Example: these commands are used as-is, no further detection needed

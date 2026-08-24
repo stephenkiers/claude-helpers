@@ -18,7 +18,7 @@ Experts follow a two-layer context loading pattern:
                     "Load project context"
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ PROJECT (project/.claude/project.yaml)                      │
+│ PROJECT (project.yaml / project-context.yaml)               │
 │ • Tech stack (language, framework, testing, platform)       │
 │ • Build/test/lint commands (used by /shipit)                │
 │ • docStyle, typeChecker, propertyTestingLib                 │
@@ -57,7 +57,7 @@ rather than re-listing the generic files.
 |----------|--------|---------|
 | `~/.claude/reviewers/` | `{expert}.yaml` | Global expert definition |
 | `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (router reads this only) |
-| `project/.claude/` | `.claude/project.yaml`, or `.claude/project-context.yaml` if that doesn't exist | Project-wide context — all experts + /shipit |
+| `project/.claude/` | `project.yaml`, or `project-context.yaml` if that doesn't exist | Project-wide context — all experts + /shipit |
 | `project/.claude/reviewers/` | `{expert}-local.yaml` | Expert-specific project overrides |
 
 Templates for `project.yaml` and `{expert}-local.yaml` are in `~/.claude/prompts/`:
@@ -147,8 +147,8 @@ target; do not request one there.
 
 ## Creating Project Context
 
-When setting up a new project, create `.claude/project.yaml`, or `.claude/project-context.yaml` if
-that doesn't exist.
+When setting up a new project, create either `.claude/project.yaml` or `.claude/project-context.yaml`
+— pick one filename; only the first one found is read.
 Copy `~/.claude/prompts/project.yaml.template` and fill in what's relevant.
 See `~/.claude/prompts/project-example-{python,rust,typescript}.yaml` for full examples.
 
