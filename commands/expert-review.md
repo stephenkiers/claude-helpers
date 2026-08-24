@@ -409,7 +409,7 @@ measurement block.
 - **A subagent failed:** `ls {REVIEW_DIR}/` shows what completed; re-run only the missing
   reviewer(s), once. Pass 1 files present → resume from Pass 2. Checkpoints mean completed work is
   never lost. If a re-run fails again, stop retrying that reviewer and report it missing rather than
-  looping — an unattended run (e.g. via `/expert-implement-with-haiku-and-ship`) has no one to
+  looping — an unattended run has no one to
   notice an infinite retry loop. **Exception: never re-run the Triage Chief (Step 11) once
   `action-plan.md` already carries recorded rulings** (any `- **Ruling**:` line other than the
   placeholder) — the Chief regenerates the whole file, which would overwrite the human's answers.

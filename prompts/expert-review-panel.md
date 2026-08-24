@@ -106,15 +106,21 @@ to read), skip this step entirely.
 **Skip guard:** If `MODEL_EXPLICIT=true` (the caller already passed `--model` explicitly), skip this
 step entirely — don't second-guess an explicit choice.
 
-**Otherwise:** read the Router's receipt and `{REVIEW_DIR}/tagged-sections.md` `## Escalation Recommendation`
-section. If `Escalate: No`, skip silently — no prompt, proceed to Step 6.
+**Otherwise:** read `{REVIEW_DIR}/tagged-sections.md`'s `## Escalation Recommendation` section — this
+is the sole source of truth for the escalation decision; the Router's one-line receipt also carries an
+`escalate:` field, but it is informational only (a quick status check), not a second input to branch
+on. If the section is missing, unparseable, or reads `Escalate: No`, skip silently — no prompt,
+proceed to Step 6.
 
 **If `Escalate: Yes`:** Call `AskUserQuestion`, stating the Router's `Reason:` text, with two
 options: "Escalate to opus" (marked recommended) and "Stay on sonnet". If the user picks escalate,
 set `PANEL_MODEL=opus` for the rest of the run (this affects Step 6 onward — Pass 1, Contrarian
 Carl, Pass 2, Amalgamator, Triage Chief; note explicitly that Haiku Q&A, Code Rot Cody, and
-Consistency Checker are mechanical roles pinned to Haiku and are unaffected by this). If the user
-picks stay-on-sonnet (or declines), leave `PANEL_MODEL` as-is and proceed.
+Consistency Checker are mechanical roles pinned to Haiku and are unaffected by this) and print
+"Panel model escalated to opus for the remainder of this run" immediately, so the run's own
+transcript reflects the change rather than going stale relative to the resolved-model line printed
+at the start of the run. If the user picks stay-on-sonnet (or declines), leave `PANEL_MODEL` as-is
+and proceed.
 
 ### Step 6: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
