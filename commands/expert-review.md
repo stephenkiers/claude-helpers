@@ -2,7 +2,7 @@
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
 allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
-model: opus
+model: sonnet
 ---
 
 # Expert Code Review
@@ -64,7 +64,7 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   - Naming reviewers **bypasses the router**: only named reviewers run
   - `--all`: explicitly run all reviewers (the default; router makes the final call)
 - `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Pass 2, Contrarian
-  Carl, **Amalgamator**, and **Triage Chief**. Default: inherit this command's model (`opus`). Three
+  Carl, **Amalgamator**, and **Triage Chief**. Default: inherit this command's model (`sonnet`). Three
   tiers per ADR-0004: **Router** (Step 5) = sonnet (judgment, narrow, economical); **Mechanical roles**
   (Q&A, Code Rot Cody, Consistency Checker) = haiku (routing and grep are model-agnostic); **Judgment
   panel** (Pass 1, Carl, Pass 2, Amalgamator, Triage) = PANEL_MODEL (your `--model` choice, or
@@ -75,7 +75,7 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
   · **fable** $10/$50. Fable is the most capable *and* the most expensive — 2× Opus — it is the
   deliberate expensive step, used by the Amalgamator to resolve conflicts and severity-rank findings.
-  Opus is the default panel tier.
+  Sonnet is the default panel tier.
 
 Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a smoke test) ·
 `/expert-review rachel,security-sage` (two reviewers, no router) ·
@@ -228,16 +228,14 @@ error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record th
 `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names) — consumed in Step 5's
 synthesis loop. Otherwise (or `--all`) → all reviewers, `NAMED_SELECTION=false` (Router makes the call).
 
-**Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. If absent,
-leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this
-command's model. `PANEL_MODEL` applies to Pass 1 (Step 6), Contrarian Carl (Step 7), Pass 2
+**Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. Set `MODEL_EXPLICIT=true` when the `--model` flag was passed on the command line, else `MODEL_EXPLICIT=false`. If `--model` is absent, leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this command's model. `PANEL_MODEL` applies to Pass 1 (Step 6), Contrarian Carl (Step 7), Pass 2
 (Step 9), Amalgamator (Step 10), and the Triage Chief (Step 11) — and to nothing else. Print the
 resolved panel model with the reviewer count when the run starts.
 
 ### Steps 4–10: Expert Review Panel (shared)
 
 Read `~/.claude/prompts/expert-review-panel.md` and follow those steps exactly. `REVIEW_DIR`,
-`PANEL_MODEL`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
+`PANEL_MODEL`, `MODEL_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
 all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
 
 The panel writes `summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `contrarian-carl-pass1.md`,
