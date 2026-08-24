@@ -25,14 +25,14 @@ Findings from 2+ scouts of the SAME lens (per the `### <lens-name> — scout <A|
 
 **This is the trust gap closer for haiku scouts.** You do not have a shell `rg`/`grep` — verify each anchor with your **`Grep` tool** (re-run the cited search: same pattern, same path under `${WORKTREE_PATH}`) and/or your **`Read` tool** (open the cited `file:line` and confirm the cited text/code is there). Drop any candidate whose anchor does not reproduce. A scout that can't be verified is not a finding.
 
-If the cited evidence command cannot be reproduced through `Grep`/`Read` (e.g., it referenced a linter or type-checker you don't have), apply extra scrutiny — only promote if the finding is high-confidence on its face and you can confirm the cited line exists via `Read`.
+If the cited evidence command cannot be reproduced through `Grep`/`Read` (e.g., it referenced a linter or type-checker you don't have), apply extra scrutiny — only keep if the finding is high-confidence on its face and you can confirm the cited line exists via `Read`.
 
 ## Step 4 — Apply the High Bar
 
 Keep findings that meet **both** criteria:
 
 1. **Severity**: HIGH always kept; MEDIUM only if `INCLUDE_MEDIUM=true`
-2. **Impact**: genuinely impactful (real risk, likely bug, design problem) — not a "nice to have," not style, not a preference. Promoted findings (Step 2) count as high-confidence for this judgment, but promotion does not relax the severity rule — HIGH always kept; MEDIUM only if `INCLUDE_MEDIUM=true`
+2. **Impact**: genuinely impactful (real risk, likely bug, design problem) — not a "nice to have," not style, not a preference. Promoted findings (Step 2) count as high-confidence for this judgment; promotion does not relax the severity rule in criterion 1
 
 Drop:
 - LOW-severity findings
