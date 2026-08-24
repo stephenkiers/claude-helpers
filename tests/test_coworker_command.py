@@ -12,7 +12,7 @@ scripts/setup-pr-worktree.sh produces (Step F: a '## Files' section holding
 `git diff --stat` output — including the singular "1 file changed" and
 insertions-only/deletions-only summary forms — then a '## Hunks' section).
 
-Run with: python3 tests/test_coworker_v2.py
+Run with: python3 tests/test_coworker_command.py
 """
 
 import re
