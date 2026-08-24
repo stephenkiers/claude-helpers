@@ -370,4 +370,235 @@ t("shipit.md mentions 'isStacked: false' value for non-stacked PRs",
   "expected support for non-stacked (isStacked: false) case")
 
 print()
+
+# ============================================================================
+# INVARIANT 8: /stack-sync command exists with frontmatter (issue #57)
+# ============================================================================
+# /stack-sync is the layout-routed *sync* mirror of #64's layout-routed *push*.
+# It must exist as a command doc with YAML frontmatter declaring its tools and
+# argument hint, and must document the --dry-run / --yes flags.
+print("[Invariant 8] /stack-sync command file exists with frontmatter")
+
+STACK_SYNC_FILE = COMMANDS_DIR / "stack-sync.md"
+STACK_SYNC = read(STACK_SYNC_FILE)
+
+t("commands/stack-sync.md exists and is non-empty",
+  len(STACK_SYNC.strip()) > 0,
+  "expected commands/stack-sync.md to exist with content")
+
+
+def extract_frontmatter(text: str) -> str:
+    """Return the YAML frontmatter block (between the first two --- fences), or ''."""
+    m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+    return m.group(1) if m else ""
+
+
+stack_sync_fm = extract_frontmatter(STACK_SYNC)
+t("stack-sync.md has YAML frontmatter",
+  len(stack_sync_fm) > 0,
+  "expected frontmatter delimited by --- fences at the top of stack-sync.md")
+
+t("stack-sync.md identifies the /stack-sync command",
+  "stack-sync" in STACK_SYNC,
+  "expected the literal 'stack-sync' (command name) to appear in stack-sync.md")
+
+t("stack-sync.md frontmatter declares allowed-tools",
+  "allowed-tools" in stack_sync_fm,
+  "expected an 'allowed-tools' field in stack-sync.md frontmatter")
+
+t("stack-sync.md frontmatter declares argument-hint",
+  "argument-hint" in stack_sync_fm,
+  "expected an 'argument-hint' field in stack-sync.md frontmatter")
+
+t("stack-sync.md documents --dry-run flag",
+  "--dry-run" in STACK_SYNC,
+  "expected --dry-run flag documented in stack-sync.md")
+
+t("stack-sync.md documents --yes flag",
+  "--yes" in STACK_SYNC,
+  "expected --yes flag documented in stack-sync.md")
+
+print()
+
+# ============================================================================
+# INVARIANT 9: /stack-sync routes on STACK_LAYOUT (three arms)
+# ============================================================================
+# single-driver -> delegate to `gh stack sync`; per-branch -> manual git -C
+# bottom-up rebase walk; unknown -> STOP and ask (fail closed).
+print("[Invariant 9] /stack-sync routes on STACK_LAYOUT (single-driver / per-branch / unknown)")
+
+t("stack-sync.md references STACK_LAYOUT variable",
+  "STACK_LAYOUT" in STACK_SYNC,
+  "expected STACK_LAYOUT variable referenced in stack-sync.md")
+
+t("stack-sync.md single-driver arm delegates to 'gh stack sync'",
+  "gh stack sync" in STACK_SYNC,
+  "expected single-driver arm to delegate to 'gh stack sync' (in prose)")
+
+t("stack-sync.md names the per-branch arm",
+  "per-branch" in STACK_SYNC,
+  "expected 'per-branch' routing arm named in stack-sync.md")
+
+t("stack-sync.md per-branch arm uses a manual rebase walk",
+  "rebase" in STACK_SYNC and "git -C" in STACK_SYNC,
+  "expected per-branch arm to use 'git -C' + 'rebase' manual walk")
+
+t("stack-sync.md unknown arm fails closed (stop/ask)",
+  "unknown" in STACK_SYNC and ("stop" in STACK_SYNC.lower() or "ask" in STACK_SYNC.lower()),
+  "expected unknown layout to stop-and-ask (fail closed)")
+
+print()
+
+# ============================================================================
+# INVARIANT 10: bottom-up ordering via merge-base --is-ancestor + cycle guard
+# ============================================================================
+print("[Invariant 10] bottom-up ordering via merge-base --is-ancestor + cycle detection")
+
+t("stack-sync.md uses 'git merge-base --is-ancestor' for ordering",
+  "merge-base --is-ancestor" in STACK_SYNC,
+  "expected 'git merge-base --is-ancestor' for bottom-up ancestor-before-descendant ordering")
+
+t("stack-sync.md detects cycles (hard error)",
+  "cycle" in STACK_SYNC.lower(),
+  "expected cycle detection with a hard error in stack-sync.md")
+
+print()
+
+# ============================================================================
+# INVARIANT 11: push confirmation gate (force-with-lease + repo-cache check)
+# ============================================================================
+print("[Invariant 11] push confirmation gate: force-with-lease + repo-cache.json check")
+
+t("stack-sync.md gates push with 'force-with-lease'",
+  "force-with-lease" in STACK_SYNC,
+  "expected 'push --force-with-lease' in stack-sync.md")
+
+t("stack-sync.md references repo-cache.json check gate",
+  "repo-cache.json" in STACK_SYNC,
+  "expected 'repo-cache.json' check gate in stack-sync.md")
+
+t("stack-sync.md has a pre-push confirmation (skippable via --yes)",
+  re.search(r"confirm", STACK_SYNC, re.IGNORECASE) is not None,
+  "expected a pre-push confirmation gate in stack-sync.md")
+
+print()
+
+# ============================================================================
+# INVARIANT 12: stack-sync.md bash blocks are worktree-safe
+# ============================================================================
+print("[Invariant 12] stack-sync.md bash blocks are worktree-safe")
+
+stack_sync_violations = check_file_worktree_safe(STACK_SYNC, "stack-sync.md")
+t("stack-sync.md bash blocks are worktree-safe",
+  len(stack_sync_violations) == 0,
+  f"found {len(stack_sync_violations)} violations: {stack_sync_violations}" if stack_sync_violations else "")
+
+print()
+
+# ============================================================================
+# INVARIANT 13: generalized Restack block params + ongoing recipe (worktree-ref)
+# ============================================================================
+# The Restack-a-child block is generalized: <MERGED_TIP>/<DEFAULT_BRANCH> are
+# replaced by <NEW_BASE>/<OLD_BASE>, and a new ongoing-sync recipe is added.
+print("[Invariant 13] Restack block generalized to <NEW_BASE>/<OLD_BASE> + ongoing recipe")
+
+t("worktree-reference.md restack block parameterizes <NEW_BASE>",
+  "<NEW_BASE>" in WORKTREE_REF,
+  "expected <NEW_BASE> parameter in the generalized restack block")
+
+t("worktree-reference.md restack block parameterizes <OLD_BASE>",
+  "<OLD_BASE>" in WORKTREE_REF,
+  "expected <OLD_BASE> parameter in the generalized restack block")
+
+ongoing_heading_idx = get_line_index(WORKTREE_REF, "Sync a child (ongoing")
+t("worktree-reference.md has '### Sync a child (ongoing' recipe heading",
+  ongoing_heading_idx >= 0,
+  "expected a '### Sync a child (ongoing ...)' heading for the ongoing-sync recipe")
+
+# Post-merge mapping: NEW_BASE=origin/<default>, OLD_BASE=<merged tip>
+t("worktree-reference.md documents post-merge NEW_BASE=origin/<default>",
+  re.search(r"NEW_BASE.{0,80}origin/", WORKTREE_REF, re.DOTALL) is not None,
+  "expected NEW_BASE mapped to origin/<default> (post-merge) in worktree-reference.md")
+
+# Ongoing mapping: OLD_BASE=$(git merge-base HEAD origin/<parent>)
+t("worktree-reference.md documents ongoing OLD_BASE via git merge-base",
+  re.search(r"OLD_BASE.{0,80}merge-base", WORKTREE_REF, re.DOTALL) is not None,
+  "expected OLD_BASE mapped to $(git merge-base ...) for the ongoing recipe")
+
+print()
+
+# ============================================================================
+# INVARIANT 14: shipit.md + cleanup.md wired to /stack-sync
+# ============================================================================
+print("[Invariant 14] shipit.md and cleanup.md wired to /stack-sync")
+
+t("shipit.md references /stack-sync",
+  "stack-sync" in SHIPIT,
+  "expected shipit.md to invoke /stack-sync after a per-branch stacked push")
+
+t("shipit.md gates /stack-sync on per-branch layout",
+  "stack-sync" in SHIPIT and "per-branch" in SHIPIT,
+  "expected shipit.md to gate /stack-sync on STACK_LAYOUT per-branch")
+
+t("cleanup.md references /stack-sync",
+  "stack-sync" in CLEANUP,
+  "expected cleanup.md to execute restack via /stack-sync (post-merge)")
+
+print()
+
+# ============================================================================
+# INVARIANT 15: ADR-0012 exists with required sections + ADR-0011 cross-ref
+# ============================================================================
+print("[Invariant 15] ADR-0012 exists with Status/Context/Decision/Consequences + ADR-0011 cross-ref")
+
+ADR_DIR = REPO_ROOT / "docs" / "adr"
+ADR_0012_FILE = ADR_DIR / "0012-stack-sync.md"
+ADR_0012 = read(ADR_0012_FILE)
+
+t("docs/adr/0012-stack-sync.md exists and is non-empty",
+  len(ADR_0012.strip()) > 0,
+  "expected docs/adr/0012-stack-sync.md to exist with content")
+
+t("ADR-0012 has a Status field",
+  re.search(r"Status", ADR_0012) is not None,
+  "expected a 'Status' field in ADR-0012")
+
+t("ADR-0012 has a Context section",
+  re.search(r"^##\s+Context", ADR_0012, re.MULTILINE) is not None,
+  "expected a '## Context' section in ADR-0012")
+
+t("ADR-0012 has a Decision section",
+  re.search(r"^##\s+Decision", ADR_0012, re.MULTILINE) is not None,
+  "expected a '## Decision' section in ADR-0012")
+
+t("ADR-0012 has a Consequences section",
+  re.search(r"^##\s+Consequences", ADR_0012, re.MULTILINE) is not None,
+  "expected a '## Consequences' section in ADR-0012")
+
+t("ADR-0012 cross-references ADR-0011",
+  "0011" in ADR_0012,
+  "expected ADR-0012 to cross-reference ADR-0011")
+
+print()
+
+# ============================================================================
+# INVARIANT 16: ADR README index has an ADR-0012 entry
+# ============================================================================
+print("[Invariant 16] ADR README index contains an ADR-0012 entry")
+
+ADR_README = read(ADR_DIR / "README.md")
+
+t("docs/adr/README.md exists and is non-empty",
+  len(ADR_README.strip()) > 0,
+  "expected docs/adr/README.md to exist with content")
+
+t("README.md index references ADR-0012",
+  "0012" in ADR_README,
+  "expected an ADR-0012 entry in the ADR README index")
+
+t("README.md index links to 0012-stack-sync.md",
+  "0012-stack-sync.md" in ADR_README,
+  "expected a link to 0012-stack-sync.md in the ADR README index")
+
+print()
 h.summarize_and_exit()
