@@ -10,6 +10,7 @@ read this file and follow these steps.
 - `NAMED_REVIEWERS` — space-separated lowercased names (REQUIRED only when `NAMED_SELECTION=true`)
 - `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, project modifiers, and any plan/issue context — detected by the caller (REQUIRED)
 - `PANEL_MODEL` — the model for the judgment panel; may be unset → subagents inherit the caller's model (OPTIONAL)
+- `MODEL_EXPLICIT` — `true` when the caller passed `--model` explicitly, else `false` (REQUIRED)
 - `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
@@ -96,6 +97,30 @@ input:
   echo "## (Named selection: all reviewers read full-diff.patch directly — no line-range offsets)"
 } > "$REVIEW_DIR/tagged-sections.md"
 ```
+
+### Step 5.5: Opus Escalation Check (human-confirmed)
+
+**Skip guard:** If `NAMED_SELECTION=true` (router didn't run, so there's no escalation recommendation
+to read), skip this step entirely.
+
+**Skip guard:** If `MODEL_EXPLICIT=true` (the caller already passed `--model` explicitly), skip this
+step entirely — don't second-guess an explicit choice.
+
+**Otherwise:** read `{REVIEW_DIR}/tagged-sections.md`'s `## Escalation Recommendation` section — this
+is the sole source of truth for the escalation decision; the Router's one-line receipt also carries an
+`escalate:` field, but it is informational only (a quick status check), not a second input to branch
+on. If the section is missing, unparseable, or reads `Escalate: No`, skip silently — no prompt,
+proceed to Step 6.
+
+**If `Escalate: Yes`:** Call `AskUserQuestion`, stating the Router's `Reason:` text, with two
+options: "Escalate to opus" (marked recommended) and "Stay on sonnet". If the user picks escalate,
+set `PANEL_MODEL=opus` for the rest of the run (this affects Step 6 onward — Pass 1, Contrarian
+Carl, Pass 2, Amalgamator, Triage Chief; note explicitly that Haiku Q&A, Code Rot Cody, and
+Consistency Checker are mechanical roles pinned to Haiku and are unaffected by this) and print
+"Panel model escalated to opus for the remainder of this run" immediately, so the run's own
+transcript reflects the change rather than going stale relative to the resolved-model line printed
+at the start of the run. If the user picks stay-on-sonnet (or declines), leave `PANEL_MODEL` as-is
+and proceed.
 
 ### Step 6: Pass 1 Blind Reviews (parallel subagents) → `{reviewer}-pass1.md`
 
