@@ -370,8 +370,13 @@ exact duplicate-change conflict you are escaping. The correct primitive is **sna
 `git diff backup HEAD == empty` is a *provable* no-loss check — better than trusting SHAs or counts.
 `rebase --onto` is only the fallback, used when the branch has genuinely unique local commits.
 
-Parameterized on `<CHILD_WT>` (child worktree path), `<CHILD_BRANCH>`, `<MERGED_TIP>` (the merged
-parent's tip SHA, captured before deletion), and `<DEFAULT_BRANCH>`:
+Parameterized on `<CHILD_WT>` (child worktree path), `<CHILD_BRANCH>`, `<NEW_BASE>` (the base to
+rebase onto), and `<OLD_BASE>` (the fork point / old base to exclude). The block is mode-agnostic:
+the caller supplies either **post-merge values** (`<NEW_BASE>=origin/<default-branch>`,
+`<OLD_BASE>=<merged parent tip SHA>`, captured before deletion) or **ongoing values**
+(`<NEW_BASE>=origin/<parent>`, `<OLD_BASE>=$(git merge-base HEAD origin/<parent>)`). The bash block
+below is the post-merge example (`NEW_BASE=origin/<default>`, `OLD_BASE=<merged tip>`); the ongoing
+recipe later in this section composes this same block with its own substitutions.
 
 ```bash
 git -C <CHILD_WT> fetch origin
@@ -397,7 +402,7 @@ if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
   else
     # NON-empty diff: the branch has genuinely unique local commits. Reset back and replay them.
     git -C <CHILD_WT> reset --hard backup/<CHILD_BRANCH>
-    git -C <CHILD_WT> rebase --onto '@{u}' <MERGED_TIP>
+    git -C <CHILD_WT> rebase --onto '@{u}' <OLD_BASE>
     # Re-prove: after replaying only the unique commits, the diff vs backup must be empty.
     if [ -n "$(git -C <CHILD_WT> diff --stat backup/<CHILD_BRANCH> HEAD)" ]; then
       echo "WARNING: <CHILD_BRANCH> diff non-empty after rebase — inspect before pushing"
@@ -414,7 +419,7 @@ if ! git -C <CHILD_WT> merge-base --is-ancestor '@{u}' HEAD 2>/dev/null \
 else
   # NOT diverged — remote is still stacked on the old, now-merged base. Restack it yourself.
   git -C <CHILD_WT> branch -f backup/<CHILD_BRANCH> HEAD   # snapshot before rewriting history
-  git -C <CHILD_WT> rebase --onto origin/<DEFAULT_BRANCH> <MERGED_TIP>
+  git -C <CHILD_WT> rebase --onto <NEW_BASE> <OLD_BASE>
   git -C <CHILD_WT> branch --set-upstream-to=origin/<CHILD_BRANCH>   # re-link tracking (symmetric with the reset path above)
   # Gate — force-push ONLY after the project's checks pass. A runnable gate, not a comment:
   # a bare comment here would be silently skipped when the whole block is pasted and run.
@@ -432,6 +437,28 @@ fi
 check out each stack branch in one working copy and are **fatal under a worktree-per-branch layout**
 (branches are permanently checked out in sibling worktrees). Note too that `gh stack sync` fixes only
 the *remote* — it never touches your local worktree, so you reconcile local yourself with the above.
+
+### Sync a child (ongoing — parent advanced, not merged)
+
+Recipe for the ongoing case: the parent's PR is still **open** but the parent advanced (e.g. via
+`/shipit`), so the child needs to rebase onto the parent's new tip. Rather than duplicating the
+restack logic, this computes the two mode-specific parameters and then composes the generalized
+Restack-a-child block above.
+
+```bash
+git -C "$CHILD_WT" fetch origin
+PARENT_OLD_TIP=$(git -C "$CHILD_WT" merge-base HEAD "origin/$PARENT_BRANCH")
+NEW_BASE="origin/$PARENT_BRANCH"
+# then run the generalized Restack-a-child block with
+#   <CHILD_WT>=$CHILD_WT  <CHILD_BRANCH>=$CHILD_BRANCH
+#   <NEW_BASE>=$NEW_BASE  <OLD_BASE>=$PARENT_OLD_TIP
+```
+
+`merge-base(HEAD, origin/<parent>)` is the exact fork point the child diverged from, so it is the
+correct `<OLD_BASE>` even if the parent itself was rebased in the meantime — the fork point moves
+with the parent's history, not with its tip SHA. This recipe is for the ongoing case (parent's PR
+still OPEN, parent advanced via `/shipit`); it composes the generalized Restack block rather than
+duplicating it.
 
 ## Local Plan Mode Detection
 
