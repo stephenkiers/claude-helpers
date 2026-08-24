@@ -81,7 +81,7 @@ SCHEMA_HIT="$(echo "$CHANGED_PATHS" | rg -i -m1 'migration|schema' || true)"
 [[ -n "$SCHEMA_HIT" ]] && MARKERS="${MARKERS:+$MARKERS; }schema/migration path: ${SCHEMA_HIT}"
 
 # New top-level module: a new file whose first path component is absent from the base ref's root tree.
-NEW_FILES="$(rg -A2 '^new file mode' "${REVIEW_DIR}/full-diff.patch" | rg -o '^\+\+\+ b/(.+)' -r '$1' || true)"
+NEW_FILES="$(rg -A3 '^new file mode' "${REVIEW_DIR}/full-diff.patch" | rg -o '^\+\+\+ b/(.+)' -r '$1' || true)"
 NEW_TOP=""
 SEEN_TOPS=$'\n'
 while IFS= read -r p; do
