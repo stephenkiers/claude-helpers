@@ -215,7 +215,7 @@ Before pushing and creating the PR, run the **Stack Detection → Is-stacked** b
 `~/.claude/prompts/worktree-reference.md` to detect whether this branch's parent is another
 worktree's branch. This resolves `STACK_IS_STACKED`, `STACK_PARENT_BRANCH`, and `STACK_PARENT_PR`.
 (See that reference doc for the full detection logic.)
-Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-reference.md` to resolve `STACK_LAYOUT`. (Skip if `STACK_IS_STACKED` is false.)
+Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-reference.md` to resolve `STACK_LAYOUT`. (Skip if `STACK_IS_STACKED` is false AND the branch has no stacked descendants — but note a stack root is exactly that case: unstacked itself, yet heading a stack. The descendant-sync gate below needs `STACK_LAYOUT` for roots too, so when the branch may have children, run layout detection anyway.)
 
 ### Create PR (with correct base for stacked PRs)
 
@@ -336,17 +336,25 @@ fi
 
 ### Sync stacked children (per-branch ongoing)
 
-If this PR is stacked AND `STACK_LAYOUT="per-branch"`, the push above advanced this branch
-past where its descendants branched off; per-branch children were NOT updated by the push.
-Invoke the `stack-sync` skill via the `Skill` tool, passing `--yes` so the push confirmation
-does not block the ship flow:
+**Gate on descendants, not on this branch being stacked.** A stack root
+(`STACK_IS_STACKED=false`, based on the repo default branch) still has children that need
+ongoing sync — the old `STACK_IS_STACKED` gate silently skipped exactly the canonical
+2-level stack. Detect descendants by running the **Stack Detection → Find children** block
+from `~/.claude/prompts/worktree-reference.md` with this branch as the pivot.
 
+If the branch has descendants AND `STACK_LAYOUT="per-branch"`, the push above advanced this
+branch past where its descendants branched off; per-branch children were NOT updated by the
+push. Print one line first so the descendant force-push is not silent, then invoke the
+`stack-sync` skill via the `Skill` tool, passing `--yes` so the push confirmation does not
+block the ship flow:
+
+> Syncing N stacked descendant(s) via /stack-sync
 > /stack-sync --yes "$BRANCH"
 
 stack-sync rebases each descendant onto this branch's updated tip inside each child's own
 worktree, runs the project check gate, and force-pushes with `--force-with-lease`. If the
-branch has no descendants, stack-sync is a clean no-op. Skip when `STACK_IS_STACKED=false`
-or `STACK_LAYOUT="single-driver"` (single-driver already cascaded via `gh stack sync`).
+branch has no descendants, skip the invocation (stack-sync would be a clean no-op on a leaf).
+Skip when `STACK_LAYOUT="single-driver"` (single-driver already cascaded via `gh stack sync`).
 
 **If PR exists:** Report URL and stop.
 **If on main/master:** Warn user, suggest creating a branch.
