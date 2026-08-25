@@ -101,11 +101,17 @@ def validate_registry(data, path):
         )
 
     schema_version = data["schemaVersion"]
-    if schema_version != SUPPORTED_SCHEMA_VERSION:
+    # Reject floats/bools too: in Python `1.0 == 1` and `True == 1`, so a bare `!=` would accept
+    # JSON `1.0` or `true` as schema version 1. Require a JSON integer.
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != SUPPORTED_SCHEMA_VERSION
+    ):
         fail(
             f"registry at {path} has schemaVersion {schema_version!r}; this resolver supports "
-            f"only {SUPPORTED_SCHEMA_VERSION}. Update scripts/resolve-expert-review-models.py "
-            "or lower the registry schemaVersion."
+            f"only {SUPPORTED_SCHEMA_VERSION} (a JSON integer). Update "
+            "scripts/resolve-expert-review-models.py or lower the registry schemaVersion."
         )
 
     aliases = data["aliases"]
@@ -150,6 +156,7 @@ def validate_registry(data, path):
         role_list = roles[role]
         if not isinstance(role_list, list) or not role_list:
             fail(f"registry at {path}: role '{role}' must be a non-empty list.")
+        seen_in_role = set()
         for entry in role_list:
             if not isinstance(entry, str):
                 fail(f"registry at {path}: role '{role}' entry {entry!r} is not a string.")
@@ -163,6 +170,12 @@ def validate_registry(data, path):
                     f"registry at {path}: role '{role}' references unknown alias {entry!r}; "
                     f"not declared in 'aliases' ({', '.join(aliases)})."
                 )
+            if entry in seen_in_role:
+                fail(
+                    f"registry at {path}: role '{role}' has duplicate alias {entry!r}; a role "
+                    "list must be duplicate-free so runtime healing can advance to a DISTINCT alias."
+                )
+            seen_in_role.add(entry)
 
     return aliases, roles
 

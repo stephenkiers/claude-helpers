@@ -298,8 +298,9 @@ notifications.
 **Runtime model healing (bounded).** The caller's preflight resolver run (Step 3) checks
 availability before any wave launches, preventing the common gateway-removal case up front. If an
 Agent launch STILL returns a model-unavailable / model-not-found error for an alias whose
-`.status.*` was `unchecked`, advance that role EXACTLY ONCE to the next alias in its `configured.*`
-list (read from the resolver JSON the caller cached at `{REVIEW_DIR}/models.json`), print a fallback
+`.status.*` was `unchecked`, advance that role EXACTLY ONCE to the alias immediately AFTER the one
+that failed in its `configured.*` list (read from the resolver JSON the caller cached at
+`{REVIEW_DIR}/models.json`), print a fallback
 receipt — `⚠️ {role}: {primary} unavailable — falling back to {fallback}` — and rerun only the
 affected role/wave. Rules:
 - Never infer an unconfigured model; only step to an alias already present in the role's

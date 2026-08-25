@@ -93,7 +93,9 @@ to get started.
   falls back; router and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
 - `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run the
   same shared blind-first panel (`prompts/expert-review-panel.md`), then draft PR-ready comments you
-  paste yourself (never auto-posted). Takes a PR URL and `--include-medium`
+  paste yourself (never auto-posted). Takes a PR URL, `--include-medium`, and
+  `--model haiku|sonnet|opus|fable` (panel tier, resolved from `config/expert-review-models.json`;
+  strict override that never falls back)
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
