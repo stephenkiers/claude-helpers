@@ -9,8 +9,13 @@ read this file and follow these steps.
 - `NAMED_SELECTION` — `true` if the user named specific reviewers (Router is bypassed), else `false` (REQUIRED)
 - `NAMED_REVIEWERS` — space-separated lowercased names (REQUIRED only when `NAMED_SELECTION=true`)
 - `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, project modifiers, and any plan/issue context — detected by the caller (REQUIRED)
-- `PANEL_MODEL` — the model for the judgment panel; may be unset → subagents inherit the caller's model (OPTIONAL)
+- `PANEL_MODEL` — the model for the judgment panel, resolved from the registry (always set by the caller) (REQUIRED)
+- `ROUTER_MODEL` — resolved router alias (default `sonnet`) (REQUIRED)
+- `MECHANICAL_MODEL` — resolved mechanical alias (default `haiku`) (REQUIRED)
+- `ESCALATION_MODEL` — resolved escalation alias (default `opus`) (REQUIRED)
 - `MODEL_EXPLICIT` — `true` when the caller passed `--model` explicitly, else `false` (REQUIRED)
+- `{REVIEW_DIR}/models.json` — the full resolver JSON cached by the caller (the `configured.*` lists
+  feed runtime model healing; the `resolved`/`configured` objects feed Step 13's cache) (REQUIRED)
 - `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
@@ -37,8 +42,8 @@ known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file conta
 
 ### Step 5: Router (sonnet) → `tagged-sections.md`
 
-Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
-model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
+Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: ROUTER_MODEL` —
+the resolved router alias, default `sonnet`; a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
 - `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
   that file, which later reviewers use for bounded reads)
 - The `{REVIEW_DIR}/summary.md` (Technical Summary and Business Context)
@@ -114,10 +119,11 @@ proceed to Step 6.
 
 **If `Escalate: Yes`:** Call `AskUserQuestion`, stating the Router's `Reason:` text, with two
 options: "Escalate to opus" (marked recommended) and "Stay on sonnet". If the user picks escalate,
-set `PANEL_MODEL=opus` for the rest of the run (this affects Step 6 onward — Pass 1, Contrarian
-Carl, Pass 2, Amalgamator, Triage Chief; note explicitly that Haiku Q&A, Code Rot Cody, and
-Consistency Checker are mechanical roles pinned to Haiku and are unaffected by this) and print
-"Panel model escalated to opus for the remainder of this run" immediately, so the run's own
+set `PANEL_MODEL=${ESCALATION_MODEL}` for the rest of the run — the escalation alias comes from the
+registry (default `opus`). This affects Step 6 onward (Pass 1, Contrarian Carl, Pass 2, Amalgamator,
+Triage Chief); note explicitly that the mechanical roles — Haiku Q&A, Code Rot Cody, and Consistency
+Checker — stay at `MECHANICAL_MODEL` and are unaffected by the escalation. Print
+"Panel model escalated to ${ESCALATION_MODEL} for the remainder of this run" immediately, so the run's own
 transcript reflects the change rather than going stale relative to the resolved-model line printed
 at the start of the run. If the user picks stay-on-sonnet (or declines), leave `PANEL_MODEL` as-is
 and proceed.
@@ -236,14 +242,14 @@ they read themselves; you do not need to know them here.)
   `Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
   Decision is always DEEP-DIVE.
 
-- **Code Rot Cody** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
+- **Code Rot Cody** (`subagent_type: "expert-scout"`, `model: MECHANICAL_MODEL`, ADR-0006 carve-out): gets
   `{REVIEW_DIR}/full-diff.patch` + changed-file list. He greps the ENTIRE repo to verify every
   claim — never guesses. New symbols: grep for callers (excluding definition site), flag zero-caller
   symbols DEAD. Removed symbols: grep for lingering references, flag ORPHANED. New config fields:
   verify stored, read, validated, documented. His output format (symbol-inventory table) and his
   `languageExtensions` are in his own YAML, which he reads.
 
-- **Consistency Checker** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
+- **Consistency Checker** (`subagent_type: "expert-scout"`, `model: MECHANICAL_MODEL`, ADR-0006 carve-out): gets
   `{REVIEW_DIR}/full-diff.patch` + the PR description (from cache or `gh pr view --json body`); it
   reads its own persona file for the review lens, like every other subagent. Mechanical pattern
   pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
@@ -289,6 +295,24 @@ is large enough that you truly want it backgrounded, then **end your turn**: the
 you when the agents finish. Track per-reviewer status by checking for files, never by counting
 notifications.
 
+**Runtime model healing (bounded).** The caller's preflight resolver run (Step 3) checks
+availability before any wave launches, preventing the common gateway-removal case up front. If an
+Agent launch STILL returns a model-unavailable / model-not-found error for an alias whose
+`.status.*` was `unchecked`, advance that role EXACTLY ONCE to the next alias in its `configured.*`
+list (read from the resolver JSON the caller cached at `{REVIEW_DIR}/models.json`), print a fallback
+receipt — `⚠️ {role}: {primary} unavailable — falling back to {fallback}` — and rerun only the
+affected role/wave. Rules:
+- Never infer an unconfigured model; only step to an alias already present in the role's
+  `configured.*` list.
+- Never loop: one advance per role, once. If the next alias also fails, do not advance again.
+- Never fall back an explicit `--model` selection (`MODEL_EXPLICIT=true` / `.panelOverride=true`):
+  an explicit panel choice is strict and fails fast rather than substituting.
+- If a role's `configured.*` list is exhausted, stop before later waves and report the exact
+  registry entry (`config/expert-review-models.json`) to change.
+- A configured fallback is authorization to change model, but it is never silent: the fallback
+  receipt appears in the transcript, and the actually-used model is recorded in Step 13's
+  `usedModels` cache field.
+
 ### Step 7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
 
 Carl runs **last** and is the one reviewer who is not blind to the panel. Spawn one subagent
@@ -316,7 +340,7 @@ participate in Pass 2; his findings are presented as-is.
 
 Runs BEFORE Pass 2 so the re-evaluation is informed rather than speculative (ADR-0002). For each
 reviewer whose Pass 1 receipt reported `open-questions > 0`: spawn a subagent
-(`subagent_type: "expert-scout"`) and point it at `{REVIEW_DIR}/{reviewer}-pass1.md` — it reads
+(`subagent_type: "expert-scout"`, `model: MECHANICAL_MODEL`) and point it at `{REVIEW_DIR}/{reviewer}-pass1.md` — it reads
 the Open Questions itself, so you never have to load them. Supply the reviewer's name and role
 summary (from `index.yaml`) and their tagged sections, plus: "Read the hinted files plus whatever
 else is needed to answer concretely. If a question can't be settled by static analysis, say so and

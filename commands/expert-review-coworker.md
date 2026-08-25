@@ -1,7 +1,7 @@
 ---
 description: Peer PR review — high-bar, collegial review of a coworker's GitHub PR with human-in-the-loop comment selection
 argument-hint: <github-pr-url> [--include-medium] [--model haiku|sonnet|opus|fable] [--all]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(eval:*), Bash(bash:*), Read, Glob, Grep, Task, Write, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(eval:*), Bash(bash:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion
 model: sonnet
 ---
 
@@ -15,12 +15,14 @@ Here, you **trust the author is competent**. You are not trying to find every bu
 
 Parse `$ARGUMENTS` for:
 
-1. **`--model <haiku|sonnet|opus|fable>`** — sets `PANEL_MODEL` and `MODEL_EXPLICIT=true`; if absent, leave `PANEL_MODEL` unset and set `MODEL_EXPLICIT=false` so subagents inherit this command's model, which is `sonnet` (error if any other value)
+1. **`--model <haiku|sonnet|opus|fable>`** — selects the panel tier only; store the raw flag value in
+   `PANEL_ARG` (unset when `--model` was not passed). The value is validated against the registry alias
+   list (still `haiku|sonnet|opus|fable`) by the resolver in Step 1b — not by this step. An explicit
+   `--model` is strict: it never falls back. `PANEL_MODEL` and `MODEL_EXPLICIT` are set from the
+   resolver in Step 1b (do NOT set them here).
 2. **`--include-medium`** — parse this flag (default false → `INCLUDE_MEDIUM=false`; if present → `INCLUDE_MEDIUM=true`)
 3. **`--all` or no named reviewers** → `NAMED_SELECTION=false` (all reviewers)
 4. **Named reviewers** — match names case-insensitively against `~/.claude/reviewers/index.yaml` keys; error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names)
-
-Validate `--model` value; error if not one of the four permitted values.
 
 The remaining argument is the PR URL; store it as `PR_URL`.
 
@@ -38,6 +40,45 @@ eval "$setup_out"
 This exports (among others): `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`, `HEAD_SHA`, `TARGET_REPO`, `PR_NUMBER`, `PR_TITLE`, `CLONED_THIS_SESSION` (reserved for v2 auto-clone), `INCLUDE_MEDIUM`.
 
 **If the script exits non-zero** (bad URL, no local clone, empty diff), the `|| exit 1` stops immediately; the script has sent its error message to stderr and cleaned up any partial worktree via its EXIT trap, which runs reliably on any failure exit.
+
+## Step 1b — Resolve Models
+
+After the worktree setup (Step 1) exports `REVIEW_DIR` — and BEFORE the Summarizer (Step 4) or any
+panel agent launches — run the centralized resolver and capture its JSON. The coworker reviews a PR
+from any repo, so reach the script through the install symlink (the same way Step 1 reaches
+`setup-pr-worktree.sh`); the script resolves its own registry via its own symlink path.
+
+```bash
+set -euo pipefail
+MODELS_JSON="$(python3 "$HOME/.claude/scripts/resolve-expert-review-models.py" ${PANEL_ARG:+--model "$PANEL_ARG"})"
+printf '%s' "$MODELS_JSON" > "$REVIEW_DIR/models.json"
+ROUTER_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.router')"
+MECHANICAL_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.mechanical')"
+PANEL_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.panel')"
+ESCALATION_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.escalation')"
+MODEL_EXPLICIT="$(printf '%s' "$MODELS_JSON" | jq -r '.panelOverride')"
+```
+
+Pass `--model` only when the user gave one (the `${PANEL_ARG:+…}` expansion omits the flag when
+`PANEL_ARG` is unset/empty). Use `printf '%s' "$MODELS_JSON" | jq …` (NOT `echo`) — an established
+repo convention (commit a96b06b). If the resolver exits non-zero, **stop** and surface its stderr;
+do not continue. `PANEL_MODEL` is set explicitly from the resolver even when `--model` is absent —
+that is what makes the registry the source of truth. `MODEL_EXPLICIT` comes from `.panelOverride`.
+
+**Print the resolved role table once at startup**, including any fallback or unchecked status:
+
+```
+🧭 Expert-review model routing
+  router:      sonnet   (available)
+  mechanical:  haiku    (available)
+  panel:       sonnet   (available)
+  escalation:  opus     (unchecked)
+```
+
+Pull `status` per role from `.status.*` in the resolver JSON, and include the `fallbacks` array and
+`diagnostics` (if non-empty). When a fallback was selected, print a conspicuous line naming
+role/primary/missing/fallback. Explicit `--model` controls ONLY the panel; the registry controls
+router, mechanical, default panel, and escalation.
 
 ## Step 2 — Project Context Detection
 
@@ -67,7 +108,7 @@ Output: `${REVIEW_DIR}/summary.md` (same format as `/expert-review`)
 
 ## Steps 5–10 — Expert Review Panel (Shared)
 
-Read `~/.claude/prompts/expert-review-panel.md` and follow those steps. You have already set: `REVIEW_DIR`, `WORKTREE_PATH`, `PANEL_MODEL`, `MODEL_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts.
+Read `~/.claude/prompts/expert-review-panel.md` and follow those steps. You have already set: `REVIEW_DIR`, `WORKTREE_PATH`, `PANEL_MODEL`, `MODEL_EXPLICIT`, `ROUTER_MODEL`, `MECHANICAL_MODEL`, `ESCALATION_MODEL`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts (plus `{REVIEW_DIR}/models.json` for runtime healing).
 
 **Important**: The shared panel's Summarizer is its **Step 4**. Since Step 4 above already ran the Summarizer (with the PR-context addition), **begin the panel at Step 5 (Router)**. The `summary.md` already exists and must not be regenerated.
 

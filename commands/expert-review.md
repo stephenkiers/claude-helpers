@@ -1,7 +1,7 @@
 ---
 description: Smart expert code review with triage - works across all projects
 argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(python3:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: sonnet
 ---
 
@@ -64,12 +64,19 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   - Naming reviewers **bypasses the router**: only named reviewers run
   - `--all`: explicitly run all reviewers (the default; router makes the final call)
 - `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Pass 2, Contrarian
-  Carl, **Amalgamator**, and **Triage Chief**. Default: inherit this command's model (`sonnet`). Three
-  tiers per ADR-0004: **Router** (Step 5) = sonnet (judgment, narrow, economical); **Mechanical roles**
-  (Q&A, Code Rot Cody, Consistency Checker) = haiku (routing and grep are model-agnostic); **Judgment
-  panel** (Pass 1, Carl, Pass 2, Amalgamator, Triage) = PANEL_MODEL (your `--model` choice, or
-  inherited). Triage rides the panel tier deliberately — deciding what a human must rule on is a
-  judgment call, and getting it wrong in either direction costs more than the model does.
+  Carl, **Amalgamator**, and **Triage Chief**. The value is validated against the registry alias list
+  (still `haiku|sonnet|opus|fable`); an explicit `--model` is **strict** — it never falls back, so if
+  the chosen alias is unavailable the run fails fast rather than substituting. Default (no `--model`):
+  the registry's default panel alias. Per ADR-0004 there are three tiers, now centralized in
+  `config/expert-review-models.json` and resolved at startup by `scripts/resolve-expert-review-models.py`:
+  **Router** (Step 5) = the resolved `router` alias (default `sonnet` — judgment, narrow, economical);
+  **Mechanical roles** (Q&A, Code Rot Cody, Consistency Checker) = the resolved `mechanical` alias
+  (default `haiku` — routing and grep are model-agnostic); **Judgment panel** (Pass 1, Carl, Pass 2,
+  Amalgamator, Triage) = `PANEL_MODEL` (your `--model` choice, or the registry default); **Escalation**
+  = the resolved `escalation` alias (default `opus`). Explicit `--model` controls ONLY the panel; the
+  registry controls router, mechanical, default panel, and escalation. Triage rides the panel tier
+  deliberately — deciding what a human must rule on is a judgment call, and getting it wrong in either
+  direction costs more than the model does.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
@@ -228,15 +235,77 @@ error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record th
 `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names) — consumed in Step 5's
 synthesis loop. Otherwise (or `--all`) → all reviewers, `NAMED_SELECTION=false` (Router makes the call).
 
-**Model.** `--model <haiku|sonnet|opus|fable>` → `PANEL_MODEL`; error on any other value. Set `MODEL_EXPLICIT=true` when the `--model` flag was passed on the command line, else `MODEL_EXPLICIT=false`. If `--model` is absent, leave `PANEL_MODEL` unset and omit the `model` parameter from panel subagents so they inherit this command's model. `PANEL_MODEL` applies to Pass 1 (Step 6), Contrarian Carl (Step 7), Pass 2
-(Step 9), Amalgamator (Step 10), and the Triage Chief (Step 11) — and to nothing else. Print the
-resolved panel model with the reviewer count when the run starts.
+**Model.** `--model <haiku|sonnet|opus|fable>` selects the **panel** tier only; store the raw flag
+value in `PANEL_ARG` (unset when `--model` was not passed). The value is validated against the
+registry alias list (still `haiku|sonnet|opus|fable`) by the resolver below — not by this step. An
+explicit `--model` is strict: it never falls back; if the chosen alias is unavailable under
+`enforceAvailableModels`, the resolver fails fast rather than substituting.
+
+After parsing args — and BEFORE any summary/router/panel agents launch — run the centralized resolver
+and capture its JSON. Locate the script via `$PROJECT_ROOT` (computed in Step 0 as
+`git rev-parse --show-toplevel`) — never a hardcoded path — so installed-symlink commands work from
+any repo:
+
+```bash
+set -euo pipefail
+MODELS_JSON="$(python3 "$PROJECT_ROOT/scripts/resolve-expert-review-models.py" ${PANEL_ARG:+--model "$PANEL_ARG"})"
+```
+
+Pass `--model` only when the user gave one (the `${PANEL_ARG:+…}` expansion omits the flag when
+`PANEL_ARG` is unset/empty); otherwise call with no `--model` so every role resolves to its first
+available/configured alias. If the resolver exits non-zero, **stop** and surface its stderr — it
+prints precise remediation; do not continue.
+
+Parse the four resolved aliases (one `jq` extraction each) and the override flag:
+
+```bash
+ROUTER_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.router')"
+MECHANICAL_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.mechanical')"
+PANEL_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.panel')"
+ESCALATION_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.escalation')"
+MODEL_EXPLICIT="$(printf '%s' "$MODELS_JSON" | jq -r '.panelOverride')"
+```
+
+Use `printf '%s' "$MODELS_JSON" | jq …` (NOT `echo`) to pipe the cached JSON to jq — this is an
+established repo convention (commit a96b06b); `echo` mangles values containing backslashes or
+`-n`. Never build JSON by interpolating shell vars into `--argjson`; the values come from `jq`
+reading the cached JSON directly. `PANEL_MODEL` is set explicitly from the resolver even when
+`--model` is absent — explicitly setting it is what makes the registry the source of truth (do NOT
+leave it unset to inherit frontmatter). `MODEL_EXPLICIT` comes from `.panelOverride` (`true`/`false`).
+
+Cache the full resolver JSON so the panel's runtime-healing step can read the `configured.*` lists
+and so Step 13 can record both configured and used models:
+
+```bash
+printf '%s' "$MODELS_JSON" > "$REVIEW_DIR/models.json"
+```
+
+Precedence: an explicit `--model` controls ONLY the panel; the registry controls router, mechanical,
+default panel, and escalation. `PANEL_MODEL` applies to Pass 1 (Step 6), Contrarian Carl (Step 7),
+Pass 2 (Step 9), Amalgamator (Step 10), and the Triage Chief (Step 11) — and to nothing else.
+
+**Print the resolved role table once at startup**, including any fallback or unchecked status:
+
+```
+🧭 Expert-review model routing
+  router:      sonnet   (available)
+  mechanical:  haiku    (available)
+  panel:       sonnet   (available)
+  escalation:  opus     (unchecked)
+```
+
+Pull `status` per role from `.status.*` in the resolver JSON, and include the `fallbacks` array and
+`diagnostics` (if non-empty). When a fallback was selected, print a conspicuous line naming
+role/primary/missing/fallback, e.g. `⚠️ panel: sonnet unavailable (provider-id) — falling back to haiku`.
+Print the resolved panel model with the reviewer count when the run starts.
 
 ### Steps 4–10: Expert Review Panel (shared)
 
 Read `~/.claude/prompts/expert-review-panel.md` and follow those steps exactly. `REVIEW_DIR`,
-`PANEL_MODEL`, `MODEL_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
-all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
+`PANEL_MODEL`, `MODEL_EXPLICIT`, `ROUTER_MODEL`, `MECHANICAL_MODEL`, `ESCALATION_MODEL`,
+`NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and all diff artifacts
+(`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above, and the resolver JSON is
+cached at `{REVIEW_DIR}/models.json` for the panel's runtime model healing.
 
 The panel writes `summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `contrarian-carl-pass1.md`,
 `{reviewer}-questions-answered.md`, `{reviewer}-pass2.md`, and `final-report.md` into `REVIEW_DIR`.
@@ -337,15 +406,29 @@ hand-edits that item's `- **Ruling**:` line.
 Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
 
 ```bash
+set -euo pipefail
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
+MODELS_FILE="${REVIEW_DIR}/models.json"
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+# Merge the review object, then fold in configured + used models from the cached
+# resolver JSON so a fallback run stays reproducible (which alias was requested vs.
+# which actually ran). --slurpfile reads the file as a one-element array; jq owns
+# the JSON, so no shell interpolation into --argjson.
+echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" --slurpfile models "$MODELS_FILE" \
+  '. + {review: ($review + {configuredModels: $models[0].configured, usedModels: $models[0].resolved})}' \
+  > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
 Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
 
 `$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
 `reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts).
+The merge above adds two more fields from the cached resolver JSON: `configuredModels` (the
+`.configured` object — the full alias list per role as configured in the registry) and `usedModels`
+(the `.resolved` object — the alias each role actually ran, which may differ from the configured
+primary when a fallback was selected). Together with the existing `panelModel` field, fallback runs
+remain reproducible: the registry entry, the requested override, and the model that actually ran are
+all recorded.
 
 ---
 

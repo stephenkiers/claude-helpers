@@ -1,7 +1,7 @@
 ---
 description: Peer PR review — fast swarm-of-scouts beta (6 haiku scouts + sonnet merge, or --deep single pass)
 argument-hint: <github-pr-url> [--include-medium] [--model haiku|sonnet|opus|fable] [--all] [--deep]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(eval:*), Bash(bash:*), Bash(rg:*), Read, Glob, Grep, Task, Write, AskUserQuestion
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(eval:*), Bash(bash:*), Bash(rg:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion
 model: sonnet
 ---
 
@@ -15,13 +15,15 @@ Your job is to surface **only the things that genuinely matter** — real risks,
 
 Parse `$ARGUMENTS` for:
 
-1. **`--model <haiku|sonnet|opus|fable>`** — sets `MODEL` (error if any other value; default `sonnet`)
+1. **`--model <haiku|sonnet|opus|fable>`** — selects the panel tier only; store the raw flag value in
+   `PANEL_ARG` (unset when `--model` was not passed). The value is validated against the registry alias
+   list (still `haiku|sonnet|opus|fable`) by the resolver in Step 1b — not by this step. An explicit
+   `--model` is strict: it never falls back. `PANEL_MODEL`, `MECHANICAL_MODEL`, and the other role
+   models are set from the resolver in Step 1b.
 2. **`--include-medium`** — parse this flag (default false → `INCLUDE_MEDIUM=false`; if present → `INCLUDE_MEDIUM=true`)
 3. **`--deep`** — parse this flag (default false); if present, force the DEEP single-reviewer path
 4. **`--all` or no named reviewers** → all 6 scouts
 5. **Named reviewers** — match names case-insensitively against the **6 available lens names** (sam-system, fragile-feynman, contract-chris, ariadne, vera-verifier, curious-casey), accepting display-name variants (e.g. "Sam System", "Vera Verifier", "Fragile Feynman"); error if a named reviewer has no matching lens. (The SWARM path has no Router and a fixed 6-lens set — matching against the full `index.yaml` would silently map names like "Uncle Bob" to zero lenses.) Record the matched lens names (lower-cased, space-separated in `NAMED_REVIEWERS`)
-
-Validate `--model` value against the four permitted values; error if not permitted.
 
 The remaining argument is the PR URL; store it as `PR_URL`.
 
@@ -42,10 +44,51 @@ This exports: `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BA
 
 **Main-thread skim**: read `${REVIEW_DIR}/diff-index.md` for a quick orientation on the PR's shape (changed-file extensions, file count, diff size) before spawning scouts. This is a skim, not analysis — it informs path selection and nothing downstream consumes it.
 
+## Step 1b — Resolve Models
+
+After the worktree setup (Step 1) exports `REVIEW_DIR` — and BEFORE any scouts launch — run the
+centralized resolver and capture its JSON. Reach the script through the install symlink (the same
+way Step 1 reaches `setup-pr-worktree.sh`); the script resolves its own registry via its own symlink
+path.
+
+```bash
+set -euo pipefail
+MODELS_JSON="$(python3 "$HOME/.claude/scripts/resolve-expert-review-models.py" ${PANEL_ARG:+--model "$PANEL_ARG"})"
+printf '%s' "$MODELS_JSON" > "$REVIEW_DIR/models.json"
+ROUTER_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.router')"
+MECHANICAL_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.mechanical')"
+PANEL_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.panel')"
+ESCALATION_MODEL="$(printf '%s' "$MODELS_JSON" | jq -r '.resolved.escalation')"
+MODEL_EXPLICIT="$(printf '%s' "$MODELS_JSON" | jq -r '.panelOverride')"
+```
+
+Pass `--model` only when the user gave one (the `${PANEL_ARG:+…}` expansion omits the flag when
+`PANEL_ARG` is unset/empty). Use `printf '%s' "$MODELS_JSON" | jq …` (NOT `echo`) — an established
+repo convention (commit a96b06b). If the resolver exits non-zero, **stop** and surface its stderr;
+do not continue.
+
+**Print the resolved role table once at startup**, including any fallback or unchecked status:
+
+```
+🧭 Expert-review model routing
+  router:      sonnet   (available)
+  mechanical:  haiku    (available)
+  panel:       sonnet   (available)
+  escalation:  opus     (unchecked)
+```
+
+Pull `status` per role from `.status.*` in the resolver JSON, and include the `fallbacks` array and
+`diagnostics` (if non-empty). When a fallback was selected, print a conspicuous line naming
+role/primary/missing/fallback.
+
+The SWARM path uses `MECHANICAL_MODEL` for the Wave 1 scouts and `PANEL_MODEL` for the Wave 2 merge.
+The DEEP path uses `PANEL_MODEL` for the single deep reviewer. Explicit `--model` controls ONLY the
+panel; the registry controls router, mechanical, default panel, and escalation.
+
 ## Step 2 — Path Selection
 
-- **Default: SWARM path** — 6 haiku scouts in parallel + one sonnet merge
-- **`--deep` flag: DEEP path** — one sonnet (or `--model`) single deep pass
+- **Default: SWARM path** — 6 `MECHANICAL_MODEL` scouts in parallel + one `PANEL_MODEL` merge
+- **`--deep` flag: DEEP path** — one `PANEL_MODEL` single deep pass
 
 Explicitly state: "No automatic complexity gate in v1. You are the gate — use `--deep` to force the deep path."
 
@@ -68,7 +111,7 @@ Lens→persona map:
 - `--all` or no names → all 6 lenses
 - Named reviewers → matching lenses only (case-insensitive match against lens name, not persona display name)
 
-For each selected lens, spawn one `expert-scout` subagent (`model: haiku`) in parallel using `Task`, each with a prompt built from:
+For each selected lens, spawn one `expert-scout` subagent (`model: MECHANICAL_MODEL`) in parallel using `Task`, each with a prompt built from:
 
 ```
 Read ~/.claude/prompts/peer-scout.md for your full mandate.
@@ -95,7 +138,7 @@ Collect all scout outputs inline (the orchestrator reads them as text returned b
 
 ### Wave 2 — Sonnet Merge
 
-After all scouts return (or time out), spawn ONE `expert-reviewer` subagent (`model: ${MODEL:-sonnet}`) with prompt:
+After all scouts return (or time out), spawn ONE `expert-reviewer` subagent (`model: ${PANEL_MODEL}`) with prompt:
 
 ```
 Read ~/.claude/prompts/peer-merge.md for your full mandate.
@@ -114,7 +157,7 @@ Parameters:
   PR_NUMBER=${PR_NUMBER}
   PR_TITLE=${PR_TITLE}
   INCLUDE_MEDIUM=${INCLUDE_MEDIUM}
-  MODEL=${MODEL:-sonnet}
+  MODEL=${PANEL_MODEL}
 
 Write ${REVIEW_DIR}/pr-comment-guide.md in the exact format from ~/.claude/prompts/pr-comment-guide.md (Summary, Critical/High/Medium sections with counts, Reviewer's Note for collegial/Human-Call items, permalink format, sentinel as very last line).
 ```
@@ -123,7 +166,7 @@ Write ${REVIEW_DIR}/pr-comment-guide.md in the exact format from ~/.claude/promp
 
 ## Step 3b — DEEP Path
 
-Spawn ONE `expert-reviewer` subagent (`model: ${MODEL:-sonnet}`) with prompt:
+Spawn ONE `expert-reviewer` subagent (`model: ${PANEL_MODEL}`) with prompt:
 
 ```
 Read ~/.claude/prompts/expert-framework.md for your mandate (Pass 1 blind review format, severity definitions, when-NOT-to-flag rules).
