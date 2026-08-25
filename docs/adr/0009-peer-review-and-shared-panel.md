@@ -44,3 +44,9 @@ This principle generalizes across the repo: it is a guardrail against a reviewer
 - **Cost:** A second command means maintenance of two orchestrations. Guarded by shared-panel extraction — changes to the panel itself land in one place, and either command picking up the change.
 - **Cost:** The PR Comment Guide is a new role with its own persona and thresholds. It runs post-panel, not integrated into the panel itself, adding a sequential step.
 - **Design note:** The omission of Triage Chief from `/expert-review-coworker` is deliberate, not an oversight or a future plan. Triage sorts findings into buckets for the author to decide on in series; peer review surfaces escalations as collegial questions for the author to answer inline in the PR. Different output shapes for different contexts.
+
+## Amendment — coworker command no longer shares the panel (issue #74)
+
+Issue #74 replaced `/expert-review-coworker`'s shared-panel design (Decision 2's second consumer) with a **haiku-scout swarm + automatic complexity gate**: two haiku `expert-scout` agents per lens across six fixed lenses, one sonnet merge (`prompts/peer-merge.md`), and a gate that routes oversized or architectural PRs to a single deep `expert-reviewer` pass instead. There is no Router, Pass 2, Amalgamator, or Triage Chief on either path.
+
+`prompts/expert-review-panel.md` is single-consumer again — only `/expert-review` (author mode) reads it. Decisions 1 and 3 stand unchanged: the dedicated collegial command remains, and the write boundary (`~/.claude/reviews/`, never the reviewed repo) is unaffected. The Decision section above is retained as the historical record of the shared-panel design.

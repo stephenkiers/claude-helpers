@@ -1,8 +1,8 @@
 # Expert Review Panel (shared)
 
 This file contains the shared review panel — Summarizer → Router → Pass 1 → Contrarian Carl →
-Haiku Q&A → Pass 2 → Amalgamator (Steps 4–10). Both `/expert-review` and `/expert-review-coworker`
-read this file and follow these steps.
+Haiku Q&A → Pass 2 → Amalgamator (Steps 4–10). `/expert-review` reads this file and follows
+these steps.
 
 **Preconditions — the caller has already set these before invoking this panel:**
 - `REVIEW_DIR` — the checkpoint directory, created, with `full-diff.patch` and `diff-index.md` written (REQUIRED)
@@ -11,11 +11,10 @@ read this file and follow these steps.
 - `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, project modifiers, and any plan/issue context — detected by the caller (REQUIRED)
 - `PANEL_MODEL` — the model for the judgment panel; may be unset → subagents inherit the caller's model (OPTIONAL)
 - `MODEL_EXPLICIT` — `true` when the caller passed `--model` explicitly, else `false` (REQUIRED)
-- `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
 All I/O is through `REVIEW_DIR` paths. Reviewer YAMLs live in `~/.claude/reviewers/` regardless of
-which repo is under review — this panel is completely repo-agnostic. When `WORKTREE_PATH` is set (coworker mode), project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`) and source-file reads are rooted at `${WORKTREE_PATH}`; when unset, they default to the orchestrator's cwd.
+which repo is under review — this panel is completely repo-agnostic.
 
 The steps below retain their original numbering (Step 4 … Step 10) so cross-references from the
 calling commands stay stable.
@@ -24,9 +23,8 @@ calling commands stay stable.
 
 ### Step 4: Summarizer → `summary.md`
 
-**Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller — e.g.
-`/expert-review-coworker` — may have produced it during setup), skip this step and reuse
-that file. Do not re-run the summarizer or overwrite it.
+**Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller may have produced it
+during setup), skip this step and reuse that file. Do not re-run the summarizer or overwrite it.
 
 Spawn one subagent (`subagent_type: "general-purpose"`) with the summarizer prompt
 @~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
@@ -153,12 +151,6 @@ double duty: confirming the expected file exists *and* implicitly that nothing u
 outside `{REVIEW_DIR}`. If you ever see a write outside `{REVIEW_DIR}` — a stray file, a modified
 file elsewhere in the repo — treat that run as compromised: stop, do not trust its findings, and
 report it rather than silently continuing.
-
-**Path roots (WORKTREE_PATH contract).** When `WORKTREE_PATH` is set (coworker mode), all reviewer
-prompts must root project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`)
-and source-file reads at `${WORKTREE_PATH}`, not the orchestrator's cwd. When `WORKTREE_PATH` is
-unset (default `/expert-review` mode), reads default to the orchestrator's cwd. Reviewer YAML
-files themselves always live in `~/.claude/reviewers/` regardless.
 
 **Pass paths, not contents.** A prompt is self-contained if the subagent can *reach* everything it
 needs, not if you paste everything into it. Every `Agent` prompt you write stays in your context for
@@ -385,15 +377,3 @@ It writes `{REVIEW_DIR}/final-report.md` and returns a receipt with the finding 
 ```
 amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
 ```
-
----
-
-### Coworker Mode (No Triage Chief)
-
-When the caller runs this panel WITHOUT a Triage Chief (the `/expert-review-coworker` case), panel
-escalations that require the author's judgment — findings marked `**Human Call**`, DRIFT, or
-QUESTION in the Amalgamator's report — are NOT triaged into decision buckets. Instead, they are
-surfaced downstream by the PR Comment Guide (`prompts/pr-comment-guide.md`) as collegial questions
-for the author, rather than silently dropped. This is deliberate, not accidental: the guide ensures
-these escalations reach the reviewer and author, even without a dedicated triage step.
-

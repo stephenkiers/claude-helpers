@@ -90,9 +90,11 @@ to get started.
   cross-review), then a **Triage Chief** that turns the report into a decision list and records what
   you rule. Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
   and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
-- `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run the
-  same shared blind-first panel (`prompts/expert-review-panel.md`), then draft PR-ready comments you
-  paste yourself (never auto-posted). Takes a PR URL and `--include-medium`
+- `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run a
+  fast swarm of haiku scouts (2 per lens across 6 fixed lenses) merged by one sonnet agent, with an
+  automatic complexity gate routing oversized or architectural PRs to a single deep pass
+  (`--deep`/`--swarm` overrides), then draft PR-ready comments you paste yourself (never
+  auto-posted). Takes a PR URL and `--include-medium`
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
@@ -182,10 +184,12 @@ around it.
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
   (used by `/implement-with-haiku`).
 - `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
-  for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from
+  for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Also used by
+  `/expert-review-coworker` for its sonnet merge and single deep pass. Model comes from
   the caller (`--model`), except Router which is pinned to sonnet.
 - `expert-scout` — the pinned mechanical roles: Q&A (Haiku), Code Rot Cody (Haiku), and Consistency
-  Checker (Haiku). Router (Sonnet; narrow judgment) is spawned as expert-reviewer with an explicit
+  Checker (Haiku); also the swarm scouts for `/expert-review-coworker` (2 per lens, Haiku).
+  Router (Sonnet; narrow judgment) is spawned as expert-reviewer with an explicit
   model override.
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
