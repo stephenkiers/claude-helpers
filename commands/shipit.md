@@ -339,8 +339,12 @@ fi
 **Gate on descendants, not on this branch being stacked.** A stack root
 (`STACK_IS_STACKED=false`, based on the repo default branch) still has children that need
 ongoing sync — the old `STACK_IS_STACKED` gate silently skipped exactly the canonical
-2-level stack. Detect descendants by running the **Stack Detection → Find children** block
-from `~/.claude/prompts/worktree-reference.md` with this branch as the pivot.
+2-level stack. Detect descendants with this branch as the pivot: first resolve `WORKTREE_PARENT`
+(steps 2–3 of the **Project Detection** block from `~/.claude/prompts/worktree-reference.md` —
+the worktree-list derivation; the full block is not needed here), then run the **Stack
+Detection → Find children** block. If it reports `GH_CHILD_LOOKUP_FAILED=true`, print a loud
+WARNING that the descendant set may be incomplete — never treat a failed lookup as "no
+descendants" and silently skip the sync.
 
 If the branch has descendants AND `STACK_LAYOUT="per-branch"`, the push above advanced this
 branch past where its descendants branched off; per-branch children were NOT updated by the

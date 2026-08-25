@@ -143,10 +143,13 @@ ADR_README = read(ADR_README_FILE)
 CLAUDE_MD = read(CLAUDE_MD_FILE)
 
 # Step-section slices of stack-sync.md, same convention as test_stack_awareness.py.
+step2_idx = get_byte_index(STACK_SYNC, "Step 2")
+step3_idx = get_byte_index(STACK_SYNC, "Step 3")
 step4a_idx = get_byte_index(STACK_SYNC, "Step 4a")
 step4b_idx = get_byte_index(STACK_SYNC, "Step 4b")
 step5_idx = get_byte_index(STACK_SYNC, "Step 5")
 step6_idx = get_byte_index(STACK_SYNC, "Step 6")
+step2_section = STACK_SYNC[step2_idx:step3_idx] if 0 <= step2_idx < step3_idx else ""
 step4a_section = STACK_SYNC[step4a_idx:step4b_idx] if 0 <= step4a_idx < step4b_idx else ""
 step5_section = STACK_SYNC[step5_idx:step6_idx] if 0 <= step5_idx < step6_idx else ""
 step6_section = STACK_SYNC[step6_idx:] if step6_idx >= 0 else ""
@@ -233,9 +236,12 @@ t("stack-sync.md Step 6 suggests 'git branch -D backup/<child>'",
   "branch -D" in step6_section and "backup/" in step6_section,
   "expected the backup-deletion suggestion inside the Step 6 section")
 
+# Pin the gate CONDITION, not just the co-presence of "branch -D" and "synced" somewhere in the
+# section — a doc could mention both without gating one on the other.
 t("stack-sync.md Step 6 gates backup deletion on the child's own outcome",
-  "branch -D" in step6_section and re.search(r"synced", step6_section) is not None,
-  "expected the backup-deletion suggestion gated on that child having synced")
+  "branch -D" in step6_section
+  and re.search(r'\$OUTCOME" = "synced"', step6_section) is not None,
+  "expected the backup-deletion suggestion gated on that child's own outcome being 'synced'")
 
 print()
 
@@ -244,23 +250,27 @@ print()
 # ============================================================================
 print("[Invariant 5] mode detection distinguishes lookup failure from absence; ls-remote for CLOSED")
 
+# Scoped to the Step 2 section: whole-file presence is satisfiable by the frontmatter's
+# allowed-tools grants (e.g. Bash(git ls-remote:*)) without the behavior existing at all.
 t("stack-sync.md routes on the mergedAt field",
-  "mergedAt" in STACK_SYNC,
-  "expected mode routing on mergedAt (non-null -> post-merge)")
+  "mergedAt" in step2_section,
+  "expected mode routing on mergedAt (non-null -> post-merge) in Step 2")
 
 t("stack-sync.md handles the CLOSED-without-merge case",
-  "CLOSED" in STACK_SYNC,
-  "expected a CLOSED + null mergedAt arm that stops and reports")
+  "CLOSED" in step2_section,
+  "expected a CLOSED + null mergedAt arm that stops and reports, in Step 2")
 
 t("stack-sync.md runs ls-remote for the remote-branch check (CLOSED included)",
-  "ls-remote" in STACK_SYNC,
-  "expected 'git ls-remote' in the mode detection (run for CLOSED PRs too)")
+  "ls-remote" in step2_section,
+  "expected 'git ls-remote' in the Step 2 mode detection (run for CLOSED PRs too)")
 
-gh_pr_view_idx = STACK_SYNC.find("gh pr view")
-mode_window = STACK_SYNC[gh_pr_view_idx:gh_pr_view_idx + 2500] if gh_pr_view_idx >= 0 else ""
+# Anchored on the Step 2 section, not a bare find("gh pr view") — the first "gh pr view" in the
+# file is the frontmatter's Bash(gh pr view:*) grant, so a naive window never reaches the code.
 t("stack-sync.md captures the lookup exit code (fails closed on error)",
-  "$?" in mode_window or re.search(r"exit (code|status)", mode_window) is not None,
-  "expected an exit-code check after 'gh pr view' so lookup failure is not treated as absence")
+  "$?" in step2_section
+  and re.search(r'\*\)\s*echo\s+"ERROR', step2_section) is not None,
+  "expected an exit-code check after 'gh pr view' with a catch-all ERROR arm, so lookup failure"
+  " is not treated as absence")
 
 print()
 
@@ -289,17 +299,23 @@ t("stack-sync.md runs the cache-based child detector",
   re.search(r"github-cache\.json|cache", STACK_SYNC) is not None,
   "expected the repo-cache detector in stack-sync.md's Find-children")
 
+# "gh pr list" alone is satisfied by the frontmatter's Bash(gh pr list:*) grant even if the body
+# never runs the detector — pin the actual invocation shape instead.
 t("stack-sync.md always runs 'gh pr list' as the second detector",
-  "gh pr list" in STACK_SYNC,
-  "expected 'gh pr list' to run alongside the cache detector")
+  "gh pr list --base" in STACK_SYNC,
+  "expected a 'gh pr list --base <parent>' detector call alongside the cache detector")
 
 t("stack-sync.md dedupes the union of detectors by branch",
   re.search(r"sort -u|dedup|unique", STACK_SYNC, re.IGNORECASE) is not None,
   "expected deduplication (e.g. 'sort -u') of the two detectors' output")
 
+# The old regex's only match was an incidental "via cache" in a dedupe comment — not provenance
+# output. Pin the actual per-child echo shape for BOTH detector sources.
 t("stack-sync.md prints per-child detection provenance",
-  re.search(r"detected via|provenance|via cache|via gh pr list", STACK_SYNC, re.IGNORECASE) is not None,
-  "expected each child's detection source (cache vs gh pr list) to be printed")
+  re.search(r"detected child .{0,80}\(worktree cache\)", STACK_SYNC) is not None
+  and re.search(r"detected child .{0,80}\(gh pr list\)", STACK_SYNC) is not None,
+  "expected each child's detection source echoed per child: 'detected child <b> of <p> (worktree"
+  " cache)' and '(gh pr list)'")
 
 find_children_section = slice_heading_section(WORKTREE_REF, r"[Ff]ind.{0,20}[Cc]hildren") or ""
 t("worktree-reference.md has a canonical Find-children block",
@@ -322,8 +338,8 @@ t("stack-sync.md parses DESCENDANTS with 'while IFS= read -r'",
   "expected 'while IFS= read -r' so paths with spaces survive the parse")
 
 t("stack-sync.md extracts the path-typed tail with 'cut -f5-'",
-  re.search(r"cut -f5-", STACK_SYNC) is not None,
-  "expected a 'cut -f5-'-style tail extraction (no two-delimiter ambiguity)")
+  re.search(r"cut -d: -f5-", STACK_SYNC) is not None,
+  "expected a 'cut -d: -f5-'-style tail extraction (no two-delimiter ambiguity)")
 
 print()
 
@@ -388,9 +404,23 @@ t("stack-sync.md Step 6 emits a paste-me cleanup command",
   len(cleanup_cmd_lines) > 0,
   "expected a 'git branch -D backup/...' suggestion line in the Step 6 section")
 
+# Both fields must be quote-wrapped so the pasted command survives paths with spaces. Either quote
+# style counts — the doc emits echo "... git -C '$CHILD_WT' branch -D 'backup/$CHILD_BRANCH'"
+# (single-quoted fields inside a double-quoted echo, so the pasted command carries literal quotes
+# around the expanded values). Check: inside the echo payload, no $-variable may sit OUTSIDE a
+# quoted span (the outer echo wrapper itself is excluded first so it can't launder bare fields).
+def cleanup_fields_quoted(line):
+    m = re.search(r'echo\s+"(.*)"', line)
+    payload = m.group(1) if m else line
+    if "$" not in payload:
+        return False
+    stripped = re.sub(r"'[^']*'", "", payload)          # drop 'single-quoted' spans
+    stripped = re.sub(r'\\?"[^"\\]*\\?"', "", stripped)  # drop "double" or \"escaped\" spans
+    return "$" not in stripped
+
 t("stack-sync.md Step 6 cleanup command quotes its fields",
-  any('"$' in line for line in cleanup_cmd_lines),
-  "expected quoted variable fields (\"$...\") in the Step 6 cleanup command")
+  any(cleanup_fields_quoted(line) for line in cleanup_cmd_lines),
+  "expected every variable field in the Step 6 cleanup command to sit inside quotes")
 
 print()
 
@@ -424,17 +454,23 @@ print()
 # ============================================================================
 print("[Invariant 14] gh pr list failure is captured and warned on")
 
-gh_pr_list_idx = STACK_SYNC.find("gh pr list")
+# Anchored on the actual invocation "gh pr list --base" in the body — a bare find("gh pr list")
+# hits the frontmatter's Bash(gh pr list:*) grant and windows the wrong text. Exit-status capture
+# may take either idiom: `if VAR=$(gh pr list ...)` (status tested by the if) or an explicit $?
+# check after the call; both distinguish API failure from an empty result.
+gh_pr_list_idx = STACK_SYNC.find("gh pr list --base")
 detection_window = STACK_SYNC[gh_pr_list_idx:gh_pr_list_idx + 1500] if gh_pr_list_idx >= 0 else ""
 
 t("stack-sync.md captures the 'gh pr list' exit status",
-  "$?" in detection_window or re.search(r"exit (code|status)", detection_window) is not None,
-  "expected an exit-code capture after 'gh pr list' so API failure is not mistaken for no children")
+  re.search(r"if\s+\w+=\$\(gh pr list", STACK_SYNC) is not None
+  or "$?" in detection_window
+  or re.search(r"exit (code|status)", detection_window) is not None,
+  "expected an exit-status capture on 'gh pr list' (if-capture or $?) so API failure is not"
+  " mistaken for no children")
 
 t("stack-sync.md warns when child detection fails",
-  re.search(r"warn", STACK_SYNC, re.IGNORECASE) is not None
-  and re.search(r"fail", detection_window, re.IGNORECASE) is not None,
-  "expected a warning path near the 'gh pr list' call for detection failure")
+  re.search(r"WARNING[^\n]*failed", detection_window, re.IGNORECASE) is not None,
+  "expected a WARNING near the 'gh pr list' call when detection fails")
 
 print()
 
@@ -447,11 +483,13 @@ t("stack-sync.md prefers the .mergeCommit.oid field",
   ".mergeCommit.oid" in STACK_SYNC,
   "expected '.mergeCommit.oid' as the preferred merged-tip source")
 
-merge_commit_idx = STACK_SYNC.find("mergeCommit")
-merge_window = STACK_SYNC[merge_commit_idx:merge_commit_idx + 1500] if merge_commit_idx >= 0 else ""
+# Sliced to the Step 2 (mode detection) section: the fallback lives ~50 lines below the first
+# mergeCommit mention, past any fixed char window. Pin both halves — the fallback wording and the
+# actual local-ref expression it falls back to.
 t("stack-sync.md documents a local-ref fallback for the merged tip",
-  re.search(r"fall\s?back|fallback|local (ref|branch)", merge_window, re.IGNORECASE) is not None,
-  "expected a local-ref fallback near the mergeCommit lookup")
+  re.search(r"fall\s?back|fallback|local (ref|branch)", step2_section, re.IGNORECASE) is not None
+  and re.search(r'git rev-parse "\$PIVOT_BRANCH"', step2_section) is not None,
+  "expected a local-ref fallback (git rev-parse \"$PIVOT_BRANCH\") for the merged tip in Step 2")
 
 print()
 
@@ -477,19 +515,27 @@ print()
 # ============================================================================
 print("[Invariant 18] 'gh stack sync' appears in a fenced bash block in Step 4a, after the dry-run guard")
 
-step4a_blocks = extract_bash_blocks(step4a_section)
+# Positions come from the finditer match offsets, not str.find(block_text): the bare string
+# "gh stack sync" also appears in Step 4a's backtick-quoted prose BEFORE the bash blocks, so
+# find() mis-anchors the invocation there and inverts the ordering check.
 sync_lines = []
-for block_start, block_text in step4a_blocks:
+for match in re.finditer(r"```bash\n(.*?)\n```", step4a_section, re.DOTALL):
+    block_text = match.group(1)
     for line in active_command_lines(block_text):
         if "gh stack sync" in line:
-            # Position of this invocation within the Step 4a section text.
-            sync_lines.append(step4a_section.find(block_text) + block_text.find(line))
+            sync_lines.append(match.start())
 
 t("stack-sync.md Step 4a inlines 'gh stack sync' as an active command",
   len(sync_lines) > 0,
   "expected an active (non-comment, non-echo) 'gh stack sync' line in a Step 4a bash block")
 
-dry_run_guard_idx = step4a_section.find("DRY_RUN")
+# Anchor the guard WITH its polarity (`= "true"`): a flipped guard (`!= "true"`) must fail here,
+# not silently relocate the anchor. (Part C weak-assertion fix: presence alone pinned nothing.)
+dry_run_guard_idx = step4a_section.find('if [ "$DRY_RUN" = "true" ]')
+t("stack-sync.md Step 4a dry-run guard fires when DRY_RUN is true",
+  dry_run_guard_idx >= 0,
+  "expected the guard 'if [ \"$DRY_RUN\" = \"true\" ]' — polarity matters, not just presence")
+
 t("stack-sync.md Step 4a places the dry-run guard before 'gh stack sync'",
   dry_run_guard_idx >= 0 and len(sync_lines) > 0 and dry_run_guard_idx < min(sync_lines),
   "expected the DRY_RUN guard to precede the 'gh stack sync' invocation inside Step 4a")

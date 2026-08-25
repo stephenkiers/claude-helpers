@@ -41,10 +41,12 @@ structurally (single-driver / per-branch / unknown) using the same primitives as
    or the `.stack.parentBranch` cache, `/stack-sync` halts and prompts the user rather than assuming
    single-driver.
 
-**Descendants are collected via a topological walk and verified (not ordered) by
-`git merge-base --is-ancestor`, not by the `.stack.parentBranch` cache.** The cache may be empty or stale
-(a freshly created sibling worktree has no `.stack.parentBranch` until something writes it). The reliable
-ordering is structural: an ancestor is rebased before its descendant. A cycle in the ancestry graph
+**Descendants are collected from two detectors — the `.stack.parentBranch` worktree caches and
+`gh pr list` — and then walked bottom-up in an order verified (not derived) by
+`git merge-base --is-ancestor`.** The cache feeds *detection* (it is one of the two child detectors);
+it is excluded from *ordering*, because it may be empty or stale (a freshly created sibling worktree
+has no `.stack.parentBranch` until something writes it). The reliable ordering is structural: an
+ancestor is rebased before its descendant. A cycle in the ancestry graph
 (A is ancestor of B and B is ancestor of A) is a hard error — `/stack-sync` aborts rather than guessing
 a topology.
 
@@ -77,8 +79,8 @@ cannot port to the single-driver arm, which has no per-child worktrees.
 The runbook is printed unconditionally — even when the harness auto-executes it and even when the user
 aborts (an abort is a deferral, not a cancellation; the runbook remains the user's record of what still
 needs to run). Auto-execution is harness-conditional: it is gated on `command -v claude`, never passes
-`--yes` (each child's confirmation prompt still applies), and falls back to emit-only when no harness is
-found. `STACK_SYNC_MANUAL=1` opts out of auto-execution entirely, leaving the emit-only behavior.
+`--yes` (the run's single pre-push confirmation still applies), and falls back to emit-only when no
+harness is found. `STACK_SYNC_MANUAL=1` opts out of auto-execution entirely, leaving the emit-only behavior.
 
 ## Consequences
 
@@ -96,9 +98,9 @@ found. `STACK_SYNC_MANUAL=1` opts out of auto-execution entirely, leaving the em
   `/shipit` / `/expert-rebase`. Calling `/stack-sync` before the pivot is pushed is a no-op for the pivot
   and a rebase-onto-trunk for descendants — which is correct, not a bug.
 - **Two-gate force-push in the per-branch arm is the cost of safety.** The pre-push confirmation adds one
-  prompt to every per-branch child force-push; `--yes` exists for scripted/lifecycle callers that have
-  already obtained consent. The repo-cache gate runs the project's build/test checks from `<CHILD_WT>`
-  before each push. Both are intentional and both must remain in the per-branch arm; removing either
+  prompt per per-branch run (a single pause before the first child force-push); `--yes` exists for
+  scripted/lifecycle callers that have already obtained consent. The repo-cache gate runs the project's
+  build/test checks from `<CHILD_WT>` before each push. Both are intentional and both must remain in the per-branch arm; removing either
   re-opens the force-push-corrupts-remote class that ADR-0011's fail-closed detection only half-closes.
   The single-driver arm's push is deliberately ungated — it is the case ADR-0011 re-legalized as safe, and
   the `<CHILD_WT>`-parameterized cache gate has no child worktree to run against in a single working copy.

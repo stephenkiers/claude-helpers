@@ -543,7 +543,9 @@ path (emit-only fallback — you run it yourself). The canonical restack block f
 if [ "$PR_STATE" = "MERGED" ]; then
   # Run Stack Detection → Find children block from ~/.claude/prompts/worktree-reference.md
   # This requires WORKTREE_PARENT (from Project Detection) and CURRENT_BRANCH
-  # Emits: CHILD_BRANCHES (space-separated list of "branch:pr:worktree" records)
+  # Emits: CHILD_BRANCHES (newline-separated "branch:pr:worktree" records — worktree LAST so
+  #        `cut -d: -f3-` stays correct for paths containing ':'; branch names and PR numbers are
+  #        colon-free by git/GitHub rules), GH_CHILD_LOOKUP_FAILED (true when gh pr list errored)
 
   REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
   REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
@@ -553,8 +555,11 @@ if [ "$PR_STATE" = "MERGED" ]; then
   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
   [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
 
-  # Detect children (scan worktree caches + fallback to gh pr list)
+  # Detect children — mirrors the canonical Find-children block (worktree-reference.md): cache scan
+  # UNION 'gh pr list' (both detectors always run; a cache hit can be stale and gh can miss children
+  # the cache knows about), deduped by branch, with a lookup-failure flag.
   CHILD_BRANCHES=""
+  GH_CHILD_LOOKUP_FAILED=false
 
   if [ -d "$WORKTREE_PARENT" ]; then
     while IFS= read -r cache_file; do
@@ -568,18 +573,25 @@ if [ "$PR_STATE" = "MERGED" ]; then
         ')
         if [ -n "$CHILD_BRANCH" ]; then
           CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
-          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE} "
+          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE}"$'\n'
         fi
       fi
     done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
   fi
 
-  # Fallback: check open PRs against this branch (no worktree path available)
-  if [ -z "$CHILD_BRANCHES" ]; then
-    OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null || true)
-    if [ -n "$OPEN_PRS" ]; then
-      CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
-    fi
+  # Detector 2 — open PRs based on this branch. Always runs (union, not fallback); dedupe by branch.
+  if OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null); then
+    while IFS= read -r PR_REC; do
+      [ -z "$PR_REC" ] && continue
+      PR_BRANCH=$(printf '%s' "$PR_REC" | cut -d: -f1)
+      if printf '%s' "$CHILD_BRANCHES" | awk -F: -v b="$PR_BRANCH" '$1==b {f=1} END {exit !f}'; then
+        continue   # already detected via cache
+      fi
+      CHILD_BRANCHES="${CHILD_BRANCHES}${PR_REC}"$'\n'
+    done <<< "$OPEN_PRS"
+  else
+    GH_CHILD_LOOKUP_FAILED=true
+    echo "  WARNING: 'gh pr list --base $CURRENT_BRANCH' failed — child detection may be incomplete"
   fi
 
   # If children found, capture the merged tip SHA and emit runbook
@@ -630,8 +642,11 @@ if [ "$PR_STATE" = "MERGED" ]; then
     echo ""
 
     # Parse children and emit runbook (emit-by-reference: substitute parameters into the canonical block)
+    # CHILD_BRANCHES records are newline-separated (a worktree path may contain spaces), so read
+    # line-by-line — never `for ... in $CHILD_BRANCHES` (that would word-split a spaced path).
     CHILD_NUM=0
-    for CHILD_INFO in $CHILD_BRANCHES; do
+    while IFS= read -r CHILD_INFO; do
+      [ -z "$CHILD_INFO" ] && continue
       CHILD_NUM=$((CHILD_NUM + 1))
       # Parse "branch:pr:worktree" — handle paths with colons by reading field3 onwards
       CHILD_BRANCH=$(echo "$CHILD_INFO" | cut -d: -f1)
@@ -642,9 +657,9 @@ if [ "$PR_STATE" = "MERGED" ]; then
       echo ""
       echo "\`\`\`bash"
 
-      # If no worktree path (fallback only), emit a placeholder for the caller to substitute.
+      # If no worktree path (gh-only record), emit a placeholder for the caller to substitute.
       if [ -z "$CHILD_WT" ]; then
-        echo "# Worktree path unknown (detected via gh pr list fallback, not cache)."
+        echo "# Worktree path unknown (detected via 'gh pr list', not the worktree cache)."
         echo "# Substitute the actual child worktree path for <CHILD_WT> below."
         CHILD_WT="<CHILD_WT>"
       fi
@@ -725,12 +740,12 @@ if [ "$PR_STATE" = "MERGED" ]; then
       echo "fi"
       echo "\`\`\`"
       echo ""
-    done
+    done <<< "$CHILD_BRANCHES"
 
     # Cache metadata fixup on the auto-execute path: after /stack-sync completes, read its
     # per-child report and run the cache-clearing snippet above for each child whose outcome
-    # is a success (not failed, not skipped-parent-failed). On the emit-only path the user
-    # runs it as part of the runbook.
+    # is `synced` (not `conflict`, not `skipped-parent-failed`, etc.). On the emit-only path
+    # the user runs it as part of the runbook.
 
     # Remote stack fixup (if this was part of a remote stack)
     PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")
@@ -760,7 +775,13 @@ GRAPHQL
       echo ""
     fi
   else
-    echo "No stacked children detected. Proceeding to worktree removal."
+    if [ "$GH_CHILD_LOOKUP_FAILED" = "true" ]; then
+      # gh errored during detection — "no children" may be a lookup failure, not a fact.
+      echo "WARNING: no stacked children detected, but 'gh pr list' failed during detection — the"
+      echo "child set may be incomplete. Re-run /cleanup when gh is healthy before relying on this."
+    else
+      echo "No stacked children detected. Proceeding to worktree removal."
+    fi
   fi
 
 else
@@ -795,8 +816,9 @@ After a successful child sync, on either path, the child's `.claude/github-cache
 metadata is cleared to `stack: {isStacked: false}` — its base is now the default branch, not
 the merged pivot. Without this, "run /cleanup again" re-detects the same children forever and
 the next `/shipit` routes on a phantom parent. On the auto-execute path, run the per-child
-cache-clearing snippet (emitted with the runbook) for each child stack-sync reports as
-succeeded; on the emit-only path the snippet is part of the runbook itself.
+cache-clearing snippet (emitted with the runbook) for each child stack-sync reports with outcome
+`synced` (the literal per-child outcome token from the Step 6 report); on the emit-only path the
+snippet is part of the runbook itself.
 
 ### 3. Remove Worktree (from main)
 

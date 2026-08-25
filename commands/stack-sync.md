@@ -46,19 +46,27 @@ for _a in $ARGUMENTS; do
     --yes|-y)  ASSUME_YES=true ;;   # -y is the documented short alias for --yes
     --*)       echo "ERROR: unknown flag '$_a' (expected --dry-run or --yes)." >&2; exit 1 ;;
     -*)        echo "ERROR: unknown flag '$_a' (a pivot branch may not start with '-')." >&2; exit 1 ;;
-    *)         PIVOT_BRANCH="$_a"; ARG_POSITIONAL="$_a" ;;
+    *)         if [ -n "$ARG_POSITIONAL" ]; then
+                 echo "ERROR: unexpected second positional '$_a' (pivot is already '$ARG_POSITIONAL')." >&2
+                 exit 1
+               fi
+               PIVOT_BRANCH="$_a"; ARG_POSITIONAL="$_a" ;;
   esac
 done
 set +f
 [ -z "$PIVOT_BRANCH" ] && PIVOT_BRANCH=$(git branch --show-current)
+# Empty pivot (no arg, detached HEAD) must fail here, not opaquely downstream.
+[ -n "$PIVOT_BRANCH" ] || { echo "ERROR: no pivot branch given and HEAD is detached — pass a pivot: /stack-sync <pivot-branch>" >&2; exit 1; }
 echo "PIVOT_BRANCH=$PIVOT_BRANCH  DRY_RUN=$DRY_RUN  ASSUME_YES=$ASSUME_YES"
 ```
 
 Default-branch guards:
 
-- If `PIVOT_BRANCH` equals `DEFAULT_BRANCH` → **post-merge mode**: the pivot is the trunk itself, so
-  sync every branch stacked directly on the default branch. This is a legitimate request only when the
-  user passed the default branch explicitly as the pivot.
+- If `PIVOT_BRANCH` equals `DEFAULT_BRANCH` → the pivot is the trunk itself, so sync every branch
+  stacked directly on the default branch. Mode detection resolves **ongoing** here (the default branch
+  always exists on the remote, so the `ls-remote` check takes the "still on remote" arm), which is
+  correct: children rebase onto `origin/$DEFAULT_BRANCH`'s current tip. This is a legitimate request
+  only when the user passed the default branch explicitly as the pivot.
 - If you are sitting on the default branch **and no pivot arg was given** → error and stop. Running
   from the default branch with no pivot is ambiguous (there is no single parent to sync from).
 
@@ -116,19 +124,18 @@ fi
 
 if [ "$SYNC_MODE" = "post-merge" ]; then
   # Capture the pivot's tip BEFORE any descendant work — post-merge children rebase away from this SHA.
-  if [ "$PIVOT_BRANCH" = "$DEFAULT_BRANCH" ]; then
-    MERGED_TIP=$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || echo "")
-  else
-    # Prefer the PR's merge commit — it resolves even when the local branch was already deleted.
-    # PR_MERGE_OID came from the routing fetch above; when that fetch never ran (ls-remote
-    # fallback path), ask again here — a transient gh failure may have cleared.
-    if [ -z "$PR_MERGE_OID" ] || [ "$PR_MERGE_OID" = "null" ]; then
-      PR_MERGE_OID=$(gh pr view "$PIVOT_BRANCH" --json mergeCommit -q '.mergeCommit.oid // ""' 2>/dev/null || echo "")
-    fi
-    MERGED_TIP="$PR_MERGE_OID"
-    if [ -z "$MERGED_TIP" ] || [ "$MERGED_TIP" = "null" ]; then
-      MERGED_TIP=$(git rev-parse "$PIVOT_BRANCH" 2>/dev/null || echo "")
-    fi
+  # (A default-branch pivot never reaches this arm: the default branch always exists on the remote,
+  # so mode detection resolves ongoing for it.)
+  # Prefer the PR's merge commit — it resolves even when the local branch was already deleted.
+  # PR_MERGE_OID came from the routing fetch above; when that fetch never ran (ls-remote
+  # fallback path), ask again here — a transient gh failure may have cleared.
+  if [ -z "$PR_MERGE_OID" ] || [ "$PR_MERGE_OID" = "null" ]; then
+    PR_MERGE_OID=$(gh pr view "$PIVOT_BRANCH" --json mergeCommit -q '.mergeCommit.oid // ""' 2>/dev/null || echo "")
+  fi
+  MERGED_TIP="$PR_MERGE_OID"
+  if [ -z "$MERGED_TIP" ] || [ "$MERGED_TIP" = "null" ]; then
+    # Local-ref fallback: the branch tip as recorded locally before deletion.
+    MERGED_TIP=$(git rev-parse "$PIVOT_BRANCH" 2>/dev/null || echo "")
   fi
   [ -z "$MERGED_TIP" ] && { echo "ERROR: post-merge mode but could not resolve '$PIVOT_BRANCH' tip SHA."; exit 1; }
   echo "SYNC_MODE=post-merge  MERGED_TIP=$MERGED_TIP"
@@ -141,9 +148,10 @@ fi
 
 Run the **Detect layout** block from `~/.claude/prompts/worktree-reference.md` (the same block
 `/shipit`'s stacked push routing uses) with **`STACK_LAYOUT_SUBJECT="$PIVOT_BRANCH"`** so detection
-keys off the pivot, not the cwd's branch. This matters for the `/cleanup` handoff, which runs
-`/stack-sync <pivot>` from the merged child's own worktree — keyed off the current branch, detection
-would deterministically resolve `unknown` and STOP. When the pivot IS the current branch, run
+keys off the pivot, not the cwd's branch. This matters for the `/cleanup` handoff: `/cleanup` cd's
+to the **main** worktree (its Step 1) before invoking `/stack-sync <pivot>`, so the cwd's branch is
+the default branch, not the pivot — keyed off the current branch, detection would deterministically
+resolve `unknown` and STOP. When the pivot IS the current branch, run
 **Is-stacked (this branch)** first so `STACK_PARENT_BRANCH` is set; for a non-current pivot the layout
 block reads the pivot's parent from the pivot's own worktree cache.
 
@@ -223,16 +231,18 @@ DESCENDANTS=""          # newline-separated "branch:pr:parent:level:worktree" re
                         # The worktree path is LAST so `cut -d: -f5-` stays correct even for paths
                         # containing ':'; branch names and PR numbers are colon-free by git/GitHub rules.
 CYCLE_DETECTED=false
-GH_LOOKUP_FAILED=false  # set when any 'gh pr list' detector call errors during the walk below
+# Same flag name as the canonical Find-children block, but sticky here: the canonical snippet runs
+# once per caller, while this walk calls find_children_of repeatedly — so the flag is initialized
+# once before the walk and OR-accumulated (set, never reset) by each errored call.
+GH_CHILD_LOOKUP_FAILED=false
 
 # find_children_of <branch> — mirrors the canonical Find-children block from
 # ~/.claude/prompts/worktree-reference.md, re-encoded inline as a function for recursion (the
 # canonical block is a snippet, not a shell function — keep the two in sync). Emits CHILD_BRANCHES
-# as newline-separated "branch:pr:worktree" records; sets GH_LIST_FAILED on gh errors.
+# as newline-separated "branch:pr:worktree" records; sets GH_CHILD_LOOKUP_FAILED on gh errors.
 find_children_of() {
   local parent="$1"
   CHILD_BRANCHES=""
-  GH_LIST_FAILED=false
   # Detector 1 — sibling worktree caches.
   if [ -d "$WORKTREE_PARENT" ]; then
     while IFS= read -r cache_file; do
@@ -269,7 +279,7 @@ find_children_of() {
       echo "  detected child $pr_branch of $parent (gh pr list)"
     done <<< "$open_prs"
   else
-    GH_LIST_FAILED=true
+    GH_CHILD_LOOKUP_FAILED=true   # sticky — see the flag's declaration above
     echo "  WARNING: 'gh pr list --base $parent' failed — child detection may be incomplete"
   fi
 }
@@ -306,7 +316,6 @@ walk() {
   case "$SEEN" in *":$parent:"*) CYCLE_DETECTED=true; return ;; esac
   SEEN="$SEEN$parent:"
   find_children_of "$parent"
-  [ "$GH_LIST_FAILED" = "true" ] && GH_LOOKUP_FAILED=true
   local rec
   while IFS= read -r rec; do
     [ -z "$rec" ] && continue
@@ -358,7 +367,7 @@ while IFS= read -r rec; do
 done <<< "$DESCENDANTS"
 
 if [ -z "$DESCENDANTS" ]; then
-  if [ "$GH_LOOKUP_FAILED" = "true" ]; then
+  if [ "$GH_CHILD_LOOKUP_FAILED" = "true" ]; then
     # gh errored during detection — the child set may be incomplete. Refuse to declare a clean no-op.
     echo "WARNING: no descendants found, but 'gh pr list' failed during detection — the child set"
     echo "may be incomplete. Re-run when gh is healthy; refusing to declare 'nothing to sync'."
@@ -505,6 +514,9 @@ invocation, classify the outcome from the exit status and the block's echoed rea
 - 4b.2 flagged the worktree dirty → do NOT invoke the block at all; record `skipped-dirty`
 - 4b.2 could not resolve a worktree → do NOT invoke; record `no-worktree`
 - invocation output shows the check gate refusing to push → `checks-failed`
+- invocation shows the block's dirty-tree bail ("uncommitted changes") although 4b.2 flagged the
+  worktree clean → the tree went dirty between planning and invocation (TOCTOU) — record
+  `skipped-dirty`, not `conflict`
 - invocation shows a rebase conflict (or any other non-zero exit) → `conflict`
 - parent's outcome was not `synced` → `skipped-parent-failed` (no invocation; see skip-parent rule)
 
