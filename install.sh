@@ -62,6 +62,37 @@ for dir in commands reviewers prompts agents scripts; do
     done
 done
 
+# Validate the expert-review model registry.
+# The resolver script is symlinked into ~/.claude/scripts/ by the loop above; confirm it landed,
+# then (if python3 is available) run it to validate config/expert-review-models.json in place.
+# setup-local is idempotent and should warn, not hard-fail, so all checks here are advisory.
+
+RESOLVER_LINK="$CLAUDE_DIR/scripts/resolve-expert-review-models.py"
+if [ ! -e "$RESOLVER_LINK" ]; then
+    echo ""
+    echo "WARNING: $RESOLVER_LINK not found."
+    echo "         The expert-review model resolver was not symlinked. Re-run this script from"
+    echo "         the repo root so scripts/resolve-expert-review-models.py is linked into ~/.claude/scripts/."
+fi
+
+REGISTRY="$REPO_DIR/config/expert-review-models.json"
+if [ ! -f "$REGISTRY" ]; then
+    echo ""
+    echo "NOTE: $REGISTRY not found — registry validation skipped (no config/expert-review-models.json)."
+elif ! command -v python3 >/dev/null 2>&1; then
+    echo ""
+    echo "NOTE: python3 not found — expert-review model registry validation skipped."
+else
+    if python3 "$REPO_DIR/scripts/resolve-expert-review-models.py" >/dev/null 2>/dev/null; then
+        echo "Expert-review model registry validated (config/expert-review-models.json)."
+    else
+        echo ""
+        echo "WARNING: expert-review model registry failed validation."
+        echo "         Fix config/expert-review-models.json. The resolver's stderr (re-run"
+        echo "         'python3 scripts/resolve-expert-review-models.py') has the precise error."
+    fi
+fi
+
 if [ ! -e "$CLAUDE_DIR/preferences.yaml" ]; then
     cp "$REPO_DIR/prompts/preferences.yaml.template" "$CLAUDE_DIR/preferences.yaml"
     echo "Created $CLAUDE_DIR/preferences.yaml from template"
