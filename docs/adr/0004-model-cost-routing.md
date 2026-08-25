@@ -117,7 +117,12 @@ Expert-review model routing is now centralized in a single registry rather than 
 agent frontmatter and command overrides. The per-agent `model:` pins described above were a model-
 retirement bug: a dated provider ID (e.g. `claude-haiku-4-5-20251001`) baked into frontmatter
 breaks silently when the provider retires that ID, and there was no single place to retune the
-review system for a fork. This amendment fixes both.
+review system for a fork. This amendment fixes both. It supersedes the specific mechanic claims in
+the Decision above that no longer hold: the `model: haiku` expert-scout frontmatter pin (the agent
+now carries no model default), the literal `model: "sonnet"` Router override (now the resolved
+`ROUTER_MODEL` alias), and "panel roles inherit from the command's model" (panel roles now receive
+an explicitly resolved `PANEL_MODEL`). The tier guidance (Haiku mechanical / Sonnet router / panel
+tier / Fable deliberate-expensive) still holds — only the mechanism that selects each tier changed.
 
 **Semantic aliases are policy, not provider IDs.** `haiku`/`sonnet`/`opus`/`fable` are the only
 model identifiers used in expert-review routing. Claude Code settings map these aliases to local
@@ -137,8 +142,9 @@ errors go to stderr with a non-zero exit.
 
 **Ordered fallbacks are bounded and visible.** When a provider model disappears at runtime, an
 `unchecked` alias that fails at spawn heals to the next configured alias exactly once, with a printed
-receipt and cached metadata — never loops, never silent. If the ordered list is exhausted, the
-resolver stops and names the registry entry that ran dry.
+receipt and cached metadata — never loops, never silent. If the ordered list is exhausted — at
+preflight by the resolver, or at runtime by the orchestrator — the run stops and names the registry
+entry that ran dry.
 
 **Strict overrides never fall back.** An explicit `--model <alias>` that is unavailable **fails**
 rather than silently switching to a different model. The strict override is the user's deliberate

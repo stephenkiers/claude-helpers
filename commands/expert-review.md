@@ -242,13 +242,16 @@ explicit `--model` is strict: it never falls back; if the chosen alias is unavai
 `enforceAvailableModels`, the resolver fails fast rather than substituting.
 
 After parsing args — and BEFORE any summary/router/panel agents launch — run the centralized resolver
-and capture its JSON. Locate the script via `$PROJECT_ROOT` (computed in Step 0 as
-`git rev-parse --show-toplevel`) — never a hardcoded path — so installed-symlink commands work from
-any repo:
+and capture its JSON. Locate the script via the install symlink at
+`$HOME/.claude/scripts/resolve-expert-review-models.py` — never a hardcoded path, and NOT
+`$PROJECT_ROOT`: `$PROJECT_ROOT` is the repo *under review* (`git rev-parse --show-toplevel`), which
+is only claude-helpers when claude-helpers reviews itself. `/expert-review` works across all projects,
+so the resolver is reached through the same install symlink the coworker commands use. The resolver
+resolves its own registry via `os.path.realpath(__file__)`, so the symlink path works from any repo:
 
 ```bash
 set -euo pipefail
-MODELS_JSON="$(python3 "$PROJECT_ROOT/scripts/resolve-expert-review-models.py" ${PANEL_ARG:+--model "$PANEL_ARG"})"
+MODELS_JSON="$(python3 "$HOME/.claude/scripts/resolve-expert-review-models.py" ${PANEL_ARG:+--model "$PANEL_ARG"})"
 ```
 
 Pass `--model` only when the user gave one (the `${PANEL_ARG:+…}` expansion omits the flag when
@@ -410,13 +413,21 @@ set -euo pipefail
 EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 MODELS_FILE="${REVIEW_DIR}/models.json"
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-# Merge the review object, then fold in configured + used models from the cached
-# resolver JSON so a fallback run stays reproducible (which alias was requested vs.
-# which actually ran). --slurpfile reads the file as a one-element array; jq owns
-# the JSON, so no shell interpolation into --argjson.
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" --slurpfile models "$MODELS_FILE" \
-  '. + {review: ($review + {configuredModels: $models[0].configured, usedModels: $models[0].resolved})}' \
-  > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+# Merge the review object, then fold in configured + used models from the cached resolver JSON
+# so a fallback run stays reproducible (which alias was requested vs. which actually ran). This
+# merge is best-effort: if models.json is missing or malformed, write the review object WITHOUT
+# the model fields rather than losing the whole review-cache entry (findings, rulings, commit) —
+# review metadata must not depend on the model cache surviving. jq owns the JSON, so no shell
+# interpolation into --argjson.
+if [ -s "$MODELS_FILE" ] && jq -e . "$MODELS_FILE" >/dev/null 2>&1; then
+  echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" --slurpfile models "$MODELS_FILE" \
+    '. + {review: ($review + {configuredModels: $models[0].configured, usedModels: $models[0].resolved})}' \
+    > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+else
+  echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" \
+    '. + {review: $review}' \
+    > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+fi
 ```
 
 Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
