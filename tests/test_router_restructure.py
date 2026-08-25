@@ -168,14 +168,15 @@ test_result(
 )
 
 # ============================================================================
-# INVARIANT 5: Router step uses expert-reviewer (not expert-scout) with sonnet
+# INVARIANT 5: Router step uses expert-reviewer (not expert-scout) with the
+# resolved ROUTER_MODEL variable (registry-driven), not a hard-coded model literal
 # ============================================================================
 print()
-print("[Invariant 5] Router spawns expert-reviewer (not expert-scout), with sonnet reference")
+print("[Invariant 5] Router spawns expert-reviewer (not expert-scout), resolved via ROUTER_MODEL")
 
 router_uses_correct_agent = False
 router_avoids_scout = False
-router_mentions_sonnet = False
+router_uses_resolved_var = False
 
 # The Router step was extracted into expert-review-panel.md in #46 (so /expert-review-coworker
 # could reuse the panel). Search both the orchestrator and the panel for the step section, the
@@ -205,8 +206,12 @@ if router_section:
     # Check that expert-scout is NOT mentioned as the agent type for the router
     router_avoids_scout = not bool(re.search(r"expert-scout", router_section, re.IGNORECASE))
 
-    # Check for sonnet reference (could be "sonnet", "model.*sonnet", "Sonnet", etc.)
-    router_mentions_sonnet = bool(re.search(r"\bsonnet\b", router_section, re.IGNORECASE))
+    # The Router step must pass the resolved ROUTER_MODEL alias (from
+    # config/expert-review-models.json via the resolver) as its `model:` argument,
+    # not a hard-coded literal like "sonnet". The default alias is sonnet, so the
+    # explanatory prose may still mention "sonnet" — but the executable model
+    # argument must be the variable. Assert the variable is present.
+    router_uses_resolved_var = bool(re.search(r"\bROUTER_MODEL\b", router_section))
 
 test_result(
     "Router step mentions expert-reviewer",
@@ -221,9 +226,9 @@ test_result(
 )
 
 test_result(
-    "Router step mentions sonnet",
-    router_mentions_sonnet,
-    "sonnet reference not found in router section" if expert_review_exists and not router_mentions_sonnet else ""
+    "Router step uses the resolved ROUTER_MODEL variable",
+    router_uses_resolved_var,
+    "ROUTER_MODEL not found in router section — the step must pass the resolved alias, not a hard-coded literal" if expert_review_exists and not router_uses_resolved_var else ""
 )
 
 # ============================================================================
