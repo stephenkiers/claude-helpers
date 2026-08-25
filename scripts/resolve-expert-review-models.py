@@ -35,7 +35,12 @@ ALIAS_TO_SETTINGS_ENV = {
     "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
 }
-SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
+# Production path for settings. Overridable via the EXPERT_REVIEW_SETTINGS_PATH env var so the
+# resolver can be driven against temporary settings fixtures in tests without touching the user's
+# real ~/.claude/settings.json. Unset in production → the real path is used.
+SETTINGS_PATH = os.environ.get(
+    "EXPERT_REVIEW_SETTINGS_PATH", os.path.expanduser("~/.claude/settings.json")
+)
 
 
 def fail(message):
@@ -45,7 +50,15 @@ def fail(message):
 
 
 def registry_path_for(script_file):
-    """Resolve the registry path relative to this script's real (symlink-resolved) location."""
+    """Resolve the registry path relative to this script's real (symlink-resolved) location.
+
+    Overridable via the EXPERT_REVIEW_MODELS_PATH env var so tests can point the resolver at a
+    temporary registry fixture (malformed JSON, bad schema, etc.) without overwriting the
+    checked-in file. Unset in production → the path next to this script is used.
+    """
+    override = os.environ.get("EXPERT_REVIEW_MODELS_PATH")
+    if override:
+        return override
     script_dir = os.path.dirname(os.path.realpath(script_file))
     return os.path.normpath(os.path.join(script_dir, "..", "config", "expert-review-models.json"))
 
