@@ -261,8 +261,13 @@ print()
 # ============================================================================
 print("[Section 2] Registry validation errors")
 
-def test_registry_error(label, content, *, path=None):
-    """Assert that a malformed registry produces exit 1, empty stdout, stderr message."""
+def test_registry_error(label, content, *, path=None, expect_in_err=None):
+    """Assert that a malformed registry produces exit 1, empty stdout, stderr message.
+
+    When expect_in_err is given, additionally assert that substring appears in
+    stderr — pinning the message content so a broken impl that prints any ERROR
+    cannot pass on exit code alone.
+    """
     if path is not None:
         reg = path
     else:
@@ -283,47 +288,86 @@ def test_registry_error(label, content, *, path=None):
         "ERROR" in err,
         f"stderr: {err[:120]}",
     )
+    if expect_in_err is not None:
+        t(
+            f"{label}: stderr mentions '{expect_in_err}'",
+            expect_in_err in err,
+            f"stderr: {err[:160]}",
+        )
 
 
-test_registry_error("malformed JSON", '{"schemaVersion":1, broken}')
+test_registry_error(
+    "malformed JSON",
+    '{"schemaVersion":1, broken}',
+    expect_in_err="malformed JSON",
+)
 test_registry_error(
     "wrong schema version",
     '{"schemaVersion":99,"aliases":["haiku"],"roles":{"router":["haiku"]}}',
+    expect_in_err="schemaVersion",
+)
+test_registry_error(
+    "schemaVersion float (1.0) rejected",
+    '{"schemaVersion":1.0,"aliases":["haiku","sonnet","opus","fable"],'
+    '"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],'
+    '"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="schemaVersion",
+)
+test_registry_error(
+    "schemaVersion bool (true) rejected",
+    '{"schemaVersion":true,"aliases":["haiku","sonnet","opus","fable"],'
+    '"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],'
+    '"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="schemaVersion",
 )
 test_registry_error(
     "missing role (no escalation)",
     '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable"],'
     '"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],"panel":["sonnet","haiku"]}}',
+    expect_in_err="escalation",
 )
 test_registry_error(
     "empty fallback list for router",
     '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable"],'
     '"roles":{"router":[],"mechanical":["haiku","sonnet"],"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="router",
 )
 test_registry_error(
     "duplicate alias in aliases",
     '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable","haiku"],'
     '"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="duplicate",
+)
+test_registry_error(
+    "duplicate alias within a role list",
+    '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable"],'
+    '"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],'
+    '"panel":["sonnet","sonnet"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="duplicate",
 )
 test_registry_error(
     "unknown alias in role list",
     '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable"],'
     '"roles":{"router":["sonnet","turbo"],"mechanical":["haiku","sonnet"],"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="unknown alias",
 )
 test_registry_error(
     "exact provider model ID in role list",
     '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable"],'
     '"roles":{"router":["claude-sonnet-4-5"],"mechanical":["haiku","sonnet"],"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="provider",
 )
 test_registry_error(
     "missing aliases key",
     '{"schemaVersion":1,"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],'
     '"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="aliases",
 )
 test_registry_error(
     "unknown alias in aliases vocabulary",
     '{"schemaVersion":1,"aliases":["haiku","sonnet","opus","fable","turbo"],'
     '"roles":{"router":["sonnet","haiku"],"mechanical":["haiku","sonnet"],"panel":["sonnet","haiku"],"escalation":["opus","sonnet"]}}',
+    expect_in_err="vocabulary",
 )
 
 # Missing registry file (nonexistent path)
@@ -331,6 +375,7 @@ test_registry_error(
     "missing registry file",
     "",
     path=_fixture_dir / "nonexistent_registry.json",
+    expect_in_err="not found",
 )
 
 print()
