@@ -171,22 +171,26 @@ fi
 
 ### Detect layout
 
-Detect the worktree layout so stacked pushes route correctly. Self-contained — re-runs the worktree list unconditionally (cheap; ~5ms). Precondition: `STACK_IS_STACKED=true`, `STACK_PARENT_BRANCH` set. Emits `STACK_LAYOUT` (`single-driver` | `per-branch` | `unknown`). Value is re-derived each run (not cached).
+Detect the worktree layout so stacked pushes route correctly. Self-contained — re-runs the worktree list unconditionally (cheap; ~5ms). Precondition: `STACK_IS_STACKED=true`; `STACK_PARENT_BRANCH` set when the subject is the current branch (run Is-stacked first). Optional input: `STACK_LAYOUT_SUBJECT` — the branch whose layout to detect; defaults to the current branch. Callers acting on a **non-current pivot** (e.g. `/stack-sync <pivot>`, or `/cleanup`'s handoff, which runs from the merged child's worktree) MUST set it to the pivot — keyed off the cwd's branch, detection would deterministically misresolve to `unknown`. For a non-current subject the parent is read from the subject's own worktree cache instead of `STACK_PARENT_BRANCH`. Emits `STACK_LAYOUT` (`single-driver` | `per-branch` | `unknown`). Value is re-derived each run (not cached).
 
 ```bash
 # Detect worktree layout for stacked-push routing — STRUCTURAL, not commit-ancestry.
-# Precondition: STACK_IS_STACKED=true, STACK_PARENT_BRANCH set (run Is-stacked first).
+# Precondition: STACK_IS_STACKED=true; STACK_PARENT_BRANCH set when the subject is the current
+#   branch (run Is-stacked first). For a non-current subject the parent comes from the subject's
+#   own worktree cache.
+# Input (optional): STACK_LAYOUT_SUBJECT — branch whose layout to detect; defaults to current branch.
 # Emits: STACK_LAYOUT="single-driver"|"per-branch"|"unknown"
 #
 # Layout turns on one structural fact: is any OTHER member of this stack checked out in a
 # sibling worktree? If yes, `gh stack sync`/`checkout` would try to check out an
-# already-checked-out branch -> fatal -> per-branch. If no member other than the current
+# already-checked-out branch -> fatal -> per-branch. If no member other than the subject
 # branch is checked out anywhere, one working copy drives the stack -> single-driver.
 # Read from metadata (worktree branch list + each worktree's cached .stack.parentBranch),
 # never from `git merge-base --is-ancestor`.
 
 STACK_LAYOUT="unknown"
 CURRENT_BRANCH=$(git branch --show-current)
+STACK_LAYOUT_SUBJECT="${STACK_LAYOUT_SUBJECT:-$CURRENT_BRANCH}"
 DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
 [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
 
@@ -195,26 +199,39 @@ WORKTREE_LINES=$(git worktree list --porcelain | awk '
   /^worktree / { wt=substr($0,10); next }
   /^branch / && wt != "" { b=substr($0,8); sub(/^refs\/heads\//,"",b); print b "\t" wt; wt="" }')
 
+# The subject's parent: from Is-stacked when the subject IS the current branch; otherwise from the
+# subject's own worktree cache (a non-current pivot lives in a sibling worktree).
+SUBJECT_PARENT=""
+if [ "$STACK_LAYOUT_SUBJECT" = "$CURRENT_BRANCH" ]; then
+  SUBJECT_PARENT="$STACK_PARENT_BRANCH"
+else
+  while IFS=$'\t' read -r b wt; do
+    [ "$b" = "$STACK_LAYOUT_SUBJECT" ] || continue
+    SUBJECT_PARENT=$(jq -r '.stack.parentBranch // empty' "$wt/.claude/github-cache.json" 2>/dev/null)
+    break
+  done <<< "$WORKTREE_LINES"
+fi
+
 PER_BRANCH=false
 while IFS=$'\t' read -r b wt; do
   [ -z "$b" ] && continue
-  [ "$b" = "$CURRENT_BRANCH" ] && continue      # exclude self by name
-  [ "$b" = "$DEFAULT_BRANCH" ] && continue      # exclude default branch by name
-  # This sibling worktree holds the current branch's parent?
-  if [ -n "$STACK_PARENT_BRANCH" ] && [ "$b" = "$STACK_PARENT_BRANCH" ]; then
+  [ "$b" = "$STACK_LAYOUT_SUBJECT" ] && continue  # exclude the subject itself by name
+  [ "$b" = "$DEFAULT_BRANCH" ] && continue        # exclude default branch by name
+  # This sibling worktree holds the subject's parent?
+  if [ -n "$SUBJECT_PARENT" ] && [ "$b" = "$SUBJECT_PARENT" ]; then
     PER_BRANCH=true; break
   fi
-  # This sibling worktree holds a child of the current branch (per its own cache)?
+  # This sibling worktree holds a child of the subject (per its own cache)?
   SIB_PARENT=$(jq -r '.stack.parentBranch // empty' "$wt/.claude/github-cache.json" 2>/dev/null)
-  if [ "$SIB_PARENT" = "$CURRENT_BRANCH" ]; then
+  if [ "$SIB_PARENT" = "$STACK_LAYOUT_SUBJECT" ]; then
     PER_BRANCH=true; break
   fi
 done <<< "$WORKTREE_LINES"
 
 if [ "$PER_BRANCH" = "true" ]; then
   STACK_LAYOUT="per-branch"
-elif [ -n "$STACK_PARENT_BRANCH" ]; then
-  # Stacked, and no stack member other than the current branch is checked out in any
+elif [ -n "$SUBJECT_PARENT" ]; then
+  # Stacked, and no stack member other than the subject is checked out in any
   # sibling worktree -> one working copy can drive the whole stack.
   STACK_LAYOUT="single-driver"
 else
@@ -225,9 +242,9 @@ fi
 ```
 
 **Edge cases:**
-- Parent checked out in a sibling worktree → `per-branch` (`gh stack sync` would try to check out the parent from the current worktree → fatal)
+- Parent checked out in a sibling worktree → `per-branch` (`gh stack sync` would try to check out the parent from the driving worktree → fatal)
 - Child checked out in a sibling worktree → `per-branch` (`gh stack sync` would try to check out the child → fatal)
-- No stack member other than the current branch is checked out anywhere → `single-driver` (one working copy can safely drive the whole stack)
+- No stack member other than the subject branch is checked out anywhere → `single-driver` (one working copy can safely drive the whole stack)
 - Detached-HEAD worktrees → awk outputs no `branch` line → correctly skipped
 - Cannot determine (stacked but no parent or sibling members found) → `unknown` (caller stops and asks)
 
@@ -277,19 +294,27 @@ fi
 
 ### Find children (of a branch)
 
-Given a branch name, find all branches whose parent is that branch. Scan sibling worktree caches
-first: `"$WORKTREE_PARENT"/*/.claude/github-cache.json` for entries whose `.stack.parentBranch`
-matches. If no caches match, fall back to `gh pr list --base <branch> --state open --json number,headRefName`.
-Emits the list of child branches and PR numbers.
+Given a branch name, find all branches whose parent is that branch. Two detectors ALWAYS run and
+their results are **unioned** (deduped by branch — a cache-found child keeps its cache record, which
+carries the worktree path): the sibling worktree caches
+(`"$WORKTREE_PARENT"/*/.claude/github-cache.json` entries whose `.stack.parentBranch` matches) and
+`gh pr list --base <branch> --state open --json number,headRefName`. Neither alone is authoritative —
+a cache can be stale or missing for worktrees created out-of-band, and `gh pr list` misses children
+whose PRs are closed or whose base was retargeted. Emits the list of child branches and PR numbers,
+plus a failure flag when the gh detector errors so callers can warn that detection may be incomplete.
 
 ```bash
 # Requires: WORKTREE_PARENT and PARENT_BRANCH as inputs
-# Emits: CHILD_BRANCHES (space-separated list of "branch:pr:worktree" records)
+# Emits: CHILD_BRANCHES (newline-separated "branch:pr:worktree" records — worktree LAST so
+#        `cut -d: -f3-` stays correct for paths containing ':'; branch names and PR numbers are
+#        colon-free by git/GitHub rules), GH_CHILD_LOOKUP_FAILED (true when gh pr list errored)
+# Note: /stack-sync's 4b.1 re-encodes this block inline as a recursive function — keep the two in sync.
 
 PARENT_BRANCH="$1"
 CHILD_BRANCHES=""
+GH_CHILD_LOOKUP_FAILED=false
 
-# Scan worktree caches for children whose parent matches
+# Detector 1 — scan worktree caches for children whose parent matches
 if [ -d "$WORKTREE_PARENT" ]; then
   while IFS= read -r cache_file; do
     [ ! -f "$cache_file" ] && continue
@@ -297,24 +322,36 @@ if [ -d "$WORKTREE_PARENT" ]; then
     if [ "$CACHED_PARENT" = "$PARENT_BRANCH" ]; then
       CHILD_WORKTREE=$(basename "$(dirname "$(dirname "$cache_file")")")
       CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
-        $1 == "worktree" && $2 == wt { found=1 }
-        found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
+        /^worktree / { found=(substr($0, 10) == wt); next }
+        found && /^branch / { b=substr($0, 8); sub(/^refs\/heads\//, "", b); print b; exit }
       ')
       if [ -n "$CHILD_BRANCH" ]; then
         CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
-        CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE} "
+        CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE}"$'\n'
+        echo "  detected child $CHILD_BRANCH of $PARENT_BRANCH (worktree cache)"
       fi
     fi
   done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
 fi
 
-# Fallback: scan open PRs against this branch
-if [ -z "$CHILD_BRANCHES" ]; then
-  OPEN_PRS=$(gh pr list --base "$PARENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number)"' 2>/dev/null || true)
-  CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
+# Detector 2 — open PRs based on this branch. Always runs (union, not fallback); dedupe by branch.
+if OPEN_PRS=$(gh pr list --base "$PARENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null); then
+  while IFS= read -r pr_rec; do
+    [ -z "$pr_rec" ] && continue
+    PR_BRANCH=$(printf '%s' "$pr_rec" | cut -d: -f1)
+    if printf '%s' "$CHILD_BRANCHES" | awk -F: -v b="$PR_BRANCH" '$1==b {f=1} END {exit !f}'; then
+      continue   # already detected via cache
+    fi
+    CHILD_BRANCHES="${CHILD_BRANCHES}${pr_rec}"$'\n'
+    echo "  detected child $PR_BRANCH of $PARENT_BRANCH (gh pr list)"
+  done <<< "$OPEN_PRS"
+else
+  GH_CHILD_LOOKUP_FAILED=true
+  echo "  WARNING: 'gh pr list --base $PARENT_BRANCH' failed — child detection may be incomplete"
 fi
 
-echo "Child branches of '$PARENT_BRANCH': $CHILD_BRANCHES"
+echo "Child branches of '$PARENT_BRANCH':"
+printf '%s' "$CHILD_BRANCHES"
 ```
 
 ### Stack number (remote)
@@ -452,13 +489,21 @@ NEW_BASE="origin/$PARENT_BRANCH"
 # then run the generalized Restack-a-child block with
 #   <CHILD_WT>=$CHILD_WT  <CHILD_BRANCH>=$CHILD_BRANCH
 #   <NEW_BASE>=$NEW_BASE  <OLD_BASE>=$PARENT_OLD_TIP
+# Multi-child runs: substitute the parent's captured pre-sync tip for PARENT_OLD_TIP instead —
+# see the prose below.
 ```
 
-`merge-base(HEAD, origin/<parent>)` is the exact fork point the child diverged from, so it is the
-correct `<OLD_BASE>` even if the parent itself was rebased in the meantime — the fork point moves
-with the parent's history, not with its tip SHA. This recipe is for the ongoing case (parent's PR
-still OPEN, parent advanced via `/shipit`); it composes the generalized Restack block rather than
-duplicating it.
+`merge-base(HEAD, origin/<parent>)` is the correct `<OLD_BASE>` only while `origin/<parent>` still
+contains the history the child forked from — i.e. the standalone, single-child ongoing case this
+recipe serves, where the parent advanced but nobody has rewritten the parent's history out from under
+the child (the fork point is then a real shared commit, and merge-base finds it). It is **not**
+correct in a multi-child sync run (`/stack-sync`): a level-2+ child's parent was just rewritten and
+force-pushed by the same run, so the old shared commits are gone from `origin/<parent>` and merge-base
+computes the fork against the parent's NEW history — a wrong, too-early base that replays
+already-integrated parent commits. There the caller must capture the parent's pre-sync tip BEFORE the
+parent's force-push and pass it as `<OLD_BASE>` (see `/stack-sync` Step 4b.2). This recipe is for the
+ongoing case (parent's PR still OPEN, parent advanced via `/shipit`); it composes the generalized
+Restack block rather than duplicating it.
 
 ## Local Plan Mode Detection
 
