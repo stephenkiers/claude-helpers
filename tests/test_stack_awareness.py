@@ -88,13 +88,15 @@ t = h.test_result
 # ============================================================================
 # ADR-0011 reversed PR #55's blanket ban: `gh stack sync` is the intended
 # single-driver push command, and `gh stack init`/`checkout` are fatal under
-# per-branch layout. This repo's convention is that the single-driver
-# `gh stack sync` action is described in *prose* ("Run `gh stack sync`") and
-# never inlined as an active bash command, so bash blocks stay worktree-safe
-# (manual git primitives + API-only `gh stack link`/`unstack`). The guard
-# below flags hostile verbs only when they appear as *active command lines* —
-# not inside comments (explanatory) or echo/printf strings (emit-only runbooks
-# the user pastes manually).
+# per-branch layout. This repo's convention (updated per accepted review
+# finding #30 / ADR-0011): the single-driver Step 4a arm of stack-sync.md may
+# inline `gh stack sync` as an active bash command after a dry-run guard;
+# everywhere else the action is described in *prose* ("Run `gh stack sync`")
+# and never inlined, so bash blocks stay worktree-safe (manual git primitives +
+# API-only `gh stack link`/`unstack`). The guard below flags hostile verbs only
+# when they appear as *active command lines* — not inside comments
+# (explanatory) or echo/printf strings (emit-only runbooks the user pastes
+# manually).
 print("[Invariant 1] Worktree-safety: no hostile gh stack verbs as active commands in bash blocks")
 
 HOSTILE_VERBS: list[str] = ["gh stack init", "gh stack sync", "gh stack checkout"]
@@ -117,19 +119,21 @@ def active_command_lines(block_text: str) -> list[str]:
         active.append(line)
     return active
 
-def check_file_worktree_safe(content: str, filename: str) -> list[str]:
+def check_file_worktree_safe(content: str, filename: str, hostile_verbs=None) -> list[str]:
     """
     Check that hostile verbs don't appear as active (non-comment, non-echo)
     command lines in bash blocks of a file. Comments and prose mentions are
-    permitted.
+    permitted. `hostile_verbs` overrides HOSTILE_VERBS (used to scope the
+    `gh stack sync` ban outside stack-sync.md's Step 4a section).
 
     Returns: list of violation strings (empty if no violations found)
     """
+    verbs = hostile_verbs if hostile_verbs is not None else HOSTILE_VERBS
     bash_blocks = extract_bash_blocks(content)
     violations = []
     for line_num, block_text in bash_blocks:
         for line in active_command_lines(block_text):
-            for verb in HOSTILE_VERBS:
+            for verb in verbs:
                 if verb in line:
                     violations.append(f"{filename}:{line_num} executes '{verb}'")
     return violations
@@ -566,7 +570,28 @@ print()
 # ============================================================================
 print("[Invariant 12] stack-sync.md bash blocks are worktree-safe")
 
-stack_sync_violations = check_file_worktree_safe(STACK_SYNC, "stack-sync.md")
+# Finding 30 / ADR-0011: the single-driver Step 4a arm may inline `gh stack sync`
+# as an active command after a dry-run guard. Scope the ban: `gh stack init` and
+# `gh stack checkout` are banned everywhere in the file; `gh stack sync` is banned
+# everywhere EXCEPT the Step 4a section. step4a_idx/step4b_idx are computed in
+# Invariant 9 above.
+if 0 <= step4a_idx < step4b_idx:
+    stack_sync_4a_slice = STACK_SYNC[step4a_idx:step4b_idx]
+    # Blank the Step 4a slice (preserving its line count so violation line
+    # numbers stay accurate) and apply the full ban to the remainder.
+    stack_sync_outside_4a = (
+        STACK_SYNC[:step4a_idx]
+        + "\n" * stack_sync_4a_slice.count("\n")
+        + STACK_SYNC[step4b_idx:]
+    )
+    stack_sync_violations = (
+        check_file_worktree_safe(stack_sync_outside_4a, "stack-sync.md")
+        + check_file_worktree_safe(stack_sync_4a_slice, "stack-sync.md (Step 4a)",
+                                   hostile_verbs=["gh stack init", "gh stack checkout"])
+    )
+else:
+    # Step headings missing (Invariant 9 already fails) — apply the full ban.
+    stack_sync_violations = check_file_worktree_safe(STACK_SYNC, "stack-sync.md")
 t("stack-sync.md bash blocks are worktree-safe",
   len(stack_sync_violations) == 0,
   f"found {len(stack_sync_violations)} violations: {stack_sync_violations}" if stack_sync_violations else "")
