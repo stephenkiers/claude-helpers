@@ -110,3 +110,43 @@ gate ran 19 Haiku calls over the same patch. 3 vs. 19 yields a modeled ~6× cost
 routing step (unmeasured; the gate's ~1.1M-token cost is the measured baseline, while the Router's
 cost is a model estimate not yet benchmarked against a real run). Routing accuracy (judgment vs.
 keywords) is a bonus on top.
+
+### Amendment: Centralized model-policy registry (2026-08-25)
+
+Expert-review model routing is now centralized in a single registry rather than scattered across
+agent frontmatter and command overrides. The per-agent `model:` pins described above were a model-
+retirement bug: a dated provider ID (e.g. `claude-haiku-4-5-20251001`) baked into frontmatter
+breaks silently when the provider retires that ID, and there was no single place to retune the
+review system for a fork. This amendment fixes both.
+
+**Semantic aliases are policy, not provider IDs.** `haiku`/`sonnet`/`opus`/`fable` are the only
+model identifiers used in expert-review routing. Claude Code settings map these aliases to local
+gateway models via `ANTHROPIC_DEFAULT_*_MODEL` environment variables; the aliases themselves never
+name a provider model ID.
+
+**`config/expert-review-models.json` is the single helper-level source of truth** for review model
+policy. Its schema is `{schemaVersion, aliases, roles:{router,mechanical,panel,escalation}}`; each
+role is an ordered alias list where the first available alias wins. A fork changes this one file to
+retune the whole review system — no per-agent edits required.
+
+**`scripts/resolve-expert-review-models.py` validates the registry and resolves each role** before
+any review agents launch. It reads `~/.claude/settings.json` only as an optional availability source
+(`enforceAvailableModels`) and never rewrites settings. `fable` is always `unchecked` (unmapped), so
+it is always available and never gates another alias. The resolver emits one JSON object on stdout;
+errors go to stderr with a non-zero exit.
+
+**Ordered fallbacks are bounded and visible.** When a provider model disappears at runtime, an
+`unchecked` alias that fails at spawn heals to the next configured alias exactly once, with a printed
+receipt and cached metadata — never loops, never silent. If the ordered list is exhausted, the
+resolver stops and names the registry entry that ran dry.
+
+**Strict overrides never fall back.** An explicit `--model <alias>` that is unavailable **fails**
+rather than silently switching to a different model. The strict override is the user's deliberate
+choice; healing it would be the silent-substitution failure mode this amendment exists to prevent.
+
+**Exact provider model IDs are prohibited** in expert-review routing. Agent frontmatter and the
+registry use semantic aliases only. `agents/expert-scout.md` carries no model default at all — the
+caller passes the resolved `MECHANICAL_MODEL` alias on every spawn, so there is no second hidden
+default to go stale. `agents/plan-implementer.md` (outside the expert-review role registry but
+sharing the same retirement bug) uses `model: haiku`.
+

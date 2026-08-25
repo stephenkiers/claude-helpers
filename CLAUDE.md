@@ -88,8 +88,9 @@ to get started.
 - `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, judgment
   router for reviewer selection (Sonnet), single Amalgamator for synthesis (replaces quadratic
   cross-review), then a **Triage Chief** that turns the report into a decision list and records what
-  you rule. Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
-  and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
+  you rule. Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier, resolved from
+  `config/expert-review-models.json` via the resolver; `--model` is a strict override that never
+  falls back; router and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
 - `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run the
   same shared blind-first panel (`prompts/expert-review-panel.md`), then draft PR-ready comments you
   paste yourself (never auto-posted). Takes a PR URL and `--include-medium`
@@ -180,13 +181,14 @@ around it.
 ## Agents
 
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
-  (used by `/implement-with-haiku`).
+  (used by `/implement-with-haiku`). Uses `model: haiku` (the portable semantic alias).
 - `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
   for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from
   the caller (`--model`), except Router which is pinned to sonnet.
-- `expert-scout` — the pinned mechanical roles: Q&A (Haiku), Code Rot Cody (Haiku), and Consistency
-  Checker (Haiku). Router (Sonnet; narrow judgment) is spawned as expert-reviewer with an explicit
-  model override.
+- `expert-scout` — the pinned mechanical roles: Q&A, Code Rot Cody, and Consistency Checker. Carries
+  no model default — the caller passes the resolved mechanical alias (from
+  `scripts/resolve-expert-review-models.py`) on every spawn. Router (Sonnet; narrow judgment) is
+  spawned as expert-reviewer with an explicit model override.
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory

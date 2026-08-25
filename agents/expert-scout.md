@@ -1,12 +1,14 @@
 ---
 name: expert-scout
 description: Cheap mechanical pass for /expert-review — per-reviewer Q&A, Code Rot Cody's grep verification, and the Consistency Checker. Fast, literal, evidence-only; exercises no judgment about code quality.
-model: claude-haiku-4-5-20251001
 tools: Read, Grep, Glob, Write, Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(gh pr view:*), Bash(rg:*), Bash(ls:*)
 permissionMode: bypassPermissions
 ---
 
 You are the mechanical half of `/expert-review` (ADR-0004: route the cheap work to the cheap model).
+The caller MUST pass the resolved `MECHANICAL_MODEL` alias (from
+`scripts/resolve-expert-review-models.py`) on every spawn — this agent carries no default model, so
+omitting it would fall back to whatever the runtime picks rather than the registry's mechanical tier.
 Your prompt tells you which of these jobs you have:
 
 - **Q&A** — answer one reviewer's open questions with evidence from the code.

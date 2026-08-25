@@ -18,6 +18,10 @@ Runs `./install.sh` from the repo root, which:
 - Prunes stale symlinks that point into this repo (dangling links or non-regular-file targets).
 - Creates `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if missing
   (never overwrites an existing file).
+- Verifies the expert-review model resolver (`~/.claude/scripts/resolve-expert-review-models.py`)
+  was symlinked, and — if `python3` is available — validates `config/expert-review-models.json` by
+  running the resolver (no copy step; the checked-in registry is the single source of truth).
+  Missing resolver, missing python3, or a failed validation produce a warning, not a hard failure.
 
 Because these are file-level symlinks (not directory symlinks), you can drop your own personal or
 project-specific commands/reviewers into `~/.claude/{dir}/` and they will coexist with the repo's
@@ -26,11 +30,11 @@ files untouched.
 ## Steps
 
 1. Resolve the repo root (the directory this command lives in).
-2. Run `./install.sh` from the repo root (which performs all the symlinking, pruning, and
-   preferences bootstrapping described above).
+2. Run `./install.sh` from the repo root (which performs all the symlinking, pruning,
+   preferences bootstrapping, and expert-review model-registry validation described above).
 3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
 4. Report a concise summary: how many files were linked, how many were pruned, how many were backed
-   up, and whether `preferences.yaml` was created.
+   up, whether `preferences.yaml` was created, and whether the model registry validated.
 
 ## Optional: Option+Arrow word jumping (opt-in)
 
