@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "aliases": ["haiku", "sonnet", "opus", "fable"],
+  "roles": {
+    "router": ["sonnet", "haiku"],
+    "mechanical": ["haiku", "sonnet"],
+    "panel": ["sonnet", "haiku"],
+    "escalation": ["opus", "sonnet"]
+  }
+}
