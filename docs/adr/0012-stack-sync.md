@@ -53,13 +53,32 @@ a topology.
 trunk), `/stack-sync` uses one primitive parameterized by the old and new base. Ongoing mode sets
 `<NEW_BASE>` to the parent's new tip and `<OLD_BASE>` to the parent's previous tip; post-merge mode sets
 `<NEW_BASE>` to the trunk the parent merged into and `<OLD_BASE>` to the parent's merged commit. One block
-means the two modes cannot drift apart.
+means the two modes cannot drift apart. **For level-2+ children, `<OLD_BASE>` is the parent's captured
+pre-sync tip, taken in the planning loop before any force-push.** The fork point moves with the parent's
+history only for a level-1 parent; at level 2 and deeper the parent's tip has been rewritten by its own
+rebase earlier in the walk, so a merge-base against the already-rewritten tip would anchor the child to the
+wrong fork point. Capturing every parent's pre-sync tip up front makes each child's `<OLD_BASE>` immune to
+the rewrites that happen later in the same run.
 
-**Force-push is gated twice: once on confirmation, once on the repo-cache check.** Before any force-push,
-`/stack-sync` asks for a pre-push confirmation (skippable via `--yes`), and additionally consults the
-`repo-cache.json` check gate that the push side already enforces. The two gates are independent: the
-confirmation gate is a human-in-the-loop safety, the cache gate is a structural guard against re-pushing
-branches whose state has moved underneath the local view.
+**Per-branch force-pushes are gated twice: once on confirmation, once on the repo-cache check.** In the
+per-branch arm, before any child force-push, `/stack-sync` asks for a pre-push confirmation (skippable via
+`--yes`), and additionally consults the `repo-cache.json` check gate that the push side already enforces.
+The two gates are independent: the confirmation gate is a human-in-the-loop safety, the cache gate is a
+build/test gate — it runs the project's checks from the child's own worktree so a branch whose checks fail
+is never force-pushed.
+
+**The single-driver arm's `gh stack sync` push is ungated by design.** The single-driver case inherits
+ADR-0011's blessing: ADR-0011 explicitly re-legalized `gh stack sync` for that layout as the safe case —
+an atomic whole-stack fetch, cascade-rebase, and push — so it runs with no confirmation prompt and no
+repo-cache gate. The repo-cache gate is parameterized on `<CHILD_WT>` (a child worktree path) and so
+cannot port to the single-driver arm, which has no per-child worktrees.
+
+**`/cleanup` always emits the restack runbook, and auto-executes it only when a Claude harness is present.**
+The runbook is printed unconditionally — even when the harness auto-executes it and even when the user
+aborts (an abort is a deferral, not a cancellation; the runbook remains the user's record of what still
+needs to run). Auto-execution is harness-conditional: it is gated on `command -v claude`, never passes
+`--yes` (each child's confirmation prompt still applies), and falls back to emit-only when no harness is
+found. `STACK_SYNC_MANUAL=1` opts out of auto-execution entirely, leaving the emit-only behavior.
 
 ## Consequences
 
@@ -76,11 +95,13 @@ branches whose state has moved underneath the local view.
 - **Does not re-push the pivot.** `/stack-sync` syncs descendants only. The pivot branch is pushed by
   `/shipit` / `/expert-rebase`. Calling `/stack-sync` before the pivot is pushed is a no-op for the pivot
   and a rebase-onto-trunk for descendants — which is correct, not a bug.
-- **Two-gate force-push is the cost of safety.** The pre-push confirmation adds one prompt to every
-  force-push; `--yes` exists for scripted/lifecycle callers that have already obtained consent. The
-  repo-cache gate adds a read of `repo-cache.json` before each push. Both are intentional and both must
-  remain; removing either re-opens the force-push-corrupts-remote class that ADR-0011's fail-closed
-  detection only half-closes.
+- **Two-gate force-push in the per-branch arm is the cost of safety.** The pre-push confirmation adds one
+  prompt to every per-branch child force-push; `--yes` exists for scripted/lifecycle callers that have
+  already obtained consent. The repo-cache gate runs the project's build/test checks from `<CHILD_WT>`
+  before each push. Both are intentional and both must remain in the per-branch arm; removing either
+  re-opens the force-push-corrupts-remote class that ADR-0011's fail-closed detection only half-closes.
+  The single-driver arm's push is deliberately ungated — it is the case ADR-0011 re-legalized as safe, and
+  the `<CHILD_WT>`-parameterized cache gate has no child worktree to run against in a single working copy.
 - **Cross-reference ADR-0011.** This ADR is the sync companion to ADR-0011's push routing. Any new command
   that syncs or rebases a stack must consult ADR-0011 for the layout model and this ADR for the sync-side
   invariants.
