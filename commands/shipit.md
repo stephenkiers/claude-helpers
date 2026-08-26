@@ -324,14 +324,21 @@ else
     '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: false}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || { rm -f "$TMP"; echo "WARNING: failed to update .claude/github-cache.json (jq/mv error); cache left unchanged." >&2; }
 fi
 
-# Link parent PR in the remote stack (worktree-safe: gh stack link is API-only)
-if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
-  if command -v gh-stack >/dev/null 2>&1; then
-    gh stack link "$STACK_PARENT_PR" "$PR_NUM"
-  else
-    echo "WARNING: gh-stack extension not found; skipping 'gh stack link'. Install via 'gh extension install .../gh-stack' or run manually: gh stack link $STACK_PARENT_PR $PR_NUM"
-  fi
-fi
+# Do NOT auto-link a server-side GitHub "stack" entity here.
+# `gh pr create --base "$STACK_PARENT_BRANCH"` above already establishes the
+# parent→child relationship — GitHub derives "Stacked on #N" from the base-branch
+# pointer alone; no server stack entity is needed for the chain to work.
+#
+# `gh stack link <parent> <child>` is NOT metadata-only: it repoints the FIRST
+# arg's base to the trunk (master). Linking only a parent+child SUBSET detaches
+# the parent from ITS parent (observed 2026-08-25: `gh stack link 67 77`
+# repointed #67 from pps-223 → master and locked its base under a new server
+# stack, requiring `gh stack unstack` + `gh pr edit --base` to repair).
+#
+# The server "stack" entity is optional cosmetic grouping on top of the
+# base-pointer chain. If the user explicitly wants it, link the FULL
+# bottom→top chain — see "GitHub stack entity (optional)" in
+# ~/.claude/prompts/shipit-reference.md. Never link just the new pair.
 ```
 
 ### Sync stacked children (per-branch ongoing)
@@ -383,5 +390,5 @@ Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
 | No changes | Report "nothing to commit" |
 | PR exists | Report URL |
 | On main branch | Warn, suggest branching |
-| Branch is stacked | Create PR with `--base "$STACK_PARENT_BRANCH"`, link parent PR, cache stack metadata; push via `gh stack sync` (single-driver) or `--force-with-lease` (per-branch) |
+| Branch is stacked | Create PR with `--base "$STACK_PARENT_BRANCH"` (this establishes the chain — do **not** auto-run `gh stack link`, it destructively repoints the bottom PR's base to trunk). Cache stack metadata; push via `gh stack sync` (single-driver) or `--force-with-lease` (per-branch) |
 | Branch not stacked | Create PR with repo default base, mark `stack.isStacked=false` in cache |

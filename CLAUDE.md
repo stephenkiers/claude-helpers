@@ -88,11 +88,16 @@ to get started.
 - `/expert-review` — multi-persona, blind-first code review; parallel per-reviewer subagents, judgment
   router for reviewer selection (Sonnet), single Amalgamator for synthesis (replaces quadratic
   cross-review), then a **Triage Chief** that turns the report into a decision list and records what
-  you rule. Takes `[reviewers...]` and `--model haiku|sonnet|opus|fable` (panel tier; router
-  and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step)
-- `/expert-review-coworker` — peer PR review: fetch a coworker's PR into an isolated worktree, run the
-  same shared blind-first panel (`prompts/expert-review-panel.md`), then draft PR-ready comments you
-  paste yourself (never auto-posted). Takes a PR URL and `--include-medium`
+  you rule. Takes `[reviewers...]`, `--model haiku|sonnet|opus|fable` (panel tier; router
+  and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step), and
+  `--effort 1–5` (ADR-0012: 1 = 6 haiku scouts + merge, 2 = router's top 2, 3 = + uncle-bob,
+  4 = default full panel, 5 = everyone). A positional GitHub PR URL switches to PR mode: review a
+  coworker's PR in an isolated worktree (no cache/rulings writes — ADR-0009).
+- `/expert-review-coworker` — **deprecated** (still functional): superseded by `/expert-review
+  <github-pr-url> [--effort N]` (ADR-0012). Peer PR review with the pr-comment-guide + walkthrough
+  flow: fetch a coworker's PR into an isolated worktree, run the same shared blind-first panel
+  (`prompts/expert-review-panel.md`), then draft PR-ready comments you paste yourself (never
+  auto-posted). Takes a PR URL and `--include-medium`
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items

@@ -1,7 +1,7 @@
 ---
 description: Smart expert code review with triage - works across all projects
-argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--all] [--force]
-allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
+argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--effort 1|2|3|4|5] [--all] [--force] | <github-pr-url> [--effort 1|2|3|4|5]
+allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(eval:*), Bash(bash:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: sonnet
 ---
 
@@ -70,6 +70,32 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   panel** (Pass 1, Carl, Pass 2, Amalgamator, Triage) = PANEL_MODEL (your `--model` choice, or
   inherited). Triage rides the panel tier deliberately — deciding what a human must rule on is a
   judgment call, and getting it wrong in either direction costs more than the model does.
+- `--effort <1|2|3|4|5>`: how much panel to run. Default **4** (today's full behavior). The ladder:
+
+  | Level | Name | What runs |
+  |---|---|---|
+  | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`, CRITIC `path:line` grounding) → 1 sonnet merge agent → `final-report.md` → Triage → `action-plan.md`. Skips Summarizer/Router/Carl/Q&A/Pass 2/Amalgamator. |
+  | 2 | focused pair | Router picks exactly the top 2 judgment reviewers; Carl + Cody + Consistency Checker still run; full pipeline otherwise (Q&A, Pass 2, Amalgamator, Triage). |
+  | 3 | pair + Bob | Effort 2 plus `uncle-bob` pre-seated (full-patch read, like named mode). |
+  | 4 | normal | **Default.** Current behavior, unchanged. |
+  | 5 | everyone | All `index.yaml` reviewers; implemented as named-selection over the full index (router bypassed). |
+
+  Interaction rules: `--effort` + named reviewers = **error**. `--all --effort 5` is accepted
+  (redundant); `--all` + `--effort 1|2|3` is accepted — effort wins. `--model` stays orthogonal; at
+  effort 1 the merge agent is `PANEL_MODEL` if `--model` was explicit, else pinned sonnet; scouts are
+  always haiku. Triage runs at every level (output contract identical). Sam System at levels 2–3
+  runs only if the router's top-2 includes him (keeps the ladder monotonic in cost; Cody and the
+  Consistency Checker stay always-run because pinned-haiku cheap and they catch a 2-person panel's
+  unchecked-claim failure mode).
+- `<github-pr-url>`: a positional argument matching `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$`
+  (checked before reviewer-name matching) switches to **PR mode** — review a coworker's PR in an
+  isolated worktree. Step 1 is replaced by `eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"`,
+  which creates `REVIEW_DIR`, the worktree, `full-diff.patch`, `diff-index.md`, and `pr-context.md`;
+  Steps 4–11 run unchanged against `${WORKTREE_PATH}`. **Skipped** in PR mode: the prior-review cache
+  check, Step 12 (rulings loop), Step 13 (cache write) — ADR-0009: never write to a repo you don't
+  own. No pr-comment-guide, walkthrough, or posted-comments: the closing message lists the *Needs you*
+  items verbatim (the candidate PR comments — you post them on GitHub yourself) plus links, then
+  offers the worktree-cleanup question. Mutually exclusive with named reviewers and `--force`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
@@ -79,7 +105,11 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
 
 Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a smoke test) ·
 `/expert-review rachel,security-sage` (two reviewers, no router) ·
-`/expert-review --model fable` (use fable for the amalgamator and panel)
+`/expert-review --model fable` (use fable for the amalgamator and panel) ·
+`/expert-review --effort 1` (6 haiku scouts + one merge + triage — the cheap screen) ·
+`/expert-review --effort 2` (router's top 2 + the always-run mechanical set) ·
+`/expert-review https://github.com/owner/repo/pull/123` (PR mode — review a coworker's PR) ·
+`/expert-review https://github.com/owner/repo/pull/123 --effort 1` (swarm against the PR worktree)
 
 ## Checkpoint Files
 
@@ -92,6 +122,7 @@ already-reviewed commit never overwrites the prior run):
 |------|-----------|------|
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
+| `pr-context.md` | `setup-pr-worktree.sh` (PR mode); main thread (effort 1, local mode) | Step 1 / swarm path — PR title, description, metadata; synthesized from branch/plan context in local-mode swarm |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
 | `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 6 (Consistency Checker + Cody included) |
@@ -106,6 +137,12 @@ already-reviewed commit never overwrites the prior run):
 ## Instructions
 
 ### Step 0: Setup
+
+**PR mode:** if `PR_MODE=true` (Step 3 parses arguments, but a PR URL is recognizable at a glance —
+check before anything else here), skip sub-steps 1 and 5's prior-review check entirely: the setup
+script (Step 1) creates `REVIEW_DIR` itself, and ADR-0009 forbids reading/writing prior-review cache
+in a repo you don't own. Sub-steps 2–4 still run, rooted at `${WORKTREE_PATH}` instead of the cwd
+(read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`, etc.).
 
 1. Resolve paths and create the checkpoint directory:
    ```bash
@@ -194,6 +231,21 @@ already-reviewed commit never overwrites the prior run):
 
 ### Step 1: Determine Review Scope
 
+**PR mode:** replace this whole step with the coworker setup call (no `--include-medium` — that flag
+belongs to the deprecated commands' comment guide, which PR mode does not produce):
+
+```bash
+eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"
+```
+
+This exports `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`,
+`HEAD_SHA`, `TARGET_REPO`, `PR_NUMBER`, `PR_TITLE` and writes `full-diff.patch`, `diff-index.md`,
+and `pr-context.md` into `REVIEW_DIR`. If the script exits non-zero (bad URL, no local clone, empty
+diff), stop — it has already cleaned up any partial worktree via its EXIT trap. Skip the rest of
+this step and continue at Step 2.
+
+**Local mode (default):**
+
 - `git diff --name-only main...HEAD`. If empty, inform the user and exit.
 - Write both diff artifacts once, so every later step passes a path instead of re-deriving or
   inlining the diff:
@@ -221,7 +273,21 @@ already-reviewed commit never overwrites the prior run):
    overrides exist — record the paths, do not read the files. Pass the path to the owning subagent;
    a local override augments (not replaces) the global reviewer of the same base name.
 
-### Step 3: Parse Reviewer Selection and Model
+### Step 3: Parse Reviewer Selection, PR URL, and Effort
+
+**PR URL.** If any positional argument matches `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$`
+(checked **before** reviewer-name matching — a URL is never a reviewer name), set `PR_MODE=true` and
+store it as `PR_URL`. PR mode is mutually exclusive with named reviewers and with `--force` — error
+on either combination. The prior-review cache check (Step 0.5), Step 12, and Step 13 are skipped in
+PR mode (ADR-0009 write boundary); see the PR Mode section below.
+
+**Effort.** `--effort <1|2|3|4|5>` → `EFFORT`; error on any other value (including `--effort 0` and
+`--effort 6`). Default `EFFORT=4`. Set `EFFORT_EXPLICIT=true` when the flag was passed on the command
+line, else `EFFORT_EXPLICIT=false`. `--effort` + named reviewers = **error** (say so and exit).
+`--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted — effort wins.
+Effort 5 **lowers to named selection**: set `NAMED_SELECTION=true` and `NAMED_REVIEWERS` to the full
+`index.yaml` reviewer list (space-separated, lowercased) — the router is bypassed with no new code
+path. Print the resolved effort at run start, alongside the resolved panel model and reviewer count.
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
 error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in
@@ -232,14 +298,50 @@ synthesis loop. Otherwise (or `--all`) → all reviewers, `NAMED_SELECTION=false
 (Step 9), Amalgamator (Step 10), and the Triage Chief (Step 11) — and to nothing else. Print the
 resolved panel model with the reviewer count when the run starts.
 
+### PR Mode (positional `<github-pr-url>`)
+
+When `PR_MODE=true`:
+
+- **Reused unchanged:** Steps 2–3 (reviewer discovery, argument parsing) and Steps 4–11 of the
+  shared panel (with `WORKTREE_PATH` set, so project-context and source reads root at the PR
+  worktree) including the Triage Chief — PR mode *does* triage.
+- **Skipped:** the prior-review cache check (Step 0.5), the local-diff step (Step 1 — replaced by
+  the setup script), Step 12's ruling loop, and Step 13's cache write. ADR-0009: never write to a
+  repo you don't own. Rulings are the author's to record, not yours.
+- **Not produced:** `pr-comment-guide.md`, the interactive walk-through, `posted-comments.md`.
+  Those belong to the deprecated `/expert-review-coworker(-beta)` commands; PR mode's closing
+  message replaces them.
+- **Closing message (PR-mode variant):** list the *Needs you* items from `action-plan.md`
+  **verbatim** — they are the candidate PR comments, and the user posts them on GitHub themselves —
+  then the needs-measurement block (unchanged), then the links to `action-plan.md` and
+  `final-report.md`. After the links, offer the worktree-cleanup question:
+
+  ```
+  AskUserQuestion: "Remove the PR worktree?"
+  Options:
+    1. "Yes, remove"
+    2. "No, keep it" (default presentation)
+  ```
+
+  If "Yes, remove":
+
+  ```bash
+  git -C "${MAIN_WORKTREE}" worktree remove "${WORKTREE_PATH}" --force
+  git -C "${MAIN_WORKTREE}" branch -D "${BRANCH_NAME}"
+  ```
+
 ### Steps 4–10: Expert Review Panel (shared)
 
 Read `~/.claude/prompts/expert-review-panel.md` and follow those steps exactly. `REVIEW_DIR`,
-`PANEL_MODEL`, `MODEL_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
+`PANEL_MODEL`, `MODEL_EXPLICIT`, `EFFORT`, `EFFORT_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`,
+`PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
 all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
+At `EFFORT=1` the panel's Swarm Path replaces Steps 4–10; at `EFFORT=5` Step 3 has already lowered
+the run to named selection over the full index.
 
 The panel writes `summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `contrarian-carl-pass1.md`,
-`{reviewer}-questions-answered.md`, `{reviewer}-pass2.md`, and `final-report.md` into `REVIEW_DIR`.
+`{reviewer}-questions-answered.md`, `{reviewer}-pass2.md`, and `final-report.md` into `REVIEW_DIR`
+(the swarm path writes only `pr-context.md`, a stub `tagged-sections.md`, and `final-report.md`).
 When it returns, resume at Step 11 below.
 
 ### Step 11: Triage Chief (one agent) → `action-plan.md`
@@ -273,6 +375,9 @@ exists to solve. The trip condition is stated identically here and in `triage.md
 from the receipt, so the orchestrator and the Chief cannot disagree on it.
 
 ### Step 12: Rulings (main thread)
+
+**Skipped in PR mode** (`PR_MODE=true`) — the *Needs you* items are listed verbatim in the closing
+message instead; rulings are the author's to record, not yours (ADR-0009).
 
 Read **only** `{REVIEW_DIR}/action-plan.md` — not the pass files, not the final report. This is the
 one file the orchestrator reads, and it is small by construction.
@@ -333,6 +438,9 @@ this conversation, so it shouldn't cost them a second file-open to discover). Ea
 hand-edits that item's `- **Ruling**:` line.
 
 ### Step 13: Cache Review Metadata
+
+**Skipped in PR mode** (`PR_MODE=true`) — ADR-0009: never write to a repo you don't own.
+
 
 Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
 
@@ -424,4 +532,8 @@ measurement block.
 /expert-review                      # all reviewers, delta from main
 /expert-review contracts,concurrency
 /expert-review sam-system --force   # skip re-run confirmation
+/expert-review --effort 1           # cheap swarm screen: 6 haiku scouts + merge + triage
+/expert-review --effort 5           # everyone — full index, router bypassed
+/expert-review https://github.com/owner/repo/pull/123            # PR mode
+/expert-review https://github.com/owner/repo/pull/123 --effort 1 # PR mode, swarm
 ```

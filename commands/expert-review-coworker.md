@@ -7,6 +7,13 @@ model: sonnet
 
 # Expert PR Review (Coworker)
 
+> **Deprecated — still functional.** This command is superseded by `/expert-review <github-pr-url>
+> [--effort N]`, which runs the same shared panel in PR mode *with* the Triage Chief (see
+> [ADR-0012](../docs/adr/0012-effort-ladder-and-pr-mode.md)). This command is not deleted: it remains
+> fully operational, and the prompt files it depends on (`prompts/peer-scout.md`,
+> `prompts/peer-merge.md`, `prompts/pr-comment-guide.md`, the shared panel) all stay. Prefer the new
+> form for new work; use this one when you specifically want the pr-comment-guide + walkthrough flow.
+
 You are reviewing a coworker's GitHub PR with a **high bar and collegial tone**. This is fundamentally different from `/expert-review`, which is exhaustive author-centric feedback on your own code.
 
 Here, you **trust the author is competent**. You are not trying to find every bug. Your job is to surface **only the things that genuinely matter** — CRITICALs, major design problems, real risks — without flooding the PR with noise. A 20-comment LLM review is worse than a 3-comment one that lands. No automatic comment posting; the human reviewer stays in the loop for every comment.

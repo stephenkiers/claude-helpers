@@ -7,6 +7,13 @@ model: sonnet
 
 # Expert PR Review — Coworker Beta (Fast Swarm)
 
+> **Deprecated — still functional.** This command is superseded by `/expert-review <github-pr-url>
+> --effort 1`, which runs the same 6-scout swarm against the PR worktree and feeds its merge into
+> the Triage Chief (see [ADR-0012](../docs/adr/0012-effort-ladder-and-pr-mode.md)). This command is
+> not deleted: it remains fully operational, and the prompt files it depends on
+> (`prompts/peer-scout.md`, `prompts/peer-merge.md`) all stay. Prefer the new form for new work; use
+> this one when you specifically want the pr-comment-guide + walkthrough flow.
+
 You are reviewing a coworker's GitHub PR with a **fast, high-bar, collegial** review. This is a deliberately smaller v1: 6 haiku scouts in parallel + one sonnet merge, with a manual `--deep` override. No auto-gate — the user is the gate.
 
 Your job is to surface **only the things that genuinely matter** — real risks, likely bugs, design problems — without flooding the PR with noise. A 3-comment LLM review beats a 20-comment one nobody reads. No automatic comment posting; the human reviewer stays in the loop for every comment.
