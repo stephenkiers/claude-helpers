@@ -769,8 +769,10 @@ GRAPHQL
       echo ""
       echo "\`\`\`bash"
       echo "gh stack unstack $STACK_NUMBER"
-      echo "# And re-link survivors (API-only, worktree-safe):"
-      echo "# gh stack link <survivor-pr> <next-survivor-pr>"
+      echo "# And re-link survivors (worktree-safe, no checkout — but NOT metadata-only:"
+      echo "# it repoints the bottom PR's base to trunk, so link the FULL bottom→top chain"
+      echo "# in one call, never just a pair):"
+      echo "# gh stack link <bottom-pr> ... <survivor-pr> <next-survivor-pr>"
       echo "\`\`\`"
       echo ""
     fi

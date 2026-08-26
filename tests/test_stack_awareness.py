@@ -11,7 +11,9 @@ Tests assert (updated for ADR-0011, which reversed PR #55's blanket ban on
    commands in bash blocks (comments/prose mentions are permitted; the
    single-driver `gh stack sync` action is described in prose, not inlined)
 2. Shared Stack Detection block exists with defined variables
-3. Only worktree-safe verbs (gh stack link, unstack) used
+3. Worktree-safe verbs (gh stack unstack) used; `gh stack link` is documented but
+   NOT auto-executed by /shipit (it is worktree-safe but destructive — repoints the
+   bottom PR's base to trunk; /shipit establishes the chain via `gh pr create --base`)
 4. shipit.md opens stacked PRs correctly
 5. cleanup.md emits a restack runbook (for merged stacked PRs)
 6. Cache schema documented in both files
@@ -207,6 +209,21 @@ t("'gh stack link' appears in the docs",
 t("'gh stack unstack' appears in the docs",
   "gh stack unstack" in CLEANUP,
   "expected 'gh stack unstack' in cleanup.md")
+
+# Regression (2026-08-25, PPS-228 → PR #77): `gh stack link <parent> <child>` run as
+# an ACTIVE command by /shipit destructively repointed the parent's base to trunk and
+# detached it from its real parent. /shipit must establish the chain via
+# `gh pr create --base` only; `gh stack link` may appear in comments/prose, never as
+# an executed bash command line.
+shipit_bash_blocks = extract_bash_blocks(SHIPIT)
+shipit_link_active = []
+for line_num, block_text in shipit_bash_blocks:
+    for line in active_command_lines(block_text):
+        if "gh stack link" in line:
+            shipit_link_active.append(f"shipit.md:{line_num} executes 'gh stack link'")
+t("shipit.md does NOT auto-execute 'gh stack link' (destructive — use --base only)",
+  len(shipit_link_active) == 0,
+  f"found {len(shipit_link_active)} active 'gh stack link' calls: {shipit_link_active}" if shipit_link_active else "")
 
 print()
 

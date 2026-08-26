@@ -236,3 +236,40 @@ The common scenarios are in `shipit.md`'s Quick Reference. Additional cases:
 | Command not found | Update cache gotchas, try alternatives |
 
 **Stacked branches** — push errors on a stacked branch (no upstream, tip behind remote) mean the parent was force-rebased by gh-stack. See the "Push a stacked branch (new local work)" block in `~/.claude/prompts/worktree-reference.md`.
+
+### GitHub stack entity (optional)
+
+`/shipit` does **not** create a server-side GitHub "stack" entity. `gh pr create --base <parent>`
+sets the base-branch pointer, which is the substantive parent→child link — GitHub derives the
+"Stacked on #N" chain from that pointer alone. The numbered server "stack" entity (e.g. `stack #78`)
+is **optional cosmetic grouping** on top of that chain. Under the per-branch worktree layout it adds
+no functional value (you can't run `gh stack sync` anyway — see `worktree-reference.md`), so the
+default is to skip it.
+
+**If you explicitly want the GitHub stack UI grouping**, link the FULL bottom→top chain in one call —
+never just the new parent+child pair:
+
+```bash
+# Example: chain is master → #74 → #75 → #73 → #67 → #77
+gh stack link 74 75 73 67 77
+```
+
+Why the full chain: `gh stack link` treats its FIRST arg as the stack bottom and repoints that PR's
+base to the trunk (master). Including the real bottom (already based on master) is harmless; omitting
+it (e.g. `gh stack link 67 77`) repoints #67 to master and detaches it from its real parent — and
+every linked PR's base is then locked under the new server stack.
+
+**Recovery if a subset link already damaged a base:**
+
+```bash
+# 1. Find the server stack number that was just created
+STACK_NUM=$(gh api graphql -f query='{repository(owner:"OWNER",name:"REPO"){pullRequest(number:N){stack{number}}}}' -q '.data.repository.pullRequest.stack.number')
+# 2. Dissolve the server stack — frees every member's base for editing
+gh stack unstack "$STACK_NUM"
+# 3. Restore the detached PR's base to its real parent branch
+gh pr edit <detached-pr> --base <real-parent-branch>
+```
+
+`gh stack unstack <n>` is API-only and worktree-safe (no checkout); it removes the server stack
+metadata and unlocks the bases but leaves branches/PRs/commits untouched. After unstacking, the PRs
+remain a valid logical chain via their base-branch pointers — re-linking is optional.
