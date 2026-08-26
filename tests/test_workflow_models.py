@@ -44,7 +44,7 @@ if __name__ == "__main__":
     )
     test_result(
         "GitHubCacheData.to_dict() serializes stack info",
-        cache_dict["stack"]["is_stacked"] is True and cache_dict["stack"]["parent_pr"] == 42
+        cache_dict["stack"]["isStacked"] is True and cache_dict["stack"]["parentPr"] == 42
     )
 
     reconstructed = GitHubCacheData.from_dict(cache_dict)

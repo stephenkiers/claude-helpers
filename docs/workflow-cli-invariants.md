@@ -131,9 +131,9 @@ git.run_git_command(f"merge-base --is-ancestor {ancestor} {descendant}")
 
 **Rationale:** Cache allows explicit override of auto-detection; users can set `"isStacked": false` to disable stack detection if auto-detection misfires.
 
-## Phase 1 Fixture Coverage
+## Phase 1 Test Coverage
 
-**Invariant:** Fixture test data must cover all supported repo states:
+**Design intent:** Automated tests aim to cover all supported repo states:
 - Normal repo (single worktree, stacked, single-driver).
 - Bare/graft worktree setup.
 - Local-plan mode (no GitHub remote).
@@ -143,7 +143,9 @@ git.run_git_command(f"merge-base --is-ancestor {ancestor} {descendant}")
 - Stale cache (content mismatch).
 - Missing remote.
 
-**Rationale:** Ensures all code paths are tested before mutation phases begin.
+**Implementation:** Phase 1 uses inline temporary directories and mocks rather than pre-built fixture files. Future phases may expand to fixture-based testing for readability and reusability.
+
+**Rationale:** Ensures code paths are exercised before mutation phases begin.
 
 ## Error Messages and Diagnostics
 

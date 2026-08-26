@@ -105,8 +105,9 @@ def detect_layout(
     5. If subject has known parent and no siblings checked out → single-driver
     6. Else (stacked but no parent or sibling info) → unknown (fail closed)
     """
+    current_branch = git.get_current_branch(cwd=cwd)
     if subject_branch is None:
-        subject_branch = git.get_current_branch(cwd=cwd)
+        subject_branch = current_branch
 
     default_branch = git.get_default_branch(cwd=cwd)
 
@@ -128,7 +129,7 @@ def detect_layout(
                     if cache_data and cache_data.stack.parent_branch:
                         subject_parent = cache_data.stack.parent_branch
 
-        if subject_parent is None:
+        if subject_parent is None and subject_branch == current_branch:
             is_stack, parent_branch, _ = is_stacked(subject_branch, cwd=cwd, cache_path=None)
             if is_stack and parent_branch:
                 subject_parent = parent_branch
@@ -149,7 +150,7 @@ def detect_layout(
                     if cache_data and cache_data.stack.parent_branch == subject_branch:
                         per_branch = True
                         break
-                except Exception:
+                except OSError:
                     pass
 
         if per_branch:

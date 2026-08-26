@@ -46,7 +46,11 @@ class GitHubCacheData:
         d = asdict(self)
         if self.issue:
             d["issue"] = asdict(self.issue)
-        d["stack"] = asdict(self.stack)
+        d["stack"] = {
+            "isStacked": self.stack.is_stacked,
+            "parentBranch": self.stack.parent_branch,
+            "parentPr": self.stack.parent_pr
+        }
         return d
 
     @classmethod
@@ -59,9 +63,9 @@ class GitHubCacheData:
         if "stack" in data and data["stack"]:
             stack_data = data["stack"]
             obj.stack = StackInfo(
-                is_stacked=stack_data.get("is_stacked", False),
-                parent_branch=stack_data.get("parent_branch"),
-                parent_pr=stack_data.get("parent_pr")
+                is_stacked=stack_data.get("isStacked", False),
+                parent_branch=stack_data.get("parentBranch"),
+                parent_pr=stack_data.get("parentPr")
             )
         return obj
 
