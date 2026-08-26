@@ -85,7 +85,7 @@ Monthly Maintenance Checklist:
 2. **Detect on miss** - If no cache, run full detection
 3. **Update immediately on gotcha** - Don't wait; write cache after each discovery
 4. **Monthly refresh** - Full re-detection + gotcha pruning every 30 days
-5. **Cache is committed** - Shared across worktrees and team via git
+5. **Cache is gitignored** - Per-worktree, not shared across worktrees or team via git
 
 ---
 

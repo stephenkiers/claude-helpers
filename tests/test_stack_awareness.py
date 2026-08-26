@@ -31,6 +31,7 @@ PROMPTS_DIR = REPO_ROOT / "prompts"
 CLEANUP_FILE = COMMANDS_DIR / "cleanup.md"
 SHIPIT_FILE = COMMANDS_DIR / "shipit.md"
 WORKTREE_REF_FILE = PROMPTS_DIR / "worktree-reference.md"
+MERGE_FILE = COMMANDS_DIR / "merge-and-cleanup.md"
 
 
 def read(path):
@@ -81,6 +82,7 @@ def get_byte_index(text, section_name):
 CLEANUP = read(CLEANUP_FILE)
 SHIPIT = read(SHIPIT_FILE)
 WORKTREE_REF = read(WORKTREE_REF_FILE)
+MERGE = read(MERGE_FILE)
 
 h = Harness("STACK AWARENESS TEST SUITE (ISSUE #51)")
 t = h.test_result
@@ -144,6 +146,7 @@ def check_file_worktree_safe(content: str, filename: str, hostile_verbs=None) ->
 cleanup_violations = check_file_worktree_safe(CLEANUP, "cleanup.md")
 shipit_violations = check_file_worktree_safe(SHIPIT, "shipit.md")
 ref_violations = check_file_worktree_safe(WORKTREE_REF, "worktree-reference.md")
+merge_violations = check_file_worktree_safe(MERGE, "merge-and-cleanup.md")
 
 t("cleanup.md bash blocks are worktree-safe",
   len(cleanup_violations) == 0,
@@ -156,6 +159,10 @@ t("shipit.md bash blocks are worktree-safe",
 t("worktree-reference.md bash blocks are worktree-safe",
   len(ref_violations) == 0,
   f"found {len(ref_violations)} violations: {ref_violations}" if ref_violations else "")
+
+t("merge-and-cleanup.md bash blocks are worktree-safe",
+  len(merge_violations) == 0,
+  f"found {len(merge_violations)} violations: {merge_violations}" if merge_violations else "")
 
 # ADR-0011: the warning is now *scoped* — gh stack init/sync/checkout are fatal
 # under per-branch layout specifically, not a blanket "never use" ban. The docs
