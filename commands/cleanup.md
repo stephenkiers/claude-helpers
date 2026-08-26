@@ -524,19 +524,28 @@ else
 fi
 ```
 
-### 2.6. Detect Stacked Children & Emit Restack Runbook
+### 2.6. Detect Stacked Children & Sync/Restack
 
 **Only when `PR_STATE = "MERGED"`.** If the merged PR was the base of a stacked chain, detect
-child branches and emit a runbook for the user to restack them manually. This emits the canonical
-restack block from `~/.claude/prompts/worktree-reference.md` verbatim (per child, substituting
-`<CHILD_WT>`, `<CHILD_BRANCH>`, `<MERGED_TIP>`, `<DEFAULT_BRANCH>`). The user runs the emitted
-block manually (no auto-rebase, no auto-force-push).
+child branches and restack them. When the `claude` binary is on PATH (the Skill harness is
+available) and `STACK_SYNC_MANUAL` is not `1`, the restack is auto-executed via `/stack-sync`
+(see the "Sync stacked children" subsection below). The fully-substituted restack runbook is
+**always emitted**, on both paths — on the auto-execute path the Skill invocation supersedes
+it, but if the user aborts or defers the Skill run, the on-screen runbook is still the
+complete manual recipe (abort is a deferral, not a dead end). When `claude` is not on PATH,
+or `STACK_SYNC_MANUAL=1` is set to opt out of auto-execution, the emitted runbook is the only
+path (emit-only fallback — you run it yourself). The canonical restack block from
+`~/.claude/prompts/worktree-reference.md` is used per child, substituting `<CHILD_WT>`,
+`<CHILD_BRANCH>`, `<NEW_BASE>`, and `<OLD_BASE>`, where post-merge sets
+`<NEW_BASE>=origin/$DEFAULT_BRANCH` and `<OLD_BASE>=$MERGED_TIP`.
 
 ```bash
 if [ "$PR_STATE" = "MERGED" ]; then
   # Run Stack Detection → Find children block from ~/.claude/prompts/worktree-reference.md
   # This requires WORKTREE_PARENT (from Project Detection) and CURRENT_BRANCH
-  # Emits: CHILD_BRANCHES (space-separated list of "branch:pr:worktree" records)
+  # Emits: CHILD_BRANCHES (newline-separated "branch:pr:worktree" records — worktree LAST so
+  #        `cut -d: -f3-` stays correct for paths containing ':'; branch names and PR numbers are
+  #        colon-free by git/GitHub rules), GH_CHILD_LOOKUP_FAILED (true when gh pr list errored)
 
   REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
   REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
@@ -546,8 +555,11 @@ if [ "$PR_STATE" = "MERGED" ]; then
   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
   [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
 
-  # Detect children (scan worktree caches + fallback to gh pr list)
+  # Detect children — mirrors the canonical Find-children block (worktree-reference.md): cache scan
+  # UNION 'gh pr list' (both detectors always run; a cache hit can be stale and gh can miss children
+  # the cache knows about), deduped by branch, with a lookup-failure flag.
   CHILD_BRANCHES=""
+  GH_CHILD_LOOKUP_FAILED=false
 
   if [ -d "$WORKTREE_PARENT" ]; then
     while IFS= read -r cache_file; do
@@ -561,18 +573,25 @@ if [ "$PR_STATE" = "MERGED" ]; then
         ')
         if [ -n "$CHILD_BRANCH" ]; then
           CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
-          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE} "
+          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE}"$'\n'
         fi
       fi
     done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
   fi
 
-  # Fallback: check open PRs against this branch (no worktree path available)
-  if [ -z "$CHILD_BRANCHES" ]; then
-    OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null || true)
-    if [ -n "$OPEN_PRS" ]; then
-      CHILD_BRANCHES=$(echo "$OPEN_PRS" | xargs)
-    fi
+  # Detector 2 — open PRs based on this branch. Always runs (union, not fallback); dedupe by branch.
+  if OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null); then
+    while IFS= read -r PR_REC; do
+      [ -z "$PR_REC" ] && continue
+      PR_BRANCH=$(printf '%s' "$PR_REC" | cut -d: -f1)
+      if printf '%s' "$CHILD_BRANCHES" | awk -F: -v b="$PR_BRANCH" '$1==b {f=1} END {exit !f}'; then
+        continue   # already detected via cache
+      fi
+      CHILD_BRANCHES="${CHILD_BRANCHES}${PR_REC}"$'\n'
+    done <<< "$OPEN_PRS"
+  else
+    GH_CHILD_LOOKUP_FAILED=true
+    echo "  WARNING: 'gh pr list --base $CURRENT_BRANCH' failed — child detection may be incomplete"
   fi
 
   # If children found, capture the merged tip SHA and emit runbook
@@ -588,7 +607,27 @@ if [ "$PR_STATE" = "MERGED" ]; then
       exit 1
     fi
 
-    # Emit restack commands for each child, bottom-up
+    # Auto-execute arm: when the Skill harness is available (`claude` on PATH) and the user
+    # has not opted out with STACK_SYNC_MANUAL=1, invoke the `stack-sync` skill via the
+    # `Skill` tool with the merged branch as pivot (no `--yes` — the post-merge restack keeps
+    # its own confirmation):
+    #   /stack-sync "$CURRENT_BRANCH"
+    # stack-sync detects post-merge mode (PR merged) and routes on layout: single-driver
+    # delegates to gh stack sync; per-branch (STACK_LAYOUT="per-branch") rebases each child
+    # onto origin/$DEFAULT_BRANCH (bottom-up), reusing the generalized Restack-a-child block.
+    if command -v claude >/dev/null 2>&1 && [ "${STACK_SYNC_MANUAL:-0}" != "1" ]; then
+      echo "Auto-executing the restack via /stack-sync (set STACK_SYNC_MANUAL=1 to force the emit-only path)."
+      echo "✓ After /stack-sync completes, run /cleanup again on this merged branch to remove it."
+    else
+      echo "Emit-only mode (claude not on PATH, or STACK_SYNC_MANUAL=1) — run the restack runbook below yourself."
+    fi
+    echo ""
+
+    # ALWAYS emit the manual restack runbook, on both arms. When the harness auto-executed
+    # above, the Skill invocation supersedes this runbook — but emitting it anyway means an
+    # aborted or deferred Skill run is never a dead end: the full manual recipe stays on
+    # screen. On the emit-only path it is the deliverable (self-sufficiency outside the
+    # Skill harness).
     echo "The PR #$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "?") that was just merged"
     echo "was the base of a stacked chain. When a parent merges, GitHub retargets the child PR's"
     echo "**base pointer** to '$DEFAULT_BRANCH' — but it never rebases the child's commits. The remote"
@@ -598,12 +637,16 @@ if [ "$PR_STATE" = "MERGED" ]; then
     echo "reset and prove no work was lost; otherwise rebase-and-force-push yourself."
     echo ""
     echo "**Canonical restack primitive** (from ~/.claude/prompts/worktree-reference.md):"
-    echo "You will run this for each child below. The runbook is emit-only — you paste and run it manually."
+    echo "Run this for each child below. The runbook is emit-only — you paste and run it manually"
+    echo "(on the auto-execute path, skip any child /stack-sync already synced)."
     echo ""
 
     # Parse children and emit runbook (emit-by-reference: substitute parameters into the canonical block)
+    # CHILD_BRANCHES records are newline-separated (a worktree path may contain spaces), so read
+    # line-by-line — never `for ... in $CHILD_BRANCHES` (that would word-split a spaced path).
     CHILD_NUM=0
-    for CHILD_INFO in $CHILD_BRANCHES; do
+    while IFS= read -r CHILD_INFO; do
+      [ -z "$CHILD_INFO" ] && continue
       CHILD_NUM=$((CHILD_NUM + 1))
       # Parse "branch:pr:worktree" — handle paths with colons by reading field3 onwards
       CHILD_BRANCH=$(echo "$CHILD_INFO" | cut -d: -f1)
@@ -614,9 +657,9 @@ if [ "$PR_STATE" = "MERGED" ]; then
       echo ""
       echo "\`\`\`bash"
 
-      # If no worktree path (fallback only), emit a placeholder for the caller to substitute.
+      # If no worktree path (gh-only record), emit a placeholder for the caller to substitute.
       if [ -z "$CHILD_WT" ]; then
-        echo "# Worktree path unknown (detected via gh pr list fallback, not cache)."
+        echo "# Worktree path unknown (detected via 'gh pr list', not the worktree cache)."
         echo "# Substitute the actual child worktree path for <CHILD_WT> below."
         CHILD_WT="<CHILD_WT>"
       fi
@@ -676,7 +719,33 @@ if [ "$PR_STATE" = "MERGED" ]; then
 
       echo "\`\`\`"
       echo ""
-    done
+
+      # Emit the cache-clearing step for this child: a successful post-merge sync leaves the
+      # child's .claude/github-cache.json naming this merged pivot as its parent — the next
+      # /cleanup would re-detect the same child forever and the next /shipit would route on a
+      # phantom parent. The child's new base is the default branch, so clear to
+      # stack: {isStacked: false}. jq-safe convention (same as /shipit's cache write): printf
+      # not echo (zsh's builtin echo interprets backslash escapes), temp file + mv so a jq
+      # failure never truncates the existing cache.
+      echo "Once this child's restack succeeds, clear its stale stack metadata (the merged pivot"
+      echo "is no longer its parent — the new base is the default branch):"
+      echo ""
+      echo "\`\`\`bash"
+      echo "CHILD_CACHE='$CHILD_WT/.claude/github-cache.json'"
+      echo "if [ -f \"\$CHILD_CACHE\" ]; then"
+      echo "  CHILD_TMP=\$(mktemp \"\$CHILD_CACHE.XXXXXX\")"
+      echo "  printf '%s' \"\$(cat \"\$CHILD_CACHE\")\" | jq '. + {stack: {isStacked: false}}' > \"\$CHILD_TMP\" \\"
+      echo "    && mv \"\$CHILD_TMP\" \"\$CHILD_CACHE\" \\"
+      echo "    || { rm -f \"\$CHILD_TMP\"; echo 'WARNING: cache update failed; left unchanged' >&2; }"
+      echo "fi"
+      echo "\`\`\`"
+      echo ""
+    done <<< "$CHILD_BRANCHES"
+
+    # Cache metadata fixup on the auto-execute path: after /stack-sync completes, read its
+    # per-child report and run the cache-clearing snippet above for each child whose outcome
+    # is `synced` (not `conflict`, not `skipped-parent-failed`, etc.). On the emit-only path
+    # the user runs it as part of the runbook.
 
     # Remote stack fixup (if this was part of a remote stack)
     PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null || echo "0")
@@ -705,11 +774,14 @@ GRAPHQL
       echo "\`\`\`"
       echo ""
     fi
-
-    echo "✓ After restacking, run /cleanup again on this merged branch to remove it."
-    echo ""
   else
-    echo "No stacked children detected. Proceeding to worktree removal."
+    if [ "$GH_CHILD_LOOKUP_FAILED" = "true" ]; then
+      # gh errored during detection — "no children" may be a lookup failure, not a fact.
+      echo "WARNING: no stacked children detected, but 'gh pr list' failed during detection — the"
+      echo "child set may be incomplete. Re-run /cleanup when gh is healthy before relying on this."
+    else
+      echo "No stacked children detected. Proceeding to worktree removal."
+    fi
   fi
 
 else
@@ -717,6 +789,36 @@ else
   :
 fi
 ```
+
+### Sync stacked children (post-merge)
+
+When the `claude` binary is on PATH (the Skill harness is available) and `STACK_SYNC_MANUAL`
+is not `1`, the restack is executed automatically rather than left as a manual runbook.
+Invoke the `stack-sync` skill via the `Skill` tool with the merged branch as the pivot — no
+`--yes` flag here; the post-merge restack keeps its own confirmation:
+
+> /stack-sync "$CURRENT_BRANCH"
+
+stack-sync detects post-merge mode (PR merged) and routes on layout: `single-driver` delegates
+to `gh stack sync`; `per-branch` rebases each child onto `origin/$DEFAULT_BRANCH` (bottom-up),
+reusing the generalized Restack-a-child block. If the branch has no descendants, stack-sync is
+a clean no-op. Each child's outcome is reported per branch; a failed child leaves its own
+subtree `skipped-parent-failed`, so the rest of the stack still syncs.
+
+The manual restack runbook from Step 2.6's bash block is emitted on BOTH paths. On this
+auto-execute path the Skill invocation supersedes it — but if you abort or defer the Skill
+run, the on-screen runbook is still the complete manual recipe (abort is a deferral, not a
+dead end). When `claude` is NOT on PATH — or you set `STACK_SYNC_MANUAL=1` to opt out of
+auto-execution — the emitted runbook is the only path: you paste and run it yourself
+(emit-only).
+
+After a successful child sync, on either path, the child's `.claude/github-cache.json` stack
+metadata is cleared to `stack: {isStacked: false}` — its base is now the default branch, not
+the merged pivot. Without this, "run /cleanup again" re-detects the same children forever and
+the next `/shipit` routes on a phantom parent. On the auto-execute path, run the per-child
+cache-clearing snippet (emitted with the runbook) for each child stack-sync reports with outcome
+`synced` (the literal per-child outcome token from the Step 6 report); on the emit-only path the
+snippet is part of the runbook itself.
 
 ### 3. Remove Worktree (from main)
 
@@ -762,7 +864,7 @@ fi
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
 | Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
 | Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
-| Stacked children detected | Print a fully-substituted restack runbook (user runs it manually) |
+| Stacked children detected | Auto-execute restack via /stack-sync when the Skill harness is available and `STACK_SYNC_MANUAL` is unset; the fully-substituted restack runbook is always emitted (abort = deferral, not a dead end); on the emit-only path the user runs it manually |
 | No stacked children | Continue to worktree removal (unchanged flow) |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
 | **Shell stuck in deleted dir** | See recovery section below |
@@ -814,8 +916,13 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
   (run `/shipit` once to write it). Failures are reported but never block cleanup.
 - **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
-  child branches and prints a restack runbook (user runs it manually). No auto-rebase, no
-  auto-force-push — the runbook is emit-only, and the user controls restacking. This keeps
+  child branches and restacks them via `/stack-sync` when the Skill harness is available
+  (`claude` on PATH) and `STACK_SYNC_MANUAL` is not `1`. The fully-substituted restack
+  runbook is emitted on both paths — on the auto-execute path the Skill invocation supersedes
+  it, but an aborted or deferred Skill run leaves the complete manual recipe on screen.
+  `STACK_SYNC_MANUAL=1` forces the emit-only fallback (you run it yourself; no auto-rebase,
+  no auto-force-push). After a successful child sync, the child's cache stack metadata is
+  cleared to `isStacked: false` so re-runs don't loop on the merged pivot. This keeps
   worktrees independent and safe for concurrent work.
 - **Restack runbook is detect-then-branch, not rebase-and-replay.** GitHub retargets a child PR's
   *base pointer* when its parent merges but never rebases the *commits*; the force-push that rewrites
