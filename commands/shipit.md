@@ -9,6 +9,18 @@ model: haiku
 Run CI checks, commit, and open PR. For edge cases and maintenance, read
 `~/.claude/prompts/shipit-reference.md`.
 
+## 0. Telemetry: mark command start
+
+Telemetry is local, observational, and best-effort — it must never block or fail `/shipit`.
+Every call is non-fatal (stderr redirected, `|| echo unknown` fallback so a missing/broken
+`run-metrics.py`, e.g. before `install.sh` has run, can't break this command):
+
+```bash
+TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit 2>/dev/null || echo unknown)
+```
+
+Reuse `$TELEMETRY_CMD_ID` for every `stage-begin`/`stage-end`/`command-end` call below.
+
 ## 1. Load Cache & Detect Tooling
 
 Start these in parallel:
@@ -181,6 +193,10 @@ If `node_modules` missing (or `node_modules/.bun` for bun): run cached install c
 
 ## 3. Run Checks
 
+```bash
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage run-checks 2>/dev/null || echo unknown)
+```
+
 **Skip if recently run:** If lint/typecheck/test were run earlier in this conversation and all passed, skip re-running them. Trust the prior results.
 
 Run every non-null command from the cache in this order:
@@ -194,9 +210,20 @@ Run every non-null command from the cache in this order:
 
 **On failure:** Stop immediately, report error, record gotcha in cache. Do NOT commit.
 
+```bash
+# On the check-failure branch above:
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome failure --failure-class test_failure 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class test_failure 2>/dev/null || true
+```
+
+On success, continue below and close out `run-checks` there.
+
 ## 4. Commit
 
 ```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome success 2>/dev/null || true
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage commit 2>/dev/null || echo unknown)
+
 git add -A
 git diff --staged
 ```
@@ -208,6 +235,11 @@ Write commit message:
 - **NEVER mention Claude, AI, LLM, or add Co-Authored-By**
 
 ## 5. Push & PR
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage commit --outcome success 2>/dev/null || true
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage create-pr 2>/dev/null || echo unknown)
+```
 
 ### Stack Detection (if stacked)
 
@@ -371,9 +403,27 @@ Skip when `STACK_LAYOUT="single-driver"` (single-driver already cascaded via `gh
 **If on main/master:** Warn user, suggest creating a branch.
 **If branch has issue number:** Include "Closes #N" in PR body to auto-close issue on merge.
 
+### Telemetry: mark command end (success path)
+
+Once the PR is created (or confirmed to already exist) and reported to the user, close out
+`create-pr` and the overall command as success — non-fatal, same as every telemetry call above:
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-pr --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome success 2>/dev/null || true
+```
+
 ## On Failure
 
 Record gotcha in cache: `{"issue": "what failed", "resolution": "how to fix"}`
+
+If failure happened during push/PR creation (Step 5) rather than the earlier checks step, close
+out telemetry for that failure too — never let this block reporting the failure to the user:
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class other 2>/dev/null || true
+```
 
 Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
 
