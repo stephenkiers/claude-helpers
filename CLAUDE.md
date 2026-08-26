@@ -115,6 +115,7 @@ to get started.
   → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → round-sized, concurrent
   spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
+- `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
 - `/verify-queue` — drain pending "needs measurement" and "needs you" rulings from expert-review action-plans; batched per-repo queue at `<repo>/worktrees/verify-queue.jsonl` drains open items via sync, measurement, and disposition
 - `/fork-planning` — fork a planning session

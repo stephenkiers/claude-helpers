@@ -205,7 +205,7 @@ Options:
 
 If force-push chosen, run it and report.
 
-Under single-driver layout, `gh stack sync` cascades to child branches automatically. Under per-branch layout, child branches are not updated — use the **"Restack a child (after its parent merged)"** runbook in `~/.claude/prompts/worktree-reference.md` for each child.
+Under single-driver layout, `gh stack sync` cascades to child branches automatically. Under per-branch layout, child branches are not updated by this push — run `/stack-sync "$BRANCH"`, the same ongoing-sync recipe `/shipit` uses after its push (it rebases each descendant onto this branch's updated tip, runs the project check gate per child, and force-pushes with `--force-with-lease`). `/expert-rebase` deliberately does NOT auto-invoke it: the force-push above was confirmation-gated for this branch only, and the descendant sync force-pushes every child — that decision stays with you as a separate, explicit step after the rebase result is reported. (Omit `--yes` so the sync's own confirmation gate applies. The **"Restack a child (after its parent merged)"** runbook in `~/.claude/prompts/worktree-reference.md` is the post-merge recipe — not applicable here, where the parent has not merged.)
 
 ---
 

@@ -88,13 +88,15 @@ t = h.test_result
 # ============================================================================
 # ADR-0011 reversed PR #55's blanket ban: `gh stack sync` is the intended
 # single-driver push command, and `gh stack init`/`checkout` are fatal under
-# per-branch layout. This repo's convention is that the single-driver
-# `gh stack sync` action is described in *prose* ("Run `gh stack sync`") and
-# never inlined as an active bash command, so bash blocks stay worktree-safe
-# (manual git primitives + API-only `gh stack link`/`unstack`). The guard
-# below flags hostile verbs only when they appear as *active command lines* —
-# not inside comments (explanatory) or echo/printf strings (emit-only runbooks
-# the user pastes manually).
+# per-branch layout. This repo's convention (updated per accepted review
+# finding #30 / ADR-0011): the single-driver Step 4a arm of stack-sync.md may
+# inline `gh stack sync` as an active bash command after a dry-run guard;
+# everywhere else the action is described in *prose* ("Run `gh stack sync`")
+# and never inlined, so bash blocks stay worktree-safe (manual git primitives +
+# API-only `gh stack link`/`unstack`). The guard below flags hostile verbs only
+# when they appear as *active command lines* — not inside comments
+# (explanatory) or echo/printf strings (emit-only runbooks the user pastes
+# manually).
 print("[Invariant 1] Worktree-safety: no hostile gh stack verbs as active commands in bash blocks")
 
 HOSTILE_VERBS: list[str] = ["gh stack init", "gh stack sync", "gh stack checkout"]
@@ -117,19 +119,21 @@ def active_command_lines(block_text: str) -> list[str]:
         active.append(line)
     return active
 
-def check_file_worktree_safe(content: str, filename: str) -> list[str]:
+def check_file_worktree_safe(content: str, filename: str, hostile_verbs=None) -> list[str]:
     """
     Check that hostile verbs don't appear as active (non-comment, non-echo)
     command lines in bash blocks of a file. Comments and prose mentions are
-    permitted.
+    permitted. `hostile_verbs` overrides HOSTILE_VERBS (used to scope the
+    `gh stack sync` ban outside stack-sync.md's Step 4a section).
 
     Returns: list of violation strings (empty if no violations found)
     """
+    verbs = hostile_verbs if hostile_verbs is not None else HOSTILE_VERBS
     bash_blocks = extract_bash_blocks(content)
     violations = []
     for line_num, block_text in bash_blocks:
         for line in active_command_lines(block_text):
-            for verb in HOSTILE_VERBS:
+            for verb in verbs:
                 if verb in line:
                     violations.append(f"{filename}:{line_num} executes '{verb}'")
     return violations
@@ -368,6 +372,352 @@ has_false_stacked = re.search(r"isStacked.*false", SHIPIT, re.DOTALL)
 t("shipit.md mentions 'isStacked: false' value for non-stacked PRs",
   has_false_stacked is not None,
   "expected support for non-stacked (isStacked: false) case")
+
+print()
+
+# ============================================================================
+# INVARIANT 8: /stack-sync command exists with frontmatter (issue #57)
+# ============================================================================
+# /stack-sync is the layout-routed *sync* mirror of #64's layout-routed *push*.
+# It must exist as a command doc with YAML frontmatter declaring its tools and
+# argument hint, and must document the --dry-run / --yes flags.
+print("[Invariant 8] /stack-sync command file exists with frontmatter")
+
+STACK_SYNC_FILE = COMMANDS_DIR / "stack-sync.md"
+STACK_SYNC = read(STACK_SYNC_FILE)
+
+t("commands/stack-sync.md exists and is non-empty",
+  len(STACK_SYNC.strip()) > 0,
+  "expected commands/stack-sync.md to exist with content")
+
+
+def extract_frontmatter(text: str) -> str:
+    """Return the YAML frontmatter block (between the first two --- fences), or ''."""
+    # Tolerate CRLF line endings so the check doesn't false-fail on Windows-authored docs.
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.DOTALL)
+    return m.group(1) if m else ""
+
+
+stack_sync_fm = extract_frontmatter(STACK_SYNC)
+t("stack-sync.md has YAML frontmatter",
+  len(stack_sync_fm) > 0,
+  "expected frontmatter delimited by --- fences at the top of stack-sync.md")
+
+t("stack-sync.md frontmatter declares 'name: stack-sync'",
+  re.search(r"^name:\s*stack-sync\s*$", stack_sync_fm, re.MULTILINE) is not None,
+  "expected a 'name: stack-sync' field in stack-sync.md frontmatter")
+
+t("stack-sync.md frontmatter declares allowed-tools",
+  "allowed-tools" in stack_sync_fm,
+  "expected an 'allowed-tools' field in stack-sync.md frontmatter")
+
+t("stack-sync.md frontmatter declares argument-hint",
+  "argument-hint" in stack_sync_fm,
+  "expected an 'argument-hint' field in stack-sync.md frontmatter")
+
+t("stack-sync.md documents --dry-run flag",
+  "--dry-run" in STACK_SYNC,
+  "expected --dry-run flag documented in stack-sync.md")
+
+t("stack-sync.md documents --yes flag",
+  "--yes" in STACK_SYNC,
+  "expected --yes flag documented in stack-sync.md")
+
+print()
+
+# ============================================================================
+# INVARIANT 9: /stack-sync routes on STACK_LAYOUT (three arms)
+# ============================================================================
+# single-driver -> delegate to `gh stack sync`; per-branch -> manual git -C
+# bottom-up rebase walk; unknown -> STOP and ask (fail closed).
+print("[Invariant 9] /stack-sync routes on STACK_LAYOUT (single-driver / per-branch / unknown)")
+
+t("stack-sync.md references STACK_LAYOUT variable",
+  "STACK_LAYOUT" in STACK_SYNC,
+  "expected STACK_LAYOUT variable referenced in stack-sync.md")
+
+# Step-section slices, computed once and reused by later invariants (9, 11).
+step4a_idx = get_byte_index(STACK_SYNC, "Step 4a")
+step4b_idx = get_byte_index(STACK_SYNC, "Step 4b")
+step5_idx = get_byte_index(STACK_SYNC, "Step 5")
+step6_idx = get_byte_index(STACK_SYNC, "Step 6")
+step4a_section = STACK_SYNC[step4a_idx:step4b_idx] if 0 <= step4a_idx < step4b_idx else ""
+step4b_section = STACK_SYNC[step4b_idx:step5_idx] if 0 <= step4b_idx < step5_idx else ""
+step5_section = STACK_SYNC[step5_idx:step6_idx] if 0 <= step5_idx < step6_idx else ""
+
+t("stack-sync.md has a '## Step 4a' single-driver arm heading",
+  step4a_idx >= 0,
+  "expected a '## Step 4a' heading for the single-driver arm")
+
+t("stack-sync.md Step 4a delegates to 'gh stack sync' near the heading",
+  re.search(r"^## Step 4a\b.{0,600}?gh stack sync", STACK_SYNC, re.MULTILINE | re.DOTALL) is not None,
+  "expected 'gh stack sync' in proximity to the '## Step 4a' heading (ungated by design per ADR-0012)")
+
+t("stack-sync.md has a '## Step 4b' per-branch arm heading",
+  step4b_idx >= 0,
+  "expected a '## Step 4b' heading for the per-branch arm")
+
+t("stack-sync.md per-branch arm uses a manual rebase walk",
+  "rebase" in STACK_SYNC and "git -C" in STACK_SYNC,
+  "expected per-branch arm to use 'git -C' + 'rebase' manual walk")
+
+t("stack-sync.md unknown arm fails closed near STACK_LAYOUT=\"unknown\"",
+  re.search(r'STACK_LAYOUT="unknown".{0,160}(stop and ask|fail.?closed)',
+            STACK_SYNC, re.DOTALL | re.IGNORECASE) is not None,
+  "expected a fail-closed stop-and-ask line in proximity to STACK_LAYOUT=\"unknown\"")
+
+# --- Behavior branches: mode detection, pivot guard, dry-run, install guard ---
+
+t("stack-sync.md defines a post-merge routing mode",
+  'SYNC_MODE="post-merge"' in STACK_SYNC,
+  "expected a SYNC_MODE=\"post-merge\" assignment in mode detection")
+
+t("stack-sync.md defines an ongoing routing mode",
+  'SYNC_MODE="ongoing"' in STACK_SYNC,
+  "expected a SYNC_MODE=\"ongoing\" assignment in mode detection")
+
+t("stack-sync.md post-merge detection fetches the mergeCommit field",
+  "mergeCommit" in STACK_SYNC,
+  "expected 'mergeCommit' in the post-merge 'gh pr view --json' field list")
+
+t("stack-sync.md guards the pivot against the default branch",
+  '[ "$PIVOT_BRANCH" = "$DEFAULT_BRANCH" ]' in STACK_SYNC,
+  "expected a pivot guard comparing PIVOT_BRANCH to DEFAULT_BRANCH")
+
+t("stack-sync.md gates 'git fetch' behind dry-run",
+  re.search(r'DRY_RUN" = "true" \] \|\| git fetch', STACK_SYNC) is not None,
+  "expected '[ \"$DRY_RUN\" = \"true\" ] || git fetch ...' so --dry-run performs no fetch")
+
+t("stack-sync.md single-driver arm has a gh-stack install guard",
+  "command -v gh-stack" in STACK_SYNC,
+  "expected a 'command -v gh-stack' install guard in the single-driver arm")
+
+t("stack-sync.md enforces the dry-run gate in the single-driver arm (Step 4a)",
+  "DRY_RUN" in step4a_section,
+  "expected a DRY_RUN check inside the Step 4a section")
+
+t("stack-sync.md enforces the dry-run gate in the per-branch arm (Step 4b)",
+  "DRY_RUN" in step4b_section,
+  "expected a DRY_RUN check inside the Step 4b section")
+
+print()
+
+# ============================================================================
+# INVARIANT 10: bottom-up ordering via merge-base --is-ancestor + cycle guard
+# ============================================================================
+print("[Invariant 10] bottom-up ordering via merge-base --is-ancestor + cycle detection")
+
+t("stack-sync.md uses 'git merge-base --is-ancestor' for ordering",
+  "merge-base --is-ancestor" in STACK_SYNC,
+  "expected 'git merge-base --is-ancestor' for bottom-up ancestor-before-descendant ordering")
+
+t("stack-sync.md detects cycles (hard error)",
+  "cycle" in STACK_SYNC.lower(),
+  "expected cycle detection with a hard error in stack-sync.md")
+
+# --- Structural ordering assertions: pin the walk's shape, not just its keywords ---
+# (A keyword grep was green on the buggy walk PR #57 had to fix — the append must
+# precede the recursion, the seed call must be the pivot at level 0, and each child
+# must be recorded at $((level + 1)) so level-1 substitutions apply to direct children.)
+
+desc_append_idx = STACK_SYNC.find('DESCENDANTS="${DESCENDANTS}')
+walk_recurse_idx = STACK_SYNC.find('walk "$child_branch"')
+
+t("stack-sync.md walk() appends to DESCENDANTS before the recursive walk call (pre-order)",
+  desc_append_idx >= 0 and walk_recurse_idx > desc_append_idx,
+  "expected the DESCENDANTS append to precede the recursive walk call so ancestors precede descendants")
+
+t("stack-sync.md seeds the descendant walk at the pivot with level 0",
+  'walk "$PIVOT_BRANCH" 0' in STACK_SYNC,
+  "expected the initial call 'walk \"$PIVOT_BRANCH\" 0' (pivot itself is never synced)")
+
+t("stack-sync.md walk() records each child's level as $((level + 1))",
+  re.search(r'DESCENDANTS="\$\{DESCENDANTS\}[^\n]*\$\(\(level \+ 1\)\)', STACK_SYNC) is not None,
+  "expected the DESCENDANTS record to emit the child level via $((level + 1))")
+
+print()
+
+# ============================================================================
+# INVARIANT 11: push confirmation gate (force-with-lease + repo-cache check)
+# ============================================================================
+print("[Invariant 11] push gates: force-with-lease, repo-cache CHECK_CMD gate, Step 5 confirmation")
+
+t("stack-sync.md gates push with 'force-with-lease'",
+  "force-with-lease" in STACK_SYNC,
+  "expected 'push --force-with-lease' in stack-sync.md")
+
+# The runnable gate lives in the canonical Restack block, not in stack-sync.md:
+# CHECK_CMD is read from .claude/repo-cache.json and must be non-empty before any
+# force-push. Assert the gate's shape (mechanism), not just the filename keyword.
+t("worktree-reference.md gates force-push on the repo-cache.json CHECK_CMD",
+  re.search(r'CHECK_CMD=\$\(jq[^\n]*repo-cache\.json.{0,220}\[ -n "\$CHECK_CMD" \]',
+            WORKTREE_REF, re.DOTALL) is not None,
+  "expected the canonical Restack block to read CHECK_CMD from repo-cache.json and require it non-empty before force-push")
+
+# The confirmation gate is Step 5's job specifically — scope the assertions there.
+t("stack-sync.md Step 5 confirmation requires AskUserQuestion",
+  "AskUserQuestion" in step5_section,
+  "expected the Step 5 push-confirmation gate to pause via AskUserQuestion")
+
+t("stack-sync.md Step 5 confirmation honors --yes",
+  "--yes" in step5_section,
+  "expected the Step 5 confirmation to be skippable via --yes")
+
+print()
+
+# ============================================================================
+# INVARIANT 12: stack-sync.md bash blocks are worktree-safe
+# ============================================================================
+print("[Invariant 12] stack-sync.md bash blocks are worktree-safe")
+
+# Finding 30 / ADR-0011: the single-driver Step 4a arm may inline `gh stack sync`
+# as an active command after a dry-run guard. Scope the ban: `gh stack init` and
+# `gh stack checkout` are banned everywhere in the file; `gh stack sync` is banned
+# everywhere EXCEPT the Step 4a section. step4a_idx/step4b_idx are computed in
+# Invariant 9 above.
+if 0 <= step4a_idx < step4b_idx:
+    stack_sync_4a_slice = STACK_SYNC[step4a_idx:step4b_idx]
+    # Blank the Step 4a slice (preserving its line count so violation line
+    # numbers stay accurate) and apply the full ban to the remainder.
+    stack_sync_outside_4a = (
+        STACK_SYNC[:step4a_idx]
+        + "\n" * stack_sync_4a_slice.count("\n")
+        + STACK_SYNC[step4b_idx:]
+    )
+    stack_sync_violations = (
+        check_file_worktree_safe(stack_sync_outside_4a, "stack-sync.md")
+        + check_file_worktree_safe(stack_sync_4a_slice, "stack-sync.md (Step 4a)",
+                                   hostile_verbs=["gh stack init", "gh stack checkout"])
+    )
+else:
+    # Step headings missing (Invariant 9 already fails) — apply the full ban.
+    stack_sync_violations = check_file_worktree_safe(STACK_SYNC, "stack-sync.md")
+t("stack-sync.md bash blocks are worktree-safe",
+  len(stack_sync_violations) == 0,
+  f"found {len(stack_sync_violations)} violations: {stack_sync_violations}" if stack_sync_violations else "")
+
+print()
+
+# ============================================================================
+# INVARIANT 13: generalized Restack block params + ongoing recipe (worktree-ref)
+# ============================================================================
+# The Restack-a-child block is generalized: <MERGED_TIP>/<DEFAULT_BRANCH> are
+# replaced by <NEW_BASE>/<OLD_BASE>, and a new ongoing-sync recipe is added.
+print("[Invariant 13] Restack block generalized to <NEW_BASE>/<OLD_BASE> + ongoing recipe")
+
+t("worktree-reference.md restack block parameterizes <NEW_BASE>",
+  "<NEW_BASE>" in WORKTREE_REF,
+  "expected <NEW_BASE> parameter in the generalized restack block")
+
+t("worktree-reference.md restack block parameterizes <OLD_BASE>",
+  "<OLD_BASE>" in WORKTREE_REF,
+  "expected <OLD_BASE> parameter in the generalized restack block")
+
+ongoing_heading_idx = get_line_index(WORKTREE_REF, "Sync a child (ongoing")
+t("worktree-reference.md has '### Sync a child (ongoing' recipe heading",
+  ongoing_heading_idx >= 0,
+  "expected a '### Sync a child (ongoing ...)' heading for the ongoing-sync recipe")
+
+# Post-merge mapping: NEW_BASE=origin/<default>, OLD_BASE=<merged tip>
+t("worktree-reference.md documents post-merge NEW_BASE=origin/<default>",
+  re.search(r"NEW_BASE.{0,80}origin/", WORKTREE_REF, re.DOTALL) is not None,
+  "expected NEW_BASE mapped to origin/<default> (post-merge) in worktree-reference.md")
+
+# Ongoing mapping: OLD_BASE=$(git merge-base HEAD origin/<parent>)
+t("worktree-reference.md documents ongoing OLD_BASE via git merge-base",
+  re.search(r"OLD_BASE.{0,80}merge-base", WORKTREE_REF, re.DOTALL) is not None,
+  "expected OLD_BASE mapped to $(git merge-base ...) for the ongoing recipe")
+
+print()
+
+# ============================================================================
+# INVARIANT 14: shipit.md + cleanup.md wired to /stack-sync
+# ============================================================================
+print("[Invariant 14] shipit.md and cleanup.md wired to /stack-sync")
+
+t("shipit.md references /stack-sync",
+  "stack-sync" in SHIPIT,
+  "expected shipit.md to invoke /stack-sync after a per-branch stacked push")
+
+# Gating must be verifiable, not two keywords anywhere in the file: require the
+# stack-sync invocation and the STACK_LAYOUT="per-branch" test in proximity.
+t("shipit.md gates /stack-sync on per-branch layout",
+  re.search(r'STACK_LAYOUT="per-branch".{0,400}stack-sync|stack-sync.{0,400}STACK_LAYOUT="per-branch"',
+            SHIPIT, re.DOTALL) is not None,
+  "expected shipit.md to tie the /stack-sync invocation to a STACK_LAYOUT=\"per-branch\" check")
+
+t("cleanup.md references /stack-sync",
+  "stack-sync" in CLEANUP,
+  "expected cleanup.md to execute restack via /stack-sync (post-merge)")
+
+t("cleanup.md gates /stack-sync on per-branch layout",
+  re.search(r'STACK_LAYOUT="per-branch".{0,500}stack-sync|stack-sync.{0,500}STACK_LAYOUT="per-branch"',
+            CLEANUP, re.DOTALL) is not None,
+  "expected cleanup.md to tie the /stack-sync invocation to a STACK_LAYOUT=\"per-branch\" check")
+
+t("cleanup.md keeps a manual-runbook fallback when the Skill harness is absent",
+  "command -v claude" in CLEANUP and re.search(r"not on PATH", CLEANUP, re.IGNORECASE) is not None,
+  "expected a 'command -v claude' harness check with a not-on-PATH manual-runbook fallback")
+
+t("cleanup.md supports a STACK_SYNC_MANUAL=1 opt-out of auto stack-sync",
+  "STACK_SYNC_MANUAL" in CLEANUP,
+  "expected a STACK_SYNC_MANUAL=1 opt-out for the auto-execute arm")
+
+print()
+
+# ============================================================================
+# INVARIANT 15: ADR-0012 exists with required sections + ADR-0011 cross-ref
+# ============================================================================
+print("[Invariant 15] ADR-0012 exists with Status/Context/Decision/Consequences + ADR-0011 cross-ref")
+
+ADR_DIR = REPO_ROOT / "docs" / "adr"
+ADR_0012_FILE = ADR_DIR / "0012-stack-sync.md"
+ADR_0012 = read(ADR_0012_FILE)
+
+t("docs/adr/0012-stack-sync.md exists and is non-empty",
+  len(ADR_0012.strip()) > 0,
+  "expected docs/adr/0012-stack-sync.md to exist with content")
+
+t("ADR-0012 has a Status field",
+  re.search(r"Status", ADR_0012) is not None,
+  "expected a 'Status' field in ADR-0012")
+
+t("ADR-0012 has a Context section",
+  re.search(r"^##\s+Context", ADR_0012, re.MULTILINE) is not None,
+  "expected a '## Context' section in ADR-0012")
+
+t("ADR-0012 has a Decision section",
+  re.search(r"^##\s+Decision", ADR_0012, re.MULTILINE) is not None,
+  "expected a '## Decision' section in ADR-0012")
+
+t("ADR-0012 has a Consequences section",
+  re.search(r"^##\s+Consequences", ADR_0012, re.MULTILINE) is not None,
+  "expected a '## Consequences' section in ADR-0012")
+
+t("ADR-0012 cross-references ADR-0011",
+  "0011" in ADR_0012,
+  "expected ADR-0012 to cross-reference ADR-0011")
+
+print()
+
+# ============================================================================
+# INVARIANT 16: ADR README index has an ADR-0012 entry
+# ============================================================================
+print("[Invariant 16] ADR README index contains an ADR-0012 entry")
+
+ADR_README = read(ADR_DIR / "README.md")
+
+t("docs/adr/README.md exists and is non-empty",
+  len(ADR_README.strip()) > 0,
+  "expected docs/adr/README.md to exist with content")
+
+t("README.md index references ADR-0012",
+  "0012" in ADR_README,
+  "expected an ADR-0012 entry in the ADR README index")
+
+t("README.md index links to 0012-stack-sync.md",
+  "0012-stack-sync.md" in ADR_README,
+  "expected a link to 0012-stack-sync.md in the ADR README index")
 
 print()
 h.summarize_and_exit()
