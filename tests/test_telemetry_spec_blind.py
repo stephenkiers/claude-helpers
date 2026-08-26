@@ -505,19 +505,27 @@ if __name__ == "__main__":
                 if events:
                     event = events[0]
 
-                    # Check for fields that should be "unknown" if not provided
-                    # These might include: elapsed_seconds, turns, peak_concurrency, etc.
-                    # We look for the string "unknown" (not 0, not null)
-                    event_str = json.dumps(event)
+                    # Candidate metric-field names the plan calls out as never-fabricate-zero.
+                    # Not all are guaranteed to appear on an agent.begin event; we only assert
+                    # on the ones actually present.
+                    candidate_metric_fields = [
+                        "turns", "elapsed_seconds", "retries",
+                        "peak_concurrency", "transcript_size", "output_artifact_size",
+                    ]
+                    present = {k: event[k] for k in candidate_metric_fields if k in event}
 
-                    # If there are any unspecified numeric metrics, they should be "unknown"
-                    has_unknown_string = '"unknown"' in event_str or "'unknown'" in event_str
-
-                    # This is a heuristic test; we're checking that the pattern *could* exist
                     t(
-                        "Metric fields can represent 'unknown' (check implementation)",
-                        True,  # Placeholder: actual verification depends on implementation details
-                        "This is a spec-level check that should be verified against actual events"
+                        "at least one metric field present on agent.begin event",
+                        len(present) > 0,
+                        f"event keys: {sorted(event.keys())}"
+                    )
+
+                    no_fabricated_zero = all(v != 0 for v in present.values())
+                    all_unknown = all(v == "unknown" for v in present.values())
+                    t(
+                        "unspecified metric fields are the literal string 'unknown', never 0",
+                        no_fabricated_zero and all_unknown,
+                        f"present metric fields and values: {present}"
                     )
 
             except Exception as e:

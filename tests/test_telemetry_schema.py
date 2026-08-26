@@ -310,6 +310,73 @@ def test_append_event_appends_multiple():
             return False, f"line is not valid JSON: {e}"
 
 
+def _append_events_worker(log_path_str, n, worker_id):
+    """Subprocess-of-a-Process target: append n events, each independently locked."""
+    import telemetry_schema as ts  # re-import in the child process
+
+    for i in range(n):
+        event = ts.build_event(
+            "agent.begin",
+            session_id=f"worker-{worker_id}",
+            timestamp="2026-08-26T12:00:00Z",
+            agent_id=f"{worker_id}-{i}",
+        )
+        ts.append_event(log_path_str, event)
+
+
+def test_append_event_concurrent_writers():
+    """append_event under real concurrent processes never interleaves/corrupts lines.
+
+    Spawns several OS processes hammering the same log file simultaneously and verifies
+    every line is still valid, complete JSON and the total line count matches exactly —
+    the failure mode flock guards against is two writers' bytes landing interleaved on
+    the same line, which would show up as a JSON parse error or a missing line.
+    """
+    import multiprocessing
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "concurrent.jsonl"
+        n_workers = 6
+        n_per_worker = 25
+
+        procs = [
+            multiprocessing.Process(
+                target=_append_events_worker, args=(str(log_path), n_per_worker, w)
+            )
+            for w in range(n_workers)
+        ]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=30)
+
+        if any(p.exitcode != 0 for p in procs):
+            return False, f"a worker process failed: exitcodes={[p.exitcode for p in procs]}"
+
+        if not log_path.exists():
+            return False, "log file was never created"
+
+        with open(log_path) as f:
+            lines = [line for line in f.readlines() if line.strip()]
+
+        expected = n_workers * n_per_worker
+        if len(lines) != expected:
+            return False, f"expected {expected} lines, got {len(lines)} (lost/merged writes)"
+
+        seen_agent_ids = set()
+        for i, line in enumerate(lines):
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError as e:
+                return False, f"line {i} is corrupted/interleaved JSON: {e!r} :: {line!r}"
+            seen_agent_ids.add(parsed.get("agent_id"))
+
+        if len(seen_agent_ids) != expected:
+            return False, f"expected {expected} unique agent_ids, got {len(seen_agent_ids)}"
+
+        return True, ""
+
+
 def test_default_log_path():
     """default_log_path returns a Path in ~/.claude/telemetry/events.jsonl."""
     path = telemetry_schema.default_log_path()
@@ -400,6 +467,9 @@ if __name__ == "__main__":
 
     passed, msg = test_append_event_appends_multiple()
     test_result("append_event appends to existing file", passed, msg)
+
+    passed, msg = test_append_event_concurrent_writers()
+    test_result("append_event survives real concurrent-process writers", passed, msg)
 
     passed, msg = test_default_log_path()
     test_result("default_log_path returns valid path", passed, msg)

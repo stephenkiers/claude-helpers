@@ -34,7 +34,13 @@ Every `*.end` event carries an `outcome` field with one of three shapes:
 {"status": "interrupted"}
 ```
 
-**Important:** an event whose matching `*.end` never arrives is reconciled as `interrupted` by readers — never silently dropped, never inferred as a zero-cost success.
+**Important:** an event whose matching `*.end` never arrives is never silently dropped and never
+inferred as a zero-cost success. Today, `run-metrics.py diagnose` surfaces this as an unmatched
+begin lowering the reported match rate (see "Telemetry Health Check" below) — it does not (yet)
+synthesize an `interrupted` outcome record for the orphaned begin. `outcome: {"status":
+"interrupted"}` is a value a writer can emit explicitly (e.g. a future crash-detection pass); a
+reader-side reconciliation step that retroactively marks stale begins as `interrupted` is not
+implemented in this phase.
 
 ## Field Reference
 

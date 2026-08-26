@@ -571,6 +571,8 @@ After creating the issue, add it to the local cache:
 # Append new issue to cache (use jq or equivalent)
 # .issues["$ISSUE_NUM"] = { number, title, state: "open", labels, milestone: null, assignee: "$ASSIGNEE", url }
 # Update .lastSynced to current timestamp
+
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-issue --outcome success 2>/dev/null || true
 ```
 
 ## Label Inference
@@ -586,8 +588,13 @@ Infer labels from plan content:
 
 ## Creating the Worktree
 
+**Note:** Local Plan Mode's "Branch and Worktree (Local Mode)" step above also lands here via its
+own "continue to Branch Naming and Creating the Worktree as normal" cross-reference — this stage
+marker is unconditional and self-contained (no prior stage-end bundled into it) specifically so
+that entry path stays correctly paired, rather than closing out a `create-issue` stage Local Mode
+never opened.
+
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-issue --outcome success 2>/dev/null || true
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage create-worktree 2>/dev/null || echo unknown)
 ```
 
