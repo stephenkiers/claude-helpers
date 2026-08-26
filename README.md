@@ -48,7 +48,9 @@ is `./install.sh` (add `--with-zsh-keybindings` to opt into Option+Arrow word ju
   concurrency, DDD, composition/EDA, fragility, contracts, dead code, and more), routed to only the
   parts of a diff they care about.
 - **`/expert-review`** — the core: a blind-first, two-pass, multi-persona review with cheap-model
-  routing and checkpointed artifacts.
+  routing and checkpointed artifacts. An `--effort 1–5` ladder scales it from a 6-scout haiku swarm
+  up to the full panel (default 4), and a positional GitHub PR URL reviews a coworker's PR in an
+  isolated worktree (ADR-0012).
 - **Planning & hardening** — `/expert-plan`, `/expert-review-plan`, `/expert-harden-{types,contracts,tests}`,
   `/expert-pre-mortem`.
 - **Lifecycle** — `/track`, `/implement-with-haiku`, `/shipit`, `/cleanup`, `/expert-rebase`, and more.
@@ -72,10 +74,12 @@ The design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
 
 ## A note on cost
 
-A full `/expert-review` with many personas is **not cheap** — it spins up a summarizer, a tagger,
+A full `/expert-review` with many personas is **not cheap** — it spins up a summarizer, a router,
 multiple expert passes, and Q&A subagents. Mechanical steps run on Haiku to keep this sane
-([ADR-0004](docs/adr/0004-model-cost-routing.md)), and you can scope a run to specific reviewers
-(`/expert-review security,types`). Start small before running the whole panel.
+([ADR-0004](docs/adr/0004-model-cost-routing.md)); the `--effort 1–5` ladder scales the panel down
+to a 6-scout swarm (`--effort 1`) or a focused pair (`--effort 2`) for small diffs
+([ADR-0012](docs/adr/0012-effort-ladder-and-pr-mode.md)), and you can scope a run to specific
+reviewers (`/expert-review security,types`). Start small before running the whole panel.
 
 ## Project context
 
@@ -84,14 +88,18 @@ and terminology. Copy [`prompts/project.yaml.template`](prompts/project.yaml.tem
 
 ## Dependencies
 
-The `/shipit` and `/cleanup` commands support GitHub's **remote stack** feature (linking stacked PRs via
-GraphQL and `gh stack`). This is optional:
+The `/shipit` and `/cleanup` commands are gh-stack-aware. `/shipit` establishes the parent→child
+chain via `gh pr create --base <parent>` alone — it does **not** auto-run `gh stack link` (that
+command is not metadata-only: it repoints the bottom PR's base to trunk, which detaches an
+intermediate PR from its real parent when given a subset). The server-side GitHub "stack" entity
+is optional cosmetic grouping on top of the base-pointer chain.
 
-- If `gh-stack` is not installed, `/shipit` will warn and skip the automatic `gh stack link` after PR creation
-  (you can still link manually: `gh stack link <parent-pr> <child-pr>`)
-- If the GraphQL `stack` field is unavailable, stack metadata is simply not cached or used
+- If the GraphQL `stack` field is unavailable, stack metadata is simply not cached or used.
+- To opt into the GitHub stack UI grouping manually, link the **full** bottom→top chain in one call
+  (never just the parent+child pair): `gh stack link <bottom-pr> … <parent-pr> <child-pr>`. See
+  `prompts/shipit-reference.md` § "GitHub stack entity (optional)".
 
-**To enable remote stacking** (optional), install the gh-stack extension:
+**To install gh-stack** (optional; needed only for `gh stack sync`/`unstack`):
 ```bash
 gh extension install github/gh-stack
 ```

@@ -37,6 +37,7 @@ to North Star Nick).
   `worktrees` — cross-referenced by ADR-0011 (stacked-PR layout model)
 - [ADR-0011: Stacked-PR layout model (single-driver vs per-branch)](0011-stacked-pr-layout-model.md) — when `gh stack sync` is safe or fatal depends on whether all stack branches are driven from one working copy or checked out in sibling worktrees; reverses PR #55's blanket ban by correctly routing based on detected layout
 - [ADR-0012: /stack-sync — layout-routed stack sync](0012-stack-sync.md) — the layout-routed **sync** mirror of ADR-0011's layout-routed push: single-driver delegates to `gh stack sync`, per-branch collects descendants from the worktree-cache and `gh pr list` detectors and walks them bottom-up — order verified (not ordered) by `git merge-base --is-ancestor`; the `.stack.parentBranch` cache feeds detection only, never ordering — and rebases each via a generalized Restack-a-child block; unknown layout fails closed; per-branch force-push is gated on one confirmation plus the repo check gate
+- [ADR-0012: Effort ladder and PR mode for `/expert-review`](0012-effort-ladder-and-pr-mode.md) — a manual `--effort 1–5` ladder (swarm → full panel, default 4) plus a positional GitHub-PR-URL mode that folds coworker review into `/expert-review`; deprecates (not deletes) `/expert-review-coworker(-beta)` and records effort 1's deliberate non-blindness
 
 ## Format
 

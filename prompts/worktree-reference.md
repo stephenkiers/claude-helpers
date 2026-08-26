@@ -89,13 +89,26 @@ fi
 ## Stack Detection
 
 Detect and manage stacked PRs (branches whose parent is another worktree's branch, not the default
-branch). Used by `/shipit` to set the correct PR base and link parent PRs, and by `/cleanup` to
-detect children and emit a restack runbook. **IMPORTANT:** Only worktree-safe verbs are emitted here:
-`gh stack link`, `gh stack unstack`, and graphql reads. `gh stack init`, `gh stack checkout` are
-**fatal under per-branch layout** (branches are permanently checked out in sibling worktrees), but
-under **single-driver layout** (one working copy driving the whole stack via `gh stack checkout`)
-`gh stack sync` is the intended one-command path — use the "Detect layout" block to resolve
-`STACK_LAYOUT` before choosing.
+branch). Used by `/shipit` to set the correct PR base, and by `/cleanup` to detect children and emit
+a restack runbook. **IMPORTANT:** `/shipit` establishes the parent→child chain via `gh pr create
+--base <parent>` alone — it does **not** auto-run `gh stack link` (see hazard below). The worktree-safe
+verbs referenced here are `gh stack unstack` and graphql reads. `gh stack init`, `gh stack checkout`,
+and `gh stack push` are **fatal under per-branch layout** (branches are permanently checked out in
+sibling worktrees), but under **single-driver layout** (one working copy driving the whole stack via
+`gh stack checkout`) `gh stack sync` is the intended one-command path — use the "Detect layout" block
+to resolve `STACK_LAYOUT` before choosing.
+
+**`gh stack link` hazard (read before ever running it):** `gh stack link` is worktree-safe (no
+checkout) but **NOT metadata-only** — it repoints the FIRST (bottom) PR's base to the trunk (master),
+because it treats its first arg as the stack bottom. Linking a parent+child *subset* when the parent
+is itself stacked on a grandparent DETACHES the parent from the grandparent and locks every base under
+a new server stack entity (`gh pr edit --base` then fails with "Cannot change the base branch because
+the pull request is part of a stack"). Observed 2026-08-25: `gh stack link 67 77` repointed #67 from
+`pps-223-…` → `master`, requiring `gh stack unstack <n>` + `gh pr edit 67 --base <pps-223-…>` to
+repair. The base-branch pointer set by `gh pr create --base` is the substantive link; the server
+"stack" entity is optional cosmetic grouping. If you do want it, link the FULL bottom→top chain
+(all members incl. the already-trunk-based real bottom), never just the new pair — see "GitHub stack
+entity (optional)" in `~/.claude/prompts/shipit-reference.md`.
 
 ### Is-stacked (this branch)
 
