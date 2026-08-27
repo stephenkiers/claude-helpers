@@ -214,14 +214,28 @@ chore(deps): update dependencies
 ## PR Body Example
 
 ```markdown
-## Summary
-- Add pagination support to /users and /posts endpoints
-- Default page size: 20, max: 100
+## Why this PR exists
+Pagination is a prerequisite for the performance tracking dashboard — without it, users can't view results for large datasets without the API choking.
 
-## Test plan
-- GET /users returns paginated response
-- GET /users?page=2&limit=10 works
-- Invalid page params return 400
+## What it does
+- Add offset/limit pagination to /users and /posts endpoints
+- Default page size: 20, max: 100
+- Return 400 on invalid page params
+
+## What major decisions were made
+- Chose offset-based pagination over cursor-based for simplicity (acceptable for the current dataset size)
+- Stored pagination metadata in response headers rather than body to maintain backward compatibility
+
+## What a reviewer should pay attention to
+- `handlers/pagination.go` — new utility; check the boundary conditions (empty results, last page, overflow)
+- `handlers/users_test.go` and `handlers/posts_test.go` — edge cases in paginated queries
+- Database query optimization in the pagination cursor loop (could be a bottleneck if not indexed)
+
+## How to verify
+- GET /users returns paginated response with correct metadata
+- GET /users?page=2&limit=10 works and returns page 2
+- Invalid page params (negative offset, limit > 100) return 400 with descriptive error
+- Run `go test ./handlers -v -run Pagination` — all tests pass
 ```
 
 ---
