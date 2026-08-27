@@ -38,36 +38,6 @@ def read(path):
     except OSError:
         return ""
 
-
-def extract_bash_blocks(markdown_text):
-    """
-    Extract all bash code block contents from markdown.
-    Returns a list of (start_line_num, block_text) tuples.
-    """
-    blocks = []
-    pattern = r"```bash\n(.*?)\n```"
-    for match in re.finditer(pattern, markdown_text, re.DOTALL):
-        start_pos = match.start()
-        line_num = markdown_text[:start_pos].count("\n") + 1
-        block_text = match.group(1)
-        blocks.append((line_num, block_text))
-    return blocks
-
-
-def slice_heading_section(text, heading_regex):
-    """
-    Slice from a markdown heading whose text matches heading_regex to the next
-    heading of the same-or-higher level. Returns None when no heading matches.
-    """
-    m = re.search(rf"^(#+)\s[^\n]*{heading_regex}[^\n]*$", text, re.MULTILINE)
-    if not m:
-        return None
-    level = len(m.group(1)) if m.group(1) else 1
-    nxt = re.search(rf"^#{{1,{level}}}\s", text[m.end():], re.MULTILINE)
-    end = m.end() + nxt.start() if nxt else len(text)
-    return text[m.start():end]
-
-
 SHIPIT = read(SHIPIT_FILE)
 SHIPIT_REF = read(SHIPIT_REF_FILE)
 
