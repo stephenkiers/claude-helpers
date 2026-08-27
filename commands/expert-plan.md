@@ -17,8 +17,7 @@ Call `EnterPlanMode` immediately. All subsequent work happens in plan mode.
 ### Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail
-`/expert-plan`. Every call below is non-fatal (stderr redirected, `|| echo unknown` fallback so
-a missing/broken `run-metrics.py`, e.g. before `install.sh` has run, can't break this command):
+`/expert-plan`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
 
 ```bash
 TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan 2>/dev/null || echo unknown)

@@ -9,6 +9,7 @@ Run with: python3 tests/test_telemetry_schema.py
 """
 
 import json
+import stat
 import sys
 import tempfile
 from datetime import datetime
@@ -386,6 +387,131 @@ def test_default_log_path():
     ), f"got path: {path_str}"
 
 
+def test_append_event_validates_before_write():
+    """append_event calls validate_event and raises ValueError for invalid events."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+
+        # Build an invalid event (missing session_id)
+        invalid_event = {
+            "schema_version": telemetry_schema.SCHEMA_VERSION,
+            "event_type": "session.begin",
+            "timestamp": "2026-08-26T12:00:00Z",
+            # Missing session_id!
+        }
+
+        try:
+            telemetry_schema.append_event(log_path, invalid_event)
+            return False, "should have raised ValueError for invalid event"
+        except ValueError as e:
+            return True, f"correctly raised ValueError: {e}"
+
+
+def test_append_event_creates_file_mode_0600():
+    """append_event creates log file at mode 0600, not 0644."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        event = telemetry_schema.build_event(
+            "session.begin",
+            session_id="test123",
+            timestamp="2026-08-26T12:00:00Z",
+        )
+        telemetry_schema.append_event(log_path, event)
+
+        if not log_path.exists():
+            return False, "log file not created"
+
+        file_mode = stat.S_IMODE(log_path.stat().st_mode)
+        expected_mode = 0o600
+
+        if file_mode != expected_mode:
+            return False, f"expected mode 0o{expected_mode:03o}, got 0o{file_mode:03o}"
+
+        return True, ""
+
+
+def test_append_event_creates_parent_dir_mode_0700():
+    """append_event creates parent directory at mode 0700 when it doesn't exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a path where the parent dir doesn't exist yet
+        parent_path = Path(tmpdir) / "new_dir"
+        log_path = parent_path / "test.jsonl"
+
+        event = telemetry_schema.build_event(
+            "session.begin",
+            session_id="test123",
+            timestamp="2026-08-26T12:00:00Z",
+        )
+        telemetry_schema.append_event(log_path, event)
+
+        if not parent_path.exists():
+            return False, "parent directory not created"
+
+        if not parent_path.is_dir():
+            return False, "parent path is not a directory"
+
+        dir_mode = stat.S_IMODE(parent_path.stat().st_mode)
+        expected_mode = 0o700
+
+        if dir_mode != expected_mode:
+            return False, f"expected parent mode 0o{expected_mode:03o}, got 0o{dir_mode:03o}"
+
+        return True, ""
+
+
+def test_append_event_preserves_existing_parent_permissions():
+    """append_event does NOT modify parent directory permissions if it already exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create parent dir with explicit mode
+        parent_path = Path(tmpdir) / "existing_dir"
+        parent_path.mkdir(mode=0o755)
+        original_mode = stat.S_IMODE(parent_path.stat().st_mode)
+
+        log_path = parent_path / "test.jsonl"
+        event = telemetry_schema.build_event(
+            "session.begin",
+            session_id="test123",
+            timestamp="2026-08-26T12:00:00Z",
+        )
+        telemetry_schema.append_event(log_path, event)
+
+        new_mode = stat.S_IMODE(parent_path.stat().st_mode)
+
+        if new_mode != original_mode:
+            return False, f"parent mode changed from 0o{original_mode:03o} to 0o{new_mode:03o}"
+
+        return True, ""
+
+
+def test_append_event_to_existing_common_dir():
+    """append_event works when pointing to an existing directory like /tmp without crashing."""
+    tmpbase = Path(tempfile.gettempdir()) / ".test-append-existing"
+    tmpbase.mkdir(exist_ok=True)
+
+    log_path = tmpbase / "test.jsonl"
+    try:
+        event = telemetry_schema.build_event(
+            "session.begin",
+            session_id="test123",
+            timestamp="2026-08-26T12:00:00Z",
+        )
+
+        # This should NOT crash or fail permission-wise
+        telemetry_schema.append_event(log_path, event)
+
+        if not log_path.exists():
+            return False, "log file not created in existing dir"
+
+        return True, ""
+    except Exception as e:
+        return False, f"unexpected exception: {e}"
+    finally:
+        if log_path.exists():
+            log_path.unlink()
+        if tmpbase.exists():
+            tmpbase.rmdir()
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -473,6 +599,25 @@ if __name__ == "__main__":
 
     passed, msg = test_default_log_path()
     test_result("default_log_path returns valid path", passed, msg)
+
+    print()
+
+    # Hardening tests: validation-before-write, file/dir permissions
+    print("[Section 5] Hardening: validation and permissions")
+    passed, msg = test_append_event_validates_before_write()
+    test_result("append_event validates before write", passed, msg)
+
+    passed, msg = test_append_event_creates_file_mode_0600()
+    test_result("log file created at mode 0600", passed, msg)
+
+    passed, msg = test_append_event_creates_parent_dir_mode_0700()
+    test_result("parent dir created at mode 0700", passed, msg)
+
+    passed, msg = test_append_event_preserves_existing_parent_permissions()
+    test_result("existing parent permissions preserved", passed, msg)
+
+    passed, msg = test_append_event_to_existing_common_dir()
+    test_result("append to existing dir like /tmp works", passed, msg)
 
     print()
 
