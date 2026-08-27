@@ -12,8 +12,7 @@ Run CI checks, commit, and open PR. For edge cases and maintenance, read
 ## 0. Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail `/shipit`.
-Every call is non-fatal (stderr redirected, `|| echo unknown` fallback so a missing/broken
-`run-metrics.py`, e.g. before `install.sh` has run, can't break this command):
+Every call is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
 
 ```bash
 TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit 2>/dev/null || echo unknown)
@@ -269,6 +268,8 @@ else
   # ~/.claude/prompts/worktree-reference.md (routes on STACK_LAYOUT: gh stack sync for
   # single-driver, git rebase --onto + --force-with-lease for per-branch; stops on unknown).
   echo "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
