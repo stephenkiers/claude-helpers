@@ -13,7 +13,9 @@ Check A (Existence pairing per stage name):
   Known limitation: This is an existence check, not a count check. A stage name
   may have one stage-begin reached by multiple branches and multiple stage-end
   call sites (one per branch), which is safe and expected. We do NOT flag count
-  mismatches as errors.
+  mismatches as errors. Also assumes `--stage` is always followed by a literal
+  name, not a shell variable reference (`${VAR}`/`$VAR`) — a doc that
+  parameterizes a stage name could produce spurious findings.
 
 Check B (Abort paths that leak an open stage):
   Within each fenced ```bash code block, if the block contains:
