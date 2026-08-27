@@ -22,11 +22,23 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telemetry_schema
 
+# Defense-in-depth constants
+MAX_STDIN_BYTES = 1_048_576  # 1 MiB — hook payloads are small metadata blobs, never larger
+MAX_FIELD_LEN = 4096  # defense-in-depth cap on any single pass-through metadata field
+
+
+def _bounded(value, max_len=MAX_FIELD_LEN):
+    """Truncate a string value to max_len chars; pass through non-strings unchanged."""
+    if isinstance(value, str) and len(value) > max_len:
+        return value[:max_len]
+    return value
+
 
 def read_stdin_json():
     """Read and parse JSON from stdin. Returns dict, or None on error (with message to stderr)."""
     try:
-        return json.load(sys.stdin)
+        raw = sys.stdin.buffer.read(MAX_STDIN_BYTES)
+        return json.loads(raw)
     except (json.JSONDecodeError, ValueError) as e:
         print(f"Error: could not parse JSON from stdin: {e}", file=sys.stderr)
         return None
@@ -41,8 +53,8 @@ def cmd_session_begin(args):
     if payload is None:
         sys.exit(1)
 
-    session_id = payload.get("session_id", telemetry_schema.UNKNOWN)
-    cwd = payload.get("cwd", telemetry_schema.UNKNOWN)
+    session_id = _bounded(payload.get("session_id", telemetry_schema.UNKNOWN))
+    cwd = _bounded(payload.get("cwd", telemetry_schema.UNKNOWN))
     repo = os.path.basename(cwd.rstrip("/")) if cwd != telemetry_schema.UNKNOWN else telemetry_schema.UNKNOWN
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -63,8 +75,8 @@ def cmd_session_end(args):
     if payload is None:
         sys.exit(1)
 
-    session_id = payload.get("session_id", telemetry_schema.UNKNOWN)
-    cwd = payload.get("cwd", telemetry_schema.UNKNOWN)
+    session_id = _bounded(payload.get("session_id", telemetry_schema.UNKNOWN))
+    cwd = _bounded(payload.get("cwd", telemetry_schema.UNKNOWN))
     repo = os.path.basename(cwd.rstrip("/")) if cwd != telemetry_schema.UNKNOWN else telemetry_schema.UNKNOWN
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -86,10 +98,10 @@ def cmd_agent_begin(args):
     if payload is None:
         sys.exit(1)
 
-    session_id = payload.get("session_id", telemetry_schema.UNKNOWN)
-    agent_id = payload.get("agent_id", telemetry_schema.UNKNOWN)
-    agent_type = payload.get("agent_type", telemetry_schema.UNKNOWN)
-    cwd = payload.get("cwd", telemetry_schema.UNKNOWN)
+    session_id = _bounded(payload.get("session_id", telemetry_schema.UNKNOWN))
+    agent_id = _bounded(payload.get("agent_id", telemetry_schema.UNKNOWN))
+    agent_type = _bounded(payload.get("agent_type", telemetry_schema.UNKNOWN))
+    cwd = _bounded(payload.get("cwd", telemetry_schema.UNKNOWN))
     repo = os.path.basename(cwd.rstrip("/")) if cwd != telemetry_schema.UNKNOWN else telemetry_schema.UNKNOWN
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -122,9 +134,9 @@ def cmd_agent_end(args):
     _ = payload.get("background_tasks")        # never used
     _ = payload.get("session_crons")           # never used
 
-    session_id = payload.get("session_id", telemetry_schema.UNKNOWN)
-    agent_id = payload.get("agent_id", telemetry_schema.UNKNOWN)
-    agent_type = payload.get("agent_type", telemetry_schema.UNKNOWN)
+    session_id = _bounded(payload.get("session_id", telemetry_schema.UNKNOWN))
+    agent_id = _bounded(payload.get("agent_id", telemetry_schema.UNKNOWN))
+    agent_type = _bounded(payload.get("agent_type", telemetry_schema.UNKNOWN))
     timestamp = datetime.now(timezone.utc).isoformat()
 
     event = telemetry_schema.build_event(
@@ -289,38 +301,38 @@ def cmd_diagnose(args):
 
         if event_type == "session.begin":
             sid = event.get("session_id")
-            if sid:
+            if sid and sid != telemetry_schema.UNKNOWN:
                 sessions[sid] = (event, None)
         elif event_type == "session.end":
             sid = event.get("session_id")
-            if sid and sid in sessions:
+            if sid and sid != telemetry_schema.UNKNOWN and sid in sessions:
                 sessions[sid] = (sessions[sid][0], event)
 
         elif event_type == "command.begin":
             cid = event.get("command_id")
-            if cid:
+            if cid and cid != telemetry_schema.UNKNOWN:
                 commands[cid] = (event, None)
         elif event_type == "command.end":
             cid = event.get("command_id")
-            if cid and cid in commands:
+            if cid and cid != telemetry_schema.UNKNOWN and cid in commands:
                 commands[cid] = (commands[cid][0], event)
 
         elif event_type == "stage.begin":
             sid = event.get("stage_id")
-            if sid:
+            if sid and sid != telemetry_schema.UNKNOWN:
                 stages[sid] = (event, None)
         elif event_type == "stage.end":
             sid = event.get("stage_id")
-            if sid and sid in stages:
+            if sid and sid != telemetry_schema.UNKNOWN and sid in stages:
                 stages[sid] = (stages[sid][0], event)
 
         elif event_type == "agent.begin":
             aid = event.get("agent_id")
-            if aid:
+            if aid and aid != telemetry_schema.UNKNOWN:
                 agents[aid] = (event, None)
         elif event_type == "agent.end":
             aid = event.get("agent_id")
-            if aid and aid in agents:
+            if aid and aid != telemetry_schema.UNKNOWN and aid in agents:
                 agents[aid] = (agents[aid][0], event)
 
     # Compute match rates
@@ -358,6 +370,25 @@ def cmd_diagnose(args):
     # Report
     print(f"Match rate: {match_rate:.1%} ({total_matched}/{total_begins} begin/end pairs matched)")
     print(f"Unknown token fields: {unknown_pct:.1%}")
+
+    # Per-stage match rate breakdown
+    stage_name_totals = {}  # stage_name -> [begins, matched]
+    for stage_id, (begin, end) in stages.items():
+        if not begin:
+            continue
+        stage_name = begin.get("stage", telemetry_schema.UNKNOWN)
+        if stage_name not in stage_name_totals:
+            stage_name_totals[stage_name] = [0, 0]
+        stage_name_totals[stage_name][0] += 1
+        if end:
+            stage_name_totals[stage_name][1] += 1
+
+    if stage_name_totals:
+        print("Per-stage match rate:")
+        for stage_name in sorted(stage_name_totals):
+            begins, matched = stage_name_totals[stage_name]
+            rate = 1.0 if begins == 0 else matched / begins
+            print(f"  {stage_name}: {rate:.1%} ({matched}/{begins})")
 
     # Check thresholds
     passes = match_rate >= 0.95 and unknown_pct < 0.15
