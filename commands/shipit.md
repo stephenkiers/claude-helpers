@@ -317,7 +317,7 @@ as if it will be public — don't restate secrets or non-public context.
 ```bash
 # Prepare temp file for PR body (multi-line content too risky to inline)
 TMP_BODY=$(mktemp)
-trap "rm -f '$TMP_BODY'" EXIT
+echo "TMP_BODY=$TMP_BODY"
 ```
 
 **The block below is a shape to fill in, not a command to run verbatim.** Do not execute the
@@ -326,6 +326,10 @@ write `$TMP_BODY` yourself (e.g. with the Write tool, or your own heredoc with t
 replaced) using the five headings in this exact order, each followed by the real content you
 reasoned out above. Omit the "What major decisions were made" heading entirely if there were
 none — do not leave a heading with an empty or "None" body.
+
+**Important:** Note the exact path printed by the `echo "TMP_BODY=$TMP_BODY"` line above; reuse
+that path verbatim for the Write-tool step below and every later bash fence in this flow. Do not
+re-run `mktemp` and do not guess the path.
 
 ```
 ## Why this PR exists
@@ -384,15 +388,29 @@ if [ -z "$PR_NUM" ]; then
   else
     gh pr create --title "$TITLE" --body-file "$TMP_BODY"
   fi
+  rm -f "$TMP_BODY"
 else
-  gh pr view "$PR_NUM" --json body -q '.body' > "${TMP_BODY}.current"
+  TMP_BODY_CURRENT=$(mktemp)
+  if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
+    echo "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
+    exit 1
+  fi
+  echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
 fi
 ```
 
 **If the PR already exists, merge into its current body before writing — never blind-overwrite.**
 This is the firm rule the rewrite exists for: a human may have hand-edited the description since
-the last `/shipit` run, and that work must not be silently destroyed. Read `${TMP_BODY}.current`
-(the PR's live body) and apply this ingest-then-merge policy:
+the last `/shipit` run, and that work must not be silently destroyed. Note the exact path printed
+by `echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"` above and reuse it verbatim — do not re-run `mktemp`
+and do not guess the path. Read `$TMP_BODY_CURRENT` (the PR's live body) and apply this
+ingest-then-merge policy:
+
+Note: There is a window between fetching the current PR body and the final `gh pr edit` write
+during which a human could edit the PR description concurrently (e.g. while the agent is
+reasoning over the diff and drafting the merge); this implementation does not guard against that
+race (no optimistic-concurrency / `updatedAt` check) — it is an accepted, documented trade-off,
+not an oversight.
 
 1. **Split the current body into recognized vs. novel content.** Recognized content is exactly:
    the `Closes #N` line, the five standard headings (`## Why this PR exists`, `## What it does`,
@@ -415,6 +433,7 @@ the last `/shipit` run, and that work must not be silently destroyed. Read `${TM
 ```bash
 if [ -n "$PR_NUM" ]; then
   gh pr edit "$PR_NUM" --title "$TITLE" --body-file "$TMP_BODY"
+  rm -f "$TMP_BODY" "$TMP_BODY_CURRENT"
 fi
 ```
 
