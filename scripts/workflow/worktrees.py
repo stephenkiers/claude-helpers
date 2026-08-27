@@ -82,7 +82,7 @@ def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
         main_path = Path(main)
         if main_path.parent.name == "worktrees":
             return str(main_path.parent)
-        return str(main_path / "worktrees")
+        return str(main_path.parent / "worktrees")
 
     return ""
 

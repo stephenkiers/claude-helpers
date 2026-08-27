@@ -74,8 +74,12 @@ branch refs/heads/feature
             isinstance(result, list)
         )
         test_result(
-            "parse_worktree_list extracts entries",
-            len(result) >= 0
+            "parse_worktree_list extracts both branched entries",
+            len(result) == 2
+        )
+        test_result(
+            "parse_worktree_list preserves worktree path and branch pairs",
+            result == [("/path/to/main", "main"), ("/path/to/feature", "feature")]
         )
 
     print()
@@ -92,7 +96,7 @@ branch refs/heads/feature
         result = worktrees_module.parse_worktree_list(porcelain)
         test_result(
             "parse_worktree_list skips detached entries",
-            len(result) == 2 or len(result) > 0
+            result == [("/path/to/main", "main"), ("/path/to/feature", "feature")]
         )
 
     print()

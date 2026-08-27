@@ -5,13 +5,53 @@ All git/gh invocation goes through these functions — never shell=True or
 string interpolation into a shell command. Includes timeouts.
 """
 
+import os
 import subprocess
 import json
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
+from .safety import Unknown, fail_closed
 
 
 DEFAULT_TIMEOUT = 30
+
+# Git resolves which repository/worktree to operate on via these vars before
+# consulting cwd at all. Git sets GIT_DIR automatically inside hooks, and any
+# of them can leak from a prior `GIT_DIR=... git ...` invocation in the same
+# shell — inheriting them here would silently break cwd-scoped calls (e.g.
+# stack.py looping over worktree paths). Stripped only for this known-dangerous
+# set, not the whole GIT_ prefix, so callers relying on GIT_AUTHOR_NAME,
+# GIT_SSH_COMMAND, etc. are unaffected.
+_DANGEROUS_GIT_ENV_VARS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"
+)
+
+
+def _run(
+    executable: str,
+    args: List[str],
+    cwd: Optional[Path] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    check: bool = True
+) -> str:
+    """
+    Run a git/gh command with argument array. Returns stdout, raises on
+    error if check=True.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _DANGEROUS_GIT_ENV_VARS}
+    try:
+        result = subprocess.run(
+            [executable] + args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=check,
+            env=env
+        )
+        return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{executable} command timed out after {timeout}s: {' '.join(args)}")
 
 
 def run_git_command(
@@ -23,22 +63,7 @@ def run_git_command(
     """
     Run a git command with argument array. Returns stdout, raises on error if check=True.
     """
-    try:
-        result = subprocess.run(
-            ["git"] + args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=check
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        if check:
-            raise
-        return e.stdout.strip()
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"git command timed out after {timeout}s: {' '.join(args)}")
+    return _run("git", args, cwd=cwd, timeout=timeout, check=check)
 
 
 def run_gh_command(
@@ -50,22 +75,7 @@ def run_gh_command(
     """
     Run a gh command with argument array. Returns stdout, raises on error if check=True.
     """
-    try:
-        result = subprocess.run(
-            ["gh"] + args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=check
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        if check:
-            raise
-        return e.stdout.strip()
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"gh command timed out after {timeout}s: {' '.join(args)}")
+    return _run("gh", args, cwd=cwd, timeout=timeout, check=check)
 
 
 def get_current_branch(cwd: Optional[Path] = None) -> str:
@@ -73,18 +83,34 @@ def get_current_branch(cwd: Optional[Path] = None) -> str:
     return run_git_command(["branch", "--show-current"], cwd=cwd)
 
 
-def get_default_branch(cwd: Optional[Path] = None) -> str:
+@fail_closed
+def get_default_branch(cwd: Optional[Path] = None) -> Tuple[Optional[str], Optional[Unknown]]:
     """
-    Get the default branch from origin/HEAD symbolic-ref.
-    Falls back to 'main' if not found.
+    Get the default branch.
+
+    1. Try origin/HEAD symbolic-ref (most authoritative).
+    2. Probe local refs/heads/main, then refs/heads/master — never guess a
+       name that doesn't exist locally.
+    3. If neither resolves, return (None, Unknown(...)) rather than a
+       load-bearing guess.
     """
     try:
         ref = run_git_command(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=cwd, check=False)
         if ref:
-            return ref.split("/")[-1]
-    except Exception:
+            return ref.split("/")[-1], None
+    except RuntimeError:
         pass
-    return "main"
+
+    for candidate in ("main", "master"):
+        try:
+            run_git_command(["show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"], cwd=cwd, check=True)
+            return candidate, None
+        except subprocess.CalledProcessError:
+            continue
+        except RuntimeError:
+            break
+
+    return None, Unknown("could not determine default branch: no origin/HEAD and no local main or master")
 
 
 def get_head_sha(cwd: Optional[Path] = None) -> str:
@@ -111,7 +137,7 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> b
     """Check if ancestor is an ancestor of descendant using merge-base."""
     try:
         run_git_command(
-            ["merge-base", "--is-ancestor", ancestor, descendant],
+            ["merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant],
             cwd=cwd,
             check=True
         )
@@ -123,7 +149,7 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> b
 def rev_list_count(rev_range: str, cwd: Optional[Path] = None) -> int:
     """Count commits in a revision range (e.g., 'branch..HEAD')."""
     try:
-        output = run_git_command(["rev-list", "--count", rev_range], cwd=cwd)
+        output = run_git_command(["rev-list", "--count", "--end-of-options", rev_range], cwd=cwd)
         return int(output)
     except (ValueError, subprocess.CalledProcessError):
         return -1
@@ -150,7 +176,7 @@ def gh_api_user_json(cwd: Optional[Path] = None) -> Dict[str, Any]:
 def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
     """Run 'gh pr view <branch> --json <args>' and return parsed JSON."""
     try:
-        output = run_gh_command(["pr", "view", branch, "--json"] + json_args, cwd=cwd, check=False)
+        output = run_gh_command(["pr", "view", "--json"] + json_args + ["--", branch], cwd=cwd, check=False)
         return json.loads(output) if output else {}
     except (json.JSONDecodeError, subprocess.CalledProcessError):
         return {}
@@ -162,7 +188,7 @@ def ls_remote_exit_code(ref: str, cwd: Optional[Path] = None) -> int:
     Returns 0 if present, non-zero if absent.
     """
     try:
-        run_git_command(["ls-remote", "--exit-code", "origin", ref], cwd=cwd, check=True)
+        run_git_command(["ls-remote", "--exit-code", "origin", "--", ref], cwd=cwd, check=True)
         return 0
     except subprocess.CalledProcessError as e:
         return e.returncode

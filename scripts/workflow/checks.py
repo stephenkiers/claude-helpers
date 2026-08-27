@@ -9,7 +9,6 @@ from typing import List, Dict, Optional
 import json
 
 
-@staticmethod
 class ToolchainDetector:
     """Detect present toolchains from config files in repo root."""
 
@@ -115,7 +114,7 @@ def detect_checks(repo_root: Path) -> Dict[str, str]:
     if "test" in npm_scripts:
         checks["npm_test"] = "npm test"
     if "lint" in npm_scripts:
-        checks["npm_lint"] = "npm lint"
+        checks["npm_lint"] = "npm run lint"
     if "type-check" in npm_scripts:
         checks["npm_typecheck"] = "npm run type-check"
 

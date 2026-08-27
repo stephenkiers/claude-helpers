@@ -10,22 +10,26 @@ from pathlib import Path
 from typing import Optional, Tuple
 from .worktrees import parse_worktree_list
 from .cache import read_github_cache
-from .safety import Unknown
+from .safety import Unknown, fail_closed
 from . import git
 
 
 StackLayout = str
 
 
+@fail_closed
 def is_stacked(
     branch: Optional[str] = None,
     cwd: Optional[Path] = None,
     cache_path: Optional[Path] = None
-) -> Tuple[bool, Optional[str], Optional[int]]:
+) -> Tuple[bool, Optional[str], Optional[int], Optional[Unknown]]:
     """
     Detect whether the current (or specified) branch's parent is another branch.
 
-    Returns (is_stacked: bool, parent_branch: str or None, parent_pr: int or None).
+    Returns (is_stacked, parent_branch, parent_pr, error). error is None on
+    a confident result (found or confirmed-not-stacked); it's an Unknown
+    when ancestor-search detection itself failed, so a real "not stacked"
+    is never indistinguishable from "couldn't tell".
 
     Logic from ADR-0011 Is-stacked block:
     1. Check cache first (most specific) at .claude/github-cache.json
@@ -36,21 +40,22 @@ def is_stacked(
     if branch is None:
         branch = git.get_current_branch(cwd=cwd)
 
-    default_branch = git.get_default_branch(cwd=cwd)
+    default_branch, _ = git.get_default_branch(cwd=cwd)
 
     cache_result = None
     if cache_path:
         cache_result, _ = read_github_cache(cache_path)
 
-    if cache_result and cache_result.stack.is_stacked:
+    if cache_result and cache_result.stack is not None and cache_result.stack.is_stacked:
         return (
             True,
             cache_result.stack.parent_branch,
-            cache_result.stack.parent_pr
+            cache_result.stack.parent_pr,
+            None
         )
 
-    if cache_result and not cache_result.stack.is_stacked:
-        return False, None, None
+    if cache_result and cache_result.stack is not None and not cache_result.stack.is_stacked:
+        return False, None, None, None
 
     try:
         porcelain = git.get_worktree_list_porcelain(cwd=cwd)
@@ -72,18 +77,20 @@ def is_stacked(
 
         if best_ancestor:
             parent_pr = None
+            pr_lookup_failed = False
             try:
                 pr_data = git.pr_view_json(best_ancestor, ["number"], cwd=cwd)
                 parent_pr = pr_data.get("number")
             except Exception:
-                pass
+                pr_lookup_failed = True
 
-            return True, best_ancestor, parent_pr
+            error = Unknown(f"PR lookup for parent branch {best_ancestor!r} failed") if pr_lookup_failed else None
+            return True, best_ancestor, parent_pr, error
 
-    except Exception:
-        pass
+    except Exception as e:
+        return False, None, None, Unknown(f"ancestor-search stack detection failed: {e}")
 
-    return False, None, None
+    return False, None, None, None
 
 
 def detect_layout(
@@ -109,7 +116,7 @@ def detect_layout(
     if subject_branch is None:
         subject_branch = current_branch
 
-    default_branch = git.get_default_branch(cwd=cwd)
+    default_branch, _ = git.get_default_branch(cwd=cwd)
 
     try:
         porcelain = git.get_worktree_list_porcelain(cwd=cwd)
@@ -126,11 +133,11 @@ def detect_layout(
                 if wt_path and Path(wt_path).is_dir():
                     cache_path = Path(wt_path) / ".claude" / "github-cache.json"
                     cache_data, _ = read_github_cache(cache_path)
-                    if cache_data and cache_data.stack.parent_branch:
+                    if cache_data and cache_data.stack and cache_data.stack.parent_branch:
                         subject_parent = cache_data.stack.parent_branch
 
         if subject_parent is None and subject_branch == current_branch:
-            is_stack, parent_branch, _ = is_stacked(subject_branch, cwd=cwd, cache_path=None)
+            is_stack, parent_branch, _, _ = is_stacked(subject_branch, cwd=cwd, cache_path=None)
             if is_stack and parent_branch:
                 subject_parent = parent_branch
 
@@ -147,7 +154,7 @@ def detect_layout(
                 try:
                     cache_path = Path(wt_path) / ".claude" / "github-cache.json"
                     cache_data, _ = read_github_cache(cache_path)
-                    if cache_data and cache_data.stack.parent_branch == subject_branch:
+                    if cache_data and cache_data.stack and cache_data.stack.parent_branch == subject_branch:
                         per_branch = True
                         break
                 except OSError:

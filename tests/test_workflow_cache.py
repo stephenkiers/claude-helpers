@@ -46,6 +46,19 @@ if __name__ == "__main__":
         hash1 != hash3
     )
 
+    hash_lower = hash_file_content("content")
+    hash_upper = hash_file_content("CONTENT")
+    test_result(
+        "hash_file_content() is case-sensitive",
+        hash_lower != hash_upper
+    )
+
+    hash_empty = hash_file_content("")
+    test_result(
+        "hash_file_content() handles empty string",
+        len(hash_empty) == 64
+    )
+
     print()
     print("[Section 2] Read github-cache.json")
 
@@ -142,6 +155,31 @@ if __name__ == "__main__":
         test_result(
             "hash_issues_cache_file() returns valid hash",
             issues_hash and len(issues_hash) == 64
+        )
+
+    print()
+    print("[Section 5] Cache round-trip preserves nested fields")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "github-cache.json"
+
+        original = GitHubCacheData(
+            branch="feature",
+            issue=IssueInfo(number=99, url="http://gh", title="Issue", body="Body"),
+            stack=StackInfo(is_stacked=True, parent_branch="main", parent_pr=42)
+        )
+        cache_file.write_text(json.dumps(original.to_dict()))
+
+        read_data, error = read_github_cache(cache_file)
+        test_result(
+            "read_github_cache() preserves issue number through round-trip",
+            read_data and read_data.issue and read_data.issue.number == 99
+        )
+        test_result(
+            "read_github_cache() preserves stack info through round-trip",
+            read_data and read_data.stack and read_data.stack.parent_branch == "main"
+                and read_data.stack.parent_pr == 42
         )
 
     print()

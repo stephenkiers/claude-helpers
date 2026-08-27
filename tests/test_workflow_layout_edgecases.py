@@ -55,10 +55,10 @@ branch refs/heads/child
                     with patch("workflow.stack.read_github_cache") as mock_read:
                         with patch("workflow.stack.is_stacked") as mock_is_stacked:
                             mock_branch.return_value = "child"
-                            mock_default.return_value = "main"
+                            mock_default.return_value = ("main", None)
                             mock_worktree.return_value = porcelain
                             mock_read.return_value = stacked_cache
-                            mock_is_stacked.return_value = (True, "parent", None)
+                            mock_is_stacked.return_value = (True, "parent", None, None)
 
                             layout = detect_layout(subject_branch="child")
                             test_result(
@@ -74,7 +74,7 @@ branch refs/heads/child
             with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
                 with patch("workflow.stack.is_stacked") as mock_is_stacked:
                     mock_branch.return_value = "child"
-                    mock_default.return_value = "main"
+                    mock_default.return_value = ("main", None)
                     porcelain = """\
 worktree /path/main
 branch refs/heads/main
@@ -84,12 +84,12 @@ worktree /path/child-wt
 branch refs/heads/child
 """
                     mock_worktree.return_value = porcelain
-                    mock_is_stacked.return_value = (False, None, None)
+                    mock_is_stacked.return_value = (False, None, None, None)
 
                     layout = detect_layout(subject_branch="child")
                     test_result(
-                        "detect_layout handles multiple worktrees correctly",
-                        layout in ["single-driver", "per-branch", "unknown"]
+                        "detect_layout returns unknown when no cache and is_stacked() reports not-stacked",
+                        layout == "unknown"
                     )
 
     print()
@@ -97,36 +97,41 @@ branch refs/heads/child
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmppath = Path(tmpdir)
-        cache_file = tmppath / "github-cache.json"
+        main_wt = tmppath / "main"
+        feature_wt = tmppath / "feature"
+        main_wt.mkdir()
+        feature_wt.mkdir()
 
+        # Real worktree paths so detect_layout's is_dir() gate passes and
+        # the cache file is genuinely read from disk, not bypassed.
+        cache_dir = feature_wt / ".claude"
+        cache_dir.mkdir()
+        cache_file = cache_dir / "github-cache.json"
         stacked_cache = GitHubCacheData(
             branch="feature",
             stack=StackInfo(is_stacked=True, parent_branch="main")
         )
         cache_file.write_text(json.dumps(stacked_cache.to_dict()))
 
-        porcelain = """\
-worktree /path/main
+        porcelain = f"""\
+worktree {main_wt}
 branch refs/heads/main
-worktree /path/feature
+worktree {feature_wt}
 branch refs/heads/feature
 """
 
         with patch("workflow.stack.git.get_current_branch") as mock_branch:
             with patch("workflow.stack.git.get_default_branch") as mock_default:
                 with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
-                    with patch("workflow.stack.read_github_cache"):
-                        with patch("workflow.stack.is_stacked") as mock_is_stacked:
-                            mock_branch.return_value = "feature"
-                            mock_default.return_value = "main"
-                            mock_worktree.return_value = porcelain
-                            mock_is_stacked.return_value = (True, "main", None)
+                    mock_branch.return_value = "feature"
+                    mock_default.return_value = ("main", None)
+                    mock_worktree.return_value = porcelain
 
-                            layout = detect_layout(subject_branch="feature")
-                            test_result(
-                                "detect_layout returns single-driver when stacked with no per-branch sibling",
-                                layout == "single-driver"
-                            )
+                    layout = detect_layout(subject_branch="feature")
+                    test_result(
+                        "detect_layout returns single-driver when stacked with no per-branch sibling (cache read from disk)",
+                        layout == "single-driver"
+                    )
 
     print()
     print("[Section 4] detect_layout: unknown (no worktrees besides main)")
@@ -136,9 +141,9 @@ branch refs/heads/feature
             with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
                 with patch("workflow.stack.is_stacked") as mock_is_stacked:
                     mock_branch.return_value = "feature"
-                    mock_default.return_value = "main"
+                    mock_default.return_value = ("main", None)
                     mock_worktree.return_value = ""
-                    mock_is_stacked.return_value = (False, None, None)
+                    mock_is_stacked.return_value = (False, None, None, None)
 
                     layout = detect_layout(subject_branch="feature")
                     test_result(
@@ -154,7 +159,7 @@ branch refs/heads/feature
             with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
                 with patch("workflow.stack.is_stacked") as mock_is_stacked:
                     mock_branch.return_value = "feature"
-                    mock_default.return_value = "main"
+                    mock_default.return_value = ("main", None)
                     porcelain = """\
 worktree /path/main
 branch refs/heads/main
@@ -164,7 +169,7 @@ worktree /path/other
 branch refs/heads/other
 """
                     mock_worktree.return_value = porcelain
-                    mock_is_stacked.return_value = (False, None, None)
+                    mock_is_stacked.return_value = (False, None, None, None)
 
                     layout = detect_layout(subject_branch="feature")
                     test_result(
@@ -180,7 +185,7 @@ branch refs/heads/other
             with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
                 with patch("workflow.stack.is_stacked") as mock_is_stacked:
                     mock_branch.return_value = "feature"
-                    mock_default.return_value = "main"
+                    mock_default.return_value = ("main", None)
                     porcelain_detached = """\
 worktree /path/main
 branch refs/heads/main
@@ -189,12 +194,12 @@ worktree /path/feature
 branch refs/heads/feature
 """
                     mock_worktree.return_value = porcelain_detached
-                    mock_is_stacked.return_value = (True, "main", None)
+                    mock_is_stacked.return_value = (True, "main", None, None)
 
                     layout = detect_layout(subject_branch="feature")
                     test_result(
-                        "detect_layout handles detached worktrees correctly",
-                        layout in ["single-driver", "unknown"]
+                        "detect_layout ignores detached-HEAD worktrees and returns single-driver",
+                        layout == "single-driver"
                     )
 
     print()
@@ -202,38 +207,45 @@ branch refs/heads/feature
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmppath = Path(tmpdir)
-        cache_file = tmppath / "github-cache.json"
+        main_wt = tmppath / "main"
+        main_wt2 = tmppath / "main-worktree"
+        feature_wt = tmppath / "feature"
+        main_wt.mkdir()
+        main_wt2.mkdir()
+        feature_wt.mkdir()
 
+        # Real worktree paths so detect_layout's is_dir() gate passes and
+        # the cache file is genuinely read from disk, not bypassed.
+        cache_dir = feature_wt / ".claude"
+        cache_dir.mkdir()
+        cache_file = cache_dir / "github-cache.json"
         stacked_cache = GitHubCacheData(
             branch="feature",
             stack=StackInfo(is_stacked=True, parent_branch="main")
         )
         cache_file.write_text(json.dumps(stacked_cache.to_dict()))
 
-        porcelain = """\
-worktree /path/main
+        porcelain = f"""\
+worktree {main_wt}
 branch refs/heads/main
-worktree /path/main-worktree
+worktree {main_wt2}
 branch refs/heads/main
-worktree /path/feature
+worktree {feature_wt}
 branch refs/heads/feature
 """
 
         with patch("workflow.stack.git.get_current_branch") as mock_branch:
             with patch("workflow.stack.git.get_default_branch") as mock_default:
                 with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
-                    with patch("workflow.stack.read_github_cache"):
-                        with patch("workflow.stack.is_stacked") as mock_is_stacked:
-                            mock_branch.return_value = "feature"
-                            mock_default.return_value = "main"
-                            mock_worktree.return_value = porcelain
-                            mock_is_stacked.return_value = (True, "main", None)
+                    mock_branch.return_value = "feature"
+                    mock_default.return_value = ("main", None)
+                    mock_worktree.return_value = porcelain
 
-                            layout = detect_layout(subject_branch="feature")
-                            test_result(
-                                "detect_layout does not count default branch as sibling",
-                                layout == "single-driver"
-                            )
+                    layout = detect_layout(subject_branch="feature")
+                    test_result(
+                        "detect_layout does not count default branch as sibling (cache read from disk)",
+                        layout == "single-driver"
+                    )
 
     print()
     h.summarize_and_exit()

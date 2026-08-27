@@ -97,10 +97,10 @@ if __name__ == "__main__":
         with patch("workflow.stack.git.get_default_branch") as mock_default:
             with patch("workflow.stack.git.get_worktree_list_porcelain") as mock_worktree:
                 mock_branch.return_value = "feature"
-                mock_default.return_value = "main"
+                mock_default.return_value = ("main", None)
                 mock_worktree.return_value = ""
 
-                is_stack, parent, pr = is_stacked(cache_path=Path("/nonexistent/cache"))
+                is_stack, parent, pr, _ = is_stacked(cache_path=Path("/nonexistent/cache"))
                 test_result(
                     "is_stacked falls back to False when no cache",
                     is_stack is False

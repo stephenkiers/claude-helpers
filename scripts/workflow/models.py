@@ -39,18 +39,24 @@ class GitHubCacheData:
     schema_version: str = GITHUB_CACHE_SCHEMA_VERSION
     branch: str = ""
     issue: Optional[IssueInfo] = None
-    stack: StackInfo = field(default_factory=StackInfo)
+    # None means "stack key absent from the cache file" — distinct from a
+    # confirmed, explicit StackInfo(is_stacked=False). Collapsing the two
+    # made every reader treat "we don't know" as "confirmed not stacked".
+    stack: Optional[StackInfo] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
         d = asdict(self)
         if self.issue:
             d["issue"] = asdict(self.issue)
-        d["stack"] = {
-            "isStacked": self.stack.is_stacked,
-            "parentBranch": self.stack.parent_branch,
-            "parentPr": self.stack.parent_pr
-        }
+        if self.stack is not None:
+            d["stack"] = {
+                "isStacked": self.stack.is_stacked,
+                "parentBranch": self.stack.parent_branch,
+                "parentPr": self.stack.parent_pr
+            }
+        else:
+            d["stack"] = None
         return d
 
     @classmethod
@@ -67,6 +73,8 @@ class GitHubCacheData:
                 parent_branch=stack_data.get("parentBranch"),
                 parent_pr=stack_data.get("parentPr")
             )
+        else:
+            obj.stack = None
         return obj
 
 
@@ -85,6 +93,11 @@ class IssuesCacheData:
     schema_version: str = ISSUES_CACHE_SCHEMA_VERSION
     next_id: int = 1
     issues: Dict[int, LocalIssueEntry] = field(default_factory=dict)
+    # Keys from the source dict that failed to parse into a LocalIssueEntry
+    # (malformed id or entry shape). Not part of to_dict()'s JSON output —
+    # read_issues_cache() surfaces this as an Unknown so a silent drop isn't
+    # indistinguishable from a fully-clean read.
+    dropped_keys: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -105,7 +118,7 @@ class IssuesCacheData:
                 issue_id = int(key)
                 obj.issues[issue_id] = LocalIssueEntry(**entry_data)
             except (ValueError, TypeError):
-                pass
+                obj.dropped_keys.append(str(key))
         return obj
 
 

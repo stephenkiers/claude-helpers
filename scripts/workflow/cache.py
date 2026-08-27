@@ -29,7 +29,7 @@ def read_github_cache(path: Path) -> Tuple[Optional[GitHubCacheData], Optional[U
         if not validate_github_cache(data):
             return None, Unknown("github-cache.json schema validation failed")
         return GitHubCacheData.from_dict(data), None
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
         return None, Unknown(f"Failed to read github-cache.json: {e}")
 
 
@@ -46,7 +46,10 @@ def read_issues_cache(path: Path) -> Tuple[Optional[IssuesCacheData], Optional[U
         data = json.loads(path.read_text())
         if not validate_issues_cache(data):
             return None, Unknown("issues.json schema validation failed")
-        return IssuesCacheData.from_dict(data), None
+        parsed = IssuesCacheData.from_dict(data)
+        if parsed.dropped_keys:
+            return parsed, Unknown(f"issues.json dropped malformed entries: {', '.join(parsed.dropped_keys)}")
+        return parsed, None
     except (json.JSONDecodeError, OSError) as e:
         return None, Unknown(f"Failed to read issues.json: {e}")
 
@@ -56,9 +59,16 @@ def read_repo_cache(path: Path) -> Tuple[Optional[RepoCacheData], Optional[Unkno
     Read and validate .claude/repo-cache.json.
 
     Returns (RepoCacheData or None, Unknown error or None).
+
+    Implemented ahead of schedule relative to RepoCacheData's "future use;
+    stubbed for Phase 1" marker: no caller writes repo-cache.json yet, so
+    this has no test coverage against a real file today. Kept (not
+    removed) because the read path is simple, side-effect-free, and
+    follows the same contract as its two siblings above — Phase 2's
+    writer can add coverage when it lands.
     """
     if not path.exists():
-        return None, None
+        return None, Unknown("repo-cache.json not found")
 
     try:
         data = json.loads(path.read_text())
@@ -74,8 +84,8 @@ def hash_file_content(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-def hash_github_cache_file(path: Path) -> Optional[str]:
-    """Compute content hash of github-cache.json if it exists."""
+def hash_cache_file(path: Path) -> Optional[str]:
+    """Compute content hash of a cache file if it exists."""
     if not path.exists():
         return None
     try:
@@ -83,17 +93,16 @@ def hash_github_cache_file(path: Path) -> Optional[str]:
         return hash_file_content(content)
     except OSError:
         return None
+
+
+def hash_github_cache_file(path: Path) -> Optional[str]:
+    """Compute content hash of github-cache.json if it exists."""
+    return hash_cache_file(path)
 
 
 def hash_issues_cache_file(path: Path) -> Optional[str]:
     """Compute content hash of issues.json if it exists."""
-    if not path.exists():
-        return None
-    try:
-        content = path.read_text()
-        return hash_file_content(content)
-    except OSError:
-        return None
+    return hash_cache_file(path)
 
 
 def write_cache(path: Path, data: Dict[str, Any]) -> Tuple[bool, Optional[Unknown]]:
