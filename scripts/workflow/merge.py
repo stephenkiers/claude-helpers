@@ -7,12 +7,14 @@ Ports the deterministic merge logic from /merge-and-cleanup into a plan/apply pa
 """
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from . import git
+from .cache import read_repo_cache, write_cache
 from .safety import Unknown, fail_closed
 
 
@@ -109,6 +111,12 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
     1. Path 1: 'just merge' (if recipe exists)
     2. Path 2: repo-cache.json check gate + gh pr merge --squash
     3. Path 3: gh pr merge --squash (no gate, with warning marker)
+
+    Note: 'just merge' (Path 1) and the repo-cache check command (Path 2) are deliberately
+    NOT routed through mutations.check_mutation_allowed() — they're already-trusted,
+    repo-configured content the maintainer wrote (same trust boundary the .md wrapper relied
+    on before this CLI existed), not an argv shape this module constructed itself. The funnel
+    only guards git/gh calls this module builds directly (gh pr merge, the reentrancy lock).
 
     Creates/preserves .merge-and-cleanup.lock file (never auto-cleared).
 
@@ -215,12 +223,10 @@ def _resolve_pr_from_number(arguments: str, cwd: Optional[Path]) -> Tuple[Option
     try:
         pr_number = None
         if "/pull/" in arguments:
-            import re
             match = re.search(r"/pull/(\d+)", arguments)
             if match:
                 pr_number = int(match.group(1))
         else:
-            import re
             match = re.search(r"\d+", arguments)
             if match:
                 pr_number = int(match.group(0))
@@ -288,8 +294,6 @@ def _check_just_merge(target_worktree: str) -> bool:
         justfile = Path(target_worktree) / "justfile"
         if not justfile.exists():
             return False
-        result = git.run_git_command(["--version"], cwd=Path(target_worktree), check=False)
-        import re
         summary = subprocess.run(
             ["just", "-f", str(justfile), "--summary"],
             cwd=target_worktree,
@@ -321,14 +325,11 @@ def _run_just_merge(target_worktree: str, cwd: Optional[Path]) -> bool:
 
 def _get_repo_cache_check_cmd(target_worktree: Path) -> Optional[str]:
     """Get check command from repo-cache.json if it exists."""
-    try:
-        cache_file = target_worktree / ".claude" / "repo-cache.json"
-        if not cache_file.exists():
-            return None
-        cache_data = json.loads(cache_file.read_text())
-        return cache_data.get("commands", {}).get("check")
-    except Exception:
+    cache_file = target_worktree / ".claude" / "repo-cache.json"
+    cache_data, err = read_repo_cache(cache_file)
+    if err or not cache_data:
         return None
+    return cache_data.commands.get("check")
 
 
 def _run_check_command(cmd: str, target_worktree: str, cwd: Optional[Path]) -> bool:

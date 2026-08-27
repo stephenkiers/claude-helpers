@@ -141,8 +141,11 @@ class RepoCacheData:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RepoCacheData":
         """Construct from parsed JSON dict."""
+        # /shipit's real cache (commands/shipit.md) writes a top-level "version" int, never
+        # "schema_version" — accept whichever key is present rather than losing the field.
+        version = data.get("schema_version", data.get("version", REPO_CACHE_SCHEMA_VERSION))
         return cls(
-            schema_version=data.get("schema_version", REPO_CACHE_SCHEMA_VERSION),
+            schema_version=str(version),
             repo_path=data.get("repo_path", ""),
             worktree_parent=data.get("worktree_parent", ""),
             commands=dict(data.get("commands") or {})
@@ -176,10 +179,16 @@ def validate_issues_cache(data: Dict[str, Any]) -> bool:
 
 
 def validate_repo_cache(data: Dict[str, Any]) -> bool:
-    """Validate repo-cache.json structure and required fields."""
+    """
+    Validate repo-cache.json structure and required fields.
+
+    Unlike github-cache.json/issues.json, this file's real-world writer (/shipit, per
+    commands/shipit.md) uses a top-level "version" int and never writes "schema_version" —
+    gating on an exact "schema_version" string this reader predates would reject every real
+    file. Structural validation only: a dict, with "commands" a dict if present.
+    """
     if not isinstance(data, dict):
         return False
-    version = data.get("schema_version")
-    if version != REPO_CACHE_SCHEMA_VERSION:
+    if "commands" in data and not isinstance(data["commands"], dict):
         return False
     return True

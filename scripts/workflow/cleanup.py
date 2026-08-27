@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from . import git
-from .cache import hash_cache_file, read_github_cache
+from .cache import hash_cache_file, hash_file_content, read_github_cache
 from .safety import Unknown, fail_closed
 from .models import RepoCacheData
 
@@ -368,5 +368,4 @@ def _detect_stacked_children(
 
 def _hash_plan(plan_json: str) -> str:
     """Compute a hash of the plan for freshness detection."""
-    import hashlib
-    return hashlib.sha256(plan_json.encode()).hexdigest()
+    return hash_file_content(plan_json)
