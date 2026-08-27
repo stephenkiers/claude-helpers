@@ -22,7 +22,7 @@ COMMANDS_DIR = REPO_ROOT / "commands"
 MERGE_FILE = COMMANDS_DIR / "merge-and-cleanup.md"
 
 
-def read(path):
+def read(path) -> str:
     """Return a file's text, or empty string if missing."""
     try:
         return path.read_text()
@@ -30,7 +30,7 @@ def read(path):
         return ""
 
 
-def extract_bash_blocks(markdown_text):
+def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
     """
     Extract all bash code block contents from markdown.
     Returns a list of (start_line_num, block_text) tuples.
@@ -60,7 +60,7 @@ def get_line_index(text: str, heading: str) -> int:
     return -1
 
 
-def get_byte_index(text, section_name):
+def get_byte_index(text: str, section_name: str) -> int:
     """Return the byte offset of a top-level heading, or -1 if not found."""
     pattern = rf"^### {re.escape(section_name)}"
     match = re.search(pattern, text, re.MULTILINE)
@@ -96,11 +96,15 @@ t = h.test_result
 # ============================================================================
 print("[Test 1] Branch resolution uses exact match (refs/heads/<branch>)")
 
-# Phase 1 should use awk with exact matching on refs/heads/<branch>
-has_exact_match = 'refs/heads/' in MERGE and '$0=="branch "b' in MERGE
+# Phase 1 should use awk with exact matching on refs/heads/<branch>. The awk
+# pattern's exact whitespace is not load-bearing, so match it tolerantly
+# rather than pinning to one literal spelling.
+has_exact_match = 'refs/heads/' in MERGE and bool(
+    re.search(r'\$0\s*==\s*"branch\s*"\s*b', MERGE)
+)
 t("Phase 1 uses exact refs/heads/ match in awk",
   has_exact_match,
-  "expected awk with $0==\"branch \"b pattern for exact matching")
+  "expected awk with $0==\"branch \"b pattern (or equivalent spacing) for exact matching")
 
 # Make sure there's no naive substring grep on branch name
 has_naive_grep = bool(re.search(r"grep.*\$HEAD_REF", MERGE))
@@ -170,16 +174,20 @@ t("At least one merge invocation uses subshell ( cd ... )",
 bare_cd_violations = []
 for line_num, block_text in bash_blocks:
     for line in active_command_lines(block_text):
-        # Bare cd is a line that starts with 'cd ' but is not part of a subshell
-        # Look for lines that are exactly 'cd <path>' or start with 'cd '
-        stripped = line.strip()
-        if stripped.startswith("cd "):
-            # Check if this line is wrapped in a subshell by looking at the raw block
-            # If the line contains '( ' or is preceded by '(' on same line, it's safe
-            if not ("(" in line and ")" in line):
-                # Look at context: is it inside parentheses?
-                # For safety, check if the full line has both ( and )
-                if not re.search(r"\(\s*cd\s+", line):
+        # Strip a trailing '# ...' comment before splitting on command
+        # separators, so a comment containing '(' / ')' can't fool the
+        # subshell check below.
+        code_part = re.split(r"(?<!\S)#", line, maxsplit=1)[0]
+        # A line can chain multiple commands with ';', '&&', or '||' — check
+        # each sub-command individually, not just the first token on the line.
+        for sub_command in re.split(r";|&&|\|\|", code_part):
+            stripped = sub_command.strip()
+            if stripped.startswith("cd "):
+                # Check if this sub-command is wrapped in a subshell by
+                # looking at the raw line for both '(' and ')'.
+                if not ("(" in line and ")" in line):
+                    bare_cd_violations.append(f"line {line_num}: '{stripped}'")
+                elif not re.search(r"\(\s*cd\s+", line):
                     bare_cd_violations.append(f"line {line_num}: '{stripped}'")
 
 t("No bare cd outside subshell",
@@ -226,6 +234,16 @@ has_rebase_onto = "rebase --onto" in MERGE
 t("Does NOT contain 'rebase --onto'",
   not has_rebase_onto,
   "rebase --onto (restacking) belongs in /cleanup and prompts/worktree-reference.md only")
+
+has_worktree_parent_assignment = "WORKTREE_PARENT=" in MERGE
+t("Does NOT compute WORKTREE_PARENT itself",
+  not has_worktree_parent_assignment,
+  "WORKTREE_PARENT is owned by Project Detection elsewhere, not this command")
+
+has_project_root_assignment = "PROJECT_ROOT=" in MERGE
+t("Does NOT compute PROJECT_ROOT itself",
+  not has_project_root_assignment,
+  "PROJECT_ROOT is owned by Project Detection elsewhere, not this command")
 
 print()
 
@@ -283,22 +301,99 @@ if phase3_idx >= 0:
           has_guard,
           "expected conditional branching on MERGE_GATE_USED to prevent double-merge")
 
-        # The gh pr merge should be inside an else or if-not condition
-        # Check for the conditional structure
-        has_conditional_merge = re.search(
-            r'if\s*\[\s*"\$MERGE_GATE_USED"\s*[!=]',
-            phase3_bash
-        ) or re.search(
-            r'if\s*\[\s*-z\s*"\$MERGE_GATE_USED"',
-            phase3_bash
+        # Parse the if/then/else/fi structure explicitly (co-occurrence of the
+        # verb and the variable name isn't enough — the verb could sit in
+        # either arm and still "pass" a substring check) and confirm
+        # 'gh pr merge --squash' appears only in the else arm, never in the
+        # just-merge then-arm, which is what would actually cause a
+        # double-merge.
+        phase3_lines = phase3_bash.split("\n")
+        guard_idx = next(
+            (i for i, l in enumerate(phase3_lines)
+             if re.search(r'if\s*\[\s*"\$MERGE_GATE_USED"\s*=\s*"just merge"\s*\]', l)),
+            None,
         )
-        t("gh pr merge is guarded by conditional (not unconditional)",
-          has_conditional_merge,
-          "gh pr merge must be inside an if/else to avoid running after just merge")
+        t("Found the MERGE_GATE_USED == 'just merge' guard line",
+          guard_idx is not None,
+          "expected an if [ \"$MERGE_GATE_USED\" = \"just merge\" ] line in Phase 3")
+
+        if guard_idx is not None:
+            depth = 1
+            in_else = False
+            then_lines: list[str] = []
+            else_lines: list[str] = []
+            i = guard_idx + 1
+            while i < len(phase3_lines) and depth > 0:
+                stripped = phase3_lines[i].strip()
+                if re.search(r"\bif\b.*\bthen\s*$", stripped):
+                    depth += 1
+                elif stripped == "fi":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif stripped == "else" and depth == 1:
+                    in_else = True
+                    i += 1
+                    continue
+                (else_lines if in_else else then_lines).append(phase3_lines[i])
+                i += 1
+
+            then_body = "\n".join(then_lines)
+            else_body = "\n".join(else_lines)
+
+            t("'gh pr merge --squash' is absent from the just-merge (then) arm",
+              "gh pr merge --squash" not in then_body,
+              "found 'gh pr merge --squash' in the just-merge then-branch — this would double-merge")
+
+            t("'gh pr merge --squash' is present in the else arm",
+              "gh pr merge --squash" in else_body,
+              "expected 'gh pr merge --squash' inside the else branch")
     else:
         t("Phase 3 bash block found",
           False,
           "could not extract bash block from Phase 3")
+
+print()
+
+# ============================================================================
+# TEST 9: PR-number parsing prefers a URL's pull/<n> segment before falling
+# back to the first digit run (regression test for the bug this PR fixed —
+# an earlier numeric org/repo segment in a URL must not be grabbed instead
+# of the actual PR number).
+# ============================================================================
+print("[Test 9] PR-number parsing: pull/<n> match precedes fallback digit-run match")
+
+phase0_idx = get_line_index(MERGE, "Phase 0")
+t("Phase 0 heading found",
+  phase0_idx >= 0,
+  "could not find Phase 0 section")
+
+if phase0_idx >= 0:
+    phase0_start_idx = phase0_idx + 1
+    phase0_text = "\n".join(MERGE.split("\n")[phase0_start_idx:])
+    bash_match = re.search(r"```bash\n(.*?)\n```", phase0_text, re.DOTALL)
+    t("Phase 0 bash block found",
+      bash_match is not None,
+      "could not extract bash block from Phase 0")
+
+    if bash_match:
+        phase0_bash = bash_match.group(1)
+
+        pull_match_idx = phase0_bash.find("pull/[0-9]+")
+        t("Phase 0 matches a URL's pull/<n> segment",
+          pull_match_idx != -1,
+          "expected a 'pull/[0-9]+' pattern to extract the PR number from a URL")
+
+        fallback_match = re.search(r'PR_NUM=\$\(echo "\$ARGUMENTS" \| grep -oE \'\[0-9\]\+\'', phase0_bash)
+        t("Phase 0 has a fallback first-digit-run match",
+          fallback_match is not None,
+          "expected a fallback grep -oE '[0-9]+' match for the bare/#/PR-prefixed forms")
+
+        if pull_match_idx != -1 and fallback_match is not None:
+            t("The pull/<n> match appears before the fallback digit-run match",
+              pull_match_idx < fallback_match.start(),
+              "the pull/<n> pattern must be tried before the naive digit-run fallback, "
+              "or a numeric org/repo segment earlier in a URL would be grabbed instead")
 
 print()
 h.summarize_and_exit()
