@@ -86,7 +86,7 @@ reviewers (`/expert-review security,types`). Start small before running the whol
 This repo ships optional **local, observational telemetry** to track cost and output quality across your
 commands — no data leaves your machine. Record usage patterns, token counts, retry rates, and outcomes
 to a single-machine JSONL log. See [docs/metrics.md](docs/metrics.md) for the full schema, privacy
-allowlist, and how to opt-in via `./install.sh`.
+allowlist, and how to opt-in via `./install.sh --with-telemetry`.
 
 ## Project context
 
