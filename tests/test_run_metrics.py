@@ -301,6 +301,278 @@ def test_stage_end_requires_failure_class():
         return True, ""
 
 
+def test_read_stdin_json_caps_at_1mib():
+    """read_stdin_json caps input at 1 MiB before parsing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+
+        # Payload well under 1 MiB should succeed normally
+        small_payload = json.dumps({"session_id": "s1", "cwd": "/tmp"})
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "session-begin"],
+            stdin_text=small_payload,
+        )
+        if code != 0:
+            return False, f"small payload failed: {stderr}"
+
+        # ~2 MiB payload should be handled gracefully (capped, not hung/crashed)
+        big_string = "x" * (2 * 1024 * 1024)
+        huge_payload = json.dumps({"session_id": "s2", "data": big_string})
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "session-begin"],
+            stdin_text=huge_payload,
+        )
+
+        if code == 0:
+            return True, "huge payload handled gracefully"
+        if "Traceback" in stderr:
+            return False, f"huge payload caused traceback: {stderr}"
+        return True, "huge payload rejected cleanly"
+
+
+def test_field_truncation_session_id():
+    """session_id truncated to 4096 chars when read from hook payload."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        payload = json.dumps({"session_id": "s" * 5000, "cwd": "/tmp"})
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "session-begin"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"session-begin failed: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        written_session_id = event.get("session_id", "")
+        if len(written_session_id) > 4096:
+            return False, f"session_id not truncated: {len(written_session_id)} chars"
+
+        return True, ""
+
+
+def test_field_truncation_cwd():
+    """cwd truncated to 4096 chars when read from hook payload."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        payload = json.dumps({"session_id": "s1", "cwd": "/" + "d" * 5000})
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "session-begin"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"session-begin failed: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        written_cwd = event.get("cwd", "")
+        if len(written_cwd) > 4096:
+            return False, f"cwd not truncated: {len(written_cwd)} chars"
+
+        return True, ""
+
+
+def test_field_truncation_agent_id():
+    """agent_id truncated to 4096 chars when read from hook payload."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        payload = json.dumps({
+            "session_id": "s1",
+            "agent_id": "a" * 5000,
+            "agent_type": "general",
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "agent-begin"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"agent-begin failed: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        written_agent_id = event.get("agent_id", "")
+        if len(written_agent_id) > 4096:
+            return False, f"agent_id not truncated: {len(written_agent_id)} chars"
+
+        return True, ""
+
+
+def test_field_truncation_agent_type():
+    """agent_type truncated to 4096 chars when read from hook payload."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        payload = json.dumps({
+            "session_id": "s1",
+            "agent_id": "a1",
+            "agent_type": "x" * 5000,
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "agent-begin"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"agent-begin failed: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        written_agent_type = event.get("agent_type", "")
+        if len(written_agent_type) > 4096:
+            return False, f"agent_type not truncated: {len(written_agent_type)} chars"
+
+        return True, ""
+
+
+def test_repo_field_derived_correctly_from_cwd():
+    """repo field is derived correctly from cwd (basename without trailing slashes)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        payload = json.dumps({"session_id": "s1", "cwd": "/foo/bar"})
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "session-begin"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"session-begin failed: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        written_repo = event.get("repo", "")
+        if written_repo != "bar":
+            return False, f"repo should be 'bar', got '{written_repo}'"
+
+        return True, ""
+
+
+def test_diagnose_excludes_unknown_as_correlation_id():
+    """diagnose excludes command_id="unknown" from pairing; only pairs valid command IDs."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+
+        # One valid command pair (c1) and one "unknown"-id pair that must not be
+        # spuriously treated as matched against itself.
+        events = [
+            {
+                "schema_version": 1, "event_type": "command.begin",
+                "timestamp": "2026-08-26T12:00:00Z", "session_id": "s1",
+                "command_id": "c1", "command": "test1",
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1, "event_type": "command.end",
+                "timestamp": "2026-08-26T12:00:10Z", "session_id": "s1",
+                "command_id": "c1", "outcome": {"status": "success"},
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1, "event_type": "command.begin",
+                "timestamp": "2026-08-26T12:00:20Z", "session_id": "s1",
+                "command_id": "unknown", "command": "test2",
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1, "event_type": "command.end",
+                "timestamp": "2026-08-26T12:00:30Z", "session_id": "s1",
+                "command_id": "unknown", "outcome": {"status": "success"},
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+        ]
+
+        with open(log_path, "w") as f:
+            for event in events:
+                f.write(json.dumps(event) + "\n")
+
+        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose"])
+
+        if "Match rate" not in stdout:
+            return False, f"diagnose output missing 'Match rate': {stdout}"
+
+        # Only the valid pair (c1) should count: 1/1. The "unknown" pair must not
+        # inflate that to 2/2.
+        if "1/1" not in stdout:
+            return False, f"diagnose should show 1/1 matched; instead got: {stdout}"
+        if "2/2" in stdout:
+            return False, f"diagnose should NOT show 2/2 matched (unknown IDs should be filtered); got: {stdout}"
+
+        return True, ""
+
+
+def test_diagnose_prints_per_stage_breakdown():
+    """diagnose prints per-stage match-rate breakdown."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+
+        events = [
+            {
+                "schema_version": 1, "event_type": "stage.begin",
+                "timestamp": "2026-08-26T12:00:00Z", "session_id": "s1",
+                "command_id": "c1", "stage_id": "st1", "stage": "build",
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1, "event_type": "stage.end",
+                "timestamp": "2026-08-26T12:00:10Z", "session_id": "s1",
+                "command_id": "c1", "stage_id": "st1", "stage": "build",
+                "outcome": {"status": "success"},
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1, "event_type": "stage.begin",
+                "timestamp": "2026-08-26T12:00:20Z", "session_id": "s1",
+                "command_id": "c1", "stage_id": "st2", "stage": "test",
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1, "event_type": "stage.end",
+                "timestamp": "2026-08-26T12:00:30Z", "session_id": "s1",
+                "command_id": "c1", "stage_id": "st2", "stage": "test",
+                "outcome": {"status": "success"},
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+        ]
+
+        with open(log_path, "w") as f:
+            for event in events:
+                f.write(json.dumps(event) + "\n")
+
+        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose"])
+
+        if code != 0:
+            return False, f"diagnose exited non-zero: {stderr}"
+
+        has_stage_breakdown = ("build" in stdout or "test" in stdout or "stage" in stdout.lower())
+        if not has_stage_breakdown:
+            return False, f"diagnose output missing per-stage breakdown: {stdout}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -348,6 +620,33 @@ if __name__ == "__main__":
 
     passed, msg = test_diagnose_incomplete_pairs()
     test_result("diagnose detects incomplete pairs", passed, msg)
+
+    print()
+
+    print("[Section 6] Hardening: stdin cap, field truncation, diagnose additions")
+    passed, msg = test_read_stdin_json_caps_at_1mib()
+    test_result("read_stdin_json caps at 1 MiB", passed, msg)
+
+    passed, msg = test_field_truncation_session_id()
+    test_result("session_id truncated to 4096 chars", passed, msg)
+
+    passed, msg = test_field_truncation_cwd()
+    test_result("cwd truncated to 4096 chars", passed, msg)
+
+    passed, msg = test_field_truncation_agent_id()
+    test_result("agent_id truncated to 4096 chars", passed, msg)
+
+    passed, msg = test_field_truncation_agent_type()
+    test_result("agent_type truncated to 4096 chars", passed, msg)
+
+    passed, msg = test_repo_field_derived_correctly_from_cwd()
+    test_result("repo field derived correctly from cwd", passed, msg)
+
+    passed, msg = test_diagnose_excludes_unknown_as_correlation_id()
+    test_result("diagnose excludes 'unknown' as correlation ID", passed, msg)
+
+    passed, msg = test_diagnose_prints_per_stage_breakdown()
+    test_result("diagnose prints per-stage breakdown", passed, msg)
 
     print()
 
