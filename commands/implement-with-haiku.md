@@ -25,11 +25,23 @@ The flow:
 
 In priority order:
 
+0. **Args contain a path to an existing `action-plan.md` file** → read it directly, set `PLAN_SOURCE=action-plan`. If the path doesn't exist, fall through to priority 1–3 below with a one-line warning.
 1. **Args contain an issue number or URL** → fetch with `gh issue view <number>`
 2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan
 3. **A plan is visible in the current conversation** → use it directly
 
 If none yield a plan, tell the user and stop.
+
+### Parse action-plan.md into directives
+
+When `PLAN_SOURCE=action-plan`, extract directives from the file's sections:
+
+- **Doing it** table rows → one directive each: `[decided: doing-it]` + the fix (compress the table row's cell content into a clause).
+- **Needs you** / **Needs measurement** items whose `- **Ruling**:` line is **not** the pending placeholder (`_(pending your call...)` / `_(pending measurement...)`) → one directive each: `[decided: ruling recorded]` + the finding + the chosen option's text verbatim from the ruling.
+- Items still showing the pending placeholder → **excluded from work units**. Collect them into a one-time warning printed at Step 1 completion: `N item(s) in this action-plan still lack a recorded ruling and will be skipped: [titles]. Resolve them in the action-plan (or hand-edit the Ruling line) before re-running if you want them included.` Non-blocking — matches this command's existing "surface, don't block" pattern.
+- **Deferred** and the **gut check** section are never turned into directives.
+
+This parsed, tagged directive list becomes "the plan" fed into Step 3 ("Split the plan into work units").
 
 ## Step 2: Get context
 
@@ -98,6 +110,8 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
   must be assigned to **exactly one** unit — never left unassigned.
 - **Extract shared contracts/interfaces** (types, enums, constants) into the sub-task text given to
   *all* units — cheap drift reduction without inter-agent communication.
+- When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[decided: doing-it]`
+  directive, the split must carry that tag through verbatim into the sub-task text — never strip it.
 - Always emit **≥ 1** unit. If the plan is too coupled to split safely, emit 1 unit.
 
 **Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
@@ -152,6 +166,10 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - **"Do not write tests in this pass. A separate pass will write tests from the plan."**
 - **"Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
   commits it."**
+- For each directive tagged `[decided: ruling recorded]` or `[decided: doing-it]` in this unit's
+  sub-task, include this blockquote before the finding + chosen fix/option verbatim:
+  > **This was already decided by a human reviewer — implement exactly the option below. Do not
+  > treat it as open, do not propose an alternative, do not flag it back as ambiguous.**
 - The verification commands from the plan (or `n/a` if none for this unit)
 - The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section, which
   ends in `STAGED: yes | no`, not a commit)
@@ -852,6 +870,8 @@ wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total ag
 
 ```
 ROUND SIZING: <mechanical | test-only | full>
+ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=action-plan]
+  Doing-it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
 ROUND 1 — Implementer (parallel)
   Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>
 INTEGRATION GATE (trusted)
