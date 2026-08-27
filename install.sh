@@ -1,12 +1,15 @@
 #!/bin/bash
 set -e
 
-# Usage: ./install.sh [--with-zsh-keybindings]
+# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry]
 #   --with-zsh-keybindings   Also add Option+Arrow word jumping to ~/.zshrc (opt-in).
+#   --with-telemetry         Register telemetry hooks in ~/.claude/settings.json (opt-in).
 WITH_ZSH_KEYBINDINGS=0
+WITH_TELEMETRY=0
 for arg in "$@"; do
     case "$arg" in
         --with-zsh-keybindings) WITH_ZSH_KEYBINDINGS=1 ;;
+        --with-telemetry) WITH_TELEMETRY=1 ;;
     esac
 done
 
@@ -84,59 +87,77 @@ KEYBINDINGS
 fi
 
 # Register telemetry hooks in ~/.claude/settings.json (idempotent)
-if command -v jq &> /dev/null; then
-    SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+if [ "$WITH_TELEMETRY" -eq 1 ]; then
+    if command -v jq &> /dev/null; then
+        SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 
-    # Create settings.json if it doesn't exist
-    if [ ! -e "$SETTINGS_FILE" ]; then
-        echo '{}' > "$SETTINGS_FILE"
-    fi
+        # Create settings.json if it doesn't exist
+        if [ ! -e "$SETTINGS_FILE" ]; then
+            echo '{}' > "$SETTINGS_FILE"
+        fi
 
-    # Validate existing JSON
-    if ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
-        echo "Warning: $SETTINGS_FILE is not valid JSON, skipping telemetry hook registration"
+        # Validate existing JSON
+        if ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
+            echo "Warning: $SETTINGS_FILE is not valid JSON, skipping telemetry hook registration"
+        else
+            # Define the four telemetry hooks
+            for hook_event in "SessionStart" "SessionEnd" "SubagentStart" "SubagentStop"; do
+                case "$hook_event" in
+                    SessionStart)
+                        subcommand="session-begin"
+                        ;;
+                    SessionEnd)
+                        subcommand="session-end"
+                        ;;
+                    SubagentStart)
+                        subcommand="agent-begin"
+                        ;;
+                    SubagentStop)
+                        subcommand="agent-end"
+                        ;;
+                esac
+
+                hook_command="python3 \$HOME/.claude/scripts/run-metrics.py $subcommand 2>/dev/null || true"
+
+                # Hooks live under the top-level "hooks" key; each event maps to an array of
+                # matcher groups, each with its own nested "hooks" array — this two-level nesting
+                # is Claude Code's actual hook config schema (confirmed by live-capturing a real
+                # SubagentStart/SubagentStop payload against this exact config shape).
+                # Check if a run-metrics.py hook for this subcommand already exists (pattern match,
+                # so it works even if old unguarded entries exist without the 2>/dev/null || true suffix).
+                if jq --arg event "$hook_event" --arg subcommand "$subcommand" \
+                    '((.hooks[$event] // []) | any(.hooks[]?.command | test("run-metrics\\.py.*" + $subcommand)))' \
+                    "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
+                    # Hook already registered for this event/subcommand
+                    continue
+                fi
+
+                # Add a new matcher group with this hook to the event's array
+                TMP_SETTINGS=$(mktemp "$SETTINGS_FILE.XXXXXX")
+                jq --arg event "$hook_event" --arg cmd "$hook_command" \
+                    '.hooks[$event] = ((.hooks[$event] // []) + [{"hooks": [{"type": "command", "command": $cmd}]}])' \
+                    "$SETTINGS_FILE" > "$TMP_SETTINGS"
+                if jq empty "$TMP_SETTINGS" 2>/dev/null; then
+                    mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+                else
+                    echo "Warning: jq produced invalid JSON while registering $hook_event hook; leaving $SETTINGS_FILE unchanged" >&2
+                    rm -f "$TMP_SETTINGS"
+                fi
+            done
+            echo "Telemetry hooks registered in $SETTINGS_FILE"
+        fi
     else
-        # Define the four telemetry hooks
-        for hook_event in "SessionStart" "SessionEnd" "SubagentStart" "SubagentStop"; do
-            case "$hook_event" in
-                SessionStart)
-                    subcommand="session-begin"
-                    ;;
-                SessionEnd)
-                    subcommand="session-end"
-                    ;;
-                SubagentStart)
-                    subcommand="agent-begin"
-                    ;;
-                SubagentStop)
-                    subcommand="agent-end"
-                    ;;
-            esac
-
-            hook_command="python3 \$HOME/.claude/scripts/run-metrics.py $subcommand"
-
-            # Hooks live under the top-level "hooks" key; each event maps to an array of
-            # matcher groups, each with its own nested "hooks" array — this two-level nesting
-            # is Claude Code's actual hook config schema (confirmed by live-capturing a real
-            # SubagentStart/SubagentStop payload against this exact config shape).
-            # Check if this hook command already exists in the event's matcher groups.
-            if jq --arg event "$hook_event" --arg cmd "$hook_command" \
-                '((.hooks[$event] // []) | any(.hooks[]?.command == $cmd))' \
-                "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
-                # Hook already registered for this event
-                continue
-            fi
-
-            # Add a new matcher group with this hook to the event's array
-            jq --arg event "$hook_event" --arg cmd "$hook_command" \
-                '.hooks[$event] = ((.hooks[$event] // []) + [{"hooks": [{"type": "command", "command": $cmd}]}])' \
-                "$SETTINGS_FILE" > "$SETTINGS_FILE.tmp"
-            mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE"
-        done
-        echo "Telemetry hooks registered in $SETTINGS_FILE"
+        echo "Warning: jq not found; skipping telemetry hook registration (manual setup available in docs/metrics.md)" >&2
     fi
-elif [ ! -e "$CLAUDE_DIR/settings.json" ]; then
-    echo "Note: jq not found; skipping telemetry hook registration (manual setup available in docs/metrics.md)"
+else
+    SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+    if command -v jq &> /dev/null && [ -e "$SETTINGS_FILE" ] && jq empty "$SETTINGS_FILE" 2>/dev/null && \
+        jq -e '[(.hooks.SessionStart // []), (.hooks.SessionEnd // []), (.hooks.SubagentStart // []), (.hooks.SubagentStop // [])] | flatten | any(.hooks[]?.command | test("run-metrics\\.py"))' \
+            "$SETTINGS_FILE" &> /dev/null; then
+        echo "Telemetry hooks already registered in $SETTINGS_FILE (pass --with-telemetry to re-check)"
+    else
+        echo "Telemetry hooks not registered (pass --with-telemetry to opt in; see docs/metrics.md)"
+    fi
 fi
 
 echo ""

@@ -53,8 +53,7 @@ but always stay in (or switch to) main. Never cd into the target worktree.
 ### 0. Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail `/cleanup`.
-Every call below is non-fatal (stderr redirected, `|| echo unknown` fallback so a missing/broken
-`run-metrics.py`, e.g. before `install.sh` has run, can't break this command):
+Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
 
 ```bash
 TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup 2>/dev/null || echo unknown)
@@ -92,10 +91,14 @@ if [ -n "$ARG" ]; then
 
   if [ "$MATCH_COUNT" -eq 0 ] || [ -z "$MATCH_LIST" ]; then
     echo "ERROR: No directory matching '${PATTERN}' found"
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   elif [ "$MATCH_COUNT" -gt 1 ]; then
     echo "ERROR: Ambiguous match for '${PATTERN}'. Multiple directories found:"
     echo "$MATCH_LIST" | sed 's/^/  /'
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   fi
 
@@ -109,6 +112,8 @@ else
   if [ "$COMMON_DIR" = "$GIT_DIR" ]; then
     echo "ERROR: No argument provided and not in a worktree."
     echo "Usage: /cleanup <glob>  (e.g. /cleanup ../4*)"
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   fi
   CURRENT_WORKTREE=$(pwd)
@@ -117,6 +122,8 @@ fi
 # Validate target is not main
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   echo "ERROR: Target resolves to main worktree. Cannot clean up main."
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
   exit 1
 fi
 
@@ -128,6 +135,8 @@ CURRENT_BRANCH=$(git worktree list --porcelain | awk -v wt="$CURRENT_WORKTREE" '
 
 if [ -z "$CURRENT_BRANCH" ]; then
   echo "ERROR: '$CURRENT_WORKTREE' is not a registered git worktree"
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
   exit 1
 fi
 
@@ -548,9 +557,16 @@ else
 fi
 
 # Validation failures are reported loudly but never block cleanup — the merge is already
-# irreversible — so this stage still closes as "success" (the stage ran to completion); the
-# regression itself is visible in the VALIDATION=fail line printed above, not in telemetry.
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage validate-main --outcome success 2>/dev/null || true
+# irreversible. The stage's telemetry outcome reflects what validation actually found: a
+# real regression records as failure so it surfaces in analysis, while a pass (or a skip,
+# because no repo-cache.json existed to say what "green" means) records as success — the
+# overall command still completes as success either way since cleanup's own objectives
+# succeeded (see command-end below).
+if [ "${VALIDATION:-pass}" = "fail" ]; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage validate-main --outcome failure --failure-class other 2>/dev/null || true
+else
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage validate-main --outcome success 2>/dev/null || true
+fi
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage restack-children 2>/dev/null || echo unknown)
 ```
 
