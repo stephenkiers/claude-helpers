@@ -1,14 +1,14 @@
 ---
 name: merge-and-cleanup
-description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number, e.g. /merge-and-cleanup 1022.
-argument-hint: <PR number>
+description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
+argument-hint: <PR number | worktree path>
 allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*)
 model: haiku
 ---
 
 # Merge and Cleanup
 
-Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch.
+Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Accept either a PR number or a worktree path as input.
 
 **Why `model: haiku`:** every conditional branch here is a literal check against command
 output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
@@ -27,78 +27,162 @@ bounds the blast radius of a misjudgment to "the command halts," not "the wrong 
 
 ## Workflow
 
-### Phase 0 — Resolve the PR
+### Phase 0 — Resolve PR and worktree (path or PR-number input)
 
-Parse a bare integer from `$ARGUMENTS` (tolerate `1022`, `#1022`, `PR 1022`, or a URL). Then verify the PR exists and is open.
-
-```bash
-# Extract PR number: prefer a URL's /pull/<n> segment (a repo or org name earlier
-# in the URL could itself be numeric, so the naive "first digit run" is not safe
-# for URLs); fall back to the first digit run for the bare/#/PR-prefixed forms.
-PR_NUM=$(echo "$ARGUMENTS" | grep -oE 'pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
-if [ -z "$PR_NUM" ]; then
-  PR_NUM=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1)
-fi
-
-if [ -z "$PR_NUM" ]; then
-  echo "ERROR: No PR number found in '$ARGUMENTS'"
-  echo "Usage: /merge-and-cleanup 1022  (or #1022, PR 1022, or a URL)"
-  exit 1
-fi
-
-# Fetch PR details
-PR_DATA=$(gh pr view "$PR_NUM" --json headRefName,state,title,baseRefName)
-
-if [ -z "$PR_DATA" ]; then
-  echo "ERROR: PR #$PR_NUM not found or not accessible"
-  exit 1
-fi
-
-# Extract fields (printf, not echo — zsh echo can mangle backslash escapes in
-# piped JSON; see commit a96b06b's fix to shipit.md for the same bug class)
-HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
-PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
-PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
-
-if [ "$PR_STATE" != "OPEN" ]; then
-  echo "ERROR: PR #$PR_NUM is not open (state: $PR_STATE)"
-  exit 1
-fi
-
-echo "PR #$PR_NUM: $PR_TITLE"
-echo "Branch: $HEAD_REF"
-echo "PR_NUM=$PR_NUM"
-```
-
-### Phase 1 — Resolve branch → worktree
-
-Directory names lie and must never be matched. Example: a PR's branch might be `chore/1020-something` living in a worktree directory literally named `1020-something`, or `feature/coach-drop-sourcesdir-persistence` living in a directory named `coach-sources-dir-removal`. Match only the exact porcelain line from `git worktree list`.
+Accept either a worktree path or a PR number from `$ARGUMENTS`. Detect which via directory existence check: if `$ARGUMENTS` resolves to a directory, treat as path mode; otherwise parse as PR number. Both branches converge on identical `PR_NUM`, `HEAD_REF`, and `WT` values before Phase 2.
 
 ```bash
-# Resolve worktree from git worktree list using exact branch match
-WT=$(git worktree list --porcelain | awk -v b="refs/heads/$HEAD_REF" '
-  /^worktree /{w=$2} $0=="branch "b{print w; exit}')
+# DETECTION: Is $ARGUMENTS a directory (path mode) or a PR number (PR-number mode)?
+WT_CANDIDATE=$(cd "$ARGUMENTS" 2>/dev/null && pwd || echo "")
 
-if [ -z "$WT" ]; then
-  echo "ERROR: No local worktree found for branch $HEAD_REF"
-  exit 1
+if [ -n "$WT_CANDIDATE" ]; then
+  # PATH MODE: $ARGUMENTS resolves to an existing directory
+  WT="$WT_CANDIDATE"
+  
+  # Verify it's a real git worktree
+  if ! git -C "$WT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "ERROR: '$ARGUMENTS' is not a git worktree"
+    exit 1
+  fi
+  
+  # Ensure it's not the main worktree
+  MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+  if [ "$WT" = "$MAIN_WT" ]; then
+    echo "ERROR: Target worktree resolves to main. Cannot merge from main."
+    exit 1
+  fi
+  
+  # Resolve HEAD_REF from the current branch in the worktree
+  HEAD_REF=$(git -C "$WT" symbolic-ref --short -q HEAD 2>/dev/null || echo "")
+  # If detached, leave HEAD_REF empty — Phase 2 will catch it with its own error
+  
+  # Resolve PR_NUM via cache-first + gh fallback
+  CACHE_FILE="$WT/.claude/github-cache.json"
+  GITHUB_CACHE=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
+  PR_NUM=$(printf '%s' "$GITHUB_CACHE" | jq -r '.pr.number // "unset"' 2>/dev/null)
+  
+  if [ "$PR_NUM" = "unset" ] || [ -z "$PR_NUM" ]; then
+    # Cache miss — query GitHub
+    PR_DATA=$(cd "$WT" && gh pr view --json number,state,headRefName,title,baseRefName,url 2>/dev/null || echo "")
+    if [ -z "$PR_DATA" ]; then
+      echo "ERROR: No PR found for worktree $WT (no cached PR and none open on GitHub)"
+      exit 1
+    fi
+    
+    PR_NUM=$(printf '%s' "$PR_DATA" | jq -r '.number')
+    PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
+    PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
+    PR_URL=$(printf '%s' "$PR_DATA" | jq -r '.url')
+    
+    # Backfill the cache with PR data (temp-file-then-mv pattern to avoid truncation)
+    if [ ! -f "$CACHE_FILE" ]; then
+      printf '{}' > "$CACHE_FILE"
+    fi
+    EXISTING=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
+    TMP=$(mktemp "$WT/.claude/github-cache.json.XXXXXX")
+    if printf '%s' "$EXISTING" | jq \
+        --argjson number "$PR_NUM" \
+        --arg url "$PR_URL" \
+        --arg state "$PR_STATE" \
+        '. + {pr: {number: $number, url: $url, state: $state}}' > "$TMP"; then
+      mv "$TMP" "$CACHE_FILE"
+    else
+      rm -f "$TMP"
+      echo "WARNING: failed to update $CACHE_FILE (jq error); continuing without cache" >&2
+    fi
+  else
+    # Cache hit — fetch full PR details to verify state
+    PR_DATA=$(cd "$WT" && gh pr view "$PR_NUM" --json number,state,title,headRefName,baseRefName 2>/dev/null || echo "")
+    if [ -z "$PR_DATA" ]; then
+      echo "ERROR: PR #$PR_NUM not found or not accessible"
+      exit 1
+    fi
+    PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
+    PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
+  fi
+  
+  # Validate PR is open
+  if [ "$PR_STATE" != "OPEN" ]; then
+    echo "ERROR: PR #$PR_NUM is not open (state: $PR_STATE)"
+    exit 1
+  fi
+  
+  echo "PR #$PR_NUM: $PR_TITLE"
+  echo "Branch: $HEAD_REF"
+  echo "Resolved worktree: $WT"
+  echo "PR_NUM=$PR_NUM"
+  echo "WT=$WT"
+
+else
+  # PR-NUMBER MODE: $ARGUMENTS is not a directory; parse as PR number
+  
+  # Extract PR number: prefer a URL's /pull/<n> segment (a repo or org name earlier
+  # in the URL could itself be numeric, so the naive "first digit run" is not safe
+  # for URLs); fall back to the first digit run for the bare/#/PR-prefixed forms.
+  PR_NUM=$(echo "$ARGUMENTS" | grep -oE 'pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
+  if [ -z "$PR_NUM" ]; then
+    PR_NUM=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1)
+  fi
+  
+  if [ -z "$PR_NUM" ]; then
+    echo "ERROR: No PR number found in '$ARGUMENTS'"
+    echo "Usage: /merge-and-cleanup 1022  (or #1022, PR 1022, or a URL)"
+    exit 1
+  fi
+  
+  # Fetch PR details
+  PR_DATA=$(gh pr view "$PR_NUM" --json headRefName,state,title,baseRefName)
+  
+  if [ -z "$PR_DATA" ]; then
+    echo "ERROR: PR #$PR_NUM not found or not accessible"
+    exit 1
+  fi
+  
+  # Extract fields (printf, not echo — zsh echo can mangle backslash escapes in
+  # piped JSON; see commit a96b06b's fix to shipit.md for the same bug class)
+  HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
+  PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
+  PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
+  
+  if [ "$PR_STATE" != "OPEN" ]; then
+    echo "ERROR: PR #$PR_NUM is not open (state: $PR_STATE)"
+    exit 1
+  fi
+  
+  echo "PR #$PR_NUM: $PR_TITLE"
+  echo "Branch: $HEAD_REF"
+  
+  # Resolve worktree from git worktree list using exact branch match.
+  # Directory names lie and must never be matched. Example: a PR's branch might be
+  # `chore/1020-something` living in a worktree directory literally named
+  # `1020-something`, or `feature/coach-drop-sourcesdir-persistence` living in a
+  # directory named `coach-sources-dir-removal`. Match only the exact porcelain line
+  # from `git worktree list`.
+  WT=$(git worktree list --porcelain | awk -v b="refs/heads/$HEAD_REF" '
+    /^worktree /{w=$2} $0=="branch "b{print w; exit}')
+  
+  if [ -z "$WT" ]; then
+    echo "ERROR: No local worktree found for branch $HEAD_REF"
+    exit 1
+  fi
+  
+  # Verify the worktree directory exists
+  if ! test -d "$WT"; then
+    echo "ERROR: Worktree path $WT does not exist (may have been pruned)"
+    exit 1
+  fi
+  
+  # Ensure it's not the main worktree
+  MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
+  if [ "$WT" = "$MAIN_WT" ]; then
+    echo "ERROR: Target worktree resolves to main. Cannot merge from main."
+    exit 1
+  fi
+  
+  echo "Resolved worktree: $WT"
+  echo "PR_NUM=$PR_NUM"
+  echo "WT=$WT"
 fi
-
-# Verify the worktree directory exists
-if ! test -d "$WT"; then
-  echo "ERROR: Worktree path $WT does not exist (may have been pruned)"
-  exit 1
-fi
-
-# Ensure it's not the main worktree
-MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-if [ "$WT" = "$MAIN_WT" ]; then
-  echo "ERROR: Target worktree resolves to main. Cannot merge from main."
-  exit 1
-fi
-
-echo "Resolved worktree: $WT"
-echo "WT=$WT"
 ```
 
 ### Phase 2 — Push gate (the one hard stop)
