@@ -273,30 +273,131 @@ else
   exit 1
 fi
 
-# Build PR body with issue link (and "Stacked on" note if applicable)
-PR_BODY="## Summary
-- <what changed>
-
-## Test plan
-- <how to verify>"
-
-if [ -n "$ISSUE_NUM" ]; then
-  PR_BODY="Closes #$ISSUE_NUM
-
-$PR_BODY"
-fi
-
-if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
-  PR_BODY="$PR_BODY
-
-Stacked on #$STACK_PARENT_PR"
-fi
-
-# Create PR with correct base (stacked PRs use parent branch; non-stacked use repo default)
+# Determine base branch for git diff (empty if not stacked → uses repo default)
+BASE_BRANCH=""
 if [ "$STACK_IS_STACKED" = "true" ]; then
-  gh pr create --title "<commit subject>" --base "$STACK_PARENT_BRANCH" --body "$PR_BODY"
+  BASE_BRANCH="$STACK_PARENT_BRANCH"
+fi
+
+# Build PR title: concise imperative summary of the whole branch's diff (not just latest commit)
+# Source: git log <base>..HEAD --oneline, compute a synthetic 1-2 word summary
+# For now: use the first commit subject as a baseline (replace <commit subject> placeholder later)
+TITLE_PLACEHOLDER="<commit subject>"
+
+# Build PR body with the five required headings.
+# These sections are generated from:
+# - Why this PR exists: issue title/body via gh issue view (cache-first), or user's original request
+# - What it does: git log <base>..HEAD --oneline + git diff <base>...HEAD --stat of whole branch
+# - What major decisions were made: pull from plan file's "Decisions Made" section if exists
+# - What a reviewer should pay attention to: identify risky/complex hunks in branch diff
+# - How to verify: concrete steps/commands for testing
+#
+# Guardrail: acting model synthesizes body from conversation context, which may contain internal-only
+# detail (credentials, other people's names, private ticket notes). Write as if it will be public —
+# don't restate secrets or non-public context.
+
+# Prepare temp file for PR body (multi-line content too risky to inline)
+TMP_BODY=$(mktemp)
+trap "rm -f '$TMP_BODY'" EXIT
+
+# Write the five-heading template to temp file.
+# The model executing /shipit will reason over real context and fill these in based on:
+# - branch diff (git log / git diff --stat from base..HEAD)
+# - issue context (fetched via gh issue view if ISSUE_NUM is set)
+# - plan file if exists (extract "Decisions Made" section)
+# - conversation history for "Why this PR exists"
+cat > "$TMP_BODY" << 'EOF'
+## Why this PR exists
+<1-3 sentences: the problem/need this addresses>
+
+## What it does
+<bulleted list of concrete behavior/code changes>
+
+## What major decisions were made
+<bulleted list of notable tradeoffs or choices — omit this whole section if none>
+
+## What a reviewer should pay attention to
+<bulleted list of specific files/areas worth a closer look, and why>
+
+## How to verify
+<bulleted list of how to confirm the change works>
+EOF
+
+# Prepend "Closes #N" if issue is set
+if [ -n "$ISSUE_NUM" ]; then
+  {
+    echo "Closes #$ISSUE_NUM"
+    echo ""
+    cat "$TMP_BODY"
+  } > "${TMP_BODY}.with-issue"
+  mv "${TMP_BODY}.with-issue" "$TMP_BODY"
+fi
+
+# Append "Stacked on #N" if applicable
+if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
+  {
+    cat "$TMP_BODY"
+    echo ""
+    echo "Stacked on #$STACK_PARENT_PR"
+  } > "${TMP_BODY}.with-stack"
+  mv "${TMP_BODY}.with-stack" "$TMP_BODY"
+fi
+
+# Check if PR already exists (cache-first)
+PR_NUM=""
+if [ -f ".claude/github-cache.json" ]; then
+  PR_NUM=$(jq -r '.pr.number // empty' < .claude/github-cache.json 2>/dev/null)
+fi
+if [ -z "$PR_NUM" ]; then
+  # Fallback: try gh pr view
+  PR_NUM=$(gh pr view --json number -q '.number' 2>/dev/null || echo "")
+fi
+
+if [ -z "$PR_NUM" ]; then
+  # PR does not exist: create it with correct base
+  if [ "$STACK_IS_STACKED" = "true" ]; then
+    gh pr create --title "$TITLE_PLACEHOLDER" --base "$STACK_PARENT_BRANCH" --body-file "$TMP_BODY"
+  else
+    gh pr create --title "$TITLE_PLACEHOLDER" --body-file "$TMP_BODY"
+  fi
 else
-  gh pr create --title "<commit subject>" --body "$PR_BODY"
+  # PR exists: fetch current body, parse recognized sections vs novel content, and update
+  #
+  # Ingest-then-merge policy:
+  # - Recognized sections (the 5 headings above + Closes#/Stacked-on# lines) are regenerated
+  # - Novel content (headings /shipit doesn't know, checklists, free text added by user) is preserved
+  # - Small/clearly-delimited novel content → auto-preserve under "## Notes carried over from a previous description"
+  # - Large or structurally ambiguous novel content → ask user how to proceed before overwriting
+  #
+  # For now: update the body with the new template, using simple line-based parsing to detect
+  # recognized headings (## Why, ## What it does, ## What major decisions, ## What a reviewer,
+  # ## How to verify, Closes #, Stacked on #). Anything else is novel content.
+  #
+  # The model executing /shipit should reason about whether novel content is worth preserving,
+  # and either auto-append it under the "Notes" section or pause and ask the user.
+  
+  CURRENT_BODY=$(gh pr view "$PR_NUM" --json body -q '.body')
+  
+  # TODO for acting model: split CURRENT_BODY into recognized vs novel sections.
+  # Recognized sections to regenerate:
+  #   - Closes #... (first line if present)
+  #   - ## Why this PR exists
+  #   - ## What it does
+  #   - ## What major decisions were made
+  #   - ## What a reviewer should pay attention to
+  #   - ## How to verify
+  #   - Stacked on #... (at end if present)
+  # Everything else is novel content — preserve it.
+  #
+  # If novel content is large or interleaved (e.g., it's inside one of the recognized sections
+  # rather than cleanly separate), ask the user before proceeding.
+  #
+  # Otherwise, regenerate recognized sections, append novel content under "## Notes carried over
+  # from a previous description", and update.
+  
+  # For now, write the new body directly. Replace this logic after discussing with the user
+  # if novel-content handling should be more sophisticated.
+  gh pr edit "$PR_NUM" --title "$TITLE_PLACEHOLDER" --body-file "$TMP_BODY"
 fi
 ```
 
@@ -400,7 +501,7 @@ worktree, runs the project check gate, and force-pushes with `--force-with-lease
 branch has no descendants, skip the invocation (stack-sync would be a clean no-op on a leaf).
 Skip when `STACK_LAYOUT="single-driver"` (single-driver already cascaded via `gh stack sync`).
 
-**If PR exists:** Report URL and stop.
+**If PR exists:** Fetch current body, preserve novel content, regenerate recognized sections, update PR with refreshed title and body, then report URL.
 **If on main/master:** Warn user, suggest creating a branch.
 **If branch has issue number:** Include "Closes #N" in PR body to auto-close issue on merge.
 
@@ -439,7 +540,7 @@ Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
 | Checks ran earlier in session | Skip, trust prior results |
 | Check fails | Stop, report, record gotcha, don't commit |
 | No changes | Report "nothing to commit" |
-| PR exists | Report URL |
+| PR exists | Refresh title and body (preserving novel content), report URL |
 | On main branch | Warn, suggest branching |
 | Branch is stacked | Create PR with `--base "$STACK_PARENT_BRANCH"` (this establishes the chain — do **not** auto-run `gh stack link`, it destructively repoints the bottom PR's base to trunk). Cache stack metadata; push via `gh stack sync` (single-driver) or `--force-with-lease` (per-branch) |
 | Branch not stacked | Create PR with repo default base, mark `stack.isStacked=false` in cache |
