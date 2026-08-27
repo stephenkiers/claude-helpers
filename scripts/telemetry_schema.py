@@ -224,8 +224,10 @@ def append_event(path: Path, event: dict) -> None:
         raise ValueError(f"Invalid telemetry event: {'; '.join(errors)}")
 
     path = Path(path)
+    parent_existed = path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    if not parent_existed:
+        os.chmod(path.parent, 0o700)
 
     # Open with os.open to use O_APPEND | O_CREAT atomically
     fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
