@@ -39,8 +39,8 @@ inferred as a zero-cost success. Today, `run-metrics.py diagnose` surfaces this 
 begin lowering the reported match rate (see "Telemetry Health Check" below) — it does not (yet)
 synthesize an `interrupted` outcome record for the orphaned begin. `outcome: {"status":
 "interrupted"}` is a value a writer can emit explicitly (e.g. a future crash-detection pass); a
-reader-side reconciliation step that retroactively marks stale begins as `interrupted` is not
-implemented in this phase.
+reader-side reconciliation step that retroactively marks stale begins as `interrupted` is
+deferred to a future phase.
 
 ## Field Reference
 
@@ -51,7 +51,7 @@ Every event emitted by `run-metrics.py` carries these fields:
 - `schema_version` (integer) — currently `1`
 - `event_type` (string) — one of the 8 types above
 - `timestamp` (ISO 8601 string) — UTC time the event was recorded
-- `session_id` (string) — session UUID or `"unknown"`
+- `session_id` (string) — session UUID or `"unknown"` (defaults from `CLAUDE_CODE_SESSION_ID` environment variable when not explicitly passed via CLI flag)
 - `turns` (integer or string) — number of conversation turns; defaults to literal string `"unknown"` when not captured
 - `elapsed_seconds` (integer or string) — wall-clock elapsed time; defaults to literal string `"unknown"` when not captured
 - `retries` (integer or string) — number of retries; defaults to literal string `"unknown"` when not captured
@@ -194,6 +194,28 @@ python3 scripts/run-metrics.py [--log PATH] stage-end \
 ```
 
 Default log path (no `--log` given): `~/.claude/telemetry/events.jsonl`.
+
+## Telemetry Call-Site Conventions
+
+Every telemetry call in command docs is non-fatal (stderr redirected, fallback provided) to ensure `run-metrics.py` failures never break the command itself. Two fallback patterns are used depending on call type:
+
+**`*-begin` calls (capturing output into a variable):** Use `|| echo unknown`
+
+```bash
+TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit 2>/dev/null || echo unknown)
+```
+
+The `*-begin` subcommands print a bare UUID to stdout. This UUID must be captured into a variable for later `*-end` calls to reference. If `run-metrics.py` fails or is missing, the variable needs *some* fallback value — `|| echo unknown` provides the literal string `"unknown"`, so downstream `*-end` calls that reference `$TELEMETRY_CMD_ID` don't fail with "unbound variable" errors.
+
+**`*-end` calls (not capturing output):** Use `|| true`
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" ... 2>/dev/null || true
+```
+
+The `*-end` subcommands print nothing to stdout — they only exit with status 0/1 to indicate success/failure. Since there's no output to capture, `|| true` just suppresses the non-zero exit status (if any) so it doesn't get treated as the bash block's own exit status and abort the command.
+
+Both patterns redirect stderr to `/dev/null` and pair with a shell operator (`||`) so the telemetry call is genuinely non-fatal: a missing or broken `run-metrics.py` (e.g., before `install.sh` has run) cannot break the command.
 
 ## Transcript Parsing (`claude-transcript-metrics.py`)
 

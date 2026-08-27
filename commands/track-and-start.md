@@ -32,8 +32,7 @@ Creates a GitHub issue (or local plan file) from the plan, generates a branch na
 ## Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail
-`/track-and-start`. Every call below is non-fatal (stderr redirected, `|| echo unknown` fallback
-so a missing/broken `run-metrics.py`, e.g. before `install.sh` has run, can't break this command):
+`/track-and-start`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
 
 ```bash
 TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command track-and-start 2>/dev/null || echo unknown)
@@ -412,7 +411,13 @@ Update the issue's body in `$CACHE_FILE` so future duplicate detection runs agai
 - Local caches updated
 ```
 
-**6. Call `ExitPlanMode`** — since the user is already in the correct worktree, they can approve the plan and begin implementing immediately. The plan file content is the new plan (it triggered `/track-and-start`).
+**6. Close telemetry and call `ExitPlanMode`:**
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command track-and-start --outcome success 2>/dev/null || true
+```
+
+Call `ExitPlanMode` — since the user is already in the correct worktree, they can approve the plan and begin implementing immediately. The plan file content is the new plan (it triggered `/track-and-start`).
 
 **Do NOT** proceed to Steps 5-9 after a successful pivot.
 
