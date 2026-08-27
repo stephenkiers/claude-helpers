@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for merge-and-cleanup command (feature #68).
+Test suite for merge-and-cleanup command (feature #68, updated for #92).
 
 These tests verify that `commands/merge-and-cleanup.md` correctly:
 1. Uses exact branch matching for worktree resolution (never substring-match)
@@ -11,6 +11,11 @@ These tests verify that `commands/merge-and-cleanup.md` correctly:
 6. Does not re-encode stack logic (per ADR-0011)
 7. Excludes destructive verbs from allowed-tools
 8. Guards gh pr merge to avoid double-merge after just merge
+9. Accepts either a PR number or worktree path as input
+10. Path mode: detects input type before PR-number parsing
+11. Path mode: reads cache before falling back to gh pr view
+12. Path mode: backfills cache using temp-file-then-mv pattern
+13. Path mode: errors on non-worktree or main-worktree paths
 
 Run with: python3 tests/test_merge_and_cleanup.py
 """
@@ -394,6 +399,185 @@ if phase0_idx >= 0:
               pull_match_idx < fallback_match.start(),
               "the pull/<n> pattern must be tried before the naive digit-run fallback, "
               "or a numeric org/repo segment earlier in a URL would be grabbed instead")
+
+print()
+
+# ============================================================================
+# TEST 10: Path-mode input detection precedes PR-number parsing
+# ============================================================================
+print("[Test 10] Path mode: input type detection before PR-number parsing")
+
+phase0_idx = get_line_index(MERGE, "Phase 0")
+t("Phase 0 heading found",
+  phase0_idx >= 0,
+  "could not find Phase 0 section")
+
+if phase0_idx >= 0:
+    phase0_start_idx = phase0_idx + 1
+    phase0_text = "\n".join(MERGE.split("\n")[phase0_start_idx:])
+    bash_match = re.search(r"```bash\n(.*?)\n```", phase0_text, re.DOTALL)
+    t("Phase 0 bash block found",
+      bash_match is not None,
+      "could not extract bash block from Phase 0")
+
+    if bash_match:
+        phase0_bash = bash_match.group(1)
+
+        # Should test if $ARGUMENTS is a directory using test -d or cd ... 2>/dev/null
+        has_path_detection = ('test -d "$ARGUMENTS"' in phase0_bash or
+                             'cd "$ARGUMENTS" 2>/dev/null' in phase0_bash)
+        t("Phase 0 detects path input (cd or test -d) before PR-number parsing",
+          has_path_detection,
+          "expected path detection (test -d or cd check) in Phase 0")
+
+        # The pull/ pattern match (PR parsing) should come after the path detection
+        # in the control flow (i.e., in an else branch or after the path branch)
+        pull_pattern_idx = phase0_bash.find("pull/[0-9]+")
+        path_detect_idx = phase0_bash.find("WT_CANDIDATE") if "WT_CANDIDATE" in phase0_bash else 0
+        if path_detect_idx >= 0 and pull_pattern_idx >= 0:
+            t("Path detection appears before PR-number parsing in the control flow",
+              path_detect_idx < pull_pattern_idx,
+              "path detection should precede PR-number regex parsing")
+
+print()
+
+# ============================================================================
+# TEST 11: Path mode reads cache before gh pr view fallback
+# ============================================================================
+print("[Test 11] Path mode: cache-first before gh pr view fallback")
+
+if phase0_idx >= 0:
+    phase0_start_idx = phase0_idx + 1
+    phase0_text = "\n".join(MERGE.split("\n")[phase0_start_idx:])
+    bash_match = re.search(r"```bash\n(.*?)\n```", phase0_text, re.DOTALL)
+
+    if bash_match:
+        phase0_bash = bash_match.group(1)
+
+        # Should read github-cache.json first
+        has_cache_read = "github-cache.json" in phase0_bash and "cat " in phase0_bash
+        t("Phase 0 path mode reads .claude/github-cache.json",
+          has_cache_read,
+          "expected 'cat' on github-cache.json in path-mode logic")
+
+        # Should use jq to extract .pr.number
+        has_cache_extract = ".pr.number" in phase0_bash and "jq" in phase0_bash
+        t("Phase 0 path mode extracts .pr.number from cache via jq",
+          has_cache_extract,
+          "expected 'jq .pr.number' to extract cached PR number")
+
+        # Should fall back to gh pr view if cache miss
+        has_gh_fallback = "gh pr view" in phase0_bash
+        t("Phase 0 path mode falls back to 'gh pr view' on cache miss",
+          has_gh_fallback,
+          "expected 'gh pr view' fallback when cache is missing")
+
+print()
+
+# ============================================================================
+# TEST 12: Path mode backfills cache using temp-file-then-mv pattern
+# ============================================================================
+print("[Test 12] Path mode: cache backfill uses temp-file-then-mv pattern")
+
+if phase0_idx >= 0:
+    phase0_start_idx = phase0_idx + 1
+    phase0_text = "\n".join(MERGE.split("\n")[phase0_start_idx:])
+    bash_match = re.search(r"```bash\n(.*?)\n```", phase0_text, re.DOTALL)
+
+    if bash_match:
+        phase0_bash = bash_match.group(1)
+
+        # Should use mktemp
+        has_mktemp = "mktemp" in phase0_bash
+        t("Phase 0 path mode uses mktemp for temp file",
+          has_mktemp,
+          "expected 'mktemp' to create a temp file for cache write")
+
+        # Should use jq to merge cache
+        has_jq_merge = "jq" in phase0_bash and ("--argjson" in phase0_bash or "--arg" in phase0_bash)
+        t("Phase 0 path mode uses jq to merge PR data into cache",
+          has_jq_merge,
+          "expected 'jq --arg...' to merge cache entries")
+
+        # Should use mv to atomically replace the cache
+        has_atomic_mv = '"$TMP"' in phase0_bash and 'mv "$TMP"' in phase0_bash
+        t("Phase 0 path mode uses mv to atomically replace cache file",
+          has_atomic_mv,
+          "expected 'mv \"$TMP\" ...cache.json' for atomic write")
+
+        # Should NOT have bare > redirect to github-cache.json (which would truncate)
+        bare_redirect = bool(re.search(r'>\s*"\$.*?github-cache\.json"', phase0_bash))
+        t("Phase 0 path mode does NOT use bare > redirect to cache file",
+          not bare_redirect,
+          "bare redirect would truncate cache; must use temp-file-then-mv pattern")
+
+print()
+
+# ============================================================================
+# TEST 13: Path mode errors on non-worktree or main-worktree
+# ============================================================================
+print("[Test 13] Path mode: error paths for non-worktree and main-worktree")
+
+if phase0_idx >= 0:
+    phase0_start_idx = phase0_idx + 1
+    phase0_text = "\n".join(MERGE.split("\n")[phase0_start_idx:])
+    bash_match = re.search(r"```bash\n(.*?)\n```", phase0_text, re.DOTALL)
+
+    if bash_match:
+        phase0_bash = bash_match.group(1)
+
+        # Should check git rev-parse --is-inside-work-tree
+        has_worktree_check = "rev-parse" in phase0_bash and "is-inside-work-tree" in phase0_bash
+        t("Phase 0 path mode checks for git worktree validity",
+          has_worktree_check,
+          "expected 'git rev-parse --is-inside-work-tree' check")
+
+        # Should error on non-worktree
+        has_non_wt_error = 'ERROR' in phase0_bash and ('not a git worktree' in phase0_bash or 'is not a git worktree' in phase0_bash)
+        t("Phase 0 path mode has ERROR for non-worktree path",
+          has_non_wt_error,
+          "expected ERROR message when path is not a git worktree")
+
+        # Should check against MAIN_WT
+        has_main_wt_check = "MAIN_WT" in phase0_bash and "=" in phase0_bash
+        t("Phase 0 path mode checks against main worktree",
+          has_main_wt_check,
+          "expected MAIN_WT comparison to reject main worktree")
+
+        # Should error on main-worktree resolution
+        has_main_error = ("Cannot merge from main" in phase0_bash or "resolves to main" in phase0_bash)
+        t("Phase 0 path mode has ERROR when resolving to main",
+          has_main_error,
+          "expected ERROR message when path resolves to main worktree")
+
+print()
+
+# ============================================================================
+# TEST 14: Both input modes converge on identical output before Phase 2
+# ============================================================================
+print("[Test 14] Both input modes output PR_NUM and WT before Phase 2")
+
+if phase0_idx >= 0:
+    phase0_start_idx = phase0_idx + 1
+    phase0_text = "\n".join(MERGE.split("\n")[phase0_start_idx:])
+    bash_match = re.search(r"```bash\n(.*?)\n```", phase0_text, re.DOTALL)
+
+    if bash_match:
+        phase0_bash = bash_match.group(1)
+
+        # Both branches should emit PR_NUM=... and WT=...
+        pr_num_output_count = phase0_bash.count('echo "PR_NUM=$PR_NUM"')
+        wt_output_count = phase0_bash.count('echo "WT=$WT"')
+
+        # We expect these to appear once at the end of each branch, so they should
+        # appear at least once in the whole block (could be more if emitted by both branches)
+        t("Phase 0 emits PR_NUM= for variable export",
+          'PR_NUM=' in phase0_bash,
+          "expected 'PR_NUM=...' output for variable export to Phase 2")
+
+        t("Phase 0 emits WT= for variable export",
+          'WT=' in phase0_bash,
+          "expected 'WT=...' output for variable export to Phase 2")
 
 print()
 h.summarize_and_exit()
