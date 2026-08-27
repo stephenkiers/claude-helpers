@@ -338,18 +338,50 @@ def test_field_truncation_agent_type():
         return True, ""
 
 
-def test_diagnose_excludes_unknown_as_correlation_id():
-    """diagnose excludes literal 'unknown' string as a correlation ID."""
+def test_repo_field_derived_correctly_from_cwd():
+    """repo field is derived correctly from cwd (basename without trailing slashes)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
 
-        # Write two events with session_id="unknown" (unrelated)
+        # Test case: cwd="/foo/bar" should produce repo="bar"
+        payload = json.dumps({
+            "session_id": "s1",
+            "cwd": "/foo/bar"
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "session-begin"],
+            stdin_text=payload,
+        )
+
+        if code != 0:
+            return False, f"session-begin failed: {stderr}"
+
+        # Read the event from the log
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        written_repo = event.get("repo", "")
+        if written_repo != "bar":
+            return False, f"repo should be 'bar', got '{written_repo}'"
+
+        return True, ""
+
+
+def test_diagnose_excludes_unknown_as_correlation_id():
+    """diagnose excludes command_id="unknown" from pairing; only pairs valid command IDs."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+
+        # Write mixed events: one valid command pair (c1) and one invalid pair (unknown)
+        # Only the valid pair should be counted in match rate
         events = [
+            # Valid pair: c1 begin and end
             {
                 "schema_version": 1,
                 "event_type": "command.begin",
                 "timestamp": "2026-08-26T12:00:00Z",
-                "session_id": "unknown",
+                "session_id": "s1",
                 "command_id": "c1",
                 "command": "test1",
                 "turns": "unknown",
@@ -363,8 +395,37 @@ def test_diagnose_excludes_unknown_as_correlation_id():
                 "schema_version": 1,
                 "event_type": "command.end",
                 "timestamp": "2026-08-26T12:00:10Z",
-                "session_id": "unknown",
-                "command_id": "c_different",  # Different command
+                "session_id": "s1",
+                "command_id": "c1",
+                "outcome": {"status": "success"},
+                "turns": "unknown",
+                "elapsed_seconds": "unknown",
+                "retries": "unknown",
+                "peak_concurrency": "unknown",
+                "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            # Invalid pair: "unknown" command_id (should be filtered out and not counted)
+            {
+                "schema_version": 1,
+                "event_type": "command.begin",
+                "timestamp": "2026-08-26T12:00:20Z",
+                "session_id": "s1",
+                "command_id": "unknown",
+                "command": "test2",
+                "turns": "unknown",
+                "elapsed_seconds": "unknown",
+                "retries": "unknown",
+                "peak_concurrency": "unknown",
+                "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                "schema_version": 1,
+                "event_type": "command.end",
+                "timestamp": "2026-08-26T12:00:30Z",
+                "session_id": "s1",
+                "command_id": "unknown",
                 "outcome": {"status": "success"},
                 "turns": "unknown",
                 "elapsed_seconds": "unknown",
@@ -383,14 +444,17 @@ def test_diagnose_excludes_unknown_as_correlation_id():
             ["--log", str(log_path), "diagnose"]
         )
 
-        # Should show poor match rate (0/1 matched) since "unknown" isn't treated as a correlation ID
-        # The "unknown" session begin shouldn't be paired with the "unknown" session end
         if "Match rate" not in stdout:
             return False, f"diagnose output missing 'Match rate': {stdout}"
 
-        # The match should be 0% since "unknown" IDs don't match
-        if "100" in stdout:
-            return False, f"diagnose incorrectly shows high match rate when using 'unknown': {stdout}"
+        # With the fix, only the valid pair (c1) should be counted: 1 begin, 1 matched = 100% (1/1)
+        # Without the fix, both pairs would be counted: 2 begins, 2 matched = 100% (2/2)
+        # So we verify the output shows "1/1" not "2/2"
+        if "1/1" not in stdout:
+            return False, f"diagnose should show 1/1 matched; instead got: {stdout}"
+
+        if "2/2" in stdout:
+            return False, f"diagnose should NOT show 2/2 matched (unknown correlation IDs should be filtered); got: {stdout}"
 
         return True, ""
 
@@ -535,7 +599,13 @@ if __name__ == "__main__":
 
     print()
 
-    print("[Section 5] diagnose improvements")
+    print("[Section 5] repo field derivation")
+    passed, msg = test_repo_field_derived_correctly_from_cwd()
+    test_result("repo field derived correctly from cwd", passed, msg)
+
+    print()
+
+    print("[Section 6] diagnose improvements")
     passed, msg = test_diagnose_excludes_unknown_as_correlation_id()
     test_result("diagnose excludes 'unknown' as correlation ID", passed, msg)
 

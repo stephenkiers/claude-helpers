@@ -377,6 +377,8 @@ def cmd_diagnose(args):
         if not begin:
             continue
         stage_name = begin.get("stage", telemetry_schema.UNKNOWN)
+        if stage_name == telemetry_schema.UNKNOWN:
+            continue
         if stage_name not in stage_name_totals:
             stage_name_totals[stage_name] = [0, 0]
         stage_name_totals[stage_name][0] += 1
