@@ -232,7 +232,7 @@ def append_event(path: Path, event: dict) -> None:
     # Open with os.open to use O_APPEND | O_CREAT atomically
     fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
-        os.chmod(fd, 0o600)
+        os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             line = json.dumps(event, sort_keys=True) + "\n"

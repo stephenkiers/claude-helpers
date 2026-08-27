@@ -254,7 +254,11 @@ def cmd_stage_end(args):
 
 
 def cmd_diagnose(args):
-    """Read the log file, reconcile begin/end pairs, and report match rate and data quality."""
+    """Read the log file, reconcile begin/end pairs, and report match rate and data quality.
+
+    Stages/agents with an "unknown" id are excluded from match-rate accounting, and the
+    report includes a per-stage-name match-rate breakdown alongside the overall rate.
+    """
     log_path = Path(args.log)
 
     # Read all events from log

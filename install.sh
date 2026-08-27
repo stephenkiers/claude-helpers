@@ -117,7 +117,7 @@ if [ "$WITH_TELEMETRY" -eq 1 ]; then
                         ;;
                 esac
 
-                hook_command="python3 \$HOME/.claude/scripts/run-metrics.py $subcommand"
+                hook_command="python3 \$HOME/.claude/scripts/run-metrics.py $subcommand 2>/dev/null || true"
 
                 # Hooks live under the top-level "hooks" key; each event maps to an array of
                 # matcher groups, each with its own nested "hooks" array — this two-level nesting
@@ -149,7 +149,14 @@ if [ "$WITH_TELEMETRY" -eq 1 ]; then
         echo "Warning: jq not found; skipping telemetry hook registration (manual setup available in docs/metrics.md)" >&2
     fi
 else
-    echo "Telemetry hooks not registered (pass --with-telemetry to opt in; see docs/metrics.md)"
+    SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+    if command -v jq &> /dev/null && [ -e "$SETTINGS_FILE" ] && jq empty "$SETTINGS_FILE" 2>/dev/null && \
+        jq -e '[(.hooks.SessionStart // []), (.hooks.SessionEnd // []), (.hooks.SubagentStart // []), (.hooks.SubagentStop // [])] | flatten | any(.hooks[]?.command | test("run-metrics\\.py"))' \
+            "$SETTINGS_FILE" &> /dev/null; then
+        echo "Telemetry hooks already registered in $SETTINGS_FILE (pass --with-telemetry to re-check)"
+    else
+        echo "Telemetry hooks not registered (pass --with-telemetry to opt in; see docs/metrics.md)"
+    fi
 fi
 
 echo ""

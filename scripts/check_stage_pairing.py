@@ -149,6 +149,12 @@ def main():
     for finding in sorted(all_findings):
         print(finding)
 
+    print(
+        'Note: this linter has known blind spots (count mismatches, "${VAR}"/"$VAR" stage names, '
+        'and block-scoped-only leak detection) — see the module docstring for details.',
+        file=sys.stderr,
+    )
+
     # Exit code: 0 if no findings, 1 if any findings exist
     return 1 if all_findings else 0
 
