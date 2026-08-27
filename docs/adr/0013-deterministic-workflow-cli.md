@@ -114,4 +114,12 @@ Phase 2+ will wire Phases 1's read-only primitives into mutation planning:
 
 ## ADR-0013 Amendments
 
-(None yet. This section will record future changes to this decision.)
+### Amendment 1: Phase 2 scope and implementation details
+
+**Scope expanded:** `/merge-and-cleanup` is included in the deterministic workflow CLI alongside `/cleanup` (not originally in ADR text).
+
+**I/O contract (wrapper-CLI boundary):** All CLI operations output JSON to stdout via `json.dumps(dataclasses.asdict(...))`. The `.md` wrapper commands extract fields via `jq` invocations (one variable per `--arg`/`--argjson`, never interpolating a shell variable into a `--argjson` string literal — per CLAUDE.md's documented shell-injection safety constraint).
+
+**Forward compatibility implementation:** The plan/apply pattern realizes the "Forward compatibility" section (Consequences): `plan_*` reads repo state via Phase 1 primitives and returns a JSON plan with resolved state, freshness triple, and intended operations. `apply_*` validates freshness (Decision 2: all three of {expected HEAD SHA, cache content hash, branch name} must match current repo state or plan is rejected), then executes mutations. This separates read-only inspection from destructive operations, enabling safe re-planning if state changes.
+
+**Mutation allowlist mechanism:** `scripts/workflow/mutations.py` implements the centralized mutation funnel — `check_mutation_allowed(args)` rejects anything not in the exact-shape allowlist, replacing the Bash-tool-allowlist enforcement the `.md` docs previously relied on. The allowlist is data-driven (dict of subcommand → permitted argument shapes), and all git mutation functions in `git.py` (`remove_worktree`, `delete_branch`, `pull_ff_only`) must route through the funnel before calling `run_git_command`.

@@ -205,6 +205,16 @@ echo "Now in main worktree, safe to proceed"
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome success 2>/dev/null || true
+
+# Call plan_cleanup to capture check commands and freshness state for later apply
+PLAN_JSON=$(python3 -m scripts.workflow.cli cleanup plan "$CURRENT_WORKTREE")
+PLAN_RESULT=$?
+if [ $PLAN_RESULT -ne 0 ]; then
+  echo "ERROR: Failed to plan cleanup for $CURRENT_WORKTREE"
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
+fi
+
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage check-merge-status 2>/dev/null || echo unknown)
 ```
 
@@ -488,85 +498,32 @@ if [ -f "$PROJECT_ISSUES" ]; then
 fi
 ```
 
-### 2.5. Validate Merged Main (regression gate)
+### 2.5. Apply Cleanup (remove worktree, delete branch, validate)
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage check-merge-status --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage validate-main 2>/dev/null || echo unknown)
-```
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup 2>/dev/null || echo unknown)
 
-**Only when `PR_STATE = "MERGED"`.** For OPEN/CLOSED/NONE nothing is integrated
-into `main`, so skip validation with a note. We are already in `$MAIN_WORKTREE`
-(Step 1 switched there) — run everything from main, never touch the target worktree.
+# Apply the plan: executes pull main ff-only, validation checks, worktree removal, branch deletion
+APPLY_RESULT=$(echo "$PLAN_JSON" | python3 -m scripts.workflow.cli cleanup apply -)
+APPLY_RESULT_CODE=$?
 
-This catches regressions that only surface once the squash-merged PR lands
-alongside other merges. **Validation never blocks cleanup**: the merge is already
-irreversible, so a failure is reported loudly and we still remove the worktree.
-
-Validation uses the **same command set `/shipit` runs** — sourced from
-`.claude/repo-cache.json`, the single source of truth `/shipit` writes for this
-repo's checks (`just check`, `cargo test`, `make lint`, etc. are all just entries
-in it). `cleanup.md` is a global command, so it can't assume any particular tool;
-the cache (or, if absent, `CLAUDE.md`) is what tells us what "green" means here.
-
-```bash
-if [ "$PR_STATE" = "MERGED" ]; then
-  # 1. Update main to the merged commit (ff-only so cleanup never rewrites history)
-  git pull --ff-only origin main 2>&1 \
-    || echo "WARN: could not fast-forward main; validating current main state"
-
-  # 2. Discover the check commands the SAME way /shipit does: from repo-cache.json.
-  #    If it's missing we don't know what "green" means here, so we say so loudly
-  #    rather than silently passing.
-  REPO_CACHE=".claude/repo-cache.json"
-  if [ ! -f "$REPO_CACHE" ]; then
-    echo "VALIDATION=skipped — no $REPO_CACHE found."
-    echo "Run /shipit once (it writes the cache) or document the check commands in"
-    echo "CLAUDE.md, then validate main manually. Cleanup will continue."
-  else
-    # Build the command list in /shipit Step 3 order, skipping nulls. A composite
-    # `check` replaces separate lint+typecheck (same rule /shipit applies).
-    if [ -n "$(jq -r '.commands.check // empty' "$REPO_CACHE")" ]; then
-      ORDER='["format","check","vet","test","build"]'
-    else
-      ORDER='["format","lint","vet","typecheck","test","build"]'
-    fi
-    CMDS=$(jq -r --argjson order "$ORDER" '$order[] as $k | .commands[$k] // empty' "$REPO_CACHE")
-
-    # 3. Run each command. Warn-but-continue: a failure flags REGRESSION but the
-    #    non-zero exit must NEVER abort cleanup — the merge is already irreversible.
-    VALIDATION=pass
-    while IFS= read -r cmd; do
-      [ -z "$cmd" ] && continue
-      echo "Validating merged main: $cmd"
-      if ! eval "$cmd"; then
-        VALIDATION=fail
-        echo "FAILED: \`$cmd\` (main's integrated state after merging $CURRENT_BRANCH)"
-      fi
-    done <<< "$CMDS"
-
-    if [ "$VALIDATION" = "pass" ]; then
-      echo "VALIDATION=pass — merged main is green"
-    else
-      echo "VALIDATION=fail — REGRESSION on main; investigate separately."
-      echo "Cleanup will continue (PR already merged)."
-    fi
-  fi
-else
-  echo "PR not merged (PR_STATE=$PR_STATE) — skipping main validation (nothing integrated)"
+if [ $APPLY_RESULT_CODE -ne 0 ]; then
+  echo "ERROR: Failed to apply cleanup"
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
 fi
 
-# Validation failures are reported loudly but never block cleanup — the merge is already
-# irreversible. The stage's telemetry outcome reflects what validation actually found: a
-# real regression records as failure so it surfaces in analysis, while a pass (or a skip,
-# because no repo-cache.json existed to say what "green" means) records as success — the
-# overall command still completes as success either way since cleanup's own objectives
-# succeeded (see command-end below).
-if [ "${VALIDATION:-pass}" = "fail" ]; then
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage validate-main --outcome failure --failure-class other 2>/dev/null || true
+# Extract validation status from result
+VALIDATION_STATUS=$(echo "$APPLY_RESULT" | jq -r '.validation_passed // true')
+if [ "$VALIDATION_STATUS" = "true" ]; then
+  echo "VALIDATION=pass — merged main is green"
 else
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage validate-main --outcome success 2>/dev/null || true
+  echo "VALIDATION=fail — REGRESSION on main; investigate separately."
+  echo "Cleanup will continue (PR already merged, worktree removed)."
 fi
+
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup --outcome success 2>/dev/null || true
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage restack-children 2>/dev/null || echo unknown)
 ```
 
@@ -587,12 +544,6 @@ path (emit-only fallback — you run it yourself). The canonical restack block f
 
 ```bash
 if [ "$PR_STATE" = "MERGED" ]; then
-  # Run Stack Detection → Find children block from ~/.claude/prompts/worktree-reference.md
-  # This requires WORKTREE_PARENT (from Project Detection) and CURRENT_BRANCH
-  # Emits: CHILD_BRANCHES (newline-separated "branch:pr:worktree" records — worktree LAST so
-  #        `cut -d: -f3-` stays correct for paths containing ':'; branch names and PR numbers are
-  #        colon-free by git/GitHub rules), GH_CHILD_LOOKUP_FAILED (true when gh pr list errored)
-
   REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
   REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
   REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
@@ -601,43 +552,19 @@ if [ "$PR_STATE" = "MERGED" ]; then
   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
   [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
 
-  # Detect children — mirrors the canonical Find-children block (worktree-reference.md): cache scan
-  # UNION 'gh pr list' (both detectors always run; a cache hit can be stale and gh can miss children
-  # the cache knows about), deduped by branch, with a lookup-failure flag.
-  CHILD_BRANCHES=""
-  GH_CHILD_LOOKUP_FAILED=false
+  # Read stacked children from the plan (detected during plan_cleanup)
+  STACKED_CHILDREN=$(echo "$PLAN_JSON" | jq -r '.stacked_children // []')
+  CHILD_COUNT=$(echo "$STACKED_CHILDREN" | jq 'length')
+  GH_CHILD_LOOKUP_FAILED=$(echo "$PLAN_JSON" | jq -r '.gh_lookup_failed // false')
 
-  if [ -d "$WORKTREE_PARENT" ]; then
-    while IFS= read -r cache_file; do
-      [ ! -f "$cache_file" ] && continue
-      CACHED_PARENT=$(jq -r '.stack.parentBranch // empty' "$cache_file" 2>/dev/null)
-      if [ "$CACHED_PARENT" = "$CURRENT_BRANCH" ]; then
-        CHILD_WORKTREE=$(basename "$(dirname "$(dirname "$cache_file")")")
-        CHILD_BRANCH=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$CHILD_WORKTREE" '
-          /^worktree / { found=(substr($0, 10) == wt); next }   # match full path (handles spaces), reset per worktree
-          found && /^branch / { b=substr($0, 8); sub(/^refs\/heads\//, "", b); print b; exit }
-        ')
-        if [ -n "$CHILD_BRANCH" ]; then
-          CHILD_PR=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
-          CHILD_BRANCHES="${CHILD_BRANCHES}${CHILD_BRANCH}:${CHILD_PR}:${WORKTREE_PARENT}/${CHILD_WORKTREE}"$'\n'
-        fi
-      fi
-    done < <(find "$WORKTREE_PARENT" -maxdepth 3 -name "github-cache.json" 2>/dev/null)
+  # Build CHILD_BRANCHES in the same format as before: newline-separated "branch:pr:worktree" records
+  CHILD_BRANCHES=""
+  if [ "$CHILD_COUNT" -gt 0 ]; then
+    CHILD_BRANCHES=$(echo "$STACKED_CHILDREN" | jq -r '.[] | "\(.branch):\(.pr_number // ""):\(.worktree_path // "")"')
   fi
 
-  # Detector 2 — open PRs based on this branch. Always runs (union, not fallback); dedupe by branch.
-  if OPEN_PRS=$(gh pr list --base "$CURRENT_BRANCH" --state open --json number,headRefName -q '.[] | "\(.headRefName):\(.number):"' 2>/dev/null); then
-    while IFS= read -r PR_REC; do
-      [ -z "$PR_REC" ] && continue
-      PR_BRANCH=$(printf '%s' "$PR_REC" | cut -d: -f1)
-      if printf '%s' "$CHILD_BRANCHES" | awk -F: -v b="$PR_BRANCH" '$1==b {f=1} END {exit !f}'; then
-        continue   # already detected via cache
-      fi
-      CHILD_BRANCHES="${CHILD_BRANCHES}${PR_REC}"$'\n'
-    done <<< "$OPEN_PRS"
-  else
-    GH_CHILD_LOOKUP_FAILED=true
-    echo "  WARNING: 'gh pr list --base $CURRENT_BRANCH' failed — child detection may be incomplete"
+  if [ "$GH_CHILD_LOOKUP_FAILED" = "true" ]; then
+    echo "  WARNING: 'gh pr list' failed during detection — child detection may be incomplete"
   fi
 
   # If children found, capture the merged tip SHA and emit runbook
@@ -646,7 +573,10 @@ if [ "$PR_STATE" = "MERGED" ]; then
     echo "=== Stacked children detected — restack runbook ==="
     echo ""
 
-    MERGED_TIP=$(git rev-parse "$CURRENT_BRANCH" 2>/dev/null || echo "")
+    # Step 2.5's apply_cleanup already deleted the local $CURRENT_BRANCH ref, so a live
+    # `git rev-parse "$CURRENT_BRANCH"` here would fail — use the HEAD SHA plan_cleanup
+    # captured before any mutation ran instead.
+    MERGED_TIP=$(echo "$PLAN_JSON" | jq -r '.expected_head_sha // empty')
     if [ -z "$MERGED_TIP" ]; then
       echo "ERROR: Could not capture the merged branch tip SHA. Cannot emit safe restack runbook."
       echo "Please retry /cleanup after the branch is re-created or manually perform restack."
@@ -875,27 +805,20 @@ TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin 
 
 ### 3. Remove Worktree (from main)
 
-When PR_STATE is **MERGED**, use `git branch -D` (force delete). Squash merges mean the local
-branch commits never appear on main, so `git branch -d` will always fail with "not fully merged".
-Since we've already confirmed the PR was merged, `-D` is safe.
-
-When PR_STATE is anything else, use `git branch -d` (safe delete) and let it fail if not merged.
+**The non-graft path is already done.** Step 2.5's `apply_cleanup` call removed the worktree and
+deleted the branch (force `-D` when `PR_STATE=MERGED`, safe `-d` otherwise — the CLI's
+`cleanup.py` applies that same rule) as part of its plan/apply pattern; the CLI does not yet model
+graft-managed worktrees (`cleanup.py`'s `apply_cleanup` unconditionally calls plain `git worktree
+remove`, which is a no-op-with-warning on a path graft already detached). So this step now only
+has real work left for the graft case:
 
 ```bash
 if [ "$USE_GRAFT" = "true" ]; then
   graft rm "$GRAFT_WORKTREE_NAME" --force -r "$GRAFT_REPO_NAME" 2>/dev/null \
     || echo "Worktree already removed or graft rm failed"
+  # graft rm does not delete branches — apply_cleanup (Step 2.5) already did.
 else
-  git worktree remove "$CURRENT_WORKTREE" 2>/dev/null \
-    || echo "Worktree already removed or doesn't exist"
-  git worktree prune
-fi
-
-# Branch deletion — always needed (graft rm does NOT delete branches)
-if [ "$PR_STATE" = "MERGED" ]; then
-  git branch -D "$CURRENT_BRANCH" 2>/dev/null || echo "Branch already deleted"
-else
-  git branch -d "$CURRENT_BRANCH" 2>/dev/null || echo "Branch not deleted (not fully merged or already deleted)"
+  echo "Worktree and branch already removed by Step 2.5's apply_cleanup."
 fi
 
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage remove-worktree --outcome success 2>/dev/null || true

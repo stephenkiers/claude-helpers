@@ -124,10 +124,15 @@ class IssuesCacheData:
 
 @dataclass
 class RepoCacheData:
-    """Schema for .claude/repo-cache.json (future use; stubbed for Phase 1)."""
+    """Schema for .claude/repo-cache.json."""
     schema_version: str = REPO_CACHE_SCHEMA_VERSION
     repo_path: str = ""
     worktree_parent: str = ""
+    # /shipit writes one entry per check type (format/lint/check/vet/typecheck/test/build);
+    # a value of None means "not applicable to this project" (e.g. typecheck: null for Go) —
+    # distinct from the key being absent entirely, which the .get(...) call sites below
+    # already treat identically (both skip the command), so from_dict need not distinguish them.
+    commands: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -139,7 +144,8 @@ class RepoCacheData:
         return cls(
             schema_version=data.get("schema_version", REPO_CACHE_SCHEMA_VERSION),
             repo_path=data.get("repo_path", ""),
-            worktree_parent=data.get("worktree_parent", "")
+            worktree_parent=data.get("worktree_parent", ""),
+            commands=dict(data.get("commands") or {})
         )
 
 

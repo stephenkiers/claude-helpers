@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: <PR number | worktree path>
-allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*)
+allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*)
 model: haiku
 ---
 
@@ -27,219 +27,55 @@ bounds the blast radius of a misjudgment to "the command halts," not "the wrong 
 
 ## Workflow
 
-### Phase 0 — Resolve PR and worktree (path or PR-number input)
+### Phase 0 & 1 — Resolve PR, worktree, and run push gate
 
-Accept either a worktree path or a PR number from `$ARGUMENTS`. Detect which via directory existence check: if `$ARGUMENTS` resolves to a directory, treat as path mode; otherwise parse as PR number. An existing directory always wins — e.g. if a directory named `92` exists in the cwd, `/merge-and-cleanup 92` resolves it as a worktree path, not PR #92; disambiguate with `./92` vs a bare `92` if this ever collides. Both branches converge on identical `PR_NUM`, `HEAD_REF`, and `WT` values before Phase 2.
-
-```bash
-# DETECTION: Is $ARGUMENTS a directory (path mode) or a PR number (PR-number mode)?
-WT_CANDIDATE=$(cd "$ARGUMENTS" 2>/dev/null && pwd || echo "")
-
-if [ -n "$WT_CANDIDATE" ]; then
-  # PATH MODE: $ARGUMENTS resolves to an existing directory
-  WT="$WT_CANDIDATE"
-  
-  # Verify it's a real git worktree
-  if ! git -C "$WT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "ERROR: '$ARGUMENTS' is not a git worktree"
-    exit 1
-  fi
-  
-  # Ensure it's not the main worktree
-  MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-  if [ "$WT" = "$MAIN_WT" ]; then
-    echo "ERROR: Target worktree resolves to main. Cannot merge from main."
-    exit 1
-  fi
-  
-  # Resolve PR_NUM via cache-first + gh fallback
-  CACHE_FILE="$WT/.claude/github-cache.json"
-  GITHUB_CACHE=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
-  PR_NUM=$(printf '%s' "$GITHUB_CACHE" | jq -r '.pr.number // "unset"' 2>/dev/null)
-  
-  if [ "$PR_NUM" = "unset" ] || [ -z "$PR_NUM" ]; then
-    # Cache miss — query GitHub
-    PR_DATA=$(cd "$WT" && gh pr view --json number,state,headRefName,title,baseRefName,url 2>/dev/null || echo "")
-    if [ -z "$PR_DATA" ]; then
-      echo "ERROR: No PR found for worktree $WT (no cached PR and none open on GitHub)"
-      exit 1
-    fi
-    
-    PR_NUM=$(printf '%s' "$PR_DATA" | jq -r '.number')
-    PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
-    PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
-    PR_URL=$(printf '%s' "$PR_DATA" | jq -r '.url')
-    HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
-    
-    # Backfill the cache with PR data (temp-file-then-mv pattern to avoid truncation)
-    if [ ! -f "$CACHE_FILE" ]; then
-      printf '{}' > "$CACHE_FILE"
-    fi
-    EXISTING=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
-    TMP=$(mktemp "$WT/.claude/github-cache.json.XXXXXX")
-    if printf '%s' "$EXISTING" | jq \
-        --argjson number "$PR_NUM" \
-        --arg url "$PR_URL" \
-        --arg state "$PR_STATE" \
-        '. + {pr: {number: $number, url: $url, state: $state}}' > "$TMP"; then
-      mv "$TMP" "$CACHE_FILE"
-    else
-      rm -f "$TMP"
-      echo "WARNING: failed to update $CACHE_FILE (jq error); continuing without cache" >&2
-    fi
-  else
-    # Cache hit — fetch full PR details to verify state
-    PR_DATA=$(cd "$WT" && gh pr view "$PR_NUM" --json number,state,title,headRefName,baseRefName 2>/dev/null || echo "")
-    if [ -z "$PR_DATA" ]; then
-      echo "ERROR: PR #$PR_NUM not found or not accessible"
-      exit 1
-    fi
-    PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
-    PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
-    HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
-  fi
-  
-  # Validate PR is open
-  if [ "$PR_STATE" != "OPEN" ]; then
-    echo "ERROR: PR #$PR_NUM is not open (state: $PR_STATE)"
-    exit 1
-  fi
-  
-  echo "PR #$PR_NUM: $PR_TITLE"
-  echo "Branch: $HEAD_REF"
-  echo "Resolved worktree: $WT"
-  echo "PR_NUM=$PR_NUM"
-  echo "WT=$WT"
-
-else
-  # PR-NUMBER MODE: $ARGUMENTS is not a directory; parse as PR number
-  
-  # Extract PR number: prefer a URL's /pull/<n> segment (a repo or org name earlier
-  # in the URL could itself be numeric, so the naive "first digit run" is not safe
-  # for URLs); fall back to the first digit run for the bare/#/PR-prefixed forms.
-  PR_NUM=$(echo "$ARGUMENTS" | grep -oE 'pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
-  if [ -z "$PR_NUM" ]; then
-    PR_NUM=$(echo "$ARGUMENTS" | grep -oE '[0-9]+' | head -1)
-  fi
-  
-  if [ -z "$PR_NUM" ]; then
-    echo "ERROR: No PR number found in '$ARGUMENTS'"
-    echo "Usage: /merge-and-cleanup 1022  (or #1022, PR 1022, or a URL)"
-    exit 1
-  fi
-  
-  # Fetch PR details
-  PR_DATA=$(gh pr view "$PR_NUM" --json headRefName,state,title,baseRefName)
-  
-  if [ -z "$PR_DATA" ]; then
-    echo "ERROR: PR #$PR_NUM not found or not accessible"
-    exit 1
-  fi
-  
-  # Extract fields (printf, not echo — zsh echo can mangle backslash escapes in
-  # piped JSON; see commit a96b06b's fix to shipit.md for the same bug class)
-  HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
-  PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
-  PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
-  
-  if [ "$PR_STATE" != "OPEN" ]; then
-    echo "ERROR: PR #$PR_NUM is not open (state: $PR_STATE)"
-    exit 1
-  fi
-  
-  echo "PR #$PR_NUM: $PR_TITLE"
-  echo "Branch: $HEAD_REF"
-  
-  # Resolve worktree from git worktree list using exact branch match.
-  # Directory names lie and must never be matched. Example: a PR's branch might be
-  # `chore/1020-something` living in a worktree directory literally named
-  # `1020-something`, or `feature/coach-drop-sourcesdir-persistence` living in a
-  # directory named `coach-sources-dir-removal`. Match only the exact porcelain line
-  # from `git worktree list`.
-  WT=$(git worktree list --porcelain | awk -v b="refs/heads/$HEAD_REF" '
-    /^worktree /{w=$2} $0=="branch "b{print w; exit}')
-  
-  if [ -z "$WT" ]; then
-    echo "ERROR: No local worktree found for branch $HEAD_REF"
-    exit 1
-  fi
-  
-  # Verify the worktree directory exists
-  if ! test -d "$WT"; then
-    echo "ERROR: Worktree path $WT does not exist (may have been pruned)"
-    exit 1
-  fi
-  
-  # Ensure it's not the main worktree
-  MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
-  if [ "$WT" = "$MAIN_WT" ]; then
-    echo "ERROR: Target worktree resolves to main. Cannot merge from main."
-    exit 1
-  fi
-  
-  echo "Resolved worktree: $WT"
-  echo "PR_NUM=$PR_NUM"
-  echo "WT=$WT"
-fi
-```
-
-### Phase 2 — Push gate (the one hard stop)
-
-This is the "one hard-fail push gate" — if everything is pushed, later worktree removal in `/cleanup` cannot lose work. All checks run via `git -C "$WT"`. This gate never pushes or discards anything itself (no `git push` or destructive commands are in this command's `allowed-tools` — the user runs the recommended fix themselves and re-invokes).
-
-| Check | Detection | Recommendation |
-|---|---|---|
-| Detached HEAD | `symbolic-ref -q HEAD` fails | `git -C <wt> checkout <branch>` |
-| Uncommitted / untracked | `status --porcelain` non-empty | Show `--short`; commit or discard deliberately. Never auto-discard. |
-| No upstream | `rev-parse @{u}` fails | `git -C <wt> push -u origin <branch>` |
-| Unpushed commits | `rev-list @{u}.. --count` > 0 | Show `log @{u}.. --oneline`, then `git -C <wt> push` |
+Accept either a worktree path or a PR number from `$ARGUMENTS`. The plan resolves the PR/worktree and validates the push gate:
+- PR/worktree resolution (cache-first for path mode)
+- 4-check push gate: detached HEAD, uncommitted changes, no upstream, unpushed commits
 
 ```bash
-echo "=== Phase 2: Push Gate ==="
+# Call plan_merge to resolve PR/worktree and run push gate
+PLAN_JSON=$(python3 -m scripts.workflow.cli merge plan "$ARGUMENTS")
+PLAN_RESULT=$?
 
-# Fetch first so the @{u} comparisons below reflect the actual remote state,
-# not a stale local view of origin from before this session started.
-git -C "$WT" fetch origin "$HEAD_REF" 2>/dev/null || true
-
-# Check 1: Detached HEAD
-if ! git -C "$WT" symbolic-ref -q HEAD >/dev/null 2>&1; then
-  echo "ERROR: Detached HEAD in $WT"
-  echo "RECOMMENDATION: git -C $WT checkout $HEAD_REF"
+if [ $PLAN_RESULT -ne 0 ]; then
+  echo "ERROR: Failed to plan merge for '$ARGUMENTS'"
   exit 1
 fi
 
-# Check 2: Uncommitted / untracked changes
-DIRTY=$(git -C "$WT" status --porcelain)
-if [ -n "$DIRTY" ]; then
-  echo "ERROR: Uncommitted or untracked changes in $WT:"
-  git -C "$WT" status --short
-  echo "RECOMMENDATION: Commit or deliberately discard the changes, then re-invoke"
+# Extract resolved values
+PR_NUM=$(echo "$PLAN_JSON" | jq -r '.pr_number')
+HEAD_REF=$(echo "$PLAN_JSON" | jq -r '.head_ref')
+WT=$(echo "$PLAN_JSON" | jq -r '.target_worktree')
+
+# Check for push gate failures (blocking_failures is a list)
+BLOCKING=$(echo "$PLAN_JSON" | jq -r '.blocking_failures[]' 2>/dev/null)
+if [ -n "$BLOCKING" ]; then
+  echo "ERROR: Push gate failed:"
+  echo "$BLOCKING" | sed 's/^/  - /'
+  echo ""
+  echo "Recommendations:"
+  if echo "$BLOCKING" | grep -q "Detached HEAD"; then
+    echo "  - Detached HEAD: git -C $WT checkout $HEAD_REF"
+  fi
+  if echo "$BLOCKING" | grep -q "changes"; then
+    echo "  - Uncommitted changes: commit or discard, then re-invoke"
+  fi
+  if echo "$BLOCKING" | grep -q "upstream"; then
+    echo "  - No upstream: git -C $WT push -u origin $HEAD_REF"
+  fi
+  if echo "$BLOCKING" | grep -q "unpushed"; then
+    echo "  - Unpushed commits: git -C $WT push"
+  fi
   exit 1
 fi
 
-# Check 3: No upstream tracking branch
-if ! git -C "$WT" rev-parse "@{u}" >/dev/null 2>&1; then
-  echo "ERROR: Branch $HEAD_REF has no upstream tracking branch"
-  echo "RECOMMENDATION: git -C $WT push -u origin $HEAD_REF"
-  exit 1
-fi
-
-# Check 4: Unpushed commits — a failed rev-list must not be mistaken for "0 unpushed"
-if ! UNPUSHED_COUNT=$(git -C "$WT" rev-list "@{u}.." --count 2>&1); then
-  echo "ERROR: Could not determine unpushed commit count in $WT: $UNPUSHED_COUNT"
-  exit 1
-fi
-if [ "$UNPUSHED_COUNT" -gt 0 ]; then
-  echo "ERROR: $UNPUSHED_COUNT unpushed commits in $WT:"
-  git -C "$WT" log "@{u}.." --oneline
-  echo "RECOMMENDATION: git -C $WT push"
-  exit 1
-fi
-
+echo "PR #$PR_NUM: $HEAD_REF"
+echo "Resolved worktree: $WT"
 echo "✓ Push gate passed: branch is clean and fully pushed"
 ```
 
-### Phase 3 — Resolve and run the merge gate
+### Phase 3 — Run the merge gate
 
 Auto-detected, no config key (repo-cache.json is gitignored and per-worktree, so a `commands.merge` key would not persist to new worktrees — this mirrors the design in `prompts/shipit-reference.md`). Resolution order:
 
@@ -247,99 +83,27 @@ Auto-detected, no config key (repo-cache.json is gitignored and per-worktree, so
 2. Else read `.commands.check` from `$WT/.claude/repo-cache.json` via `jq`, then run `gh pr merge --squash`
 3. Else run `gh pr merge --squash` alone, with no gate — this is silent unless flagged, so every reach of this path prints a loud, distinct marker (`⚠️ merged with NO GATE`) rather than looking like a gated merge
 
-Run the actual merge-gate command in a **subshell**, never a bare `cd`, since `/cleanup` deletes this worktree directory shortly after and a lingering shell cwd inside it makes every later command fail with "Path does not exist":
-
 ```bash
 echo "=== Phase 3: Merge Gate ==="
 
-# Reentrancy guard: refuse a second concurrent/repeat invocation against the
-# same worktree while a prior run's lock is still present. The lock is not
-# removed on success (this worktree is about to be deleted by /cleanup
-# anyway) or on failure (a human should inspect before retrying) — clear it
-# manually with `mv` if you need to re-run after a failure.
-LOCK_FILE="$WT/.claude/.merge-and-cleanup.lock"
-if test -f "$LOCK_FILE"; then
-  echo "ERROR: Lock file $LOCK_FILE already exists — a merge-and-cleanup run may already be in progress or a prior run failed without cleanup."
-  echo "RECOMMENDATION: inspect the worktree, then 'mv $LOCK_FILE ${LOCK_FILE}.stale' to clear it before re-running."
+# Apply the merge plan (executes 3-path merge gate, writes cache on success)
+APPLY_RESULT=$(echo "$PLAN_JSON" | python3 -m scripts.workflow.cli merge apply -)
+APPLY_RESULT_CODE=$?
+
+if [ $APPLY_RESULT_CODE -ne 0 ]; then
+  echo "ERROR: Merge apply failed"
   exit 1
 fi
-printf 'PR #%s locked by merge-and-cleanup\n' "$PR_NUM" > "$LOCK_FILE"
 
-MERGE_GATE_USED=""
+# Extract results
+PR_MERGED=$(echo "$APPLY_RESULT" | jq -r '.pr_merged // false')
+MERGE_GATE_USED=$(echo "$APPLY_RESULT" | jq -r '.merge_gate_used // "unknown"')
 
-# Path 1: just merge (if recipe exists in target worktree). --summary lists
-# recipe names space-separated on one line; --list's output is human-oriented
-# columns and a plain "^merge" anchor never matches it.
-if [ -f "$WT/justfile" ] && just -f "$WT/justfile" --summary 2>/dev/null | tr ' ' '\n' | grep -qx merge; then
-  echo "Found 'just merge' recipe in $WT/justfile"
-  echo "(This may take many minutes if it invokes E2E build/test)"
-  if ( cd "$WT" && just merge ); then
-    MERGE_GATE_USED="just merge"
-    echo "✓ Merge succeeded via 'just merge'"
-  else
-    echo "ERROR: 'just merge' failed"
-    exit 1
-  fi
-fi
-
-# Path 2: check repo-cache.json for a check gate, then gh pr merge --squash
-if [ -z "$MERGE_GATE_USED" ]; then
-  REPO_CACHE="$WT/.claude/repo-cache.json"
-  if [ -f "$REPO_CACHE" ]; then
-    if ! jq -e . "$REPO_CACHE" >/dev/null 2>&1; then
-      echo "ERROR: $REPO_CACHE exists but could not be parsed as JSON"
-      exit 1
-    fi
-    CHECK_CMD=$(jq -r '.commands.check // empty' "$REPO_CACHE")
-    if [ -n "$CHECK_CMD" ]; then
-      echo "Found merge gate in repo-cache.json: $CHECK_CMD"
-      if ( cd "$WT" && eval "$CHECK_CMD" ); then
-        MERGE_GATE_USED="repo-cache check"
-        echo "✓ Merge gate passed"
-      else
-        echo "ERROR: Merge gate failed"
-        exit 1
-      fi
-    fi
-  fi
-fi
-
-# Path 3: plain gh pr merge --squash (no gate)
-if [ -z "$MERGE_GATE_USED" ]; then
-  echo "No merge gate found (no 'just merge' recipe and no repo-cache.json check)"
-  echo "⚠️  merged with NO GATE"
-  MERGE_GATE_USED="gh pr merge (no gate)"
-fi
-
-# Perform the actual merge — but only on paths 2/3. Path 1 ("just merge") already
-# IS the merge action; calling gh pr merge --squash again afterward would hit an
-# already-merged PR and fail, incorrectly halting a command that just succeeded.
-if [ "$MERGE_GATE_USED" = "just merge" ]; then
-  echo "✓ PR #$PR_NUM merged successfully via 'just merge'"
+if [ "$PR_MERGED" = "true" ]; then
+  echo "✓ PR #$PR_NUM merged successfully via $MERGE_GATE_USED"
 else
-  echo "Running: gh pr merge --squash $PR_NUM"
-  if MERGE_ERR=$(gh pr merge --squash "$PR_NUM" 2>&1); then
-    echo "✓ PR #$PR_NUM merged successfully"
-
-    # Both path 2 (gate-only) and path 3 (no gate) perform the merge here —
-    # write the cache on either success, not just the no-gate fallback.
-    CACHE_FILE="$WT/.claude/github-cache.json"
-    if [ ! -f "$CACHE_FILE" ]; then
-      printf '{}' > "$CACHE_FILE"
-    fi
-    if jq --arg state "MERGED" '.pr.state = $state' "$CACHE_FILE" > "$CACHE_FILE.tmp"; then
-      mv "$CACHE_FILE.tmp" "$CACHE_FILE"
-      echo "(Wrote .pr.state = MERGED to cache)"
-    else
-      echo "WARNING: failed to update $CACHE_FILE with merged state"
-      mv "$CACHE_FILE.tmp" "${CACHE_FILE}.failed" 2>/dev/null || true
-    fi
-  else
-    echo "ERROR: gh pr merge failed: $MERGE_ERR"
-    echo "$MERGE_ERR" | grep -qi "squash" && \
-      echo "NAMED ERROR: this repo may not allow squash merges — edit Phase 3's --squash flag to a merge method this repo allows."
-    exit 1
-  fi
+  echo "ERROR: PR merge result indicated failure"
+  exit 1
 fi
 ```
 

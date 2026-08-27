@@ -6,6 +6,8 @@ Phase 1: read-only only. Write/locking/atomic-rename in Phase 2+.
 
 import json
 import hashlib
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from .models import (
@@ -107,9 +109,55 @@ def hash_issues_cache_file(path: Path) -> Optional[str]:
 
 def write_cache(path: Path, data: Dict[str, Any]) -> Tuple[bool, Optional[Unknown]]:
     """
-    Write cache file atomically (stub for Phase 1).
+    Write cache file atomically with lock file serialization.
 
-    Decision 1: temp-file + os.replace() atomic rename, plus sidecar lock file.
-    TODO: Implement actual write path in Phase 2 when mutations begin.
+    Decision 1: temp-file + os.replace() atomic rename, plus sidecar lock file
+    to serialize concurrent writers. Lock is created with os.open(..., os.O_CREAT | os.O_EXCL)
+    for atomic create-if-absent. Returns (False, Unknown(...)) if lock already exists
+    rather than blocking.
+
+    On success or failure, cleans up temp file and lock file properly via try/finally.
     """
-    return False, Unknown("Cache write not implemented in Phase 1")
+    lock_path = path.with_suffix(path.suffix + ".lock")
+
+    try:
+        try:
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(lock_fd)
+        except FileExistsError:
+            return False, Unknown("cache locked by a concurrent writer")
+        except OSError as e:
+            return False, Unknown(f"Failed to create lock file: {e}")
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            fd, temp_path = tempfile.mkstemp(
+                suffix=".tmp",
+                prefix=f".{path.name}.",
+                dir=str(path.parent)
+            )
+            temp_file = Path(temp_path)
+
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f)
+
+                os.replace(str(temp_file), str(path))
+                return True, None
+
+            except Exception as e:
+                try:
+                    temp_file.unlink()
+                except OSError:
+                    pass
+                return False, Unknown(f"Failed to write cache: {e}")
+
+        finally:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+    except Exception as e:
+        return False, Unknown(f"Unexpected error in write_cache: {e}")

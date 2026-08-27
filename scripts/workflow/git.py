@@ -182,6 +182,16 @@ def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) 
         return {}
 
 
+def pr_list_json(base_branch: str, json_fields: List[str], cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Run 'gh pr list --base <base_branch> --state open --json <fields>' and return parsed JSON list."""
+    try:
+        args = ["pr", "list", "--base", base_branch, "--state", "open", "--json"] + json_fields
+        output = run_gh_command(args, cwd=cwd, check=False)
+        return json.loads(output) if output else []
+    except (json.JSONDecodeError, subprocess.CalledProcessError):
+        return []
+
+
 def ls_remote_exit_code(ref: str, cwd: Optional[Path] = None) -> int:
     """
     Check if a ref exists on origin via ls-remote.
@@ -192,3 +202,97 @@ def ls_remote_exit_code(ref: str, cwd: Optional[Path] = None) -> int:
         return 0
     except subprocess.CalledProcessError as e:
         return e.returncode
+
+
+def remove_worktree(path: Path, force: bool = False, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Remove a git worktree via the mutation funnel.
+
+    Args:
+        path: Path to the worktree to remove.
+        force: If True, use --force flag (git worktree remove --force).
+        cwd: Working directory for the git command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to remove worktree {path}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to remove worktree {path}: {e}")
+
+
+def delete_branch(name: str, force: bool = False, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Delete a git branch via the mutation funnel.
+
+    Args:
+        name: Branch name to delete.
+        force: If True, use -D flag (force delete); if False, use -d (safe delete).
+        cwd: Working directory for the git command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    flag = "-D" if force else "-d"
+    args = ["branch", flag, name]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to delete branch {name}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to delete branch {name}: {e}")
+
+
+def pull_ff_only(remote: str, branch: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Pull from remote branch with --ff-only flag via the mutation funnel.
+
+    Args:
+        remote: Remote name (e.g., "origin").
+        branch: Branch name to pull.
+        cwd: Working directory for the git command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["pull", "--ff-only", remote, branch]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to pull {remote} {branch}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to pull {remote} {branch}: {e}")
