@@ -123,11 +123,12 @@ if [ "$WITH_TELEMETRY" -eq 1 ]; then
                 # matcher groups, each with its own nested "hooks" array — this two-level nesting
                 # is Claude Code's actual hook config schema (confirmed by live-capturing a real
                 # SubagentStart/SubagentStop payload against this exact config shape).
-                # Check if this hook command already exists in the event's matcher groups.
-                if jq --arg event "$hook_event" --arg cmd "$hook_command" \
-                    '((.hooks[$event] // []) | any(.hooks[]?.command == $cmd))' \
+                # Check if a run-metrics.py hook for this subcommand already exists (pattern match,
+                # so it works even if old unguarded entries exist without the 2>/dev/null || true suffix).
+                if jq --arg event "$hook_event" --arg subcommand "$subcommand" \
+                    '((.hooks[$event] // []) | any(.hooks[]?.command | test("run-metrics\\.py.*" + $subcommand)))' \
                     "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
-                    # Hook already registered for this event
+                    # Hook already registered for this event/subcommand
                     continue
                 fi
 

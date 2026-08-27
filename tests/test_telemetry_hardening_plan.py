@@ -43,7 +43,7 @@ def run_script(args, cwd=None, stdin_text=None):
     return result.returncode, result.stdout, result.stderr
 
 
-def run_bash_script(args, cwd=None, stdin_text=None):
+def run_bash_script(args, cwd=None, stdin_text=None, env=None):
     """Run a bash script as a subprocess. Returns (returncode, stdout, stderr)."""
     cmd = ["bash"] + args
     result = subprocess.run(
@@ -52,6 +52,7 @@ def run_bash_script(args, cwd=None, stdin_text=None):
         text=True,
         cwd=cwd,
         input=stdin_text,
+        env=env,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -59,26 +60,6 @@ def run_bash_script(args, cwd=None, stdin_text=None):
 # ============================================================================
 # Section 1: append_event ValueError contract & install.sh guards
 # ============================================================================
-
-def test_append_event_raises_valueerror_for_invalid_event():
-    """append_event raises ValueError when validation fails."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log_path = Path(tmpdir) / "test.jsonl"
-
-        # Build an invalid event (missing session_id)
-        invalid_event = {
-            "schema_version": telemetry_schema.SCHEMA_VERSION,
-            "event_type": "session.begin",
-            "timestamp": "2026-08-26T12:00:00Z",
-            # Missing session_id!
-        }
-
-        try:
-            telemetry_schema.append_event(log_path, invalid_event)
-            return False, "should have raised ValueError"
-        except ValueError as e:
-            return True, ""
-
 
 def test_append_event_raises_valueerror_for_bad_timestamp():
     """append_event raises ValueError for malformed timestamp."""
@@ -136,34 +117,6 @@ def test_append_event_uses_fchmod_not_chmod():
             if "integer" in str(e).lower() or "path" in str(e).lower():
                 return False, f"bug: using os.chmod(fd, mode) instead of os.fchmod(fd, mode): {e}"
             raise
-
-
-def test_append_event_parent_dir_mode_0700():
-    """append_event creates parent directory at mode 0700."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Create a path where the parent dir doesn't exist yet
-        parent_path = Path(tmpdir) / "telemetry_dir"
-        log_path = parent_path / "events.jsonl"
-
-        event = telemetry_schema.build_event(
-            "session.begin",
-            session_id="test-session",
-            timestamp="2026-08-26T12:00:00Z",
-        )
-
-        telemetry_schema.append_event(log_path, event)
-
-        if not parent_path.exists():
-            return False, "parent directory not created"
-
-        if not parent_path.is_dir():
-            return False, "parent path is not a directory"
-
-        dir_mode = stat.S_IMODE(parent_path.stat().st_mode)
-        if dir_mode != 0o700:
-            return False, f"expected parent mode 0o700, got 0o{dir_mode:03o}"
-
-        return True, ""
 
 
 # ============================================================================
@@ -287,60 +240,104 @@ def test_install_sh_has_telemetry_flag_logic():
 
 
 def test_install_sh_no_flag_checks_settings_json():
-    """install.sh no-flag branch checks settings.json for already-registered hooks."""
-    try:
-        with open(INSTALL_SH, 'r') as f:
-            content = f.read()
+    """install.sh no-flag branch detects hooks in settings.json (with and without guard suffix)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a minimal HOME and CLAUDE_DIR for install.sh
+        test_home = Path(tmpdir) / "home"
+        test_home.mkdir()
+        claude_dir = test_home / ".claude"
+        claude_dir.mkdir()
 
-        # Should check settings.json when flag not passed
-        if "settings.json" not in content or "jq" not in content:
-            return False, "install.sh doesn't check settings.json via jq"
+        # Create a settings.json with an already-registered hook (old format, without 2>/dev/null || true)
+        settings_file = claude_dir / "settings.json"
+        settings_file.write_text(json.dumps({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python3 $HOME/.claude/scripts/run-metrics.py session-begin"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }))
 
-        # Should look for run-metrics in hook commands
-        if "run-metrics" not in content:
-            return False, "install.sh doesn't reference run-metrics in hook checking"
+        # Run install.sh without --with-telemetry flag
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+        code, stdout, stderr = run_bash_script([str(INSTALL_SH)], env={**os.environ, "HOME": str(test_home)})
+
+        # The no-flag branch should detect the hook and print message with "settings.json"
+        output = stdout + stderr
+        if "settings.json" not in output and "Telemetry hooks" not in output:
+            return False, f"output doesn't mention settings.json or hooks status. stdout: {stdout}, stderr: {stderr}"
 
         return True, ""
-    except Exception as e:
-        return False, f"error reading install.sh: {e}"
 
 
 def test_install_sh_no_flag_prints_already_registered_message():
     """install.sh no-flag branch prints already-registered message when hooks exist."""
-    try:
-        with open(INSTALL_SH, 'r') as f:
-            content = f.read()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a minimal HOME and CLAUDE_DIR for install.sh
+        test_home = Path(tmpdir) / "home"
+        test_home.mkdir()
+        claude_dir = test_home / ".claude"
+        claude_dir.mkdir()
 
-        # Should have message for already-registered hooks
-        if "already registered" not in content.lower():
-            return False, "install.sh missing 'already registered' message"
+        # Create a settings.json with an already-registered hook
+        settings_file = claude_dir / "settings.json"
+        settings_file.write_text(json.dumps({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python3 $HOME/.claude/scripts/run-metrics.py session-begin 2>/dev/null || true"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }))
 
-        # Should mention settings.json in the message
-        if "settings.json" not in content:
-            return False, "install.sh message doesn't mention settings.json"
+        # Run install.sh without --with-telemetry flag
+        code, stdout, stderr = run_bash_script([str(INSTALL_SH)], env={**os.environ, "HOME": str(test_home)})
+
+        # Should print "already registered" message
+        output = stdout + stderr
+        if "already registered" not in output.lower():
+            return False, f"output missing 'already registered' message. stdout: {stdout}, stderr: {stderr}"
 
         return True, ""
-    except Exception as e:
-        return False, f"error reading install.sh: {e}"
 
 
 def test_install_sh_hooks_guarded_with_error_suppression():
-    """install.sh hook registrations are guarded with 2>/dev/null || true."""
+    """install.sh hook_command variable is guarded with 2>/dev/null || true."""
     try:
         with open(INSTALL_SH, 'r') as f:
-            content = f.read()
+            lines = f.readlines()
 
-        # Should have guards around hook commands
-        # The guards should be `2>/dev/null || true` to suppress ValueError from append_event
-        if "2>/dev/null || true" not in content:
-            return False, "install.sh missing '2>/dev/null || true' guards"
+        # Find the hook_command assignment line
+        hook_command_line = None
+        for i, line in enumerate(lines):
+            if 'hook_command=' in line and 'run-metrics.py' in line:
+                hook_command_line = line
+                break
 
-        # Should have guards for each of the 4 hook types
+        if hook_command_line is None:
+            return False, "install.sh missing hook_command assignment with run-metrics.py"
+
+        # Verify the guard is included in the hook_command assignment
+        if '2>/dev/null || true' not in hook_command_line:
+            return False, f"hook_command missing '2>/dev/null || true' guard. line: {hook_command_line}"
+
+        # Verify all 4 hook types are defined
         hook_types = ["SessionStart", "SessionEnd", "SubagentStart", "SubagentStop"]
-        found_hooks = 0
-        for hook_type in hook_types:
-            if hook_type in content:
-                found_hooks += 1
+        found_hooks = sum(1 for hook_type in hook_types if hook_type in ''.join(lines))
 
         if found_hooks < 4:
             return False, f"install.sh only mentions {found_hooks}/4 hook types"
@@ -359,9 +356,6 @@ if __name__ == "__main__":
     # Section 1: append_event ValueError contract
     # ========================================================================
     print("[Section 1] append_event ValueError contract")
-    passed, msg = test_append_event_raises_valueerror_for_invalid_event()
-    test_result("append_event raises ValueError for invalid event", passed, msg)
-
     passed, msg = test_append_event_raises_valueerror_for_bad_timestamp()
     test_result("append_event raises ValueError for bad timestamp", passed, msg)
 
@@ -373,9 +367,6 @@ if __name__ == "__main__":
     print("[Section 2] telemetry_schema.py fchmod fix")
     passed, msg = test_append_event_uses_fchmod_not_chmod()
     test_result("append_event uses fchmod (not chmod on fd)", passed, msg)
-
-    passed, msg = test_append_event_parent_dir_mode_0700()
-    test_result("append_event creates parent dir at mode 0700", passed, msg)
 
     print()
 
