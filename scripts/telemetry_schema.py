@@ -216,13 +216,21 @@ def append_event(path: Path, event: dict) -> None:
     """Atomically append an event (as JSON on one line) to the log file.
 
     Creates parent directories if missing. Uses fcntl.flock for atomic writes.
+    Raises ValueError if the event fails validate_event().
     """
+    # Validate event before any I/O
+    errors = validate_event(event)
+    if errors:
+        raise ValueError(f"Invalid telemetry event: {'; '.join(errors)}")
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
 
     # Open with os.open to use O_APPEND | O_CREAT atomically
-    fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
+        os.chmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             line = json.dumps(event, sort_keys=True) + "\n"
