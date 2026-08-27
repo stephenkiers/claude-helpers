@@ -1,13 +1,14 @@
 ---
 name: shipit
-description: Use when user says "/shipit", "ship it", "commit and pr", "create pr", or wants to commit changes and create a pull request. Detects tooling, runs CI checks locally, creates a minimal commit, and opens a PR.
+description: Use when user says "/shipit", "ship it", "commit and pr", "create pr", or wants to commit changes and create a pull request. Detects tooling, runs CI checks locally, creates a minimal commit, and creates or refreshes the PR.
 model: haiku
 ---
 
 # Shipit
 
-Run CI checks, commit, and open PR. For edge cases and maintenance, read
-`~/.claude/prompts/shipit-reference.md`.
+Run CI checks, commit, and create or refresh the PR — every run regenerates the title and body
+from the whole branch, and refreshing an already-open PR is normal, ongoing behavior, not an edge
+case. For edge cases and maintenance, read `~/.claude/prompts/shipit-reference.md`.
 
 ## 0. Telemetry: mark command start
 
@@ -317,11 +318,16 @@ as if it will be public — don't restate secrets or non-public context.
 # Prepare temp file for PR body (multi-line content too risky to inline)
 TMP_BODY=$(mktemp)
 trap "rm -f '$TMP_BODY'" EXIT
+```
 
-# Write the five-heading template below, replacing each bracketed placeholder with the real
-# content you just reasoned out above. Omit the "What major decisions were made" heading entirely
-# if there were none — do not leave a heading with an empty or "None" body.
-cat > "$TMP_BODY" << 'EOF'
+**The block below is a shape to fill in, not a command to run verbatim.** Do not execute the
+`cat > "$TMP_BODY"` heredoc as written — its bracketed placeholders are not real content. Instead,
+write `$TMP_BODY` yourself (e.g. with the Write tool, or your own heredoc with the placeholders
+replaced) using the five headings in this exact order, each followed by the real content you
+reasoned out above. Omit the "What major decisions were made" heading entirely if there were
+none — do not leave a heading with an empty or "None" body.
+
+```
 ## Why this PR exists
 <1-3 sentences: the problem/need this addresses>
 
@@ -336,8 +342,11 @@ cat > "$TMP_BODY" << 'EOF'
 
 ## How to verify
 <bulleted list of how to confirm the change works>
-EOF
+```
 
+Once you've written that real content to `$TMP_BODY`, continue:
+
+```bash
 # Prepend "Closes #N" if issue is set
 if [ -n "$ISSUE_NUM" ]; then
   {
