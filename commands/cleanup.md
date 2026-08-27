@@ -50,6 +50,18 @@ but always stay in (or switch to) main. Never cd into the target worktree.
 
 ## Workflow
 
+### 0. Telemetry: mark command start
+
+Telemetry is local, observational, and best-effort — it must never block or fail `/cleanup`.
+Every call below is non-fatal (stderr redirected, `|| echo unknown` fallback so a missing/broken
+`run-metrics.py`, e.g. before `install.sh` has run, can't break this command):
+
+```bash
+TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup 2>/dev/null || echo unknown)
+```
+
+Reuse `$TELEMETRY_CMD_ID` for every `stage-begin`/`stage-end`/`command-end` call that follows.
+
 ### 1. Resolve Target and Capture Context (SINGLE COMMAND)
 
 Supports three modes:
@@ -60,6 +72,8 @@ Supports three modes:
 Uses `git worktree list` to look up the branch for the resolved path. Never cd's into the target.
 
 ```bash
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage resolve-target 2>/dev/null || echo unknown)
+
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
 ARG="$ARGUMENTS"
@@ -178,6 +192,11 @@ echo "CURRENT_WORKTREE=$CURRENT_WORKTREE"
 echo "CURRENT_BRANCH=$CURRENT_BRANCH"
 echo "MAIN_WORKTREE=$MAIN_WORKTREE"
 echo "Now in main worktree, safe to proceed"
+```
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome success 2>/dev/null || true
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage check-merge-status 2>/dev/null || echo unknown)
 ```
 
 ### 2. Check Merge Status (from main)
@@ -462,6 +481,11 @@ fi
 
 ### 2.5. Validate Merged Main (regression gate)
 
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage check-merge-status --outcome success 2>/dev/null || true
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage validate-main 2>/dev/null || echo unknown)
+```
+
 **Only when `PR_STATE = "MERGED"`.** For OPEN/CLOSED/NONE nothing is integrated
 into `main`, so skip validation with a note. We are already in `$MAIN_WORKTREE`
 (Step 1 switched there) — run everything from main, never touch the target worktree.
@@ -522,6 +546,12 @@ if [ "$PR_STATE" = "MERGED" ]; then
 else
   echo "PR not merged (PR_STATE=$PR_STATE) — skipping main validation (nothing integrated)"
 fi
+
+# Validation failures are reported loudly but never block cleanup — the merge is already
+# irreversible — so this stage still closes as "success" (the stage ran to completion); the
+# regression itself is visible in the VALIDATION=fail line printed above, not in telemetry.
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage validate-main --outcome success 2>/dev/null || true
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage restack-children 2>/dev/null || echo unknown)
 ```
 
 ### 2.6. Detect Stacked Children & Sync/Restack
@@ -822,6 +852,11 @@ cache-clearing snippet (emitted with the runbook) for each child stack-sync repo
 `synced` (the literal per-child outcome token from the Step 6 report); on the emit-only path the
 snippet is part of the runbook itself.
 
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage restack-children --outcome success 2>/dev/null || true
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage remove-worktree 2>/dev/null || echo unknown)
+```
+
 ### 3. Remove Worktree (from main)
 
 When PR_STATE is **MERGED**, use `git branch -D` (force delete). Squash merges mean the local
@@ -846,9 +881,20 @@ if [ "$PR_STATE" = "MERGED" ]; then
 else
   git branch -d "$CURRENT_BRANCH" 2>/dev/null || echo "Branch not deleted (not fully merged or already deleted)"
 fi
+
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage remove-worktree --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome success 2>/dev/null || true
 ```
 
 ## Failure Handling
+
+If cleanup aborts before worktree removal (e.g. no argument and not in a worktree, target
+resolves to main, target not a registered worktree, or the "shell stuck in deleted dir" case),
+mark the command as failed — non-fatal, same as every other telemetry call in this doc:
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+```
 
 | Scenario | Action |
 |----------|--------|

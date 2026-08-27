@@ -81,6 +81,13 @@ to a 6-scout swarm (`--effort 1`) or a focused pair (`--effort 2`) for small dif
 ([ADR-0012](docs/adr/0012-effort-ladder-and-pr-mode.md)), and you can scope a run to specific
 reviewers (`/expert-review security,types`). Start small before running the whole panel.
 
+## Usage and yield telemetry (optional)
+
+This repo ships optional **local, observational telemetry** to track cost and output quality across your
+commands — no data leaves your machine. Record usage patterns, token counts, retry rates, and outcomes
+to a single-machine JSONL log. See [docs/metrics.md](docs/metrics.md) for the full schema, privacy
+allowlist, and how to opt-in via `./install.sh`.
+
 ## Project context
 
 Drop a `.claude/project.yaml` into any project to give the reviewers your tech stack, ADRs, invariants,
