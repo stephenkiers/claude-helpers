@@ -518,6 +518,109 @@ parent's force-push and pass it as `<OLD_BASE>` (see `/stack-sync` Step 4b.2). T
 ongoing case (parent's PR still OPEN, parent advanced via `/shipit`); it composes the generalized
 Restack block rather than duplicating it.
 
+## Docker Compose Project Isolation
+
+If a repo has a `docker-compose.yml` (or `compose.yml`) at its worktree root, its `worktrees/.envrc`
+should export a dynamically-computed `COMPOSE_PROJECT_NAME`. Without this, Compose derives its
+project name from the current directory's **basename**, and every repo's primary worktree is
+conventionally named `main` — so two unrelated repos' `main` worktrees collide under the same
+Compose project. This is not theoretical: `docker compose up -d postgres --remove-orphans` run
+from one repo's `main` worktree once deleted a healthy, running container belonging to a
+completely different repo's `main` worktree, because Compose believed they were the same project.
+
+**Fix** — append to `worktrees/.envrc` (after any existing `dotenv` block). If your repo's `.envrc` already resolves its own path via `BASH_SOURCE` for another purpose, reuse that existing `ENVRC_DIR` variable (or equivalent) instead of redeclaring it.
+
+```bash
+# Unique docker-compose project name per repo+worktree — prevents `docker compose
+# up/down --remove-orphans` in one repo's worktree from treating another repo's
+# identically-named worktree (e.g. every repo's "main") as part of the same project.
+# direnv evaluates this file with $PWD set to its own directory (the worktrees/
+# parent), so that gives the repo name; $OLDPWD is the worktree dir that triggered it.
+# Lowercased because Compose project names must match [a-z0-9][a-z0-9_-]* — repo
+# directory names here are capitalized (AcmeApp, WidgetCo, ...).
+# Note: repo/worktree names containing characters outside [a-z0-9_-] (dots, spaces, parens, etc.)
+# require an additional strip/replace step beyond the case-fold shown here.
+ENVRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_NAME=$(basename "$(dirname "$ENVRC_DIR")" | tr '[:upper:]' '[:lower:]')
+WT_NAME=$(basename "${OLDPWD:?OLDPWD not set — open a shell in the worktree directory first, then cd here}" | tr '[:upper:]' '[:lower:]')
+export COMPOSE_PROJECT_NAME="${REPO_NAME}-${WT_NAME}"
+```
+
+This yields e.g. `acme-app-main` and `widgetco-142-tier-2-invoice-reconciliation` — unique per
+repo and per worktree, computed with no hardcoding, so new worktrees and new repos get correct
+names automatically. If the repo has no `worktrees/.envrc` yet (no shared secrets to `dotenv`),
+create one containing only this block.
+
+**Why `$OLDPWD`, not `$PWD`:** direnv genuinely `cd`s to the `.envrc`'s own directory before
+evaluating it (verified — a subprocess `pwd -P` run from inside the script confirms this, not just
+the `$PWD` shell variable), so `$PWD` during evaluation is always the `worktrees/` parent, never the
+actual worktree you're in. `$OLDPWD` is a side effect of that `cd` and reliably holds the real
+invocation directory.
+
+**If migrating an existing repo with real dev data in a named volume:** the project name change
+means Compose creates a *new*, empty volume under the new project-scoped name — the old volume
+(e.g. `main_pgdata`) is orphaned, not deleted. Migrate before relying on the new name.
+For example, if the old project was named `main` (pre-fix, un-namespaced) and the new one is
+`acme-app-main`, then `<old-project>` = `main` and `<new-project>` = `acme-app-main`;
+`<volume>` is the volume name declared under `volumes:` in your `docker-compose.yml` (e.g. `pgdata`),
+so `<old-project>_<volume>` reads as e.g. `main_pgdata` and `<new-project>_<volume>` as `acme-app-main_pgdata`.
+
+This recipe assumes a single-service (database-only) Compose stack. If your stack includes other
+services (app, cache, etc.), `docker compose down` with no service argument will stop all of them;
+multi-service stacks need additional steps beyond this recipe to avoid silently leaving orphaned
+containers under the old project name.
+
+Apply this recipe:
+
+```bash
+# Capture baseline count from old project's live database — do this BEFORE stopping it
+OLD_COUNT=$(docker compose -p <old-project> exec <service> psql -c 'SELECT count(*) FROM <table>;' 2>/dev/null | grep -oE '[0-9]+' | tail -1) \
+  || { echo "failed to read count from live old database"; exit 1; }
+echo "Baseline: $OLD_COUNT rows"
+
+docker volume create <new-project>_<volume>
+
+# Stop the old database — gate on success (a bare comment would be silently skipped when pasted)
+docker compose -p <old-project> down \
+  || { echo "docker compose down failed — aborting to avoid data loss"; exit 1; }
+# Verify no lingering containers after down
+[ -z "$(docker compose -p <old-project> ps -q)" ] \
+  || { echo "containers still running under <old-project> after down — aborting copy"; exit 1; }
+
+# Verify destination volume is empty before copying into it
+DEST_FILE_COUNT=$(docker run --rm -v <new-project>_<volume>:/to alpine sh -c 'find /to -type f 2>/dev/null | wc -l') \
+  || { echo "failed to inspect destination volume"; exit 1; }
+[ "$DEST_FILE_COUNT" -eq 0 ] \
+  || { echo "destination volume not empty ($DEST_FILE_COUNT files found) — aborting copy"; exit 1; }
+
+# Copy data
+docker run --rm -v <old-project>_<volume>:/from -v <new-project>_<volume>:/to \
+  alpine sh -c "cp -a /from/. /to/" \
+  || { echo "data copy failed"; exit 1; }
+
+# Bring up database under new project name
+docker compose -p <new-project> up -d <service> \
+  || { echo "docker compose up failed"; exit 1; }
+
+# Verify data integrity: compare row count to baseline
+NEW_COUNT=$(docker compose -p <new-project> exec <service> psql -c 'SELECT count(*) FROM <table>;' 2>/dev/null | grep -oE '[0-9]+' | tail -1) \
+  || { echo "failed to verify count in new database"; exit 1; }
+echo "Migrated: $NEW_COUNT rows (baseline: $OLD_COUNT)"
+
+# Clean up old volume ONLY after verification passes
+test "$NEW_COUNT" = "$OLD_COUNT" \
+  || { echo "row count mismatch: expected $OLD_COUNT, got $NEW_COUNT — investigate before cleaning up"; exit 1; }
+docker volume rm <old-project>_<volume> || { echo "warning: failed to remove old volume"; }
+echo "✓ Migration complete"
+```
+
+**CAUTION:** Always pin Compose commands to the project name explicitly (e.g. `docker compose -p
+<old-project> down`). If you run this recipe after `.envrc` is already sourced, an unpinned
+`docker compose down` will silently target the new, empty project instead, risking data corruption.
+
+Bind-mounted storage (e.g. a host path, not a named Docker volume) is unaffected by project-name
+changes and needs no migration.
+
 ## Local Plan Mode Detection
 
 When the project root has both a `plans/` directory and an **array-format** `issues.json`, commands
