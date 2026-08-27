@@ -273,39 +273,54 @@ else
   exit 1
 fi
 
-# Determine base branch for git diff (empty if not stacked → uses repo default)
-BASE_BRANCH=""
+# Determine the base to diff the whole branch against: the stacked parent if stacked,
+# otherwise the repo's default branch (same detection pattern used in worktree-reference.md).
 if [ "$STACK_IS_STACKED" = "true" ]; then
-  BASE_BRANCH="$STACK_PARENT_BRANCH"
+  DIFF_BASE="$STACK_PARENT_BRANCH"
+else
+  DIFF_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+  DIFF_BASE="${DIFF_BASE:-main}"
 fi
 
-# Build PR title: concise imperative summary of the whole branch's diff (not just latest commit)
-# Source: git log <base>..HEAD --oneline, compute a synthetic 1-2 word summary
-# For now: use the first commit subject as a baseline (replace <commit subject> placeholder later)
-TITLE_PLACEHOLDER="<commit subject>"
+git log "$DIFF_BASE"..HEAD --oneline
+git diff "$DIFF_BASE"...HEAD --stat
+```
 
-# Build PR body with the five required headings.
-# These sections are generated from:
-# - Why this PR exists: issue title/body via gh issue view (cache-first), or user's original request
-# - What it does: git log <base>..HEAD --oneline + git diff <base>...HEAD --stat of whole branch
-# - What major decisions were made: pull from plan file's "Decisions Made" section if exists
-# - What a reviewer should pay attention to: identify risky/complex hunks in branch diff
-# - How to verify: concrete steps/commands for testing
-#
-# Guardrail: acting model synthesizes body from conversation context, which may contain internal-only
-# detail (credentials, other people's names, private ticket notes). Write as if it will be public —
-# don't restate secrets or non-public context.
+**Compute the PR title and body by reasoning over the branch, not by running more bash.** The
+commands above give you the whole branch's commit history and diff shape — use them (not just the
+latest commit) so the title and body stay accurate as commits accumulate across repeated `/shipit`
+runs on the same PR. Gather:
 
+- **Title**: a concise (<70 char), imperative summary of the whole branch's diff — same register as
+  a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
+  Assign it to `$TITLE`.
+- **Why this PR exists**: if `$ISSUE_NUM` is set, run `gh issue view "$ISSUE_NUM" --json
+  title,body` (cache-first against `.claude/github-cache.json`'s `.issue` section, same as the
+  `ISSUE_NUM` lookup above); otherwise derive it from the user's original request earlier in this
+  conversation. 1-3 sentences on the problem/need being addressed.
+- **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
+  / `git diff --stat` output above.
+- **What major decisions were made**: pull from a plan file's "Decisions Made" section if one
+  exists for this work (e.g. an `/expert-plan` output), or notable tradeoffs surfaced during
+  implementation. If genuinely none, **omit this whole heading** — do not write "None".
+- **What a reviewer should pay attention to**: a bulleted list naming specific files/areas from the
+  branch diff worth a closer look (security-sensitive files, concurrency, migrations, new external
+  dependencies) and why.
+- **How to verify**: a bulleted list of concrete steps/commands to confirm the change works — same
+  content the old "Test plan" section held.
+
+**Guardrail:** you are synthesizing this body from conversation context, which may contain
+internal-only detail (credentials, other people's names, private ticket notes). Write PR-body prose
+as if it will be public — don't restate secrets or non-public context.
+
+```bash
 # Prepare temp file for PR body (multi-line content too risky to inline)
 TMP_BODY=$(mktemp)
 trap "rm -f '$TMP_BODY'" EXIT
 
-# Write the five-heading template to temp file.
-# The model executing /shipit will reason over real context and fill these in based on:
-# - branch diff (git log / git diff --stat from base..HEAD)
-# - issue context (fetched via gh issue view if ISSUE_NUM is set)
-# - plan file if exists (extract "Decisions Made" section)
-# - conversation history for "Why this PR exists"
+# Write the five-heading template below, replacing each bracketed placeholder with the real
+# content you just reasoned out above. Omit the "What major decisions were made" heading entirely
+# if there were none — do not leave a heading with an empty or "None" body.
 cat > "$TMP_BODY" << 'EOF'
 ## Why this PR exists
 <1-3 sentences: the problem/need this addresses>
@@ -356,48 +371,41 @@ fi
 if [ -z "$PR_NUM" ]; then
   # PR does not exist: create it with correct base
   if [ "$STACK_IS_STACKED" = "true" ]; then
-    gh pr create --title "$TITLE_PLACEHOLDER" --base "$STACK_PARENT_BRANCH" --body-file "$TMP_BODY"
+    gh pr create --title "$TITLE" --base "$STACK_PARENT_BRANCH" --body-file "$TMP_BODY"
   else
-    gh pr create --title "$TITLE_PLACEHOLDER" --body-file "$TMP_BODY"
+    gh pr create --title "$TITLE" --body-file "$TMP_BODY"
   fi
 else
-  # PR exists: fetch current body, parse recognized sections vs novel content, and update
-  #
-  # Ingest-then-merge policy:
-  # - Recognized sections (the 5 headings above + Closes#/Stacked-on# lines) are regenerated
-  # - Novel content (headings /shipit doesn't know, checklists, free text added by user) is preserved
-  # - Small/clearly-delimited novel content → auto-preserve under "## Notes carried over from a previous description"
-  # - Large or structurally ambiguous novel content → ask user how to proceed before overwriting
-  #
-  # For now: update the body with the new template, using simple line-based parsing to detect
-  # recognized headings (## Why, ## What it does, ## What major decisions, ## What a reviewer,
-  # ## How to verify, Closes #, Stacked on #). Anything else is novel content.
-  #
-  # The model executing /shipit should reason about whether novel content is worth preserving,
-  # and either auto-append it under the "Notes" section or pause and ask the user.
-  
-  CURRENT_BODY=$(gh pr view "$PR_NUM" --json body -q '.body')
-  
-  # TODO for acting model: split CURRENT_BODY into recognized vs novel sections.
-  # Recognized sections to regenerate:
-  #   - Closes #... (first line if present)
-  #   - ## Why this PR exists
-  #   - ## What it does
-  #   - ## What major decisions were made
-  #   - ## What a reviewer should pay attention to
-  #   - ## How to verify
-  #   - Stacked on #... (at end if present)
-  # Everything else is novel content — preserve it.
-  #
-  # If novel content is large or interleaved (e.g., it's inside one of the recognized sections
-  # rather than cleanly separate), ask the user before proceeding.
-  #
-  # Otherwise, regenerate recognized sections, append novel content under "## Notes carried over
-  # from a previous description", and update.
-  
-  # For now, write the new body directly. Replace this logic after discussing with the user
-  # if novel-content handling should be more sophisticated.
-  gh pr edit "$PR_NUM" --title "$TITLE_PLACEHOLDER" --body-file "$TMP_BODY"
+  gh pr view "$PR_NUM" --json body -q '.body' > "${TMP_BODY}.current"
+fi
+```
+
+**If the PR already exists, merge into its current body before writing — never blind-overwrite.**
+This is the firm rule the rewrite exists for: a human may have hand-edited the description since
+the last `/shipit` run, and that work must not be silently destroyed. Read `${TMP_BODY}.current`
+(the PR's live body) and apply this ingest-then-merge policy:
+
+1. **Split the current body into recognized vs. novel content.** Recognized content is exactly:
+   the `Closes #N` line, the five standard headings (`## Why this PR exists`, `## What it does`,
+   `## What major decisions were made`, `## What a reviewer should pay attention to`,
+   `## How to verify`), the `Stacked on #N` line, and a prior
+   `## Notes carried over from a previous description` section. Everything else — an unfamiliar
+   heading, a checklist, free text a human added — is **novel content**.
+2. **Recognized sections are always regenerated** from the `$TMP_BODY` template you just built —
+   discard the old text of those sections entirely.
+3. **Small, clearly-delimited novel content** (its own heading or clearly separate block, not
+   interleaved inside one of the five recognized sections) → carry it forward verbatim under a
+   `## Notes carried over from a previous description` heading, appended at the end of the new
+   body (merge with any existing `## Notes carried over…` section rather than duplicating it).
+4. **Large or structurally ambiguous novel content** (e.g. free text mixed into the middle of a
+   recognized section, so it can't be cleanly separated) → do not guess. Stop and ask the user
+   (via a direct question, not a silent decision) how to proceed before overwriting.
+5. Write the final merged body — regenerated recognized sections plus any carried-over novel
+   content — to `$TMP_BODY`, then update:
+
+```bash
+if [ -n "$PR_NUM" ]; then
+  gh pr edit "$PR_NUM" --title "$TITLE" --body-file "$TMP_BODY"
 fi
 ```
 
