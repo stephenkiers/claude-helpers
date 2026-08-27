@@ -2,13 +2,19 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number, e.g. /merge-and-cleanup 1022.
 argument-hint: <PR number>
-allowed-tools: Read, Skill, AskUserQuestion, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git branch:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(mv:*), Bash(printf:*), Bash(test:*)
+allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*)
 model: haiku
 ---
 
 # Merge and Cleanup
 
 Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch.
+
+**Why `model: haiku`:** every conditional branch here is a literal check against command
+output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
+mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004) — and the one
+irreversible action (the actual merge) sits behind the push gate's single hard-fail stop, which
+bounds the blast radius of a misjudgment to "the command halts," not "the wrong thing merges."
 
 ## Permission & Safety Philosophy
 
@@ -41,18 +47,18 @@ if [ -z "$PR_NUM" ]; then
 fi
 
 # Fetch PR details
-PR_DATA=$(gh pr view "$PR_NUM" --json headRefName,state,title,url,baseRefName 2>/dev/null)
+PR_DATA=$(gh pr view "$PR_NUM" --json headRefName,state,title,baseRefName)
 
 if [ -z "$PR_DATA" ]; then
   echo "ERROR: PR #$PR_NUM not found or not accessible"
   exit 1
 fi
 
-# Extract fields
-HEAD_REF=$(echo "$PR_DATA" | jq -r '.headRefName')
-PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
-PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
-PR_URL=$(echo "$PR_DATA" | jq -r '.url')
+# Extract fields (printf, not echo — zsh echo can mangle backslash escapes in
+# piped JSON; see commit a96b06b's fix to shipit.md for the same bug class)
+HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
+PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
+PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
 
 if [ "$PR_STATE" != "OPEN" ]; then
   echo "ERROR: PR #$PR_NUM is not open (state: $PR_STATE)"
@@ -61,6 +67,7 @@ fi
 
 echo "PR #$PR_NUM: $PR_TITLE"
 echo "Branch: $HEAD_REF"
+echo "PR_NUM=$PR_NUM"
 ```
 
 ### Phase 1 — Resolve branch → worktree
@@ -91,6 +98,7 @@ if [ "$WT" = "$MAIN_WT" ]; then
 fi
 
 echo "Resolved worktree: $WT"
+echo "WT=$WT"
 ```
 
 ### Phase 2 — Push gate (the one hard stop)
@@ -106,6 +114,10 @@ This is the "one hard-fail push gate" — if everything is pushed, later worktre
 
 ```bash
 echo "=== Phase 2: Push Gate ==="
+
+# Fetch first so the @{u} comparisons below reflect the actual remote state,
+# not a stale local view of origin from before this session started.
+git -C "$WT" fetch origin "$HEAD_REF" 2>/dev/null || true
 
 # Check 1: Detached HEAD
 if ! git -C "$WT" symbolic-ref -q HEAD >/dev/null 2>&1; then
@@ -130,8 +142,11 @@ if ! git -C "$WT" rev-parse "@{u}" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Check 4: Unpushed commits
-UNPUSHED_COUNT=$(git -C "$WT" rev-list "@{u}.." --count 2>/dev/null || echo 0)
+# Check 4: Unpushed commits — a failed rev-list must not be mistaken for "0 unpushed"
+if ! UNPUSHED_COUNT=$(git -C "$WT" rev-list "@{u}.." --count 2>&1); then
+  echo "ERROR: Could not determine unpushed commit count in $WT: $UNPUSHED_COUNT"
+  exit 1
+fi
 if [ "$UNPUSHED_COUNT" -gt 0 ]; then
   echo "ERROR: $UNPUSHED_COUNT unpushed commits in $WT:"
   git -C "$WT" log "@{u}.." --oneline
@@ -146,19 +161,34 @@ echo "✓ Push gate passed: branch is clean and fully pushed"
 
 Auto-detected, no config key (repo-cache.json is gitignored and per-worktree, so a `commands.merge` key would not persist to new worktrees — this mirrors the design in `prompts/shipit-reference.md`). Resolution order:
 
-1. `just -f "$WT/justfile" --list` contains a `merge` recipe → run `just merge`
+1. `just -f "$WT/justfile" --summary` lists a `merge` recipe → run `just merge`
 2. Else read `.commands.check` from `$WT/.claude/repo-cache.json` via `jq`, then run `gh pr merge --squash`
-3. Else run `gh pr merge --squash` alone
+3. Else run `gh pr merge --squash` alone, with no gate — this is silent unless flagged, so every reach of this path prints a loud, distinct marker (`⚠️ merged with NO GATE`) rather than looking like a gated merge
 
 Run the actual merge-gate command in a **subshell**, never a bare `cd`, since `/cleanup` deletes this worktree directory shortly after and a lingering shell cwd inside it makes every later command fail with "Path does not exist":
 
 ```bash
 echo "=== Phase 3: Merge Gate ==="
 
+# Reentrancy guard: refuse a second concurrent/repeat invocation against the
+# same worktree while a prior run's lock is still present. The lock is not
+# removed on success (this worktree is about to be deleted by /cleanup
+# anyway) or on failure (a human should inspect before retrying) — clear it
+# manually with `mv` if you need to re-run after a failure.
+LOCK_FILE="$WT/.claude/.merge-and-cleanup.lock"
+if test -f "$LOCK_FILE"; then
+  echo "ERROR: Lock file $LOCK_FILE already exists — a merge-and-cleanup run may already be in progress or a prior run failed without cleanup."
+  echo "RECOMMENDATION: inspect the worktree, then 'mv $LOCK_FILE ${LOCK_FILE}.stale' to clear it before re-running."
+  exit 1
+fi
+printf 'PR #%s locked by merge-and-cleanup\n' "$PR_NUM" > "$LOCK_FILE"
+
 MERGE_GATE_USED=""
 
-# Path 1: just merge (if recipe exists in target worktree)
-if [ -f "$WT/justfile" ] && just -f "$WT/justfile" --list 2>/dev/null | grep -q "^merge"; then
+# Path 1: just merge (if recipe exists in target worktree). --summary lists
+# recipe names space-separated on one line; --list's output is human-oriented
+# columns and a plain "^merge" anchor never matches it.
+if [ -f "$WT/justfile" ] && just -f "$WT/justfile" --summary 2>/dev/null | tr ' ' '\n' | grep -qx merge; then
   echo "Found 'just merge' recipe in $WT/justfile"
   echo "(This may take many minutes if it invokes E2E build/test)"
   if ( cd "$WT" && just merge ); then
@@ -174,7 +204,11 @@ fi
 if [ -z "$MERGE_GATE_USED" ]; then
   REPO_CACHE="$WT/.claude/repo-cache.json"
   if [ -f "$REPO_CACHE" ]; then
-    CHECK_CMD=$(jq -r '.commands.check // empty' "$REPO_CACHE" 2>/dev/null)
+    if ! jq -e . "$REPO_CACHE" >/dev/null 2>&1; then
+      echo "ERROR: $REPO_CACHE exists but could not be parsed as JSON"
+      exit 1
+    fi
+    CHECK_CMD=$(jq -r '.commands.check // empty' "$REPO_CACHE")
     if [ -n "$CHECK_CMD" ]; then
       echo "Found merge gate in repo-cache.json: $CHECK_CMD"
       if ( cd "$WT" && eval "$CHECK_CMD" ); then
@@ -191,6 +225,7 @@ fi
 # Path 3: plain gh pr merge --squash (no gate)
 if [ -z "$MERGE_GATE_USED" ]; then
   echo "No merge gate found (no 'just merge' recipe and no repo-cache.json check)"
+  echo "⚠️  merged with NO GATE"
   MERGE_GATE_USED="gh pr merge (no gate)"
 fi
 
@@ -201,22 +236,26 @@ if [ "$MERGE_GATE_USED" = "just merge" ]; then
   echo "✓ PR #$PR_NUM merged successfully via 'just merge'"
 else
   echo "Running: gh pr merge --squash $PR_NUM"
-  if gh pr merge --squash "$PR_NUM"; then
+  if MERGE_ERR=$(gh pr merge --squash "$PR_NUM" 2>&1); then
     echo "✓ PR #$PR_NUM merged successfully"
 
-    # Only write cache on the fallback path (path 3) — path 2's check command
-    # is a gate only, not the merge, but its own tooling is expected to own
-    # cache updates the same way path 1's does.
-    if [ "$MERGE_GATE_USED" = "gh pr merge (no gate)" ]; then
-      CACHE_FILE="$WT/.claude/github-cache.json"
-      if [ ! -f "$CACHE_FILE" ]; then
-        printf '{}' > "$CACHE_FILE"
-      fi
-      jq --arg state "MERGED" '.pr.state = $state' "$CACHE_FILE" > "$CACHE_FILE.tmp" && mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+    # Both path 2 (gate-only) and path 3 (no gate) perform the merge here —
+    # write the cache on either success, not just the no-gate fallback.
+    CACHE_FILE="$WT/.claude/github-cache.json"
+    if [ ! -f "$CACHE_FILE" ]; then
+      printf '{}' > "$CACHE_FILE"
+    fi
+    if jq --arg state "MERGED" '.pr.state = $state' "$CACHE_FILE" > "$CACHE_FILE.tmp"; then
+      mv "$CACHE_FILE.tmp" "$CACHE_FILE"
       echo "(Wrote .pr.state = MERGED to cache)"
+    else
+      echo "WARNING: failed to update $CACHE_FILE with merged state"
+      mv "$CACHE_FILE.tmp" "${CACHE_FILE}.failed" 2>/dev/null || true
     fi
   else
-    echo "ERROR: gh pr merge failed"
+    echo "ERROR: gh pr merge failed: $MERGE_ERR"
+    echo "$MERGE_ERR" | grep -qi "squash" && \
+      echo "NAMED ERROR: this repo may not allow squash merges — edit Phase 3's --squash flag to a merge method this repo allows."
     exit 1
   fi
 fi
@@ -240,7 +279,7 @@ fi
 # /cleanup itself will build (it appends "*" to a pattern with no trailing slash,
 # per its own resolution logic) — a sibling worktree whose name is a strict
 # prefix of $WT would otherwise make /cleanup's own match ambiguous.
-MATCH_LIST=$(eval ls -d "${WT}*/" 2>/dev/null)
+MATCH_LIST=$(ls -d "${WT}"*/ 2>/dev/null)
 MATCH_COUNT=$(echo "$MATCH_LIST" | grep -c .)
 
 if [ "$MATCH_COUNT" -ne 1 ]; then
@@ -255,7 +294,7 @@ echo "Path verified unambiguous — invoking /cleanup with: $WT"
 
 #### Non-duplication rules
 
-- **Stacked-PR handling** (detecting children, restack runbooks) lives entirely in `/cleanup` and `prompts/worktree-reference.md`. This command must not detect stack layout, find children, or restack anything itself (per ADR-0011, ADR-0010).
+- **Stacked-PR handling** (detecting children, restack runbooks) lives entirely in `/cleanup` and `prompts/worktree-reference.md`. This command must not detect stack layout, find children, or restack anything itself (per ADR-0011).
 - This command must not compute `WORKTREE_PARENT` or `PROJECT_ROOT` itself — that is owned by Project Detection elsewhere.
 - This command must not reimplement worktree removal or branch deletion — `/cleanup` owns that.
 
@@ -269,13 +308,20 @@ echo "Path verified unambiguous — invoking /cleanup with: $WT"
 Example output (with PR 1022 as the illustrative example):
 
 ```
-PR #1022    ✅ merged via `just merge` (E2E gate passed)
-WORKTREE    ✅ removed  /path/to/1020-…
-BRANCH      ✅ deleted  chore/1020-…
-MAIN        ✅ fast-forwarded to <sha>  |  checks: pass
+PR #1022    ✓ merged via `just merge` (E2E gate passed)
+WORKTREE    ✓ removed  /path/to/1020-…
+BRANCH      ✓ deleted  chore/1020-…
+MAIN        ✓ fast-forwarded to <sha>  |  checks: pass
 ```
 
-Use ⛔ for a halted phase; omit phases that never ran.
+Use ⛔ for a halted phase; omit phases that never ran. Example of a halted run (push gate failure on PR 1022 — nothing past Phase 2 ran):
+
+```
+PR #1022    ✓ resolved to branch chore/1020-something
+WORKTREE    ✓ resolved  /path/to/1020-something
+PUSH GATE   ⛔ halted — 2 unpushed commits in /path/to/1020-something
+            RECOMMENDATION: git -C /path/to/1020-something push
+```
 
 ## Files
 
