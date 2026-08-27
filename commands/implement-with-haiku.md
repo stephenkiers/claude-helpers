@@ -34,11 +34,14 @@ If none yield a plan, tell the user and stop.
 
 ### Parse action-plan.md into directives
 
+**Note:** This subsection's assumptions about action-plan.md's shape (section headings, table columns, ruling-line format) are defined authoritatively in `prompts/triage.md`'s `## Output` section. If triage.md's template changes, re-check this subsection's rules against it.
+
 When `PLAN_SOURCE=action-plan`, extract directives from the file's sections:
 
-- **Doing it** table rows → one directive each: `[decided: doing-it]` + the fix (compress the table row's cell content into a clause).
-- **Needs you** / **Needs measurement** items whose `- **Ruling**:` line is **not** the pending placeholder (`_(pending your call...)` / `_(pending measurement...)`) → one directive each: `[decided: ruling recorded]` + the finding + the chosen option's text verbatim from the ruling.
-- Items still showing the pending placeholder → **excluded from work units**. Collect them into a one-time warning printed at Step 1 completion: `N item(s) in this action-plan still lack a recorded ruling and will be skipped: [titles]. Resolve them in the action-plan (or hand-edit the Ruling line) before re-running if you want them included.` Non-blocking — matches this command's existing "surface, don't block" pattern.
+- **Doing it** table rows → one directive each: `[decided: doing-it]` + Finding cell (verbatim) + Fix cell (verbatim or compressed to a clause). Both Finding and Fix must be preserved; do not drop the Finding.
+- **Needs you** / **Needs measurement** items whose `- **Ruling**:` line contains a recorded decision → one directive each: `[decided: ruling recorded]` + the finding paragraph + the chosen option's text verbatim from the ruling. A ruling is "recorded" if its text (after stripping the `_(…)_` markdown-italics wrapper) does **not** start with `pending your call` or `pending measurement` (case-insensitive).
+  - **Exception: "Leave as-is" rulings** — if the recorded ruling's chosen option is "Leave as-is" or clearly states no code change is needed, **exclude that item from directives entirely**. A "leave as-is" ruling is a decided no-op; there is nothing to implement.
+- Items still showing a pending placeholder (ruling text, after unwrapping `_(…)_`, starts with `pending your call` or `pending measurement`) → **excluded from work units**. Collect them into a one-time warning printed at Step 1 completion: `N item(s) in this action-plan still lack a recorded ruling and will be skipped: [titles]. Resolve them in the action-plan (or hand-edit the Ruling line) before re-running if you want them included.` Non-blocking — matches this command's existing "surface, don't block" pattern.
 - **Deferred** and the **gut check** section are never turned into directives.
 
 This parsed, tagged directive list becomes "the plan" fed into Step 3 ("Split the plan into work units").
@@ -167,8 +170,8 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - **"Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
   commits it."**
 - For each directive tagged `[decided: ruling recorded]` or `[decided: doing-it]` in this unit's
-  sub-task, include this blockquote before the finding + chosen fix/option verbatim:
-  > **This was already decided by a human reviewer — implement exactly the option below. Do not
+  sub-task, include this blockquote before the finding + fix verbatim:
+  > **This was already decided by a human reviewer — implement exactly what is described below. Do not
   > treat it as open, do not propose an alternative, do not flag it back as ambiguous.**
 - The verification commands from the plan (or `n/a` if none for this unit)
 - The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section, which
@@ -871,7 +874,7 @@ wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total ag
 ```
 ROUND SIZING: <mechanical | test-only | full>
 ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=action-plan]
-  Doing-it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
+  Doing it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
 ROUND 1 — Implementer (parallel)
   Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>
 INTEGRATION GATE (trusted)
