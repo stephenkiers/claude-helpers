@@ -25,26 +25,40 @@ The flow:
 
 In priority order:
 
-0. **Args contain a path to an existing `action-plan.md` file** → read it directly, set `PLAN_SOURCE=action-plan`. If the path doesn't exist, fall through to priority 1–3 below with a one-line warning.
+0. **Args contain a path to an existing `claude-action-plan.md` file** → read it directly, set
+   `PLAN_SOURCE=claude-action-plan`. If the path doesn't exist, fall through to priority 1–3 below
+   with a one-line warning.
 1. **Args contain an issue number or URL** → fetch with `gh issue view <number>`
 2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan
 3. **A plan is visible in the current conversation** → use it directly
 
 If none yield a plan, tell the user and stop.
 
-### Parse action-plan.md into directives
+### Parse claude-action-plan.md into directives
 
-**Note:** This subsection's assumptions about action-plan.md's shape (section headings, table columns, ruling-line format) are defined authoritatively in `prompts/triage.md`'s `## Output` section. If triage.md's template changes, re-check this subsection's rules against it.
+**Note:** This subsection's assumptions about `claude-action-plan.md`'s shape (section headings,
+table columns, `STATUS`/`DECISION` fields) are defined authoritatively in `prompts/triage.md`'s
+`## Output` section. If triage.md's template changes, re-check this subsection's rules against it.
 
-When `PLAN_SOURCE=action-plan`, extract directives from the file's sections:
+When `PLAN_SOURCE=claude-action-plan`, extract directives from the file's sections by matching
+literal field values — no prose interpretation:
 
-- **Doing it** table rows → one directive each: `[decided: doing-it]` + Finding cell (verbatim) + Fix cell (verbatim or compressed to a clause). Both Finding and Fix must be preserved; do not drop the Finding.
-- **Needs you** / **Needs measurement** items whose `- **Ruling**:` line contains a recorded decision → one directive each: `[decided: ruling recorded]` + the finding paragraph + the chosen option's text verbatim from the ruling. A ruling is "recorded" if its text (after stripping the `_(…)_` markdown-italics wrapper) does **not** start with `pending your call` or `pending measurement` (case-insensitive).
-  - **Exception: "Leave as-is" rulings** — if the recorded ruling's chosen option is "Leave as-is" or clearly states no code change is needed, **exclude that item from directives entirely**. A "leave as-is" ruling is a decided no-op; there is nothing to implement.
-- Items still showing a pending placeholder (ruling text, after unwrapping `_(…)_`, starts with `pending your call` or `pending measurement`) → **excluded from work units**. Collect them into a one-time warning printed at Step 1 completion: `N item(s) in this action-plan still lack a recorded ruling and will be skipped: [titles]. Resolve them in the action-plan (or hand-edit the Ruling line) before re-running if you want them included.` Non-blocking — matches this command's existing "surface, don't block" pattern.
+- **Doing it** table rows → one directive each: `[decided: doing-it]` + Finding cell (verbatim) + Fix
+  cell (verbatim or compressed to a clause). Both Finding and Fix must be preserved; do not drop the
+  Finding.
+- Items with `- **STATUS**: decided` or `- **STATUS**: measured` → one directive each:
+  `[decided: ruling recorded]` + the finding paragraph + the `- **DECISION**:` field verbatim.
+- Items with `- **STATUS**: no-op` → **excluded from directives entirely**. A no-op ruling ("Leave
+  as-is" was chosen) is decided; there is nothing to implement.
+- Items with `- **STATUS**: pending-decision` or `- **STATUS**: pending-measurement` → **excluded
+  from work units**. Collect them into a one-time warning printed at Step 1 completion: `N item(s) in
+  this action plan still lack a recorded ruling and will be skipped: [titles]. Resolve them via
+  /expert-review's ruling flow before re-running if you want them included.` Non-blocking — matches
+  this command's existing "surface, don't block" pattern.
 - **Deferred** and the **gut check** section are never turned into directives.
 
-This parsed, tagged directive list becomes "the plan" fed into Step 3 ("Split the plan into work units").
+This parsed, tagged directive list becomes "the plan" fed into Step 3 ("Split the plan into work
+units").
 
 ## Step 2: Get context
 
@@ -873,7 +887,7 @@ wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total ag
 
 ```
 ROUND SIZING: <mechanical | test-only | full>
-ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=action-plan]
+ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]
   Doing it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
 ROUND 1 — Implementer (parallel)
   Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>

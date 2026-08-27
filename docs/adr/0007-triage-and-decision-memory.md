@@ -286,3 +286,43 @@ field. No other files carry the mechanism.
 ## Amendment — scope note: Triage Chief is author-centric (ADR-0009)
 
 The Triage Chief and triage stage (doing it / needs you / needs measurement / deferred) described in this ADR apply to **author-centric** review via `/expert-review`. The peer-review command, `/expert-review-coworker`, deliberately **omits the Triage Chief** — it is a different orchestration optimized for collegial, high-bar escalation in a shared PR context. Instead of sorting findings into decision buckets, `/expert-review-coworker` surfaces panel escalations (`**Human Call**` / `DRIFT` / `QUESTION`) as collegial questions for the author inline in PR comments (via `prompts/pr-comment-guide.md`). This is a design choice reflecting different contexts and use cases, not a phasing plan. See [ADR-0009](0009-peer-review-and-shared-panel.md).
+
+## Amendment — machine-readable `claude-action-plan.md` (rename + STATUS/DECISION format)
+
+Two commits patched `/implement-with-haiku`'s consumer-side parser for `action-plan.md` after expert
+review found four precision gaps (ambiguous `_(pending …)_` placeholder prefix-matching, naming drift
+between "Doing-it" and "Doing it", a missing no-op branch for "leave as-is" rulings, no clear
+statement of which file was authoritative for the shape). All four traced to the same root cause:
+the file's shape was defined once in `triage.md`'s Output template and then re-described from scratch
+in the consumer, so the two specs could silently drift. This amendment stops patching the
+re-description and changes the file itself:
+
+- **The file is renamed `action-plan.md` → `claude-action-plan.md`** everywhere it is produced,
+  edited, or consumed (`triage.md`, `commands/expert-review.md`, `commands/implement-with-haiku.md`,
+  `commands/verify-queue.md`, `commands/cleanup.md`, `agents/expert-reviewer.md`, `CLAUDE.md`). The
+  name signals what it now is: Claude's working file, not a hand-edited human document. This ADR's
+  body above still says `action-plan.md` in historical prose describing decisions as originally made
+  (e.g. the `Edit` red line's third-target reasoning) — that text is left as the historical record;
+  the current target is the renamed file.
+- **The free-text `- **Ruling**: _(pending your call…)_` / `_(pending measurement…)_` placeholder
+  convention is replaced by an explicit `STATUS`/`DECISION` field pair** with a closed set of literal
+  values: `pending-decision` → `decided` or `no-op` (for *Needs you*); `pending-measurement` →
+  `measured` (for *Needs measurement*). Every consumer now does one literal field match instead of
+  interpreting prose — this is the actual fix; the renamed placeholder convention was always going to
+  need periodic re-patching as edge cases surfaced (as it did, twice).
+- **Needs measurement results are now recorded by Claude, not hand-edited.** The original Decision
+  above (and the *Needs measurement* bucket's design) assumed a human would hand-edit the `Ruling:`
+  line after running the drafted command. That hand-edit path is removed: the human reports the
+  result back to Claude in conversation (same moment `/verify-queue` already drains it, or whenever
+  they report back after running the command), and Claude edits `STATUS: measured` /
+  `DECISION: {result}` in place — the same conversation-driven recording *Needs you* already used via
+  Step 12's `AskUserQuestion` loop now covers both buckets. There is no longer any bucket in
+  `claude-action-plan.md` a human is expected to hand-edit directly.
+- **The `Edit` red line's third target is now the `STATUS`/`DECISION` fields**, not a `- **Ruling**:`
+  line — same scope (a single already-answered escalation), same file (`{REVIEW_DIR}` — a file the
+  command already writes freely in Step 11), same spirit. The idempotent-edit check now reads "is
+  `STATUS` no longer `pending-decision`/`pending-measurement`" instead of "is the `Ruling` line no
+  longer the placeholder."
+
+Net effect: `/implement-with-haiku`'s two patch commits are replaced, not layered on, by a consumer
+that matches literal `STATUS`/`DECISION` values and never re-derives intent from prose.

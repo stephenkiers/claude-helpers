@@ -20,7 +20,7 @@ A checkpoint-based, parallel code review pipeline:
 7. **Amalgamator** (PANEL_MODEL) — one expensive agent replaces quadratic cross-review; deduplicates,
    severity-ranks, resolves conflicts, writes final-report.md
 8. **Triage Chief** (PANEL_MODEL) — sorts findings into *doing it* / *needs you* / *needs measurement*
-   / *deferred*, runs the cross-cutting gut check, writes action-plan.md
+   / *deferred*, runs the cross-cutting gut check, writes claude-action-plan.md
 9. **Rulings → Record → Cache metadata** (main thread) — ask the human only what only they can answer,
    then write the answers down so the panel stops asking
 
@@ -74,7 +74,7 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
 
   | Level | Name | What runs |
   |---|---|---|
-  | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`, CRITIC `path:line` grounding) → 1 sonnet merge agent → `final-report.md` → Triage → `action-plan.md`. Skips Summarizer/Router/Carl/Q&A/Pass 2/Amalgamator. |
+  | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`, CRITIC `path:line` grounding) → 1 sonnet merge agent → `final-report.md` → Triage → `claude-action-plan.md`. Skips Summarizer/Router/Carl/Q&A/Pass 2/Amalgamator. |
   | 2 | focused pair | Router picks exactly the top 2 judgment reviewers; Carl + Cody + Consistency Checker still run; full pipeline otherwise (Q&A, Pass 2, Amalgamator, Triage). |
   | 3 | pair + Bob | Effort 2 plus `uncle-bob` pre-seated (full-patch read, like named mode). |
   | 4 | normal | **Default.** Current behavior, unchanged. |
@@ -130,7 +130,7 @@ already-reviewed commit never overwrites the prior run):
 | `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
 | `{reviewer}-pass2.md` | Pass 2 subagents | Step 9 — only reviewers with findings, judgment reviewers only |
 | `final-report.md` | Amalgamator | Step 10 — the complete record; the gut-check instrument |
-| `action-plan.md` | Triage Chief (Step 11); ruling lines appended in place by the main thread (Step 12) | Step 11 — decision-first; **the file the human opens** |
+| `claude-action-plan.md` | Triage Chief (Step 11); `STATUS`/`DECISION` fields updated in place by the main thread (Step 12) | Step 11 — decision-first; **the file the human opens** |
 
 ---
 
@@ -311,9 +311,9 @@ When `PR_MODE=true`:
 - **Not produced:** `pr-comment-guide.md`, the interactive walk-through, `posted-comments.md`.
   Those belong to the deprecated `/expert-review-coworker(-beta)` commands; PR mode's closing
   message replaces them.
-- **Closing message (PR-mode variant):** list the *Needs you* items from `action-plan.md`
+- **Closing message (PR-mode variant):** list the *Needs you* items from `claude-action-plan.md`
   **verbatim** — they are the candidate PR comments, and the user posts them on GitHub themselves —
-  then the needs-measurement block (unchanged), then the links to `action-plan.md` and
+  then the needs-measurement block (unchanged), then the links to `claude-action-plan.md` and
   `final-report.md`. After the links, offer the worktree-cleanup question:
 
   ```
@@ -344,7 +344,7 @@ The panel writes `summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `con
 (the swarm path writes only `pr-context.md`, a stub `tagged-sections.md`, and `final-report.md`).
 When it returns, resume at Step 11 below.
 
-### Step 11: Triage Chief (one agent) → `action-plan.md`
+### Step 11: Triage Chief (one agent) → `claude-action-plan.md`
 
 The Amalgamator decided what is true. The Triage Chief decides **what the human has to look at** —
 sorting findings into *doing it* / *needs you* / *needs measurement* / *deferred*, and running the
@@ -354,14 +354,15 @@ running something and reading a result back — not a judgment call, so it never
 `AskUserQuestion`.
 
 **ONE subagent** (`subagent_type: "expert-reviewer"`, `model: PANEL_MODEL`). Its mandate and the
-`action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it to read:
+`claude-action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it
+to read:
 - `{REVIEW_DIR}/final-report.md` (its primary input)
 - `{PROJECT_ROOT}/.claude/project.yaml` (skip if absent)
 
-It writes `{REVIEW_DIR}/action-plan.md`. It returns:
+It writes `{REVIEW_DIR}/claude-action-plan.md`. It returns:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {claude-action-plan path}
 ```
 
 **Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `measure` —
@@ -379,8 +380,8 @@ from the receipt, so the orchestrator and the Chief cannot disagree on it.
 **Skipped in PR mode** (`PR_MODE=true`) — the *Needs you* items are listed verbatim in the closing
 message instead; rulings are the author's to record, not yours (ADR-0009).
 
-Read **only** `{REVIEW_DIR}/action-plan.md` — not the pass files, not the final report. This is the
-one file the orchestrator reads, and it is small by construction.
+Read **only** `{REVIEW_DIR}/claude-action-plan.md` — not the pass files, not the final report. This is
+the one file the orchestrator reads, and it is small by construction.
 
 This step is scoped to the **Needs you** section only. **Needs measurement** items are never put to
 `AskUserQuestion` — there is nothing to choose between until the command in the item has been run, so
@@ -399,43 +400,47 @@ answers (below) **as that batch returns**, inside this same loop, rather than wa
 to finish first. A crash between batches must not leave an earlier batch's answers unrecorded.
 
 For each escalation whose answer just came back — and only that one; if the user made no selection for
-an item (e.g. they closed the batch early), leave that item's placeholder untouched and do not
-fabricate a ruling for it — **`Edit` `{REVIEW_DIR}/action-plan.md` in place**.
+an item (e.g. they closed the batch early), leave that item's `STATUS`/`DECISION` fields untouched and
+do not fabricate a ruling for it — **`Edit` `{REVIEW_DIR}/claude-action-plan.md` in place**.
 
-**Edit red line (security control — retained regardless of any future changes to triage or recorded rulings):** The only permitted `Edit` target in this command is the `- **Ruling**:` line of an already-answered escalation in `action-plan.md`. Prohibited targets: `settings.json`, `CLAUDE.md`, anything under `agents/`, `reviewers/`, or source files. If the Edit target does not match, stop and report rather than proceeding.
+**Edit red line (security control — retained regardless of any future changes to triage or recorded rulings):** The only permitted `Edit` target in this command is the `STATUS` and `DECISION` fields of an already-answered escalation in `claude-action-plan.md`. Prohibited targets: `settings.json`, `CLAUDE.md`, anything under `agents/`, `reviewers/`, or source files. If the Edit target does not match, stop and report rather than proceeding.
 
 Restructure the item from an open options menu into a resolved question-and-answer record, so an executor skimming the file meets only the chosen answer, not the declined ones:
 
-1. Replace the block starting at `- **Options**:` through the line before `- **Ruling**:`. Anchor the
+1. Replace the block starting at `- **Options**:` through the line before `- **STATUS**:`. Anchor the
    whole match on the item's own `### N. [Title]` heading to keep multiple escalations from colliding.
-2. Write a single `- **Ruling**: {Option} — {reasoning}` line in its place — the user's own note if
-   they gave one, otherwise the chosen option's rationale from the action plan — directly under
-   `- **Recommendation**: ...`.
+2. Set `- **STATUS**: decided` — or `- **STATUS**: no-op` if the chosen option was "Leave as-is" (a
+   decided no-op; nothing to implement). Write `- **DECISION**: {Option} — {reasoning}` directly below
+   it — the user's own note if they gave one, otherwise the chosen option's rationale from the action
+   plan — directly under `- **Recommendation**: ...`.
 3. Preserve the rejected options as record, not delete them: fold them into a collapsed block right
-   after the ruling line —
+   after the `DECISION` line —
    `<details><summary>Options considered and rejected (record only — do not act on these)</summary>`
    … the non-chosen options, each with its original Pro/Con … `</details>`. This is the only place the
-   rejected options live once an item is ruled; do not also leave a live copy above the ruling.
+   rejected options live once an item is ruled; do not also leave a live copy above it.
 
 Runs **unconditionally whenever `needs-you > 0`**.
 
-**Idempotent and fail-closed.** Before editing an item, check whether its `- **Ruling**:` line already
-reads anything other than the `_(pending your call` placeholder (or, for a **Needs measurement** item
-a human has since resolved by hand, the `_(pending measurement` placeholder) — if so, it was already
-recorded (e.g. a prior partial run, or a measurement result the human already wrote in); skip it
-rather than re-asking or re-editing. If an item's anchors (`### N.`, `- **Options**:`/`- **Command**:`,
-`- **Ruling**:`) are not uniquely present, do not widen the match to guess at the boundary — stop and
-report that item's ruling could not be recorded, and move on to the rest.
+**Idempotent and fail-closed.** Before editing an item, check whether its `- **STATUS**:` field already
+reads anything other than `pending-decision` (or, for a **Needs measurement** item, anything other
+than `pending-measurement`) — if so, it was already recorded (e.g. a prior partial run, or a
+measurement result the human already reported back); skip it rather than re-asking or re-editing. If
+an item's anchors (`### N.`, `- **Options**:`/`- **Command**:`, `- **STATUS**:`) are not uniquely
+present, do not widen the match to guess at the boundary — stop and report that item's ruling could
+not be recorded, and move on to the rest.
 
-**Before proceeding**, re-read `action-plan.md` and confirm no `_(pending your call` placeholder
+**Before proceeding**, re-read `claude-action-plan.md` and confirm no `STATUS: pending-decision`
 remains for any item you just ruled on. If one does, stop and report it before moving on.
 
 **Needs measurement.** If `measure > 0`, do not wait for these before proceeding to Step 13 — nothing
 in this bucket blocks the rest of the pipeline. Instead, include each item's **Command** and
 **Resolves via** directly in the conversation message you send at the end of this run (not merely a
-pointer to `action-plan.md` — this is the one output category the human is expected to act on outside
-this conversation, so it shouldn't cost them a second file-open to discover). Each stays `_(pending measurement` in `action-plan.md` until the human runs the command and
-hand-edits that item's `- **Ruling**:` line.
+pointer to `claude-action-plan.md` — this is the one output category the human is expected to act on
+outside this conversation, so it shouldn't cost them a second file-open to discover). Each item stays
+`STATUS: pending-measurement` until the human reports the command's result back to Claude — in this
+conversation, when they report back, or when `/verify-queue` drains it — at which point Claude (not
+the human) edits `STATUS: measured` and `DECISION: {result}` in place. There is no hand-editing path
+for this field anymore.
 
 ### Step 13: Cache Review Metadata
 
@@ -464,7 +469,7 @@ Three outputs, in descending order of how much of it the human reads:
 | Output | Written by | Purpose |
 |--------|-----------|---------|
 | Conversation message | Main thread | The decisions. Short. |
-| `action-plan.md` | Triage Chief; rulings appended by the main thread (Step 12) | Decision-first. **The file they open.** Template in `prompts/triage.md`. |
+| `claude-action-plan.md` | Triage Chief; `STATUS`/`DECISION` fields updated by the main thread (Step 12) | Decision-first. **The file they open.** Template in `prompts/triage.md`. |
 | `final-report.md` | Amalgamator | The complete record. The gut-check instrument. Template in `prompts/amalgamator.md`. |
 
 **Do not inline either file in the conversation** — the link is the contract. Both file templates now
@@ -472,7 +477,7 @@ live in their agents' prompt files, so a format change happens in one place and 
 control-flow document.
 
 The old `## Sign-off Checklist` table is gone. Its `Decision` column was never filled in by anything —
-`action-plan.md` is what it was always reaching for.
+`claude-action-plan.md` is what it was always reaching for.
 
 ### Template for the in-conversation message
 
@@ -502,7 +507,7 @@ outside this conversation, so the command itself belongs here, not just a link:}
 N deferred. {If declined > 0: ", N nominations declined (see the action plan)."} These need doing,
 not deciding — apply them, or hand the action plan to `/implement-with-haiku`.
 
-📋 Action plan: {REVIEW_DIR}/action-plan.md
+📋 Action plan: {REVIEW_DIR}/claude-action-plan.md
 📄 Full report: {REVIEW_DIR}/final-report.md
 ```
 
@@ -519,9 +524,9 @@ measurement block.
   never lost. If a re-run fails again, stop retrying that reviewer and report it missing rather than
   looping — an unattended run has no one to
   notice an infinite retry loop. **Exception: never re-run the Triage Chief (Step 11) once
-  `action-plan.md` already carries recorded rulings** (any `- **Ruling**:` line other than the
-  placeholder) — the Chief regenerates the whole file, which would overwrite the human's answers.
-  Re-run Step 11 only when `action-plan.md` doesn't exist yet.
+  `claude-action-plan.md` already carries recorded rulings** (any item whose `STATUS` is no longer
+  `pending-decision`/`pending-measurement`) — the Chief regenerates the whole file, which would
+  overwrite the human's answers. Re-run Step 11 only when `claude-action-plan.md` doesn't exist yet.
 - **Compare reviews:** each review has its own folder —
   `diff ~/.claude/reviews/{REPO_KEY}/{a}/ ~/.claude/reviews/{REPO_KEY}/{b}/`;
   clean up old reviews with `rm -rf` when desired.

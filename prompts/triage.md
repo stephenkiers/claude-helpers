@@ -210,9 +210,13 @@ a collapse to look thorough.
 
 ## Output
 
-You write **one** file into `{REVIEW_DIR}`, and nothing else: `action-plan.md`.
+You write **one** file into `{REVIEW_DIR}`, and nothing else: `claude-action-plan.md`. It is
+machine-readable — a `STATUS`/`DECISION` field pair carries every ruling, not prose a reader (or a
+downstream consumer like `/implement-with-haiku`) has to interpret. It is Claude's working file: a
+human skims it, but rulings are recorded through conversation with Claude, not by hand-editing the
+file directly.
 
-### `action-plan.md`
+### `claude-action-plan.md`
 
 It is read top to bottom; the ordering is the product.
 
@@ -251,8 +255,8 @@ It is read top to bottom; the ordering is the product.
   - **C — Leave as-is**: {do nothing} · Pro: … · Con: …
     {MANDATORY on any footgun (test 5) or scope call (test 3) — it may be the recommended option.}
 - **Recommendation**: A, because …
-- **Ruling**: _(pending your call — recorded here after you decide)_ {MANDATORY — emitted verbatim on
-  every escalation, never omitted}
+- **STATUS**: pending-decision {MANDATORY — emitted verbatim on every escalation, never omitted}
+- **DECISION**: _(empty until STATUS changes)_
 
 ### 2. …
 
@@ -274,9 +278,10 @@ been run.
   standard as the `Options` you draft for *Needs you*.}
 - **Resolves via**: {what result confirms the finding, what result refutes it — concrete thresholds
   where possible, e.g. "if p95 latency drops >20%, keep the change; if not, revert."}
-- **Ruling**: _(pending measurement — record the result here after running the command above, then
-  edit this line by hand)_ {MANDATORY — same placeholder convention as *Needs you*, so the
-  orchestrator's idempotent-edit check covers this bucket too}
+- **STATUS**: pending-measurement {MANDATORY — same field pair as *Needs you*, so the orchestrator's
+  idempotent-edit check covers this bucket too}
+- **DECISION**: _(empty until STATUS changes — Claude records the reported result here once you tell
+  it what the command above returned; never hand-edited)_
 
 ### 2. …
 
@@ -316,7 +321,7 @@ never a section with its own heading.}
 Write the file, then return **only** this line — never the plan itself:
 
 ```
-triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {action-plan path}
+triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {claude-action-plan path}
 ```
 
 `clusters` is the number of gut-check questions that came back with a real answer (0–3);
