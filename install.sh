@@ -83,6 +83,62 @@ KEYBINDINGS
     fi
 fi
 
+# Register telemetry hooks in ~/.claude/settings.json (idempotent)
+if command -v jq &> /dev/null; then
+    SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+
+    # Create settings.json if it doesn't exist
+    if [ ! -e "$SETTINGS_FILE" ]; then
+        echo '{}' > "$SETTINGS_FILE"
+    fi
+
+    # Validate existing JSON
+    if ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
+        echo "Warning: $SETTINGS_FILE is not valid JSON, skipping telemetry hook registration"
+    else
+        # Define the four telemetry hooks
+        for hook_event in "SessionStart" "SessionEnd" "SubagentStart" "SubagentStop"; do
+            case "$hook_event" in
+                SessionStart)
+                    subcommand="session-begin"
+                    ;;
+                SessionEnd)
+                    subcommand="session-end"
+                    ;;
+                SubagentStart)
+                    subcommand="agent-begin"
+                    ;;
+                SubagentStop)
+                    subcommand="agent-end"
+                    ;;
+            esac
+
+            hook_command="python3 \$HOME/.claude/scripts/run-metrics.py $subcommand"
+
+            # Hooks live under the top-level "hooks" key; each event maps to an array of
+            # matcher groups, each with its own nested "hooks" array — this two-level nesting
+            # is Claude Code's actual hook config schema (confirmed by live-capturing a real
+            # SubagentStart/SubagentStop payload against this exact config shape).
+            # Check if this hook command already exists in the event's matcher groups.
+            if jq --arg event "$hook_event" --arg cmd "$hook_command" \
+                '((.hooks[$event] // []) | any(.hooks[]?.command == $cmd))' \
+                "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
+                # Hook already registered for this event
+                continue
+            fi
+
+            # Add a new matcher group with this hook to the event's array
+            jq --arg event "$hook_event" --arg cmd "$hook_command" \
+                '.hooks[$event] = ((.hooks[$event] // []) + [{"hooks": [{"type": "command", "command": $cmd}]}])' \
+                "$SETTINGS_FILE" > "$SETTINGS_FILE.tmp"
+            mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE"
+        done
+        echo "Telemetry hooks registered in $SETTINGS_FILE"
+    fi
+elif [ ! -e "$CLAUDE_DIR/settings.json" ]; then
+    echo "Note: jq not found; skipping telemetry hook registration (manual setup available in docs/metrics.md)"
+fi
+
 echo ""
 echo "Claude helpers installed!"
 echo ""
