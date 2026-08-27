@@ -186,9 +186,20 @@ def validate_repo_cache(data: Dict[str, Any]) -> bool:
     commands/shipit.md) uses a top-level "version" int and never writes "schema_version" —
     gating on an exact "schema_version" string this reader predates would reject every real
     file. Structural validation only: a dict, with "commands" a dict if present.
+
+    Minimal forward-compat protection: version/schema_version field, if present, must be
+    int or str (rejects nonsensical shapes like list or dict in that slot).
     """
     if not isinstance(data, dict):
         return False
+    # Check version field type (minimal forward-compat protection)
+    version = data.get("schema_version", data.get("version"))
+    if version is not None and not isinstance(version, (str, int)):
+        return False
     if "commands" in data and not isinstance(data["commands"], dict):
         return False
+    # Validate commands dict values: must be None or str
+    if "commands" in data and isinstance(data["commands"], dict):
+        if not all(v is None or isinstance(v, str) for v in data["commands"].values()):
+            return False
     return True

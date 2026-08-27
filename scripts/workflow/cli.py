@@ -20,6 +20,40 @@ from pathlib import Path
 from . import cleanup, merge
 
 
+def _run_plan(plan_fn, arg):
+    """
+    Execute a plan function and handle output/exit codes.
+
+    Args:
+        plan_fn: function that returns (plan_obj, error)
+        arg: argument to pass to plan_fn
+    """
+    plan_obj, error = plan_fn(arg)
+    if error:
+        output = {"success": False, "error": str(error)}
+    else:
+        output = plan_obj.to_dict() if plan_obj else {"success": False}
+    print(json.dumps(output))
+    if error:
+        sys.exit(1)
+
+
+def _run_apply(apply_fn, plan_json):
+    """
+    Execute an apply function and handle output/exit codes.
+
+    Args:
+        apply_fn: function that returns (result, error)
+        plan_json: JSON string plan to apply
+    """
+    result, error = apply_fn(plan_json)
+    if error:
+        result.error = error
+    print(json.dumps(result.to_dict()))
+    if error or result.error:
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deterministic workflow CLI",
@@ -56,45 +90,23 @@ def main():
 
     if args.command == "cleanup":
         if args.cleanup_action == "plan":
-            plan_obj, error = cleanup.plan_cleanup(args.target)
-            if error:
-                output = {
-                    "success": False,
-                    "error": str(error)
-                }
-            else:
-                output = plan_obj.to_dict() if plan_obj else {"success": False}
-            print(json.dumps(output))
+            _run_plan(cleanup.plan_cleanup, args.target)
         elif args.cleanup_action == "apply":
             plan_json = args.plan
             if plan_json == "-":
                 plan_json = sys.stdin.read()
-            result, error = cleanup.apply_cleanup(plan_json)
-            if error:
-                result.error = error
-            print(json.dumps(result.to_dict()))
+            _run_apply(cleanup.apply_cleanup, plan_json)
         else:
             cleanup_parser.print_help()
             sys.exit(1)
     elif args.command == "merge":
         if args.merge_action == "plan":
-            plan_obj, error = merge.plan_merge(args.arguments)
-            if error:
-                output = {
-                    "success": False,
-                    "error": str(error)
-                }
-            else:
-                output = plan_obj.to_dict() if plan_obj else {"success": False}
-            print(json.dumps(output))
+            _run_plan(merge.plan_merge, args.arguments)
         elif args.merge_action == "apply":
             plan_json = args.plan
             if plan_json == "-":
                 plan_json = sys.stdin.read()
-            result, error = merge.apply_merge(plan_json)
-            if error:
-                result.error = error
-            print(json.dumps(result.to_dict()))
+            _run_apply(merge.apply_merge, plan_json)
         else:
             merge_parser.print_help()
             sys.exit(1)
