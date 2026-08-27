@@ -29,7 +29,7 @@ bounds the blast radius of a misjudgment to "the command halts," not "the wrong 
 
 ### Phase 0 — Resolve PR and worktree (path or PR-number input)
 
-Accept either a worktree path or a PR number from `$ARGUMENTS`. Detect which via directory existence check: if `$ARGUMENTS` resolves to a directory, treat as path mode; otherwise parse as PR number. Both branches converge on identical `PR_NUM`, `HEAD_REF`, and `WT` values before Phase 2.
+Accept either a worktree path or a PR number from `$ARGUMENTS`. Detect which via directory existence check: if `$ARGUMENTS` resolves to a directory, treat as path mode; otherwise parse as PR number. An existing directory always wins — e.g. if a directory named `92` exists in the cwd, `/merge-and-cleanup 92` resolves it as a worktree path, not PR #92; disambiguate with `./92` vs a bare `92` if this ever collides. Both branches converge on identical `PR_NUM`, `HEAD_REF`, and `WT` values before Phase 2.
 
 ```bash
 # DETECTION: Is $ARGUMENTS a directory (path mode) or a PR number (PR-number mode)?
@@ -52,10 +52,6 @@ if [ -n "$WT_CANDIDATE" ]; then
     exit 1
   fi
   
-  # Resolve HEAD_REF from the current branch in the worktree
-  HEAD_REF=$(git -C "$WT" symbolic-ref --short -q HEAD 2>/dev/null || echo "")
-  # If detached, leave HEAD_REF empty — Phase 2 will catch it with its own error
-  
   # Resolve PR_NUM via cache-first + gh fallback
   CACHE_FILE="$WT/.claude/github-cache.json"
   GITHUB_CACHE=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
@@ -73,6 +69,7 @@ if [ -n "$WT_CANDIDATE" ]; then
     PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
     PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
     PR_URL=$(printf '%s' "$PR_DATA" | jq -r '.url')
+    HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
     
     # Backfill the cache with PR data (temp-file-then-mv pattern to avoid truncation)
     if [ ! -f "$CACHE_FILE" ]; then
@@ -99,6 +96,7 @@ if [ -n "$WT_CANDIDATE" ]; then
     fi
     PR_STATE=$(printf '%s' "$PR_DATA" | jq -r '.state')
     PR_TITLE=$(printf '%s' "$PR_DATA" | jq -r '.title')
+    HEAD_REF=$(printf '%s' "$PR_DATA" | jq -r '.headRefName')
   fi
   
   # Validate PR is open
