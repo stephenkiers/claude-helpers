@@ -199,21 +199,26 @@ TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin 
 
 **Skip if recently run:** If lint/typecheck/test were run earlier in this conversation and all passed, skip re-running them. Trust the prior results.
 
-Run every non-null command from the cache in this order:
+Run every non-null command from the cache in this order: format → check (composite, replaces lint+typecheck if present) → parallelizable group → build.
 
-1. **Format** (if `commands.format` exists): Run first — formatting fixes may prevent lint errors
-2. **Check** (if `commands.check` exists): Composite command — may replace lint+typecheck. Run instead of separate lint/typecheck if present.
-3. **Parallel** (from `parallelizable` list): Typically lint, vet, typecheck, test
-4. **Sequential**: build (if exists)
+```bash
+# Run checks via deterministic CLI
+CHECK_RESULT=$(python3 -m scripts.workflow.cli checks run - < <(cat .claude/repo-cache.json 2>/dev/null || echo '{}'))
+CHECK_PASSED=$(printf '%s' "$CHECK_RESULT" | jq -r '.all_passed // false')
+FAILED_AT=$(printf '%s' "$CHECK_RESULT" | jq -r '.failed_at // empty')
+```
 
 **If a command is null in the cache, skip it.** Don't fall back to language defaults at runtime — all defaults were already resolved during detection and written to the cache.
 
 **On failure:** Stop immediately, report error, record gotcha in cache. Do NOT commit.
 
 ```bash
-# On the check-failure branch above:
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome failure --failure-class test_failure 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class test_failure 2>/dev/null || true
+if [ "$CHECK_PASSED" != "true" ]; then
+  # Check failed
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome failure --failure-class test_failure 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class test_failure 2>/dev/null || true
+  exit 1
+fi
 ```
 
 On success, continue below and close out `run-checks` there.
@@ -223,9 +228,6 @@ On success, continue below and close out `run-checks` there.
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome success 2>/dev/null || true
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage commit 2>/dev/null || echo unknown)
-
-git add -A
-git diff --staged
 ```
 
 Write commit message:
@@ -233,6 +235,8 @@ Write commit message:
 - Types: feat, fix, refactor, docs, test, chore
 - Under 72 chars
 - **NEVER mention Claude, AI, LLM, or add Co-Authored-By**
+
+(The wrapper's modeling step handles this; the CLI just commits the message already written.)
 
 ## 5. Push & PR
 
@@ -381,25 +385,35 @@ if [ -z "$PR_NUM" ]; then
   PR_NUM=$(gh pr view --json number -q '.number' 2>/dev/null || echo "")
 fi
 
-if [ -z "$PR_NUM" ]; then
-  # PR does not exist: create it with correct base
-  if [ "$STACK_IS_STACKED" = "true" ]; then
-    gh pr create --title "$TITLE" --base "$STACK_PARENT_BRANCH" --body-file "$TMP_BODY"
-  else
-    gh pr create --title "$TITLE" --body-file "$TMP_BODY"
-  fi
-  rm -f "$TMP_BODY"
-else
-  TMP_BODY_CURRENT=$(mktemp)
-  if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
-    echo "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
-    exit 1
-  fi
-  echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
+**After the PR body is finalized (below), use the deterministic CLI to execute push and PR creation/update:**
+
+```bash
+# Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
+TMP_MSG=$(mktemp)
+# Write the commit message to TMP_MSG here (if not already done above)
+
+SHIPIT_PLAN=$(python3 -m scripts.workflow.cli shipit plan "$TMP_MSG" --body-file "$TMP_BODY" --title "$TITLE")
+PLAN_OK=$(printf '%s' "$SHIPIT_PLAN" | jq -r '.plan_hash // empty')
+if [ -z "$PLAN_OK" ]; then
+  echo "ERROR: Failed to plan shipit" >&2
+  exit 1
 fi
+
+# Apply the plan (stages, commits, pushes, creates/edits PR, writes cache)
+SHIPIT_RESULT=$(echo "$SHIPIT_PLAN" | python3 -m scripts.workflow.cli shipit apply -)
+SHIPIT_OK=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.success // false')
+if [ "$SHIPIT_OK" != "true" ]; then
+  ERROR=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.error // "Unknown error"')
+  echo "ERROR: shipit apply failed: $ERROR" >&2
+  exit 1
+fi
+
+rm -f "$TMP_BODY" "$TMP_MSG"
 ```
 
-**If the PR already exists, merge into its current body before writing — never blind-overwrite.**
+**Note:** The old PR-body-merge logic below is kept for reference, but is now incorporated into the plan/apply flow. If the PR already exists, the CLI detects it and calls `gh pr edit` instead of `gh pr create`.
+
+**If you need to handle novel PR content manually, use this reference logic; otherwise, the CLI handles it:**
 This is the firm rule the rewrite exists for: a human may have hand-edited the description since
 the last `/shipit` run, and that work must not be silently destroyed. Note the exact path printed
 by `echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"` above and reuse it verbatim — do not re-run `mktemp`

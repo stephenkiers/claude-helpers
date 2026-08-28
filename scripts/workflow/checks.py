@@ -1,14 +1,14 @@
 """
-Toolchain and check detection.
+Toolchain and check detection, and check execution for /shipit.
 
-Phase 1: detection only (read-only). Execution comes in Phase 2+.
+Phase 1: detection only (read-only). Phase 2: execution for /shipit.
 """
 
 import json
 import os
 import signal
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -141,6 +141,34 @@ class CheckResult:
     error: Optional[str] = None
 
 
+@dataclass
+class CheckStepResult:
+    """Result of a single check step in the execution sequence."""
+    command_type: str
+    command: str
+    success: bool
+    returncode: Optional[int] = None
+    stdout: str = ""
+    stderr: str = ""
+    error: Optional[str] = None
+
+
+@dataclass
+class CheckResults:
+    """Results of executing all checks for a /shipit run."""
+    results: List[CheckStepResult] = field(default_factory=list)
+    all_passed: bool = True
+    failed_at: Optional[str] = None
+
+    def to_dict(self):
+        """Convert to dict for JSON serialization."""
+        return {
+            "results": [asdict(r) for r in self.results],
+            "all_passed": self.all_passed,
+            "failed_at": self.failed_at
+        }
+
+
 def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300) -> CheckResult:
     """
     Execute a shell check command, capturing output. Never raises.
@@ -167,3 +195,59 @@ def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300) -> CheckRes
         return CheckResult(success=proc.returncode == 0, returncode=proc.returncode, stdout=stdout, stderr=stderr)
     except Exception as e:
         return CheckResult(success=False, error=str(e))
+
+
+def run_checks(
+    commands: Dict[str, Optional[str]],
+    repo_root: Path,
+    parallelizable: Optional[List[str]] = None,
+    timeout: int = 300
+) -> CheckResults:
+    """
+    Execute checks in order (format → check → parallelizable → build), stopping at first failure.
+
+    Cached check commands execute via shell=True (intentional for shell syntax like && and pipes).
+    Trust boundary: .claude/repo-cache.json content is repo-committer-controlled, not PR/attacker input.
+
+    Args:
+        commands: Dict of command type → command string (from cache).
+        repo_root: Path to repo root for cwd of executed commands.
+        parallelizable: List of command types to run in the "parallelizable" group (typically lint, vet, typecheck, test).
+        timeout: Timeout per command in seconds (default 300).
+
+    Returns:
+        CheckResults with ordered list of per-command results, all_passed, and failed_at fields.
+    """
+    if parallelizable is None:
+        parallelizable = []
+
+    results = CheckResults()
+    order = ["format", "check"]
+    if parallelizable:
+        order.extend(parallelizable)
+    order.append("build")
+
+    for cmd_type in order:
+        if cmd_type not in commands or commands[cmd_type] is None:
+            continue
+
+        cmd = commands[cmd_type]
+        check_result = execute_check(cmd, cwd=repo_root, timeout=timeout)
+
+        step_result = CheckStepResult(
+            command_type=cmd_type,
+            command=cmd,
+            success=check_result.success,
+            returncode=check_result.returncode,
+            stdout=check_result.stdout,
+            stderr=check_result.stderr,
+            error=check_result.error
+        )
+        results.results.append(step_result)
+
+        if not check_result.success:
+            results.all_passed = False
+            results.failed_at = cmd_type
+            break
+
+    return results

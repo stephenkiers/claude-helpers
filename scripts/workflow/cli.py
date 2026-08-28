@@ -17,7 +17,9 @@ import json
 import dataclasses
 from pathlib import Path
 
-from . import cleanup, merge
+from . import cleanup, merge, shipit, checks
+from .models import RepoCacheData
+from .cache import read_repo_cache
 
 
 def _run_plan(plan_fn, arg):
@@ -86,6 +88,38 @@ def main():
     merge_apply_parser = merge_subparsers.add_parser("apply", help="Apply merge plan")
     merge_apply_parser.add_argument("plan", help="Plan JSON")
 
+    shipit_parser = subparsers.add_parser("shipit", help="Commit, push, and create/update PR")
+    shipit_subparsers = shipit_parser.add_subparsers(dest="shipit_action")
+
+    shipit_plan_parser = shipit_subparsers.add_parser("plan", help="Plan shipit")
+    shipit_plan_parser.add_argument(
+        "message_path",
+        help="Path to commit message file"
+    )
+    shipit_plan_parser.add_argument(
+        "--body-file",
+        help="Path to PR body file (optional)"
+    )
+    shipit_plan_parser.add_argument(
+        "--title",
+        help="PR title (optional)"
+    )
+
+    shipit_apply_parser = shipit_subparsers.add_parser("apply", help="Apply shipit plan")
+    shipit_apply_parser.add_argument(
+        "plan",
+        help="Plan JSON or '-' to read from stdin"
+    )
+
+    checks_parser = subparsers.add_parser("checks", help="Run checks")
+    checks_subparsers = checks_parser.add_subparsers(dest="checks_action")
+
+    checks_run_parser = checks_subparsers.add_parser("run", help="Run checks")
+    checks_run_parser.add_argument(
+        "cache",
+        help="Repo cache JSON path or '-' to read from stdin"
+    )
+
     args = parser.parse_args()
 
     if args.command == "cleanup":
@@ -109,6 +143,51 @@ def main():
             _run_apply(merge.apply_merge, plan_json)
         else:
             merge_parser.print_help()
+            sys.exit(1)
+    elif args.command == "shipit":
+        if args.shipit_action == "plan":
+            def plan_shipit_wrapper(_):
+                return shipit.plan_shipit(
+                    commit_message_path=args.message_path,
+                    pr_body_path=args.body_file,
+                    pr_title=args.title
+                )
+            _run_plan(plan_shipit_wrapper, None)
+        elif args.shipit_action == "apply":
+            plan_json = args.plan
+            if plan_json == "-":
+                plan_json = sys.stdin.read()
+            _run_apply(shipit.apply_shipit, plan_json)
+        else:
+            shipit_parser.print_help()
+            sys.exit(1)
+    elif args.command == "checks":
+        if args.checks_action == "run":
+            cache_input = args.cache
+            if cache_input == "-":
+                cache_input = sys.stdin.read()
+            try:
+                cache_data = json.loads(cache_input)
+                repo_cache, cache_err = read_repo_cache(Path(cache_data.get("repo_path", ".")))
+                if cache_err:
+                    output = {"success": False, "error": str(cache_err)}
+                    print(json.dumps(output))
+                    sys.exit(1)
+                repo_cache = RepoCacheData.from_dict(cache_data)
+                result = checks.run_checks(
+                    commands=repo_cache.commands,
+                    repo_root=Path.cwd(),
+                    parallelizable=repo_cache.parallelizable
+                )
+                print(json.dumps(result.to_dict()))
+                if not result.all_passed:
+                    sys.exit(1)
+            except json.JSONDecodeError as e:
+                output = {"success": False, "error": f"Invalid cache JSON: {e}"}
+                print(json.dumps(output))
+                sys.exit(1)
+        else:
+            checks_parser.print_help()
             sys.exit(1)
     else:
         parser.print_help()
