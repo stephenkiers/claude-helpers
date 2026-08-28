@@ -13,13 +13,13 @@ case. For edge cases and maintenance, read `~/.claude/prompts/shipit-reference.m
 ## 0. Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail `/shipit`.
-Every call is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
+Every call is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit >/dev/null 2>&1 || true
 ```
 
-Reuse `$TELEMETRY_CMD_ID` for every `stage-begin`/`stage-end`/`command-end` call below.
+Correlation between stages and commands is automatic via a session-scoped state file keyed on the `CLAUDE_CODE_SESSION_ID` environment variable (which persists across separate Bash tool calls). This means explicit `--command-id` and `--stage-id` flags are now optional — they're resolved automatically when omitted. Shell variables set in one Bash tool call do **not** survive into a later, separate Bash tool call, which is why this doc no longer threads `TELEMETRY_CMD_ID`/`TELEMETRY_STAGE_ID` through shell variables across call boundaries. See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ## 1. Load Cache & Detect Tooling
 
@@ -194,7 +194,7 @@ If `node_modules` missing (or `node_modules/.bun` for bun): run cached install c
 ## 3. Run Checks
 
 ```bash
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage run-checks 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks 2>/dev/null || true
 ```
 
 **Skip if recently run:** If lint/typecheck/test were run earlier in this conversation and all passed, skip re-running them. Trust the prior results.
@@ -215,8 +215,8 @@ FAILED_AT=$(printf '%s' "$CHECK_RESULT" | jq -r '.failed_at // empty')
 ```bash
 if [ "$CHECK_PASSED" != "true" ]; then
   # Check failed
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome failure --failure-class test_failure 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class test_failure 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome failure --failure-class test_failure 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class test_failure 2>/dev/null || true
   exit 1
 fi
 ```
@@ -226,8 +226,8 @@ On success, continue below and close out `run-checks` there.
 ## 4. Commit
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage run-checks --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage commit 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage commit 2>/dev/null || true
 ```
 
 Write commit message:
@@ -241,8 +241,8 @@ Write commit message:
 ## 5. Push & PR
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage commit --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage create-pr 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage commit --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-pr 2>/dev/null || true
 ```
 
 ### Stack Detection (if stacked)
@@ -273,8 +273,8 @@ else
   # ~/.claude/prompts/worktree-reference.md (routes on STACK_LAYOUT: gh stack sync for
   # single-driver, git rebase --onto + --force-with-lease for per-branch; stops on unknown).
   echo "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
@@ -547,8 +547,8 @@ Once the PR is created (or confirmed to already exist) and reported to the user,
 `create-pr` and the overall command as success — non-fatal, same as every telemetry call above:
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-pr --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-pr --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome success 2>/dev/null || true
 ```
 
 ## On Failure
@@ -559,8 +559,8 @@ If failure happened during push/PR creation (Step 5) rather than the earlier che
 out telemetry for that failure too — never let this block reporting the failure to the user:
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command shipit --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class other 2>/dev/null || true
 ```
 
 Then retry. For complex failures, see `~/.claude/prompts/shipit-reference.md`.
