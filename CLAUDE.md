@@ -102,6 +102,9 @@ to get started.
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
 - `/pr-comments` — review PR comments and decide how to respond
+- `/leave-pr-comments` — post an expert-review's curated findings to a coworker's PR as a pending
+  (draft) GitHub review with inline comments; never auto-submits (the human clicks Submit). Consumes
+  the walk-through's kept set. Takes a PR URL or review-dir path. See ADR-0015 (amends ADR-0009).
 - `/expert-pre-mortem` — standalone fragility pre-mortem (Fragile Feynman)
 - `/expert-rebase` — rebase on origin/main; convene experts on conflicting hunks
 - `/review-stats` — **currently non-functional** (stub). The underlying ledger was removed in chore/29;
