@@ -145,6 +145,16 @@ REVIEWS="$HOME/.claude/reviews/${REPO_KEY}"
 [ -d "$REVIEWS" ] || { echo "No reviews for this repo ($REPO_KEY) yet."; exit 0; }
 
 # Candidates: claude-action-plan.md files with pending rulings, sorted by recency
+# First, check for any pre-migration action-plan.md files (old name, not read by verify-queue)
+find "$REVIEWS" -name action-plan.md 2>/dev/null | while read -r old_plan_file; do
+  review_dir=$(dirname "$old_plan_file")
+  new_plan_file="$review_dir/claude-action-plan.md"
+  # Only warn if the new file doesn't exist (old file without migration)
+  if [ ! -f "$new_plan_file" ]; then
+    echo "WARNING: found pre-migration action-plan.md at $old_plan_file — this file is not read by verify-queue; see docs/adr/0007 for migration policy" >&2
+  fi
+done
+
 find "$REVIEWS" -name claude-action-plan.md 2>/dev/null -print0 \
   | xargs -0 ls -t 2>/dev/null \
   | while read -r plan_file; do
@@ -216,45 +226,94 @@ echo "Total pending: **$TOTAL**"
 
 ## Disposition Verbs
 
-### `done <id> [--result "…"]`
+### `done <id> [--result "…"] [--noop]`
 
 Marks a row as `done`, optionally records a result, and writes the result back to the source claude-action-plan:
 
 ```bash
 ID="$2"
 RESULT=""
+NOOP=false
 
-# Parse --result flag if present
-if [ "$3" = "--result" ] && [ -n "$4" ]; then
-  RESULT="$4"
-fi
+# Parse --result and --noop flags
+shift 2  # consume ID and command name
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --result)
+      if [ -n "$2" ]; then
+        RESULT="$2"
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --noop)
+      NOOP=true
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
-# Update queue
-set_status "$ID" "done" "$RESULT"
-
-# Write result back to claude-action-plan (read the plan, find the item's STATUS/DECISION fields, update them)
-# Extract plan path from queue
+# Extract plan path and kind from queue
 PLAN=$(jq -r --arg id "$ID" 'select(.id == $id) | .plan' "$QUEUE" | head -1)
+KIND=$(jq -r --arg id "$ID" 'select(.id == $id) | .kind' "$QUEUE" | head -1)
+
 if [ -z "$PLAN" ] || [ ! -f "$PLAN" ]; then
   echo "ERROR: Could not find plan file for $ID"
   exit 1
 fi
 
+# For your-call rows, require one of --result or --noop
+if [ "$KIND" = "your-call" ] && [ -z "$RESULT" ] && [ "$NOOP" = "false" ]; then
+  echo "ERROR: For your-call items, must specify either --result or --noop"
+  exit 1
+fi
+
+# Update queue
+set_status "$ID" "done" "$RESULT"
+
 echo "Marked $ID as done"
 [ -n "$RESULT" ] && echo "Result: $RESULT"
+[ "$NOOP" = "true" ] && echo "Recorded as no-op (leave as-is)"
 echo "Now write the ruling back to: $PLAN"
 ```
 
 **Then write the ruling back into the plan (judgment step, not blind sed).** Open `$PLAN`, locate the
 `- **STATUS**:` and `- **DECISION**:` fields belonging to *this* finding (match on the finding's
 `summary` / slug via its `### N. [Title]` heading — a plan usually holds several items, so a global
-replace would corrupt the others), and set `STATUS: decided` (or `measured`, for a `measurement` row)
-with `DECISION: <result>` when `$RESULT` is present, or `DECISION: done` otherwise. When exactly one
-matching `pending-*` item remains in the file, a scoped replacement is safe as a fallback:
+replace would corrupt the others). For `measurement` rows, set `STATUS: measured` with `DECISION: <result>`
+when `$RESULT` is present, or `DECISION: done` otherwise. For `your-call` rows, set `STATUS: decided`
+with `DECISION: <result>` (or `DECISION: done` if no result), unless `--noop` was given, in which case
+set `STATUS: no-op` with `DECISION: no action needed` or similar. When exactly one matching `pending-*`
+item remains in the file, a scoped replacement is safe as a fallback:
 
 ```bash
-# Fallback ONLY when a single matching pending-* item remains in $PLAN:
-# sed -i.bak "s/- \*\*STATUS\*\*: pending-measurement/- **STATUS**: measured/; s/- \*\*DECISION\*\*: .*/- **DECISION**: ${RESULT}/" "$PLAN" && rm -f "$PLAN.bak"
+# Fallback ONLY when a single matching pending-* item remains in $PLAN.
+# Find the item's heading anchor (its own "### N. [Title]") and scope the sed to that block —
+# through the next "### " heading (or EOF), never past it, so the substitution can't reach
+# another item's STATUS/DECISION lines.
+# ITEM_HEADING=$(grep -n "^### .*${FINDING_SLUG}" "$PLAN" | head -1 | cut -d: -f1)
+# if [ -n "$ITEM_HEADING" ]; then
+#   NEXT_HEADING=$(tail -n "+$((ITEM_HEADING + 1))" "$PLAN" | grep -n "^### " | head -1 | cut -d: -f1)
+#   if [ -n "$NEXT_HEADING" ]; then
+#     LAST_LINE=$((ITEM_HEADING + NEXT_HEADING - 1))
+#   else
+#     LAST_LINE='$'  # no later heading — block runs to end of file
+#   fi
+#   if [ "$KIND" = "measurement" ]; then
+#     sed -i.bak "${ITEM_HEADING},${LAST_LINE}s/- \*\*STATUS\*\*: pending-measurement/- **STATUS**: measured/; ${ITEM_HEADING},${LAST_LINE}s/- \*\*DECISION\*\*: .*/- **DECISION**: ${RESULT}/" "$PLAN"
+#   elif [ "$KIND" = "your-call" ]; then
+#     if [ "$NOOP" = "true" ]; then
+#       sed -i.bak "${ITEM_HEADING},${LAST_LINE}s/- \*\*STATUS\*\*: pending-decision/- **STATUS**: no-op/; ${ITEM_HEADING},${LAST_LINE}s/- \*\*DECISION\*\*: .*/- **DECISION**: no action needed/" "$PLAN"
+#     else
+#       sed -i.bak "${ITEM_HEADING},${LAST_LINE}s/- \*\*STATUS\*\*: pending-decision/- **STATUS**: decided/; ${ITEM_HEADING},${LAST_LINE}s/- \*\*DECISION\*\*: .*/- **DECISION**: ${RESULT}/" "$PLAN"
+#     fi
+#   fi
+#   rm -f "$PLAN.bak"
+# fi
 ```
 
 This write-back is what keeps `claude-action-plan.md` (the gut-check instrument of record) in sync
