@@ -67,7 +67,6 @@ if __name__ == "__main__":
         with mock.patch("workflow.checks.execute_check", side_effect=mock_execute_check):
             commands = {
                 "format": "prettier --write .",
-                "check": "custom-check",
                 "lint": "eslint .",
                 "typecheck": "tsc --noEmit",
                 "test": "jest",
@@ -77,7 +76,7 @@ if __name__ == "__main__":
 
             result = run_checks(commands, repo_root=repo_root, parallelizable=parallelizable)
 
-            # Should execute: format, check, then parallelize lint/typecheck/test, then build
+            # Should execute: format, then parallelize lint/typecheck/test, then build
             # The parallelizable ones should be in there too, but in any order
             parallelizable_found = all(
                 cmd in execution_order for cmd in ["eslint .", "tsc --noEmit", "jest"]
@@ -86,10 +85,6 @@ if __name__ == "__main__":
             test_result(
                 "run_checks: format executes first",
                 len(execution_order) > 0 and execution_order[0] == "prettier --write ."
-            )
-            test_result(
-                "run_checks: check executes second",
-                len(execution_order) > 1 and execution_order[1] == "custom-check"
             )
             test_result(
                 "run_checks: build executes last",
@@ -191,6 +186,7 @@ if __name__ == "__main__":
         check_called = []
         lint_called = []
         typecheck_called = []
+        test_called = []
         build_called = []
 
         def mock_execute_selective(command, cwd=None, timeout=300):
@@ -201,6 +197,8 @@ if __name__ == "__main__":
                 lint_called.append(command)
             elif "typecheck" in command:
                 typecheck_called.append(command)
+            elif "test" in command or "jest" in command:
+                test_called.append(command)
             elif "build" in command:
                 build_called.append(command)
 
@@ -222,9 +220,10 @@ if __name__ == "__main__":
                 "check": "custom-check",
                 "lint": "eslint .",
                 "typecheck": "tsc --noEmit",
+                "test": "jest",
                 "build": "npm run build"
             }
-            parallelizable = []
+            parallelizable = ["lint", "typecheck", "test"]
 
             result = run_checks(commands, repo_root=repo_root, parallelizable=parallelizable)
 
@@ -237,6 +236,10 @@ if __name__ == "__main__":
             test_result(
                 "run_checks: check replaces typecheck when both present",
                 len(check_called) > 0 and len(typecheck_called) == 0
+            )
+            test_result(
+                "run_checks: test still runs (not excluded by check)",
+                len(test_called) > 0
             )
 
     print()

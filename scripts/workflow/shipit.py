@@ -248,7 +248,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     result.pr_url = pr_url
                     # Extract PR number from URL
                     try:
-                        pr_num = int(pr_url.split('/')[-1])
+                        pr_num = int(pr_url.rstrip().split('/')[-1])
                         plan.pr_number = pr_num
                     except (ValueError, IndexError):
                         pass
@@ -283,9 +283,17 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     pass
 
             # Merge PR data into cache
-            if plan.pr_number and result.pr_url:
+            # Attempt fallback extraction if plan.pr_number is still None
+            pr_num_to_cache = plan.pr_number
+            if not pr_num_to_cache and result.pr_url:
+                try:
+                    pr_num_to_cache = int(result.pr_url.rstrip().split('/')[-1])
+                except (ValueError, IndexError):
+                    pr_num_to_cache = None
+
+            if pr_num_to_cache and result.pr_url:
                 pr_data = {
-                    "number": plan.pr_number,
+                    "number": pr_num_to_cache,
                     "url": result.pr_url,
                     "state": "OPEN"
                 }

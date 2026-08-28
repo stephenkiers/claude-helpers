@@ -223,8 +223,10 @@ def run_checks(
 
     results = CheckResults()
     order = ["format", "check"]
-    if parallelizable:
-        order.extend(parallelizable)
+    effective_parallelizable = list(parallelizable) if parallelizable else []
+    if commands.get("check"):
+        effective_parallelizable = [c for c in effective_parallelizable if c not in ("lint", "typecheck")]
+    order.extend(effective_parallelizable)
     order.append("build")
 
     for cmd_type in order:
