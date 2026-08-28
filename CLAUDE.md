@@ -49,7 +49,7 @@ See the ADRs for the full rationale:
 
 The panel got good enough that reading its output became the expensive part. So `/expert-review` no
 longer ends at the Amalgamator's `final-report.md` — a **Triage Chief** (`prompts/triage.md`) reads
-that report and writes `action-plan.md`, which is the file a human actually opens. Every CONFIRMED
+that report and writes `claude-action-plan.md`, which is the file a human actually opens. Every CONFIRMED
 finding lands in one of **four buckets** — *doing it*, *needs you*, *needs measurement*, *deferred*:
 
 - **Doing it** — the default, and where ~85% of findings land. Skim it. (No *decision* needed — but
@@ -124,7 +124,7 @@ to get started.
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. Takes a PR number
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
-- `/verify-queue` — drain pending "needs measurement" and "needs you" rulings from expert-review action-plans; batched per-repo queue at `<repo>/worktrees/verify-queue.jsonl` drains open items via sync, measurement, and disposition
+- `/verify-queue` — drain pending "needs measurement" and "needs you" rulings from expert-review claude-action-plans; batched per-repo queue at `<repo>/worktrees/verify-queue.jsonl` drains open items via sync, measurement, and disposition
 - `/fork-planning` — fork a planning session
 - `/handoff` — snapshot the current conversation into `~/.handoff/<timestamp>-<slug>/` so it can be resumed elsewhere (pair with Esc-Esc to rewind)
 - `/handoff-resume` — list recent handoffs, or load one (by name/prefix/query) into the current window
