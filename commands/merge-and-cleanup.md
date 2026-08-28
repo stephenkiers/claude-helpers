@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: <PR number | worktree path>
-allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(cd:*), Bash(dirname:*), Bash(readlink:*)
+allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*)
 model: haiku
 ---
 
@@ -34,9 +34,24 @@ Accept either a worktree path or a PR number from `$ARGUMENTS`. The plan resolve
 - 4-check push gate: detached HEAD, uncommitted changes, no upstream, unpushed commits
 
 ```bash
+# Resolve $ARGUMENTS to an absolute path if it's an existing filesystem path; if it's a PR number, pass through unchanged
+if [ -e "$ARGUMENTS" ]; then
+  ARGUMENTS="$(readlink -f "$ARGUMENTS")"
+fi
+
 # Call plan_merge to resolve PR/worktree and run push gate
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$(readlink -f "$HOME/.claude/scripts/run-metrics.py")")")"
-PLAN_JSON=$(cd "$CLAUDE_HELPERS_DIR" && python3 -m scripts.workflow.cli merge plan "$ARGUMENTS")
+# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
+# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
+# Intentionally resolves to whichever checkout /setup-local last symlinked (conventionally
+# main), not this worktree — /cleanup and /merge-and-cleanup run the installed, canonical
+# CLI by design, not an in-progress feature-branch copy.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge plan "$ARGUMENTS")
 PLAN_RESULT=$?
 
 if [ $PLAN_RESULT -ne 0 ]; then
@@ -88,8 +103,18 @@ Auto-detected, no config key (repo-cache.json is gitignored and per-worktree, so
 echo "=== Phase 3: Merge Gate ==="
 
 # Apply the merge plan (executes 3-path merge gate, writes cache on success)
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$(readlink -f "$HOME/.claude/scripts/run-metrics.py")")")"
-APPLY_RESULT=$(cd "$CLAUDE_HELPERS_DIR" && echo "$PLAN_JSON" | python3 -m scripts.workflow.cli merge apply -)
+# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
+# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
+# Intentionally resolves to whichever checkout /setup-local last symlinked (conventionally
+# main), not this worktree — /cleanup and /merge-and-cleanup run the installed, canonical
+# CLI by design, not an in-progress feature-branch copy.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+APPLY_RESULT=$(echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply -)
 APPLY_RESULT_CODE=$?
 
 if [ $APPLY_RESULT_CODE -ne 0 ]; then

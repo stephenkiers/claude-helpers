@@ -207,8 +207,18 @@ echo "Now in main worktree, safe to proceed"
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome success 2>/dev/null || true
 
 # Call plan_cleanup to capture check commands and freshness state for later apply
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$(readlink -f "$HOME/.claude/scripts/run-metrics.py")")")"
-PLAN_JSON=$(cd "$CLAUDE_HELPERS_DIR" && python3 -m scripts.workflow.cli cleanup plan "$CURRENT_WORKTREE")
+# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
+# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
+# Intentionally resolves to whichever checkout /setup-local last symlinked (conventionally
+# main), not this worktree — /cleanup and /merge-and-cleanup run the installed, canonical
+# CLI by design, not an in-progress feature-branch copy.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup plan "$CURRENT_WORKTREE")
 PLAN_RESULT=$?
 if [ $PLAN_RESULT -ne 0 ]; then
   echo "ERROR: Failed to plan cleanup for $CURRENT_WORKTREE"
@@ -506,8 +516,18 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup 2>/dev/null || echo unknown)
 
 # Apply the plan: executes pull main ff-only, validation checks, worktree removal, branch deletion
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$(readlink -f "$HOME/.claude/scripts/run-metrics.py")")")"
-APPLY_RESULT=$(cd "$CLAUDE_HELPERS_DIR" && echo "$PLAN_JSON" | python3 -m scripts.workflow.cli cleanup apply -)
+# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
+# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
+# Intentionally resolves to whichever checkout /setup-local last symlinked (conventionally
+# main), not this worktree — /cleanup and /merge-and-cleanup run the installed, canonical
+# CLI by design, not an in-progress feature-branch copy.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+APPLY_RESULT=$(echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup apply -)
 APPLY_RESULT_CODE=$?
 
 if [ $APPLY_RESULT_CODE -ne 0 ]; then
