@@ -9,9 +9,11 @@ Run with: python3 tests/test_telemetry_schema.py
 """
 
 import json
+import os
 import stat
 import sys
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -512,6 +514,187 @@ def test_append_event_to_existing_common_dir():
             tmpbase.rmdir()
 
 
+def test_load_and_update_state_round_trip():
+    """load_and_update_state performs correct read-modify-write (multiple mutations)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "state.json"
+
+        # First write
+        def first_mutation(state):
+            state["key1"] = "value1"
+            return state
+        result1 = telemetry_schema.load_and_update_state(state_path, first_mutation)
+
+        if result1.get("key1") != "value1":
+            return False, f"first mutation didn't persist: {result1}"
+
+        # Second write (should preserve key1)
+        def second_mutation(state):
+            state["key2"] = "value2"
+            return state
+        result2 = telemetry_schema.load_and_update_state(state_path, second_mutation)
+
+        if result2.get("key1") != "value1" or result2.get("key2") != "value2":
+            return False, f"second mutation lost first key: {result2}"
+
+        return True, ""
+
+
+def test_load_and_update_state_missing_file():
+    """load_and_update_state on missing file creates it with mutated content."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "new_state.json"
+
+        if state_path.exists():
+            return False, "state file should not exist yet"
+
+        def init(state):
+            state["initialized"] = True
+            return state
+        result = telemetry_schema.load_and_update_state(state_path, init)
+
+        if not state_path.exists():
+            return False, "state file was not created"
+
+        if result.get("initialized") != True:
+            return False, f"mutation not applied: {result}"
+
+        return True, ""
+
+
+def test_load_and_update_state_corrupt_file():
+    """load_and_update_state on corrupt JSON treats it as empty dict."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "corrupt.json"
+
+        # Write corrupt JSON
+        with open(state_path, "w") as f:
+            f.write("{ invalid json }")
+
+        def mutate(state):
+            state["recovered"] = True
+            return state
+        result = telemetry_schema.load_and_update_state(state_path, mutate)
+
+        if result.get("recovered") != True:
+            return False, f"recovery from corrupt failed: {result}"
+
+        # Verify file now contains valid JSON
+        with open(state_path) as f:
+            content = json.loads(f.read())
+        if content.get("recovered") != True:
+            return False, "file was not updated with valid JSON"
+
+        return True, ""
+
+
+def test_prune_stale_state_removes_old_files():
+    """prune_stale_state removes files older than cutoff."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        # Create an old file (2 days old)
+        old_file = state_dir / "old_session.json"
+        old_file.write_text("{}")
+        os.utime(old_file, (0, 0))  # Set mtime to epoch
+
+        # Create a fresh file
+        fresh_file = state_dir / "fresh_session.json"
+        fresh_file.write_text("{}")
+
+        # Prune with 24h cutoff
+        telemetry_schema.prune_stale_state(state_dir, max_age_seconds=86400)
+
+        if old_file.exists():
+            return False, "old file was not pruned"
+        if not fresh_file.exists():
+            return False, "fresh file was deleted"
+
+        return True, ""
+
+
+def test_prune_stale_state_nonexistent_dir():
+    """prune_stale_state handles nonexistent directory gracefully."""
+    nonexistent = Path("/tmp/.definitely-not-real-dir-" + str(uuid.uuid4()))
+    try:
+        # Should not raise
+        telemetry_schema.prune_stale_state(nonexistent)
+        return True, ""
+    except Exception as e:
+        return False, f"prune_stale_state raised on missing dir: {e}"
+
+
+def test_build_event_state_mismatch_field():
+    """build_event includes state_mismatch field when provided (non-None)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        state_mismatch=True,
+    )
+    if event.get("state_mismatch") != True:
+        return False, f"state_mismatch not in event: {event}"
+    return True, ""
+
+
+def test_build_event_state_mismatch_omitted_when_none():
+    """build_event omits state_mismatch when None."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        state_mismatch=None,
+    )
+    if "state_mismatch" in event:
+        return False, f"state_mismatch should be omitted when None, but found in: {event}"
+    return True, ""
+
+
+def test_validate_event_rejects_empty_command_id():
+    """validate_event rejects command_id that is an empty string."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        command_id="c1",
+    )
+    # Manually set to empty string
+    event["command_id"] = ""
+    errors = telemetry_schema.validate_event(event)
+    if not any("command_id" in e.lower() and "empty" in e.lower() for e in errors):
+        return False, f"should reject empty command_id, got errors: {errors}"
+    return True, ""
+
+
+def test_validate_event_rejects_empty_stage_id():
+    """validate_event rejects stage_id that is an empty string."""
+    event = telemetry_schema.build_event(
+        "stage.begin",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        stage_id="st1",
+    )
+    # Manually set to empty string
+    event["stage_id"] = ""
+    errors = telemetry_schema.validate_event(event)
+    if not any("stage_id" in e.lower() and "empty" in e.lower() for e in errors):
+        return False, f"should reject empty stage_id, got errors: {errors}"
+    return True, ""
+
+
+def test_validate_event_accepts_unknown_as_id():
+    """validate_event accepts command_id='unknown' and stage_id='unknown'."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        command_id="unknown",
+        stage_id="unknown",
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept 'unknown' as ID, got errors: {errors}"
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -618,6 +801,44 @@ if __name__ == "__main__":
 
     passed, msg = test_append_event_to_existing_common_dir()
     test_result("append to existing dir like /tmp works", passed, msg)
+
+    print()
+
+    # State file management tests
+    print("[Section 6] State file operations")
+    passed, msg = test_load_and_update_state_round_trip()
+    test_result("load_and_update_state preserves across mutations", passed, msg)
+
+    passed, msg = test_load_and_update_state_missing_file()
+    test_result("load_and_update_state creates missing file", passed, msg)
+
+    passed, msg = test_load_and_update_state_corrupt_file()
+    test_result("load_and_update_state handles corrupt JSON gracefully", passed, msg)
+
+    passed, msg = test_prune_stale_state_removes_old_files()
+    test_result("prune_stale_state removes files older than cutoff", passed, msg)
+
+    passed, msg = test_prune_stale_state_nonexistent_dir()
+    test_result("prune_stale_state handles nonexistent directory", passed, msg)
+
+    print()
+
+    # State mismatch and ID validation tests
+    print("[Section 7] State mismatch and ID validation")
+    passed, msg = test_build_event_state_mismatch_field()
+    test_result("build_event includes state_mismatch when provided", passed, msg)
+
+    passed, msg = test_build_event_state_mismatch_omitted_when_none()
+    test_result("build_event omits state_mismatch when None", passed, msg)
+
+    passed, msg = test_validate_event_rejects_empty_command_id()
+    test_result("validate_event rejects empty string command_id", passed, msg)
+
+    passed, msg = test_validate_event_rejects_empty_stage_id()
+    test_result("validate_event rejects empty string stage_id", passed, msg)
+
+    passed, msg = test_validate_event_accepts_unknown_as_id()
+    test_result("validate_event accepts 'unknown' as command_id/stage_id", passed, msg)
 
     print()
 

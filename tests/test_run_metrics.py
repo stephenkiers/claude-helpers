@@ -573,6 +573,321 @@ def test_diagnose_prints_per_stage_breakdown():
         return True, ""
 
 
+def test_cross_process_correlation_via_state_file():
+    """Cross-process correlation test: run command-begin, stage-begin, stage-end, command-end as separate calls.
+
+    All four calls share the same CLAUDE_CODE_SESSION_ID and state-dir. Verifies that
+    stage.begin/end share a stage_id, and all four events share a command_id, despite
+    each being run in a separate subprocess (no shell variables).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run command-begin
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id_from_stdout = stdout1.strip()
+
+        # Run stage-begin (WITHOUT explicit --command-id)
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "test-stage"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage-begin failed: {stderr2}"
+        stage_id_from_stdout = stdout2.strip()
+
+        # Run stage-end (WITHOUT explicit --stage-id or --command-id)
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "test-stage", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"stage-end failed: {stderr3}"
+
+        # Run command-end (WITHOUT explicit --command-id)
+        code4, stdout4, stderr4 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "test-cmd", "--outcome", "success"],
+            env=env,
+        )
+        if code4 != 0:
+            return False, f"command-end failed: {stderr4}"
+
+        # Parse the log file
+        if not log_path.exists():
+            return False, "log file was never created"
+
+        events = []
+        with open(log_path) as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+
+        if len(events) != 4:
+            return False, f"expected 4 events, got {len(events)}"
+
+        # Find each event type
+        cmd_begin = next((e for e in events if e.get("event_type") == "command.begin"), None)
+        stage_begin = next((e for e in events if e.get("event_type") == "stage.begin"), None)
+        stage_end = next((e for e in events if e.get("event_type") == "stage.end"), None)
+        cmd_end = next((e for e in events if e.get("event_type") == "command.end"), None)
+
+        if not all([cmd_begin, stage_begin, stage_end, cmd_end]):
+            return False, "missing one or more event types"
+
+        # Verify command_id correlation
+        cmd_id_from_begin = cmd_begin.get("command_id")
+        if cmd_id_from_begin != cmd_id_from_stdout:
+            return False, f"command.begin's command_id doesn't match stdout: {cmd_id_from_begin} vs {cmd_id_from_stdout}"
+
+        if stage_begin.get("command_id") != cmd_id_from_begin:
+            return False, f"stage.begin doesn't have matching command_id: {stage_begin.get('command_id')} vs {cmd_id_from_begin}"
+
+        if stage_end.get("command_id") != cmd_id_from_begin:
+            return False, f"stage.end doesn't have matching command_id: {stage_end.get('command_id')} vs {cmd_id_from_begin}"
+
+        if cmd_end.get("command_id") != cmd_id_from_begin:
+            return False, f"command.end doesn't have matching command_id: {cmd_end.get('command_id')} vs {cmd_id_from_begin}"
+
+        # Verify stage_id correlation
+        stage_id_from_begin = stage_begin.get("stage_id")
+        if stage_id_from_begin != stage_id_from_stdout:
+            return False, f"stage.begin's stage_id doesn't match stdout: {stage_id_from_begin} vs {stage_id_from_stdout}"
+
+        if stage_end.get("stage_id") != stage_id_from_begin:
+            return False, f"stage.end doesn't have matching stage_id: {stage_end.get('stage_id')} vs {stage_id_from_begin}"
+
+        return True, ""
+
+
+def test_explicit_flags_override_state():
+    """Explicit --command-id/--stage-id flags override state file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run command-begin, which seeds state with one command_id
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        auto_cmd_id = stdout1.strip()
+
+        # Run stage-end with an EXPLICIT --stage-id and --command-id (different from state)
+        explicit_stage_id = "explicit-stage-id-" + __import__("uuid").uuid4().hex[:8]
+        explicit_cmd_id = "explicit-cmd-id-" + __import__("uuid").uuid4().hex[:8]
+
+        code2, stdout2, stderr2 = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "stage-end",
+                "--stage-id", explicit_stage_id,
+                "--command-id", explicit_cmd_id,
+                "--stage", "test-stage",
+                "--outcome", "success",
+            ],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage-end failed: {stderr2}"
+
+        # Parse and verify explicit IDs were used
+        with open(log_path) as f:
+            lines = [line for line in f if line.strip()]
+
+        stage_end_event = json.loads(lines[-1])  # Last event should be stage.end
+
+        if stage_end_event.get("stage_id") != explicit_stage_id:
+            return False, f"explicit --stage-id not used: got {stage_end_event.get('stage_id')}, expected {explicit_stage_id}"
+
+        if stage_end_event.get("command_id") != explicit_cmd_id:
+            return False, f"explicit --command-id not used: got {stage_end_event.get('command_id')}, expected {explicit_cmd_id}"
+
+        return True, ""
+
+
+def test_missing_state_file_degrades_to_unknown():
+    """stage-end with no state file and no explicit flags produces 'unknown' IDs."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run stage-end WITHOUT any prior command-begin or stage-begin (no state file)
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "stage-end",
+                "--stage", "orphan-stage",
+                "--outcome", "success",
+            ],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"stage-end should succeed even with no state: exit {code}, stderr: {stderr}"
+
+        # Parse the event
+        if not log_path.exists():
+            return False, "log file not created"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if event.get("stage_id") != "unknown":
+            return False, f"stage_id should be 'unknown', got: {event.get('stage_id')}"
+
+        if event.get("command_id") != "unknown":
+            return False, f"command_id should be 'unknown', got: {event.get('command_id')}"
+
+        return True, ""
+
+
+def test_stage_name_mismatch_sets_flag():
+    """stage-end with mismatched stage name sets state_mismatch: true."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run command-begin and stage-begin with one name
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "original-stage"],
+            env=env,
+        )
+
+        # Now run stage-end with a DIFFERENT stage name (no explicit --stage-id)
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "stage-end",
+                "--stage", "different-stage",  # Mismatch!
+                "--outcome", "success",
+            ],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"stage-end failed: {stderr}"
+
+        # Parse and verify state_mismatch flag
+        with open(log_path) as f:
+            lines = [line for line in f if line.strip()]
+
+        stage_end_event = json.loads(lines[-1])
+
+        if stage_end_event.get("state_mismatch") != True:
+            return False, f"state_mismatch should be True, got: {stage_end_event.get('state_mismatch')}"
+
+        return True, ""
+
+
+def test_command_name_mismatch_sets_flag():
+    """command-end with mismatched command name sets state_mismatch: true."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run command-begin with one name
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "original-cmd"],
+            env=env,
+        )
+
+        # Now run command-end with a DIFFERENT command name (no explicit --command-id)
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "command-end",
+                "--command", "different-cmd",  # Mismatch!
+                "--outcome", "success",
+            ],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"command-end failed: {stderr}"
+
+        # Parse and verify state_mismatch flag
+        with open(log_path) as f:
+            lines = [line for line in f if line.strip()]
+
+        cmd_end_event = json.loads(lines[-1])
+
+        if cmd_end_event.get("state_mismatch") != True:
+            return False, f"state_mismatch should be True, got: {cmd_end_event.get('state_mismatch')}"
+
+        return True, ""
+
+
+def test_prune_on_command_begin():
+    """command-begin opportunistically prunes stale state files."""
+    import os as _os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id_old = "old-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id_new = "new-session-" + __import__("uuid").uuid4().hex[:8]
+
+        # Create a stale state file (2 days old)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        old_state_file = state_dir / f"{session_id_old}.json"
+        old_state_file.write_text('{"command_id": "old"}')
+        _os.utime(old_state_file, (0, 0))  # Set mtime to epoch (very old)
+
+        if not old_state_file.exists():
+            return False, "old state file not created"
+
+        # Run command-begin for a new session
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id_new}
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test"],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"command-begin failed: {stderr}"
+
+        # Verify old file was pruned, new file exists
+        if old_state_file.exists():
+            return False, "old state file was not pruned by command-begin"
+
+        new_state_file = state_dir / f"{session_id_new}.json"
+        if not new_state_file.exists():
+            return False, "new session state file was not created"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -647,6 +962,27 @@ if __name__ == "__main__":
 
     passed, msg = test_diagnose_prints_per_stage_breakdown()
     test_result("diagnose prints per-stage breakdown", passed, msg)
+
+    print()
+
+    print("[Section 7] Session-scoped state file correlation (cross-process)")
+    passed, msg = test_cross_process_correlation_via_state_file()
+    test_result("cross-process correlation: command/stage IDs match via state file", passed, msg)
+
+    passed, msg = test_explicit_flags_override_state()
+    test_result("explicit flags override state file", passed, msg)
+
+    passed, msg = test_missing_state_file_degrades_to_unknown()
+    test_result("missing state degrades to 'unknown' IDs gracefully", passed, msg)
+
+    passed, msg = test_stage_name_mismatch_sets_flag()
+    test_result("stage-end with mismatched name sets state_mismatch: true", passed, msg)
+
+    passed, msg = test_command_name_mismatch_sets_flag()
+    test_result("command-end with mismatched name sets state_mismatch: true", passed, msg)
+
+    passed, msg = test_prune_on_command_begin()
+    test_result("command-begin prunes stale state files", passed, msg)
 
     print()
 

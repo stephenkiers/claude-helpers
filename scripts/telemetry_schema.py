@@ -10,6 +10,7 @@ and encoding. Never duplicates logic across writers.
 import fcntl
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -77,6 +78,7 @@ def build_event(
     findings=None,
     checks=None,
     token_confidence=None,
+    state_mismatch=None,
 ) -> dict:
     """Build a well-formed telemetry event.
 
@@ -152,6 +154,8 @@ def build_event(
         event["checks"] = checks
     if token_confidence is not None:
         event["token_confidence"] = token_confidence
+    if state_mismatch is not None:
+        event["state_mismatch"] = state_mismatch
 
     return event
 
@@ -189,6 +193,22 @@ def validate_event(event: dict) -> list:
     elif not isinstance(event.get("session_id"), str) or not event.get("session_id"):
         errors.append("session_id must be a non-empty string")
 
+    # Check command_id if present (must be non-empty string, not empty string)
+    if "command_id" in event:
+        command_id = event.get("command_id")
+        if command_id == "":
+            errors.append("command_id must not be an empty string; use 'unknown' instead")
+        elif not isinstance(command_id, str):
+            errors.append(f"command_id must be a string, got {type(command_id).__name__}")
+
+    # Check stage_id if present (must be non-empty string, not empty string)
+    if "stage_id" in event:
+        stage_id = event.get("stage_id")
+        if stage_id == "":
+            errors.append("stage_id must not be an empty string; use 'unknown' instead")
+        elif not isinstance(stage_id, str):
+            errors.append(f"stage_id must be a string, got {type(stage_id).__name__}")
+
     # Check outcome if present
     if "outcome" in event:
         outcome = event.get("outcome")
@@ -210,6 +230,116 @@ def validate_event(event: dict) -> list:
 def default_log_path() -> Path:
     """Return the default telemetry log path."""
     return Path.home() / ".claude" / "telemetry" / "events.jsonl"
+
+
+def default_state_dir() -> Path:
+    """Return the default telemetry state directory for session-scoped IDs."""
+    return Path.home() / ".claude" / "telemetry" / "state"
+
+
+def state_path(session_id: str, state_dir: Path = None) -> Path:
+    """Return the state file path for a given session_id.
+
+    Args:
+        session_id: the session ID (used as filename; should not be "unknown")
+        state_dir: directory to store state files (default: default_state_dir())
+
+    Returns:
+        Path to the session's state file
+    """
+    if state_dir is None:
+        state_dir = default_state_dir()
+    return state_dir / f"{session_id}.json"
+
+
+def load_and_update_state(path: Path, mutate_fn) -> dict:
+    """Atomically read-modify-write a JSON state file.
+
+    Uses fcntl.flock to ensure atomic read-modify-write across concurrent callers.
+    If the file doesn't exist or contains corrupt/empty JSON, treats it as an empty dict {}.
+    If the state_dir doesn't exist, creates it with mode 0700.
+
+    Args:
+        path: path to the state file
+        mutate_fn: callable(state_dict) -> new_state_dict; receives the read dict,
+                   returns the mutated dict to write back
+
+    Returns:
+        The final state dict that was written (the return value of mutate_fn)
+    """
+    path = Path(path)
+
+    # Ensure parent directory exists with secure permissions
+    parent_existed = path.parent.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not parent_existed:
+        os.chmod(path.parent, 0o700)
+
+    # Open with O_RDWR | O_CREAT to support read-modify-write
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            # Read existing content
+            file_size = os.fstat(fd).st_size
+            if file_size > 0:
+                content = os.read(fd, file_size).decode("utf-8")
+                try:
+                    state = json.loads(content)
+                except (json.JSONDecodeError, ValueError):
+                    # Corrupt file: treat as empty
+                    state = {}
+            else:
+                # Empty or new file
+                state = {}
+
+            # Apply mutation
+            new_state = mutate_fn(state)
+
+            # Truncate and rewrite
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            new_content = json.dumps(new_state)
+            os.write(fd, new_content.encode("utf-8"))
+
+            return new_state
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def prune_stale_state(state_dir: Path = None, max_age_seconds: int = 86400) -> None:
+    """Best-effort prune of state files older than max_age_seconds.
+
+    Never raises; failures are silently ignored. If state_dir doesn't exist, returns
+    quietly without error.
+
+    Args:
+        state_dir: directory containing state files (default: default_state_dir())
+        max_age_seconds: files older than this (in seconds) are deleted (default: 86400 = 24h)
+    """
+    if state_dir is None:
+        state_dir = default_state_dir()
+
+    try:
+        if not state_dir.exists():
+            return
+
+        cutoff_time = time.time() - max_age_seconds
+        for file_path in state_dir.iterdir():
+            if file_path.is_file() and file_path.suffix == ".json":
+                try:
+                    mtime = file_path.stat().st_mtime
+                    if mtime < cutoff_time:
+                        file_path.unlink()
+                except (OSError, FileNotFoundError):
+                    # File already deleted or permission issue; ignore
+                    pass
+    except Exception:
+        # Silently ignore any errors during pruning
+        pass
 
 
 def append_event(path: Path, event: dict) -> None:
