@@ -22,14 +22,15 @@ Invariants encoded (one or more test_result calls each):
 7. WRITE BOUNDARY: artifacts stay under ~/.claude/reviews/ (REVIEW_DIR);
    nothing written to the reviewed repo (no git write, no artifact path under
    the worktree).
-8. docs/adr/0013-leave-pr-comments-draft-review.md exists, is non-empty, and has
+8. docs/adr/0015-leave-pr-comments-draft-review.md exists, is non-empty, and has
    the required ADR sections: ## Context, ## Decision, ## Consequences, and a
-   **Status:** line. (Renumbered from 0012 to 0013 because ADR-0012 is taken by
-   /stack-sync.)
+   **Status:** line. (Renumbered from 0012 to 0013 to 0015: ADR-0012 is taken by
+   /stack-sync, and ADR-0013 was independently claimed by the deterministic workflow
+   CLI ADR merged to origin/main — resolved during /expert-rebase.)
 9. ADR-0009 amended: docs/adr/0009-peer-review-and-shared-panel.md contains an
-   ## Amendment section referencing ADR-0013, AND uses the hyphen form
+   ## Amendment section referencing ADR-0015, AND uses the hyphen form
    {owner}-{repo}/ (NOT the slash form {owner}/{repo}/).
-10. docs/adr/README.md index lists ADR-0013.
+10. docs/adr/README.md index lists ADR-0015.
 11. CLAUDE.md lists /leave-pr-comments under the **Review & planning** section.
 12. BOTH coworker walk-throughs emit the data contract: expert-review-coworker.md
     AND expert-review-coworker-beta.md each reference selected-comments.json.
@@ -44,7 +45,7 @@ COMMANDS_DIR = REPO_ROOT / "commands"
 ADR_DIR = REPO_ROOT / "docs" / "adr"
 
 LPC_FILE = COMMANDS_DIR / "leave-pr-comments.md"
-ADR_0013_FILE = ADR_DIR / "0013-leave-pr-comments-draft-review.md"
+ADR_0015_FILE = ADR_DIR / "0015-leave-pr-comments-draft-review.md"
 ADR_0009_FILE = ADR_DIR / "0009-peer-review-and-shared-panel.md"
 ADR_README_FILE = ADR_DIR / "README.md"
 CLAUDE_MD_FILE = REPO_ROOT / "CLAUDE.md"
@@ -89,7 +90,7 @@ def active_command_lines(block_text):
 
 
 LPC = read(LPC_FILE)
-ADR_0013 = read(ADR_0013_FILE)
+ADR_0015 = read(ADR_0015_FILE)
 ADR_0009 = read(ADR_0009_FILE)
 ADR_README = read(ADR_README_FILE)
 CLAUDE_MD = read(CLAUDE_MD_FILE)
@@ -270,44 +271,44 @@ t("leave-pr-comments.md does not write artifacts under ${WORKTREE_PATH}",
 print()
 
 # ============================================================================
-# INVARIANT 8: ADR-0013 exists with required sections + Status line
+# INVARIANT 8: ADR-0015 exists with required sections + Status line
 # ============================================================================
-print("[Invariant 8] ADR-0013 exists with Status/Context/Decision/Consequences")
+print("[Invariant 8] ADR-0015 exists with Status/Context/Decision/Consequences")
 
-t("docs/adr/0013-leave-pr-comments-draft-review.md exists and is non-empty",
-  len(ADR_0013.strip()) > 0,
-  "expected docs/adr/0013-leave-pr-comments-draft-review.md to exist with content")
+t("docs/adr/0015-leave-pr-comments-draft-review.md exists and is non-empty",
+  len(ADR_0015.strip()) > 0,
+  "expected docs/adr/0015-leave-pr-comments-draft-review.md to exist with content")
 
-t("ADR-0013 has a **Status:** line",
-  re.search(r"\*\*Status:\*\*", ADR_0013) is not None,
-  "expected a '**Status:**' line in ADR-0013")
+t("ADR-0015 has a **Status:** line",
+  re.search(r"\*\*Status:\*\*", ADR_0015) is not None,
+  "expected a '**Status:**' line in ADR-0015")
 
-t("ADR-0013 has a Context section",
-  re.search(r"^##\s+Context", ADR_0013, re.MULTILINE) is not None,
-  "expected a '## Context' section in ADR-0013")
+t("ADR-0015 has a Context section",
+  re.search(r"^##\s+Context", ADR_0015, re.MULTILINE) is not None,
+  "expected a '## Context' section in ADR-0015")
 
-t("ADR-0013 has a Decision section",
-  re.search(r"^##\s+Decision", ADR_0013, re.MULTILINE) is not None,
-  "expected a '## Decision' section in ADR-0013")
+t("ADR-0015 has a Decision section",
+  re.search(r"^##\s+Decision", ADR_0015, re.MULTILINE) is not None,
+  "expected a '## Decision' section in ADR-0015")
 
-t("ADR-0013 has a Consequences section",
-  re.search(r"^##\s+Consequences", ADR_0013, re.MULTILINE) is not None,
-  "expected a '## Consequences' section in ADR-0013")
+t("ADR-0015 has a Consequences section",
+  re.search(r"^##\s+Consequences", ADR_0015, re.MULTILINE) is not None,
+  "expected a '## Consequences' section in ADR-0015")
 
 print()
 
 # ============================================================================
-# INVARIANT 9: ADR-0009 amended -- Amendment section referencing ADR-0013 + hyphen form
+# INVARIANT 9: ADR-0009 amended -- Amendment section referencing ADR-0015 + hyphen form
 # ============================================================================
-print("[Invariant 9] ADR-0009 amended: ## Amendment referencing ADR-0013, {owner}-{repo}/ form")
+print("[Invariant 9] ADR-0009 amended: ## Amendment referencing ADR-0015, {owner}-{repo}/ form")
 
 t("ADR-0009 has an ## Amendment section",
   re.search(r"^##\s+Amendment", ADR_0009, re.MULTILINE) is not None,
   "expected an '## Amendment' section in ADR-0009")
 
-t("ADR-0009 Amendment references ADR-0013",
-  "0013" in ADR_0009,
-  "expected the ADR-0009 amendment to reference ADR-0013")
+t("ADR-0009 Amendment references ADR-0015",
+  "0015" in ADR_0009,
+  "expected the ADR-0009 amendment to reference ADR-0015")
 
 t("ADR-0009 uses the hyphen form {owner}-{repo}/",
   "{owner}-{repo}/" in ADR_0009,
@@ -320,21 +321,21 @@ t("ADR-0009 does NOT use the slash form {owner}/{repo}/",
 print()
 
 # ============================================================================
-# INVARIANT 10: ADR README index lists ADR-0013
+# INVARIANT 10: ADR README index lists ADR-0015
 # ============================================================================
-print("[Invariant 10] docs/adr/README.md index lists ADR-0013")
+print("[Invariant 10] docs/adr/README.md index lists ADR-0015")
 
 t("docs/adr/README.md exists and is non-empty",
   len(ADR_README.strip()) > 0,
   "expected docs/adr/README.md to exist with content")
 
-t("README.md index references ADR-0013",
-  "0013" in ADR_README,
-  "expected an ADR-0013 entry in the ADR README index")
+t("README.md index references ADR-0015",
+  "0015" in ADR_README,
+  "expected an ADR-0015 entry in the ADR README index")
 
-t("README.md index links to 0013-leave-pr-comments-draft-review.md",
-  "0013-leave-pr-comments-draft-review.md" in ADR_README,
-  "expected a link to 0013-leave-pr-comments-draft-review.md in the ADR README index")
+t("README.md index links to 0015-leave-pr-comments-draft-review.md",
+  "0015-leave-pr-comments-draft-review.md" in ADR_README,
+  "expected a link to 0015-leave-pr-comments-draft-review.md in the ADR README index")
 
 print()
 

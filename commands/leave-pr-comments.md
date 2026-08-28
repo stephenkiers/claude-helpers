@@ -14,7 +14,7 @@ comments. Two guardrails, both load-bearing:
 1. **Pending only — never auto-submit.** The review is posted in the draft/pending state. The user
    clicks "Submit review" in GitHub. This command never calls the submit event.
 2. **Human-in-the-loop before posting.** The user confirms the comment set before anything reaches
-   GitHub (the spirit of ADR-0009, as amended by ADR-0013).
+   GitHub (the spirit of ADR-0009, as amended by ADR-0015).
 
 Artifacts stay under `~/.claude/reviews/`; nothing is written into the reviewed repo. Only the
 curated kept set is posted — if the walk-through wrote no `selected-comments.json` (nothing kept),
