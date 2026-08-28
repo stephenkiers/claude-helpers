@@ -222,6 +222,7 @@ def remove_worktree(path: Path, force: bool = False, cwd: Optional[Path] = None)
     args = ["worktree", "remove"]
     if force:
         args.append("--force")
+    args.append("--")
     args.append(str(path))
 
     allowed, reason = check_mutation_allowed(args)
@@ -253,7 +254,7 @@ def delete_branch(name: str, force: bool = False, cwd: Optional[Path] = None) ->
     from .mutations import check_mutation_allowed
 
     flag = "-D" if force else "-d"
-    args = ["branch", flag, name]
+    args = ["branch", flag, "--", name]
 
     allowed, reason = check_mutation_allowed(args)
     if not allowed:
@@ -283,7 +284,7 @@ def pull_ff_only(remote: str, branch: str, cwd: Optional[Path] = None) -> Tuple[
     """
     from .mutations import check_mutation_allowed
 
-    args = ["pull", "--ff-only", remote, branch]
+    args = ["pull", "--ff-only", "--", remote, branch]
 
     allowed, reason = check_mutation_allowed(args)
     if not allowed:
@@ -296,3 +297,32 @@ def pull_ff_only(remote: str, branch: str, cwd: Optional[Path] = None) -> Tuple[
         return False, Unknown(f"Failed to pull {remote} {branch}: {e}")
     except RuntimeError as e:
         return False, Unknown(f"Failed to pull {remote} {branch}: {e}")
+
+
+def pr_merge_squash(pr_number: int, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Merge a PR via 'gh pr merge --squash' through the mutation funnel.
+
+    Args:
+        pr_number: PR number to merge.
+        cwd: Working directory for the gh command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["pr", "merge", "--squash", str(pr_number)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_gh_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to merge PR #{pr_number}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to merge PR #{pr_number}: {e}")

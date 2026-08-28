@@ -55,31 +55,31 @@ if __name__ == "__main__":
     print()
     print("[Section 2] Allowlist checks")
 
-    allowed, reason = check_mutation_allowed(["worktree", "remove", "/tmp/wt"])
+    allowed, reason = check_mutation_allowed(["worktree", "remove", "--", "/tmp/wt"])
     test_result(
         "check_mutation_allowed: allowed worktree remove",
         allowed and reason is None
     )
 
-    allowed, reason = check_mutation_allowed(["worktree", "remove", "--force", "/tmp/wt"])
+    allowed, reason = check_mutation_allowed(["worktree", "remove", "--force", "--", "/tmp/wt"])
     test_result(
         "check_mutation_allowed: allowed worktree remove --force",
         allowed and reason is None
     )
 
-    allowed, reason = check_mutation_allowed(["branch", "-d", "feature"])
+    allowed, reason = check_mutation_allowed(["branch", "-d", "--", "feature"])
     test_result(
         "check_mutation_allowed: allowed branch -d",
         allowed and reason is None
     )
 
-    allowed, reason = check_mutation_allowed(["branch", "-D", "feature"])
+    allowed, reason = check_mutation_allowed(["branch", "-D", "--", "feature"])
     test_result(
         "check_mutation_allowed: allowed branch -D",
         allowed and reason is None
     )
 
-    allowed, reason = check_mutation_allowed(["pull", "--ff-only", "origin", "main"])
+    allowed, reason = check_mutation_allowed(["pull", "--ff-only", "--", "origin", "main"])
     test_result(
         "check_mutation_allowed: allowed pull --ff-only",
         allowed and reason is None
@@ -106,6 +106,31 @@ if __name__ == "__main__":
     allowed, reason = check_mutation_allowed([])
     test_result(
         "check_mutation_allowed: rejects empty args",
+        not allowed and reason is not None
+    )
+
+    # Fix 10: reject placeholders starting with -
+    test_result(
+        "_matches_shape: rejects placeholder starting with -",
+        not _matches_shape(["remove", "--evil"], ("remove", "<path>"))
+    )
+
+    allowed, reason = check_mutation_allowed(["worktree", "remove", "--", "--sneaky"])
+    test_result(
+        "check_mutation_allowed: rejects operand starting with - in placeholder",
+        not allowed and reason is not None
+    )
+
+    # Fix 13: pr merge allowlist
+    allowed, reason = check_mutation_allowed(["pr", "merge", "--squash", "123"])
+    test_result(
+        "check_mutation_allowed: allowed pr merge --squash",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["pr", "merge", "--squash", "--evil"])
+    test_result(
+        "check_mutation_allowed: rejects pr merge with placeholder starting with -",
         not allowed and reason is not None
     )
 

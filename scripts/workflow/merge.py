@@ -7,8 +7,10 @@ Ports the deterministic merge logic from /merge-and-cleanup into a plan/apply pa
 """
 
 import json
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -33,7 +35,8 @@ class MergePlan:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MergePlan":
         """Construct from parsed JSON dict."""
-        return cls(**{k: v for k, v in data.items() if k in ["pr_number", "head_ref", "target_worktree", "blocking_failures"]})
+        field_names = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in data.items() if k in field_names})
 
 
 @dataclass
@@ -43,6 +46,7 @@ class MergeResult:
     pr_merged: bool = False
     merge_gate_used: str = ""
     error: Optional[Unknown] = None
+    cache_write_failed: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -134,14 +138,23 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
             return result, result.error
 
         lock_file = Path(plan.target_worktree) / ".claude" / ".merge-and-cleanup.lock"
-        if lock_file.exists():
-            result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure)")
-            return result, result.error
 
         try:
             lock_file.parent.mkdir(parents=True, exist_ok=True)
-            lock_file.write_text(f"PR #{plan.pr_number} locked by merge-and-cleanup\n")
-        except Exception as e:
+            lock_content = f"PR #{plan.pr_number} locked by merge-and-cleanup at {time.time()}\n"
+            lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(lock_fd, lock_content.encode())
+            finally:
+                os.close(lock_fd)
+        except FileExistsError:
+            try:
+                existing_content = lock_file.read_text()
+                result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure): {existing_content}")
+            except Exception:
+                result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure)")
+            return result, result.error
+        except OSError as e:
             result.error = Unknown(f"Failed to create lock file: {e}")
             return result, result.error
 
@@ -149,41 +162,41 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         merge_succeeded = False
 
         if _check_just_merge(plan.target_worktree):
-            if _run_just_merge(plan.target_worktree, cwd):
+            success, detail = _run_just_merge(plan.target_worktree)
+            if success:
                 merge_gate_used = "just merge"
                 merge_succeeded = True
             else:
-                result.error = Unknown("'just merge' failed")
+                result.error = Unknown(f"'just merge' failed: {detail}")
                 return result, result.error
 
         if not merge_succeeded:
-            check_cmd = _get_repo_cache_check_cmd(Path(plan.target_worktree))
+            check_cmd, cache_err = _get_repo_cache_check_cmd(Path(plan.target_worktree))
+            if cache_err:
+                result.error = Unknown(f"Merge gate check unavailable: {cache_err}")
+                return result, result.error
             if check_cmd:
-                if _run_check_command(check_cmd, plan.target_worktree, cwd):
+                success, detail = _run_check_command(check_cmd)
+                if success:
                     merge_gate_used = "repo-cache check"
                 else:
-                    result.error = Unknown("Merge gate check failed")
+                    result.error = Unknown(f"Merge gate check failed: {detail}")
                     return result, result.error
 
         if not merge_succeeded:
             if merge_gate_used == "":
                 merge_gate_used = "gh pr merge (no gate)"
-            if _run_gh_pr_merge(plan.pr_number, cwd):
+            success, detail = _run_gh_pr_merge(plan.pr_number, cwd)
+            if success:
                 merge_succeeded = True
             else:
-                result.error = Unknown("gh pr merge failed")
+                result.error = Unknown(f"gh pr merge failed: {detail}")
                 return result, result.error
-
-        if merge_gate_used == "just merge":
-            merge_succeeded = True
-        elif merge_gate_used not in ("", "gh pr merge (no gate)"):
-            if not _run_gh_pr_merge(plan.pr_number, cwd):
-                result.error = Unknown("gh pr merge failed after gate")
-                return result, result.error
-            merge_succeeded = True
 
         if merge_succeeded:
-            _write_merge_cache(Path(plan.target_worktree))
+            cache_success, cache_err = _write_merge_cache(Path(plan.target_worktree))
+            if not cache_success:
+                result.cache_write_failed = str(cache_err) if cache_err else "unknown cache write failure"
             result.success = True
             result.pr_merged = True
             result.merge_gate_used = merge_gate_used
@@ -308,57 +321,80 @@ def _check_just_merge(target_worktree: str) -> bool:
         return False
 
 
-def _run_just_merge(target_worktree: str, cwd: Optional[Path]) -> bool:
-    """Run 'just merge' command."""
+def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
+    """
+    Run 'just merge' command.
+
+    Returns (True, None) on success.
+    Returns (False, diagnostic_message) on failure.
+    """
     try:
         result = subprocess.run(
             ["just", "merge"],
             cwd=target_worktree,
             timeout=600,
             capture_output=True,
+            text=True,
             check=True
         )
-        return True
-    except Exception:
-        return False
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, e.stderr or str(e)
+    except Exception as e:
+        return False, str(e)
 
 
-def _get_repo_cache_check_cmd(target_worktree: Path) -> Optional[str]:
-    """Get check command from repo-cache.json if it exists."""
+def _get_repo_cache_check_cmd(target_worktree: Path) -> Tuple[Optional[str], Optional[Unknown]]:
+    """
+    Get check command from repo-cache.json if it exists.
+
+    Returns (check_cmd, None) if found or file doesn't exist.
+    Returns (None, Unknown(...)) if file exists but is unreadable.
+    """
     cache_file = target_worktree / ".claude" / "repo-cache.json"
+    if not cache_file.exists():
+        return None, None
+
     cache_data, err = read_repo_cache(cache_file)
-    if err or not cache_data:
-        return None
-    return cache_data.commands.get("check")
+    if err:
+        return None, err
+    if not cache_data:
+        return None, None
+    return cache_data.commands.get("check"), None
 
 
-def _run_check_command(cmd: str, target_worktree: str, cwd: Optional[Path]) -> bool:
-    """Run a check command."""
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=target_worktree,
-            timeout=300,
-            capture_output=True,
-            check=True
-        )
-        return True
-    except Exception:
-        return False
+def _run_check_command(cmd: str) -> Tuple[bool, Optional[str]]:
+    """
+    Run a check command via the shared checks.py executor.
+
+    Returns (True, None) on success.
+    Returns (False, diagnostic_message) on failure.
+    """
+    from .checks import execute_check
+    result = execute_check(cmd, cwd=None)
+    if result.success:
+        return True, None
+    return False, result.error or result.stderr or f"exit code {result.returncode}"
 
 
-def _run_gh_pr_merge(pr_number: int, cwd: Optional[Path]) -> bool:
-    """Run 'gh pr merge --squash' command."""
-    try:
-        result = git.run_gh_command(["pr", "merge", "--squash", str(pr_number)], cwd=cwd, check=True)
-        return True
-    except Exception:
-        return False
+def _run_gh_pr_merge(pr_number: int, cwd: Optional[Path]) -> Tuple[bool, Optional[str]]:
+    """
+    Run 'gh pr merge --squash' command via the mutation funnel.
+
+    Returns (True, None) on success.
+    Returns (False, diagnostic_message) on failure.
+    """
+    success, err = git.pr_merge_squash(pr_number, cwd=cwd)
+    return success, str(err) if err else None
 
 
-def _write_merge_cache(target_worktree: Path) -> None:
-    """Write merged state to cache."""
+def _write_merge_cache(target_worktree: Path) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Write merged state to cache using atomic write_cache().
+
+    Returns (True, None) on success.
+    Returns (False, Unknown(...)) on failure.
+    """
     try:
         cache_file = target_worktree / ".claude" / "github-cache.json"
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +407,6 @@ def _write_merge_cache(target_worktree: Path) -> None:
             existing["pr"] = {}
         existing["pr"]["state"] = "MERGED"
 
-        cache_file.write_text(json.dumps(existing))
-    except Exception:
-        pass
+        return write_cache(cache_file, existing)
+    except Exception as e:
+        return False, Unknown(f"Failed to prepare cache for writing: {e}")

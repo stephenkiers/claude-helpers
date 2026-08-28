@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.checks import detect_toolchains, detect_checks
+from workflow.checks import detect_toolchains, detect_checks, execute_check
 from _test_harness import Harness
 
 
@@ -138,6 +138,33 @@ if __name__ == "__main__":
             "detect_checks() detects cargo test",
             "cargo_test" in checks
         )
+
+    print()
+    print("[Section 6] Check execution (Fix 11)")
+
+    result = execute_check("true", cwd=None)
+    test_result(
+        "execute_check: succeeds on passing command",
+        result.success and result.returncode == 0
+    )
+
+    result = execute_check("false", cwd=None)
+    test_result(
+        "execute_check: fails on failing command",
+        not result.success and result.returncode != 0
+    )
+
+    result = execute_check("echo 'test output' >&2 && false", cwd=None)
+    test_result(
+        "execute_check: captures stderr on failure",
+        not result.success and "test output" in result.stderr
+    )
+
+    result = execute_check("sleep 5", cwd=None, timeout=1)
+    test_result(
+        "execute_check: times out after specified timeout",
+        not result.success and "timed out" in str(result.error).lower()
+    )
 
     print()
     h.summarize_and_exit()

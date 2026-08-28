@@ -158,7 +158,7 @@ if __name__ == "__main__":
         with mock.patch("workflow.merge._check_just_merge") as mock_just:
             with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
                 mock_just.return_value = False
-                mock_merge.return_value = True
+                mock_merge.return_value = (True, None)
 
                 plan_json = json.dumps(plan.to_dict())
                 result, err = apply_merge(plan_json)
@@ -194,6 +194,71 @@ if __name__ == "__main__":
                         "plan_merge treats -1 (rev_list error) as failure, not 0",
                         plan_obj and "Could not determine" in str(plan_obj.blocking_failures)
                     )
+
+    print()
+    print("[Section 8] Apply merge calls _run_gh_pr_merge exactly once on repo-cache-check path (Fix 1)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+        claude_dir = wt_dir / ".claude"
+        claude_dir.mkdir()
+
+        plan = MergePlan(
+            pr_number=47,
+            head_ref="feature",
+            target_worktree=str(wt_dir),
+            blocking_failures=[]
+        )
+
+        with mock.patch("workflow.merge._check_just_merge") as mock_just:
+            with mock.patch("workflow.merge._get_repo_cache_check_cmd") as mock_get_cmd:
+                with mock.patch("workflow.merge._run_check_command") as mock_check:
+                    with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
+                        mock_just.return_value = False
+                        mock_get_cmd.return_value = ("test-cmd", None)
+                        mock_check.return_value = (True, None)
+                        mock_merge.return_value = (True, None)
+
+                        plan_json = json.dumps(plan.to_dict())
+                        result, err = apply_merge(plan_json)
+
+                        test_result(
+                            "apply_merge calls _run_gh_pr_merge exactly once on repo-cache-check path",
+                            result.success and mock_merge.call_count == 1,
+                            f"Expected 1 call to _run_gh_pr_merge when check succeeds, got {mock_merge.call_count}"
+                        )
+
+    print()
+    print("[Section 9] Apply merge diagnostic details (Fix 3)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+        claude_dir = wt_dir / ".claude"
+        claude_dir.mkdir()
+
+        plan = MergePlan(
+            pr_number=48,
+            head_ref="feature",
+            target_worktree=str(wt_dir),
+            blocking_failures=[]
+        )
+
+        with mock.patch("workflow.merge._check_just_merge") as mock_just:
+            with mock.patch("workflow.merge._run_just_merge") as mock_run_just:
+                mock_just.return_value = True
+                mock_run_just.return_value = (False, "just merge error detail")
+
+                plan_json = json.dumps(plan.to_dict())
+                result, err = apply_merge(plan_json)
+
+                test_result(
+                    "apply_merge includes diagnostic detail in error message",
+                    result.error and "just merge error detail" in str(result.error)
+                )
 
     print()
     h.summarize_and_exit()

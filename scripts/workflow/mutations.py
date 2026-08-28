@@ -14,15 +14,18 @@ from typing import List, Tuple, Optional
 
 MUTATION_ALLOWLIST = {
     "worktree": {
-        ("remove", "<path>"): "git worktree remove <path>",
-        ("remove", "--force", "<path>"): "git worktree remove --force <path>",
+        ("remove", "--", "<path>"): "git worktree remove -- <path>",
+        ("remove", "--force", "--", "<path>"): "git worktree remove --force -- <path>",
     },
     "branch": {
-        ("-d", "<name>"): "git branch -d <name>",
-        ("-D", "<name>"): "git branch -D <name>",
+        ("-d", "--", "<name>"): "git branch -d -- <name>",
+        ("-D", "--", "<name>"): "git branch -D -- <name>",
     },
     "pull": {
-        ("--ff-only", "<remote>", "<branch>"): "git pull --ff-only <remote> <branch>",
+        ("--ff-only", "--", "<remote>", "<branch>"): "git pull --ff-only -- <remote> <branch>",
+    },
+    "pr": {
+        ("merge", "--squash", "<pr_number>"): "gh pr merge --squash <pr_number>",
     },
 }
 
@@ -64,18 +67,20 @@ def _matches_shape(operands: List[str], shape: Tuple[str, ...]) -> bool:
     Check if operands match a shape exactly.
 
     A shape is a tuple of literal flags/subcommands and placeholders like "<path>" or "<name>".
-    "<...>" placeholders match any non-empty string; literals must match byte-for-byte.
+    "<...>" placeholders match any non-empty string (except those starting with "-", which could
+    be interpreted as flags); literals must match byte-for-byte.
 
     Example:
         _matches_shape(["remove", "/tmp/wt"], ("remove", "<path>")) → True
         _matches_shape(["remove", "--force", "/tmp/wt"], ("remove", "<path>")) → False (extra arg)
+        _matches_shape(["remove", "--evil"], ("remove", "<path>")) → False (placeholder starts with -)
     """
     if len(operands) != len(shape):
         return False
 
     for operand, pattern in zip(operands, shape):
         if pattern.startswith("<") and pattern.endswith(">"):
-            if not operand:
+            if not operand or operand.startswith("-"):
                 return False
         else:
             if operand != pattern:
