@@ -207,7 +207,8 @@ echo "Now in main worktree, safe to proceed"
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome success 2>/dev/null || true
 
 # Call plan_cleanup to capture check commands and freshness state for later apply
-PLAN_JSON=$(python3 -m scripts.workflow.cli cleanup plan "$CURRENT_WORKTREE")
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$(readlink -f "$HOME/.claude/scripts/run-metrics.py")")")"
+PLAN_JSON=$(cd "$CLAUDE_HELPERS_DIR" && python3 -m scripts.workflow.cli cleanup plan "$CURRENT_WORKTREE")
 PLAN_RESULT=$?
 if [ $PLAN_RESULT -ne 0 ]; then
   echo "ERROR: Failed to plan cleanup for $CURRENT_WORKTREE"
@@ -505,7 +506,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_
 TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup 2>/dev/null || echo unknown)
 
 # Apply the plan: executes pull main ff-only, validation checks, worktree removal, branch deletion
-APPLY_RESULT=$(echo "$PLAN_JSON" | python3 -m scripts.workflow.cli cleanup apply -)
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$(readlink -f "$HOME/.claude/scripts/run-metrics.py")")")"
+APPLY_RESULT=$(cd "$CLAUDE_HELPERS_DIR" && echo "$PLAN_JSON" | python3 -m scripts.workflow.cli cleanup apply -)
 APPLY_RESULT_CODE=$?
 
 if [ $APPLY_RESULT_CODE -ne 0 ]; then
