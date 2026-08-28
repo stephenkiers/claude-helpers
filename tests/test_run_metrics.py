@@ -888,6 +888,274 @@ def test_prune_on_command_begin():
         return True, ""
 
 
+def test_state_file_persists_command_id():
+    """State file persists command_id that can be read by subsequent calls."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run command-begin to create state
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+
+        # Verify state file exists and contains the command_id
+        state_file = state_dir / f"{session_id}.json"
+        if not state_file.exists():
+            return False, "state file not created"
+
+        with open(state_file) as f:
+            state_content = json.loads(f.read())
+
+        if "command_id" not in state_content:
+            return False, f"state file missing command_id: {state_content}"
+
+        if state_content.get("command_id") != stdout1.strip():
+            return False, f"state command_id doesn't match stdout"
+
+        return True, ""
+
+
+def test_stage_begin_without_explicit_command_id():
+    """stage-begin resolves command_id from state file when flag is omitted."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Run command-begin
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id_from_begin = stdout1.strip()
+
+        # Run stage-begin WITHOUT --command-id (should resolve from state)
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "build"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage-begin failed: {stderr2}"
+
+        # Parse log and verify stage-begin has the command_id from state
+        with open(log_path) as f:
+            lines = [line.strip() for line in f if line.strip()]
+
+        stage_begin_event = json.loads(lines[-1])
+
+        if stage_begin_event.get("command_id") != cmd_id_from_begin:
+            return False, f"stage-begin should inherit command_id from state: got {stage_begin_event.get('command_id')}, expected {cmd_id_from_begin}"
+
+        return True, ""
+
+
+def test_stage_end_clears_stage_state():
+    """After stage-end, state file's stage_id and stage fields are cleared."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # command-begin
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+
+        # stage-begin
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "build"],
+            env=env,
+        )
+
+        # Verify stage fields are in state before stage-end
+        state_file = state_dir / f"{session_id}.json"
+        with open(state_file) as f:
+            before_state = json.loads(f.read())
+        if before_state.get("stage_id") is None or before_state.get("stage") is None:
+            return False, "state should have stage_id and stage after stage-begin"
+
+        # stage-end
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "build", "--outcome", "success"],
+            env=env,
+        )
+        if code != 0:
+            return False, f"stage-end failed: {stderr}"
+
+        # Verify stage fields are now None/cleared
+        with open(state_file) as f:
+            after_state = json.loads(f.read())
+
+        if after_state.get("stage_id") is not None:
+            return False, f"after stage-end, stage_id should be None, got: {after_state.get('stage_id')}"
+
+        if after_state.get("stage") is not None:
+            return False, f"after stage-end, stage should be None, got: {after_state.get('stage')}"
+
+        # command_id should still be present (it's cleared at command-end)
+        if "command_id" not in after_state:
+            return False, "command_id should persist after stage-end"
+
+        return True, ""
+
+
+def test_command_end_deletes_state_file():
+    """After command-end, the state file is deleted entirely."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # command-begin
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+
+        state_file = state_dir / f"{session_id}.json"
+        if not state_file.exists():
+            return False, "state file should exist after command-begin"
+
+        # command-end
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "test-cmd", "--outcome", "success"],
+            env=env,
+        )
+        if code != 0:
+            return False, f"command-end failed: {stderr}"
+
+        # Verify state file is deleted
+        if state_file.exists():
+            return False, "state file should be deleted after command-end"
+
+        return True, ""
+
+
+def test_multiple_sequential_stages():
+    """Multiple sequential stage-begin/end pairs update state correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+
+        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # command-begin
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id = stdout1.strip()
+
+        # First stage: begin, end
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage1"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage1-begin failed: {stderr2}"
+        stage1_id = stdout2.strip()
+
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "stage1", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"stage1-end failed: {stderr3}"
+
+        # Second stage: begin, end
+        code4, stdout4, stderr4 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage2"],
+            env=env,
+        )
+        if code4 != 0:
+            return False, f"stage2-begin failed: {stderr4}"
+        stage2_id = stdout4.strip()
+
+        code5, stdout5, stderr5 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "stage2", "--outcome", "success"],
+            env=env,
+        )
+        if code5 != 0:
+            return False, f"stage2-end failed: {stderr5}"
+
+        # Verify all four events have the same command_id
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        stage1_begin = next((e for e in events if e.get("event_type") == "stage.begin" and e.get("stage") == "stage1"), None)
+        stage1_end = next((e for e in events if e.get("event_type") == "stage.end" and e.get("stage") == "stage1"), None)
+        stage2_begin = next((e for e in events if e.get("event_type") == "stage.begin" and e.get("stage") == "stage2"), None)
+        stage2_end = next((e for e in events if e.get("event_type") == "stage.end" and e.get("stage") == "stage2"), None)
+
+        if not all([stage1_begin, stage1_end, stage2_begin, stage2_end]):
+            return False, "missing one or more stage events"
+
+        if stage1_begin.get("command_id") != cmd_id:
+            return False, "stage1_begin doesn't have correct command_id"
+        if stage1_end.get("command_id") != cmd_id:
+            return False, "stage1_end doesn't have correct command_id"
+        if stage2_begin.get("command_id") != cmd_id:
+            return False, "stage2_begin doesn't have correct command_id"
+        if stage2_end.get("command_id") != cmd_id:
+            return False, "stage2_end doesn't have correct command_id"
+
+        # Verify stage IDs are different
+        if stage1_begin.get("stage_id") == stage2_begin.get("stage_id"):
+            return False, "stage IDs should be different for different stages"
+
+        return True, ""
+
+
+def test_no_session_id_skips_state_file():
+    """When CLAUDE_CODE_SESSION_ID is not set, command-begin succeeds gracefully."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+
+        # Run without CLAUDE_CODE_SESSION_ID (remove it from env)
+        env = {**__import__("os").environ}
+        if "CLAUDE_CODE_SESSION_ID" in env:
+            del env["CLAUDE_CODE_SESSION_ID"]
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"command-begin should succeed even without session_id: {stderr}"
+
+        # Verify the command still prints an ID
+        cmd_id = stdout.strip()
+        if not cmd_id or len(cmd_id) != 32:
+            return False, f"command-begin should still print an ID, got: {stdout!r}"
+
+        # Verify the log event was created
+        if not log_path.exists():
+            return False, "log file should be created even without session_id"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -983,6 +1251,27 @@ if __name__ == "__main__":
 
     passed, msg = test_prune_on_command_begin()
     test_result("command-begin prunes stale state files", passed, msg)
+
+    print()
+
+    print("[Section 8] State file persistence and lifecycle")
+    passed, msg = test_state_file_persists_command_id()
+    test_result("state file persists command_id", passed, msg)
+
+    passed, msg = test_stage_begin_without_explicit_command_id()
+    test_result("stage-begin resolves command_id from state without flag", passed, msg)
+
+    passed, msg = test_stage_end_clears_stage_state()
+    test_result("stage-end clears stage_id and stage fields in state file", passed, msg)
+
+    passed, msg = test_command_end_deletes_state_file()
+    test_result("command-end deletes state file after emit", passed, msg)
+
+    passed, msg = test_multiple_sequential_stages()
+    test_result("multiple sequential stages maintain command_id correlation", passed, msg)
+
+    passed, msg = test_no_session_id_skips_state_file()
+    test_result("missing CLAUDE_CODE_SESSION_ID skips state file creation", passed, msg)
 
     print()
 

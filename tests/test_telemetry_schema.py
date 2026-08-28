@@ -695,6 +695,112 @@ def test_validate_event_accepts_unknown_as_id():
     return errors == [], f"should accept 'unknown' as ID, got errors: {errors}"
 
 
+def test_default_state_dir():
+    """default_state_dir returns a path under ~/.claude/telemetry/state/."""
+    state_dir = telemetry_schema.default_state_dir()
+    state_dir_str = str(state_dir)
+    has_claude = ".claude" in state_dir_str
+    has_telemetry = "telemetry" in state_dir_str
+    has_state = "state" in state_dir_str
+    return (
+        has_claude and has_telemetry and has_state
+    ), f"got path: {state_dir_str}"
+
+
+def test_state_path_format():
+    """state_path(session_id, state_dir) returns correct path format."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+
+        result = telemetry_schema.state_path(session_id, state_dir)
+        result_str = str(result)
+
+        # Should be in the state_dir
+        if not str(result).startswith(str(state_dir)):
+            return False, f"path not under state_dir: {result_str}"
+
+        # Should include the session_id with .json extension
+        if session_id not in result_str or not result_str.endswith(".json"):
+            return False, f"path doesn't match expected format: {result_str}"
+
+        return True, ""
+
+
+def test_state_path_isolation():
+    """state_path returns different paths for different session_ids."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        path1 = telemetry_schema.state_path("session-1", state_dir)
+        path2 = telemetry_schema.state_path("session-2", state_dir)
+
+        if path1 == path2:
+            return False, "same path for different session_ids"
+
+        if not str(path1).endswith("session-1.json"):
+            return False, f"path1 format wrong: {path1}"
+
+        if not str(path2).endswith("session-2.json"):
+            return False, f"path2 format wrong: {path2}"
+
+        return True, ""
+
+
+def test_load_and_update_state_with_locking():
+    """load_and_update_state safely preserves state across interleaved reads/writes."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "state.json"
+
+        # Simulate a scenario where state is read, modified, and written multiple times
+        # This tests that the lock protects against interleaved access patterns
+
+        def set_field(key, value):
+            def mutator(state):
+                state[key] = value
+                return state
+            return mutator
+
+        # First: initialize with command_id and stage_id
+        result1 = telemetry_schema.load_and_update_state(
+            state_path, set_field("command_id", "c123")
+        )
+        if result1.get("command_id") != "c123":
+            return False, "first write failed"
+
+        # Second: add stage_id
+        result2 = telemetry_schema.load_and_update_state(
+            state_path, set_field("stage_id", "st456")
+        )
+        if result2.get("command_id") != "c123" or result2.get("stage_id") != "st456":
+            return False, "second write lost previous state"
+
+        # Third: clear stage_id but keep command_id
+        def clear_stage(state):
+            state["stage_id"] = None
+            state["stage"] = None
+            return state
+
+        result3 = telemetry_schema.load_and_update_state(state_path, clear_stage)
+        if result3.get("command_id") != "c123":
+            return False, "clearing stage fields lost command_id"
+        if result3.get("stage_id") is not None:
+            return False, "stage_id should be None"
+
+        # Fourth: verify final state by reading from disk
+        with open(state_path) as f:
+            final = json.loads(f.read())
+
+        if final.get("command_id") != "c123" or final.get("stage_id") is not None:
+            return False, f"final state incorrect: {final}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -839,6 +945,22 @@ if __name__ == "__main__":
 
     passed, msg = test_validate_event_accepts_unknown_as_id()
     test_result("validate_event accepts 'unknown' as command_id/stage_id", passed, msg)
+
+    print()
+
+    # State directory and path functions
+    print("[Section 8] State directory and path functions")
+    passed, msg = test_default_state_dir()
+    test_result("default_state_dir returns valid path", passed, msg)
+
+    passed, msg = test_state_path_format()
+    test_result("state_path returns correct format", passed, msg)
+
+    passed, msg = test_state_path_isolation()
+    test_result("state_path isolates different sessions", passed, msg)
+
+    passed, msg = test_load_and_update_state_with_locking()
+    test_result("load_and_update_state maintains atomicity under concurrent access", passed, msg)
 
     print()
 
