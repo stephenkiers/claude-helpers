@@ -261,4 +261,39 @@ if __name__ == "__main__":
                 )
 
     print()
+    print("[Section 10] apply_merge records a failed cache write without failing the merge")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+        (wt_dir / ".claude").mkdir()
+
+        plan = MergePlan(
+            pr_number=50,
+            head_ref="feature",
+            target_worktree=str(wt_dir),
+            blocking_failures=[]
+        )
+
+        with mock.patch("workflow.merge._check_just_merge") as mock_just:
+            with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
+                with mock.patch("workflow.merge.write_cache") as mock_write_cache:
+                    mock_just.return_value = False
+                    mock_merge.return_value = (True, None)
+                    mock_write_cache.return_value = (False, Unknown("Permission denied"))
+
+                    plan_json = json.dumps(plan.to_dict())
+                    result, err = apply_merge(plan_json)
+
+                    test_result(
+                        "apply_merge still succeeds when the cache write fails",
+                        result.success is True
+                    )
+                    test_result(
+                        "apply_merge records the cache write failure detail",
+                        result.cache_write_failed is not None and "Permission denied" in result.cache_write_failed
+                    )
+
+    print()
     h.summarize_and_exit()

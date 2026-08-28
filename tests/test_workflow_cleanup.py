@@ -299,4 +299,217 @@ if __name__ == "__main__":
                     )
 
     print()
+    print("[Section 8] plan_cleanup propagates a get_head_sha failure instead of swallowing it")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+        (wt_dir / ".claude").mkdir()
+
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pr_view_json") as mock_pr:
+                    mock_branch.return_value = "feature"
+                    mock_pr.return_value = {"state": "MERGED", "number": 42}
+                    mock_sha.side_effect = RuntimeError("git failed")
+
+                    plan, err = plan_cleanup(str(wt_dir))
+
+                    test_result(
+                        "plan_cleanup returns an Unknown error instead of a plan with a None SHA",
+                        plan is None and isinstance(err, Unknown)
+                    )
+
+    print()
+    print("[Section 9] CleanupPlan.from_dict filters unexpected keys on nested children")
+
+    plan_dict = {
+        "target_worktree": "/tmp/wt",
+        "current_branch": "feature",
+        "pr_state": "MERGED",
+        "pr_number": 42,
+        "expected_head_sha": "abc123",
+        "cache_hash": "def456",
+        "check_commands": [],
+        "stacked_children": [
+            {
+                "branch": "feature/child",
+                "pr_number": 99,
+                "worktree_path": "/tmp/child",
+                "unexpected_field": "should not cause error"
+            }
+        ]
+    }
+
+    try:
+        restored = CleanupPlan.from_dict(plan_dict)
+        test_result(
+            "CleanupPlan.from_dict tolerates an unexpected key in a nested child dict",
+            restored.stacked_children[0].branch == "feature/child"
+        )
+    except TypeError as e:
+        test_result(
+            "CleanupPlan.from_dict tolerates an unexpected key in a nested child dict",
+            False,
+            f"raised TypeError: {e}"
+        )
+
+    print()
+    print("[Section 10] plan_cleanup sets repo_cache_read_failed on an unreadable repo-cache.json")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+        claude_dir = wt_dir / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "repo-cache.json").write_text("{invalid json")
+
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pr_view_json") as mock_pr:
+                    mock_branch.return_value = "feature"
+                    mock_pr.return_value = {"state": "MERGED", "number": 42}
+                    mock_sha.return_value = "abc123"
+
+                    plan, err = plan_cleanup(str(wt_dir))
+
+                    test_result(
+                        "plan_cleanup flags repo_cache_read_failed for a corrupt (not missing) cache file",
+                        plan is not None and plan.repo_cache_read_failed is True
+                    )
+
+    print()
+    print("[Section 11] apply_cleanup's mutation-adjacent failure paths")
+
+    def _base_plan(**overrides):
+        defaults = dict(
+            target_worktree=str(wt_dir),
+            current_branch="feature",
+            pr_state="MERGED",
+            expected_head_sha="abc123",
+            cache_hash=None,
+        )
+        defaults.update(overrides)
+        return CleanupPlan(**defaults)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+
+        # 11a: a failed pull_ff_only flips validation_passed, not just a message.
+        plan_json = json.dumps(_base_plan().to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            mock_branch.return_value = "feature"
+                            mock_sha.return_value = "abc123"
+                            mock_pull.return_value = (False, Unknown("Merge conflict detected"))
+                            mock_delete.return_value = (True, None)
+                            mock_remove.return_value = (True, None)
+
+                            result, err = apply_cleanup(plan_json)
+
+                            test_result(
+                                "apply_cleanup flips validation_passed=False after a failed pull_ff_only",
+                                result.validation_passed is False
+                            )
+
+        # 11b: force-retry fires only on a dirty-tree removal failure.
+        plan_json = json.dumps(_base_plan().to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            mock_branch.return_value = "feature"
+                            mock_sha.return_value = "abc123"
+                            mock_pull.return_value = (True, None)
+                            mock_delete.return_value = (True, None)
+                            mock_remove.side_effect = [
+                                (False, Unknown("error: working tree is dirty")),
+                                (True, None),
+                            ]
+
+                            result, err = apply_cleanup(plan_json)
+
+                            test_result(
+                                "apply_cleanup retries with force on a dirty-tree removal failure",
+                                mock_remove.call_count == 2 and result.worktree_removed is True
+                            )
+
+        # 11c: a non-dirty-tree removal failure does NOT trigger the force retry.
+        plan_json = json.dumps(_base_plan().to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            mock_branch.return_value = "feature"
+                            mock_sha.return_value = "abc123"
+                            mock_pull.return_value = (True, None)
+                            mock_delete.return_value = (True, None)
+                            mock_remove.return_value = (False, Unknown("Permission denied"))
+
+                            result, err = apply_cleanup(plan_json)
+
+                            test_result(
+                                "apply_cleanup does not force-retry a non-dirty-tree removal failure",
+                                mock_remove.call_count == 1 and result.worktree_removed is False
+                            )
+
+        # 11d: the forced retry's own exception is recorded, not swallowed.
+        plan_json = json.dumps(_base_plan().to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            mock_branch.return_value = "feature"
+                            mock_sha.return_value = "abc123"
+                            mock_pull.return_value = (True, None)
+                            mock_delete.return_value = (True, None)
+                            mock_remove.side_effect = [
+                                (False, Unknown("error: working tree is dirty")),
+                                RuntimeError("disk full"),
+                            ]
+
+                            result, err = apply_cleanup(plan_json)
+
+                            test_result(
+                                "apply_cleanup records the forced retry's own exception",
+                                any("disk full" in msg for msg in result.validation_failures)
+                            )
+
+        # 11e: HEAD SHA re-check before mutation aborts the apply.
+        plan_json = json.dumps(_base_plan(check_commands=["echo test"]).to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            with mock.patch("workflow.checks.execute_check") as mock_check:
+                                from workflow.checks import CheckResult
+                                mock_branch.return_value = "feature"
+                                mock_pull.return_value = (True, None)
+                                mock_sha.side_effect = ["abc123", "def456"]
+                                mock_delete.return_value = (True, None)
+                                mock_remove.return_value = (True, None)
+                                mock_check.return_value = CheckResult(success=True, returncode=0, stdout="", stderr="")
+
+                                result, err = apply_cleanup(plan_json)
+
+                                test_result(
+                                    "apply_cleanup aborts before mutation when HEAD SHA changed mid-apply",
+                                    result.success is False
+                                    and "HEAD SHA changed" in str(result.error)
+                                    and result.worktree_removed is False
+                                    and result.branch_deleted is False
+                                )
+
+    print()
     h.summarize_and_exit()
