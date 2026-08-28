@@ -1,9 +1,18 @@
 """
-Mutation allowlist: centralized gating for destructive git operations.
+Mutation allowlist: centralized gating for destructive git and gh operations.
 
-The mutation funnel is the single choke point for all destructive git operations.
-It enforces that only exact argument shapes in the allowlist are permitted,
-rejecting anything not explicitly allowed (including attempts to smuggle extra flags).
+The mutation funnel is the single choke point for all destructive git and gh
+operations this module builds directly. It enforces that only exact argument
+shapes in the allowlist are permitted, rejecting anything not explicitly
+allowed (including attempts to smuggle extra flags). Placeholder values
+(e.g. "<path>", "<name>") never match an operand starting with "-", and the
+argv builders in git.py insert a literal "--" end-of-options separator
+immediately before each placeholder value to keep a malicious-looking value
+from being parsed as a flag even if it slipped past that check.
+
+Four subcommand keys: "worktree" (remove_worktree), "branch" (delete_branch),
+"pull" (pull_ff_only) — all git — and "pr" (pr_merge_squash, the one gh
+mutation: gh pr merge --squash).
 
 Decision 1 (ADR-0013): Every mutation operation must pass through
 check_mutation_allowed() — the CLI never constructs a mutating call directly.
