@@ -40,6 +40,7 @@ class CleanupPlan:
     plan_hash: Optional[str] = None
     needs_confirmation: List[str] = field(default_factory=list)
     gh_lookup_failed: bool = False
+    repo_cache_read_failed: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -50,8 +51,9 @@ class CleanupPlan:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CleanupPlan":
         """Construct from parsed JSON dict."""
+        child_field_names = {f.name for f in ChildBranchInfo.__dataclass_fields__.values()}
         children = [
-            ChildBranchInfo(**child)
+            ChildBranchInfo(**{k: v for k, v in child.items() if k in child_field_names})
             for child in data.get("stacked_children", [])
         ]
         data_copy = data.copy()
@@ -107,31 +109,34 @@ def plan_cleanup(
         pr_state = pr_data.get("state", "NONE") if pr_data else "NONE"
         pr_number = pr_data.get("number") if pr_data else None
 
-        expected_head_sha = None
-        try:
-            expected_head_sha = git.get_head_sha(cwd=target_worktree)
-        except Exception:
-            pass
+        expected_head_sha = git.get_head_sha(cwd=target_worktree)
 
         repo_cache_path = target_worktree / ".claude" / "repo-cache.json"
         cache_hash = hash_cache_file(repo_cache_path)
 
         check_commands: List[str] = []
+        repo_cache_read_failed = False
         if repo_cache_path.exists():
-            try:
-                cache_data, cache_err = _read_repo_cache(repo_cache_path)
-                if cache_data and not cache_err:
-                    check_commands = _extract_check_commands(cache_data)
-            except Exception:
-                pass
+            cache_data, cache_err = _read_repo_cache(repo_cache_path)
+            if cache_err:
+                repo_cache_read_failed = True
+            else:
+                try:
+                    if cache_data:
+                        check_commands = _extract_check_commands(cache_data)
+                except Exception:
+                    pass
 
-        stacked_children, gh_lookup_failed = _detect_stacked_children(current_branch, target_worktree, cwd=cwd)
+        stacked_children, gh_lookup_failed, detection_incomplete = _detect_stacked_children(current_branch, target_worktree, cwd=cwd)
 
         needs_confirmation: List[str] = []
         if pr_state != "MERGED":
             needs_confirmation.append("pr_state_not_merged")
         if stacked_children:
             needs_confirmation.append("stacked_children_present")
+        if detection_incomplete:
+            if "stacked_children_present" not in needs_confirmation:
+                needs_confirmation.append("stacked_children_present")
 
         plan = CleanupPlan(
             target_worktree=str(target_worktree),
@@ -143,7 +148,8 @@ def plan_cleanup(
             check_commands=check_commands,
             stacked_children=stacked_children,
             needs_confirmation=needs_confirmation,
-            gh_lookup_failed=gh_lookup_failed
+            gh_lookup_failed=gh_lookup_failed,
+            repo_cache_read_failed=repo_cache_read_failed
         )
 
         plan_json = json.dumps(plan.to_dict())
@@ -204,8 +210,10 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
         try:
             success, err = git.pull_ff_only("origin", "main", cwd=main_worktree_path)
             if not success and err:
+                result.validation_passed = False
                 result.validation_failures.append(f"Could not fast-forward main: {err.reason}")
         except Exception as e:
+            result.validation_passed = False
             result.validation_failures.append(f"Pull main ff-only failed: {e}")
 
         for cmd in plan.check_commands:
@@ -225,18 +233,32 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
                 result.validation_passed = False
                 result.validation_failures.append(f"Check command error: {cmd}: {e}")
 
+        # Re-validate HEAD SHA immediately before mutation
+        try:
+            current_head_sha_recheck = git.get_head_sha(cwd=Path(plan.target_worktree))
+            if current_head_sha_recheck != plan.expected_head_sha:
+                result.validation_passed = False
+                result.error = Unknown("HEAD SHA changed during check-commands execution (plan went stale) — aborting before worktree removal")
+                return result, result.error
+        except Exception as e:
+            result.validation_passed = False
+            result.error = Unknown(f"Freshness re-validation before mutation failed: {e}")
+            return result, result.error
+
         try:
             success, err = git.remove_worktree(Path(plan.target_worktree), force=False, cwd=cwd)
             if success:
                 result.worktree_removed = True
             elif err:
                 result.validation_failures.append(f"Worktree removal failed: {err.reason}")
-                try:
-                    success, err = git.remove_worktree(Path(plan.target_worktree), force=True, cwd=cwd)
-                    if success:
-                        result.worktree_removed = True
-                except Exception:
-                    pass
+                is_dirty_tree_failure = err.reason and ("dirty" in err.reason.lower() or "modified or untracked" in err.reason.lower())
+                if is_dirty_tree_failure:
+                    try:
+                        success, err = git.remove_worktree(Path(plan.target_worktree), force=True, cwd=cwd)
+                        if success:
+                            result.worktree_removed = True
+                    except Exception as e:
+                        result.validation_failures.append(f"Forced worktree removal error: {e}")
         except Exception as e:
             result.validation_failures.append(f"Worktree removal error: {e}")
 
@@ -280,36 +302,39 @@ def _detect_stacked_children(
     branch: str,
     target_worktree: Path,
     cwd: Optional[Path] = None
-) -> Tuple[List[ChildBranchInfo], bool]:
+) -> Tuple[List[ChildBranchInfo], bool, bool]:
     """
     Detect stacked child branches using two detectors:
     1. Cache scan: find github-cache.json files with stack.parentBranch == branch
     2. gh pr list: find open PRs targeting branch
     Union and dedup by branch name.
-    Returns (children_list, gh_lookup_failed).
+    Returns (children_list, gh_lookup_failed, detection_incomplete).
     """
     from . import worktrees
 
     detected: Dict[str, ChildBranchInfo] = {}
     gh_lookup_failed = False
+    detection_incomplete = False
 
     try:
         worktree_parent_str = worktrees.detect_worktree_parent(cwd)
         if not worktree_parent_str:
-            return [], False
+            return [], False, False
 
         worktree_parent = Path(worktree_parent_str)
         if not worktree_parent.is_dir():
-            return [], False
+            return [], False, False
     except Exception:
-        return [], False
+        return [], False, False
 
     try:
         porcelain = git.get_worktree_list_porcelain(cwd=cwd)
         worktree_list = worktrees.parse_worktree_list(porcelain)
         worktree_map = {wt_path: wt_branch for wt_path, wt_branch in worktree_list}
+        branch_to_path = {wt_branch: wt_path for wt_path, wt_branch in worktree_list}
     except Exception:
         worktree_map = {}
+        branch_to_path = {}
 
     try:
         for cache_file in worktree_parent.rglob("github-cache.json"):
@@ -342,6 +367,7 @@ def _detect_stacked_children(
                             worktree_path=worktree_path
                         )
             except Exception:
+                detection_incomplete = True
                 continue
     except Exception:
         pass
@@ -356,14 +382,14 @@ def _detect_stacked_children(
                 detected[pr_branch] = ChildBranchInfo(
                     branch=pr_branch,
                     pr_number=pr_number,
-                    worktree_path=worktree_map.get(None)
+                    worktree_path=branch_to_path.get(pr_branch)
                 )
             elif pr_branch and pr_branch in detected and pr_number:
                 detected[pr_branch].pr_number = pr_number
     except Exception:
         gh_lookup_failed = True
 
-    return list(detected.values()), gh_lookup_failed
+    return list(detected.values()), gh_lookup_failed, detection_incomplete
 
 
 def _hash_plan(plan_json: str) -> str:

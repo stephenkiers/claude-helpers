@@ -33,7 +33,7 @@ class GitFixture:
         self.repo_root.mkdir(exist_ok=True)
         self.worktree_parent = self.tmpdir / "worktrees"
 
-        self._run_git(["init"], cwd=self.repo_root)
+        self._run_git(["init", "-b", "main"], cwd=self.repo_root)
         self._run_git(["config", "user.email", "test@example.com"], cwd=self.repo_root)
         self._run_git(["config", "user.name", "Test User"], cwd=self.repo_root)
 
@@ -43,7 +43,7 @@ class GitFixture:
         """Run a git command and return stdout."""
         try:
             result = subprocess.run(
-                ["git"] + args,
+                ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"] + args,
                 cwd=cwd or self.repo_root,
                 capture_output=True,
                 text=True,

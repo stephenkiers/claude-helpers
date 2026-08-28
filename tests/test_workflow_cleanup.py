@@ -250,7 +250,7 @@ if __name__ == "__main__":
                         mock_pr_list.return_value = []
 
                         from workflow.cleanup import _detect_stacked_children
-                        children, gh_failed = _detect_stacked_children(
+                        children, gh_failed, detection_incomplete = _detect_stacked_children(
                             "feature/parent",
                             Path(main_wt)
                         )
@@ -270,7 +270,7 @@ if __name__ == "__main__":
                     ]
 
                     from workflow.cleanup import _detect_stacked_children
-                    children, gh_failed = _detect_stacked_children(
+                    children, gh_failed, detection_incomplete = _detect_stacked_children(
                         "feature/parent",
                         Path(main_wt)
                     )
@@ -288,7 +288,7 @@ if __name__ == "__main__":
                     mock_pr_list.side_effect = Exception("Network error")
 
                     from workflow.cleanup import _detect_stacked_children
-                    children, gh_failed = _detect_stacked_children(
+                    children, gh_failed, detection_incomplete = _detect_stacked_children(
                         "feature/parent",
                         Path(main_wt)
                     )

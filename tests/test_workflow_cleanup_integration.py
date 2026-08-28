@@ -116,7 +116,7 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
-    print("[Section 3] apply_cleanup deletes branch with -d when PR state is OPEN")
+    print("[Section 3] apply_cleanup uses -d (safe) deletion when PR state is OPEN")
 
     fixture = GitFixture()
     old_cwd = os.getcwd()
@@ -124,14 +124,16 @@ if __name__ == "__main__":
         os.chdir(fixture.repo_root)
 
         fixture.create_initial_commit("initial")
-        fixture.create_branch("feature/open")
-        wt_path = fixture.create_worktree("feature/open")
+        fixture.create_branch("feature/open-safe")
+        wt_path = fixture.create_worktree("feature/open-safe")
 
+        # Commit an unmerged change on the branch to demonstrate -d vs -D behavior
+        fixture.commit_in_worktree(wt_path, "unmerged change")
         feature_sha = fixture.get_head_sha(cwd=wt_path)
 
         plan = CleanupPlan(
             target_worktree=str(wt_path),
-            current_branch="feature/open",
+            current_branch="feature/open-safe",
             pr_state="OPEN",
             pr_number=43,
             expected_head_sha=feature_sha,
@@ -143,14 +145,19 @@ if __name__ == "__main__":
         result, err = apply_cleanup(plan_json)
 
         test_result(
-            "apply_cleanup succeeds with OPEN PR state",
-            result.success is True,
-            f"error: {err}"
+            "apply_cleanup fails branch deletion with -d on unmerged branch",
+            result.success is False and not result.branch_deleted,
+            f"with unmerged changes, -d should fail (not force=True); got success={result.success}, branch_deleted={result.branch_deleted}, error={err}"
         )
         test_result(
-            "branch is still deleted (just with -d flag)",
-            not fixture.branch_exists("feature/open"),
-            "branch should be deleted even with safe -d flag"
+            "branch still exists after failed -d deletion",
+            fixture.branch_exists("feature/open-safe"),
+            "branch should still exist after failed -d deletion attempt"
+        )
+        test_result(
+            "branch deletion failure is recorded",
+            any("Branch deletion failed" in msg for msg in result.validation_failures),
+            "branch deletion failure should be in validation_failures"
         )
 
     finally:
@@ -266,6 +273,99 @@ if __name__ == "__main__":
             "apply_cleanup fails for missing worktree",
             result.success is False and result.error is not None,
             "missing worktree should cause error"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 7] apply_cleanup rejects stale plan (branch changed)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+
+        fixture.create_initial_commit("initial")
+        fixture.create_branch("feature/branch-stale")
+        fixture.create_branch("feature/other")
+        wt_path = fixture.create_worktree("feature/branch-stale")
+
+        feature_sha = fixture.get_head_sha(cwd=wt_path)
+
+        plan = CleanupPlan(
+            target_worktree=str(wt_path),
+            current_branch="feature/branch-stale",
+            pr_state="MERGED",
+            pr_number=47,
+            expected_head_sha=feature_sha,
+            cache_hash=None,
+            check_commands=[]
+        )
+        plan_json = json.dumps(plan.to_dict())
+
+        # Checkout different branch in worktree to make plan stale
+        import subprocess
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "checkout", "feature/other"],
+            cwd=wt_path,
+            check=True,
+            capture_output=True
+        )
+
+        result, err = apply_cleanup(plan_json)
+
+        test_result(
+            "apply_cleanup rejects plan with changed branch",
+            result.success is False and result.error is not None and "Branch changed" in str(result.error),
+            "plan should be rejected when branch has changed"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 8] apply_cleanup rejects stale plan (cache changed)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+
+        fixture.create_initial_commit("initial")
+        fixture.create_branch("feature/cache-stale")
+        wt_path = fixture.create_worktree("feature/cache-stale")
+
+        feature_sha = fixture.get_head_sha(cwd=wt_path)
+
+        plan = CleanupPlan(
+            target_worktree=str(wt_path),
+            current_branch="feature/cache-stale",
+            pr_state="MERGED",
+            pr_number=48,
+            expected_head_sha=feature_sha,
+            cache_hash="original_hash",
+            check_commands=[]
+        )
+        plan_json = json.dumps(plan.to_dict())
+
+        # Modify cache file to make plan stale
+        claude_dir = wt_path / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = claude_dir / "repo-cache.json"
+        cache_file.write_text(json.dumps({
+            "schema_version": "1.0",
+            "commands": {}
+        }))
+
+        result, err = apply_cleanup(plan_json)
+
+        test_result(
+            "apply_cleanup rejects plan with changed cache",
+            result.success is False and result.error is not None and "Cache has changed" in str(result.error),
+            "plan should be rejected when cache has changed"
         )
 
     finally:
