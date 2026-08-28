@@ -7,7 +7,6 @@ Ports the deterministic cleanup logic from /cleanup into a plan/apply pattern:
 """
 
 import json
-import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -216,22 +215,14 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
             result.validation_passed = False
             result.validation_failures.append(f"Pull main ff-only failed: {e}")
 
+        from .checks import execute_check
+
         for cmd in plan.check_commands:
-            try:
-                subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=main_worktree_path,
-                    timeout=300,
-                    capture_output=True,
-                    check=True
-                )
-            except subprocess.CalledProcessError:
+            check_result = execute_check(cmd, cwd=main_worktree_path)
+            if not check_result.success:
                 result.validation_passed = False
-                result.validation_failures.append(f"Check command failed: {cmd}")
-            except Exception as e:
-                result.validation_passed = False
-                result.validation_failures.append(f"Check command error: {cmd}: {e}")
+                detail = check_result.error or check_result.stderr or f"exit code {check_result.returncode}"
+                result.validation_failures.append(f"Check command failed: {cmd}: {detail}")
 
         # Re-validate HEAD SHA immediately before mutation
         try:
