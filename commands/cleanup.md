@@ -361,7 +361,7 @@ fi
 
 ### 2b-ii. Enqueue Pending Post-Merge Validations (into the per-repo verify-queue)
 
-Merged code isn't always fully verified code — expert-review action-plans often mark items as
+Merged code isn't always fully verified code — expert-review claude-action-plans often mark items as
 "needs measurement" or "needs you" (pending verification or a decision). Before tearing down the
 worktree, read the issue and PR bodies and capture any such items into the per-repository
 verify-queue so they survive the worktree removal.
@@ -894,7 +894,7 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
 - This command complements `/shipit` - use `/shipit` to create PR, `/cleanup` after merge
 - Before removing the worktree, the issue and PR bodies are scanned for manual post-merge
   validations (test plans, unchecked checklists, "verify in staging" notes). Any pending
-  "needs measurement" or "needs you" items from the expert-review action-plan are enqueued into
+  "needs measurement" or "needs you" items from the expert-review claude-action-plan are enqueued into
   the per-repo verify-queue at `<repo>/worktrees/verify-queue.jsonl`. Users are then asked one
   non-blocking batch `done | defer | ignore` to categorize them — the worktree is the last
   natural checkpoint for that context, but worktree removal is never blocked by the queue.

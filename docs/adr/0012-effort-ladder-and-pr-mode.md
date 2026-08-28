@@ -30,7 +30,7 @@ this ADR; it was closed unmerged.
 | 4 | normal | Current behavior, unchanged |
 | 5 | everyone | All `index.yaml` reviewers, implemented as named-selection over the full index — the router is bypassed with no new code path |
 
-Triage runs at **every** level — the output contract (`final-report.md` → `action-plan.md`) is
+Triage runs at **every** level — the output contract (`final-report.md` → `claude-action-plan.md`) is
 identical regardless of how the findings were produced. `--effort` + named reviewers is an error
 (the user is sizing the run twice); `--model` stays orthogonal, with the effort-1 merge agent
 pinned to sonnet unless `--model` was explicit.

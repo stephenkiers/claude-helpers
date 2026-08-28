@@ -454,11 +454,11 @@ if __name__ == "__main__":
         "Core buckets (1. Doing it, 2. Needs you, 3. Needs measurement, 4. Deferred) should all be present with proper headings"
     )
 
-    # 8.4: triage.md action-plan template should still exist
+    # 8.4: triage.md claude-action-plan template should still exist
     test_result(
-        "action-plan.md template still present",
-        "action-plan.md" in triage_content or "## Output" in triage_content,
-        "action-plan.md template should still be present"
+        "claude-action-plan.md template still present",
+        "claude-action-plan.md" in triage_content or "## Output" in triage_content,
+        "claude-action-plan.md template should still be present"
     )
 
     # 8.5: amalgamator.md should still exist and have core structure

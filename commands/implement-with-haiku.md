@@ -25,11 +25,55 @@ The flow:
 
 In priority order:
 
+0. **Args contain a path to an existing `claude-action-plan.md` file** → read it directly, set
+   `PLAN_SOURCE=claude-action-plan`. If the path doesn't exist, fall through to priority 1–3 below
+   with a one-line warning.
 1. **Args contain an issue number or URL** → fetch with `gh issue view <number>`
 2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan
 3. **A plan is visible in the current conversation** → use it directly
 
 If none yield a plan, tell the user and stop.
+
+### Parse claude-action-plan.md into directives
+
+**Note:** This subsection's assumptions about `claude-action-plan.md`'s shape (section headings,
+table columns, `STATUS`/`DECISION` fields) are defined authoritatively in `prompts/triage.md`'s
+`## Output` section. If triage.md's template changes, re-check this subsection's rules against it.
+
+When `PLAN_SOURCE=claude-action-plan`, first run a structural pre-check for the pre-migration
+`action-plan.md` format (old `- **Ruling**: _(pending...)_` placeholder style, no `STATUS`/`DECISION`
+fields). **Do not use "zero `- **STATUS**:` matches" alone as the signal** — a fully modern,
+all-"Doing it" plan with no escalations legitimately has zero `- **STATUS**:` occurrences (that field
+only appears on *Needs you*/*Needs measurement* items), and would be wrongly rejected. Instead, check
+for either of two positive signals that the file predates the rename: (a) it contains the literal old
+placeholder `- **Ruling**:`, or (b) it lacks a `## Doing it` section heading entirely — a structural
+anchor present in every `claude-action-plan.md` produced by the current template regardless of how
+many items it holds (see `prompts/triage.md`'s `## Output` section). If either signal fires, stop
+immediately with a loud error: "`<path>` does not look like a current-format `claude-action-plan.md`
+— it looks like a pre-migration `action-plan.md` file (old format). This command only reads the
+current `claude-action-plan.md` format; there is no automatic migration. See
+docs/adr/0007-triage-and-decision-memory.md's Amendment section for migration policy." This is a hard
+stop for this plan source, not a non-blocking warning.
+
+If the check passes, extract directives from the file's sections by matching literal field values
+— no prose interpretation:
+
+- **Doing it** table rows → one directive each: `[accepted: doing-it]` + Finding cell (verbatim) + Fix
+  cell (verbatim or compressed to a clause). Both Finding and Fix must be preserved; do not drop the
+  Finding.
+- Items with `- **STATUS**: decided` or `- **STATUS**: measured` → one directive each:
+  `[decided: ruling recorded]` + the finding paragraph + the `- **DECISION**:` field verbatim.
+- Items with `- **STATUS**: no-op` → **excluded from directives entirely**. A no-op ruling ("Leave
+  as-is" was chosen) is decided; there is nothing to implement.
+- Items with `- **STATUS**: pending-decision` or `- **STATUS**: pending-measurement` → **excluded
+  from work units**. Collect them into a one-time warning printed at Step 1 completion: `N item(s) in
+  this action plan still lack a recorded ruling and will be skipped: [titles]. Resolve them via
+  /expert-review's ruling flow before re-running if you want them included.` Non-blocking — matches
+  this command's existing "surface, don't block" pattern.
+- **Deferred** and the **gut check** section are never turned into directives.
+
+This parsed, tagged directive list becomes "the plan" fed into Step 3 ("Split the plan into work
+units").
 
 ## Step 2: Get context
 
@@ -98,6 +142,8 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
   must be assigned to **exactly one** unit — never left unassigned.
 - **Extract shared contracts/interfaces** (types, enums, constants) into the sub-task text given to
   *all* units — cheap drift reduction without inter-agent communication.
+- When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[accepted: doing-it]`
+  directive, the split must carry that tag through verbatim into the sub-task text — never strip it.
 - Always emit **≥ 1** unit. If the plan is too coupled to split safely, emit 1 unit.
 
 **Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
@@ -152,6 +198,10 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - **"Do not write tests in this pass. A separate pass will write tests from the plan."**
 - **"Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
   commits it."**
+- For each directive tagged `[decided: ruling recorded]` or `[accepted: doing-it]` in this unit's
+  sub-task, include this blockquote before the finding + fix verbatim:
+  > **This was already decided by a human reviewer — implement exactly what is described below. Do not
+  > treat it as open, do not propose an alternative, do not flag it back as ambiguous.**
 - The verification commands from the plan (or `n/a` if none for this unit)
 - The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section, which
   ends in `STAGED: yes | no`, not a commit)
@@ -852,6 +902,8 @@ wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total ag
 
 ```
 ROUND SIZING: <mechanical | test-only | full>
+ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]
+  Doing it applied: <n>   Rulings applied: <n>   Skipped (still pending): <n>
 ROUND 1 — Implementer (parallel)
   Units: <N>   Applied clean: <c>   Conflicts resolved: <c>   Failed: <c>
 INTEGRATION GATE (trusted)

@@ -1,12 +1,12 @@
 ---
 name: verify-queue
-description: Per-repository batched verification queue — store pending rulings from action-plans in the repo's worktrees/ folder, sync and drain them, and record results back to action-plan.md
+description: Per-repository batched verification queue — store pending rulings from action-plans in the repo's worktrees/ folder, sync and drain them, and record results back to claude-action-plan.md
 ---
 
 # Verify Queue — Per-Repository Verification Workflow
 
 Batched verification queue for pending rulings — **per-repository**, stored at `<repo>/worktrees/verify-queue.jsonl`
-beside `issues.json`. Collects *your-call* and *measurement* findings from `action-plan.md` files, surfaces them
+beside `issues.json`. Collects *your-call* and *measurement* findings from `claude-action-plan.md` files, surfaces them
 for review, and records your decisions back to the plans.
 
 **Must run from inside a git repo** (or one of its worktrees) — errors outside a git repository.
@@ -50,7 +50,7 @@ Each line is a JSON object with exactly these fields:
   "kind": "your-call",
   "summary": "Short human-readable description of the finding",
   "command": "",
-  "plan": "/absolute/path/to/action-plan.md",
+  "plan": "/absolute/path/to/claude-action-plan.md",
   "result": ""
 }
 ```
@@ -62,10 +62,10 @@ Each line is a JSON object with exactly these fields:
   queue, skip it (re-sync is idempotent).
 - `status` (string): One of `open`, `done`, or `ignored`. Only `open` rows surface on drain.
 - `kind` (string): One of `your-call` (awaiting human judgment) or `measurement` (awaiting a test run).
-- `summary` (string): Human description of the finding. Copy from action-plan.md directly.
+- `summary` (string): Human description of the finding. Copy from claude-action-plan.md directly.
 - `command` (string): For `measurement` rows, the concrete runnable command to resolve the question;
   empty string for `your-call` rows.
-- `plan` (string): Absolute path to the source `action-plan.md` file.
+- `plan` (string): Absolute path to the source `claude-action-plan.md` file.
 - `result` (string): Filled when the row is marked `done` with `--result "…"`; otherwise empty string.
 
 ### Helper: `add_row` (dedup append)
@@ -124,7 +124,7 @@ Every path runs **sync first** (unless sync has already run this invocation). Th
 
 - **No arguments** → sync + drain (view all pending rulings)
 - `sync` → scan action-plans, discover new rulings, add to queue
-- `done <id> [--result "…"]` → mark row done, optionally record result, write back to action-plan
+- `done <id> [--result "…"]` → mark row done, optionally record result, write back to claude-action-plan
 - `defer <id>` → leave row open (no change to status; used for "will do this later")
 - `ignore <id>` → mark row ignored (never resurfaces on re-sync)
 - `done all` → mark all currently-open rows as done (no result recorded)
@@ -140,29 +140,41 @@ PROJECT_ROOT=$(git rev-parse --show-toplevel)
 REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')
 [ -z "$REPO_KEY" ] && REPO_KEY=$(basename "$PROJECT_ROOT")
 
-# Find all action-plans for this repo
+# Find all claude-action-plans for this repo
 REVIEWS="$HOME/.claude/reviews/${REPO_KEY}"
 [ -d "$REVIEWS" ] || { echo "No reviews for this repo ($REPO_KEY) yet."; exit 0; }
 
-# Candidates: action-plan.md files with pending rulings, sorted by recency
-find "$REVIEWS" -name action-plan.md 2>/dev/null -print0 \
+# Candidates: claude-action-plan.md files with pending rulings, sorted by recency
+# First, check for any pre-migration action-plan.md files (old name, not read by verify-queue)
+find "$REVIEWS" -name action-plan.md 2>/dev/null | while read -r old_plan_file; do
+  review_dir=$(dirname "$old_plan_file")
+  new_plan_file="$review_dir/claude-action-plan.md"
+  # Only warn if the new file doesn't exist (old file without migration)
+  if [ ! -f "$new_plan_file" ]; then
+    echo "WARNING: found pre-migration action-plan.md at $old_plan_file — this file is not read by verify-queue; see docs/adr/0007 for migration policy" >&2
+  fi
+done
+
+find "$REVIEWS" -name claude-action-plan.md 2>/dev/null -print0 \
   | xargs -0 ls -t 2>/dev/null \
   | while read -r plan_file; do
-      grep -qE 'pending (your call|measurement)' "$plan_file" && echo "$plan_file"
+      grep -qE '^\s*-\s+\*\*STATUS\*\*:\s*pending-' "$plan_file" && echo "$plan_file"
     done
 ```
 
 **Step 2 — Extract rulings from each plan:**
 
-For each `action-plan.md` file, parse the sections (e.g., "Needs Your Call" or "Needs Measurement").
-For each pending ruling, extract:
+For each `claude-action-plan.md` file, parse the sections (e.g., "Needs you" or "Needs measurement").
+For each item whose `STATUS` field is still `pending-decision` or `pending-measurement`, extract:
 - `finding-slug`: a kebab-case slug of the finding title
 - `summary`: the finding description (copy from the plan, use judgment to shorten/clarify)
-- `kind`: `your-call` or `measurement` (infer from section heading or the `pending …` marker)
+- `kind`: `your-call` or `measurement`, inferred directly from the `STATUS` value
+  (`pending-decision` → `your-call`, `pending-measurement` → `measurement`) — a literal field match,
+  not a heading/prose inference
 - `command`: for `measurement` rows, draft or copy the concrete runnable command from the plan;
   for `your-call` rows, use empty string
-- `review-id`: the review directory name (directory between `reviews/<repo-key>/` and `action-plan.md`)
-- `plan`: the absolute path to the action-plan.md file
+- `review-id`: the review directory name (directory between `reviews/<repo-key>/` and `claude-action-plan.md`)
+- `plan`: the absolute path to the claude-action-plan.md file
 
 Build `id` as `<repo-key>/<review-id>::<finding-slug>` — globally unique.
 
@@ -214,49 +226,103 @@ echo "Total pending: **$TOTAL**"
 
 ## Disposition Verbs
 
-### `done <id> [--result "…"]`
+### `done <id> [--result "…"] [--noop]`
 
-Marks a row as `done`, optionally records a result, and writes the result back to the source action-plan:
+Marks a row as `done`, optionally records a result, and writes the result back to the source claude-action-plan:
 
 ```bash
 ID="$2"
 RESULT=""
+NOOP=false
 
-# Parse --result flag if present
-if [ "$3" = "--result" ] && [ -n "$4" ]; then
-  RESULT="$4"
-fi
+# Parse --result and --noop flags
+shift 2  # consume ID and command name
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --result)
+      if [ -n "$2" ]; then
+        RESULT="$2"
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --noop)
+      NOOP=true
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
-# Update queue
-set_status "$ID" "done" "$RESULT"
-
-# Write result back to action-plan (read the plan, find the Ruling line, replace pending marker)
-# Extract plan path from queue
+# Extract plan path and kind from queue
 PLAN=$(jq -r --arg id "$ID" 'select(.id == $id) | .plan' "$QUEUE" | head -1)
+KIND=$(jq -r --arg id "$ID" 'select(.id == $id) | .kind' "$QUEUE" | head -1)
+
 if [ -z "$PLAN" ] || [ ! -f "$PLAN" ]; then
   echo "ERROR: Could not find plan file for $ID"
   exit 1
 fi
 
+if [ -z "$KIND" ] || [ "$KIND" = "null" ]; then
+  echo "ERROR: Queue row for $ID has a missing or invalid kind field"
+  exit 1
+fi
+
+# For your-call rows, require one of --result or --noop
+if [ "$KIND" = "your-call" ] && [ -z "$RESULT" ] && [ "$NOOP" = "false" ]; then
+  echo "ERROR: For your-call items, must specify either --result or --noop"
+  exit 1
+fi
+
+# Update queue
+set_status "$ID" "done" "$RESULT"
+
 echo "Marked $ID as done"
 [ -n "$RESULT" ] && echo "Result: $RESULT"
+[ "$NOOP" = "true" ] && echo "Recorded as no-op (leave as-is)"
 echo "Now write the ruling back to: $PLAN"
 ```
 
 **Then write the ruling back into the plan (judgment step, not blind sed).** Open `$PLAN`, locate the
-`Ruling:` line belonging to *this* finding (match on the finding's `summary` / slug — a plan usually
-holds several rulings, so a global replace would corrupt the others), and replace its `pending your
-call` / `pending measurement` marker with the decision, including `$RESULT` when present. For example
-a line `Ruling: pending your call` becomes `Ruling: done — <result>`. When exactly one pending marker
-of the matching kind remains in the file, a scoped replacement is safe as a fallback:
+`- **STATUS**:` and `- **DECISION**:` fields belonging to *this* finding (match on the finding's
+`summary` / slug via its `### N. [Title]` heading — a plan usually holds several items, so a global
+replace would corrupt the others). For `measurement` rows, set `STATUS: measured` with `DECISION: <result>`
+when `$RESULT` is present, or `DECISION: done` otherwise. For `your-call` rows, set `STATUS: decided`
+with `DECISION: <result>` (or `DECISION: done` if no result), unless `--noop` was given, in which case
+set `STATUS: no-op` with `DECISION: no action needed` or similar. When exactly one matching `pending-*`
+item remains in the file, a scoped replacement is safe as a fallback:
 
 ```bash
-# Fallback ONLY when a single matching pending marker remains in $PLAN:
-# sed -i.bak "s/Ruling: pending your call/Ruling: done — ${RESULT}/" "$PLAN" && rm -f "$PLAN.bak"
+# Fallback ONLY when a single matching pending-* item remains in $PLAN.
+# Find the item's heading anchor (its own "### N. [Title]") and scope the sed to that block —
+# through the next "### " heading (or EOF), never past it, so the substitution can't reach
+# another item's STATUS/DECISION lines.
+# ITEM_HEADING=$(grep -n "^### .*${FINDING_SLUG}" "$PLAN" | head -1 | cut -d: -f1)
+# if [ -n "$ITEM_HEADING" ]; then
+#   NEXT_HEADING=$(tail -n "+$((ITEM_HEADING + 1))" "$PLAN" | grep -n "^### " | head -1 | cut -d: -f1)
+#   if [ -n "$NEXT_HEADING" ]; then
+#     LAST_LINE=$((ITEM_HEADING + NEXT_HEADING - 1))
+#   else
+#     LAST_LINE='$'  # no later heading — block runs to end of file
+#   fi
+#   if [ "$KIND" = "measurement" ]; then
+#     sed -i.bak "${ITEM_HEADING},${LAST_LINE}s/- \*\*STATUS\*\*: pending-measurement/- **STATUS**: measured/; ${ITEM_HEADING},${LAST_LINE}s/- \*\*DECISION\*\*: .*/- **DECISION**: ${RESULT}/" "$PLAN"
+#   elif [ "$KIND" = "your-call" ]; then
+#     if [ "$NOOP" = "true" ]; then
+#       sed -i.bak "${ITEM_HEADING},${LAST_LINE}s/- \*\*STATUS\*\*: pending-decision/- **STATUS**: no-op/; ${ITEM_HEADING},${LAST_LINE}s/- \*\*DECISION\*\*: .*/- **DECISION**: no action needed/" "$PLAN"
+#     else
+#       sed -i.bak "${ITEM_HEADING},${LAST_LINE}s/- \*\*STATUS\*\*: pending-decision/- **STATUS**: decided/; ${ITEM_HEADING},${LAST_LINE}s/- \*\*DECISION\*\*: .*/- **DECISION**: ${RESULT}/" "$PLAN"
+#     fi
+#   fi
+#   rm -f "$PLAN.bak"
+# fi
 ```
 
-This write-back is what keeps `action-plan.md` (the gut-check instrument of record) in sync with the
-queue — so a re-sync no longer re-discovers a ruling you've already resolved.
+This write-back is what keeps `claude-action-plan.md` (the gut-check instrument of record) in sync
+with the queue — so a re-sync no longer re-discovers a ruling you've already resolved.
 
 ### `defer <id>`
 
