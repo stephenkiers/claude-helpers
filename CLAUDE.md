@@ -16,10 +16,10 @@ It creates **file-level symlinks** from `~/.claude/{dir}/` into this repo for ea
 own personal or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files:
 
 - Ensure `~/.claude/{dir}/` exists as a real directory (replace any old directory-level symlink).
-- For each file in `{repo}/{dir}/`: if `~/.claude/{dir}/{file}` is already the correct symlink, skip;
-  if it's a real file or wrong link, back it up to `.bak`, then symlink; otherwise symlink.
-- Links only regular files; skips directories like `__pycache__`.
-- Prunes stale symlinks that point into this repo (dangling links or non-regular-file targets).
+- For each file in `{repo}/{dir}/` and its subdirectories: if `~/.claude/{dir}/{file}` is already the correct symlink, skip;
+  if it's a real file or wrong link, back it up to `.bak`, then symlink; otherwise symlink. Mirrors the source tree under `~/.claude/{dir}/`.
+- Links only regular files; skips directories like `__pycache__` at any depth.
+- Prunes stale symlinks that point into this repo (dangling links or non-regular-file targets), including nested ones.
 - Creates `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if missing
   (never overwrites an existing user file).
 

@@ -32,10 +32,15 @@ for dir in commands reviewers prompts agents scripts; do
 
     mkdir -p "$target_dir"
 
-    for source_file in "$source_dir"/*; do
-        [ -f "$source_file" ] || continue
-        fname="$(basename "$source_file")"
-        target_file="$target_dir/$fname"
+    # Recursively link all files (except those in __pycache__ directories)
+    while IFS= read -r source_file; do
+        # Compute the relative path from source_dir to source_file
+        rel_path="${source_file#"$source_dir"/}"
+        target_file="$target_dir/$rel_path"
+        target_subdir="$(dirname "$target_file")"
+
+        # Create subdirectories as needed
+        mkdir -p "$target_subdir"
 
         if [ -L "$target_file" ] && [ "$(readlink "$target_file")" = "$source_file" ]; then
             continue  # already correct
@@ -48,10 +53,10 @@ for dir in commands reviewers prompts agents scripts; do
 
         ln -sf "$source_file" "$target_file"
         echo "Linked $target_file -> $source_file"
-    done
+    done < <(find "$source_dir" -type f -not -path '*/__pycache__/*')
 
-    # Prune stale symlinks that point into this repo
-    for entry in "$target_dir"/*; do
+    # Prune stale symlinks that point into this repo (including nested ones)
+    while IFS= read -r entry; do
         [ -L "$entry" ] || continue
         link_target=$(readlink "$entry")
         case "$link_target" in
@@ -62,7 +67,10 @@ for dir in commands reviewers prompts agents scripts; do
                 fi
                 ;;
         esac
-    done
+    done < <(find "$target_dir" -type l)
+
+    # Clean up empty subdirectories left behind by pruning
+    find "$target_dir" -type d -empty -delete 2>/dev/null || true
 done
 
 if [ ! -e "$CLAUDE_DIR/preferences.yaml" ]; then
