@@ -266,6 +266,11 @@ if [ -z "$PLAN" ] || [ ! -f "$PLAN" ]; then
   exit 1
 fi
 
+if [ -z "$KIND" ] || [ "$KIND" = "null" ]; then
+  echo "ERROR: Queue row for $ID has a missing or invalid kind field"
+  exit 1
+fi
+
 # For your-call rows, require one of --result or --noop
 if [ "$KIND" = "your-call" ] && [ -z "$RESULT" ] && [ "$NOOP" = "false" ]; then
   echo "ERROR: For your-call items, must specify either --result or --noop"

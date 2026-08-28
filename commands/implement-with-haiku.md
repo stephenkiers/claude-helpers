@@ -40,12 +40,18 @@ If none yield a plan, tell the user and stop.
 table columns, `STATUS`/`DECISION` fields) are defined authoritatively in `prompts/triage.md`'s
 `## Output` section. If triage.md's template changes, re-check this subsection's rules against it.
 
-When `PLAN_SOURCE=claude-action-plan`, first run a structural pre-check: grep the file for
-`- **STATUS**:`. If the search returns zero matches, the file is in the pre-migration `action-plan.md`
-format (old `- **Ruling**: _(pending...)_` placeholder style, no `STATUS`/`DECISION` fields). Stop
-immediately with a loud error: "`<path>` does not contain any `STATUS`/`DECISION` fields — it looks
-like a pre-migration `action-plan.md` file (old format). This command only reads the current
-`claude-action-plan.md` format; there is no automatic migration. See
+When `PLAN_SOURCE=claude-action-plan`, first run a structural pre-check for the pre-migration
+`action-plan.md` format (old `- **Ruling**: _(pending...)_` placeholder style, no `STATUS`/`DECISION`
+fields). **Do not use "zero `- **STATUS**:` matches" alone as the signal** — a fully modern,
+all-"Doing it" plan with no escalations legitimately has zero `- **STATUS**:` occurrences (that field
+only appears on *Needs you*/*Needs measurement* items), and would be wrongly rejected. Instead, check
+for either of two positive signals that the file predates the rename: (a) it contains the literal old
+placeholder `- **Ruling**:`, or (b) it lacks a `## Doing it` section heading entirely — a structural
+anchor present in every `claude-action-plan.md` produced by the current template regardless of how
+many items it holds (see `prompts/triage.md`'s `## Output` section). If either signal fires, stop
+immediately with a loud error: "`<path>` does not look like a current-format `claude-action-plan.md`
+— it looks like a pre-migration `action-plan.md` file (old format). This command only reads the
+current `claude-action-plan.md` format; there is no automatic migration. See
 docs/adr/0007-triage-and-decision-memory.md's Amendment section for migration policy." This is a hard
 stop for this plan source, not a non-blocking warning.
 

@@ -329,8 +329,11 @@ that matches literal `STATUS`/`DECISION` values and never re-derives intent from
 
 - **No auto-migration for pre-existing `action-plan.md` files.** Files predating this rename and
   format change (old name, old `- **Ruling**: _(pending...)_` placeholder format, no `STATUS`/`DECISION`
-  fields) are not automatically migrated or dual-format-supported. Both `/implement-with-haiku` and
-  `/verify-queue sync` fail loud and report a specific error when encountering a pre-migration file,
-  rather than silently treating it as empty — the smallest change that eliminates the silent-loss
-  failure mode and aligns with this amendment's philosophy of collapsing to one format indefinitely
-  rather than maintaining two in parallel.
+  fields) are not automatically migrated or dual-format-supported. `/implement-with-haiku` hard-stops
+  with a specific error when the single plan file it was given to read turns out to be pre-migration.
+  `/verify-queue sync` walks a whole backlog of review directories in one pass, so it warns (rather
+  than aborting the entire sync) when it finds an old-name file with no new-name sibling, and continues
+  scanning the rest — a single pre-migration file shouldn't hide every other plan's pending rulings.
+  Neither command silently treats a pre-migration file as empty — that's the shared failure mode this
+  bullet eliminates — but "loud" takes a different shape per command's blast radius: a hard stop where
+  one file is the whole unit of work, a surfaced warning where many files are.
