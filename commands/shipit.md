@@ -384,47 +384,33 @@ if [ -z "$PR_NUM" ]; then
   # Fallback: try gh pr view
   PR_NUM=$(gh pr view --json number -q '.number' 2>/dev/null || echo "")
 fi
-
-**After the PR body is finalized (below), use the deterministic CLI to execute push and PR creation/update:**
-
-```bash
-# Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
-TMP_MSG=$(mktemp)
-# Write the commit message to TMP_MSG here (if not already done above)
-
-SHIPIT_PLAN=$(python3 -m scripts.workflow.cli shipit plan "$TMP_MSG" --body-file "$TMP_BODY" --title "$TITLE")
-PLAN_OK=$(printf '%s' "$SHIPIT_PLAN" | jq -r '.plan_hash // empty')
-if [ -z "$PLAN_OK" ]; then
-  echo "ERROR: Failed to plan shipit" >&2
-  exit 1
-fi
-
-# Apply the plan (stages, commits, pushes, creates/edits PR, writes cache)
-SHIPIT_RESULT=$(echo "$SHIPIT_PLAN" | python3 -m scripts.workflow.cli shipit apply -)
-SHIPIT_OK=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.success // false')
-if [ "$SHIPIT_OK" != "true" ]; then
-  ERROR=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.error // "Unknown error"')
-  echo "ERROR: shipit apply failed: $ERROR" >&2
-  exit 1
-fi
-
-rm -f "$TMP_BODY" "$TMP_MSG"
 ```
 
-**Note:** The old PR-body-merge logic below is kept for reference, but is now incorporated into the plan/apply flow. If the PR already exists, the CLI detects it and calls `gh pr edit` instead of `gh pr create`.
+**If the PR already exists, merge into its current body before handing it to the CLI — never
+blind-overwrite.** This is the firm rule the rewrite exists for: a human may have hand-edited the
+description since the last `/shipit` run, and that work must not be silently destroyed.
 
-**If you need to handle novel PR content manually, use this reference logic; otherwise, the CLI handles it:**
-This is the firm rule the rewrite exists for: a human may have hand-edited the description since
-the last `/shipit` run, and that work must not be silently destroyed. Note the exact path printed
-by `echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"` above and reuse it verbatim — do not re-run `mktemp`
-and do not guess the path. Read `$TMP_BODY_CURRENT` (the PR's live body) and apply this
-ingest-then-merge policy:
+```bash
+if [ -n "$PR_NUM" ]; then
+  TMP_BODY_CURRENT=$(mktemp)
+  if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
+    echo "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
+    exit 1
+  fi
+  echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
+fi
+```
 
-Note: There is a window between fetching the current PR body and the final `gh pr edit` write
+Note: There is a window between fetching the current PR body and the final apply-step write
 during which a human could edit the PR description concurrently (e.g. while the agent is
 reasoning over the diff and drafting the merge); this implementation does not guard against that
 race (no optimistic-concurrency / `updatedAt` check) — it is an accepted, documented trade-off,
 not an oversight.
+
+If `$PR_NUM` was set above, note the exact path printed by `echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"`
+and reuse it verbatim — do not re-run `mktemp` and do not guess the path. Read `$TMP_BODY_CURRENT`
+(the PR's live body) and apply this ingest-then-merge policy, rewriting `$TMP_BODY` in place with
+the result:
 
 1. **Split the current body into recognized vs. novel content.** Recognized content is exactly:
    the `Closes #N` line, the five standard headings (`## Why this PR exists`, `## What it does`,
@@ -442,29 +428,49 @@ not an oversight.
    recognized section, so it can't be cleanly separated) → do not guess. Stop and ask the user
    (via a direct question, not a silent decision) how to proceed before overwriting.
 5. Write the final merged body — regenerated recognized sections plus any carried-over novel
-   content — to `$TMP_BODY`, then update:
+   content — back to `$TMP_BODY`, then clean up: `rm -f "$TMP_BODY_CURRENT"` (only if it was
+   created above).
+
+**With `$TMP_BODY` finalized, use the deterministic CLI to execute push and PR creation/update:**
 
 ```bash
-if [ -n "$PR_NUM" ]; then
-  gh pr edit "$PR_NUM" --title "$TITLE" --body-file "$TMP_BODY"
-  rm -f "$TMP_BODY" "$TMP_BODY_CURRENT"
+# Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
+TMP_MSG=$(mktemp)
+# Write the commit message to TMP_MSG here (if not already done above)
+
+SHIPIT_PLAN=$(python3 -m scripts.workflow.cli shipit plan "$TMP_MSG" --body-file "$TMP_BODY" --title "$TITLE")
+PLAN_OK=$(printf '%s' "$SHIPIT_PLAN" | jq -r '.plan_hash // empty')
+if [ -z "$PLAN_OK" ]; then
+  echo "ERROR: Failed to plan shipit" >&2
+  exit 1
 fi
+
+# Apply the plan (stages, commits, pushes, creates/edits PR, writes cache).
+# The CLI detects pr_exists from the same cache read above and calls `gh pr edit`
+# instead of `gh pr create` accordingly — it does not re-decide create-vs-edit itself.
+SHIPIT_RESULT=$(echo "$SHIPIT_PLAN" | python3 -m scripts.workflow.cli shipit apply -)
+SHIPIT_OK=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.success // false')
+if [ "$SHIPIT_OK" != "true" ]; then
+  ERROR=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.error // "Unknown error"')
+  echo "ERROR: shipit apply failed: $ERROR" >&2
+  exit 1
+fi
+
+rm -f "$TMP_BODY" "$TMP_MSG"
 ```
 
-### Write PR Data to Worktree Cache
+**The CLI's `shipit apply` step already writes `pr` and `stack` (isStacked/parentBranch/parentPr)
+data back to `.claude/github-cache.json`** — no separate manual cache-write step is needed here.
 
-After `gh pr create` succeeds, write PR data (including stack metadata) to `.claude/github-cache.json`:
+If stacked, look up the remote stack number (only needed for the `/cleanup` restack runbook;
+the CLI does not compute or cache this field):
 
 ```bash
-# Extract PR number and URL from creation output
-PR_URL=$(gh pr view --json url -q '.url')
-PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
-
-# If stacked, look up the remote stack number (needed for cleanup restack runbook)
-STACK_NUM=""
 if [ "$STACK_IS_STACKED" = "true" ]; then
+  PR_URL=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.pr_url // empty')
+  PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
-  if [ -n "$REPO" ]; then
+  if [ -n "$REPO" ] && [ -n "$PR_NUM" ]; then
     REPO_OWNER=$(echo "$REPO" | cut -d/ -f1)
     REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
     STACK_NUM=$(gh api graphql -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number="$PR_NUM" -q '.data.repository.pullRequest.stack.number // empty' 2>/dev/null << 'GRAPHQL'
@@ -479,33 +485,13 @@ query ($owner: String!, $name: String!, $number: Int!) {
 }
 GRAPHQL
 )
+    if [ -n "$STACK_NUM" ]; then
+      TMP=$(mktemp .claude/github-cache.json.XXXXXX)
+      jq --argjson stackNum "$STACK_NUM" '.stack.stackNumber = $stackNum' < .claude/github-cache.json > "$TMP" \
+        && mv "$TMP" .claude/github-cache.json \
+        || { rm -f "$TMP"; echo "WARNING: failed to write stackNumber to .claude/github-cache.json." >&2; }
+    fi
   fi
-fi
-
-# Merge PR data into existing cache (preserves branch + issue sections)
-EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-# Write to a temp file and mv on success so a jq failure never truncates the existing cache
-# (a bare `> github-cache.json` redirect truncates the file before jq runs).
-TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-# printf, not echo: zsh's builtin echo interprets backslash escapes, turning a stored
-# \n back into a literal newline and making the JSON invalid before jq ever sees it.
-if [ "$STACK_IS_STACKED" = "true" ]; then
-  # Stacked: write full stack metadata
-  printf '%s' "$EXISTING" | jq \
-    --argjson number "$PR_NUM" \
-    --arg url "$PR_URL" \
-    --arg state "OPEN" \
-    --arg parentBranch "$STACK_PARENT_BRANCH" \
-    --arg parentPr "$STACK_PARENT_PR" \
-    --arg stackNum "$STACK_NUM" \
-    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: true, parentBranch: $parentBranch, parentPr: (if $parentPr != "" then ($parentPr | tonumber) else null end), stackNumber: (if $stackNum != "" then ($stackNum | tonumber) else null end)}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || { rm -f "$TMP"; echo "WARNING: failed to update .claude/github-cache.json (jq/mv error); cache left unchanged." >&2; }
-else
-  # Not stacked: write isStacked=false
-  printf '%s' "$EXISTING" | jq \
-    --argjson number "$PR_NUM" \
-    --arg url "$PR_URL" \
-    --arg state "OPEN" \
-    '. + {pr: {number: $number, url: $url, state: $state}, stack: {isStacked: false}}' > "$TMP" && mv "$TMP" .claude/github-cache.json || { rm -f "$TMP"; echo "WARNING: failed to update .claude/github-cache.json (jq/mv error); cache left unchanged." >&2; }
 fi
 
 # Do NOT auto-link a server-side GitHub "stack" entity here.
