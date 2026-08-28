@@ -139,7 +139,7 @@ ess tracking via cache hash.
 
 **Mutation allowlist additions:** Three new git keys (`add`, `commit`, `push`) plus extended `pr` shapes:
 - `"add": {("-A",): "git add -A"}` — no other shape.
-- `"commit": {("-F", "<path>"): "git commit -F <path>"}` — message file only.
+- `"commit": {("-F", "--", "<path>"): "git commit -F -- <path>"}` — message file only.
 - `"push": {("-u", "<remote>", "<branch>"): "git push -u <remote> <branch>"}` — plain, non-forced only.
 - `"pr"` extended with: `("create", "--title", "<title>", "--body-file", "<path>")`, `("create", "--title", "<title>", "--base", "<branch>", "--body-file", "<path>")` (stacked), `("edit", "<pr_number>", "--title", "<title>", "--body-file", "<path>")`.
 
