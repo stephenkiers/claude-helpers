@@ -30,7 +30,8 @@ to North Star Nick).
   destructive prose constraints on autonomous agents get a PreToolUse hook, not just a sentence
 - [ADR-0009: Peer review and shared panel](0009-peer-review-and-shared-panel.md) — the blind-first
   two-pass panel extracted to a shared prompt consumed by both `/expert-review` and
-  `/expert-review-coworker`; peer review is collegial and omits Triage Chief
+  `/expert-review-coworker`; peer review is collegial and omits Triage Chief — amended by ADR-0015
+  (draft review posting crosses the no-auto-post line only at the draft layer)
 - [ADR-0010: Worktree clone layout](0010-worktree-clone-layout.md) — the default-branch checkout
   lives at `<repos-root>/<repo>/worktrees/<default-branch>`, not at the repo root; siblings created
   by `/track-and-start` live alongside it; detection keys off the parent directory being named
@@ -40,6 +41,9 @@ to North Star Nick).
 - [ADR-0012: Effort ladder and PR mode for `/expert-review`](0012-effort-ladder-and-pr-mode.md) — a manual `--effort 1–5` ladder (swarm → full panel, default 4) plus a positional GitHub-PR-URL mode that folds coworker review into `/expert-review`; deprecates (not deletes) `/expert-review-coworker(-beta)` and records effort 1's deliberate non-blindness
 - [ADR-0013: Deterministic workflow CLI](0013-deterministic-workflow-cli.md) — a provider-neutral Python CLI in `scripts/workflow/` replaces prose-interpreted logic in `/track-and-start`, `/shipit`, and `/cleanup`; Phase 1 provides read-only primitives (worktree/stack/project detection, cache validation, checks discovery); Phases 2-4 migrate mutations; fail-closed unknown detection on every operation; forbid per-project runtime configuration (forks edit the CLI directly); faithfully port ADR-0010/0011 logic verbatim with no reinterpretation
 - [ADR-0014: Docker Compose project isolation](0014-docker-compose-project-isolation.md) — every repo with `docker-compose.yml`/`compose.yml` must export `COMPOSE_PROJECT_NAME` scoped per repo+worktree to prevent collisions between repos' `main` worktrees; migration recipe for existing volumes documented in `prompts/worktree-reference.md`
+- [ADR-0015: Leave PR comments as pending draft review](0015-leave-pr-comments-draft-review.md) —
+  posts an expert-review's curated findings as a pending (draft) GitHub review; never auto-submits.
+  Amends ADR-0009's no-auto-post line by crossing it only at the draft layer.
 
 ## Format
 
