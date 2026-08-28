@@ -158,7 +158,7 @@ def rev_list_count(rev_range: str, cwd: Optional[Path] = None) -> int:
 def repo_view_json(json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
     """Run 'gh repo view --json <args>' and return parsed JSON."""
     try:
-        output = run_gh_command(["repo", "view", "--json"] + json_args, cwd=cwd)
+        output = run_gh_command(["repo", "view", "--json", ",".join(json_args)], cwd=cwd)
         return json.loads(output) if output else {}
     except (json.JSONDecodeError, subprocess.CalledProcessError):
         return {}
@@ -176,7 +176,7 @@ def gh_api_user_json(cwd: Optional[Path] = None) -> Dict[str, Any]:
 def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
     """Run 'gh pr view <branch> --json <args>' and return parsed JSON."""
     try:
-        output = run_gh_command(["pr", "view", "--json"] + json_args + ["--", branch], cwd=cwd, check=False)
+        output = run_gh_command(["pr", "view", "--json", ",".join(json_args), "--", branch], cwd=cwd, check=False)
         return json.loads(output) if output else {}
     except (json.JSONDecodeError, subprocess.CalledProcessError):
         return {}
@@ -185,7 +185,7 @@ def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) 
 def pr_list_json(base_branch: str, json_fields: List[str], cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Run 'gh pr list --base <base_branch> --state open --json <fields>' and return parsed JSON list."""
     try:
-        args = ["pr", "list", "--base", base_branch, "--state", "open", "--json"] + json_fields
+        args = ["pr", "list", "--base", base_branch, "--state", "open", "--json", ",".join(json_fields)]
         output = run_gh_command(args, cwd=cwd, check=False)
         return json.loads(output) if output else []
     except (json.JSONDecodeError, subprocess.CalledProcessError):
