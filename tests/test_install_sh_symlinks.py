@@ -486,6 +486,64 @@ def test_nested_structure_preserved():
         return True, ""
 
 
+def test_second_run_skips_relink_of_correct_symlink():
+    """Running install.sh twice does not re-create an already-correct symlink.
+
+    Exercises the "already correct -> skip re-linking" optimization branch
+    (the `[ -L "$target_file" ] && [ "$(readlink "$target_file")" = "$source_file" ]`
+    check). `ln -sf` unlinks and recreates a symlink, which changes its inode;
+    if the skip branch is not taken on the second run, the symlink's inode
+    will differ before vs. after the second run.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        test_home = tmpdir_path / "home"
+        test_home.mkdir()
+
+        source_repo = tmpdir_path / "repo"
+        source_repo.mkdir()
+        scripts_dir = source_repo / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "normal.py").write_text("# normal file\n")
+
+        top_level_file = source_repo / "commands"
+        top_level_file.mkdir()
+        (top_level_file / "test_cmd.md").write_text("test command\n")
+
+        install_sh_copy = setup_test_repo_with_install_sh(tmpdir_path, source_repo)
+
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+
+        # First run creates the symlink.
+        code, stdout, stderr = run_bash_script([str(install_sh_copy)], env=env)
+
+        claude_dir = test_home / ".claude"
+        target_symlink = claude_dir / "scripts" / "normal.py"
+
+        if not target_symlink.is_symlink():
+            return False, f"symlink not created at {target_symlink}"
+
+        inode_before = os.lstat(target_symlink).st_ino
+
+        # Second run should skip re-linking since the symlink is already correct.
+        code, stdout, stderr = run_bash_script([str(install_sh_copy)], env=env)
+
+        if not target_symlink.is_symlink():
+            return False, f"symlink missing after second run at {target_symlink}"
+
+        inode_after = os.lstat(target_symlink).st_ino
+
+        if inode_before != inode_after:
+            return False, (
+                f"symlink was unnecessarily re-linked on second run "
+                f"(inode changed from {inode_before} to {inode_after})"
+            )
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("INSTALL.SH RECURSIVE SYMLINK TEST SUITE")
     test_result = h.test_result
@@ -532,6 +590,12 @@ if __name__ == "__main__":
     print("[Section 7] Complex nested structure")
     passed, msg = test_nested_structure_preserved()
     test_result("deeply nested structure preserved across multiple levels", passed, msg)
+
+    print()
+
+    print("[Section 8] Idempotent second run")
+    passed, msg = test_second_run_skips_relink_of_correct_symlink()
+    test_result("second run skips re-linking an already-correct symlink", passed, msg)
 
     print()
 
