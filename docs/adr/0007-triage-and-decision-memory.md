@@ -326,3 +326,11 @@ re-description and changes the file itself:
 
 Net effect: `/implement-with-haiku`'s two patch commits are replaced, not layered on, by a consumer
 that matches literal `STATUS`/`DECISION` values and never re-derives intent from prose.
+
+- **No auto-migration for pre-existing `action-plan.md` files.** Files predating this rename and
+  format change (old name, old `- **Ruling**: _(pending...)_` placeholder format, no `STATUS`/`DECISION`
+  fields) are not automatically migrated or dual-format-supported. Both `/implement-with-haiku` and
+  `/verify-queue sync` fail loud and report a specific error when encountering a pre-migration file,
+  rather than silently treating it as empty — the smallest change that eliminates the silent-loss
+  failure mode and aligns with this amendment's philosophy of collapsing to one format indefinitely
+  rather than maintaining two in parallel.

@@ -40,10 +40,19 @@ If none yield a plan, tell the user and stop.
 table columns, `STATUS`/`DECISION` fields) are defined authoritatively in `prompts/triage.md`'s
 `## Output` section. If triage.md's template changes, re-check this subsection's rules against it.
 
-When `PLAN_SOURCE=claude-action-plan`, extract directives from the file's sections by matching
-literal field values — no prose interpretation:
+When `PLAN_SOURCE=claude-action-plan`, first run a structural pre-check: grep the file for
+`- **STATUS**:`. If the search returns zero matches, the file is in the pre-migration `action-plan.md`
+format (old `- **Ruling**: _(pending...)_` placeholder style, no `STATUS`/`DECISION` fields). Stop
+immediately with a loud error: "`<path>` does not contain any `STATUS`/`DECISION` fields — it looks
+like a pre-migration `action-plan.md` file (old format). This command only reads the current
+`claude-action-plan.md` format; there is no automatic migration. See
+docs/adr/0007-triage-and-decision-memory.md's Amendment section for migration policy." This is a hard
+stop for this plan source, not a non-blocking warning.
 
-- **Doing it** table rows → one directive each: `[decided: doing-it]` + Finding cell (verbatim) + Fix
+If the check passes, extract directives from the file's sections by matching literal field values
+— no prose interpretation:
+
+- **Doing it** table rows → one directive each: `[accepted: doing-it]` + Finding cell (verbatim) + Fix
   cell (verbatim or compressed to a clause). Both Finding and Fix must be preserved; do not drop the
   Finding.
 - Items with `- **STATUS**: decided` or `- **STATUS**: measured` → one directive each:
@@ -127,7 +136,7 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
   must be assigned to **exactly one** unit — never left unassigned.
 - **Extract shared contracts/interfaces** (types, enums, constants) into the sub-task text given to
   *all* units — cheap drift reduction without inter-agent communication.
-- When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[decided: doing-it]`
+- When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[accepted: doing-it]`
   directive, the split must carry that tag through verbatim into the sub-task text — never strip it.
 - Always emit **≥ 1** unit. If the plan is too coupled to split safely, emit 1 unit.
 
@@ -183,7 +192,7 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 - **"Do not write tests in this pass. A separate pass will write tests from the plan."**
 - **"Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
   commits it."**
-- For each directive tagged `[decided: ruling recorded]` or `[decided: doing-it]` in this unit's
+- For each directive tagged `[decided: ruling recorded]` or `[accepted: doing-it]` in this unit's
   sub-task, include this blockquote before the finding + fix verbatim:
   > **This was already decided by a human reviewer — implement exactly what is described below. Do not
   > treat it as open, do not propose an alternative, do not flag it back as ambiguous.**
