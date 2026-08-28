@@ -9,6 +9,7 @@ Run with: python3 tests/test_workflow_git.py
 
 import sys
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -77,6 +78,39 @@ if __name__ == "__main__":
         "Unknown has reason",
         hasattr(unk, "reason") and unk.reason == "test error"
     )
+
+    print()
+    print("[Section 4] --json argv is comma-joined, not list-spliced")
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.return_value = "{}"
+        git_module.repo_view_json(["name", "owner"])
+        called_args, _ = mock_run.call_args
+        test_result(
+            "repo_view_json comma-joins multi-field --json",
+            called_args[0] == ["repo", "view", "--json", "name,owner"],
+            f"got {called_args[0]}"
+        )
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.return_value = "{}"
+        git_module.pr_view_json("some-branch", ["headRefName", "state"])
+        called_args, _ = mock_run.call_args
+        test_result(
+            "pr_view_json comma-joins multi-field --json",
+            called_args[0] == ["pr", "view", "--json", "headRefName,state", "--", "some-branch"],
+            f"got {called_args[0]}"
+        )
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.return_value = "[]"
+        git_module.pr_list_json("main", ["number", "title"])
+        called_args, _ = mock_run.call_args
+        test_result(
+            "pr_list_json comma-joins multi-field --json",
+            called_args[0] == ["pr", "list", "--base", "main", "--state", "open", "--json", "number,title"],
+            f"got {called_args[0]}"
+        )
 
     print()
     h.summarize_and_exit()
