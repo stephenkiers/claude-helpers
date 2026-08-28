@@ -162,4 +162,92 @@ if __name__ == "__main__":
     )
 
     print()
+    print("[Section 6] Repo cache forward-compat and value validation")
+
+    # Test: version field must be int or str, not list
+    bad_version_list = {
+        "schema_version": ["1", "0"],  # Bad: list instead of string
+        "repo_path": "/path",
+        "worktree_parent": "/path/wt",
+        "commands": {}
+    }
+    test_result(
+        "validate_repo_cache() rejects version as list",
+        not validate_repo_cache(bad_version_list)
+    )
+
+    # Test: version field must be int or str, not dict
+    bad_version_dict = {
+        "version": {"major": 1, "minor": 0},  # Bad: dict instead of int
+        "repo_path": "/path",
+        "worktree_parent": "/path/wt",
+        "commands": {}
+    }
+    test_result(
+        "validate_repo_cache() rejects version as dict",
+        not validate_repo_cache(bad_version_dict)
+    )
+
+    # Test: commands values must be None or str, not other types
+    bad_commands_list = {
+        "version": 1,
+        "repo_path": "/path",
+        "worktree_parent": "/path/wt",
+        "commands": {
+            "test": "pytest",
+            "typecheck": ["mypy", "--strict"]  # Bad: list instead of str/None
+        }
+    }
+    test_result(
+        "validate_repo_cache() rejects commands value as list",
+        not validate_repo_cache(bad_commands_list)
+    )
+
+    # Test: commands values cannot be dicts
+    bad_commands_dict = {
+        "version": 1,
+        "repo_path": "/path",
+        "worktree_parent": "/path/wt",
+        "commands": {
+            "test": {"runner": "pytest"}  # Bad: dict instead of str/None
+        }
+    }
+    test_result(
+        "validate_repo_cache() rejects commands value as dict",
+        not validate_repo_cache(bad_commands_dict)
+    )
+
+    # Test: real /shipit-shaped payload still validates
+    shipit_format = {
+        "version": 1,
+        "repo_path": "/path/to/repo",
+        "worktree_parent": "/path/to/worktrees",
+        "commands": {
+            "test": "pytest",
+            "typecheck": None,
+            "format": "black --check .",
+            "lint": None
+        }
+    }
+    test_result(
+        "validate_repo_cache() accepts real /shipit format",
+        validate_repo_cache(shipit_format)
+    )
+
+    # Test: version as string is also valid (forward compat)
+    shipit_format_str_version = {
+        "schema_version": "1.0",
+        "repo_path": "/path/to/repo",
+        "worktree_parent": "/path/to/worktrees",
+        "commands": {
+            "test": "pytest",
+            "typecheck": None
+        }
+    }
+    test_result(
+        "validate_repo_cache() accepts version as string",
+        validate_repo_cache(shipit_format_str_version)
+    )
+
+    print()
     h.summarize_and_exit()
