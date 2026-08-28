@@ -6,6 +6,9 @@ Phase 1: read-only only. Write/locking/atomic-rename in Phase 2+.
 
 import json
 import hashlib
+import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from .models import (
@@ -13,6 +16,10 @@ from .models import (
     validate_github_cache, validate_issues_cache, validate_repo_cache
 )
 from .safety import Unknown
+
+
+# Lock file staleness threshold (10 minutes)
+LOCK_STALE_SECONDS = 600
 
 
 def read_github_cache(path: Path) -> Tuple[Optional[GitHubCacheData], Optional[Unknown]]:
@@ -107,9 +114,106 @@ def hash_issues_cache_file(path: Path) -> Optional[str]:
 
 def write_cache(path: Path, data: Dict[str, Any]) -> Tuple[bool, Optional[Unknown]]:
     """
-    Write cache file atomically (stub for Phase 1).
+    Write cache file atomically with lock file serialization.
 
-    Decision 1: temp-file + os.replace() atomic rename, plus sidecar lock file.
-    TODO: Implement actual write path in Phase 2 when mutations begin.
+    Decision 1: temp-file + os.replace() atomic rename, plus sidecar lock file
+    to serialize concurrent writers. Lock is created with os.open(..., os.O_CREAT | os.O_EXCL)
+    for atomic create-if-absent. Returns (False, Unknown(...)) if lock already exists
+    rather than blocking.
+
+    On success or failure, cleans up temp file and lock file properly via try/finally.
+
+    Lock file contains PID and timestamp for staleness detection. If an existing lock
+    is older than LOCK_STALE_SECONDS, it's treated as stale and removed (retry once).
     """
-    return False, Unknown("Cache write not implemented in Phase 1")
+    lock_path = path.with_suffix(path.suffix + ".lock")
+
+    def acquire_lock():
+        """Try to acquire the lock, with staleness check."""
+        try:
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(lock_fd, f"{os.getpid()} {time.time()}".encode())
+            finally:
+                os.close(lock_fd)
+            return True, None
+        except FileExistsError:
+            # Check for stale lock
+            try:
+                lock_content = lock_path.read_text().strip()
+                parts = lock_content.split()
+                if len(parts) >= 2:
+                    timestamp = float(parts[1])
+                    age = time.time() - timestamp
+                    if age > LOCK_STALE_SECONDS:
+                        # Lock is stale, remove it and retry once
+                        try:
+                            lock_path.unlink()
+                        except OSError:
+                            pass
+                        # Try to acquire again
+                        try:
+                            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                            try:
+                                os.write(lock_fd, f"{os.getpid()} {time.time()}".encode())
+                            finally:
+                                os.close(lock_fd)
+                            return True, None
+                        except FileExistsError:
+                            return False, Unknown("cache locked by a concurrent writer")
+                        except OSError as e:
+                            # Unlink lock file on write error
+                            try:
+                                lock_path.unlink()
+                            except OSError:
+                                pass
+                            return False, Unknown(f"Failed to write lock file: {e}")
+            except (ValueError, OSError):
+                # Can't parse lock file or read it, assume it's locked
+                pass
+            return False, Unknown("cache locked by a concurrent writer")
+        except OSError as e:
+            # Unlink lock file on creation/write error
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+            return False, Unknown(f"Failed to write lock file: {e}")
+
+    try:
+        lock_acquired, lock_error = acquire_lock()
+        if not lock_acquired:
+            return False, lock_error
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            fd, temp_path = tempfile.mkstemp(
+                suffix=".tmp",
+                prefix=f".{path.name}.",
+                dir=str(path.parent)
+            )
+            temp_file = Path(temp_path)
+
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f)
+
+                os.replace(str(temp_file), str(path))
+                return True, None
+
+            except Exception as e:
+                try:
+                    temp_file.unlink()
+                except OSError:
+                    pass
+                return False, Unknown(f"Failed to write cache: {e}")
+
+        finally:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+    except Exception as e:
+        return False, Unknown(f"Unexpected error in write_cache: {e}")

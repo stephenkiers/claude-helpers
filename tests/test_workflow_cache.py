@@ -8,13 +8,15 @@ Run with: python3 tests/test_workflow_cache.py
 import sys
 import json
 import tempfile
+import os
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.cache import (
     read_github_cache, read_issues_cache, hash_file_content,
-    hash_github_cache_file, hash_issues_cache_file
+    hash_github_cache_file, hash_issues_cache_file, write_cache
 )
 from workflow.models import GitHubCacheData, IssueInfo, StackInfo
 from workflow.safety import Unknown
@@ -180,6 +182,102 @@ if __name__ == "__main__":
             "read_github_cache() preserves stack info through round-trip",
             read_data and read_data.stack and read_data.stack.parent_branch == "main"
                 and read_data.stack.parent_pr == 42
+        )
+
+    print()
+    print("[Section 6] Write cache with locking")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "test.json"
+
+        data = {"key": "value", "nested": {"a": 1}}
+        success, error = write_cache(cache_file, data)
+        test_result(
+            "write_cache() succeeds for new file",
+            success and error is None
+        )
+        test_result(
+            "write_cache() creates file with correct content",
+            cache_file.exists() and json.loads(cache_file.read_text()) == data
+        )
+
+        data2 = {"key": "updated"}
+        success, error = write_cache(cache_file, data2)
+        test_result(
+            "write_cache() overwrites existing file",
+            success and json.loads(cache_file.read_text()) == data2
+        )
+
+        lock_file = cache_file.with_suffix(cache_file.suffix + ".lock")
+        try:
+            lock_file.touch()
+            success, error = write_cache(cache_file, {"new": "data"})
+            test_result(
+                "write_cache() returns False when lock file exists",
+                not success and isinstance(error, Unknown) and "locked" in str(error)
+            )
+        finally:
+            lock_file.unlink(missing_ok=True)
+
+        cache_file_updated = cache_file.read_text()
+        test_result(
+            "write_cache() does not clobber original when lock exists",
+            json.loads(cache_file_updated) == data2
+        )
+
+        tmpfile_pattern = f".{cache_file.name}."
+        leftover_tmpfiles = list(tmppath.glob(f"{tmpfile_pattern}*"))
+        test_result(
+            "write_cache() cleans up temp files on success",
+            len([f for f in leftover_tmpfiles if f.suffix == ".tmp"]) == 0
+        )
+
+    print()
+    print("[Section 7] Lock staleness detection")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "test.json"
+        lock_file = cache_file.with_suffix(cache_file.suffix + ".lock")
+
+        # Test 1: Recent lock file blocks write
+        lock_file.write_text(f"{os.getpid()} {time.time()}")
+        success, error = write_cache(cache_file, {"key": "value"})
+        test_result(
+            "write_cache() is blocked by recent lock file",
+            not success and isinstance(error, Unknown) and "locked" in str(error)
+        )
+
+        # Clean up for next test
+        lock_file.unlink(missing_ok=True)
+
+    print()
+    print("[Section 8] Stale lock file recovery")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "test.json"
+        lock_file = cache_file.with_suffix(cache_file.suffix + ".lock")
+
+        # Create a stale lock file (older than LOCK_STALE_SECONDS)
+        import time as time_module
+        stale_time = time_module.time() - 700  # 700 seconds ago (> 600 second threshold)
+        lock_file.write_text(f"{os.getpid()} {stale_time}")
+
+        data = {"key": "value"}
+        success, error = write_cache(cache_file, data)
+        test_result(
+            "write_cache() succeeds by removing stale lock",
+            success and error is None
+        )
+        test_result(
+            "write_cache() creates file after removing stale lock",
+            cache_file.exists() and json.loads(cache_file.read_text()) == data
+        )
+        test_result(
+            "write_cache() removes stale lock file",
+            not lock_file.exists()
         )
 
     print()

@@ -124,10 +124,15 @@ class IssuesCacheData:
 
 @dataclass
 class RepoCacheData:
-    """Schema for .claude/repo-cache.json (future use; stubbed for Phase 1)."""
+    """Schema for .claude/repo-cache.json."""
     schema_version: str = REPO_CACHE_SCHEMA_VERSION
     repo_path: str = ""
     worktree_parent: str = ""
+    # /shipit writes one entry per check type (format/lint/check/vet/typecheck/test/build);
+    # a value of None means "not applicable to this project" (e.g. typecheck: null for Go) —
+    # distinct from the key being absent entirely, which the .get(...) call sites below
+    # already treat identically (both skip the command), so from_dict need not distinguish them.
+    commands: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -136,10 +141,14 @@ class RepoCacheData:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RepoCacheData":
         """Construct from parsed JSON dict."""
+        # /shipit's real cache (commands/shipit.md) writes a top-level "version" int, never
+        # "schema_version" — accept whichever key is present rather than losing the field.
+        version = data.get("schema_version", data.get("version", REPO_CACHE_SCHEMA_VERSION))
         return cls(
-            schema_version=data.get("schema_version", REPO_CACHE_SCHEMA_VERSION),
+            schema_version=str(version),
             repo_path=data.get("repo_path", ""),
-            worktree_parent=data.get("worktree_parent", "")
+            worktree_parent=data.get("worktree_parent", ""),
+            commands=dict(data.get("commands") or {})
         )
 
 
@@ -170,10 +179,27 @@ def validate_issues_cache(data: Dict[str, Any]) -> bool:
 
 
 def validate_repo_cache(data: Dict[str, Any]) -> bool:
-    """Validate repo-cache.json structure and required fields."""
+    """
+    Validate repo-cache.json structure and required fields.
+
+    Unlike github-cache.json/issues.json, this file's real-world writer (/shipit, per
+    commands/shipit.md) uses a top-level "version" int and never writes "schema_version" —
+    gating on an exact "schema_version" string this reader predates would reject every real
+    file. Structural validation only: a dict, with "commands" a dict if present.
+
+    Minimal forward-compat protection: version/schema_version field, if present, must be
+    int or str (rejects nonsensical shapes like list or dict in that slot).
+    """
     if not isinstance(data, dict):
         return False
-    version = data.get("schema_version")
-    if version != REPO_CACHE_SCHEMA_VERSION:
+    # Check version field type (minimal forward-compat protection)
+    version = data.get("schema_version", data.get("version"))
+    if version is not None and not isinstance(version, (str, int)):
         return False
+    if "commands" in data and not isinstance(data["commands"], dict):
+        return False
+    # Validate commands dict values: must be None or str
+    if "commands" in data and isinstance(data["commands"], dict):
+        if not all(v is None or isinstance(v, str) for v in data["commands"].values()):
+            return False
     return True

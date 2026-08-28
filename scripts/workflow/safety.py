@@ -4,6 +4,13 @@ Shared "unknown state" result type for fail-closed behavior.
 Decision 8: Every operation layer (inspect/plan/apply) that hits a state
 it doesn't recognize must return an explicit, structured "cannot determine"
 result — never guess.
+
+Convention: an unexpected internal failure (a parse error, a subprocess error, a
+missing field) is never safe to continue past silently. Only a narrow, explicitly
+named exception may be swallowed with a `continue`/`pass` and no signal (e.g. "this
+file glob pattern legitimately has zero matches"). Everything else must be caught,
+recorded (into a validation_failures list, an Unknown, or a boolean flag the caller
+checks), and the caller must fail closed rather than proceed as if nothing happened.
 """
 
 import functools

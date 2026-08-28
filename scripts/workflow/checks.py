@@ -4,9 +4,13 @@ Toolchain and check detection.
 Phase 1: detection only (read-only). Execution comes in Phase 2+.
 """
 
+import json
+import os
+import signal
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Optional
-import json
 
 
 class ToolchainDetector:
@@ -125,3 +129,41 @@ def detect_checks(repo_root: Path) -> Dict[str, str]:
         checks["pytest"] = "pytest"
 
     return checks
+
+
+@dataclass
+class CheckResult:
+    """Result of executing a check command."""
+    success: bool
+    returncode: Optional[int] = None
+    stdout: str = ""
+    stderr: str = ""
+    error: Optional[str] = None
+
+
+def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300) -> CheckResult:
+    """
+    Execute a shell check command, capturing output. Never raises.
+
+    Runs in its own process group so a timeout can kill the whole
+    process tree (a check command that spawns children would otherwise
+    orphan them on TimeoutExpired).
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=cwd, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            return CheckResult(success=False, error=f"timed out after {timeout}s")
+        return CheckResult(success=proc.returncode == 0, returncode=proc.returncode, stdout=stdout, stderr=stderr)
+    except Exception as e:
+        return CheckResult(success=False, error=str(e))
