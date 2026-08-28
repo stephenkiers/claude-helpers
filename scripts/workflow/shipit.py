@@ -111,9 +111,19 @@ def plan_shipit(
         pr_exists = False
         stack = None
         if github_cache_data:
-            pr_number = github_cache_data.pr.get("number") if github_cache_data.pr else None
-            pr_exists = pr_number is not None
             stack = github_cache_data.stack
+
+        # GitHubCacheData does not model the "pr" section (see models.py) — read it
+        # from the raw file instead of extending the schema (Decision 7).
+        if github_cache_path.exists():
+            try:
+                raw_cache = json.loads(github_cache_path.read_text())
+                pr_section = raw_cache.get("pr")
+                if pr_section:
+                    pr_number = pr_section.get("number")
+                    pr_exists = pr_number is not None
+            except (json.JSONDecodeError, OSError):
+                pass
 
         plan = ShipitPlan(
             branch=branch,

@@ -19,7 +19,6 @@ from pathlib import Path
 
 from . import cleanup, merge, shipit, checks
 from .models import RepoCacheData
-from .cache import read_repo_cache
 
 
 def _run_plan(plan_fn, arg):
@@ -168,11 +167,6 @@ def main():
                 cache_input = sys.stdin.read()
             try:
                 cache_data = json.loads(cache_input)
-                repo_cache, cache_err = read_repo_cache(Path(cache_data.get("repo_path", ".")))
-                if cache_err:
-                    output = {"success": False, "error": str(cache_err)}
-                    print(json.dumps(output))
-                    sys.exit(1)
                 repo_cache = RepoCacheData.from_dict(cache_data)
                 result = checks.run_checks(
                     commands=repo_cache.commands,

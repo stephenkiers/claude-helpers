@@ -91,10 +91,16 @@ if __name__ == "__main__":
         not allowed and reason is not None
     )
 
-    allowed, reason = check_mutation_allowed(["push", "origin", "main"])
+    allowed, reason = check_mutation_allowed(["fetch", "origin", "main"])
     test_result(
         "check_mutation_allowed: rejects unlisted subcommand",
         not allowed and "not in mutation allowlist" in reason
+    )
+
+    allowed, reason = check_mutation_allowed(["push", "origin", "main"])
+    test_result(
+        "check_mutation_allowed: rejects push with wrong shape (missing -u flag)",
+        not allowed and "does not match any allowed pattern" in reason
     )
 
     allowed, reason = check_mutation_allowed(["reset", "--hard", "HEAD"])
