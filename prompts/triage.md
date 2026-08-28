@@ -216,6 +216,22 @@ downstream consumer like `/implement-with-haiku`) has to interpret. It is Claude
 human skims it, but rulings are recorded through conversation with Claude, not by hand-editing the
 file directly.
 
+### `STATUS` and `DECISION` field lifecycle
+
+Every *Needs you* and *Needs measurement* item carries a `STATUS`/`DECISION` pair that tracks the ruling:
+
+- **`pending-decision`** — initial state for a *Needs you* item; awaits a human ruling (A/B/C choice).
+- **`pending-measurement`** — initial state for a *Needs measurement* item; awaits the result of the
+  measurement command.
+- **`decided`** — a *Needs you* item where the human chose to act (A or B option). Set by
+  `commands/expert-review.md` Step 12 during the conversation.
+- **`no-op`** — a *Needs you* item where the human chose "leave as-is" (C option, "Leave as-is").
+  Excluded from `/implement-with-haiku` directives. Set by Step 12.
+- **`measured`** — a *Needs measurement* item once the human's reported result has been recorded.
+  Set by `commands/verify-queue.md`'s `done` command after receiving the measurement result.
+
+The write-back logic lives in those commands; triage.md specifies the set and transitions here.
+
 ### `claude-action-plan.md`
 
 It is read top to bottom; the ordering is the product.
