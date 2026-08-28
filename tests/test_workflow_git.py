@@ -93,13 +93,17 @@ if __name__ == "__main__":
         )
 
     with mock.patch("workflow.git.run_gh_command") as mock_run:
-        mock_run.return_value = "{}"
-        git_module.pr_view_json("some-branch", ["headRefName", "state"])
+        mock_run.return_value = '{"headRefName": "feature/x", "state": "OPEN"}'
+        result = git_module.pr_view_json("some-branch", ["headRefName", "state"])
         called_args, _ = mock_run.call_args
         test_result(
             "pr_view_json comma-joins multi-field --json",
             called_args[0] == ["pr", "view", "--json", "headRefName,state", "--", "some-branch"],
             f"got {called_args[0]}"
+        )
+        test_result(
+            "pr_view_json returns parsed JSON on success",
+            result == {"headRefName": "feature/x", "state": "OPEN"}
         )
 
     with mock.patch("workflow.git.run_gh_command") as mock_run:
