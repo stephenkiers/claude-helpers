@@ -91,14 +91,14 @@ if [ -n "$ARG" ]; then
 
   if [ "$MATCH_COUNT" -eq 0 ] || [ -z "$MATCH_LIST" ]; then
     echo "ERROR: No directory matching '${PATTERN}' found"
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   elif [ "$MATCH_COUNT" -gt 1 ]; then
     echo "ERROR: Ambiguous match for '${PATTERN}'. Multiple directories found:"
     echo "$MATCH_LIST" | sed 's/^/  /'
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   fi
 
@@ -112,8 +112,8 @@ else
   if [ "$COMMON_DIR" = "$GIT_DIR" ]; then
     echo "ERROR: No argument provided and not in a worktree."
     echo "Usage: /cleanup <glob>  (e.g. /cleanup ../4*)"
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   fi
   CURRENT_WORKTREE=$(pwd)
@@ -122,8 +122,8 @@ fi
 # Validate target is not main
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   echo "ERROR: Target resolves to main worktree. Cannot clean up main."
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
   exit 1
 fi
 
@@ -135,8 +135,8 @@ CURRENT_BRANCH=$(git worktree list --porcelain | awk -v wt="$CURRENT_WORKTREE" '
 
 if [ -z "$CURRENT_BRANCH" ]; then
   echo "ERROR: '$CURRENT_WORKTREE' is not a registered git worktree"
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
   exit 1
 fi
 
@@ -222,7 +222,7 @@ PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cle
 PLAN_RESULT=$?
 if [ $PLAN_RESULT -ne 0 ]; then
   echo "ERROR: Failed to plan cleanup for $CURRENT_WORKTREE"
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
