@@ -135,7 +135,7 @@ git.run_git_command(f"merge-base --is-ancestor {ancestor} {descendant}")
 
 **Design intent:** Automated tests aim to cover all supported repo states:
 - Normal repo (single worktree, stacked, single-driver).
-- Bare/graft worktree setup.
+- Bare worktree setup.
 - Local-plan mode (no GitHub remote).
 - External tracker repos.
 - Stacked per-branch layout.
