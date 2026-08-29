@@ -12,10 +12,11 @@ import sys
 import os
 import json
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.merge import apply_merge, MergePlan, MergeResult
+from workflow.merge import apply_merge, merge_lock_path, MergePlan, MergeResult
 from _test_harness import Harness
 from _git_fixture import GitFixture
 
@@ -35,9 +36,8 @@ if __name__ == "__main__":
         fixture.create_branch("feature/merge-test")
         wt_path = fixture.create_worktree("feature/merge-test")
 
-        claude_dir = wt_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        lock_file = claude_dir / ".merge-and-cleanup.lock"
+        home_dir = fixture.repo_root.parent / "fake-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
 
         fixture.commit_in_worktree(wt_path, "add content")
 
@@ -48,12 +48,19 @@ if __name__ == "__main__":
         )
         plan_json = json.dumps(plan.to_dict())
 
-        result, err = apply_merge(plan_json)
+        with mock.patch("workflow.merge.Path.home", return_value=home_dir):
+            lock_file = merge_lock_path(str(wt_path))
+            result, err = apply_merge(plan_json)
 
         test_result(
             "apply_merge creates lock file",
             lock_file.exists(),
-            "lock file should exist at .claude/.merge-and-cleanup.lock"
+            "lock file should exist under ~/.claude/state/merge-locks/"
+        )
+
+        test_result(
+            "apply_merge does not write the lock file inside the target worktree",
+            not (wt_path / ".claude" / ".merge-and-cleanup.lock").exists()
         )
 
     finally:
@@ -72,6 +79,9 @@ if __name__ == "__main__":
         fixture.create_branch("feature/concurrent")
         wt_path = fixture.create_worktree("feature/concurrent")
 
+        home_dir = fixture.repo_root.parent / "fake-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+
         fixture.commit_in_worktree(wt_path, "add content")
 
         plan = MergePlan(
@@ -81,10 +91,11 @@ if __name__ == "__main__":
         )
         plan_json = json.dumps(plan.to_dict())
 
-        result1, err1 = apply_merge(plan_json)
-        result1_succeeded = result1.success if result1 else False
+        with mock.patch("workflow.merge.Path.home", return_value=home_dir):
+            result1, err1 = apply_merge(plan_json)
+            result1_succeeded = result1.success if result1 else False
 
-        result2, err2 = apply_merge(plan_json)
+            result2, err2 = apply_merge(plan_json)
         test_result(
             "Second apply_merge call is rejected (lock exists)",
             result2.success is False and result2.error is not None,
@@ -107,9 +118,8 @@ if __name__ == "__main__":
         fixture.create_branch("feature/persistent")
         wt_path = fixture.create_worktree("feature/persistent")
 
-        claude_dir = wt_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        lock_file = claude_dir / ".merge-and-cleanup.lock"
+        home_dir = fixture.repo_root.parent / "fake-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
 
         fixture.commit_in_worktree(wt_path, "add content")
 
@@ -120,7 +130,9 @@ if __name__ == "__main__":
         )
         plan_json = json.dumps(plan.to_dict())
 
-        result, err = apply_merge(plan_json)
+        with mock.patch("workflow.merge.Path.home", return_value=home_dir):
+            lock_file = merge_lock_path(str(wt_path))
+            result, err = apply_merge(plan_json)
 
         test_result(
             "Lock file exists after apply_merge completes",
@@ -178,9 +190,8 @@ if __name__ == "__main__":
         fixture.create_branch("feature/failed")
         wt_path = fixture.create_worktree("feature/failed")
 
-        claude_dir = wt_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        lock_file = claude_dir / ".merge-and-cleanup.lock"
+        home_dir = fixture.repo_root.parent / "fake-home"
+        home_dir.mkdir(parents=True, exist_ok=True)
 
         fixture.commit_in_worktree(wt_path, "add content")
 
@@ -192,8 +203,6 @@ if __name__ == "__main__":
         )
         plan_json = json.dumps(plan.to_dict())
 
-        result1, err1 = apply_merge(plan_json)
-
         plan2 = MergePlan(
             pr_number=46,
             head_ref="feature/failed",
@@ -202,7 +211,9 @@ if __name__ == "__main__":
         )
         plan_json2 = json.dumps(plan2.to_dict())
 
-        result2, err2 = apply_merge(plan_json2)
+        with mock.patch("workflow.merge.Path.home", return_value=home_dir):
+            result1, err1 = apply_merge(plan_json)
+            result2, err2 = apply_merge(plan_json2)
         test_result(
             "Second apply_merge is blocked by lock file even after first failure",
             result2.success is False and result2.error is not None,

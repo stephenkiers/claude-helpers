@@ -7,13 +7,14 @@ Run with: python3 tests/test_workflow_merge.py
 
 import sys
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.merge import plan_merge, apply_merge, MergePlan, MergeResult
+from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, MergeResult
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -21,6 +22,11 @@ from _test_harness import Harness
 if __name__ == "__main__":
     h = Harness("WORKFLOW MERGE TEST SUITE")
     test_result = h.test_result
+
+    # apply_merge now writes its lock file under ~/.claude/state/merge-locks/ (moved
+    # out of the target worktree — see workflow.merge.merge_lock_path). Redirect HOME
+    # for this whole run so the suite never touches the real developer machine's home.
+    os.environ["HOME"] = tempfile.mkdtemp()
 
     print("[Section 1] Merge plan dataclass round-trip")
 
@@ -110,8 +116,6 @@ if __name__ == "__main__":
         tmppath = Path(tmpdir)
         wt_dir = tmppath / "worktree"
         wt_dir.mkdir()
-        claude_dir = wt_dir / ".claude"
-        claude_dir.mkdir()
 
         plan = MergePlan(
             pr_number=42,
@@ -120,7 +124,8 @@ if __name__ == "__main__":
             blocking_failures=[]
         )
 
-        lock_file = claude_dir / ".merge-and-cleanup.lock"
+        lock_file = merge_lock_path(str(wt_dir))
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
         lock_file.write_text("locked")
 
         plan_json = json.dumps(plan.to_dict())
@@ -136,6 +141,13 @@ if __name__ == "__main__":
             lock_file.exists()
         )
 
+        test_result(
+            "apply_merge does not write the lock file inside the target worktree",
+            not (wt_dir / ".claude" / ".merge-and-cleanup.lock").exists()
+        )
+
+        lock_file.unlink()
+
     print()
     print("[Section 6] Apply merge creates lock file on execution")
 
@@ -143,8 +155,6 @@ if __name__ == "__main__":
         tmppath = Path(tmpdir)
         wt_dir = tmppath / "worktree"
         wt_dir.mkdir()
-        claude_dir = wt_dir / ".claude"
-        claude_dir.mkdir()
 
         plan = MergePlan(
             pr_number=42,
@@ -153,7 +163,7 @@ if __name__ == "__main__":
             blocking_failures=[]
         )
 
-        lock_file = claude_dir / ".merge-and-cleanup.lock"
+        lock_file = merge_lock_path(str(wt_dir))
 
         with mock.patch("workflow.merge._check_just_merge") as mock_just:
             with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
@@ -172,6 +182,8 @@ if __name__ == "__main__":
                     "apply_merge does not remove lock file after success",
                     result.success and lock_file.exists()
                 )
+
+        lock_file.unlink()
 
     print()
     print("[Section 7] Apply merge uses unpushed commits check correctly")
