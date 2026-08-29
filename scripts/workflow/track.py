@@ -241,30 +241,36 @@ def plan_track(
         branch = build_branch_name(issue_type, ISSUE_NUMBER_PLACEHOLDER, slug)
         worktree_path = f"{worktree_parent}/{ISSUE_NUMBER_PLACEHOLDER}-{slug}"
 
+        # 5. Collision detection (limited at plan time since issue number unknown)
+        needs_confirmation = []
+        needs_confirmation.append("collision_unchecked")  # Collision check deferred to apply
+
         # 4. Fetch open issues for duplicate detection
         candidate_issues = []
         try:
             candidate_issues = provider.list_open_issues()
-        except Exception:
-            # Silently continue if list_open_issues raises
-            pass
-
-        # 5. Collision detection (limited at plan time since issue number unknown)
-        needs_confirmation = []
-        needs_confirmation.append("collision_unchecked")  # Collision check deferred to apply
+        except Exception as e:
+            # list_open_issues() does not raise under normal conditions (returns []
+            # for no issues / no remote / not authenticated). An exception here is
+            # genuinely exceptional and defeats duplicate detection, which is
+            # load-bearing. Signal it to the wrapper but don't fail the plan.
+            needs_confirmation.append("candidate_fetch_failed")
+            candidate_issues = []
 
         # 6. Freshness hashes
         expected_head_sha = None
         try:
             expected_head_sha = git.get_head_sha(cwd=Path(main_worktree) if main_worktree else None)
-        except Exception:
-            pass
+        except Exception as e:
+            # get_head_sha() is load-bearing: apply_track compares expected_sha != plan.expected_head_sha,
+            # so a None here means the plan is guaranteed to be rejected as stale. Emitting a plan that
+            # cannot possibly apply is worse than failing now.
+            return None, Unknown(f"failed to capture HEAD SHA (needed for freshness check): {e}")
 
-        cache_hash = None
-        try:
-            cache_hash = hash_cache_file(Path(main_worktree) / ".claude" / "repo-cache.json")
-        except Exception:
-            pass
+        # hash_cache_file() already catches OSError internally and returns None legitimately
+        # when the file doesn't exist or if hashing fails. No exception will escape from it.
+        # We compute the hash to detect stale plans; None is a valid state (file doesn't exist yet).
+        cache_hash = hash_cache_file(Path(main_worktree) / ".claude" / "repo-cache.json")
 
         # Build plan
         plan = TrackPlan(
