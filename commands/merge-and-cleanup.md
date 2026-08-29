@@ -93,9 +93,24 @@ echo "✓ Push gate passed: branch is clean and fully pushed"
 # Persist state to disk — Phase 3 runs backgrounded (see below) and Phase 4 runs as a
 # separate Bash call, so neither can rely on these shell variables surviving in-memory.
 # Use a PR-scoped state directory with no pointer indirection to prevent concurrent invocations
-# from cross-wiring state. Clear stale result files from any previous incomplete run for this PR.
+# from cross-wiring state.
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
-mkdir -p "$MC_STATE_DIR"
+
+# The path is predictable by design (that is what makes it re-derivable in Phase 3/4), which
+# the random `mktemp -d` it replaced was not. So verify we own a real directory before writing
+# anything into it: `mkdir -p` follows a pre-existing symlink silently, and every subsequent
+# write here — including `wt`, which Phase 4 hands to /cleanup — would land wherever it points.
+if [ -L "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is a symlink — refusing to use it as a state directory" >&2
+  exit 1
+fi
+mkdir -p -m 700 "$MC_STATE_DIR"
+if [ ! -O "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is not owned by the current user — refusing to use it" >&2
+  exit 1
+fi
+
+# Clear stale result files from any previous incomplete run for this PR.
 rm -f "$MC_STATE_DIR/apply_result.json" "$MC_STATE_DIR/apply_result.stderr" "$MC_STATE_DIR/apply_exit_code"
 echo "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
 echo "$PR_NUM" > "$MC_STATE_DIR/pr_num"
@@ -116,6 +131,9 @@ commonly runs a full build + E2E boot, which routinely takes several minutes —
 foreground Bash call's timeout ceiling even though the merge itself is still proceeding fine. A
 backgrounded call has no such ceiling; wait for its completion notification, then move on to Phase 4,
 which reads the result from disk (`$MC_STATE_DIR/apply_result.json` and `$MC_STATE_DIR/apply_exit_code`) rather than from captured stdout.
+
+The merge gate's own subprocess timeout defaults to 1800s and is configurable per-repo by exporting
+`MERGE_APPLY_TIMEOUT_SECS` (a positive integer, in seconds; anything else falls back to the default).
 
 **Before running this block, substitute the literal PR number** (from the `PR #$PR_NUM` output above) in the assignment below.
 

@@ -19,6 +19,7 @@ Run with: python3 tests/test_merge_and_cleanup.py
 """
 
 import re
+import shlex
 from _test_harness import REPO_ROOT, Harness
 
 COMMANDS_DIR = REPO_ROOT / "commands"
@@ -88,7 +89,18 @@ DESTRUCTIVE_VERBS = ["worktree remove", "branch -D"]
 # `rm` is permitted, but ONLY against this command's own PR-scoped /tmp state directory.
 # Anything else -- a worktree path, $WT, a repo path, a bare glob -- is a teardown this
 # command must delegate, so the target is checked rather than the verb being banned outright.
-STATE_DIR_TARGET = re.compile(r'"\$MC_STATE_DIR(?:/[^"]*)?"|/tmp/merge-and-cleanup\.pr-')
+STATE_DIR_TARGET = re.compile(r'^"?\$MC_STATE_DIR(?:/[^"]*)?"?$|^"?/tmp/merge-and-cleanup\.pr-')
+
+
+def rm_targets(line: str) -> list[str]:
+    """
+    Return the non-flag operands of an `rm` invocation on this line.
+
+    Checked per-operand, not per-line: `rm -rf "$MC_STATE_DIR" "$WT"` must be a violation,
+    and a line-level "does the state dir appear anywhere" substring test would pass it.
+    """
+    tokens = shlex.split(line.split("rm", 1)[1], posix=False)
+    return [tok for tok in tokens if not tok.startswith("-")]
 
 bash_blocks = extract_bash_blocks(MERGE)
 violations = []
@@ -98,8 +110,13 @@ for line_num, block_text in bash_blocks:
         for verb in DESTRUCTIVE_VERBS:
             if verb in line:
                 violations.append(f"line {line_num}: '{verb}'")
-        if re.search(r"\brm\b", line) and not STATE_DIR_TARGET.search(line):
-            violations.append(f"line {line_num}: 'rm' outside the /tmp state dir: {line.strip()}")
+        if re.search(r"\brm\b", line):
+            targets = rm_targets(line)
+            stray = [tk for tk in targets if not STATE_DIR_TARGET.search(tk)]
+            if stray or not targets:
+                violations.append(
+                    f"line {line_num}: 'rm' targets outside the /tmp state dir "
+                    f"({stray or 'no operands'}): {line.strip()}")
 
 t("No destructive verbs as active commands",
   len(violations) == 0,

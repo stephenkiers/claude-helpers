@@ -15,14 +15,56 @@ import re
 import tempfile
 import subprocess
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.merge import DEFAULT_MERGE_APPLY_TIMEOUT_SECS, _get_merge_apply_timeout
-from _test_harness import Harness
+from _test_harness import REPO_ROOT, Harness
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+
+def extract_bash_blocks(md_text):
+    """Return the source of every ```bash fenced block in a command document."""
+    return re.findall(r"```bash\n(.*?)```", md_text, re.DOTALL)
+
+
+def extract_exit_code_guards(md_text):
+    """
+    Pull the real apply_exit_code guard(s) out of the command doc.
+
+    The point is to execute the bash that actually ships, not a copy of it: a
+    hand-transcribed guard in this file would keep passing even if the document
+    regressed to the `[ "$X" -ne 0 ]` form whose usage-error-treated-as-false
+    behaviour is the whole bug being guarded against.
+
+    A guard runs from the line that reads apply_exit_code into a variable through
+    the `if ...; then` that acts on it.
+    """
+    guards = []
+    for block in extract_bash_blocks(md_text):
+        block_lines = block.split("\n")
+        start = None
+        for i, line in enumerate(block_lines):
+            is_if = re.match(r"\s*if .*; then\s*$", line)
+            if start is not None and is_if:
+                guards.append("\n".join(block_lines[start:i + 1]))
+                start = None
+            elif is_if and "apply_exit_code" in line:
+                # Single-line form (including the pre-fix `[ "$(cat ...)" -ne 0 ]` shape).
+                # Matching it too means a regression is caught by *executing* it and seeing
+                # it wave an empty file through -- a semantic failure, not merely "the shape
+                # I expected is gone".
+                guards.append(line)
+            elif start is None and "apply_exit_code" in line and "cat" in line and "=" in line:
+                start = i
+    return guards
+
+
+def run_guard(guard_src, state_dir):
+    """Execute an extracted guard against a fixture state dir; 0 = passed through, 1 = tripped."""
+    script = f'MC_STATE_DIR="$1"\n{guard_src}\n  exit 1\nfi\nexit 0\n'
+    return subprocess.run(["bash", "-c", script, "bash", str(state_dir)],
+                          capture_output=True).returncode
+
 
 
 if __name__ == "__main__":
@@ -230,63 +272,52 @@ if __name__ == "__main__":
         )
 
     print()
-    print("[Section 11] merge-and-cleanup.md validates pr_num in state directory")
+    print("[Section 11] merge-and-cleanup.md cross-checks pr_num at BOTH read sites")
 
-    try:
-        merge_cmd_content = merge_cmd_path.read_text()
-        # Look for validation of pr_num file - check for reading and comparing pr_num
-        has_pr_num_check = "pr_num" in merge_cmd_content and ("cat" in merge_cmd_content or "=" in merge_cmd_content)
-        test_result(
-            "merge-and-cleanup.md contains pr_num validation logic",
-            has_pr_num_check,
-            "Should validate that pr_num file matches expected PR number"
-        )
-    except Exception as e:
-        test_result(
-            "merge-and-cleanup.md contains pr_num validation logic",
-            False,
-            str(e)
-        )
+    merge_cmd_content = merge_cmd_path.read_text()
+    # The guard that matters is a *comparison* wired to an exit, at each phase that reads
+    # state -- not the mere presence of the string "pr_num" (which the Phase 1 write alone
+    # would satisfy, leaving a deleted cross-check undetected).
+    pr_num_checks = re.findall(
+        r'if \[ "\$\(cat "\$MC_STATE_DIR/pr_num".*?\)" != "\$PR_NUM" \]; then',
+        merge_cmd_content)
+    test_result(
+        "pr_num cross-check compares against $PR_NUM at both read sites",
+        len(pr_num_checks) == 2,
+        f"expected 2 pr_num cross-checks (Phase 3 and Phase 4), found {len(pr_num_checks)}")
 
-    print()
-    print("[Section 12] merge-and-cleanup.md contains exit-code guard logic")
-
-    try:
-        merge_cmd_content = merge_cmd_path.read_text()
-        # Look for apply_exit_code or similar exit code checking
-        has_exit_check = "apply_exit_code" in merge_cmd_content or "exit_code" in merge_cmd_content
-        test_result(
-            "merge-and-cleanup.md contains exit-code validation logic",
-            has_exit_check,
-            "Should check the exit code from the merge operation"
-        )
-    except Exception as e:
-        test_result(
-            "merge-and-cleanup.md contains exit-code validation logic",
-            False,
-            str(e)
-        )
+    mismatch_exits = merge_cmd_content.count("ERROR: PR number mismatch in state directory")
+    test_result(
+        "each pr_num mismatch fails loudly",
+        mismatch_exits == 2,
+        f"expected 2 loud mismatch errors, found {mismatch_exits}")
 
     print()
-    print("[Section 13] merge-and-cleanup.md contains self-cleaning logic (rm -rf)")
+    print("[Section 12] merge-and-cleanup.md guards apply_exit_code at BOTH read sites")
 
-    try:
-        merge_cmd_content = merge_cmd_path.read_text()
-        # Look for removal of state directory
-        has_rm_rf = "rm -rf" in merge_cmd_content and "/tmp/merge-and-cleanup.pr-" in merge_cmd_content
-        test_result(
-            "merge-and-cleanup.md removes state directory on success",
-            has_rm_rf,
-            "Should use rm -rf to clean up state directory"
-        )
-    except Exception as e:
-        test_result(
-            "merge-and-cleanup.md removes state directory on success",
-            False,
-            str(e)
-        )
+    guards = extract_exit_code_guards(merge_cmd_content)
+    test_result(
+        "an apply_exit_code guard is extractable from Phase 3 and Phase 4",
+        len(guards) == 2,
+        f"expected 2 extractable guards, found {len(guards)} -- the guard's shape may have "
+        f"changed, which would silently disable Sections 16-20")
 
     print()
+    print("[Section 13] merge-and-cleanup.md removes the state dir, and only the state dir")
+
+    rm_lines = [ln.strip() for blk in extract_bash_blocks(merge_cmd_content)
+                for ln in blk.split("\n")
+                if re.search(r"\brm\b", ln) and not ln.strip().startswith("#")]
+    test_result(
+        "every rm targets the state dir",
+        bool(rm_lines) and all("$MC_STATE_DIR" in ln for ln in rm_lines),
+        f"found rm lines not scoped to $MC_STATE_DIR: "
+        f"{[ln for ln in rm_lines if '$MC_STATE_DIR' not in ln]}")
+    test_result(
+        "the state dir is removed recursively on the success path",
+        any(re.search(r'rm -rf "\$MC_STATE_DIR"\s*$', ln) for ln in rm_lines),
+        'expected a `rm -rf "$MC_STATE_DIR"` line')
+
     print("[Section 14] merge-and-cleanup.md frontmatter grants Bash(rm:*)")
 
     try:
@@ -342,188 +373,34 @@ if __name__ == "__main__":
         )
 
     print()
-    print("[Section 16] Exit-code guard handles missing file")
+    print("[Sections 16-20] The REAL extracted guard, executed against fixtures")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmppath = Path(tmpdir)
-        state_dir = tmppath / "merge-and-cleanup.pr-42"
-        state_dir.mkdir()
+    # Each case runs the bash lifted out of commands/merge-and-cleanup.md above. If the
+    # document regresses, these fail -- which a hand-written copy of the guard would not.
+    guards = extract_exit_code_guards(merge_cmd_path.read_text())
+    if not guards:
+        test_result("exit-code guard is extractable from the command doc", False,
+                    "no guard could be extracted -- cannot execute the real logic")
+    else:
+        cases = [
+            ("missing file",       None,   1),
+            ("empty file",         "",     1),
+            ("non-numeric content", "abc", 1),
+            ("non-zero exit code", "127",  1),
+            ("trailing newline, zero", "0\n", 0),
+            ("zero exit code",     "0",    0),
+        ]
+        for phase_idx, guard_src in enumerate(guards, start=3):
+            for label, content, expected in cases:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    state_dir = Path(tmpdir)
+                    if content is not None:
+                        (state_dir / "apply_exit_code").write_text(content)
+                    rc = run_guard(guard_src, state_dir)
+                    test_result(
+                        f"Phase {phase_idx} guard: {label} -> "
+                        f"{'trips' if expected else 'passes through'}",
+                        rc == expected,
+                        f"expected returncode {expected}, got {rc}")
 
-        # Create a bash script that simulates the guard logic
-        guard_script = """
-        exit_code_file="$1"
-        if [ ! -f "$exit_code_file" ]; then
-            # Missing file should be treated as failure
-            exit 1
-        fi
-        exit_code=$(cat "$exit_code_file")
-        if [ -z "$exit_code" ] || ! [[ "$exit_code" =~ ^[0-9]+$ ]] || [ "$exit_code" -ne 0 ]; then
-            exit 1
-        fi
-        exit 0
-        """
-        script_file = tmppath / "guard_test.sh"
-        script_file.write_text(guard_script)
-        script_file.chmod(0o755)
-
-        # Test with missing file
-        result = subprocess.run(
-            ["bash", str(script_file), str(state_dir / "missing_file")],
-            capture_output=True
-        )
-        test_result(
-            "Exit-code guard fails when file is missing",
-            result.returncode == 1,
-            f"Expected exit code 1 for missing file, got {result.returncode}"
-        )
-
-    print()
-    print("[Section 17] Exit-code guard handles empty file")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmppath = Path(tmpdir)
-        state_dir = tmppath / "merge-and-cleanup.pr-42"
-        state_dir.mkdir()
-
-        guard_script = """
-        exit_code_file="$1"
-        if [ ! -f "$exit_code_file" ]; then
-            exit 1
-        fi
-        exit_code=$(cat "$exit_code_file")
-        if [ -z "$exit_code" ] || ! [[ "$exit_code" =~ ^[0-9]+$ ]] || [ "$exit_code" -ne 0 ]; then
-            exit 1
-        fi
-        exit 0
-        """
-        script_file = tmppath / "guard_test.sh"
-        script_file.write_text(guard_script)
-        script_file.chmod(0o755)
-
-        # Test with empty file
-        exit_code_file = state_dir / "apply_exit_code"
-        exit_code_file.write_text("")
-
-        result = subprocess.run(
-            ["bash", str(script_file), str(exit_code_file)],
-            capture_output=True
-        )
-        test_result(
-            "Exit-code guard fails when file is empty",
-            result.returncode == 1,
-            f"Expected exit code 1 for empty file, got {result.returncode}"
-        )
-
-    print()
-    print("[Section 18] Exit-code guard handles non-numeric content")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmppath = Path(tmpdir)
-        state_dir = tmppath / "merge-and-cleanup.pr-42"
-        state_dir.mkdir()
-
-        guard_script = """
-        exit_code_file="$1"
-        if [ ! -f "$exit_code_file" ]; then
-            exit 1
-        fi
-        exit_code=$(cat "$exit_code_file")
-        if [ -z "$exit_code" ] || ! [[ "$exit_code" =~ ^[0-9]+$ ]] || [ "$exit_code" -ne 0 ]; then
-            exit 1
-        fi
-        exit 0
-        """
-        script_file = tmppath / "guard_test.sh"
-        script_file.write_text(guard_script)
-        script_file.chmod(0o755)
-
-        # Test with non-numeric content
-        exit_code_file = state_dir / "apply_exit_code"
-        exit_code_file.write_text("abc")
-
-        result = subprocess.run(
-            ["bash", str(script_file), str(exit_code_file)],
-            capture_output=True
-        )
-        test_result(
-            "Exit-code guard fails when file contains non-numeric content",
-            result.returncode == 1,
-            f"Expected exit code 1 for non-numeric content, got {result.returncode}"
-        )
-
-    print()
-    print("[Section 19] Exit-code guard handles non-zero exit code")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmppath = Path(tmpdir)
-        state_dir = tmppath / "merge-and-cleanup.pr-42"
-        state_dir.mkdir()
-
-        guard_script = """
-        exit_code_file="$1"
-        if [ ! -f "$exit_code_file" ]; then
-            exit 1
-        fi
-        exit_code=$(cat "$exit_code_file")
-        if [ -z "$exit_code" ] || ! [[ "$exit_code" =~ ^[0-9]+$ ]] || [ "$exit_code" -ne 0 ]; then
-            exit 1
-        fi
-        exit 0
-        """
-        script_file = tmppath / "guard_test.sh"
-        script_file.write_text(guard_script)
-        script_file.chmod(0o755)
-
-        # Test with non-zero exit code
-        exit_code_file = state_dir / "apply_exit_code"
-        exit_code_file.write_text("127")
-
-        result = subprocess.run(
-            ["bash", str(script_file), str(exit_code_file)],
-            capture_output=True
-        )
-        test_result(
-            "Exit-code guard fails when exit code is non-zero",
-            result.returncode == 1,
-            f"Expected exit code 1 for non-zero exit code, got {result.returncode}"
-        )
-
-    print()
-    print("[Section 20] Exit-code guard succeeds with zero exit code")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmppath = Path(tmpdir)
-        state_dir = tmppath / "merge-and-cleanup.pr-42"
-        state_dir.mkdir()
-
-        guard_script = """
-        exit_code_file="$1"
-        if [ ! -f "$exit_code_file" ]; then
-            exit 1
-        fi
-        exit_code=$(cat "$exit_code_file")
-        if [ -z "$exit_code" ] || ! [[ "$exit_code" =~ ^[0-9]+$ ]] || [ "$exit_code" -ne 0 ]; then
-            exit 1
-        fi
-        exit 0
-        """
-        script_file = tmppath / "guard_test.sh"
-        script_file.write_text(guard_script)
-        script_file.chmod(0o755)
-
-        # Test with zero exit code
-        exit_code_file = state_dir / "apply_exit_code"
-        exit_code_file.write_text("0")
-
-        result = subprocess.run(
-            ["bash", str(script_file), str(exit_code_file)],
-            capture_output=True
-        )
-        test_result(
-            "Exit-code guard succeeds when exit code is zero",
-            result.returncode == 0,
-            f"Expected exit code 0 for zero exit code, got {result.returncode}"
-        )
-
-    print()
     h.summarize_and_exit()
