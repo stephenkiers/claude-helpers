@@ -33,6 +33,9 @@ def merge_lock_path(target_worktree: str) -> Path:
     /merge-and-cleanup run unless that repo's .gitignore is manually patched to
     exclude it (a fix that has to be repeated in every repo this runs against).
     Keeping the lock out of the repo entirely fixes this once, for all repos.
+    Lock identity depends on the worktree's resolved absolute path at call time;
+    if the worktree is later moved, renamed, or recreated at a different path, it
+    will resolve to a different lock.
     """
     resolved = str(Path(target_worktree).resolve())
     digest = hashlib.sha256(resolved.encode()).hexdigest()[:16]
@@ -161,6 +164,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
 
         try:
             lock_file.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(lock_file.parent, 0o700)
             lock_content = f"PR #{plan.pr_number} locked by merge-and-cleanup at {time.time()}\n"
             lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             try:
@@ -170,9 +174,9 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         except FileExistsError:
             try:
                 existing_content = lock_file.read_text()
-                result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure): {existing_content}")
+                result.error = Unknown(f"Merge lock file exists at {lock_file} (concurrent merge or prior failure): {existing_content}")
             except Exception:
-                result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure)")
+                result.error = Unknown(f"Merge lock file exists at {lock_file} (concurrent merge or prior failure)")
             return result, result.error
         except OSError as e:
             result.error = Unknown(f"Failed to create lock file: {e}")
