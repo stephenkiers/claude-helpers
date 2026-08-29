@@ -157,9 +157,13 @@ echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow
   > "$MC_STATE_DIR/apply_result.json" 2> "$MC_STATE_DIR/apply_result.stderr"
 echo $? > "$MC_STATE_DIR/apply_exit_code"
 
-# Guard: ensure exit code file exists and contains a non-zero value (mirrors Phase 4's guard)
-if [ ! -f "$MC_STATE_DIR/apply_exit_code" ] || [ "$(cat "$MC_STATE_DIR/apply_exit_code")" -ne 0 ]; then
-  echo "ERROR: Merge apply failed"
+# Guard: ensure exit code file exists, is non-empty, contains numeric value, and equals 0
+APPLY_RESULT_CODE="$(cat "$MC_STATE_DIR/apply_exit_code" 2>/dev/null)"
+case "$APPLY_RESULT_CODE" in
+  ''|*[!0-9]*) APPLY_RESULT_CODE="missing-or-malformed" ;;
+esac
+if [ "$APPLY_RESULT_CODE" != "0" ]; then
+  echo "ERROR: Merge apply failed (exit code: $APPLY_RESULT_CODE)"
   cat "$MC_STATE_DIR/apply_result.stderr" >&2
   exit 1
 fi
@@ -204,7 +208,12 @@ WT="$(cat "$MC_STATE_DIR/wt")"
 
 # Sanity-check the backgrounded Phase 3 call actually finished and succeeded before trusting
 # GitHub's state below — an apply that's still running or that errored should not fall through here.
-if [ ! -f "$MC_STATE_DIR/apply_exit_code" ] || [ "$(cat "$MC_STATE_DIR/apply_exit_code")" -ne 0 ]; then
+# Guard: ensure exit code file exists, is non-empty, contains numeric value, and equals 0
+APPLY_RESULT_CODE="$(cat "$MC_STATE_DIR/apply_exit_code" 2>/dev/null)"
+case "$APPLY_RESULT_CODE" in
+  ''|*[!0-9]*) APPLY_RESULT_CODE="missing-or-malformed" ;;
+esac
+if [ "$APPLY_RESULT_CODE" != "0" ]; then
   echo "ERROR: Phase 3 merge apply has not completed successfully yet — wait for its notification first"
   exit 1
 fi
