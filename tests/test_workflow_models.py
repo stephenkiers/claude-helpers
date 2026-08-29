@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from workflow.models import (
     IssueInfo, StackInfo, GitHubCacheData, LocalIssueEntry, IssuesCacheData,
     RepoCacheData, validate_github_cache, validate_issues_cache, validate_repo_cache,
-    GITHUB_CACHE_SCHEMA_VERSION, ISSUES_CACHE_SCHEMA_VERSION, REPO_CACHE_SCHEMA_VERSION
+    GITHUB_CACHE_SCHEMA_VERSION, ISSUES_CACHE_SCHEMA_VERSION, REPO_CACHE_SCHEMA_VERSION,
+    LocalTrackerEntry, LocalTrackerData, validate_local_tracker_data
 )
 from _test_harness import Harness
 
@@ -248,6 +249,104 @@ if __name__ == "__main__":
         "validate_repo_cache() accepts version as string",
         validate_repo_cache(shipit_format_str_version)
     )
+
+    print("[Section 7] LocalTrackerData and LocalTrackerEntry serialization")
+
+    entry1 = LocalTrackerEntry(id=1, title="First task", status="todo", plan="plans/1-first.md")
+    entry2 = LocalTrackerEntry(id=2, title="Second task", status="in_progress")
+
+    tracker = LocalTrackerData(entries=[entry1, entry2])
+    tracker_dict = tracker.to_dict()
+
+    test_result(
+        "LocalTrackerData.to_dict() returns list",
+        isinstance(tracker_dict, list)
+    )
+
+    test_result(
+        "LocalTrackerData.to_dict() includes all entries",
+        len(tracker_dict) == 2
+    )
+
+    test_result(
+        "LocalTrackerData.to_dict() entry has id, title, status",
+        tracker_dict[0].get("id") == 1 and tracker_dict[0].get("title") == "First task"
+    )
+
+    test_result(
+        "LocalTrackerData.to_dict() includes plan when present",
+        tracker_dict[0].get("plan") == "plans/1-first.md"
+    )
+
+    test_result(
+        "LocalTrackerData.to_dict() omits plan key when absent (exact round-trip)",
+        "plan" not in tracker_dict[1]
+    )
+
+    reconstructed = LocalTrackerData.from_dict(tracker_dict)
+    test_result(
+        "LocalTrackerData.from_dict() reconstructs entries",
+        len(reconstructed.entries) == 2
+    )
+
+    test_result(
+        "LocalTrackerData.from_dict() reconstructs entry data",
+        reconstructed.entries[0].id == 1 and reconstructed.entries[0].title == "First task"
+    )
+
+    test_result(
+        "LocalTrackerData.from_dict() round-trip is lossless",
+        reconstructed.to_dict() == tracker_dict
+    )
+
+    print()
+
+    print("[Section 8] validate_local_tracker_data validator")
+
+    test_result(
+        "validate_local_tracker_data() accepts empty list",
+        validate_local_tracker_data([])
+    )
+
+    test_result(
+        "validate_local_tracker_data() accepts valid entries",
+        validate_local_tracker_data([
+            {"id": 1, "title": "Task", "status": "todo"},
+            {"id": 2, "title": "Task 2", "status": "in_progress", "plan": "plans/2.md"}
+        ])
+    )
+
+    test_result(
+        "validate_local_tracker_data() rejects non-list",
+        not validate_local_tracker_data({"id": 1, "title": "Not a list"})
+    )
+
+    test_result(
+        "validate_local_tracker_data() rejects entry with non-int id",
+        not validate_local_tracker_data([{"id": "1", "title": "Task", "status": "todo"}])
+    )
+
+    test_result(
+        "validate_local_tracker_data() rejects entry with bool id",
+        not validate_local_tracker_data([{"id": True, "title": "Task", "status": "todo"}])
+    )
+
+    test_result(
+        "validate_local_tracker_data() rejects entry with non-string title",
+        not validate_local_tracker_data([{"id": 1, "title": 123, "status": "todo"}])
+    )
+
+    test_result(
+        "validate_local_tracker_data() rejects entry with non-string status",
+        not validate_local_tracker_data([{"id": 1, "title": "Task", "status": 123}])
+    )
+
+    test_result(
+        "validate_local_tracker_data() rejects non-dict entries",
+        not validate_local_tracker_data([{"id": 1, "title": "Task", "status": "todo"}, "invalid"])
+    )
+
+    print()
 
     print()
     h.summarize_and_exit()

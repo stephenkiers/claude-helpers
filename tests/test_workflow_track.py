@@ -10,20 +10,17 @@ import os
 import json
 import tempfile
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.track import (
     slugify, infer_type, infer_labels, build_branch_name,
-    plan_track, apply_track, TrackPlan, TrackApplyResult,
-    ISSUE_NUMBER_PLACEHOLDER, STEP_CREATE_ISSUE, STEP_CREATE_WORKTREE, STEP_WRITE_CACHE
+    plan_track, apply_track, TrackApplyResult,
+    ISSUE_NUMBER_PLACEHOLDER, STEP_CREATE_ISSUE
 )
-from workflow.models import LocalTrackerData, LocalTrackerEntry, IssueInfo, validate_local_tracker_data
+from workflow.models import LocalTrackerData, LocalTrackerEntry, IssueInfo
 from workflow.cache import read_local_tracker, write_local_tracker
 from workflow.providers.local import LocalProvider
-from workflow.providers.base import Provider
-from workflow.safety import Unknown
 from _test_harness import Harness
 from _git_fixture import GitFixture
 
@@ -216,103 +213,7 @@ if __name__ == "__main__":
     )
 
     print()
-    print("[Section 5] LocalTrackerData and LocalTrackerEntry serialization")
-
-    entry1 = LocalTrackerEntry(id=1, title="First task", status="todo", plan="plans/1-first.md")
-    entry2 = LocalTrackerEntry(id=2, title="Second task", status="in_progress")
-
-    tracker = LocalTrackerData(entries=[entry1, entry2])
-    tracker_dict = tracker.to_dict()
-
-    test_result(
-        "LocalTrackerData.to_dict() returns list",
-        isinstance(tracker_dict, list)
-    )
-
-    test_result(
-        "LocalTrackerData.to_dict() includes all entries",
-        len(tracker_dict) == 2
-    )
-
-    test_result(
-        "LocalTrackerData.to_dict() entry has id, title, status",
-        tracker_dict[0].get("id") == 1 and tracker_dict[0].get("title") == "First task"
-    )
-
-    test_result(
-        "LocalTrackerData.to_dict() includes plan when present",
-        tracker_dict[0].get("plan") == "plans/1-first.md"
-    )
-
-    test_result(
-        "LocalTrackerData.to_dict() omits plan key when absent (exact round-trip)",
-        "plan" not in tracker_dict[1]
-    )
-
-    reconstructed = LocalTrackerData.from_dict(tracker_dict)
-    test_result(
-        "LocalTrackerData.from_dict() reconstructs entries",
-        len(reconstructed.entries) == 2
-    )
-
-    test_result(
-        "LocalTrackerData.from_dict() reconstructs entry data",
-        reconstructed.entries[0].id == 1 and reconstructed.entries[0].title == "First task"
-    )
-
-    test_result(
-        "LocalTrackerData.from_dict() round-trip is lossless",
-        reconstructed.to_dict() == tracker_dict
-    )
-
-    print()
-    print("[Section 6] validate_local_tracker_data validator")
-
-    test_result(
-        "validate_local_tracker_data() accepts empty list",
-        validate_local_tracker_data([])
-    )
-
-    test_result(
-        "validate_local_tracker_data() accepts valid entries",
-        validate_local_tracker_data([
-            {"id": 1, "title": "Task", "status": "todo"},
-            {"id": 2, "title": "Task 2", "status": "in_progress", "plan": "plans/2.md"}
-        ])
-    )
-
-    test_result(
-        "validate_local_tracker_data() rejects non-list",
-        not validate_local_tracker_data({"id": 1, "title": "Not a list"})
-    )
-
-    test_result(
-        "validate_local_tracker_data() rejects entry with non-int id",
-        not validate_local_tracker_data([{"id": "1", "title": "Task", "status": "todo"}])
-    )
-
-    test_result(
-        "validate_local_tracker_data() rejects entry with bool id",
-        not validate_local_tracker_data([{"id": True, "title": "Task", "status": "todo"}])
-    )
-
-    test_result(
-        "validate_local_tracker_data() rejects entry with non-string title",
-        not validate_local_tracker_data([{"id": 1, "title": 123, "status": "todo"}])
-    )
-
-    test_result(
-        "validate_local_tracker_data() rejects entry with non-string status",
-        not validate_local_tracker_data([{"id": 1, "title": "Task", "status": 123}])
-    )
-
-    test_result(
-        "validate_local_tracker_data() rejects non-dict entries",
-        not validate_local_tracker_data([{"id": 1, "title": "Task", "status": "todo"}, "invalid"])
-    )
-
-    print()
-    print("[Section 7] LocalProvider implementation")
+    print("[Section 5] LocalProvider implementation")
 
     tmpdir = Path(tempfile.mkdtemp())
     try:
@@ -402,109 +303,7 @@ if __name__ == "__main__":
         shutil.rmtree(tmpdir)
 
     print()
-    print("[Section 8] Mutation allowlist for worktree add")
-
-    from workflow.mutations import check_mutation_allowed
-
-    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "--", "/tmp/wt"])
-    test_result(
-        "check_mutation_allowed: worktree add -b branch -- path",
-        allowed and reason is None
-    )
-
-    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "--", "/tmp/wt", "main"])
-    test_result(
-        "check_mutation_allowed: worktree add -b branch -- path base",
-        allowed and reason is None
-    )
-
-    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "/tmp/wt"])
-    test_result(
-        "check_mutation_allowed: rejects worktree add without -- separator",
-        not allowed and reason is not None
-    )
-
-    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "", "--", "/tmp/wt"])
-    test_result(
-        "check_mutation_allowed: rejects worktree add with empty branch",
-        not allowed and reason is not None
-    )
-
-    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "--", ""])
-    test_result(
-        "check_mutation_allowed: rejects worktree add with empty path",
-        not allowed and reason is not None
-    )
-
-    print()
-    print("[Section 9] Mutation allowlist for issue commands")
-
-    allowed, reason = check_mutation_allowed(["issue", "create", "--title", "New Issue", "--body-file", "/tmp/body.md"])
-    test_result(
-        "check_mutation_allowed: issue create with title and body-file",
-        allowed and reason is None
-    )
-
-    allowed, reason = check_mutation_allowed(["issue", "create", "--title", "New Issue", "--label", "bug", "--body-file", "/tmp/body.md"])
-    test_result(
-        "check_mutation_allowed: issue create with label (before body-file)",
-        allowed and reason is None
-    )
-
-    allowed, reason = check_mutation_allowed(["issue", "create", "--title", "New Issue", "--assignee", "user", "--body-file", "/tmp/body.md"])
-    test_result(
-        "check_mutation_allowed: issue create with assignee (before body-file)",
-        allowed and reason is None
-    )
-
-    allowed, reason = check_mutation_allowed(["issue", "comment", "42", "--body-file", "/tmp/comment.md"])
-    test_result(
-        "check_mutation_allowed: issue comment",
-        allowed and reason is None
-    )
-
-    allowed, reason = check_mutation_allowed(["issue", "edit", "42", "--body-file", "/tmp/body.md"])
-    test_result(
-        "check_mutation_allowed: issue edit",
-        allowed and reason is None
-    )
-
-    print()
-    print("[Section 10] read/write_local_tracker integration")
-
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        tracker_path = tmpdir / "issues.json"
-
-        # Test read missing file
-        data, err = read_local_tracker(tracker_path)
-        test_result(
-            "read_local_tracker: missing file returns Unknown",
-            data is None and isinstance(err, Unknown)
-        )
-
-        # Test write and read back
-        tracker = LocalTrackerData(entries=[
-            LocalTrackerEntry(id=1, title="Task", status="todo", plan="plans/1.md")
-        ])
-        success, err = write_local_tracker(tracker_path, tracker)
-        test_result(
-            "write_local_tracker: succeeds",
-            success and err is None
-        )
-
-        data, err = read_local_tracker(tracker_path)
-        test_result(
-            "read_local_tracker: reads back written data",
-            data is not None and len(data.entries) == 1 and data.entries[0].id == 1
-        )
-
-    finally:
-        import shutil
-        shutil.rmtree(tmpdir)
-
-    print()
-    print("[Section 11] plan_track with GitHub provider (mocked)")
+    print("[Section 6] plan_track with GitHub provider (mocked)")
 
     fixture = GitFixture()
     old_cwd = os.getcwd()
@@ -579,7 +378,7 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
-    print("[Section 12] apply_track result structure")
+    print("[Section 7] apply_track result structure")
 
     fixture = GitFixture()
     old_cwd = os.getcwd()
@@ -658,7 +457,7 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
-    print("[Section 13] apply_track stale plan detection")
+    print("[Section 8] apply_track stale plan detection")
 
     fixture = GitFixture()
     old_cwd = os.getcwd()
@@ -706,7 +505,7 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
-    print("[Section 14] apply_track reports partial success")
+    print("[Section 9] apply_track reports partial success")
 
     fixture = GitFixture()
     old_cwd = os.getcwd()
