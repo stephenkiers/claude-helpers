@@ -10,9 +10,8 @@ argv builders in git.py insert a literal "--" end-of-options separator
 immediately before each placeholder value to keep a malicious-looking value
 from being parsed as a flag even if it slipped past that check.
 
-Four subcommand keys: "worktree" (remove_worktree), "branch" (delete_branch),
-"pull" (pull_ff_only) — all git — and "pr" (pr_merge_squash, the one gh
-mutation: gh pr merge --squash).
+Subcommand keys (per ADR-0013 and Amendment 2): "worktree", "branch", "pull"
+(git), "add", "commit", "push" (git, /shipit), and "pr" (gh, including /shipit).
 
 Decision 1 (ADR-0013): Every mutation operation must pass through
 check_mutation_allowed() — the CLI never constructs a mutating call directly.
@@ -33,8 +32,20 @@ MUTATION_ALLOWLIST = {
     "pull": {
         ("--ff-only", "--", "<remote>", "<branch>"): "git pull --ff-only -- <remote> <branch>",
     },
+    "add": {
+        ("-A",): "git add -A",
+    },
+    "commit": {
+        ("-F", "--", "<path>"): "git commit -F -- <path>",
+    },
+    "push": {
+        ("-u", "<remote>", "<branch>"): "git push -u <remote> <branch>",
+    },
     "pr": {
         ("merge", "--squash", "<pr_number>"): "gh pr merge --squash <pr_number>",
+        ("create", "--title", "<title>", "--body-file", "<path>"): "gh pr create --title <title> --body-file <path>",
+        ("create", "--title", "<title>", "--base", "<branch>", "--body-file", "<path>"): "gh pr create --title <title> --base <branch> --body-file <path>",
+        ("edit", "<pr_number>", "--title", "<title>", "--body-file", "<path>"): "gh pr edit <pr_number> --title <title> --body-file <path>",
     },
 }
 

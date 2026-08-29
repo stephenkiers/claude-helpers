@@ -331,3 +331,166 @@ def pr_merge_squash(pr_number: int, cwd: Optional[Path] = None) -> Tuple[bool, O
         return False, Unknown(f"Failed to merge PR #{pr_number}: {e}")
     except RuntimeError as e:
         return False, Unknown(f"Failed to merge PR #{pr_number}: {e}")
+
+
+def stage_all(cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Stage all changes via 'git add -A' through the mutation funnel.
+
+    Args:
+        cwd: Working directory for the git command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["add", "-A"]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to stage all changes: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to stage all changes: {e}")
+
+
+def commit_with_message_file(message_path: Path, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Commit with message from file via 'git commit -F <path>' through the mutation funnel.
+
+    Args:
+        message_path: Path to file containing commit message.
+        cwd: Working directory for the git command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["commit", "-F", "--", str(message_path)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to commit: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to commit: {e}")
+
+
+def push_upstream(remote: str, branch: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Push to upstream via 'git push -u <remote> <branch>' through the mutation funnel.
+
+    Plain push only (no force/force-with-lease). On non-fast-forward rejection (detected via
+    stderr inspection), returns Unknown with a descriptive message. Other failures also return
+    Unknown but do not retry or force.
+
+    Args:
+        remote: Remote name (e.g., "origin").
+        branch: Branch name to push.
+        cwd: Working directory for the git command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) on any failure (including non-fast-forward).
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["push", "-u", remote, branch]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        # Inspect stderr for non-fast-forward rejection
+        stderr = getattr(e, 'stderr', '')
+        if stderr and any(phrase in stderr.lower() for phrase in ['rejected', 'non-fast-forward', 'diverged']):
+            return False, Unknown(f"push rejected — remote has diverged; a rebase or stacked-push flow is needed")
+        return False, Unknown(f"Failed to push {remote} {branch}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to push {remote} {branch}: {e}")
+
+
+def pr_create(title: str, body_file: Path, base: Optional[str] = None, cwd: Optional[Path] = None) -> Tuple[Optional[str], Optional[Unknown]]:
+    """
+    Create a PR via 'gh pr create' through the mutation funnel.
+
+    Returns PR URL on success (parsed from gh pr create stdout).
+
+    Args:
+        title: PR title.
+        body_file: Path to file containing PR body.
+        base: Optional base branch (for stacked PRs); if None, uses repo default.
+        cwd: Working directory for the gh command.
+
+    Returns:
+        (pr_url_string, None) on success.
+        (None, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    if base:
+        args = ["pr", "create", "--title", title, "--base", base, "--body-file", str(body_file)]
+    else:
+        args = ["pr", "create", "--title", title, "--body-file", str(body_file)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return None, Unknown(reason or "mutation not allowed")
+
+    try:
+        output = run_gh_command(args, cwd=cwd)
+        # gh pr create outputs the PR URL on success
+        return output, None
+    except subprocess.CalledProcessError as e:
+        return None, Unknown(f"Failed to create PR: {e}")
+    except RuntimeError as e:
+        return None, Unknown(f"Failed to create PR: {e}")
+
+
+def pr_edit(pr_number: int, title: str, body_file: Path, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Edit a PR via 'gh pr edit' through the mutation funnel.
+
+    Args:
+        pr_number: PR number to edit.
+        title: New PR title.
+        body_file: Path to file containing new PR body.
+        cwd: Working directory for the gh command.
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["pr", "edit", str(pr_number), "--title", title, "--body-file", str(body_file)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_gh_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to edit PR #{pr_number}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to edit PR #{pr_number}: {e}")
