@@ -354,10 +354,13 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
     Returns (False, diagnostic_message) on failure.
     """
     try:
+        # /merge-and-cleanup now runs this step via a backgrounded Bash call (no harness
+        # foreground timeout ceiling), so this timeout is the only remaining limiter — give
+        # a full build + E2E boot real headroom instead of cutting it close at 600s.
         result = subprocess.run(
             ["just", "merge"],
             cwd=target_worktree,
-            timeout=600,
+            timeout=1800,
             capture_output=True,
             text=True,
             check=True
