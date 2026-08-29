@@ -17,14 +17,14 @@ Call `EnterPlanMode` immediately. All subsequent work happens in plan mode.
 ### Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail
-`/expert-plan`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
+`/expert-plan`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan 2>/dev/null || echo unknown)
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage gather-context 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-context >/dev/null 2>&1 || true
 ```
 
-Reuse `$TELEMETRY_CMD_ID` for every `stage-begin`/`stage-end`/`command-end` call that follows.
+See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ## Step 1: Gather Context
 
@@ -46,8 +46,8 @@ Collect the input to plan against:
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage gather-context --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage select-experts 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-experts >/dev/null 2>&1 || true
 ```
 
 ## Step 2: Select Experts
@@ -80,8 +80,8 @@ Choose 4-6 relevant experts from `~/.claude/reviewers/*.yaml` based on what the 
 Tell the user which experts you selected and why.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage select-experts --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage expert-contributions 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage select-experts --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage expert-contributions >/dev/null 2>&1 || true
 ```
 
 ## Step 3: Expert Contributions (Main Thread, Sequential)
@@ -186,8 +186,8 @@ After all other experts, run Carl with access to their contributions:
 Carl's open questions follow the same "Ask, Don't Assume" rule — and his confounders should honestly acknowledge when the consensus might be right.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage expert-contributions --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage checkpoint 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage expert-contributions --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/dev/null 2>&1 || true
 ```
 
 ## Step 4: Checkpoint — Resolve Open Questions
@@ -224,8 +224,8 @@ Use `AskUserQuestion` for questions with clear discrete options (2-4 choices). F
 **Wait for the user to answer before proceeding.** If the user says "you decide" or "use your judgment" for a specific question, THEN you may make a recommendation — but note it in the plan as "Decision: [choice] (AI-recommended, not specified in ticket)".
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage checkpoint --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage synthesize-plan 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-plan >/dev/null 2>&1 || true
 ```
 
 ## Step 5: Synthesize the Plan
@@ -275,7 +275,7 @@ This creates an audit trail of what was decided and by whom.]
 ## Step 6: Present for Approval
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage synthesize-plan --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome success 2>/dev/null || true
 ```
 
 Call `ExitPlanMode` to present the synthesized plan to the user. They can:
@@ -284,7 +284,7 @@ Call `ExitPlanMode` to present the synthesized plan to the user. They can:
 - Run `/expert-review-plan` for a formal validation pass
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command expert-plan --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome success 2>/dev/null || true
 ```
 
 ## Efficiency Notes

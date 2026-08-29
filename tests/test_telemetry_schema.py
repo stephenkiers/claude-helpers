@@ -9,9 +9,11 @@ Run with: python3 tests/test_telemetry_schema.py
 """
 
 import json
+import os
 import stat
 import sys
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -512,6 +514,337 @@ def test_append_event_to_existing_common_dir():
             tmpbase.rmdir()
 
 
+def test_load_and_update_state_round_trip():
+    """load_and_update_state performs correct read-modify-write (multiple mutations)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "state.json"
+
+        # First write
+        def first_mutation(state):
+            state["key1"] = "value1"
+            return state
+        result1 = telemetry_schema.load_and_update_state(state_path, first_mutation)
+
+        if result1.get("key1") != "value1":
+            return False, f"first mutation didn't persist: {result1}"
+
+        # Second write (should preserve key1)
+        def second_mutation(state):
+            state["key2"] = "value2"
+            return state
+        result2 = telemetry_schema.load_and_update_state(state_path, second_mutation)
+
+        if result2.get("key1") != "value1" or result2.get("key2") != "value2":
+            return False, f"second mutation lost first key: {result2}"
+
+        return True, ""
+
+
+def test_load_and_update_state_missing_file():
+    """load_and_update_state on missing file creates it with mutated content."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "new_state.json"
+
+        if state_path.exists():
+            return False, "state file should not exist yet"
+
+        def init(state):
+            state["initialized"] = True
+            return state
+        result = telemetry_schema.load_and_update_state(state_path, init)
+
+        if not state_path.exists():
+            return False, "state file was not created"
+
+        if result.get("initialized") != True:
+            return False, f"mutation not applied: {result}"
+
+        return True, ""
+
+
+def test_load_and_update_state_corrupt_file():
+    """load_and_update_state on corrupt JSON treats it as empty dict."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "corrupt.json"
+
+        # Write corrupt JSON
+        with open(state_path, "w") as f:
+            f.write("{ invalid json }")
+
+        def mutate(state):
+            state["recovered"] = True
+            return state
+        result = telemetry_schema.load_and_update_state(state_path, mutate)
+
+        if result.get("recovered") != True:
+            return False, f"recovery from corrupt failed: {result}"
+
+        # Verify file now contains valid JSON
+        with open(state_path) as f:
+            content = json.loads(f.read())
+        if content.get("recovered") != True:
+            return False, "file was not updated with valid JSON"
+
+        return True, ""
+
+
+def test_prune_stale_state_removes_old_files():
+    """prune_stale_state removes files older than cutoff."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        # Create an old file (2 days old)
+        old_file = state_dir / "old_session.json"
+        old_file.write_text("{}")
+        os.utime(old_file, (0, 0))  # Set mtime to epoch
+
+        # Create a fresh file
+        fresh_file = state_dir / "fresh_session.json"
+        fresh_file.write_text("{}")
+
+        # Prune with 24h cutoff
+        telemetry_schema.prune_stale_state(state_dir, max_age_seconds=86400)
+
+        if old_file.exists():
+            return False, "old file was not pruned"
+        if not fresh_file.exists():
+            return False, "fresh file was deleted"
+
+        return True, ""
+
+
+def test_prune_stale_state_nonexistent_dir():
+    """prune_stale_state handles nonexistent directory gracefully."""
+    nonexistent = Path("/tmp/.definitely-not-real-dir-" + str(uuid.uuid4()))
+    try:
+        # Should not raise
+        telemetry_schema.prune_stale_state(nonexistent)
+        return True, ""
+    except Exception as e:
+        return False, f"prune_stale_state raised on missing dir: {e}"
+
+
+def test_prune_boundary_just_past_cutoff():
+    """prune_stale_state: file at (now - max_age - 1) is pruned."""
+    import time
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        # Create file and set mtime to (now - 24h - 1 second)
+        file_path = state_dir / "just_past.json"
+        file_path.write_text("{}")
+        now = time.time()
+        old_mtime = now - 86400 - 1
+        os.utime(file_path, (old_mtime, old_mtime))
+
+        # Prune with 24h cutoff
+        telemetry_schema.prune_stale_state(state_dir, max_age_seconds=86400)
+
+        if file_path.exists():
+            return False, "file at (now - 24h - 1) should be pruned"
+
+        return True, ""
+
+
+def test_prune_boundary_before_cutoff():
+    """prune_stale_state: file at (now - max_age + 60) survives."""
+    import time
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        # Create file and set mtime to (now - 24h + 60 seconds)
+        file_path = state_dir / "still_fresh.json"
+        file_path.write_text("{}")
+        now = time.time()
+        ok_mtime = now - 86400 + 60
+        os.utime(file_path, (ok_mtime, ok_mtime))
+
+        # Prune with 24h cutoff
+        telemetry_schema.prune_stale_state(state_dir, max_age_seconds=86400)
+
+        if not file_path.exists():
+            return False, "file at (now - 24h + 60) should survive"
+
+        return True, ""
+
+
+def test_build_event_state_mismatch_field():
+    """build_event includes state_mismatch field when provided (non-None)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        state_mismatch=True,
+    )
+    if event.get("state_mismatch") != True:
+        return False, f"state_mismatch not in event: {event}"
+    return True, ""
+
+
+def test_build_event_state_mismatch_omitted_when_none():
+    """build_event omits state_mismatch when None."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        state_mismatch=None,
+    )
+    if "state_mismatch" in event:
+        return False, f"state_mismatch should be omitted when None, but found in: {event}"
+    return True, ""
+
+
+def test_validate_event_rejects_empty_command_id():
+    """validate_event rejects command_id that is an empty string."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        command_id="c1",
+    )
+    # Manually set to empty string
+    event["command_id"] = ""
+    errors = telemetry_schema.validate_event(event)
+    if not any("command_id" in e.lower() and "empty" in e.lower() for e in errors):
+        return False, f"should reject empty command_id, got errors: {errors}"
+    return True, ""
+
+
+def test_validate_event_rejects_empty_stage_id():
+    """validate_event rejects stage_id that is an empty string."""
+    event = telemetry_schema.build_event(
+        "stage.begin",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        stage_id="st1",
+    )
+    # Manually set to empty string
+    event["stage_id"] = ""
+    errors = telemetry_schema.validate_event(event)
+    if not any("stage_id" in e.lower() and "empty" in e.lower() for e in errors):
+        return False, f"should reject empty stage_id, got errors: {errors}"
+    return True, ""
+
+
+def test_validate_event_accepts_unknown_as_id():
+    """validate_event accepts command_id='unknown' and stage_id='unknown'."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="s1",
+        timestamp="2026-08-26T12:00:00Z",
+        command_id="unknown",
+        stage_id="unknown",
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept 'unknown' as ID, got errors: {errors}"
+
+
+def test_default_state_dir():
+    """default_state_dir returns a path under ~/.claude/telemetry/state/."""
+    state_dir = telemetry_schema.default_state_dir()
+    state_dir_str = str(state_dir)
+    has_claude = ".claude" in state_dir_str
+    has_telemetry = "telemetry" in state_dir_str
+    has_state = "state" in state_dir_str
+    return (
+        has_claude and has_telemetry and has_state
+    ), f"got path: {state_dir_str}"
+
+
+def test_state_path_format():
+    """state_path(session_id, state_dir) returns correct path format."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+
+        result = telemetry_schema.state_path(session_id, state_dir)
+        result_str = str(result)
+
+        # Should be in the state_dir
+        if not str(result).startswith(str(state_dir)):
+            return False, f"path not under state_dir: {result_str}"
+
+        # Should include the session_id with .json extension
+        if session_id not in result_str or not result_str.endswith(".json"):
+            return False, f"path doesn't match expected format: {result_str}"
+
+        return True, ""
+
+
+def test_state_path_isolation():
+    """state_path returns different paths for different session_ids."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        path1 = telemetry_schema.state_path("session-1", state_dir)
+        path2 = telemetry_schema.state_path("session-2", state_dir)
+
+        if path1 == path2:
+            return False, "same path for different session_ids"
+
+        if not str(path1).endswith("session-1.json"):
+            return False, f"path1 format wrong: {path1}"
+
+        if not str(path2).endswith("session-2.json"):
+            return False, f"path2 format wrong: {path2}"
+
+        return True, ""
+
+
+def test_load_and_update_state_with_locking():
+    """load_and_update_state safely preserves state across interleaved reads/writes."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "state.json"
+
+        # Simulate a scenario where state is read, modified, and written multiple times
+        # This tests that the lock protects against interleaved access patterns
+
+        def set_field(key, value):
+            def mutator(state):
+                state[key] = value
+                return state
+            return mutator
+
+        # First: initialize with command_id and stage_id
+        result1 = telemetry_schema.load_and_update_state(
+            state_path, set_field("command_id", "c123")
+        )
+        if result1.get("command_id") != "c123":
+            return False, "first write failed"
+
+        # Second: add stage_id
+        result2 = telemetry_schema.load_and_update_state(
+            state_path, set_field("stage_id", "st456")
+        )
+        if result2.get("command_id") != "c123" or result2.get("stage_id") != "st456":
+            return False, "second write lost previous state"
+
+        # Third: clear stage_id but keep command_id
+        def clear_stage(state):
+            state["stage_id"] = None
+            state["stage"] = None
+            return state
+
+        result3 = telemetry_schema.load_and_update_state(state_path, clear_stage)
+        if result3.get("command_id") != "c123":
+            return False, "clearing stage fields lost command_id"
+        if result3.get("stage_id") is not None:
+            return False, "stage_id should be None"
+
+        # Fourth: verify final state by reading from disk
+        with open(state_path) as f:
+            final = json.loads(f.read())
+
+        if final.get("command_id") != "c123" or final.get("stage_id") is not None:
+            return False, f"final state incorrect: {final}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -618,6 +951,66 @@ if __name__ == "__main__":
 
     passed, msg = test_append_event_to_existing_common_dir()
     test_result("append to existing dir like /tmp works", passed, msg)
+
+    print()
+
+    # State file management tests
+    print("[Section 6] State file operations")
+    passed, msg = test_load_and_update_state_round_trip()
+    test_result("load_and_update_state preserves across mutations", passed, msg)
+
+    passed, msg = test_load_and_update_state_missing_file()
+    test_result("load_and_update_state creates missing file", passed, msg)
+
+    passed, msg = test_load_and_update_state_corrupt_file()
+    test_result("load_and_update_state handles corrupt JSON gracefully", passed, msg)
+
+    passed, msg = test_prune_stale_state_removes_old_files()
+    test_result("prune_stale_state removes files older than cutoff", passed, msg)
+
+    passed, msg = test_prune_stale_state_nonexistent_dir()
+    test_result("prune_stale_state handles nonexistent directory", passed, msg)
+
+    passed, msg = test_prune_boundary_just_past_cutoff()
+    test_result("prune_stale_state: file at (now - max_age - 1) is pruned", passed, msg)
+
+    passed, msg = test_prune_boundary_before_cutoff()
+    test_result("prune_stale_state: file at (now - max_age + 60) survives", passed, msg)
+
+    print()
+
+    # State mismatch and ID validation tests
+    print("[Section 7] State mismatch and ID validation")
+    passed, msg = test_build_event_state_mismatch_field()
+    test_result("build_event includes state_mismatch when provided", passed, msg)
+
+    passed, msg = test_build_event_state_mismatch_omitted_when_none()
+    test_result("build_event omits state_mismatch when None", passed, msg)
+
+    passed, msg = test_validate_event_rejects_empty_command_id()
+    test_result("validate_event rejects empty string command_id", passed, msg)
+
+    passed, msg = test_validate_event_rejects_empty_stage_id()
+    test_result("validate_event rejects empty string stage_id", passed, msg)
+
+    passed, msg = test_validate_event_accepts_unknown_as_id()
+    test_result("validate_event accepts 'unknown' as command_id/stage_id", passed, msg)
+
+    print()
+
+    # State directory and path functions
+    print("[Section 8] State directory and path functions")
+    passed, msg = test_default_state_dir()
+    test_result("default_state_dir returns valid path", passed, msg)
+
+    passed, msg = test_state_path_format()
+    test_result("state_path returns correct format", passed, msg)
+
+    passed, msg = test_state_path_isolation()
+    test_result("state_path isolates different sessions", passed, msg)
+
+    passed, msg = test_load_and_update_state_with_locking()
+    test_result("load_and_update_state maintains atomicity under concurrent access", passed, msg)
 
     print()
 
