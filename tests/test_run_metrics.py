@@ -1423,11 +1423,10 @@ def test_stage_end_cas_guard_protects_different_stage_state():
 
 
 def test_session_id_with_disallowed_characters_is_sanitized():
-    """Session ID with disallowed characters (not ^[A-Za-z0-9_-]+$) is sanitized.
+    """Session ID with disallowed characters (not ^[A-Za-z0-9_-]+$) falls back to 'unknown'.
 
-    According to the plan, disallowed characters should either be sanitized or the
-    session ID should fall back to 'unknown' as the filename. This test verifies the
-    command still succeeds and creates a state file (whether with sanitized name or unknown).
+    The telemetry_schema.state_path() sanitization logic rejects any session_id that
+    doesn't match ^[A-Za-z0-9_-]+$ and falls back to filename 'unknown.json'.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
@@ -1450,26 +1449,23 @@ def test_session_id_with_disallowed_characters_is_sanitized():
         if not log_path.exists():
             return False, "log file should exist"
 
-        # Verify a state file was created (either with sanitized name or 'unknown')
-        # List all files in state_dir to see what was created
-        if not state_dir.exists():
-            return False, "state dir should exist"
+        # Verify state file was created as 'unknown.json' (due to sanitization fallback)
+        expected_state_file = state_dir / "unknown.json"
+        if not expected_state_file.exists():
+            if not state_dir.exists():
+                return False, "state dir was not created"
+            state_files = list(state_dir.glob("*.json"))
+            return False, f"state file should be 'unknown.json', but found: {[f.name for f in state_files]}"
 
-        state_files = list(state_dir.glob("*.json"))
-        if not state_files:
-            return False, f"no state file created, state_dir contents: {list(state_dir.iterdir())}"
-
-        # The state file should be created (either sanitized or as 'unknown.json')
-        # The test passes if any state file exists, confirming graceful handling
         return True, ""
 
 
 def test_session_id_with_slashes_creates_state_file():
-    """Session ID with slashes or path separators is sanitized to avoid directory traversal.
+    """Session ID with slashes/path separators falls back to 'unknown' to prevent directory traversal.
 
-    A session ID like 'foo/bar' should NOT create files outside state_dir. The CLI should
-    either sanitize the filename or fall back to 'unknown' to avoid path traversal.
-    This test verifies the command succeeds and state stays within state_dir.
+    A session ID like 'foo/bar' should NOT create subdirectories or escape state_dir.
+    The telemetry_schema.state_path() sanitization logic rejects slashes and falls back
+    to filename 'unknown.json'.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
@@ -1492,7 +1488,15 @@ def test_session_id_with_slashes_creates_state_file():
         if not log_path.exists():
             return False, "log file should exist"
 
-        # Verify all state files are directly in state_dir (no subdirectories created)
+        # Verify state file was created as 'unknown.json' (due to sanitization fallback)
+        expected_state_file = state_dir / "unknown.json"
+        if not expected_state_file.exists():
+            if not state_dir.exists():
+                return False, "state dir was not created"
+            state_files = list(state_dir.glob("*.json"))
+            return False, f"state file should be 'unknown.json', but found: {[f.name for f in state_files]}"
+
+        # Verify no subdirectories were created (directory traversal protection)
         if state_dir.exists():
             for item in state_dir.rglob("*"):
                 if item.is_file():

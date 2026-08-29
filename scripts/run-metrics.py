@@ -216,10 +216,9 @@ def cmd_command_end(args):
 
     command_id = telemetry_schema.UNKNOWN
     state_mismatch = None
-    cleared = False
     if session_id != telemetry_schema.UNKNOWN:
         try:
-            command_id, state_mismatch, cleared = telemetry_schema.resolve_and_clear_command_state(
+            command_id, state_mismatch, _ = telemetry_schema.resolve_and_clear_command_state(
                 telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.command
             )
         except (OSError, PermissionError) as e:
@@ -228,13 +227,6 @@ def cmd_command_end(args):
         command_id = args.command_id
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
-
-    # Delete the state file if it was successfully cleared
-    if cleared:
-        try:
-            telemetry_schema.state_path(session_id, args.state_dir).unlink(missing_ok=True)
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
 
     event = telemetry_schema.build_event(
         "command.end",

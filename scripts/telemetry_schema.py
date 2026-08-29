@@ -307,11 +307,11 @@ def load_and_update_state(path: Path, mutate_fn) -> dict:
             # Read existing content
             file_size = os.fstat(fd).st_size
             if file_size > 0:
-                content = os.read(fd, file_size).decode("utf-8")
                 try:
+                    content = os.read(fd, file_size).decode("utf-8")
                     state = json.loads(content)
-                except (json.JSONDecodeError, ValueError):
-                    # Corrupt file: treat as empty
+                except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                    # Corrupt file (bad JSON or bad encoding): treat as empty
                     state = {}
             else:
                 # Empty or new file
@@ -377,6 +377,10 @@ def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], c
         result["state_mismatch"] = state_mismatch
         if recorded_command_id and recorded_command_id == command_id:
             result["cleared"] = True
+            try:
+                os.unlink(str(path))
+            except (OSError, FileNotFoundError):
+                pass
             return {}
         result["cleared"] = False
         return state

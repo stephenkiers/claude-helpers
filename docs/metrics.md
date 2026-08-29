@@ -234,9 +234,9 @@ If `stage-end` or `command-end` is called with a stage/command name that does no
 
 When `CLAUDE_CODE_SESSION_ID` is unset or empty (session_id resolves to `"unknown"`), no state file is written or read — the behavior reverts to the old pattern (all calls must provide explicit IDs, or they degrade to `"unknown"`). This is safe and maintains backward compatibility.
 
-### Assumption: Single-Threaded Command and Stage Usage
+### Graceful Degradation on Concurrent Lifecycles
 
-Session-scoped state assumes only one command and one stage can be active per session at a time. No doc currently runs overlapping or concurrent command or stage markers within one session; this is documented as an assumption, not enforced or currently violated. Concurrent same-session lifecycles would share the same state file and corrupt each other's correlation IDs.
+Session-scoped state assumes only one command and one stage can be active per session at a time, and this assumption is backed by Compare-And-Swap (CAS) guards. When concurrent same-session lifecycles do occur, the state file is protected from corruption: a `*-end` call whose resolved ID no longer matches the state's current ID will silently skip its destructive clear/delete operation and log a stderr warning. This ensures that the concurrent lifecycle's state survives untouched, though the skipped `*-end` call will have emitted an event with resolved (often `"unknown"`) correlation IDs rather than the mismatched state's IDs.
 
 The CLI subcommands are:
 
