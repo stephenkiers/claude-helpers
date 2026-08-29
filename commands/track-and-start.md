@@ -457,7 +457,6 @@ Then offer these options:
 | Option | Description |
 |--------|-------------|
 | **Pivot to existing** | Archive the existing issue's body as a comment, replace it with the new plan, then create branch/worktree linked to that issue. Use when the plan supersedes or refines the existing issue. |
-| **Link to existing** | Skip creating a new issue. Use the existing issue number — create the branch/worktree linked to that issue instead. Add the plan as a comment on the existing issue. |
 | **Create new and reference** | Create the new issue but add a "Related: #N" line. Useful when the work is distinct but connected. |
 | **Create new (no overlap)** | The match was a false positive. Proceed normally with no references. |
 
@@ -480,23 +479,6 @@ worktree's issue):
 1. **Skip issue creation** — use the existing issue number for branch naming: `{type}/{existing-issue#}-{slug}`
 2. **Update `$CACHE_FILE`** with the new issue body so future duplicate detection runs against the current plan
 3. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number
-
-### "Link to existing" Flow
-
-If the user chooses to link to an existing issue instead of creating a new one:
-
-1. **Skip issue creation** entirely
-2. **Use the existing issue number** for branch naming: `{type}/{existing-issue#}-{slug}`
-3. **Add the plan as a comment** on the existing issue:
-   ```bash
-   gh issue comment "$EXISTING_ISSUE_NUM" --body "$(cat <<'EOF'
-   ## Implementation Plan
-
-   <original plan content>
-   EOF
-   )"
-   ```
-4. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number
 
 ## Branch Naming
 
@@ -746,7 +728,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEME
 | No plan file | Error: "No plan file found. Create a plan first." |
 | Not in a git repo | Error: "Must be in a git repository with a GitHub remote" |
 | No GitHub remote | Error: "No GitHub remote found. Add one with `gh repo create` or `git remote add`" |
-| Overlapping issue found | Ask user: pivot to existing, link to existing, create new with reference, or create new (no overlap) |
+| Overlapping issue found | Ask user: pivot to existing, create new with reference, or create new (no overlap) |
 | Pivot-to-existing: `gh issue comment` fails | Error + abort: "Failed to archive old issue body. Aborting pivot to avoid losing the original content." |
 | Pivot-to-existing: `gh issue edit` fails | Error: "Failed to update issue body. Old body is preserved as a comment. Try again or update manually." |
 | Pivot: `gh issue comment` fails | Error + abort: "Failed to archive old plan. Aborting pivot to avoid losing the original plan." |
