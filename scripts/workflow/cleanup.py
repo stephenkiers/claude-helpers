@@ -257,8 +257,8 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
         if result.worktree_removed:
             try:
                 merge_lock_path(str(plan.target_worktree)).unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as e:
+                result.validation_failures.append(f"Merge lock cleanup failed (non-fatal): {e}")
 
         force_delete = plan.pr_state == "MERGED"
         try:

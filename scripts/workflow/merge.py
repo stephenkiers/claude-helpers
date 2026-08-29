@@ -112,6 +112,7 @@ def plan_merge(
             pr_number, head_ref, target_worktree = _resolve_pr_from_number(arguments, cwd)
             if not pr_number or not head_ref or not target_worktree:
                 return None, Unknown(f"Could not resolve PR from '{arguments}'")
+            target_worktree = str(Path(target_worktree).resolve())
 
         plan = MergePlan(
             pr_number=pr_number,
