@@ -1,7 +1,9 @@
 """
 Cache reading, validation, hashing, and freshness checks.
 
-Phase 1: read-only only. Write/locking/atomic-rename in Phase 2+.
+Reads: read_github_cache, read_issues_cache, read_repo_cache, read_local_tracker.
+Writes: write_cache (atomic rename via a temp file) and write_local_tracker,
+plus lock-file helpers for coordinating concurrent writers.
 """
 
 import json
@@ -10,10 +12,11 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union, List
 from .models import (
     GitHubCacheData, IssuesCacheData, RepoCacheData,
-    validate_github_cache, validate_issues_cache, validate_repo_cache
+    validate_github_cache, validate_issues_cache, validate_repo_cache,
+    LocalTrackerData, validate_local_tracker_data
 )
 from .safety import Unknown
 
@@ -112,7 +115,31 @@ def hash_issues_cache_file(path: Path) -> Optional[str]:
     return hash_cache_file(path)
 
 
-def write_cache(path: Path, data: Dict[str, Any]) -> Tuple[bool, Optional[Unknown]]:
+def read_local_tracker(path: Path) -> Tuple[Optional[LocalTrackerData], Optional[Unknown]]:
+    """
+    Read and validate project-root array-format issues.json (Local Plan Mode).
+
+    Returns (LocalTrackerData or None, Unknown error or None).
+    Missing file is distinct from malformed JSON or validation failure — include the path
+    in the reason so "issues.json not found" is distinguishable from other files named
+    issues.json elsewhere (e.g., worktree-parent issues.json read by read_issues_cache).
+    """
+    if not path.exists():
+        return None, Unknown(f"local tracker issues.json not found at {path}")
+
+    try:
+        data = json.loads(path.read_text())
+        if not validate_local_tracker_data(data):
+            return None, Unknown("local tracker issues.json schema validation failed")
+        parsed = LocalTrackerData.from_dict(data)
+        if parsed.dropped_entries:
+            return parsed, Unknown(f"local tracker issues.json dropped malformed entries: {', '.join(parsed.dropped_entries)}")
+        return parsed, None
+    except (json.JSONDecodeError, OSError) as e:
+        return None, Unknown(f"Failed to read local tracker issues.json: {e}")
+
+
+def write_cache(path: Path, data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Tuple[bool, Optional[Unknown]]:
     """
     Write cache file atomically with lock file serialization.
 
@@ -217,3 +244,12 @@ def write_cache(path: Path, data: Dict[str, Any]) -> Tuple[bool, Optional[Unknow
 
     except Exception as e:
         return False, Unknown(f"Unexpected error in write_cache: {e}")
+
+
+def write_local_tracker(path: Path, data: LocalTrackerData) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Write local tracker (project-root array-format issues.json) atomically.
+
+    Delegates to write_cache, passing data.to_dict() which returns a top-level list.
+    """
+    return write_cache(path, data.to_dict())

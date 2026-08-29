@@ -9,6 +9,8 @@ Usage:
   python3 -m scripts.workflow.cli cleanup apply <plan_json_or_->
   python3 -m scripts.workflow.cli merge plan <arguments>
   python3 -m scripts.workflow.cli merge apply <plan_json>
+  python3 -m scripts.workflow.cli track plan --mode github --plan-file <path> --title <title> [--assignee <a>]
+  python3 -m scripts.workflow.cli track apply <plan_json_or_->
 """
 
 import sys
@@ -17,8 +19,10 @@ import json
 import dataclasses
 from pathlib import Path
 
-from . import cleanup, merge, shipit, checks
+from . import cleanup, merge, shipit, checks, track
 from .models import RepoCacheData
+from .providers import GithubProvider, LocalProvider
+from . import worktrees
 
 
 def _run_plan(plan_fn, arg):
@@ -110,6 +114,45 @@ def main():
         help="Plan JSON or '-' to read from stdin"
     )
 
+    track_parser = subparsers.add_parser("track", help="Create issue and worktree")
+    track_subparsers = track_parser.add_subparsers(dest="track_action")
+
+    track_plan_parser = track_subparsers.add_parser("plan", help="Plan track")
+    track_plan_parser.add_argument(
+        "--mode",
+        choices=["github", "local"],
+        default="github",
+        help="Mode: github or local (default: github)"
+    )
+    track_plan_parser.add_argument(
+        "--plan-file",
+        required=True,
+        help="Path to plan file"
+    )
+    track_plan_parser.add_argument(
+        "--title",
+        required=True,
+        help="Issue title"
+    )
+    track_plan_parser.add_argument(
+        "--assignee",
+        help="Assignee (optional)"
+    )
+    track_plan_parser.add_argument(
+        "--tracker-path",
+        help="Path to local issues.json (local mode only; defaults to <project-root>/issues.json)"
+    )
+    track_plan_parser.add_argument(
+        "--plans-dir",
+        help="Path to plans directory (local mode only; defaults to <project-root>/plans)"
+    )
+
+    track_apply_parser = track_subparsers.add_parser("apply", help="Apply track plan")
+    track_apply_parser.add_argument(
+        "plan",
+        help="Plan JSON or '-' to read from stdin"
+    )
+
     checks_parser = subparsers.add_parser("checks", help="Run checks")
     checks_subparsers = checks_parser.add_subparsers(dest="checks_action")
 
@@ -159,6 +202,86 @@ def main():
             _run_apply(shipit.apply_shipit, plan_json)
         else:
             shipit_parser.print_help()
+            sys.exit(1)
+    elif args.command == "track":
+        if args.track_action == "plan":
+            # Read plan file
+            try:
+                plan_file = Path(args.plan_file)
+                plan_content = plan_file.read_text()
+            except (OSError, IOError) as e:
+                output = {"success": False, "error": f"Failed to read plan file: {e}"}
+                print(json.dumps(output))
+                sys.exit(1)
+
+            # Construct provider based on mode
+            if args.mode == "local":
+                # For local mode, determine tracker and plans paths
+                project_root = worktrees.detect_project_root()
+                if not project_root:
+                    output = {"success": False, "error": "Could not detect project root for local mode"}
+                    print(json.dumps(output))
+                    sys.exit(1)
+
+                tracker_path = Path(args.tracker_path) if args.tracker_path else Path(project_root) / "issues.json"
+                plans_dir = Path(args.plans_dir) if args.plans_dir else Path(project_root) / "plans"
+                provider = LocalProvider(tracker_path, plans_dir)
+            else:
+                provider = GithubProvider()
+
+            def plan_track_wrapper(_):
+                return track.plan_track(
+                    provider=provider,
+                    plan_content=plan_content,
+                    title=args.title,
+                    mode=args.mode,
+                    assignee=args.assignee
+                )
+
+            _run_plan(plan_track_wrapper, None)
+
+        elif args.track_action == "apply":
+            plan_json = args.plan
+            if plan_json == "-":
+                plan_json = sys.stdin.read()
+
+            # Construct provider from plan (same as in plan step)
+            try:
+                plan_data = json.loads(plan_json)
+                mode = plan_data.get("mode", "github")
+            except json.JSONDecodeError:
+                output = {"success": False, "error": "Could not parse plan JSON to determine mode"}
+                print(json.dumps(output))
+                sys.exit(1)
+
+            if mode == "local":
+                # Prefer the project_root already serialized in the plan (matches
+                # apply_track's own approach of reading plan.main_worktree rather
+                # than re-detecting), so apply is consistent with the paths plan
+                # time actually used. Only fall back to a fresh detect when the
+                # plan predates this field or the field is empty.
+                # NOTE: --tracker-path/--plans-dir overrides used at plan time are
+                # still not threaded through the plan JSON here; apply always
+                # derives tracker_path/plans_dir from project_root. Fixing that
+                # fully requires a plan schema change and is left for Phase 3b.
+                project_root = plan_data.get("project_root") or worktrees.detect_project_root()
+                if not project_root:
+                    output = {"success": False, "error": "Could not detect project root for local mode"}
+                    print(json.dumps(output))
+                    sys.exit(1)
+
+                tracker_path = Path(project_root) / "issues.json"
+                plans_dir = Path(project_root) / "plans"
+                provider = LocalProvider(tracker_path, plans_dir)
+            else:
+                provider = GithubProvider()
+
+            def apply_track_wrapper(pj):
+                return track.apply_track(provider=provider, plan_json=pj)
+
+            _run_apply(apply_track_wrapper, plan_json)
+        else:
+            track_parser.print_help()
             sys.exit(1)
     elif args.command == "checks":
         if args.checks_action == "run":

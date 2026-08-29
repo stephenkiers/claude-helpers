@@ -326,5 +326,75 @@ if __name__ == "__main__":
         allowed and reason is None
     )
 
+    print("[Section 5] Mutation allowlist for worktree add")
+
+    from workflow.mutations import check_mutation_allowed
+
+    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "--", "/tmp/wt"])
+    test_result(
+        "check_mutation_allowed: worktree add -b branch -- path",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "--", "/tmp/wt", "main"])
+    test_result(
+        "check_mutation_allowed: worktree add -b branch -- path base",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "/tmp/wt"])
+    test_result(
+        "check_mutation_allowed: rejects worktree add without -- separator",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "", "--", "/tmp/wt"])
+    test_result(
+        "check_mutation_allowed: rejects worktree add with empty branch",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["worktree", "add", "-b", "feature/123-foo", "--", ""])
+    test_result(
+        "check_mutation_allowed: rejects worktree add with empty path",
+        not allowed and reason is not None
+    )
+
+    print()
+
+    print("[Section 6] Mutation allowlist for issue commands")
+
+    allowed, reason = check_mutation_allowed(["issue", "create", "--title", "New Issue", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: issue create with title and body-file",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["issue", "create", "--title", "New Issue", "--label", "bug", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: issue create with label (before body-file)",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["issue", "create", "--title", "New Issue", "--assignee", "user", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: issue create with assignee (before body-file)",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["issue", "comment", "42", "--body-file", "/tmp/comment.md"])
+    test_result(
+        "check_mutation_allowed: issue comment",
+        allowed and reason is None
+    )
+
+    allowed, reason = check_mutation_allowed(["issue", "edit", "42", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: issue edit",
+        allowed and reason is None
+    )
+
+    print()
+
     print()
     h.summarize_and_exit()

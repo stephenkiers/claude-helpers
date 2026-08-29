@@ -16,9 +16,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.cache import (
     read_github_cache, read_issues_cache, hash_file_content,
-    hash_github_cache_file, hash_issues_cache_file, write_cache
+    hash_github_cache_file, hash_issues_cache_file, write_cache,
+    read_local_tracker, write_local_tracker
 )
-from workflow.models import GitHubCacheData, IssueInfo, StackInfo
+from workflow.models import GitHubCacheData, IssueInfo, StackInfo, LocalTrackerData, LocalTrackerEntry
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -279,6 +280,41 @@ if __name__ == "__main__":
             "write_cache() removes stale lock file",
             not lock_file.exists()
         )
+
+    print("[Section 9] read/write_local_tracker integration")
+
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        tracker_path = tmpdir / "issues.json"
+
+        # Test read missing file
+        data, err = read_local_tracker(tracker_path)
+        test_result(
+            "read_local_tracker: missing file returns Unknown",
+            data is None and isinstance(err, Unknown)
+        )
+
+        # Test write and read back
+        tracker = LocalTrackerData(entries=[
+            LocalTrackerEntry(id=1, title="Task", status="todo", plan="plans/1.md")
+        ])
+        success, err = write_local_tracker(tracker_path, tracker)
+        test_result(
+            "write_local_tracker: succeeds",
+            success and err is None
+        )
+
+        data, err = read_local_tracker(tracker_path)
+        test_result(
+            "read_local_tracker: reads back written data",
+            data is not None and len(data.entries) == 1 and data.entries[0].id == 1
+        )
+
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir)
+
+    print()
 
     print()
     h.summarize_and_exit()
