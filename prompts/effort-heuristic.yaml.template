@@ -6,8 +6,9 @@
 #
 # ─── What is this? ─────────────────────────────────────────────────────────
 #
-# /expert-review defaults to effort 4 (full panel) unless you pass --effort explicitly.
-# This config lets you auto-size based on diff signal (LOC, file count, risk keywords) instead.
+# Without this file (or a project-level .claude/effort-heuristic.yaml), /expert-review falls back
+# to a flat effort 4 (full panel) whenever --effort isn't passed. This config lets you auto-size
+# based on diff signal (LOC, file count, risk keywords) instead.
 # The heuristic only runs when --effort is NOT specified; explicit --effort always skips it.
 #
 # The heuristic picks effort 2, 3, or 4. Efforts 1 (swarm) and 5 (everyone) remain explicit-only

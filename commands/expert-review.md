@@ -70,14 +70,15 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   panel** (Pass 1, Carl, Pass 2, Amalgamator, Triage) = PANEL_MODEL (your `--model` choice, or
   inherited). Triage rides the panel tier deliberately — deciding what a human must rule on is a
   judgment call, and getting it wrong in either direction costs more than the model does.
-- `--effort <1|2|3|4|5>`: how much panel to run. Default **4** (today's full behavior). The ladder:
+- `--effort <1|2|3|4|5>`: how much panel to run. When omitted, effort is heuristic-derived (2-4) —
+  see the Effort heuristic sub-section below. The ladder:
 
   | Level | Name | What runs |
   |---|---|---|
   | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`, CRITIC `path:line` grounding) → 1 sonnet merge agent → `final-report.md` → Triage → `claude-action-plan.md`. Skips Summarizer/Router/Carl/Q&A/Pass 2/Amalgamator. |
   | 2 | focused pair | Router picks exactly the top 2 judgment reviewers; Carl + Cody + Consistency Checker still run; full pipeline otherwise (Q&A, Pass 2, Amalgamator, Triage). |
   | 3 | pair + Bob | Effort 2 plus `uncle-bob` pre-seated (full-patch read, like named mode). |
-  | 4 | normal | **Default.** Current behavior, unchanged. |
+  | 4 | normal | Full panel; the heuristic's ceiling and the fallback when no config or `--effort` is given. |
   | 5 | everyone | All `index.yaml` reviewers; implemented as named-selection over the full index (router bypassed). |
 
   Interaction rules: `--effort` + named reviewers = **error**. `--all --effort 5` is accepted
@@ -293,28 +294,32 @@ and reviewer count.
 
 **Effort heuristic** (when `--effort` not passed):
 
-1. Load `~/.claude/effort-heuristic.yaml` (user-level) or `.claude/effort-heuristic.yaml` (project-level,
-   takes precedence). If neither file exists, use built-in defaults (`default_effort: 4`, `bias:
-   over-review`, risk-keyword floor, LOC and file-count thresholds per the template). Set `EFFORT_SOURCE=heuristic`.
+1. Look for `~/.claude/effort-heuristic.yaml` (user-level) or `.claude/effort-heuristic.yaml`
+   (project-level, takes precedence). **If neither file exists, skip this heuristic entirely:**
+   `EFFORT=4`, `EFFORT_SOURCE=default`, do not compute any signal below. If at least one file
+   exists, load it (fall back to the template's defaults for any field it omits — `default_effort:
+   4`, `bias: over-review`, the risk-keyword list, and the LOC/file-count thresholds) and set
+   `EFFORT_SOURCE=heuristic`.
 2. Gather signal **without reading the full diff** (per this command's existing context-discipline rules):
-   - `diff-index.md` (file count, LOC count from `git diff --stat`, hunk headers with function names)
+   - `diff-index.md` — reuse the file count and LOC total it already recorded at Step 1; do not
+     re-run `git diff --numstat`/`--name-only` yourself, hunk headers with function names
    - Issue/plan body text (from `pr-context.md` if already written, or `.claude/github-cache.json`)
    - Commit messages (`git log --oneline` since branch divergence from main)
    - File paths themselves
 3. Search this signal **case-insensitively** for any risk keywords. If any keyword is found in paths, hunk
    headers, issue/plan text, or commit messages: `EFFORT=4` (floor), `EFFORT_REASON="risk keyword: {keyword}"`,
    skip to the output step below.
-4. Otherwise, compute effort from size:
-   - Extract LOC and file count from diff-index: `LOC=$(git diff main...HEAD --numstat | awk '{s+=$4-$3} END {print s}')`;
-     `FILES=$(git diff main...HEAD --name-only | wc -l)`
+4. Otherwise, compute effort from size using the LOC and file count already read from `diff-index.md` in
+   step 2 above (call them `LOC` and `FILES`):
    - Both LOC and file count must independently pass the same tier test: if either fails a tier, that tier
      is skipped. For each of `file_count_thresholds` and `loc_thresholds`, map to effort 2, 3, or 4:
      * If both LOC and file count are ≤ tier_2_max → effort 2
      * Else if both are ≤ tier_3_max → effort 3
-     * Else effort 4 (or `default_effort` as fallback)
-   - Apply `bias`: if the computed effort is at a boundary (both LOC and file count are in the same tier
-     but one just barely), bias controls rounding: `over-review` rounds up, `balanced` applies no rounding,
-     `lean` rounds down. Simplest heuristic: if any metric hits exactly a threshold boundary, apply bias.
+     * Else use `default_effort` (falls back to 4 if unset in config)
+   - Apply `bias` only when LOC and FILES disagree on tier (e.g. LOC qualifies for tier 2 but FILES
+     only qualifies for tier 3, or vice versa): `over-review` takes the higher of the two tiers,
+     `balanced` takes the tier implied by LOC, `lean` takes the lower of the two tiers. When LOC and
+     FILES agree on the same tier, bias has no effect — use that tier directly.
    - Clamp result to `[2,4]` — heuristic never emits 1 or 5.
    - Set `EFFORT_REASON` to a one-line summary: e.g. `"18 LOC across 2 files, no risk keywords"` or
      `"42 LOC across 5 files, tier 3"`.
@@ -520,7 +525,7 @@ on; a decision is the reason they are reading at all.
 
 **Run summary**
 - Code recap: {1–2 sentences from `summary.md`'s Technical Summary; if effort 1, use `diff-index.md`'s stat line instead}
-- Effort: {N} ({" you specified it" if EFFORT_EXPLICIT, else "heuristic: " + EFFORT_REASON})
+- Effort: {N} ({"you specified it" if EFFORT_EXPLICIT, else "heuristic: " + EFFORT_REASON})
 - Reviewers: {names} ({reasoning from tagged-sections.md's Panel Decision, one clause} | "fixed 6-lens swarm screen" at effort 1 | "full index, effort 5" at effort 5)
 
 **Decisions for you**: N
