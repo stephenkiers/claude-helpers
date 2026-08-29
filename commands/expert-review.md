@@ -282,12 +282,43 @@ on either combination. The prior-review cache check (Step 0.5), Step 12, and Ste
 PR mode (ADR-0009 write boundary); see the PR Mode section below.
 
 **Effort.** `--effort <1|2|3|4|5>` → `EFFORT`; error on any other value (including `--effort 0` and
-`--effort 6`). Default `EFFORT=4`. Set `EFFORT_EXPLICIT=true` when the flag was passed on the command
-line, else `EFFORT_EXPLICIT=false`. `--effort` + named reviewers = **error** (say so and exit).
-`--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted — effort wins.
-Effort 5 **lowers to named selection**: set `NAMED_SELECTION=true` and `NAMED_REVIEWERS` to the full
-`index.yaml` reviewer list (space-separated, lowercased) — the router is bypassed with no new code
-path. Print the resolved effort at run start, alongside the resolved panel model and reviewer count.
+`--effort 6`). When `--effort` is passed, set `EFFORT_EXPLICIT=true`, use that effort directly, and skip
+the heuristic entirely. When `--effort` is not passed, set `EFFORT_EXPLICIT=false` and apply the **effort
+heuristic** (see sub-section below). Default fallback `EFFORT=4`. `--effort` + named reviewers = **error**
+(say so and exit). `--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted
+— effort wins. Effort 5 **lowers to named selection**: set `NAMED_SELECTION=true` and `NAMED_REVIEWERS`
+to the full `index.yaml` reviewer list (space-separated, lowercased) — the router is bypassed with no
+new code path. Print the resolved effort and its source at run start, alongside the resolved panel model
+and reviewer count.
+
+**Effort heuristic** (when `--effort` not passed):
+
+1. Load `~/.claude/effort-heuristic.yaml` (user-level) or `.claude/effort-heuristic.yaml` (project-level,
+   takes precedence). If neither file exists, use built-in defaults (`default_effort: 4`, `bias:
+   over-review`, risk-keyword floor, LOC and file-count thresholds per the template). Set `EFFORT_SOURCE=heuristic`.
+2. Gather signal **without reading the full diff** (per this command's existing context-discipline rules):
+   - `diff-index.md` (file count, LOC count from `git diff --stat`, hunk headers with function names)
+   - Issue/plan body text (from `pr-context.md` if already written, or `.claude/github-cache.json`)
+   - Commit messages (`git log --oneline` since branch divergence from main)
+   - File paths themselves
+3. Search this signal **case-insensitively** for any risk keywords. If any keyword is found in paths, hunk
+   headers, issue/plan text, or commit messages: `EFFORT=4` (floor), `EFFORT_REASON="risk keyword: {keyword}"`,
+   skip to the output step below.
+4. Otherwise, compute effort from size:
+   - Extract LOC and file count from diff-index: `LOC=$(git diff main...HEAD --numstat | awk '{s+=$4-$3} END {print s}')`;
+     `FILES=$(git diff main...HEAD --name-only | wc -l)`
+   - Both LOC and file count must independently pass the same tier test: if either fails a tier, that tier
+     is skipped. For each of `file_count_thresholds` and `loc_thresholds`, map to effort 2, 3, or 4:
+     * If both LOC and file count are ≤ tier_2_max → effort 2
+     * Else if both are ≤ tier_3_max → effort 3
+     * Else effort 4 (or `default_effort` as fallback)
+   - Apply `bias`: if the computed effort is at a boundary (both LOC and file count are in the same tier
+     but one just barely), bias controls rounding: `over-review` rounds up, `balanced` applies no rounding,
+     `lean` rounds down. Simplest heuristic: if any metric hits exactly a threshold boundary, apply bias.
+   - Clamp result to `[2,4]` — heuristic never emits 1 or 5.
+   - Set `EFFORT_REASON` to a one-line summary: e.g. `"18 LOC across 2 files, no risk keywords"` or
+     `"42 LOC across 5 files, tier 3"`.
+5. Print effort resolution at run start: `Effort: {EFFORT} ({EFFORT_SOURCE}: {EFFORT_REASON})`.
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
 error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in
@@ -487,6 +518,11 @@ on; a decision is the reason they are reading at all.
 ```
 {One sentence: does anything here need you, and is this ship-blocking or polish?}
 
+**Run summary**
+- Code recap: {1–2 sentences from `summary.md`'s Technical Summary; if effort 1, use `diff-index.md`'s stat line instead}
+- Effort: {N} ({" you specified it" if EFFORT_EXPLICIT, else "heuristic: " + EFFORT_REASON})
+- Reviewers: {names} ({reasoning from tagged-sections.md's Panel Decision, one clause} | "fixed 6-lens swarm screen" at effort 1 | "full index, effort 5" at effort 5)
+
 **Decisions for you**: N
 1. [Title] — {the trade-off, in one clause} — ruled: {option}
 2. …
@@ -509,11 +545,23 @@ not deciding — apply them, or hand the action plan to `/implement-with-haiku`.
 
 📋 Action plan: {REVIEW_DIR}/claude-action-plan.md
 📄 Full report: {REVIEW_DIR}/final-report.md
+
+▶️ Next: /implement-with-haiku {REVIEW_DIR}/claude-action-plan.md
 ```
 
 When `needs-you: 0`, drop the Decisions header entirely and lead with the verdict — do not print an
 empty section, and do not invent a question to look diligent. Same for `measure: 0` and the Needs
 measurement block.
+
+**Calibration flag** (when `EFFORT_SOURCE == heuristic`): after computing `findings.critical` for the
+metadata cache (Step 13), if any CRITICAL findings came back, append one line to the closing message:
+
+```
+⚠️  Heuristic picked effort {EFFORT} for this diff; {findings.critical} Critical finding(s) came back.
+    Consider raising effort-heuristic.yaml's thresholds or bias for diffs like this.
+```
+
+Silent otherwise — no line printed for explicit `--effort` runs or when no Critical findings came back.
 
 ---
 

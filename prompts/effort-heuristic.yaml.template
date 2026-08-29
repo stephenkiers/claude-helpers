@@ -1,0 +1,72 @@
+# .claude/effort-heuristic.yaml — tunable heuristic for auto-sizing /expert-review effort
+#
+# Copy this file to your home directory at: ~/.claude/effort-heuristic.yaml
+# Project-level copy at: .claude/effort-heuristic.yaml (overrides user-level)
+# All entries are optional. Omit what you want the defaults for; this template shows all fields.
+#
+# ─── What is this? ─────────────────────────────────────────────────────────
+#
+# /expert-review defaults to effort 4 (full panel) unless you pass --effort explicitly.
+# This config lets you auto-size based on diff signal (LOC, file count, risk keywords) instead.
+# The heuristic only runs when --effort is NOT specified; explicit --effort always skips it.
+#
+# The heuristic picks effort 2, 3, or 4. Efforts 1 (swarm) and 5 (everyone) remain explicit-only
+# to avoid trading accuracy for cost in either direction.
+#
+# When diff signal is ambiguous (e.g., at a boundary), bias controls whether to round up or down.
+# Start with bias: over-review and tighten once you have evidence.
+#
+# ─── Configuration ─────────────────────────────────────────────────────────
+#
+# default_effort: fallback when signal is ambiguous (default 4, the conservative baseline)
+#
+# bias: over-review | balanced | lean
+#   - over-review: when diff lands at a tier boundary, round UP (favor reviewing more)
+#   - balanced:    apply no rounding; compute effort strictly from thresholds
+#   - lean:        when diff lands at a boundary, round DOWN (favor cheaper review)
+#   Default: over-review (start with a somewhat over-reviewed baseline)
+#
+# loc_thresholds:
+#   tier_2_max: Lines of code above which the diff is too large for effort 2 (default 30)
+#   tier_3_max: Lines of code above which the diff is too large for effort 3 (default 150)
+#   Diffs up to tier_2_max → effort 2
+#   Diffs tier_2_max+1 to tier_3_max → effort 3 (unless bias rounds down to 2)
+#   Diffs > tier_3_max → effort 4 (or default_effort)
+#
+# file_count_thresholds:
+#   tier_2_max: file count above which the diff is too large for effort 2 (default 2)
+#   tier_3_max: file count above which the diff is too large for effort 3 (default 6)
+#   Same logic as LOC: up to tier_2_max → 2, tier_2_max+1 to tier_3_max → 3, >tier_3_max → 4
+#
+# risk_keywords: case-insensitive keywords that, if found anywhere, floor the effort at 4
+#   Matched against:
+#   - File paths (e.g., auth/login.ts matches "auth")
+#   - Diff-index hunk headers (function/section names)
+#   - Issue/plan body text (captured from .claude/github-cache.json or branch plan)
+#   - Commit messages (git log --oneline)
+#   Any hit → immediate effort 4, regardless of size. Prevents auto-downgrading risky changes.
+#   Default list includes: auth, payment, migration, schema, security, secret, token, crypto,
+#   permission, password
+
+default_effort: 4
+bias: over-review
+
+loc_thresholds:
+  tier_2_max: 30
+  tier_3_max: 150
+
+file_count_thresholds:
+  tier_2_max: 2
+  tier_3_max: 6
+
+risk_keywords:
+  - auth
+  - payment
+  - migration
+  - schema
+  - security
+  - secret
+  - token
+  - crypto
+  - permission
+  - password
