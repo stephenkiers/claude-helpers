@@ -255,7 +255,16 @@ def main():
                 sys.exit(1)
 
             if mode == "local":
-                project_root = worktrees.detect_project_root()
+                # Prefer the project_root already serialized in the plan (matches
+                # apply_track's own approach of reading plan.main_worktree rather
+                # than re-detecting), so apply is consistent with the paths plan
+                # time actually used. Only fall back to a fresh detect when the
+                # plan predates this field or the field is empty.
+                # NOTE: --tracker-path/--plans-dir overrides used at plan time are
+                # still not threaded through the plan JSON here; apply always
+                # derives tracker_path/plans_dir from project_root. Fixing that
+                # fully requires a plan schema change and is left for Phase 3b.
+                project_root = plan_data.get("project_root") or worktrees.detect_project_root()
                 if not project_root:
                     output = {"success": False, "error": "Could not detect project root for local mode"}
                     print(json.dumps(output))

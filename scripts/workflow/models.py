@@ -255,9 +255,10 @@ class LocalTrackerData:
     def from_dict(cls, data: List[Dict[str, Any]]) -> "LocalTrackerData":
         """Construct from parsed JSON list (top-level array).
 
-        Round-tripping is lossless for well-formed data: LocalTrackerData.from_dict(d).to_dict() == d
-        when every entry has exactly the known keys. Entries missing the optional `plan` key round-trip
-        with `plan: None` present in the output.
+        Round-tripping is lossless for well-formed data: LocalTrackerData.from_dict(d).to_dict() == d,
+        for both 3-key entries (no `plan` key) and 4-key entries (`plan` present). to_dict() omits
+        the `plan` key entirely when entry.plan is None, so a 3-key input round-trips back to a
+        3-key output rather than gaining a `plan: None` key it never had.
         """
         obj = cls()
         if not isinstance(data, list):

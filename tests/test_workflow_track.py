@@ -245,8 +245,8 @@ if __name__ == "__main__":
     )
 
     test_result(
-        "LocalTrackerData.to_dict() includes plan:None when absent",
-        "plan" in tracker_dict[1] or tracker_dict[1].get("plan") is None
+        "LocalTrackerData.to_dict() omits plan key when absent (exact round-trip)",
+        "plan" not in tracker_dict[1]
     )
 
     reconstructed = LocalTrackerData.from_dict(tracker_dict)
@@ -620,12 +620,12 @@ if __name__ == "__main__":
 
         test_result(
             "apply_track: has issue_number",
-            result.issue_number is not None
+            result.issue_number == 1
         )
 
         test_result(
             "apply_track: has branch",
-            result.branch is not None
+            result.branch == "feature/1-implement-feature"
         )
 
         test_result(
@@ -635,12 +635,12 @@ if __name__ == "__main__":
 
         test_result(
             "apply_track: has worktree_path",
-            result.worktree_path is not None
+            result.worktree_path is not None and result.worktree_path.endswith("1-implement-feature")
         )
 
         test_result(
             "apply_track: records issue creation in steps_completed",
-            STEP_CREATE_ISSUE in result.steps_completed or STEP_CREATE_ISSUE in result.steps_failed or result.success
+            STEP_CREATE_ISSUE in result.steps_completed and STEP_CREATE_ISSUE not in result.steps_failed
         )
 
         # Verify the tracker was updated
@@ -765,7 +765,7 @@ if __name__ == "__main__":
 
         test_result(
             "apply_track: issue was created despite worktree failure",
-            result.issue_number is not None
+            result.issue_number == 1
         )
 
         import shutil

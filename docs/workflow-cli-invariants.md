@@ -56,7 +56,7 @@ This document specifies the safety invariants and contracts that every `scripts/
 
 **Forbidden in Phase 1:**
 - Writing cache files (Phase 2+ when mutations begin).
-- Creating or deleting worktrees (Phase 3+).
+- Creating worktrees (Phase 3+); deleting worktrees (Phase 2+ — `cleanup.py`).
 - Creating or updating branches (Phase 2+).
 - Staging, committing, or pushing (Phase 2+).
 
@@ -75,10 +75,20 @@ This document specifies the safety invariants and contracts that every `scripts/
 
 **Invariant:** Every cache file includes a `schema_version` field. Reads validate the version before parsing. Invalid versions cause read failure, not silent parsing or default values.
 
+**Deliberate exception (Phase 3a):** the project-root array-format `issues.json` (Local Plan
+Mode's `LocalTrackerData`) has no `schema_version` field and no wrapper object to put one in — its
+on-disk format is a plain top-level JSON array (`[{"id": 1, "title": "...", ...}, ...]`), and that
+shape already exists in the wild, so adding a version key would mean changing the format itself.
+`validate_local_tracker_data()` is structural-only (checks field presence/types per entry) rather
+than version-gated.
+
 **Versions:**
-- `.claude/github-cache.json`: `schema_version: "1.0"`
+- `.claude/github-cache.json` (worktree-parent, dict-keyed, `GitHubCacheData`): `schema_version: "1.0"`
 - `.claude/repo-cache.json`: `schema_version: "1.0"`
-- `issues.json`: `schema_version: "1.0"`
+- `<worktree-parent>/issues.json` (dict-keyed, `IssuesCacheData`): `schema_version: "1.0"`
+- `<project-root>/issues.json` (array format, `LocalTrackerData`): no `schema_version` — see the
+  exception above. This is a structurally different file that happens to share the same filename
+  as the worktree-parent `issues.json` above, at a different path.
 
 **Validation:** `models.py` provides `validate_*_cache()` functions that all readers must use.
 

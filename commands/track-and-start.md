@@ -81,11 +81,13 @@ Before generating an ID, scan `issues.json` for existing entries with overlappin
 Use the CLI to plan the local track operation. The CLI infers all required state (slug, branch naming, collision detection):
 
 ```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
 TRACK_PLAN=$(python3 -m scripts.workflow.cli track plan --mode local --plan-file "$PLAN_FILE" --title "$TITLE" \
   --tracker-path "$PROJECT_ISSUES" --plans-dir "$PLANS_DIR")
 PLAN_OK=$(printf '%s' "$TRACK_PLAN" | jq -r '.plan_hash // empty')
 if [ -z "$PLAN_OK" ]; then
   echo "ERROR: Failed to plan track (local mode)" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
@@ -128,6 +130,7 @@ if [ "$TRACK_OK" != "true" ]; then
     echo "  Manual cleanup or retry may be needed." >&2
   fi
   
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
@@ -139,11 +142,13 @@ Extract the real branch and worktree path from the result (NOT from the plan, wh
 ISSUE_NUM=$(printf '%s' "$TRACK_RESULT" | jq -r '.issue_number // empty')
 BRANCH=$(printf '%s' "$TRACK_RESULT" | jq -r '.branch // empty')
 WORKTREE_PATH=$(printf '%s' "$TRACK_RESULT" | jq -r '.worktree_path // empty')
-PLAN_FILE=$(printf '%s' "$TRACK_PLAN" | jq -r '.main_worktree // empty')
-PLANS_DIR=$(printf '%s' "$TRACK_PLAN" | jq -r '.worktree_parent // empty')
+# main_worktree/worktree_parent are already available as $MAIN_WORKTREE/$WORKTREE_PARENT
+# from Project Detection above — do not reassign $PLAN_FILE/$PLANS_DIR here, those names
+# are reused for the plan-mode markdown file and the plans/ directory elsewhere in this doc.
 
 if [ -z "$ISSUE_NUM" ] || [ -z "$BRANCH" ] || [ -z "$WORKTREE_PATH" ]; then
   echo "ERROR: Invalid result from track apply (missing required fields)" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 ```
@@ -595,6 +600,7 @@ ISSUE_NUM=$(printf '%s' "$TRACK_RESULT" | jq -r '.issue_number // empty')
 ISSUE_URL=$(printf '%s' "$TRACK_RESULT" | jq -r '.issue_url // empty')
 if [ -z "$ISSUE_NUM" ] || [ -z "$ISSUE_URL" ]; then
   echo "ERROR: track apply succeeded but missing issue number or URL" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-issue --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 

@@ -371,6 +371,13 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
 
             # Check if branch exists
             exists, err = git.branch_exists(real_branch, cwd=main_wt)
+            if err:
+                # The issue was already created above (issue #{result.issue_number});
+                # a failed collision check must not silently proceed as "no collision."
+                msg = f"branch existence check failed (issue #{result.issue_number} already created): {err}"
+                result.error = Unknown(msg)
+                result.steps_failed.append(STEP_CREATE_WORKTREE)
+                return result, result.error
             if exists:
                 msg = f"branch {real_branch} already exists"
                 result.error = Unknown(msg)

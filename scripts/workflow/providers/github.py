@@ -68,10 +68,18 @@ class GithubProvider:
         Writes body to a temp file, invokes gh issue create, and parses the returned URL
         to extract the issue number. Raises RuntimeError if the number cannot be determined.
         """
-        # Write body to a temp file
+        # Write body to a temp file. body_file is assigned before the write, and a
+        # write failure is caught and cleaned up immediately, so a write failure
+        # can no longer leak the temp file on disk (it previously escaped before
+        # body_file was even bound). The file is closed (exiting the `with`) before
+        # invoking gh so its contents are flushed and visible to the subprocess.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(body)
             body_file = Path(f.name)
+            try:
+                f.write(body)
+            except Exception:
+                body_file.unlink(missing_ok=True)
+                raise
 
         try:
             url, err = git.issue_create(
@@ -110,8 +118,12 @@ class GithubProvider:
         Writes body to a temp file and invokes gh issue comment.
         """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(body)
             body_file = Path(f.name)
+            try:
+                f.write(body)
+            except Exception:
+                body_file.unlink(missing_ok=True)
+                raise
 
         try:
             success, err = git.issue_comment(number, body_file, cwd=self.cwd)
@@ -129,8 +141,12 @@ class GithubProvider:
         Writes body to a temp file and invokes gh issue edit.
         """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(body)
             body_file = Path(f.name)
+            try:
+                f.write(body)
+            except Exception:
+                body_file.unlink(missing_ok=True)
+                raise
 
         try:
             success, err = git.issue_edit_body(number, body_file, cwd=self.cwd)

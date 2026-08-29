@@ -34,11 +34,15 @@ class LocalProvider:
         List open issues from project-root array-format issues.json.
 
         Reads the tracker file, filters entries with status "todo" or "planned",
-        and returns them as IssueInfo list. Returns [] if the tracker is missing
-        or unreadable.
+        and returns them as IssueInfo list. Returns [] if the tracker is missing,
+        unreadable, or fails schema validation (data is None). If some entries were
+        dropped as malformed but others parsed fine (data is not None but err is
+        set), the valid entries are still returned rather than discarding all of
+        them for one bad row — duplicate detection is load-bearing and a single
+        malformed entry should not silently blind it.
         """
         data, err = read_local_tracker(self.tracker_path)
-        if err or not data:
+        if data is None:
             return []
 
         result = []
@@ -63,10 +67,18 @@ class LocalProvider:
         """
         from .. import track  # Import here to avoid circular import
 
-        # Read current tracker to get next ID
+        # Read current tracker to get next ID. Unlike list_open_issues (which now
+        # tolerates dropped entries so reading past a bad row is safe), this stays
+        # fail-closed: a dropped row may have held the current max id, and silently
+        # allocating past it risks colliding with an id that still exists on disk.
+        # "Not found" (no tracker file yet) is the one exception, since that's the
+        # expected first-issue-ever state, not a malformed file.
         data, err = read_local_tracker(self.tracker_path)
         if err and "not found" not in str(err):
-            raise RuntimeError(f"could not read tracker: {err}")
+            raise RuntimeError(
+                f"could not read tracker at {self.tracker_path}: {err}. "
+                f"Fix the malformed entry in that file before creating a new issue."
+            )
         if not data:
             data = LocalTrackerData()
 

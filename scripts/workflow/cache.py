@@ -1,7 +1,9 @@
 """
 Cache reading, validation, hashing, and freshness checks.
 
-Phase 1: read-only only. Write/locking/atomic-rename in Phase 2+.
+Reads: read_github_cache, read_issues_cache, read_repo_cache, read_local_tracker.
+Writes: write_cache (atomic rename via a temp file) and write_local_tracker,
+plus lock-file helpers for coordinating concurrent writers.
 """
 
 import json
