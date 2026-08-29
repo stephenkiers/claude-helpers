@@ -11,7 +11,8 @@ immediately before each placeholder value to keep a malicious-looking value
 from being parsed as a flag even if it slipped past that check.
 
 Subcommand keys (per ADR-0013 and Amendment 2): "worktree", "branch", "pull"
-(git), "add", "commit", "push" (git, /shipit), and "pr" (gh, including /shipit).
+(git), "add", "commit", "push" (git, /shipit), "pr" (gh, including /shipit), and
+"issue" (gh, Phase 3a /track-and-start).
 
 Decision 1 (ADR-0013): Every mutation operation must pass through
 check_mutation_allowed() — the CLI never constructs a mutating call directly.
@@ -24,6 +25,8 @@ MUTATION_ALLOWLIST = {
     "worktree": {
         ("remove", "--", "<path>"): "git worktree remove -- <path>",
         ("remove", "--force", "--", "<path>"): "git worktree remove --force -- <path>",
+        ("add", "-b", "<branch>", "--", "<path>"): "git worktree add -b <branch> -- <path>",
+        ("add", "-b", "<branch>", "--", "<path>", "<base>"): "git worktree add -b <branch> -- <path> <base>",
     },
     "branch": {
         ("-d", "--", "<name>"): "git branch -d -- <name>",
@@ -46,6 +49,14 @@ MUTATION_ALLOWLIST = {
         ("create", "--title", "<title>", "--body-file", "<path>"): "gh pr create --title <title> --body-file <path>",
         ("create", "--title", "<title>", "--base", "<branch>", "--body-file", "<path>"): "gh pr create --title <title> --base <branch> --body-file <path>",
         ("edit", "<pr_number>", "--title", "<title>", "--body-file", "<path>"): "gh pr edit <pr_number> --title <title> --body-file <path>",
+    },
+    "issue": {
+        ("create", "--title", "<title>", "--body-file", "<path>"): "gh issue create --title <title> --body-file <path>",
+        ("create", "--title", "<title>", "--label", "<labels>", "--body-file", "<path>"): "gh issue create --title <title> --label <labels> --body-file <path>",
+        ("create", "--title", "<title>", "--assignee", "<assignee>", "--body-file", "<path>"): "gh issue create --title <title> --assignee <assignee> --body-file <path>",
+        ("create", "--title", "<title>", "--label", "<labels>", "--assignee", "<assignee>", "--body-file", "<path>"): "gh issue create --title <title> --label <labels> --assignee <assignee> --body-file <path>",
+        ("comment", "<number>", "--body-file", "<path>"): "gh issue comment <number> --body-file <path>",
+        ("edit", "<number>", "--body-file", "<path>"): "gh issue edit <number> --body-file <path>",
     },
 }
 

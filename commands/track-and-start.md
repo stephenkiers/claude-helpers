@@ -46,10 +46,9 @@ See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full m
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage detect-project >/dev/null 2>&1 || true
 ```
 
-Run the **Project Detection** and **Graft Detection** blocks from
+Run the **Project Detection** block from
 `~/.claude/prompts/worktree-reference.md` (read that file for the bash). This sets `REPO`,
-`MAIN_WORKTREE`, `WORKTREE_PARENT`, `CACHE_FILE`, `ASSIGNEE`, `PROJECT_ROOT`, `USE_GRAFT`,
-and `GRAFT_REPO_NAME`.
+`MAIN_WORKTREE`, `WORKTREE_PARENT`, `CACHE_FILE`, `ASSIGNEE`, and `PROJECT_ROOT`.
 
 **If not in a git repo or no GitHub remote:** Error with message about needing to be in a git repository with a GitHub remote.
 
@@ -166,7 +165,7 @@ cd <worktree-path> && claude "/implement-with-haiku"
 
 ## Tracker Ticket Mode
 
-Activates when `/track-and-start` is called with a ticket ID argument matching `[A-Z]+-\d+` (e.g., `PPS-166`). It looks up the ticket via MCP, uses the tracker's branch name, creates a worktree named from the lowercase ticket ID, writes the standard `github-cache.json` shape, and does not require a GitHub remote. Steps 1 and 2 (validate plan mode, read original plan) still run first — the plan content becomes the cache `body`. This mode is self-contained (like Local Plan Mode): its own detection, resolution, cache write, and handoff, merging back into the shared worktree creation block. Graft is explicitly skipped (the branch name comes from the tracker and must not be renamed).
+Activates when `/track-and-start` is called with a ticket ID argument matching `[A-Z]+-\d+` (e.g., `PPS-166`). It looks up the ticket via MCP, uses the tracker's branch name, creates a worktree named from the lowercase ticket ID, writes the standard `github-cache.json` shape, and does not require a GitHub remote. Steps 1 and 2 (validate plan mode, read original plan) still run first — the plan content becomes the cache `body`. This mode is self-contained (like Local Plan Mode): its own detection, resolution, cache write, and handoff, merging back into the shared worktree creation block. The branch name comes from the tracker and must not be renamed.
 
 #### Detection
 
@@ -248,7 +247,7 @@ WORKTREE_DIR=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 
 #### Worktree Creation
 
-Run Project Detection and Graft Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly — **Graft is not used in Tracker Ticket mode** (the branch name comes from the tracker and must not be renamed):
+Run Project Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly (the branch name comes from the tracker and must not be renamed):
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
@@ -589,29 +588,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktr
 ```bash
 cd "$MAIN_WORKTREE"
 WORKTREE_DIR="${BRANCH#*/}"
-
-if [ "$USE_GRAFT" = "true" ]; then
-  GRAFT_OUTPUT=$(graft new "$WORKTREE_DIR" --no-setup -r "$GRAFT_REPO_NAME" 2>&1)
-  GRAFT_EXIT=$?
-  if [ $GRAFT_EXIT -ne 0 ]; then
-    echo "WARNING: graft new failed, falling back to manual worktree creation"
-    echo "$GRAFT_OUTPUT"
-    USE_GRAFT=false
-  else
-    echo "$GRAFT_OUTPUT"
-    GRAFT_BRANCH=$(echo "$GRAFT_OUTPUT" | grep "Using branch name" | sed "s/.*'\\([^']*\\)'.*/\\1/")
-    [ -n "$GRAFT_BRANCH" ] && BRANCH="$GRAFT_BRANCH"
-    GRAFT_PATH=$(echo "$GRAFT_OUTPUT" | grep "Created worktree" | sed "s/.* at //")
-    [ -n "$GRAFT_PATH" ] && WORKTREE_PATH="$GRAFT_PATH"
-    WORKTREE_PARENT=$(dirname "$WORKTREE_PATH")
-    CACHE_FILE="${WORKTREE_PARENT}/issues.json"
-  fi
-fi
-if [ "$USE_GRAFT" != "true" ]; then
-  mkdir -p "$WORKTREE_PARENT"
-  WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
-  git worktree add "$WORKTREE_PATH" -b "${BRANCH}"
-fi
+mkdir -p "$WORKTREE_PARENT"
+WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
+git worktree add "$WORKTREE_PATH" -b "${BRANCH}"
 ```
 
 ## Worktree GitHub Cache
