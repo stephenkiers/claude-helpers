@@ -89,3 +89,21 @@ The deviation is recorded here rather than discovered later.
   are accepted trade-offs for a ~2-minute screen, recorded here.
 - **Cost:** three review commands exist until the deprecated two are deleted; banners and this ADR
   are the guard against drift.
+
+## Amendment (2026-08-29)
+
+**Default effort is now heuristic-derived from `~/.claude/effort-heuristic.yaml` (tiers 2–4 only); efforts 1 and 5 remain explicit-only.**
+
+When `--effort` is not passed, `/expert-review` loads `effort-heuristic.yaml` (user-level or project-level;
+template in `prompts/effort-heuristic.yaml.template`) and auto-picks 2, 3, or 4 based on diff signal:
+file count, lines of code, risk keywords in paths/diffs/issues/commits. This biases toward over-review
+as the baseline ("start with a somewhat over-reviewed baseline"). Efforts 1 and 5 remain explicit-only
+to avoid the failure mode of auto-downsizing risky changes or auto-upsizing routine ones.
+
+The motivation: usage data showed `expert-reviewer` subagents at 15% of weekly token spend, the largest
+single line item. Most small/mechanical diffs routinely run the full panel (effort 4, default) because
+users either never pass `--effort` or habitually typed `--effort 4` themselves. The heuristic lets the
+default scale without the user remembering to dial it down, and captures the signal for raising it when
+a diff scores high on risk despite being small. Closing message prints the run summary (code recap, effort
+and source, reviewer names and reason) plus an explicit `/implement-with-haiku` handoff, so the execution
+path is copy-pasteable and doesn't require re-reading the action plan.
