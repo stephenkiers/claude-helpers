@@ -624,6 +624,50 @@ def test_prune_stale_state_nonexistent_dir():
         return False, f"prune_stale_state raised on missing dir: {e}"
 
 
+def test_prune_boundary_just_past_cutoff():
+    """prune_stale_state: file at (now - max_age - 1) is pruned."""
+    import time
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        # Create file and set mtime to (now - 24h - 1 second)
+        file_path = state_dir / "just_past.json"
+        file_path.write_text("{}")
+        now = time.time()
+        old_mtime = now - 86400 - 1
+        os.utime(file_path, (old_mtime, old_mtime))
+
+        # Prune with 24h cutoff
+        telemetry_schema.prune_stale_state(state_dir, max_age_seconds=86400)
+
+        if file_path.exists():
+            return False, "file at (now - 24h - 1) should be pruned"
+
+        return True, ""
+
+
+def test_prune_boundary_before_cutoff():
+    """prune_stale_state: file at (now - max_age + 60) survives."""
+    import time
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+
+        # Create file and set mtime to (now - 24h + 60 seconds)
+        file_path = state_dir / "still_fresh.json"
+        file_path.write_text("{}")
+        now = time.time()
+        ok_mtime = now - 86400 + 60
+        os.utime(file_path, (ok_mtime, ok_mtime))
+
+        # Prune with 24h cutoff
+        telemetry_schema.prune_stale_state(state_dir, max_age_seconds=86400)
+
+        if not file_path.exists():
+            return False, "file at (now - 24h + 60) should survive"
+
+        return True, ""
+
+
 def test_build_event_state_mismatch_field():
     """build_event includes state_mismatch field when provided (non-None)."""
     event = telemetry_schema.build_event(
@@ -926,6 +970,12 @@ if __name__ == "__main__":
 
     passed, msg = test_prune_stale_state_nonexistent_dir()
     test_result("prune_stale_state handles nonexistent directory", passed, msg)
+
+    passed, msg = test_prune_boundary_just_past_cutoff()
+    test_result("prune_stale_state: file at (now - max_age - 1) is pruned", passed, msg)
+
+    passed, msg = test_prune_boundary_before_cutoff()
+    test_result("prune_stale_state: file at (now - max_age + 60) survives", passed, msg)
 
     print()
 

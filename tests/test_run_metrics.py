@@ -9,9 +9,12 @@ Run with: python3 tests/test_run_metrics.py
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 from _test_harness import REPO_ROOT, Harness
@@ -108,7 +111,7 @@ def test_command_begin_prints_id():
         log_path = Path(tmpdir) / "test.jsonl"
         code, stdout, stderr = run_script(
             ["--log", str(log_path), "command-begin", "--command", "test-cmd"],
-            env={**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": "s123"},
+            env={**os.environ, "CLAUDE_CODE_SESSION_ID": "s123"},
         )
         if code != 0:
             return False, f"exit code {code}"
@@ -187,7 +190,7 @@ def test_stage_begin_prints_id():
                 "--command-id", "c123",
                 "--stage", "build",
             ],
-            env={**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": "s123"},
+            env={**os.environ, "CLAUDE_CODE_SESSION_ID": "s123"},
         )
         if code != 0:
             return False, f"exit code {code}"
@@ -583,9 +586,9 @@ def test_cross_process_correlation_via_state_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run command-begin
         code1, stdout1, stderr1 = run_script(
@@ -665,6 +668,13 @@ def test_cross_process_correlation_via_state_file():
         if stage_end.get("stage_id") != stage_id_from_begin:
             return False, f"stage.end doesn't have matching stage_id: {stage_end.get('stage_id')} vs {stage_id_from_begin}"
 
+        # Verify that matching names result in no state_mismatch flag
+        if cmd_end.get("state_mismatch") is not None:
+            return False, f"command.end with matching name should have no state_mismatch, got: {cmd_end.get('state_mismatch')}"
+
+        if stage_end.get("state_mismatch") is not None:
+            return False, f"stage.end with matching name should have no state_mismatch, got: {stage_end.get('state_mismatch')}"
+
         return True, ""
 
 
@@ -673,9 +683,9 @@ def test_explicit_flags_override_state():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run command-begin, which seeds state with one command_id
         code1, stdout1, stderr1 = run_script(
@@ -687,8 +697,8 @@ def test_explicit_flags_override_state():
         auto_cmd_id = stdout1.strip()
 
         # Run stage-end with an EXPLICIT --stage-id and --command-id (different from state)
-        explicit_stage_id = "explicit-stage-id-" + __import__("uuid").uuid4().hex[:8]
-        explicit_cmd_id = "explicit-cmd-id-" + __import__("uuid").uuid4().hex[:8]
+        explicit_stage_id = "explicit-stage-id-" + uuid.uuid4().hex[:8]
+        explicit_cmd_id = "explicit-cmd-id-" + uuid.uuid4().hex[:8]
 
         code2, stdout2, stderr2 = run_script(
             [
@@ -725,9 +735,9 @@ def test_missing_state_file_degrades_to_unknown():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run stage-end WITHOUT any prior command-begin or stage-begin (no state file)
         code, stdout, stderr = run_script(
@@ -765,19 +775,26 @@ def test_stage_name_mismatch_sets_flag():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run command-begin and stage-begin with one name
-        run_script(
+        code1, stdout1, stderr1 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
             env=env,
         )
-        run_script(
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id_from_begin = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "original-stage"],
             env=env,
         )
+        if code2 != 0:
+            return False, f"stage-begin failed: {stderr2}"
+        stage_id_from_begin = stdout2.strip()
 
         # Now run stage-end with a DIFFERENT stage name (no explicit --stage-id)
         code, stdout, stderr = run_script(
@@ -803,6 +820,13 @@ def test_stage_name_mismatch_sets_flag():
         if stage_end_event.get("state_mismatch") != True:
             return False, f"state_mismatch should be True, got: {stage_end_event.get('state_mismatch')}"
 
+        # Verify that stage_id and command_id still match the begin events
+        if stage_end_event.get("stage_id") != stage_id_from_begin:
+            return False, f"stage_id mismatch should not corrupt stage ID: {stage_end_event.get('stage_id')} vs {stage_id_from_begin}"
+
+        if stage_end_event.get("command_id") != cmd_id_from_begin:
+            return False, f"stage_id mismatch should not corrupt command ID: {stage_end_event.get('command_id')} vs {cmd_id_from_begin}"
+
         return True, ""
 
 
@@ -811,15 +835,18 @@ def test_command_name_mismatch_sets_flag():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run command-begin with one name
-        run_script(
+        code1, stdout1, stderr1 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "original-cmd"],
             env=env,
         )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id_from_begin = stdout1.strip()
 
         # Now run command-end with a DIFFERENT command name (no explicit --command-id)
         code, stdout, stderr = run_script(
@@ -845,30 +872,32 @@ def test_command_name_mismatch_sets_flag():
         if cmd_end_event.get("state_mismatch") != True:
             return False, f"state_mismatch should be True, got: {cmd_end_event.get('state_mismatch')}"
 
+        # Verify that command_id still matches the begin event
+        if cmd_end_event.get("command_id") != cmd_id_from_begin:
+            return False, f"command name mismatch should not corrupt command ID: {cmd_end_event.get('command_id')} vs {cmd_id_from_begin}"
+
         return True, ""
 
 
 def test_prune_on_command_begin():
     """command-begin opportunistically prunes stale state files."""
-    import os as _os
-
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id_old = "old-session-" + __import__("uuid").uuid4().hex[:8]
-        session_id_new = "new-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id_old = "old-session-" + uuid.uuid4().hex[:8]
+        session_id_new = "new-session-" + uuid.uuid4().hex[:8]
 
         # Create a stale state file (2 days old)
         state_dir.mkdir(parents=True, exist_ok=True)
         old_state_file = state_dir / f"{session_id_old}.json"
         old_state_file.write_text('{"command_id": "old"}')
-        _os.utime(old_state_file, (0, 0))  # Set mtime to epoch (very old)
+        os.utime(old_state_file, (0, 0))  # Set mtime to epoch (very old)
 
         if not old_state_file.exists():
             return False, "old state file not created"
 
         # Run command-begin for a new session
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id_new}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_new}
         code, stdout, stderr = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test"],
             env=env,
@@ -888,14 +917,86 @@ def test_prune_on_command_begin():
         return True, ""
 
 
+def test_prune_boundary_just_past_cutoff():
+    """State file at exactly (now - max_age_seconds - 1) is pruned."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id_old = "old-session-" + uuid.uuid4().hex[:8]
+        session_id_new = "new-session-" + uuid.uuid4().hex[:8]
+
+        # Create state file and set mtime to (now - 24h - 1 second)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        old_state_file = state_dir / f"{session_id_old}.json"
+        old_state_file.write_text('{"command_id": "old"}')
+        now = time.time()
+        old_mtime = now - 86400 - 1  # 24h + 1 second ago (should be pruned)
+        os.utime(old_state_file, (old_mtime, old_mtime))
+
+        if not old_state_file.exists():
+            return False, "old state file not created"
+
+        # Run command-begin for a new session, which triggers prune
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_new}
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test"],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"command-begin failed: {stderr}"
+
+        # Verify old file was pruned
+        if old_state_file.exists():
+            return False, f"file at (now - 24h - 1) should be pruned"
+
+        return True, ""
+
+
+def test_prune_boundary_before_cutoff():
+    """State file at exactly (now - max_age_seconds + 60) is preserved."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id_ok = "ok-session-" + uuid.uuid4().hex[:8]
+        session_id_new = "new-session-" + uuid.uuid4().hex[:8]
+
+        # Create state file and set mtime to (now - 24h + 60 seconds)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        ok_state_file = state_dir / f"{session_id_ok}.json"
+        ok_state_file.write_text('{"command_id": "ok"}')
+        now = time.time()
+        ok_mtime = now - 86400 + 60  # 24h - 60 seconds ago (should survive)
+        os.utime(ok_state_file, (ok_mtime, ok_mtime))
+
+        if not ok_state_file.exists():
+            return False, "ok state file not created"
+
+        # Run command-begin for a new session, which triggers prune
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_new}
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test"],
+            env=env,
+        )
+
+        if code != 0:
+            return False, f"command-begin failed: {stderr}"
+
+        # Verify old file was NOT pruned
+        if not ok_state_file.exists():
+            return False, f"file at (now - 24h + 60) should survive prune"
+
+        return True, ""
+
+
 def test_state_file_persists_command_id():
     """State file persists command_id that can be read by subsequent calls."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run command-begin to create state
         code1, stdout1, stderr1 = run_script(
@@ -927,9 +1028,9 @@ def test_stage_begin_without_explicit_command_id():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # Run command-begin
         code1, stdout1, stderr1 = run_script(
@@ -965,9 +1066,9 @@ def test_stage_end_clears_stage_state():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # command-begin
         run_script(
@@ -1018,9 +1119,9 @@ def test_command_end_deletes_state_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # command-begin
         run_script(
@@ -1052,9 +1153,9 @@ def test_multiple_sequential_stages():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + __import__("uuid").uuid4().hex[:8]
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
 
-        env = {**__import__("os").environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # command-begin
         code1, stdout1, stderr1 = run_script(
@@ -1132,7 +1233,7 @@ def test_no_session_id_skips_state_file():
         state_dir = Path(tmpdir) / "state"
 
         # Run without CLAUDE_CODE_SESSION_ID (remove it from env)
-        env = {**__import__("os").environ}
+        env = {**os.environ}
         if "CLAUDE_CODE_SESSION_ID" in env:
             del env["CLAUDE_CODE_SESSION_ID"]
 
@@ -1251,6 +1352,12 @@ if __name__ == "__main__":
 
     passed, msg = test_prune_on_command_begin()
     test_result("command-begin prunes stale state files", passed, msg)
+
+    passed, msg = test_prune_boundary_just_past_cutoff()
+    test_result("prune: file at (now - max_age - 1) is pruned", passed, msg)
+
+    passed, msg = test_prune_boundary_before_cutoff()
+    test_result("prune: file at (now - max_age + 60) survives", passed, msg)
 
     print()
 

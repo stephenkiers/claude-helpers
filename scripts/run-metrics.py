@@ -165,25 +165,19 @@ def cmd_command_begin(args):
     # Opportunistic cleanup of stale state files (24h cutoff)
     try:
         telemetry_schema.prune_stale_state(args.state_dir)
-    except Exception:
-        pass  # Best-effort; never fail the command-begin call
+    except (OSError, PermissionError) as e:
+        print(f"telemetry: state access failed: {e}", file=sys.stderr)
 
     # Write state file if session_id is known
     if session_id != telemetry_schema.UNKNOWN:
         try:
-            def init_state(state):
-                return {
-                    "command_id": command_id,
-                    "command": args.command,
-                    "stage_id": None,
-                    "stage": None,
-                }
-            telemetry_schema.load_and_update_state(
+            telemetry_schema.init_command_state(
                 telemetry_schema.state_path(session_id, args.state_dir),
-                init_state,
+                command_id,
+                args.command,
             )
-        except Exception:
-            pass  # Best-effort; never fail the command-begin call
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
 
     event = telemetry_schema.build_event(
         "command.begin",
@@ -200,7 +194,10 @@ def cmd_command_begin(args):
 
 
 def cmd_command_end(args):
-    """Record a command.end event. Outcome is required; --command-id is optional (resolved from state)."""
+    """Record a command.end event. Outcome is required; --command-id is optional (resolved from state).
+
+    Falls back to `telemetry_schema.UNKNOWN` if state is also unavailable.
+    """
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -217,37 +214,27 @@ def cmd_command_end(args):
         print(f"Error: invalid --outcome {args.outcome}", file=sys.stderr)
         sys.exit(1)
 
-    # Resolve command_id: explicit flag wins, then state file, then UNKNOWN
-    command_id = args.command_id
-    if not command_id and session_id != telemetry_schema.UNKNOWN:
+    command_id = telemetry_schema.UNKNOWN
+    state_mismatch = None
+    cleared = False
+    if session_id != telemetry_schema.UNKNOWN:
         try:
-            def read_state(state):
-                return state
-            state = telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                read_state,
+            command_id, state_mismatch, cleared = telemetry_schema.resolve_and_clear_command_state(
+                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.command
             )
-            command_id = state.get("command_id")
-        except Exception:
-            pass
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+    if args.command_id:
+        command_id = args.command_id
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
 
-    # Check for mismatch between explicit command name and state
-    state_mismatch = None
-    if session_id != telemetry_schema.UNKNOWN and not args.command_id:
+    # Delete the state file if it was successfully cleared
+    if cleared:
         try:
-            def read_state(state):
-                return state
-            state = telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                read_state,
-            )
-            recorded_command = state.get("command")
-            if recorded_command and recorded_command != args.command:
-                state_mismatch = True
-        except Exception:
-            pass
+            telemetry_schema.state_path(session_id, args.state_dir).unlink(missing_ok=True)
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
 
     event = telemetry_schema.build_event(
         "command.end",
@@ -259,13 +246,6 @@ def cmd_command_end(args):
         state_mismatch=state_mismatch,
     )
     telemetry_schema.append_event(args.log, event)
-
-    # Clean up state file (command lifecycle complete)
-    if session_id != telemetry_schema.UNKNOWN:
-        try:
-            telemetry_schema.state_path(session_id, args.state_dir).unlink(missing_ok=True)
-        except Exception:
-            pass
 
     print("command.end recorded", file=sys.stderr)
 
@@ -279,19 +259,14 @@ def cmd_stage_begin(args):
     stage_id = uuid.uuid4().hex
     timestamp = datetime.now(timezone.utc).isoformat()
 
-    # Resolve command_id: explicit flag wins, then state file, then UNKNOWN
-    command_id = args.command_id
-    if not command_id and session_id != telemetry_schema.UNKNOWN:
+    command_id = telemetry_schema.UNKNOWN
+    if session_id != telemetry_schema.UNKNOWN:
         try:
-            def read_state(state):
-                return state
-            state = telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                read_state,
+            command_id = telemetry_schema.resolve_and_set_stage_state(
+                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, stage_id, args.stage
             )
-            command_id = state.get("command_id")
-        except Exception:
-            pass
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
 
@@ -305,26 +280,15 @@ def cmd_stage_begin(args):
     )
     telemetry_schema.append_event(args.log, event)
 
-    # Update state file with new stage info
-    if session_id != telemetry_schema.UNKNOWN:
-        try:
-            def update_stage(state):
-                state["stage_id"] = stage_id
-                state["stage"] = args.stage
-                return state
-            telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                update_stage,
-            )
-        except Exception:
-            pass
-
     # Print bare stage_id to stdout so callers can capture it
     print(stage_id)
 
 
 def cmd_stage_end(args):
-    """Record a stage.end event. Outcome and stage are required; IDs are optional (resolved from state)."""
+    """Record a stage.end event. Outcome and stage are required; IDs are optional (resolved from state).
+
+    Falls back to `telemetry_schema.UNKNOWN` if state is also unavailable.
+    """
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -341,53 +305,20 @@ def cmd_stage_end(args):
         print(f"Error: invalid --outcome {args.outcome}", file=sys.stderr)
         sys.exit(1)
 
-    # Resolve stage_id: explicit flag wins, then state file, then UNKNOWN
-    stage_id = args.stage_id
-    if not stage_id and session_id != telemetry_schema.UNKNOWN:
+    command_id = telemetry_schema.UNKNOWN
+    stage_id = telemetry_schema.UNKNOWN
+    state_mismatch = None
+    if session_id != telemetry_schema.UNKNOWN:
         try:
-            def read_state(state):
-                return state
-            state = telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                read_state,
+            command_id, stage_id, state_mismatch = telemetry_schema.resolve_and_clear_stage_state(
+                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.stage_id, args.stage
             )
-            stage_id = state.get("stage_id")
-        except Exception:
-            pass
-    if not stage_id:
-        stage_id = telemetry_schema.UNKNOWN
-
-    # Resolve command_id: explicit flag wins, then state file, then UNKNOWN
-    command_id = args.command_id
-    if not command_id and session_id != telemetry_schema.UNKNOWN:
-        try:
-            def read_state(state):
-                return state
-            state = telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                read_state,
-            )
-            command_id = state.get("command_id")
-        except Exception:
-            pass
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
-
-    # Check for mismatch between explicit stage name and state
-    state_mismatch = None
-    if session_id != telemetry_schema.UNKNOWN and not args.stage_id:
-        try:
-            def read_state(state):
-                return state
-            state = telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                read_state,
-            )
-            recorded_stage = state.get("stage")
-            if recorded_stage and recorded_stage != args.stage:
-                state_mismatch = True
-        except Exception:
-            pass
+    if not stage_id:
+        stage_id = telemetry_schema.UNKNOWN
 
     event = telemetry_schema.build_event(
         "stage.end",
@@ -400,20 +331,6 @@ def cmd_stage_end(args):
         state_mismatch=state_mismatch,
     )
     telemetry_schema.append_event(args.log, event)
-
-    # Clear stage info from state file (command is still in flight)
-    if session_id != telemetry_schema.UNKNOWN:
-        try:
-            def clear_stage(state):
-                state["stage_id"] = None
-                state["stage"] = None
-                return state
-            telemetry_schema.load_and_update_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                clear_stage,
-            )
-        except Exception:
-            pass
 
     print("stage.end recorded", file=sys.stderr)
 

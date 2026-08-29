@@ -10,9 +10,24 @@ and encoding. Never duplicates logic across writers.
 import fcntl
 import json
 import os
+import re
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, Optional, TypedDict
+
+
+class SessionState(TypedDict, total=False):
+    """Typed representation of session-scoped state dict.
+
+    Fields command_id, command, stage_id, stage are optional; either present or absent.
+    """
+    command_id: Optional[str]
+    command: Optional[str]
+    stage_id: Optional[str]
+    stage: Optional[str]
+
 
 SCHEMA_VERSION = 1
 UNKNOWN = "unknown"
@@ -92,6 +107,9 @@ def build_event(
     Metric fields (turns, elapsed_seconds, retries, peak_concurrency, transcript_size,
     output_artifact_size) default to and keep the literal string "unknown" rather than
     being omitted, since we want missing metrics visible, not silently absent.
+
+    state_mismatch is Optional[Literal[True]] — either True or None, never False.
+    It is included in the output only if not None.
 
     All other parameters are included in the output only if not None.
     """
@@ -249,7 +267,8 @@ def state_path(session_id: str, state_dir: Path = None) -> Path:
     """
     if state_dir is None:
         state_dir = default_state_dir()
-    return state_dir / f"{session_id}.json"
+    safe_id = session_id if re.match(r"^[A-Za-z0-9_-]+$", session_id or "") else "unknown"
+    return state_dir / f"{safe_id}.json"
 
 
 def load_and_update_state(path: Path, mutate_fn) -> dict:
@@ -270,8 +289,12 @@ def load_and_update_state(path: Path, mutate_fn) -> dict:
     path = Path(path)
 
     # Ensure parent directory exists with secure permissions
-    parent_existed = path.parent.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    old_umask = os.umask(0o077)
+    try:
+        parent_existed = path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    finally:
+        os.umask(old_umask)
     if not parent_existed:
         os.chmod(path.parent, 0o700)
 
@@ -310,6 +333,138 @@ def load_and_update_state(path: Path, mutate_fn) -> dict:
         os.close(fd)
 
 
+def init_command_state(path: Path, command_id: str, command: str) -> None:
+    """Atomically initialize session state for a new command lifecycle.
+
+    Replaces any prior state unconditionally (a new command-begin always wins —
+    this matches command-begin's existing behavior of starting a fresh lifecycle).
+    """
+    def mutate(state: dict) -> dict:
+        return {"command_id": command_id, "command": command, "stage_id": None, "stage": None}
+    load_and_update_state(path, mutate)
+
+
+def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], command_name: str) -> tuple:
+    """Atomically resolve command_id/state_mismatch and clear state for command-end.
+
+    Single critical section combining what were previously 2-3 separate locked calls
+    plus an unguarded unlink:
+    - Resolves command_id: explicit command_id_arg wins; else the state's command_id;
+      else telemetry_schema.UNKNOWN.
+    - Computes state_mismatch: only when command_id_arg was NOT given (i.e. explicit ID
+      always trusted, no mismatch check needed) — True if state has a recorded 'command'
+      that differs from command_name, else None.
+    - CAS-clears state: state is reset to {} ONLY if the state's own command_id equals the
+      resolved command_id (i.e. this call is finishing the lifecycle that state currently
+      describes). If the state's command_id differs (a concurrent command-begin already
+      replaced it, or --command-id was passed for a different lifecycle), the state is left
+      UNTOUCHED (do not clear it) and a warning is printed to stderr.
+
+    Returns (command_id, state_mismatch, cleared) as a tuple.
+    """
+    result = {}
+
+    def mutate(state: dict) -> dict:
+        recorded_command_id = state.get("command_id")
+        if command_id_arg:
+            command_id = command_id_arg
+            state_mismatch = None
+        else:
+            command_id = recorded_command_id or UNKNOWN
+            recorded_command = state.get("command")
+            state_mismatch = True if (recorded_command and recorded_command != command_name) else None
+        result["command_id"] = command_id
+        result["state_mismatch"] = state_mismatch
+        if recorded_command_id and recorded_command_id == command_id:
+            result["cleared"] = True
+            return {}
+        result["cleared"] = False
+        return state
+
+    load_and_update_state(path, mutate)
+    if not result.get("cleared") and result.get("command_id") not in (None, UNKNOWN):
+        print(
+            f"telemetry: skipped clearing state for command_id={result['command_id']} "
+            "(state belongs to a different, concurrently in-flight command)",
+            file=sys.stderr,
+        )
+    return result["command_id"], result["state_mismatch"], result.get("cleared", False)
+
+
+def resolve_and_set_stage_state(path: Path, command_id_arg: Optional[str], stage_id: str, stage_name: str) -> str:
+    """Atomically resolve command_id and write stage fields into state for stage-begin.
+
+    Single critical section: resolves command_id (explicit command_id_arg wins; else the
+    state's existing command_id; else telemetry_schema.UNKNOWN), then sets stage_id/stage
+    on the same state dict, preserving whatever command_id/command was already present.
+
+    Returns the resolved command_id.
+    """
+    result = {}
+
+    def mutate(state: dict) -> dict:
+        recorded_command_id = state.get("command_id")
+        command_id = command_id_arg or recorded_command_id or UNKNOWN
+        result["command_id"] = command_id
+        state["stage_id"] = stage_id
+        state["stage"] = stage_name
+        return state
+
+    load_and_update_state(path, mutate)
+    return result["command_id"]
+
+
+def resolve_and_clear_stage_state(
+    path: Path, command_id_arg: Optional[str], stage_id_arg: Optional[str], stage_name: str
+) -> tuple:
+    """Atomically resolve command_id/stage_id/state_mismatch and clear stage fields for stage-end.
+
+    Single critical section combining what were previously 3-4 separate locked calls:
+    - Resolves stage_id: explicit stage_id_arg wins; else the state's stage_id; else UNKNOWN.
+    - Resolves command_id: explicit command_id_arg wins; else the state's command_id; else UNKNOWN.
+    - Computes state_mismatch: only when stage_id_arg was NOT given — True if state has a
+      recorded 'stage' that differs from stage_name, else None.
+    - CAS-clears ONLY the stage_id/stage fields (never command_id/command — the command
+      lifecycle is still in flight) ONLY if the state's own stage_id equals the resolved
+      stage_id. If it differs (a concurrent stage-begin already replaced it), the stage
+      fields are left UNTOUCHED and a warning is printed to stderr.
+
+    Returns (command_id, stage_id, state_mismatch) as a tuple.
+    """
+    result = {}
+
+    def mutate(state: dict) -> dict:
+        recorded_stage_id = state.get("stage_id")
+        recorded_command_id = state.get("command_id")
+        if stage_id_arg:
+            stage_id = stage_id_arg
+            state_mismatch = None
+        else:
+            stage_id = recorded_stage_id or UNKNOWN
+            recorded_stage = state.get("stage")
+            state_mismatch = True if (recorded_stage and recorded_stage != stage_name) else None
+        command_id = command_id_arg or recorded_command_id or UNKNOWN
+        result["command_id"] = command_id
+        result["stage_id"] = stage_id
+        result["state_mismatch"] = state_mismatch
+        if recorded_stage_id and recorded_stage_id == stage_id:
+            result["cleared"] = True
+            state["stage_id"] = None
+            state["stage"] = None
+            return state
+        result["cleared"] = False
+        return state
+
+    load_and_update_state(path, mutate)
+    if not result.get("cleared") and result.get("stage_id") not in (None, UNKNOWN):
+        print(
+            f"telemetry: skipped clearing stage state for stage_id={result['stage_id']} "
+            "(state belongs to a different, concurrently in-flight stage)",
+            file=sys.stderr,
+        )
+    return result["command_id"], result["stage_id"], result["state_mismatch"]
+
+
 def prune_stale_state(state_dir: Path = None, max_age_seconds: int = 86400) -> None:
     """Best-effort prune of state files older than max_age_seconds.
 
@@ -334,12 +489,12 @@ def prune_stale_state(state_dir: Path = None, max_age_seconds: int = 86400) -> N
                     mtime = file_path.stat().st_mtime
                     if mtime < cutoff_time:
                         file_path.unlink()
+                        print(f"telemetry: pruned stale state file {file_path}", file=sys.stderr)
                 except (OSError, FileNotFoundError):
                     # File already deleted or permission issue; ignore
                     pass
-    except Exception:
-        # Silently ignore any errors during pruning
-        pass
+    except (OSError, PermissionError) as e:
+        print(f"telemetry: state dir access failed: {e}", file=sys.stderr)
 
 
 def append_event(path: Path, event: dict) -> None:
@@ -354,8 +509,12 @@ def append_event(path: Path, event: dict) -> None:
         raise ValueError(f"Invalid telemetry event: {'; '.join(errors)}")
 
     path = Path(path)
-    parent_existed = path.parent.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    old_umask = os.umask(0o077)
+    try:
+        parent_existed = path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    finally:
+        os.umask(old_umask)
     if not parent_existed:
         os.chmod(path.parent, 0o700)
 
