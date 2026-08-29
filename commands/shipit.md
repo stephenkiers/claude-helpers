@@ -194,7 +194,7 @@ If `node_modules` missing (or `node_modules/.bun` for bun): run cached install c
 ## 3. Run Checks
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/dev/null 2>&1 || true
 ```
 
 **Skip if recently run:** If lint/typecheck/test were run earlier in this conversation and all passed, skip re-running them. Trust the prior results.
@@ -227,7 +227,7 @@ On success, continue below and close out `run-checks` there.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage commit 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage commit >/dev/null 2>&1 || true
 ```
 
 Write commit message:
@@ -242,7 +242,7 @@ Write commit message:
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage commit --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-pr 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-pr >/dev/null 2>&1 || true
 ```
 
 ### Stack Detection (if stacked)

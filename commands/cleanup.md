@@ -56,10 +56,10 @@ Telemetry is local, observational, and best-effort — it must never block or fa
 Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup >/dev/null 2>&1 || true
 ```
 
-Correlation between stages and commands is automatic via a session-scoped state file keyed on the `CLAUDE_CODE_SESSION_ID` environment variable (which persists across separate Bash tool calls). Shell variables set in one Bash tool call do **not** survive into a later, separate Bash tool call, which is why this doc no longer threads `TELEMETRY_CMD_ID`/`TELEMETRY_STAGE_ID` through shell variables across call boundaries.
+See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ### 1. Resolve Target and Capture Context (SINGLE COMMAND)
 
@@ -226,7 +226,7 @@ if [ $PLAN_RESULT -ne 0 ]; then
   exit 1
 fi
 
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage check-merge-status 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage check-merge-status >/dev/null 2>&1 || true
 ```
 
 ### 2. Check Merge Status (from main)
@@ -513,7 +513,7 @@ fi
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage check-merge-status --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage apply-cleanup 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage apply-cleanup >/dev/null 2>&1 || true
 
 # Apply the plan: executes pull main ff-only, validation checks, worktree removal, branch deletion
 # CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
@@ -546,7 +546,7 @@ else
 fi
 
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage apply-cleanup --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage restack-children 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage restack-children >/dev/null 2>&1 || true
 ```
 
 ### 2.6. Detect Stacked Children & Sync/Restack
@@ -822,7 +822,7 @@ snippet is part of the runbook itself.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage restack-children --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage remove-worktree 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage remove-worktree >/dev/null 2>&1 || true
 ```
 
 ### 3. Remove Worktree (from main)

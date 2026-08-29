@@ -20,11 +20,11 @@ Telemetry is local, observational, and best-effort — it must never block or fa
 `/expert-plan`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-context 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-context >/dev/null 2>&1 || true
 ```
 
-Correlation between stages and commands is automatic via a session-scoped state file keyed on the `CLAUDE_CODE_SESSION_ID` environment variable (which persists across separate Bash tool calls). Shell variables set in one Bash tool call do **not** survive into a later, separate Bash tool call, which is why this doc no longer threads `TELEMETRY_CMD_ID`/`TELEMETRY_STAGE_ID` through shell variables across call boundaries.
+See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ## Step 1: Gather Context
 
@@ -47,7 +47,7 @@ Collect the input to plan against:
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-experts 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-experts >/dev/null 2>&1 || true
 ```
 
 ## Step 2: Select Experts
@@ -81,7 +81,7 @@ Tell the user which experts you selected and why.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage select-experts --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage expert-contributions 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage expert-contributions >/dev/null 2>&1 || true
 ```
 
 ## Step 3: Expert Contributions (Main Thread, Sequential)
@@ -187,7 +187,7 @@ Carl's open questions follow the same "Ask, Don't Assume" rule — and his confo
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage expert-contributions --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/dev/null 2>&1 || true
 ```
 
 ## Step 4: Checkpoint — Resolve Open Questions
@@ -225,7 +225,7 @@ Use `AskUserQuestion` for questions with clear discrete options (2-4 choices). F
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-plan 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-plan >/dev/null 2>&1 || true
 ```
 
 ## Step 5: Synthesize the Plan

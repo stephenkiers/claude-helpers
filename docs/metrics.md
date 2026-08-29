@@ -178,7 +178,7 @@ Telemetry now maintains a per-session state file at `~/.claude/telemetry/state/<
 # NEW PATTERN (works correctly with independent bash calls)
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit >/dev/null 2>&1 || true
 
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/dev/null 2>&1 || true
 
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome success 2>/dev/null || true
 
@@ -234,9 +234,9 @@ If `stage-end` or `command-end` is called with a stage/command name that does no
 
 When `CLAUDE_CODE_SESSION_ID` is unset or empty (session_id resolves to `"unknown"`), no state file is written or read — the behavior reverts to the old pattern (all calls must provide explicit IDs, or they degrade to `"unknown"`). This is safe and maintains backward compatibility.
 
-### Assumption: Single-Threaded Stage Usage
+### Assumption: Single-Threaded Command and Stage Usage
 
-Session-scoped state assumes only one stage can be active per session at a time. No doc currently runs overlapping or concurrent stage markers within one session; this is documented as an assumption, not enforced or currently violated.
+Session-scoped state assumes only one command and one stage can be active per session at a time. No doc currently runs overlapping or concurrent command or stage markers within one session; this is documented as an assumption, not enforced or currently violated. Concurrent same-session lifecycles would share the same state file and corrupt each other's correlation IDs.
 
 The CLI subcommands are:
 
@@ -266,7 +266,7 @@ Every telemetry call in command docs is non-fatal (stderr redirected, fallback p
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit >/dev/null 2>&1 || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/dev/null 2>&1 || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome success 2>/dev/null || true
 ```

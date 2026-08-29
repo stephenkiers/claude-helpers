@@ -35,15 +35,15 @@ Telemetry is local, observational, and best-effort — it must never block or fa
 `/track-and-start`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command track-and-start 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command track-and-start >/dev/null 2>&1 || true
 ```
 
-Correlation between stages and commands is automatic via a session-scoped state file keyed on the `CLAUDE_CODE_SESSION_ID` environment variable (which persists across separate Bash tool calls). Shell variables set in one Bash tool call do **not** survive into a later, separate Bash tool call, which is why this doc no longer threads `TELEMETRY_CMD_ID`/`TELEMETRY_STAGE_ID` through shell variables across call boundaries — across whichever mode (GitHub, Local Plan, or Tracker Ticket) this run takes.
+See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ## Project Detection
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage detect-project 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage detect-project >/dev/null 2>&1 || true
 ```
 
 Run the **Project Detection** and **Graft Detection** blocks from
@@ -251,7 +251,7 @@ WORKTREE_DIR=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 Run Project Detection and Graft Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly — **Graft is not used in Tracker Ticket mode** (the branch name comes from the tracker and must not be renamed):
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
 
 cd "$MAIN_WORKTREE"
 WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
@@ -522,7 +522,7 @@ Cache file location: `${WORKTREE_PARENT}/issues.json` (detected from worktree la
 ## Creating the Issue
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-issue 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-issue >/dev/null 2>&1 || true
 ```
 
 **IMPORTANT:** Use the ORIGINAL plan content. Do NOT include branch/worktree info in the issue body.
@@ -581,7 +581,7 @@ that entry path stays correctly paired, rather than closing out a `create-issue`
 never opened.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
 ```
 
 **CRITICAL:** Must `cd` to main worktree first to ensure correct git repo.
