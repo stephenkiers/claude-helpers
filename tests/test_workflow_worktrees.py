@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.worktrees import parse_worktree_list, detect_graft_config_path
+from workflow.worktrees import parse_worktree_list
 from _test_harness import Harness
 
 
@@ -66,19 +66,6 @@ branch refs/heads/feature
     test_result(
         "parse_worktree_list() detached worktree not in result",
         "/path/to/detached" not in [wt[0] for wt in worktrees_detached]
-    )
-
-    print()
-    print("[Section 3] Graft config path")
-
-    graft_path = detect_graft_config_path()
-    test_result(
-        "detect_graft_config_path() ends with graft/config.json",
-        str(graft_path).endswith("graft/config.json")
-    )
-    test_result(
-        "detect_graft_config_path() is under .config",
-        ".config" in str(graft_path)
     )
 
     print()

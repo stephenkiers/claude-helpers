@@ -209,3 +209,106 @@ def validate_repo_cache(data: Dict[str, Any]) -> bool:
         if not all(v is None or isinstance(v, str) for v in data["commands"].values()):
             return False
     return True
+
+
+@dataclass
+class LocalTrackerEntry:
+    """One entry in the project-root array-format issues.json (Local Plan Mode)."""
+    id: int
+    title: str
+    status: str = "todo"
+    plan: Optional[str] = None
+
+
+@dataclass
+class LocalTrackerData:
+    """Schema for project-root issues.json — array format, distinct from the
+    dict-keyed worktree-parent IssuesCacheData.
+
+    This format is a plain top-level array on disk: [{"id": 1, "title": "...", "status": "todo", "plan": "plans/1-foo.md"}, ...]
+
+    It has no schema_version wrapper, unlike IssuesCacheData which lives in a worktree-parent
+    and is dict-keyed by issue number. The two formats exist at different paths (project-root
+    issues.json vs. worktree-parent issues.json) and serve different consumers, so they are
+    deliberately kept separate.
+    """
+    entries: List[LocalTrackerEntry] = field(default_factory=list)
+    # Indices/values that could not parse into a LocalTrackerEntry. Not part of to_dict()'s output —
+    # read_local_tracker surfaces this as an Unknown so a silent drop is distinguishable from a clean read.
+    dropped_entries: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> List[Dict[str, Any]]:
+        """Convert to list of dicts for JSON serialization (top-level array, no wrapper)."""
+        result = []
+        for entry in self.entries:
+            d = {
+                "id": entry.id,
+                "title": entry.title,
+                "status": entry.status
+            }
+            if entry.plan is not None:
+                d["plan"] = entry.plan
+            result.append(d)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: List[Dict[str, Any]]) -> "LocalTrackerData":
+        """Construct from parsed JSON list (top-level array).
+
+        Round-tripping is lossless for well-formed data: LocalTrackerData.from_dict(d).to_dict() == d,
+        for both 3-key entries (no `plan` key) and 4-key entries (`plan` present). to_dict() omits
+        the `plan` key entirely when entry.plan is None, so a 3-key input round-trips back to a
+        3-key output rather than gaining a `plan: None` key it never had.
+        """
+        obj = cls()
+        if not isinstance(data, list):
+            return obj
+        for idx, entry_data in enumerate(data):
+            try:
+                if not isinstance(entry_data, dict):
+                    obj.dropped_entries.append(str(idx))
+                    continue
+                entry_id = entry_data.get("id")
+                title = entry_data.get("title")
+                if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+                    obj.dropped_entries.append(str(idx))
+                    continue
+                if not isinstance(title, str):
+                    obj.dropped_entries.append(str(idx))
+                    continue
+                status = entry_data.get("status", "todo")
+                if not isinstance(status, str):
+                    obj.dropped_entries.append(str(idx))
+                    continue
+                plan = entry_data.get("plan")
+                obj.entries.append(LocalTrackerEntry(
+                    id=entry_id,
+                    title=title,
+                    status=status,
+                    plan=plan
+                ))
+            except (TypeError, ValueError):
+                obj.dropped_entries.append(str(idx))
+        return obj
+
+
+def validate_local_tracker_data(data: Any) -> bool:
+    """Validate project-root array-format issues.json.
+
+    Returns True only if `data` is a `list` and every element is a dict with an `id` that is
+    an `int` (and not a `bool`), a `title` that is a `str`, and a `status` that is a `str`.
+    An empty list is valid.
+    """
+    if not isinstance(data, list):
+        return False
+    for entry in data:
+        if not isinstance(entry, dict):
+            return False
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            return False
+        if not isinstance(entry.get("title"), str):
+            return False
+        if not isinstance(entry.get("status"), str):
+            return False
+    return True

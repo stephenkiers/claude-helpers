@@ -50,42 +50,6 @@ fi
 GitHub remote. Local plan mode does not — it runs on git alone, so steps 2–3 and 6 must not depend
 on `REPO` or `ASSIGNEE`.
 
-## Graft Detection
-
-Checks whether `graft` (the worktree manager, if installed) manages this repo's worktrees — detected
-by presence on `PATH` plus an entry in its config. Sets `USE_GRAFT` and
-`GRAFT_REPO_NAME` for commands that create worktrees; commands that *remove* worktrees should also
-verify graft tracks the specific worktree (see the cleanup variant below).
-
-```bash
-USE_GRAFT=false
-GRAFT_REPO_NAME=""
-if command -v graft >/dev/null 2>&1; then
-  GRAFT_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/graft/config.json"
-  if [ -f "$GRAFT_CONFIG" ]; then
-    GRAFT_REPO_NAME=$(jq -r --arg path "$MAIN_WORKTREE" '
-      .repos // {} | to_entries[] |
-      select(.value.path == $path) | .key
-    ' "$GRAFT_CONFIG" 2>/dev/null | head -1)
-    if [ -n "$GRAFT_REPO_NAME" ]; then
-      USE_GRAFT=true
-    fi
-  fi
-fi
-```
-
-**Cleanup variant** — additionally verify graft tracks the target worktree (it might have been
-created manually). Requires `CURRENT_WORKTREE`, set by the caller (`/cleanup`) before this block:
-
-```bash
-if [ "$USE_GRAFT" = "true" ]; then
-  GRAFT_WORKTREE_NAME=$(basename "$CURRENT_WORKTREE")
-  if ! graft ls -r "$GRAFT_REPO_NAME" 2>/dev/null | grep -q "$GRAFT_WORKTREE_NAME"; then
-    USE_GRAFT=false
-  fi
-fi
-```
-
 ## Stack Detection
 
 Detect and manage stacked PRs (branches whose parent is another worktree's branch, not the default

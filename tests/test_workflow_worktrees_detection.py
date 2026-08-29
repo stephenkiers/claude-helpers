@@ -2,8 +2,7 @@
 """
 Test suite for worktrees detection (ADR-0010).
 
-Covers: MAIN_WORKTREE, WORKTREE_PARENT detection, PROJECT_ROOT detection,
-and USE_GRAFT flag availability.
+Covers: MAIN_WORKTREE, WORKTREE_PARENT detection, PROJECT_ROOT detection.
 
 Run with: python3 tests/test_workflow_worktrees_detection.py
 """
@@ -31,7 +30,6 @@ if __name__ == "__main__":
 
     functions = [
         "parse_worktree_list",
-        "detect_graft_config_path",
     ]
 
     for func_name in functions:
@@ -48,13 +46,6 @@ if __name__ == "__main__":
         func = getattr(worktrees_module, "parse_worktree_list")
         test_result(
             "parse_worktree_list is callable",
-            callable(func)
-        )
-
-    if hasattr(worktrees_module, "detect_graft_config_path"):
-        func = getattr(worktrees_module, "detect_graft_config_path")
-        test_result(
-            "detect_graft_config_path is callable",
             callable(func)
         )
 
@@ -97,20 +88,6 @@ branch refs/heads/feature
         test_result(
             "parse_worktree_list skips detached entries",
             result == [("/path/to/main", "main"), ("/path/to/feature", "feature")]
-        )
-
-    print()
-    print("[Section 5] detect_graft_config_path returns Path")
-
-    if hasattr(worktrees_module, "detect_graft_config_path"):
-        result = worktrees_module.detect_graft_config_path()
-        test_result(
-            "detect_graft_config_path returns Path",
-            isinstance(result, Path)
-        )
-        test_result(
-            "detect_graft_config_path path includes graft/config.json",
-            "graft" in str(result) and "config.json" in str(result)
         )
 
     print()

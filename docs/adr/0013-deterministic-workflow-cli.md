@@ -42,7 +42,7 @@ The approach preserves the current semantics:
 
 - `models.py`: Schemas for `.claude/repo-cache.json`, `.claude/github-cache.json`, and local `issues.json` with `schema_version` and hand-rolled validation.
 - `git.py`: Centralized git/gh subprocess wrapper using argument arrays (never `shell=True`), with timeouts.
-- `worktrees.py`: Worktree parent detection (ADR-0010), graft detection, main/second worktree discovery.
+- `worktrees.py`: Worktree parent detection (ADR-0010), main/second worktree discovery.
 - `project.py`: Repository identity (gh repo view), local-plan-mode detection, current user.
 - `cache.py`: Read and validate cache files (phase 1); write/locking stubs citing Decision 1.
 - `checks.py`: Toolchain and check detection (read-only; execution in Phase 2+).
@@ -110,7 +110,6 @@ Phase 2+ will wire Phases 1's read-only primitives into mutation planning:
 - **Stack detection algorithm** (from ADR-0011): Find the tightest (fewest-commits) ancestor branch among other worktrees' branches, excluding the default branch and current branch. Use this ancestor's open PR number if available.
 - **Layout detection algorithm** (from ADR-0011): Build a branch → worktree map. Check if any OTHER worktree has the subject's parent checked out (per-branch), or if any OTHER worktree's cache marks the subject as their parent (per-branch), or if the subject has a known parent but no siblings (single-driver), or else unknown.
 - **Worktree parent detection** (from ADR-0010): Deterministic three-way fallback ensures the worktree parent is always discoverable without user input or config.
-- **Graft detection** (from ADR-0010): Check `XDG_CONFIG_HOME/graft/config.json` for an entry matching the main worktree's path. Graft is optional; absence is not an error.
 
 ## ADR-0013 Amendments
 

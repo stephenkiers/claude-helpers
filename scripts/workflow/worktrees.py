@@ -1,10 +1,9 @@
 """
-Worktree parent detection and graft detection.
+Worktree parent detection.
 
-Ports ADR-0010's worktree-parent detection logic verbatim, plus graft detection.
+Ports ADR-0010's worktree-parent detection logic verbatim.
 """
 
-import json
 from pathlib import Path
 from typing import Optional, Tuple
 from . import git
@@ -103,40 +102,6 @@ def detect_project_root(cwd: Optional[Path] = None) -> str:
     if main_path.parent.name == "worktrees":
         return str(main_path.parent.parent)
     return str(main_path)
-
-
-def detect_graft_config_path() -> Path:
-    """Get the graft config file path (~/.config/graft/config.json)."""
-    xdg_config = Path.home() / ".config"
-    return xdg_config / "graft" / "config.json"
-
-
-def detect_graft_usage(main_worktree: str) -> Tuple[bool, str]:
-    """
-    Detect if graft manages this repo's worktrees.
-
-    Returns (use_graft: bool, graft_repo_name: str).
-    Logic from ADR-0010 Graft Detection block.
-    """
-    import shutil
-
-    if not shutil.which("graft"):
-        return False, ""
-
-    config_path = detect_graft_config_path()
-    if not config_path.exists():
-        return False, ""
-
-    try:
-        config_data = json.loads(config_path.read_text())
-        repos = config_data.get("repos", {})
-        for repo_name, repo_info in repos.items():
-            if repo_info.get("path") == main_worktree:
-                return True, repo_name
-    except (json.JSONDecodeError, OSError):
-        pass
-
-    return False, ""
 
 
 def is_in_git_repo(cwd: Optional[Path] = None) -> bool:

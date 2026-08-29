@@ -9,7 +9,7 @@ import os
 import subprocess
 import json
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Union
 from .safety import Unknown, fail_closed
 
 
@@ -144,6 +144,26 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> b
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def branch_exists(branch: str, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Check if a branch exists.
+
+    Returns (True, None) if the branch exists, (False, None) if it doesn't,
+    or (False, Unknown(...)) if the check itself fails.
+    """
+    try:
+        run_git_command(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=cwd,
+            check=True
+        )
+        return True, None
+    except subprocess.CalledProcessError:
+        return False, None
+    except Exception as e:
+        return False, Unknown(f"branch existence check failed: {e}")
 
 
 def rev_list_count(rev_range: str, cwd: Optional[Path] = None) -> int:
@@ -494,3 +514,150 @@ def pr_edit(pr_number: int, title: str, body_file: Path, cwd: Optional[Path] = N
         return False, Unknown(f"Failed to edit PR #{pr_number}: {e}")
     except RuntimeError as e:
         return False, Unknown(f"Failed to edit PR #{pr_number}: {e}")
+
+
+def issue_list_json(json_fields: List[str], cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Run 'gh issue list --state open --json <fields>' and return parsed JSON list."""
+    try:
+        args = ["issue", "list", "--state", "open", *_json_flag(json_fields)]
+        output = run_gh_command(args, cwd=cwd, check=False)
+        return json.loads(output) if output else []
+    except (json.JSONDecodeError, subprocess.CalledProcessError):
+        return []
+
+
+def issue_create(title: str, body_file: Path, assignee: Optional[str] = None, labels: Optional[List[str]] = None, cwd: Optional[Path] = None) -> Tuple[Optional[str], Optional[Unknown]]:
+    """
+    Create an issue via 'gh issue create' through the mutation funnel.
+
+    Returns issue URL on success (parsed from gh issue create stdout).
+
+    Args:
+        title: Issue title
+        body_file: Path to file containing issue body
+        assignee: Optional assignee (@me or username); if None, no assignee flag is passed
+        labels: Optional list of label names; if None or empty, no label flag is passed
+        cwd: Working directory for the gh command
+
+    Returns:
+        (issue_url_string, None) on success.
+        (None, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    # Build args, supporting combinations with/without label and assignee
+    if labels and assignee:
+        args = ["issue", "create", "--title", title, "--label", ",".join(labels), "--assignee", assignee, "--body-file", str(body_file)]
+    elif labels:
+        args = ["issue", "create", "--title", title, "--label", ",".join(labels), "--body-file", str(body_file)]
+    elif assignee:
+        args = ["issue", "create", "--title", title, "--assignee", assignee, "--body-file", str(body_file)]
+    else:
+        args = ["issue", "create", "--title", title, "--body-file", str(body_file)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return None, Unknown(reason or "mutation not allowed")
+
+    try:
+        output = run_gh_command(args, cwd=cwd)
+        # gh issue create outputs the issue URL on success
+        return output, None
+    except subprocess.CalledProcessError as e:
+        return None, Unknown(f"Failed to create issue: {e}")
+    except RuntimeError as e:
+        return None, Unknown(f"Failed to create issue: {e}")
+
+
+def issue_comment(number: Union[int, str], body_file: Path, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Add a comment to an issue via 'gh issue comment' through the mutation funnel.
+
+    Args:
+        number: Issue number (int) or string ID
+        body_file: Path to file containing comment body
+        cwd: Working directory for the gh command
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["issue", "comment", str(number), "--body-file", str(body_file)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_gh_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to comment on issue {number}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to comment on issue {number}: {e}")
+
+
+def issue_edit_body(number: Union[int, str], body_file: Path, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Replace an issue's body via 'gh issue edit' through the mutation funnel.
+
+    Args:
+        number: Issue number (int) or string ID
+        body_file: Path to file containing new issue body
+        cwd: Working directory for the gh command
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    args = ["issue", "edit", str(number), "--body-file", str(body_file)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_gh_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to edit issue {number}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to edit issue {number}: {e}")
+
+
+def add_worktree(path: Path, branch: str, base: Optional[str] = None, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
+    """
+    Create a git worktree via 'git worktree add' through the mutation funnel.
+
+    Args:
+        path: Path for the new worktree
+        branch: Branch name to create/check out
+        base: Optional base commit/branch; if None, uses default
+        cwd: Working directory for the git command (typically the main worktree)
+
+    Returns:
+        (True, None) on success.
+        (False, Unknown(reason)) if the mutation is not allowed or command fails.
+    """
+    from .mutations import check_mutation_allowed
+
+    if base:
+        args = ["worktree", "add", "-b", branch, "--", str(path), base]
+    else:
+        args = ["worktree", "add", "-b", branch, "--", str(path)]
+
+    allowed, reason = check_mutation_allowed(args)
+    if not allowed:
+        return False, Unknown(reason or "mutation not allowed")
+
+    try:
+        run_git_command(args, cwd=cwd)
+        return True, None
+    except subprocess.CalledProcessError as e:
+        return False, Unknown(f"Failed to create worktree at {path}: {e}")
+    except RuntimeError as e:
+        return False, Unknown(f"Failed to create worktree at {path}: {e}")

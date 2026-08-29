@@ -188,15 +188,6 @@ fi
 # Switch to main if not already there
 cd "$MAIN_WORKTREE"
 
-# Graft detection: read the Graft Detection block PLUS its cleanup variant from
-# ~/.claude/prompts/worktree-reference.md, then execute it here.
-# Fail loudly if the file is missing — the block is required, not optional.
-# The block sets USE_GRAFT, GRAFT_REPO_NAME, GRAFT_WORKTREE_NAME; the cleanup
-# variant verifies graft tracks $CURRENT_WORKTREE.
-#
-# Read ~/.claude/prompts/worktree-reference.md now (required). If it is absent,
-# set USE_GRAFT=false and warn — do NOT proceed silently with unset variables.
-
 echo "CURRENT_WORKTREE=$CURRENT_WORKTREE"
 echo "CURRENT_BRANCH=$CURRENT_BRANCH"
 echo "MAIN_WORKTREE=$MAIN_WORKTREE"
@@ -827,22 +818,12 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage remove-worktr
 
 ### 3. Remove Worktree (from main)
 
-**The non-graft path is already done.** Step 2.5's `apply_cleanup` call removed the worktree and
-deleted the branch (force `-D` when `PR_STATE=MERGED`, safe `-d` otherwise — the CLI's
-`cleanup.py` applies that same rule) as part of its plan/apply pattern; the CLI does not yet model
-graft-managed worktrees (`cleanup.py`'s `apply_cleanup` unconditionally calls plain `git worktree
-remove`, which is a no-op-with-warning on a path graft already detached). So this step now only
-has real work left for the graft case:
+**Worktree removal is fully handled by Step 2.5's `apply_cleanup`** call, which removes the worktree and
+deletes the branch (force `-D` when `PR_STATE=MERGED`, safe `-d` otherwise — the CLI's
+`cleanup.py` applies that same rule) as part of its plan/apply pattern. No additional removal
+step is needed.
 
 ```bash
-if [ "$USE_GRAFT" = "true" ]; then
-  graft rm "$GRAFT_WORKTREE_NAME" --force -r "$GRAFT_REPO_NAME" 2>/dev/null \
-    || echo "Worktree already removed or graft rm failed"
-  # graft rm does not delete branches — apply_cleanup (Step 2.5) already did.
-else
-  echo "Worktree and branch already removed by Step 2.5's apply_cleanup."
-fi
-
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage remove-worktree --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome success 2>/dev/null || true
 ```
