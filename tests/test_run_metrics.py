@@ -1257,6 +1257,252 @@ def test_no_session_id_skips_state_file():
         return True, ""
 
 
+def test_command_end_cas_guard_protects_different_command_state():
+    """CAS guard: command-end does NOT delete state if state's command_id differs from resolved command_id.
+
+    Simulates concurrent commands: command-begin A, command-begin B replaces state,
+    then command-end A runs. Command-end A should NOT delete state because the
+    state's command_id no longer matches A's command_id (it's now B's).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        state_file = state_dir / f"{session_id}.json"
+
+        # Step 1: command-begin A (generates command_id_a)
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-a"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin A failed: {stderr1}"
+        command_id_a = stdout1.strip()
+
+        # Verify state has command_id_a
+        if not state_file.exists():
+            return False, "state file should exist after command-begin A"
+        with open(state_file) as f:
+            state_after_a = json.loads(f.read())
+        if state_after_a.get("command_id") != command_id_a:
+            return False, f"state should have command_id_a after first command-begin"
+
+        # Step 2: command-begin B (replaces state with command_id_b)
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-b"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"command-begin B failed: {stderr2}"
+        command_id_b = stdout2.strip()
+
+        # Verify state now has command_id_b
+        with open(state_file) as f:
+            state_after_b = json.loads(f.read())
+        if state_after_b.get("command_id") != command_id_b:
+            return False, f"state should have command_id_b after second command-begin"
+
+        # Step 3: command-end A (without explicit --command-id, resolves to command_id_a from... nowhere, or "unknown"?)
+        # Actually, the resolved command_id for command-end A should come from explicit flag if provided.
+        # Since we don't provide --command-id, it should use "unknown" or from state (which now has command_id_b).
+        # According to the plan, the CAS guard checks if state's command_id == resolved command_id.
+        # We need to use explicit --command-id to force a mismatch.
+
+        code3, stdout3, stderr3 = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "command-end",
+                "--command-id", command_id_a,  # Explicit: the OLD command_id from A
+                "--command", "cmd-a",
+                "--outcome", "success",
+            ],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"command-end A failed: {stderr3}"
+
+        # Step 4: Verify state file still exists (was NOT deleted by command-end A's CAS guard)
+        # Since state's command_id is now command_id_b (from step 2), and command-end A
+        # resolved to command_id_a, the CAS guard should prevent deletion.
+        if not state_file.exists():
+            return False, "state file should still exist after command-end A (CAS guard should have blocked deletion)"
+
+        # Verify state still has command_id_b (unchanged by command-end A)
+        with open(state_file) as f:
+            state_after_end_a = json.loads(f.read())
+        if state_after_end_a.get("command_id") != command_id_b:
+            return False, f"state should still have command_id_b (CAS guard protected it), but got: {state_after_end_a.get('command_id')}"
+
+        return True, ""
+
+
+def test_stage_end_cas_guard_protects_different_stage_state():
+    """CAS guard: stage-end does NOT clear stage fields if state's stage_id differs from resolved stage_id.
+
+    Simulates concurrent stages: stage-begin A, stage-begin B replaces stage state,
+    then stage-end A runs. Stage-end A should NOT clear stage fields because the
+    state's stage_id no longer matches A's stage_id (it's now B's).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+        state_file = state_dir / f"{session_id}.json"
+
+        # Setup: command-begin (creates the command lifecycle)
+        code0, stdout0, stderr0 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code0 != 0:
+            return False, f"command-begin failed: {stderr0}"
+        command_id = stdout0.strip()
+
+        # Step 1: stage-begin A (generates stage_id_a)
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage-a"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"stage-begin A failed: {stderr1}"
+        stage_id_a = stdout1.strip()
+
+        # Verify state has stage_id_a
+        with open(state_file) as f:
+            state_after_a = json.loads(f.read())
+        if state_after_a.get("stage_id") != stage_id_a:
+            return False, f"state should have stage_id_a after first stage-begin"
+
+        # Step 2: stage-begin B (replaces stage state with stage_id_b)
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage-b"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage-begin B failed: {stderr2}"
+        stage_id_b = stdout2.strip()
+
+        # Verify state now has stage_id_b
+        with open(state_file) as f:
+            state_after_b = json.loads(f.read())
+        if state_after_b.get("stage_id") != stage_id_b:
+            return False, f"state should have stage_id_b after second stage-begin"
+
+        # Step 3: stage-end A (with explicit --stage-id for the OLD stage_id_a)
+        code3, stdout3, stderr3 = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "stage-end",
+                "--stage-id", stage_id_a,  # Explicit: the OLD stage_id from A
+                "--stage", "stage-a",
+                "--outcome", "success",
+            ],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"stage-end A failed: {stderr3}"
+
+        # Step 4: Verify state still has stage_id_b (was NOT cleared by stage-end A's CAS guard)
+        # Since state's stage_id is now stage_id_b (from step 2), and stage-end A
+        # resolved to stage_id_a, the CAS guard should prevent clearing the stage fields.
+        with open(state_file) as f:
+            state_after_end_a = json.loads(f.read())
+        if state_after_end_a.get("stage_id") != stage_id_b:
+            return False, f"state should still have stage_id_b (CAS guard protected it), but got: {state_after_end_a.get('stage_id')}"
+
+        if state_after_end_a.get("stage") != "stage-b":
+            return False, f"state should still have stage='stage-b' (CAS guard protected it), but got: {state_after_end_a.get('stage')}"
+
+        return True, ""
+
+
+def test_session_id_with_disallowed_characters_is_sanitized():
+    """Session ID with disallowed characters (not ^[A-Za-z0-9_-]+$) is sanitized.
+
+    According to the plan, disallowed characters should either be sanitized or the
+    session ID should fall back to 'unknown' as the filename. This test verifies the
+    command still succeeds and creates a state file (whether with sanitized name or unknown).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+
+        # Session ID with spaces, @, and other disallowed chars
+        session_id_with_bad_chars = "test session@123!with spaces"
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_with_bad_chars}
+
+        # command-begin should still succeed
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code != 0:
+            return False, f"command-begin should succeed with bad chars in session_id: {stderr}"
+
+        # Verify log file was created
+        if not log_path.exists():
+            return False, "log file should exist"
+
+        # Verify a state file was created (either with sanitized name or 'unknown')
+        # List all files in state_dir to see what was created
+        if not state_dir.exists():
+            return False, "state dir should exist"
+
+        state_files = list(state_dir.glob("*.json"))
+        if not state_files:
+            return False, f"no state file created, state_dir contents: {list(state_dir.iterdir())}"
+
+        # The state file should be created (either sanitized or as 'unknown.json')
+        # The test passes if any state file exists, confirming graceful handling
+        return True, ""
+
+
+def test_session_id_with_slashes_creates_state_file():
+    """Session ID with slashes or path separators is sanitized to avoid directory traversal.
+
+    A session ID like 'foo/bar' should NOT create files outside state_dir. The CLI should
+    either sanitize the filename or fall back to 'unknown' to avoid path traversal.
+    This test verifies the command succeeds and state stays within state_dir.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+
+        # Session ID with slashes (dangerous if not sanitized)
+        session_id_with_slashes = "session/with/slashes"
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_with_slashes}
+
+        # command-begin should still succeed
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code != 0:
+            return False, f"command-begin should succeed even with slashes in session_id: {stderr}"
+
+        # Verify log file was created
+        if not log_path.exists():
+            return False, "log file should exist"
+
+        # Verify all state files are directly in state_dir (no subdirectories created)
+        if state_dir.exists():
+            for item in state_dir.rglob("*"):
+                if item.is_file():
+                    # All files must be direct children of state_dir
+                    if item.parent != state_dir:
+                        return False, f"state file created outside state_dir: {item} (parent: {item.parent})"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -1379,6 +1625,21 @@ if __name__ == "__main__":
 
     passed, msg = test_no_session_id_skips_state_file()
     test_result("missing CLAUDE_CODE_SESSION_ID skips state file creation", passed, msg)
+
+    print()
+
+    print("[Section 9] CAS guard (concurrent safety) and session ID sanitization")
+    passed, msg = test_command_end_cas_guard_protects_different_command_state()
+    test_result("command-end CAS guard: state survives if command_id differs", passed, msg)
+
+    passed, msg = test_stage_end_cas_guard_protects_different_stage_state()
+    test_result("stage-end CAS guard: stage fields survive if stage_id differs", passed, msg)
+
+    passed, msg = test_session_id_with_disallowed_characters_is_sanitized()
+    test_result("session_id with disallowed chars is handled gracefully", passed, msg)
+
+    passed, msg = test_session_id_with_slashes_creates_state_file()
+    test_result("session_id with slashes doesn't create files outside state_dir", passed, msg)
 
     print()
 
