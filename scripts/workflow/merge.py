@@ -6,6 +6,7 @@ Ports the deterministic merge logic from /merge-and-cleanup into a plan/apply pa
 - apply_merge: execute the 3-path merge gate and write cache
 """
 
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,27 @@ from typing import List, Optional, Dict, Any, Tuple
 from . import git
 from .cache import read_repo_cache, write_cache
 from .safety import Unknown, fail_closed
+
+
+def merge_lock_path(target_worktree: str) -> Path:
+    """
+    Resolve the merge-lock path for a target worktree.
+
+    Stored under ~/.claude/state/merge-locks/, keyed by a hash of the worktree's
+    resolved absolute path, rather than inside the target worktree itself. The lock
+    is a durable "already merged" guard (see apply_merge docstring) that is never
+    auto-cleared, so writing it inside the target repo leaves a permanent untracked
+    file there — tripping that repo's own dirty-tree push gate on the next
+    /merge-and-cleanup run unless that repo's .gitignore is manually patched to
+    exclude it (a fix that has to be repeated in every repo this runs against).
+    Keeping the lock out of the repo entirely fixes this once, for all repos.
+    Lock identity depends on the worktree's resolved absolute path at call time;
+    if the worktree is later moved, renamed, or recreated at a different path, it
+    will resolve to a different lock.
+    """
+    resolved = str(Path(target_worktree).resolve())
+    digest = hashlib.sha256(resolved.encode()).hexdigest()[:16]
+    return Path.home() / ".claude" / "state" / "merge-locks" / f"{digest}.lock"
 
 
 @dataclass
@@ -90,6 +112,7 @@ def plan_merge(
             pr_number, head_ref, target_worktree = _resolve_pr_from_number(arguments, cwd)
             if not pr_number or not head_ref or not target_worktree:
                 return None, Unknown(f"Could not resolve PR from '{arguments}'")
+            target_worktree = str(Path(target_worktree).resolve())
 
         plan = MergePlan(
             pr_number=pr_number,
@@ -122,7 +145,8 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
     on before this CLI existed), not an argv shape this module constructed itself. The funnel
     only guards git/gh calls this module builds directly (gh pr merge, the reentrancy lock).
 
-    Creates/preserves .merge-and-cleanup.lock file (never auto-cleared).
+    Creates/preserves a merge lock file under ~/.claude/state/merge-locks/ (never
+    auto-cleared; see merge_lock_path).
 
     Returns (MergeResult, None) with execution result.
     Returns (MergeResult, Unknown(...)) if a critical error occurs.
@@ -137,10 +161,11 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
             result.error = Unknown(f"Push gate failed: {'; '.join(plan.blocking_failures)}")
             return result, result.error
 
-        lock_file = Path(plan.target_worktree) / ".claude" / ".merge-and-cleanup.lock"
+        lock_file = merge_lock_path(plan.target_worktree)
 
         try:
             lock_file.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(lock_file.parent, 0o700)
             lock_content = f"PR #{plan.pr_number} locked by merge-and-cleanup at {time.time()}\n"
             lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             try:
@@ -150,9 +175,9 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         except FileExistsError:
             try:
                 existing_content = lock_file.read_text()
-                result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure): {existing_content}")
+                result.error = Unknown(f"Merge lock file exists at {lock_file} (concurrent merge or prior failure): {existing_content}")
             except Exception:
-                result.error = Unknown(f"Merge lock file exists (concurrent merge or prior failure)")
+                result.error = Unknown(f"Merge lock file exists at {lock_file} (concurrent merge or prior failure)")
             return result, result.error
         except OSError as e:
             result.error = Unknown(f"Failed to create lock file: {e}")

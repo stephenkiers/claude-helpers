@@ -15,6 +15,7 @@ from . import git
 from .cache import hash_cache_file, hash_file_content, read_github_cache
 from .safety import Unknown, fail_closed
 from .models import RepoCacheData
+from .merge import merge_lock_path
 
 
 @dataclass
@@ -252,6 +253,12 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
                         result.validation_failures.append(f"Forced worktree removal error: {e}")
         except Exception as e:
             result.validation_failures.append(f"Worktree removal error: {e}")
+
+        if result.worktree_removed:
+            try:
+                merge_lock_path(str(plan.target_worktree)).unlink(missing_ok=True)
+            except Exception as e:
+                result.validation_failures.append(f"Merge lock cleanup failed (non-fatal): {e}")
 
         force_delete = plan.pr_state == "MERGED"
         try:
