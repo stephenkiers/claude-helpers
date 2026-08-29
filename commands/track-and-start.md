@@ -32,19 +32,18 @@ Creates a GitHub issue (or local plan file) from the plan, generates a branch na
 ## Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail
-`/track-and-start`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
+`/track-and-start`. Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command track-and-start 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command track-and-start >/dev/null 2>&1 || true
 ```
 
-Reuse `$TELEMETRY_CMD_ID` for every `stage-begin`/`stage-end`/`command-end` call that follows,
-across whichever mode (GitHub, Local Plan, or Tracker Ticket) this run takes.
+See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ## Project Detection
 
 ```bash
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage detect-project 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage detect-project >/dev/null 2>&1 || true
 ```
 
 Run the **Project Detection** and **Graft Detection** blocks from
@@ -57,7 +56,7 @@ and `GRAFT_REPO_NAME`.
 **Exception:** If Tracker Ticket mode was activated in step 3, a missing GitHub remote is not an error — `REPO` will be empty and that is expected. Steps that follow must not call `gh` commands in this mode.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage detect-project --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage detect-project --outcome success 2>/dev/null || true
 ```
 
 ## Local Plan Mode
@@ -145,8 +144,8 @@ jq -n --arg branch "${BRANCH}" \
 ### Handoff (Local Mode)
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-worktree --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command track-and-start --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome success 2>/dev/null || true
 ```
 
 ```
@@ -252,7 +251,7 @@ WORKTREE_DIR=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 Run Project Detection and Graft Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly — **Graft is not used in Tracker Ticket mode** (the branch name comes from the tracker and must not be renamed):
 
 ```bash
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage create-worktree 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
 
 cd "$MAIN_WORKTREE"
 WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
@@ -280,8 +279,8 @@ jq -n \
 #### Handoff Output
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-worktree --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command track-and-start --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome success 2>/dev/null || true
 ```
 
 Same format as today:
@@ -414,7 +413,7 @@ Update the issue's body in `$CACHE_FILE` so future duplicate detection runs agai
 **6. Close telemetry and call `ExitPlanMode`:**
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command track-and-start --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome success 2>/dev/null || true
 ```
 
 Call `ExitPlanMode` — since the user is already in the correct worktree, they can approve the plan and begin implementing immediately. The plan file content is the new plan (it triggered `/track-and-start`).
@@ -523,7 +522,7 @@ Cache file location: `${WORKTREE_PARENT}/issues.json` (detected from worktree la
 ## Creating the Issue
 
 ```bash
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage create-issue 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-issue >/dev/null 2>&1 || true
 ```
 
 **IMPORTANT:** Use the ORIGINAL plan content. Do NOT include branch/worktree info in the issue body.
@@ -559,7 +558,7 @@ After creating the issue, add it to the local cache:
 # .issues["$ISSUE_NUM"] = { number, title, state: "open", labels, milestone: null, assignee: "$ASSIGNEE", url }
 # Update .lastSynced to current timestamp
 
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-issue --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-issue --outcome success 2>/dev/null || true
 ```
 
 ## Label Inference
@@ -582,7 +581,7 @@ that entry path stays correctly paired, rather than closing out a `create-issue`
 never opened.
 
 ```bash
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage create-worktree 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
 ```
 
 **CRITICAL:** Must `cd` to main worktree first to ensure correct git repo.
@@ -685,8 +684,8 @@ fi
 ## Final Output - Handoff Commands
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage create-worktree --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command track-and-start --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome success 2>/dev/null || true
 ```
 
 After creating the issue and worktree, output the following for the user to copy/paste:
@@ -719,7 +718,7 @@ On any error-table exit below (before the worktree/handoff step is reached), mar
 failed — non-fatal, same as every other telemetry call in this doc:
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command track-and-start --outcome failure --failure-class guard_block 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class guard_block 2>/dev/null || true
 ```
 
 | Condition | Action |

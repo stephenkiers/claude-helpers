@@ -158,22 +158,85 @@ payload against this exact config shape during this implementation pass):
 
 Claude Code has no hook that observes inside a custom slash command's internal phases, so `command-begin`/`command-end`/`stage-begin`/`stage-end` are explicit markers embedded in command docs themselves. A separate implementation pass is adding these telemetry markers to `/shipit`, `/track-and-start`, `/cleanup`, and `/expert-plan`.
 
-Example bash snippet (from a command doc):
+Previous approach (shell-variable capture — DO NOT USE):
 
 ```bash
-# Capture command_id at command start
+# OLD PATTERN (broken — Bash tool calls don't share shell state)
 TELEMETRY_COMMAND_ID=$(python3 $HOME/.claude/scripts/run-metrics.py \
-  --log "$HOME/.claude/telemetry/events.jsonl" \
   command-begin --command expert-review)
-
-# ... do work ...
-
-# Record command end (replace "success" with "failure" or outcome as needed)
 python3 $HOME/.claude/scripts/run-metrics.py \
-  --log "$HOME/.claude/telemetry/events.jsonl" \
-  command-end --command-id "$TELEMETRY_COMMAND_ID" \
-  --command expert-review --outcome success
+  command-end --command-id "$TELEMETRY_COMMAND_ID" --command expert-review --outcome success
 ```
+
+The problem: Bash tool invocations in Claude Code are isolated subprocesses. A shell variable set in one call (`TELEMETRY_COMMAND_ID=$(...)`) is not visible in the next call — the ID is blank by the time `command-end` runs. This produced a 39% begin/end match rate instead of the required 95%.
+
+**New approach (session-scoped state file — use this):**
+
+Telemetry now maintains a per-session state file at `~/.claude/telemetry/state/<session_id>.json` that tracks the current `command_id` and `stage_id`. Call sites no longer need to capture or pass IDs across bash invocations:
+
+```bash
+# NEW PATTERN (works correctly with independent bash calls)
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit >/dev/null 2>&1 || true
+
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/dev/null 2>&1 || true
+
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome success 2>/dev/null || true
+
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome success 2>/dev/null || true
+```
+
+Notice: no `--command-id`, `--stage-id` flags, and no shell variable capture. The CLI resolves IDs from the session state file automatically.
+
+## Session-Scoped State File
+
+When a `CLAUDE_CODE_SESSION_ID` environment variable is set (always true in Claude Code), `run-metrics.py` maintains a lightweight JSON state file per session to track the current command_id and stage_id. This file is at:
+
+```
+~/.claude/telemetry/state/<session_id>.json
+```
+
+### State File Schema
+
+```json
+{
+  "command_id": "hex-uuid or null",
+  "command": "command-name or null",
+  "stage_id": "hex-uuid or null",
+  "stage": "stage-name or null"
+}
+```
+
+### Behavior
+
+- **`command-begin`:** Writes `{"command_id": ..., "command": ..., "stage_id": null, "stage": null}`, replacing any prior state. Opportunistically prunes state files older than 24 hours as a side effect (best-effort; failures are silently ignored).
+- **`stage-begin`:** Updates `stage_id` and `stage` fields, leaving `command_id` and `command` intact. Reads `command_id` from state file if no explicit `--command-id` flag is given.
+- **`stage-end`:** Clears the `stage_id` and `stage` fields back to null (command may still be in flight). Reads `stage_id` and `command_id` from state if not explicitly provided.
+- **`command-end`:** Deletes the session's state file entirely (command lifecycle is complete). Reads `command_id` from state if not explicitly provided.
+
+### ID Resolution (Precedence)
+
+When an ID-bearing call site (e.g., `stage-end`) omits an explicit `--command-id` flag:
+
+1. **Explicit flag wins:** If `--command-id` is passed, use it.
+2. **State file fallback:** If session_id is known (not "unknown"), read the state file and use the recorded command_id.
+3. **Graceful degradation:** If both (1) and (2) fail, use the literal string `"unknown"`.
+
+This ensures that calls with an explicit ID always override the state file (preserving intra-block failure-exit branches in `cleanup.md` that set and read IDs within the same Bash call).
+
+### State Mismatch Detection
+
+If `stage-end` or `command-end` is called with a stage/command name that does not match what the state file says is currently active, the emitted event includes a `state_mismatch: true` field. This is a data-quality signal (currently not specially surfaced by `diagnose`, but available for future analysis). Examples:
+
+- `stage-begin --stage foo` followed by `stage-end --stage bar` (without explicit `--stage-id`) → `state_mismatch: true`
+- `command-begin --command shipit` followed by `command-end --command expert-review` (without explicit `--command-id`) → `state_mismatch: true`
+
+### Degradation When Session Unknown
+
+When `CLAUDE_CODE_SESSION_ID` is unset or empty (session_id resolves to `"unknown"`), no state file is written or read — the behavior reverts to the old pattern (all calls must provide explicit IDs, or they degrade to `"unknown"`). This is safe and maintains backward compatibility.
+
+### Graceful Degradation on Concurrent Lifecycles
+
+Session-scoped state assumes only one command and one stage can be active per session at a time, and this assumption is backed by Compare-And-Swap (CAS) guards. When concurrent same-session lifecycles do occur, the state file is protected from corruption: a `*-end` call whose resolved ID no longer matches the state's current ID will silently skip its destructive clear/delete operation and log a stderr warning. This ensures that the concurrent lifecycle's state survives untouched, though the skipped `*-end` call will have emitted an event with resolved (often `"unknown"`) correlation IDs rather than the mismatched state's IDs.
 
 The CLI subcommands are:
 
@@ -197,25 +260,31 @@ Default log path (no `--log` given): `~/.claude/telemetry/events.jsonl`.
 
 ## Telemetry Call-Site Conventions
 
-Every telemetry call in command docs is non-fatal (stderr redirected, fallback provided) to ensure `run-metrics.py` failures never break the command itself. Two fallback patterns are used depending on call type:
+Every telemetry call in command docs is non-fatal (stderr redirected, fallback provided) to ensure `run-metrics.py` failures never break the command itself.
 
-**`*-begin` calls (capturing output into a variable):** Use `|| echo unknown`
-
-```bash
-TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit 2>/dev/null || echo unknown)
-```
-
-The `*-begin` subcommands print a bare UUID to stdout. This UUID must be captured into a variable for later `*-end` calls to reference. If `run-metrics.py` fails or is missing, the variable needs *some* fallback value — `|| echo unknown` provides the literal string `"unknown"`, so downstream `*-end` calls that reference `$TELEMETRY_CMD_ID` don't fail with "unbound variable" errors.
-
-**`*-end` calls (not capturing output):** Use `|| true`
+**Simplified pattern (recommended for new call sites):**
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" ... 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command shipit >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome success 2>/dev/null || true
 ```
 
-The `*-end` subcommands print nothing to stdout — they only exit with status 0/1 to indicate success/failure. Since there's no output to capture, `|| true` just suppresses the non-zero exit status (if any) so it doesn't get treated as the bash block's own exit status and abort the command.
+Key points:
 
-Both patterns redirect stderr to `/dev/null` and pair with a shell operator (`||`) so the telemetry call is genuinely non-fatal: a missing or broken `run-metrics.py` (e.g., before `install.sh` has run) cannot break the command.
+1. **No shell variable capture:** IDs are resolved from the session state file, not threaded through shell variables across separate bash calls.
+2. **No explicit `--command-id`/`--stage-id` flags:** These are optional and resolved from the state file when omitted.
+3. **Redirect stderr to `/dev/null`:** Suppresses error messages from `run-metrics.py` if it fails or is missing.
+4. **Use `|| true`:** Suppresses the non-zero exit status so telemetry failures don't abort the command.
+
+**Why this works where the old pattern failed:**
+
+The old pattern (capturing IDs in shell variables across separate bash calls) relied on shell state persisting between Bash tool invocations. Claude Code's Bash tool is isolated per invocation — a variable set in one call is not visible in the next. The session state file solves this by persisting state to disk, which **is** visible across isolated subprocess calls.
+
+**Backward compatibility:**
+
+Existing call sites that explicitly pass `--command-id` and `--stage-id` (like intra-block failure handlers in `cleanup.md`) continue to work unchanged — explicit flags always win over the state file. This ensures no existing behavior breaks.
 
 ## Transcript Parsing (`claude-transcript-metrics.py`)
 

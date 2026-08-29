@@ -152,12 +152,32 @@ def cmd_agent_end(args):
 
 
 def cmd_command_begin(args):
-    """Record a command.begin event. Prints the command_id to stdout for callers to capture."""
+    """Record a command.begin event. Prints the command_id to stdout for callers to capture.
+
+    Also opportunistically prunes stale state files (older than 24h) as a side effect.
+    """
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
     command_id = uuid.uuid4().hex
     cwd = os.getcwd()
     repo = os.path.basename(cwd.rstrip("/"))
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Opportunistic cleanup of stale state files (24h cutoff)
+    try:
+        telemetry_schema.prune_stale_state(args.state_dir)
+    except (OSError, PermissionError) as e:
+        print(f"telemetry: state access failed: {e}", file=sys.stderr)
+
+    # Write state file if session_id is known
+    if session_id != telemetry_schema.UNKNOWN:
+        try:
+            telemetry_schema.init_command_state(
+                telemetry_schema.state_path(session_id, args.state_dir),
+                command_id,
+                args.command,
+            )
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
 
     event = telemetry_schema.build_event(
         "command.begin",
@@ -174,7 +194,10 @@ def cmd_command_begin(args):
 
 
 def cmd_command_end(args):
-    """Record a command.end event. Requires --command-id and --outcome, optionally --failure-class."""
+    """Record a command.end event. Outcome is required; --command-id is optional (resolved from state).
+
+    Falls back to `telemetry_schema.UNKNOWN` if state is also unavailable.
+    """
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -191,23 +214,53 @@ def cmd_command_end(args):
         print(f"Error: invalid --outcome {args.outcome}", file=sys.stderr)
         sys.exit(1)
 
+    command_id = telemetry_schema.UNKNOWN
+    state_mismatch = None
+    if session_id != telemetry_schema.UNKNOWN:
+        try:
+            command_id, state_mismatch, _ = telemetry_schema.resolve_and_clear_command_state(
+                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.command
+            )
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+    if args.command_id:
+        command_id = args.command_id
+    if not command_id:
+        command_id = telemetry_schema.UNKNOWN
+
     event = telemetry_schema.build_event(
         "command.end",
         session_id=session_id,
         timestamp=timestamp,
-        command_id=args.command_id,
+        command_id=command_id,
         command=args.command,
         outcome=outcome,
+        state_mismatch=state_mismatch,
     )
     telemetry_schema.append_event(args.log, event)
+
     print("command.end recorded", file=sys.stderr)
 
 
 def cmd_stage_begin(args):
-    """Record a stage.begin event. Prints the stage_id to stdout for callers to capture."""
+    """Record a stage.begin event. Prints the stage_id to stdout for callers to capture.
+
+    --command-id is optional; resolved from state file if not explicitly provided.
+    """
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
     stage_id = uuid.uuid4().hex
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    command_id = telemetry_schema.UNKNOWN
+    if session_id != telemetry_schema.UNKNOWN:
+        try:
+            command_id = telemetry_schema.resolve_and_set_stage_state(
+                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, stage_id, args.stage
+            )
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+    if not command_id:
+        command_id = telemetry_schema.UNKNOWN
 
     event = telemetry_schema.build_event(
         "stage.begin",
@@ -215,15 +268,19 @@ def cmd_stage_begin(args):
         timestamp=timestamp,
         stage_id=stage_id,
         stage=args.stage,
-        command_id=args.command_id,
+        command_id=command_id,
     )
     telemetry_schema.append_event(args.log, event)
+
     # Print bare stage_id to stdout so callers can capture it
     print(stage_id)
 
 
 def cmd_stage_end(args):
-    """Record a stage.end event. Requires --stage-id, --command-id, --stage, and --outcome."""
+    """Record a stage.end event. Outcome and stage are required; IDs are optional (resolved from state).
+
+    Falls back to `telemetry_schema.UNKNOWN` if state is also unavailable.
+    """
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -240,16 +297,33 @@ def cmd_stage_end(args):
         print(f"Error: invalid --outcome {args.outcome}", file=sys.stderr)
         sys.exit(1)
 
+    command_id = telemetry_schema.UNKNOWN
+    stage_id = telemetry_schema.UNKNOWN
+    state_mismatch = None
+    if session_id != telemetry_schema.UNKNOWN:
+        try:
+            command_id, stage_id, state_mismatch = telemetry_schema.resolve_and_clear_stage_state(
+                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.stage_id, args.stage
+            )
+        except (OSError, PermissionError) as e:
+            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+    if not command_id:
+        command_id = telemetry_schema.UNKNOWN
+    if not stage_id:
+        stage_id = telemetry_schema.UNKNOWN
+
     event = telemetry_schema.build_event(
         "stage.end",
         session_id=session_id,
         timestamp=timestamp,
-        stage_id=args.stage_id,
+        stage_id=stage_id,
         stage=args.stage,
-        command_id=args.command_id,
+        command_id=command_id,
         outcome=outcome,
+        state_mismatch=state_mismatch,
     )
     telemetry_schema.append_event(args.log, event)
+
     print("stage.end recorded", file=sys.stderr)
 
 
@@ -420,6 +494,12 @@ def main():
         default=telemetry_schema.default_log_path(),
         help="Path to telemetry log file (default: ~/.claude/telemetry/events.jsonl)",
     )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=telemetry_schema.default_state_dir(),
+        help="Path to state directory for session-scoped IDs (default: ~/.claude/telemetry/state)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True, help="Subcommand")
 
@@ -446,7 +526,7 @@ def main():
 
     # command-end
     sp_command_end = subparsers.add_parser("command-end", help="Record a command.end event")
-    sp_command_end.add_argument("--command-id", required=True, help="Command ID (from command-begin)")
+    sp_command_end.add_argument("--command-id", required=False, default=None, help="Command ID (from command-begin); optional, resolved from state if omitted")
     sp_command_end.add_argument("--command", required=True, help="Command name")
     sp_command_end.add_argument(
         "--outcome",
@@ -462,14 +542,14 @@ def main():
 
     # stage-begin
     sp_stage_begin = subparsers.add_parser("stage-begin", help="Record a stage.begin event")
-    sp_stage_begin.add_argument("--command-id", required=True, help="Command ID")
+    sp_stage_begin.add_argument("--command-id", required=False, default=None, help="Command ID; optional, resolved from state if omitted")
     sp_stage_begin.add_argument("--stage", required=True, help="Stage name")
     sp_stage_begin.set_defaults(func=cmd_stage_begin)
 
     # stage-end
     sp_stage_end = subparsers.add_parser("stage-end", help="Record a stage.end event")
-    sp_stage_end.add_argument("--stage-id", required=True, help="Stage ID (from stage-begin)")
-    sp_stage_end.add_argument("--command-id", required=True, help="Command ID")
+    sp_stage_end.add_argument("--stage-id", required=False, default=None, help="Stage ID (from stage-begin); optional, resolved from state if omitted")
+    sp_stage_end.add_argument("--command-id", required=False, default=None, help="Command ID; optional, resolved from state if omitted")
     sp_stage_end.add_argument("--stage", required=True, help="Stage name")
     sp_stage_end.add_argument(
         "--outcome",

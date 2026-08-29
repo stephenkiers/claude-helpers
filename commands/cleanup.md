@@ -53,13 +53,13 @@ but always stay in (or switch to) main. Never cd into the target worktree.
 ### 0. Telemetry: mark command start
 
 Telemetry is local, observational, and best-effort — it must never block or fail `/cleanup`.
-Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| echo unknown` while `*-end` uses `|| true`):
+Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
-TELEMETRY_CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup >/dev/null 2>&1 || true
 ```
 
-Reuse `$TELEMETRY_CMD_ID` for every `stage-begin`/`stage-end`/`command-end` call that follows.
+See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
 
 ### 1. Resolve Target and Capture Context (SINGLE COMMAND)
 
@@ -71,7 +71,7 @@ Supports three modes:
 Uses `git worktree list` to look up the branch for the resolved path. Never cd's into the target.
 
 ```bash
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage resolve-target 2>/dev/null || echo unknown)
+TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage resolve-target 2>/dev/null || echo unknown)
 
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
@@ -91,14 +91,14 @@ if [ -n "$ARG" ]; then
 
   if [ "$MATCH_COUNT" -eq 0 ] || [ -z "$MATCH_LIST" ]; then
     echo "ERROR: No directory matching '${PATTERN}' found"
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   elif [ "$MATCH_COUNT" -gt 1 ]; then
     echo "ERROR: Ambiguous match for '${PATTERN}'. Multiple directories found:"
     echo "$MATCH_LIST" | sed 's/^/  /'
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   fi
 
@@ -112,8 +112,8 @@ else
   if [ "$COMMON_DIR" = "$GIT_DIR" ]; then
     echo "ERROR: No argument provided and not in a worktree."
     echo "Usage: /cleanup <glob>  (e.g. /cleanup ../4*)"
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
     exit 1
   fi
   CURRENT_WORKTREE=$(pwd)
@@ -122,8 +122,8 @@ fi
 # Validate target is not main
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   echo "ERROR: Target resolves to main worktree. Cannot clean up main."
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
   exit 1
 fi
 
@@ -135,8 +135,8 @@ CURRENT_BRANCH=$(git worktree list --porcelain | awk -v wt="$CURRENT_WORKTREE" '
 
 if [ -z "$CURRENT_BRANCH" ]; then
   echo "ERROR: '$CURRENT_WORKTREE' is not a registered git worktree"
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome failure --failure-class guard_block 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
   exit 1
 fi
 
@@ -204,7 +204,7 @@ echo "Now in main worktree, safe to proceed"
 ```
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage resolve-target --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-target --outcome success 2>/dev/null || true
 
 # Call plan_cleanup to capture check commands and freshness state for later apply
 # CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
@@ -222,11 +222,11 @@ PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cle
 PLAN_RESULT=$?
 if [ $PLAN_RESULT -ne 0 ]; then
   echo "ERROR: Failed to plan cleanup for $CURRENT_WORKTREE"
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage check-merge-status 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage check-merge-status >/dev/null 2>&1 || true
 ```
 
 ### 2. Check Merge Status (from main)
@@ -512,8 +512,8 @@ fi
 ### 2.5. Apply Cleanup (remove worktree, delete branch, validate)
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage check-merge-status --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage check-merge-status --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage apply-cleanup >/dev/null 2>&1 || true
 
 # Apply the plan: executes pull main ff-only, validation checks, worktree removal, branch deletion
 # CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
@@ -532,7 +532,7 @@ APPLY_RESULT_CODE=$?
 
 if [ $APPLY_RESULT_CODE -ne 0 ]; then
   echo "ERROR: Failed to apply cleanup"
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage apply-cleanup --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
@@ -545,8 +545,8 @@ else
   echo "Cleanup will continue (PR already merged, worktree removed)."
 fi
 
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage apply-cleanup --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage restack-children 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage apply-cleanup --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage restack-children >/dev/null 2>&1 || true
 ```
 
 ### 2.6. Detect Stacked Children & Sync/Restack
@@ -821,8 +821,8 @@ cache-clearing snippet (emitted with the runbook) for each child stack-sync repo
 snippet is part of the runbook itself.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage restack-children --outcome success 2>/dev/null || true
-TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --command-id "$TELEMETRY_CMD_ID" --stage remove-worktree 2>/dev/null || echo unknown)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage restack-children --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage remove-worktree >/dev/null 2>&1 || true
 ```
 
 ### 3. Remove Worktree (from main)
@@ -843,8 +843,8 @@ else
   echo "Worktree and branch already removed by Step 2.5's apply_cleanup."
 fi
 
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --command-id "$TELEMETRY_CMD_ID" --stage remove-worktree --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage remove-worktree --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome success 2>/dev/null || true
 ```
 
 ## Failure Handling
@@ -854,7 +854,7 @@ resolves to main, target not a registered worktree, or the "shell stuck in delet
 mark the command as failed — non-fatal, same as every other telemetry call in this doc:
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command-id "$TELEMETRY_CMD_ID" --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --outcome failure --failure-class guard_block 2>/dev/null || true
 ```
 
 | Scenario | Action |
