@@ -91,10 +91,16 @@ if __name__ == "__main__":
         not allowed and reason is not None
     )
 
-    allowed, reason = check_mutation_allowed(["push", "origin", "main"])
+    allowed, reason = check_mutation_allowed(["fetch", "origin", "main"])
     test_result(
         "check_mutation_allowed: rejects unlisted subcommand",
         not allowed and "not in mutation allowlist" in reason
+    )
+
+    allowed, reason = check_mutation_allowed(["push", "origin", "main"])
+    test_result(
+        "check_mutation_allowed: rejects push with wrong shape (missing -u flag)",
+        not allowed and "does not match any allowed pattern" in reason
     )
 
     allowed, reason = check_mutation_allowed(["reset", "--hard", "HEAD"])
@@ -186,6 +192,139 @@ if __name__ == "__main__":
             "pull_ff_only: calls funnel",
             success and err is None and mock_run.called
         )
+
+    print()
+    print("[Section 4] New shipit-related allowlist shapes")
+
+    # git add -A
+    allowed, reason = check_mutation_allowed(["add", "-A"])
+    test_result(
+        "check_mutation_allowed: allowed git add -A",
+        allowed and reason is None,
+        f"got allowed={allowed}, reason={reason}"
+    )
+
+    allowed, reason = check_mutation_allowed(["add", "-A", "extra_arg"])
+    test_result(
+        "check_mutation_allowed: rejects add with extra args",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["add", "file.txt"])
+    test_result(
+        "check_mutation_allowed: rejects add with wrong shape (not -A)",
+        not allowed and "does not match any allowed pattern" in reason
+    )
+
+    # git commit -F <path>
+    allowed, reason = check_mutation_allowed(["commit", "-F", "--", "/tmp/msg.txt"])
+    test_result(
+        "check_mutation_allowed: allowed git commit -F with -- separator",
+        allowed and reason is None,
+        f"got allowed={allowed}, reason={reason}"
+    )
+
+    allowed, reason = check_mutation_allowed(["commit", "-F", "--", ""])
+    test_result(
+        "check_mutation_allowed: rejects commit -F with empty path",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["commit", "-m", "message"])
+    test_result(
+        "check_mutation_allowed: rejects commit -m (not allowed, only -F)",
+        not allowed and "does not match any allowed pattern" in reason
+    )
+
+    # git push -u <remote> <branch>
+    allowed, reason = check_mutation_allowed(["push", "-u", "origin", "feature"])
+    test_result(
+        "check_mutation_allowed: allowed git push -u origin branch",
+        allowed and reason is None,
+        f"got allowed={allowed}, reason={reason}"
+    )
+
+    # CRITICAL: reject --force variants
+    allowed, reason = check_mutation_allowed(["push", "-u", "--force", "origin", "feature"])
+    test_result(
+        "check_mutation_allowed: rejects push with --force",
+        not allowed and reason is not None,
+        f"--force should NOT be allowed, got allowed={allowed}"
+    )
+
+    allowed, reason = check_mutation_allowed(["push", "--force", "-u", "origin", "feature"])
+    test_result(
+        "check_mutation_allowed: rejects push with --force (different position)",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["push", "-u", "--force-with-lease", "origin", "feature"])
+    test_result(
+        "check_mutation_allowed: rejects push with --force-with-lease",
+        not allowed and reason is not None,
+        f"--force-with-lease should NOT be allowed"
+    )
+
+    allowed, reason = check_mutation_allowed(["push", "-f", "origin", "feature"])
+    test_result(
+        "check_mutation_allowed: rejects push with -f (short form of --force)",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["push", "origin", "feature"])
+    test_result(
+        "check_mutation_allowed: rejects push without -u flag",
+        not allowed and "does not match any allowed pattern" in reason
+    )
+
+    # pr create --title <title> --body-file <path>
+    allowed, reason = check_mutation_allowed(["pr", "create", "--title", "Test PR", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: allowed pr create with title and body-file",
+        allowed and reason is None,
+        f"got allowed={allowed}, reason={reason}"
+    )
+
+    # pr create --title <title> --base <branch> --body-file <path> (stacked)
+    allowed, reason = check_mutation_allowed(["pr", "create", "--title", "Test PR", "--base", "parent", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: allowed pr create with title, base, and body-file (stacked)",
+        allowed and reason is None,
+        f"got allowed={allowed}, reason={reason}"
+    )
+
+    allowed, reason = check_mutation_allowed(["pr", "create", "--title", "", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: rejects pr create with empty title",
+        not allowed and reason is not None
+    )
+
+    allowed, reason = check_mutation_allowed(["pr", "create", "--title", "Test", "--body-file", ""])
+    test_result(
+        "check_mutation_allowed: rejects pr create with empty body-file path",
+        not allowed and reason is not None
+    )
+
+    # pr edit <pr_number> --title <title> --body-file <path>
+    allowed, reason = check_mutation_allowed(["pr", "edit", "123", "--title", "Updated PR", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: allowed pr edit",
+        allowed and reason is None,
+        f"got allowed={allowed}, reason={reason}"
+    )
+
+    allowed, reason = check_mutation_allowed(["pr", "edit", "--title", "Test", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: rejects pr edit without pr_number",
+        not allowed and reason is not None
+    )
+
+    # Test that pr edit handles arbitrary pr_number placeholder (doesn't validate numeric)
+    allowed, reason = check_mutation_allowed(["pr", "edit", "any_value", "--title", "Test", "--body-file", "/tmp/body.md"])
+    test_result(
+        "check_mutation_allowed: allows pr edit with arbitrary pr_number",
+        allowed and reason is None
+    )
 
     print()
     h.summarize_and_exit()

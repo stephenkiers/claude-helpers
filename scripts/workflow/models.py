@@ -133,6 +133,8 @@ class RepoCacheData:
     # distinct from the key being absent entirely, which the .get(...) call sites below
     # already treat identically (both skip the command), so from_dict need not distinguish them.
     commands: Dict[str, Optional[str]] = field(default_factory=dict)
+    # List of command keys that can be parallelized (typically lint, vet); defaults to []
+    parallelizable: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -144,11 +146,15 @@ class RepoCacheData:
         # /shipit's real cache (commands/shipit.md) writes a top-level "version" int, never
         # "schema_version" — accept whichever key is present rather than losing the field.
         version = data.get("schema_version", data.get("version", REPO_CACHE_SCHEMA_VERSION))
+        parallelizable = data.get("parallelizable", [])
+        if not isinstance(parallelizable, list):
+            parallelizable = []
         return cls(
             schema_version=str(version),
             repo_path=data.get("repo_path", ""),
             worktree_parent=data.get("worktree_parent", ""),
-            commands=dict(data.get("commands") or {})
+            commands=dict(data.get("commands") or {}),
+            parallelizable=parallelizable
         )
 
 

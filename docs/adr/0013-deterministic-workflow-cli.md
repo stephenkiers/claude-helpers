@@ -123,3 +123,24 @@ Phase 2+ will wire Phases 1's read-only primitives into mutation planning:
 **Forward compatibility implementation:** The plan/apply pattern realizes the "Forward compatibility" section (Consequences): `plan_*` reads repo state via Phase 1 primitives and returns a JSON plan with resolved state, freshness triple, and intended operations. `apply_*` validates freshness (Decision 2: all three of {expected HEAD SHA, cache content hash, branch name} must match current repo state or plan is rejected), then executes mutations. This separates read-only inspection from destructive operations, enabling safe re-planning if state changes.
 
 **Mutation allowlist mechanism:** `scripts/workflow/mutations.py` implements the centralized mutation funnel — `check_mutation_allowed(args)` rejects anything not in the exact-shape allowlist, replacing the Bash-tool-allowlist enforcement the `.md` docs previously relied on. The allowlist is data-driven (dict of subcommand → permitted argument shapes), and every mutation function in `git.py` must route through the funnel before invoking the underlying command — the git mutations (`remove_worktree`, `delete_branch`, `pull_ff_only`) before calling `run_git_command`, and the one `gh` mutation (`pr_merge_squash`, backing `gh pr merge --squash`) before calling `run_gh_command`. The allowlist accordingly has four subcommand keys: `worktree`, `branch`, `pull`, and `pr`.
+
+### Amendment 2: /shipit golden-path scope
+
+**Scope expanded:** The /shipit command's check execution, commit/push/PR-mechanics are migrated into `shipit.py` (deterministic portions only — PR title/body authoring stays prose, stacked push orchestration stays delegated to `/stack-sync`).
+
+**Explicit scope boundary (golden path only):**
+- **In scope:** check execution via `run_checks()` (format → check → parallelizable → build, stopping at first failure); `git add -A` + commit with message file; plain `git push -u origin <branch>` (never forced); mechanical `gh pr create`/`gh pr edit` invocation (title/body supplied by wrapper as a file, not authored by the CLI).
+- **Out of scope permanently:** PR title/body authoring (stays model judgment in `.md`), recognized-vs-novel-content merge logic (stays prose), stacked push orchestration (delegated to `/stack-sync` via skill invocation), descendant sync (delegated to `/stack-sync`), force-with-lease (plain push only, no forced variants in allowlist).
+
+**Check execution design (Decision 5):** `run_checks()` is a bare function (not plan/apply), non-destructive and idempotent. Cached check commands execute via `shell=True` (matches `execute_check`'s existing implementation — intentional for shell syntax support like `&&` and pipes). Trust boundary: `.claude/repo-cache.json` is repo-committer-controlled, not PR/attacker input. Returns `CheckResults` dataclass with ordered list of per-command results and `all_passed`/`failed_at` fields.
+
+**Cache schema extended:** `RepoCacheData.parallelizable: List[str]` added (defaults to `[]` if absent in file), round-trips through `to_dict()`/`from_dict()` for freshn
+ess tracking via cache hash.
+
+**Mutation allowlist additions:** Three new git keys (`add`, `commit`, `push`) plus extended `pr` shapes:
+- `"add": {("-A",): "git add -A"}` — no other shape.
+- `"commit": {("-F", "--", "<path>"): "git commit -F -- <path>"}` — message file only.
+- `"push": {("-u", "<remote>", "<branch>"): "git push -u <remote> <branch>"}` — plain, non-forced only.
+- `"pr"` extended with: `("create", "--title", "<title>", "--body-file", "<path>")`, `("create", "--title", "<title>", "--base", "<branch>", "--body-file", "<path>")` (stacked), `("edit", "<pr_number>", "--title", "<title>", "--body-file", "<path>")`.
+
+**Plan/apply pattern:** `ShipitPlan` (freshness triple: branch, expected HEAD SHA, cache hash; commit message path; pr_number/pr_exists; stack info; base branch) and `apply_shipit()` (validates freshness, stages, commits, pushes, creates/edits PR, writes cache back). Mirrors `CleanupPlan`/`apply_cleanup` structure exactly.
