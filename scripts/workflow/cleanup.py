@@ -280,13 +280,18 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
 
 
 def _extract_check_commands(cache_data: RepoCacheData) -> List[str]:
-    """Extract check commands from repo cache data."""
+    """Extract check commands from repo cache data using build_check_order."""
+    from .checks import build_check_order
+
+    if not hasattr(cache_data, "commands") or not isinstance(cache_data.commands, dict):
+        return []
+
+    planned_order, _ = build_check_order(cache_data.commands)
     commands = []
-    if hasattr(cache_data, "commands") and isinstance(cache_data.commands, dict):
-        order = ["format", "check", "vet", "test", "build"]
-        for key in order:
-            if key in cache_data.commands and cache_data.commands[key]:
-                commands.append(cache_data.commands[key])
+    for cmd_type in planned_order:
+        cmd_value = cache_data.commands.get(cmd_type)
+        if cmd_value:
+            commands.append(cmd_value)
     return commands
 
 
