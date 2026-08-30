@@ -965,6 +965,204 @@ def test_load_and_update_state_with_locking():
         return True, ""
 
 
+def test_findings_counts_typeddict_importable():
+    """FindingsCounts TypedDict can be imported and has correct annotations."""
+    fc = telemetry_schema.FindingsCounts
+    annotations = getattr(fc, '__annotations__', {})
+    expected_keys = {'produced', 'accepted', 'unique', 'rejected', 'acted_upon'}
+    if set(annotations.keys()) != expected_keys:
+        return False, f"expected keys {expected_keys}, got {set(annotations.keys())}"
+    # Check all values are int type
+    if not all(v == int for v in annotations.values()):
+        return False, f"not all annotations are int: {annotations}"
+    return True, ""
+
+
+def test_checks_counts_typeddict_importable():
+    """ChecksCounts TypedDict can be imported and has correct annotations."""
+    cc = telemetry_schema.ChecksCounts
+    annotations = getattr(cc, '__annotations__', {})
+    expected_keys = {'executed', 'passed'}
+    if set(annotations.keys()) != expected_keys:
+        return False, f"expected keys {expected_keys}, got {set(annotations.keys())}"
+    # Check all values are int type
+    if not all(v == int for v in annotations.values()):
+        return False, f"not all annotations are int: {annotations}"
+    return True, ""
+
+
+def test_findings_counts_typeddict_has_optional_keys():
+    """FindingsCounts TypedDict has no required keys (__total__=False)."""
+    fc = telemetry_schema.FindingsCounts
+    # For non-total TypedDict, all keys should be optional
+    required = getattr(fc, '__required_keys__', frozenset())
+    if len(required) > 0:
+        return False, f"FindingsCounts has required keys: {required}"
+    return True, ""
+
+
+def test_checks_counts_typeddict_has_optional_keys():
+    """ChecksCounts TypedDict has no required keys (__total__=False)."""
+    cc = telemetry_schema.ChecksCounts
+    # For non-total TypedDict, all keys should be optional
+    required = getattr(cc, '__required_keys__', frozenset())
+    if len(required) > 0:
+        return False, f"ChecksCounts has required keys: {required}"
+    return True, ""
+
+
+def test_validate_findings_accepts_subset_of_keys():
+    """validate_event accepts findings dict with only a subset of allowed keys."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": 5, "rejected": 1},  # Only 2 of 5 keys
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept subset of findings keys, got errors: {errors}"
+
+
+def test_validate_findings_accepts_single_key():
+    """validate_event accepts findings dict with just one key."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": 10},  # Only one key
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept single findings key, got errors: {errors}"
+
+
+def test_validate_findings_accepts_empty_dict():
+    """validate_event accepts empty findings dict."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={},  # Empty dict
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept empty findings dict, got errors: {errors}"
+
+
+def test_validate_checks_accepts_subset_of_keys():
+    """validate_event accepts checks dict with only a subset of allowed keys."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": 10},  # Only 'executed', no 'passed'
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept subset of checks keys, got errors: {errors}"
+
+
+def test_validate_checks_accepts_single_key():
+    """validate_event accepts checks dict with just one key (passed)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"passed": 9},  # Only 'passed'
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept single checks key, got errors: {errors}"
+
+
+def test_validate_checks_accepts_empty_dict():
+    """validate_event accepts empty checks dict."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={},  # Empty dict
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept empty checks dict, got errors: {errors}"
+
+
+def test_validate_findings_accepts_zero_value():
+    """validate_event accepts findings with zero value (boundary case)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": 0},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept zero value in findings, got errors: {errors}"
+
+
+def test_validate_checks_accepts_zero_value():
+    """validate_event accepts checks with zero value (boundary case)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": 0, "passed": 0},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"should accept zero value in checks, got errors: {errors}"
+
+
+def test_validate_findings_rejects_mixed_valid_and_invalid_keys():
+    """validate_event rejects findings dict with both valid and invalid keys."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": 5, "invalid_key": 1},  # One valid, one invalid
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("findings" in e.lower() for e in errors), f"should reject mixed valid/invalid keys, got errors: {errors}"
+
+
+def test_validate_checks_rejects_mixed_valid_and_invalid_keys():
+    """validate_event rejects checks dict with both valid and invalid keys."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": 10, "invalid_key": 1},  # One valid, one invalid
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("checks" in e.lower() for e in errors), f"should reject mixed valid/invalid keys, got errors: {errors}"
+
+
+def test_validate_findings_all_valid_keys():
+    """validate_event accepts findings dict when each valid key is tested individually."""
+    valid_keys = ["produced", "accepted", "unique", "rejected", "acted_upon"]
+    for key in valid_keys:
+        event = telemetry_schema.build_event(
+            "stage.end",
+            session_id="123",
+            timestamp="2026-08-26T12:00:00Z",
+            findings={key: 1},
+        )
+        errors = telemetry_schema.validate_event(event)
+        if errors:
+            return False, f"key '{key}' should be valid but got errors: {errors}"
+    return True, ""
+
+
+def test_validate_checks_all_valid_keys():
+    """validate_event accepts checks dict when each valid key is tested individually."""
+    valid_keys = ["executed", "passed"]
+    for key in valid_keys:
+        event = telemetry_schema.build_event(
+            "stage.end",
+            session_id="123",
+            timestamp="2026-08-26T12:00:00Z",
+            checks={key: 1},
+        )
+        errors = telemetry_schema.validate_event(event)
+        if errors:
+            return False, f"key '{key}' should be valid but got errors: {errors}"
+    return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -1066,6 +1264,58 @@ if __name__ == "__main__":
 
     passed, msg = test_validate_checks_rejects_bool_value()
     test_result("checks dict rejects bool value", passed, msg)
+
+    # New TypedDict and partial dict tests
+    print("\n[Section 3.1] FindingsCounts and ChecksCounts TypedDict structure")
+    passed, msg = test_findings_counts_typeddict_importable()
+    test_result("FindingsCounts TypedDict importable and has correct annotations", passed, msg)
+
+    passed, msg = test_checks_counts_typeddict_importable()
+    test_result("ChecksCounts TypedDict importable and has correct annotations", passed, msg)
+
+    passed, msg = test_findings_counts_typeddict_has_optional_keys()
+    test_result("FindingsCounts all keys are optional (__total__=False)", passed, msg)
+
+    passed, msg = test_checks_counts_typeddict_has_optional_keys()
+    test_result("ChecksCounts all keys are optional (__total__=False)", passed, msg)
+
+    print("\n[Section 3.2] Partial findings/checks dicts validation")
+    passed, msg = test_validate_findings_accepts_subset_of_keys()
+    test_result("findings dict with subset of keys accepted", passed, msg)
+
+    passed, msg = test_validate_findings_accepts_single_key()
+    test_result("findings dict with single key accepted", passed, msg)
+
+    passed, msg = test_validate_findings_accepts_empty_dict()
+    test_result("empty findings dict accepted", passed, msg)
+
+    passed, msg = test_validate_checks_accepts_subset_of_keys()
+    test_result("checks dict with subset of keys accepted", passed, msg)
+
+    passed, msg = test_validate_checks_accepts_single_key()
+    test_result("checks dict with single key accepted", passed, msg)
+
+    passed, msg = test_validate_checks_accepts_empty_dict()
+    test_result("empty checks dict accepted", passed, msg)
+
+    print("\n[Section 3.3] Boundary cases and edge cases for findings/checks")
+    passed, msg = test_validate_findings_accepts_zero_value()
+    test_result("findings dict with zero value accepted", passed, msg)
+
+    passed, msg = test_validate_checks_accepts_zero_value()
+    test_result("checks dict with zero value accepted", passed, msg)
+
+    passed, msg = test_validate_findings_rejects_mixed_valid_and_invalid_keys()
+    test_result("findings dict rejects mixed valid/invalid keys", passed, msg)
+
+    passed, msg = test_validate_checks_rejects_mixed_valid_and_invalid_keys()
+    test_result("checks dict rejects mixed valid/invalid keys", passed, msg)
+
+    passed, msg = test_validate_findings_all_valid_keys()
+    test_result("findings all valid keys pass individually", passed, msg)
+
+    passed, msg = test_validate_checks_all_valid_keys()
+    test_result("checks all valid keys pass individually", passed, msg)
 
     print()
 
