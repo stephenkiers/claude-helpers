@@ -443,6 +443,85 @@ if __name__ == "__main__":
                         )
 
         print()
+        print("[Section 15] plan_merge with whitespace-only argument behaves like None")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        # Test with spaces
+                        plan_obj, err = plan_merge("   ", cwd=wt_dir)
+                        test_result(
+                            "plan_merge('   ') with spaces resolves via cwd",
+                            plan_obj and plan_obj.pr_number == 42,
+                            "Whitespace-only string should behave like None"
+                        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        # Test with tab
+                        plan_obj, err = plan_merge("\t", cwd=wt_dir)
+                        test_result(
+                            "plan_merge('\\t') with tab resolves via cwd",
+                            plan_obj and plan_obj.pr_number == 42,
+                            "Tab-only string should behave like None"
+                        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        # Test with mixed whitespace
+                        plan_obj, err = plan_merge("  \t  \n  ", cwd=wt_dir)
+                        test_result(
+                            "plan_merge('  \\t  \\n  ') with mixed whitespace resolves via cwd",
+                            plan_obj and plan_obj.pr_number == 42,
+                            "Mixed whitespace should behave like None"
+                        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                mock_is_linked.return_value = False
+
+                # Test whitespace-only fails in main worktree
+                plan_obj, err = plan_merge("   ", cwd=wt_dir)
+                test_result(
+                    "plan_merge('   ') in main worktree returns error",
+                    plan_obj is None and err is not None,
+                    "Whitespace in non-linked worktree should error"
+                )
+
+        print()
         h.summarize_and_exit()
     finally:
         shutil.rmtree(fake_home, ignore_errors=True)

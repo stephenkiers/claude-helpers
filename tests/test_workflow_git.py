@@ -160,4 +160,75 @@ if __name__ == "__main__":
     )
 
     print()
+    print("[Section: is_linked_worktree with real git operations]")
+
+    # Import GitFixture for real git testing
+    import os as os_module
+    from _git_fixture import GitFixture
+
+    # Test 1: is_linked_worktree returns False for main worktree
+    fixture = GitFixture()
+    old_cwd = os_module.getcwd()
+    try:
+        os_module.chdir(fixture.repo_root)
+
+        fixture.create_initial_commit("initial")
+        fixture.create_branch("feature/test")
+
+        # Test main worktree returns False
+        is_linked = git_module.is_linked_worktree(fixture.main_worktree)
+        test_result(
+            "is_linked_worktree returns False for main worktree",
+            is_linked is False,
+            f"got {is_linked}"
+        )
+
+        # Test 2: is_linked_worktree returns True for linked worktree
+        wt_path = fixture.create_worktree("feature/test")
+        is_linked = git_module.is_linked_worktree(wt_path)
+        test_result(
+            "is_linked_worktree returns True for linked worktree",
+            is_linked is True,
+            f"got {is_linked}"
+        )
+
+        # Test 3: is_linked_worktree with explicit Path object
+        is_linked = git_module.is_linked_worktree(Path(wt_path))
+        test_result(
+            "is_linked_worktree works with Path objects",
+            is_linked is True,
+            f"got {is_linked}"
+        )
+
+        # Test 4: is_linked_worktree with None defaults to cwd
+        old_cwd_inner = os_module.getcwd()
+        try:
+            os_module.chdir(wt_path)
+            is_linked = git_module.is_linked_worktree(None)
+            test_result(
+                "is_linked_worktree(None) uses current working directory",
+                is_linked is True,
+                f"got {is_linked}"
+            )
+        finally:
+            os_module.chdir(old_cwd_inner)
+
+        # Test 5: is_linked_worktree with main worktree as cwd when None
+        old_cwd_inner = os_module.getcwd()
+        try:
+            os_module.chdir(fixture.main_worktree)
+            is_linked = git_module.is_linked_worktree(None)
+            test_result(
+                "is_linked_worktree(None) from main worktree returns False",
+                is_linked is False,
+                f"got {is_linked}"
+            )
+        finally:
+            os_module.chdir(old_cwd_inner)
+
+    finally:
+        os_module.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
     h.summarize_and_exit()
