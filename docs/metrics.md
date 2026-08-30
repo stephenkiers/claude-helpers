@@ -410,12 +410,11 @@ combine the resulting `tokens` dict with the command/stage records sharing that 
 is inherently a small ad hoc script per question, not a fixed report — write it fresh each time
 against the specific question being asked.
 
-**Findings/yield vs. cost (once the findings/checks fields land — see the "yield fields" note in
-ADR-0016):** filter `*.end` events for the relevant fields alongside `elapsed_seconds`/token data
+**Findings/yield vs. cost:** filter `*.end` events for findings/checks fields alongside `elapsed_seconds`/token data
 from the join above, to weigh output against cost per the self-measurement goal in ADR-0016 —
 e.g., "does `/implement-with-haiku` produce enough accepted findings/successful outcomes per token
 to justify its cost, relative to other commands?" is exactly the kind of question this log exists
-to answer once yield fields are recorded.
+to answer with yield fields recorded.
 
 ## Privacy Allowlist
 

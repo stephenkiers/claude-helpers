@@ -262,7 +262,7 @@ def test_validate_findings_rejects_unknown_key():
         findings={"bogus_key": 1},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("findings" in e.lower() and "key" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_findings_rejects_negative_value():
@@ -274,7 +274,7 @@ def test_validate_findings_rejects_negative_value():
         findings={"produced": -1},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("findings" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_checks_accepts_valid_keys():
@@ -298,7 +298,7 @@ def test_validate_checks_rejects_non_int_value():
         checks={"executed": "unknown"},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("checks" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_findings_rejects_non_int_value():
@@ -310,7 +310,7 @@ def test_validate_findings_rejects_non_int_value():
         findings={"produced": "unknown"},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("findings" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_checks_rejects_unknown_key():
@@ -322,7 +322,7 @@ def test_validate_checks_rejects_unknown_key():
         checks={"bogus_key": 1},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("checks" in e.lower() and "key" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_checks_rejects_negative_value():
@@ -334,7 +334,7 @@ def test_validate_checks_rejects_negative_value():
         checks={"executed": -1},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("checks" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_findings_rejects_bool_value():
@@ -346,7 +346,7 @@ def test_validate_findings_rejects_bool_value():
         findings={"produced": True},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("findings" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_validate_checks_rejects_bool_value():
@@ -358,7 +358,31 @@ def test_validate_checks_rejects_bool_value():
         checks={"executed": True},
     )
     errors = telemetry_schema.validate_event(event)
-    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+    return any("checks" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_findings_rejects_non_dict_value():
+    """validate_event rejects a non-dict findings value (e.g. string)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings="not-a-dict",
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("must be a dict" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_checks_rejects_non_dict_value():
+    """validate_event rejects a non-dict checks value (e.g. list)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks=["not", "a", "dict"],
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("must be a dict" in e.lower() for e in errors), f"got errors: {errors}"
 
 
 def test_append_event_creates_file():
@@ -1264,6 +1288,12 @@ if __name__ == "__main__":
 
     passed, msg = test_validate_checks_rejects_bool_value()
     test_result("checks dict rejects bool value", passed, msg)
+
+    passed, msg = test_validate_findings_rejects_non_dict_value()
+    test_result("findings dict rejects non-dict value", passed, msg)
+
+    passed, msg = test_validate_checks_rejects_non_dict_value()
+    test_result("checks dict rejects non-dict value", passed, msg)
 
     # New TypedDict and partial dict tests
     print("\n[Section 3.1] FindingsCounts and ChecksCounts TypedDict structure")

@@ -10,6 +10,7 @@ Run with: python3 tests/test_run_metrics.py
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -672,9 +673,9 @@ def test_diagnose_stale_vs_recent_unmatched_breakdown():
 
         if "Unmatched begins by age" not in stdout:
             return False, f"diagnose output missing stale/recent breakdown: {stdout}"
-        if "1 stale" not in stdout:
+        if not re.search(r"\b1 stale\b", stdout):
             return False, f"expected 1 stale unmatched begin, got: {stdout}"
-        if "1 recent" not in stdout:
+        if not re.search(r"\b1 recent\b", stdout):
             return False, f"expected 1 recent unmatched begin, got: {stdout}"
 
         return True, ""

@@ -28,7 +28,7 @@ model selection, or command behavior.
 stage/agent, all UUIDs), repo basename, command/stage/agent/model names, token and cache counts,
 turn count, elapsed time, retries, peak concurrency, transcript/artifact size, outcome and failure
 class. Prompts, source code, diffs, issue bodies, and credentials are never recorded — enforced by
-`validate_event` in the writer (`scripts/run-metrics.py`), and any new call site must use a fixed,
+`build_event`'s closed parameter list in the writer (`scripts/run-metrics.py`), and any new call site must use a fixed,
 enumerated vocabulary for `--stage`/`--command` values rather than interpolating PR/diff-derived
 strings.
 
@@ -47,7 +47,7 @@ subagent fan-out) — that verification is required before instrumenting either.
 `*.end` pairs and reports a match rate and unknown-field rate against thresholds (≥95% match,
 <15% unknown), plus (added alongside this ADR) a stale-vs-recent split for unmatched begins — see
 `docs/metrics.md`'s "Interpreting a low match rate" section for why that split exists and what
-investigating the original ~38% match rate found (predominantly a pre-#107 correlation bug, not
+investigating the original ~37% match rate found (predominantly a pre-#107 correlation bug, not
 session abandonment). This is a health check on the log's trustworthiness, not a production
 alerting system.
 
