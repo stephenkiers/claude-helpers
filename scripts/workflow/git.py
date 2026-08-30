@@ -166,7 +166,15 @@ def get_git_common_dir(cwd: Optional[Path] = None) -> str:
 
 def is_linked_worktree(cwd: Optional[Path] = None) -> bool:
     """True if cwd is inside a linked worktree (not main/bare)."""
-    return get_git_dir(cwd=cwd) != get_git_common_dir(cwd=cwd)
+    resolved_cwd = Path(cwd or Path.cwd())
+    git_dir = get_git_dir(cwd=cwd)
+    git_common_dir = get_git_common_dir(cwd=cwd)
+
+    # Resolve both paths, handling relative paths by resolving relative to cwd
+    git_dir_resolved = (resolved_cwd / git_dir).resolve() if not Path(git_dir).is_absolute() else Path(git_dir).resolve()
+    git_common_dir_resolved = (resolved_cwd / git_common_dir).resolve() if not Path(git_common_dir).is_absolute() else Path(git_common_dir).resolve()
+
+    return git_dir_resolved != git_common_dir_resolved
 
 
 def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> bool:

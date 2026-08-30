@@ -163,14 +163,14 @@ if __name__ == "__main__":
     print("[Section: is_linked_worktree with real git operations]")
 
     # Import GitFixture for real git testing
-    import os as os_module
+    import os
     from _git_fixture import GitFixture
 
     # Test 1: is_linked_worktree returns False for main worktree
     fixture = GitFixture()
-    old_cwd = os_module.getcwd()
+    old_cwd = os.getcwd()
     try:
-        os_module.chdir(fixture.repo_root)
+        os.chdir(fixture.repo_root)
 
         fixture.create_initial_commit("initial")
         fixture.create_branch("feature/test")
@@ -201,9 +201,9 @@ if __name__ == "__main__":
         )
 
         # Test 4: is_linked_worktree with None defaults to cwd
-        old_cwd_inner = os_module.getcwd()
+        old_cwd_inner = os.getcwd()
         try:
-            os_module.chdir(wt_path)
+            os.chdir(wt_path)
             is_linked = git_module.is_linked_worktree(None)
             test_result(
                 "is_linked_worktree(None) uses current working directory",
@@ -211,12 +211,12 @@ if __name__ == "__main__":
                 f"got {is_linked}"
             )
         finally:
-            os_module.chdir(old_cwd_inner)
+            os.chdir(old_cwd_inner)
 
         # Test 5: is_linked_worktree with main worktree as cwd when None
-        old_cwd_inner = os_module.getcwd()
+        old_cwd_inner = os.getcwd()
         try:
-            os_module.chdir(fixture.main_worktree)
+            os.chdir(fixture.main_worktree)
             is_linked = git_module.is_linked_worktree(None)
             test_result(
                 "is_linked_worktree(None) from main worktree returns False",
@@ -224,10 +224,10 @@ if __name__ == "__main__":
                 f"got {is_linked}"
             )
         finally:
-            os_module.chdir(old_cwd_inner)
+            os.chdir(old_cwd_inner)
 
     finally:
-        os_module.chdir(old_cwd)
+        os.chdir(old_cwd)
         fixture.cleanup()
 
     print()

@@ -412,8 +412,8 @@ if __name__ == "__main__":
                     plan_obj is None and err is not None
                 )
                 test_result(
-                    "plan_merge(None) error mentions not being in a worktree",
-                    "not in a worktree" in str(err).lower()
+                    "plan_merge(None) error mentions not being in a linked worktree",
+                    "not in a linked worktree" in str(err).lower()
                 )
 
         print()
@@ -445,65 +445,25 @@ if __name__ == "__main__":
         print()
         print("[Section 15] plan_merge with whitespace-only argument behaves like None")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            wt_dir = tmppath / "worktree"
-            wt_dir.mkdir()
+        for ws in ["   ", "\t", "  \t  \n  "]:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmppath = Path(tmpdir)
+                wt_dir = tmppath / "worktree"
+                wt_dir.mkdir()
 
-            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
-                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
-                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
-                        mock_is_linked.return_value = True
-                        mock_gate.return_value = []
-                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+                with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                    with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                        with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                            mock_is_linked.return_value = True
+                            mock_gate.return_value = []
+                            mock_resolve.return_value = (42, "feature", str(wt_dir))
 
-                        # Test with spaces
-                        plan_obj, err = plan_merge("   ", cwd=wt_dir)
-                        test_result(
-                            "plan_merge('   ') with spaces resolves via cwd",
-                            plan_obj and plan_obj.pr_number == 42,
-                            "Whitespace-only string should behave like None"
-                        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            wt_dir = tmppath / "worktree"
-            wt_dir.mkdir()
-
-            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
-                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
-                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
-                        mock_is_linked.return_value = True
-                        mock_gate.return_value = []
-                        mock_resolve.return_value = (42, "feature", str(wt_dir))
-
-                        # Test with tab
-                        plan_obj, err = plan_merge("\t", cwd=wt_dir)
-                        test_result(
-                            "plan_merge('\\t') with tab resolves via cwd",
-                            plan_obj and plan_obj.pr_number == 42,
-                            "Tab-only string should behave like None"
-                        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            wt_dir = tmppath / "worktree"
-            wt_dir.mkdir()
-
-            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
-                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
-                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
-                        mock_is_linked.return_value = True
-                        mock_gate.return_value = []
-                        mock_resolve.return_value = (42, "feature", str(wt_dir))
-
-                        # Test with mixed whitespace
-                        plan_obj, err = plan_merge("  \t  \n  ", cwd=wt_dir)
-                        test_result(
-                            "plan_merge('  \\t  \\n  ') with mixed whitespace resolves via cwd",
-                            plan_obj and plan_obj.pr_number == 42,
-                            "Mixed whitespace should behave like None"
-                        )
+                            plan_obj, err = plan_merge(ws, cwd=wt_dir)
+                            test_result(
+                                f"plan_merge({ws!r}) with whitespace resolves via cwd",
+                                plan_obj and plan_obj.pr_number == 42,
+                                "Whitespace-only string should behave like None"
+                            )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)

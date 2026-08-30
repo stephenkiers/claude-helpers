@@ -92,7 +92,7 @@ def plan_merge(
     Plan a merge operation (push gate validation).
 
     Resolves PR/worktree from arguments (path mode or PR number), or auto-detects
-    from the current worktree when arguments is empty/None. Then validates the push
+    from the current linked worktree when arguments is empty/None. Then validates the push
     gate's 4 checks:
     1. Not detached HEAD
     2. No uncommitted/untracked changes
@@ -113,25 +113,19 @@ def plan_merge(
         if not arguments or not arguments.strip():
             if not git.is_linked_worktree(cwd=effective_cwd):
                 return None, Unknown(
-                    "No argument provided and not in a worktree. "
-                    "Run from the worktree you want to merge, or pass a PR number or worktree path."
+                    "No argument provided and not in a linked worktree. "
+                    "Run from the linked worktree you want to merge, or pass a PR number or worktree path."
                 )
             target_worktree = str(effective_cwd)
             pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree)
             if not pr_number or not head_ref:
-                return None, Unknown(
-                    f"Could not resolve PR from worktree {target_worktree}: "
-                    f"no cached PR and current branch has no associated PR (has it been pushed with an open PR?)"
-                )
+                return None, Unknown(_unresolved_pr_message(target_worktree, is_current=True))
 
         elif Path(arguments).exists():
             target_worktree = str(Path(arguments).resolve())
             pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree)
             if not pr_number or not head_ref:
-                return None, Unknown(
-                    f"Could not resolve PR from worktree {target_worktree}: "
-                    f"no cached PR and current branch has no associated PR (has it been pushed with an open PR?)"
-                )
+                return None, Unknown(_unresolved_pr_message(target_worktree, is_current=False))
 
         else:
             pr_number, head_ref, target_worktree = _resolve_pr_from_number(arguments, cwd)
@@ -256,6 +250,15 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         return MergeResult(success=False, error=Unknown(f"Invalid plan JSON: {e}")), None
     except Exception as e:
         return MergeResult(success=False, error=Unknown(f"apply_merge failed: {e}")), None
+
+
+def _unresolved_pr_message(target_worktree: str, is_current: bool) -> str:
+    """Build the 'could not resolve PR' error message, worded correctly for the two call sites."""
+    branch_desc = "current branch" if is_current else "worktree's checked-out branch"
+    return (
+        f"Could not resolve PR from worktree {target_worktree}: "
+        f"no cached PR and {branch_desc} has no associated PR (has it been pushed with an open PR?)"
+    )
 
 
 def _resolve_pr_from_worktree(target_worktree: str) -> Tuple[Optional[int], Optional[str], str]:
