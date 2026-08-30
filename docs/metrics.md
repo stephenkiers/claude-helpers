@@ -340,9 +340,9 @@ Run `diagnose` regularly to track telemetry data quality over time.
 
 ### Interpreting a low match rate
 
-`diagnose` also splits unmatched `*.begin` events into **stale** (≥6h old — likely a session
+`diagnose` also splits unmatched `*.begin` events into **stale** (≥12h old — likely a session
 that was interrupted or abandoned before it closed out, or a genuine correlation bug) vs.
-**recent** (<6h old — plausibly still in progress; not evidence of a defect on its own).
+**recent** (<12h old — plausibly still in progress; not evidence of a defect on its own).
 
 This split exists because a low match rate has two very different causes with different fixes:
 
