@@ -66,8 +66,8 @@ EVENT_TYPES = frozenset({
 
 OUTCOME_STATUSES = frozenset({"success", "failure", "interrupted"})
 FAILURE_CLASSES = frozenset({"timeout", "api_error", "test_failure", "guard_block", "other"})
-FINDINGS_KEYS = frozenset({"produced", "accepted", "unique", "rejected", "acted_upon"})
-CHECKS_KEYS = frozenset({"executed", "passed"})
+FINDINGS_KEYS = frozenset(FindingsCounts.__annotations__.keys())
+CHECKS_KEYS = frozenset(ChecksCounts.__annotations__.keys())
 
 
 def outcome_success() -> dict:

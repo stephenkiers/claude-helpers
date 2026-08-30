@@ -17,6 +17,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 # Add scripts/ to path so we can import telemetry_schema
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,7 +28,14 @@ MAX_STDIN_BYTES = 1_048_576  # 1 MiB — hook payloads are small metadata blobs,
 MAX_FIELD_LEN = 4096  # defense-in-depth cap on any single pass-through metadata field
 
 # diagnose: age past which an unmatched begin is reported as "stale" rather than "recent"
-STALE_THRESHOLD_HOURS = 6
+STALE_THRESHOLD_HOURS = 12
+
+
+class StaleRecentSplit(NamedTuple):
+    """Result of stale/recent split computation for unmatched begins."""
+    stale_count: int
+    recent_count: int
+    unparseable_count: int
 
 
 def _bounded(value, max_len=MAX_FIELD_LEN):
@@ -217,12 +225,17 @@ def cmd_command_begin(args):
 def _compute_stale_recent_split(all_begin_pairs, now, stale_threshold_hours):
     """Compute stale/recent split for unmatched begins, and count unparseable timestamps.
 
-    Returns a tuple (stale_count, recent_count, unparseable_count).
+    Returns a StaleRecentSplit with fields stale_count, recent_count, unparseable_count.
 
     Unmatched begins are categorized by age: stale (>= stale_threshold_hours old) are
     likely abandoned/dropped; recent (< stale_threshold_hours old) may still be in progress.
     Begins with unparseable timestamps are tracked separately and excluded from both counts.
+
+    Precondition: `now` must be timezone-aware (e.g., datetime.now(timezone.utc)).
     """
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware (e.g., datetime.now(timezone.utc))")
+
     stale_count = 0
     recent_count = 0
     unparseable_count = 0
@@ -233,6 +246,9 @@ def _compute_stale_recent_split(all_begin_pairs, now, stale_threshold_hours):
                 continue
             ts_str = begin.get("timestamp", "")
             begin_ts = _parse_event_timestamp(ts_str)
+            # Defense-in-depth: upstream filtering (validate_event in append_event) should
+            # guarantee all logged events have parseable timestamps, but we track unparseable
+            # ones here anyway to catch any regressions or edge cases that slip through.
             if begin_ts is None:
                 unparseable_count += 1
                 continue
@@ -244,7 +260,7 @@ def _compute_stale_recent_split(all_begin_pairs, now, stale_threshold_hours):
             else:
                 recent_count += 1
 
-    return stale_count, recent_count, unparseable_count
+    return StaleRecentSplit(stale_count, recent_count, unparseable_count)
 
 
 def _build_optional_dict(pairs):
@@ -276,7 +292,7 @@ def _build_findings_dict(args):
 
 
 def _build_checks_dict(args):
-    """Build a checks dict from --checks-* CLI args, or None if neither was passed."""
+    """Build a checks dict from --checks-* CLI args, or None if none were passed."""
     return _build_optional_dict((
         ("executed", args.checks_executed),
         ("passed", args.checks_passed),
@@ -329,7 +345,11 @@ def cmd_command_end(args):
         findings=_build_findings_dict(args),
         checks=_build_checks_dict(args),
     )
-    telemetry_schema.append_event(args.log, event)
+    try:
+        telemetry_schema.append_event(args.log, event)
+    except ValueError as e:
+        print(f"Error: invalid telemetry event: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print("command.end recorded", file=sys.stderr)
 
@@ -416,7 +436,11 @@ def cmd_stage_end(args):
         findings=_build_findings_dict(args),
         checks=_build_checks_dict(args),
     )
-    telemetry_schema.append_event(args.log, event)
+    try:
+        telemetry_schema.append_event(args.log, event)
+    except ValueError as e:
+        print(f"Error: invalid telemetry event: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print("stage.end recorded", file=sys.stderr)
 
@@ -457,7 +481,7 @@ def cmd_diagnose(args):
         ts = _parse_event_timestamp(ts_str)
         if ts is not None and ts >= cutoff_timestamp:
             filtered_events.append(event)
-        elif ts is None and event.get("event_type", "").endswith(".begin"):
+        elif ts is None:
             # Track events with unparseable/naive timestamps at window-filter stage
             unparseable_timestamp_count += 1
 
@@ -568,9 +592,10 @@ def cmd_diagnose(args):
     # interrupted/abandoned before it could close (a real gap, but not necessarily a bug).
     # Age against STALE_THRESHOLD_HOURS gives a rough split without guessing which.
     now = datetime.now(timezone.utc)
-    stale_count, recent_count, unparseable_count = _compute_stale_recent_split(
+    split = _compute_stale_recent_split(
         all_begin_pairs, now, STALE_THRESHOLD_HOURS
     )
+    stale_count, recent_count, unparseable_count = split.stale_count, split.recent_count, split.unparseable_count
 
     if unparseable_timestamp_count > 0:
         print(
