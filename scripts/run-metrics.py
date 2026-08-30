@@ -451,11 +451,15 @@ def cmd_diagnose(args):
     cutoff_timestamp = datetime.now(timezone.utc) - timedelta(days=args.window_days)
 
     filtered_events = []
+    unparseable_timestamp_count = 0
     for event in events:
         ts_str = event.get("timestamp", "")
         ts = _parse_event_timestamp(ts_str)
         if ts is not None and ts >= cutoff_timestamp:
             filtered_events.append(event)
+        elif ts is None and event.get("event_type", "").endswith(".begin"):
+            # Track events with unparseable/naive timestamps at window-filter stage
+            unparseable_timestamp_count += 1
 
     # Reconcile begin/end pairs by type and correlating id
     sessions = {}  # session_id -> (begin, end or None)
@@ -567,6 +571,12 @@ def cmd_diagnose(args):
     stale_count, recent_count, unparseable_count = _compute_stale_recent_split(
         all_begin_pairs, now, STALE_THRESHOLD_HOURS
     )
+
+    if unparseable_timestamp_count > 0:
+        print(
+            f"Warning: {unparseable_timestamp_count} event(s) had unparseable/naive timestamps "
+            f"and were excluded from this report"
+        )
 
     unmatched_total = total_begins - total_matched
     if unmatched_total:

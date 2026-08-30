@@ -224,7 +224,10 @@ def validate_event(event: dict) -> list:
         ts_str = event.get("timestamp", "")
         try:
             ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-            datetime.fromisoformat(ts_normalized)
+            parsed_ts = datetime.fromisoformat(ts_normalized)
+            # Timestamp must be timezone-aware
+            if parsed_ts.tzinfo is None:
+                errors.append(f"timestamp must be timezone-aware (include 'Z' or a UTC offset), got a naive timestamp: {ts_str}")
         except (ValueError, TypeError):
             errors.append(f"timestamp not parseable as ISO format: {ts_str}")
 
