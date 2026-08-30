@@ -301,6 +301,66 @@ def test_validate_checks_rejects_non_int_value():
     return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
 
 
+def test_validate_findings_rejects_non_int_value():
+    """validate_event catches a non-int findings value."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": "unknown"},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_checks_rejects_unknown_key():
+    """validate_event catches a checks key outside the allowlist."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"bogus_key": 1},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_checks_rejects_negative_value():
+    """validate_event catches a negative checks count."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": -1},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_findings_rejects_bool_value():
+    """validate_event catches a bool findings value (even though bool is technically an int subclass)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": True},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_checks_rejects_bool_value():
+    """validate_event catches a bool checks value (even though bool is technically an int subclass)."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": True},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+
+
 def test_append_event_creates_file():
     """append_event creates the log file and appends one line."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -991,6 +1051,21 @@ if __name__ == "__main__":
 
     passed, msg = test_validate_checks_rejects_non_int_value()
     test_result("checks dict rejects non-int value", passed, msg)
+
+    passed, msg = test_validate_findings_rejects_non_int_value()
+    test_result("findings dict rejects non-int value", passed, msg)
+
+    passed, msg = test_validate_checks_rejects_unknown_key()
+    test_result("checks dict rejects unknown key", passed, msg)
+
+    passed, msg = test_validate_checks_rejects_negative_value()
+    test_result("checks dict rejects negative value", passed, msg)
+
+    passed, msg = test_validate_findings_rejects_bool_value()
+    test_result("findings dict rejects bool value", passed, msg)
+
+    passed, msg = test_validate_checks_rejects_bool_value()
+    test_result("checks dict rejects bool value", passed, msg)
 
     print()
 
