@@ -137,6 +137,14 @@ if __name__ == "__main__":
                 "run_checks: status is 'failed'",
                 result.status == "failed"
             )
+            test_result(
+                "run_checks: a legitimate stop-at-first-failure is not a coverage violation (err is None)",
+                err is None
+            )
+            test_result(
+                "run_checks: not-yet-reached commands are recorded as skipped(not_reached)",
+                {s.command_type for s in result.skipped if s.reason == "not_reached"} == {"typecheck", "test", "build"}
+            )
 
     print()
     print("[Section 4] run_checks handles None/absent commands")

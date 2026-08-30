@@ -208,6 +208,10 @@ def run_checks(
             results.all_passed = False
             results.failed_at = cmd_type
             results.status = "failed"
+            not_reached = planned_order[planned_order.index(cmd_type) + 1:]
+            results.skipped.extend(
+                SkippedCheckReason(remaining, "not_reached") for remaining in not_reached
+            )
             break
 
     if not results.executed:
