@@ -85,8 +85,8 @@ def main():
 
     merge_plan_parser = merge_subparsers.add_parser("plan", help="Plan merge")
     merge_plan_parser.add_argument(
-        "arguments",
-        help="PR number or worktree path"
+        "arguments", nargs="?", default=None,
+        help="PR number or worktree path (defaults to detecting from the current directory)"
     )
 
     merge_apply_parser = merge_subparsers.add_parser("apply", help="Apply merge plan")
