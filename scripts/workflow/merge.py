@@ -210,7 +210,6 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 return result, result.error
             if gate_applied:
                 merge_gate_used = "repo-cache check"
-                merge_succeeded = True
 
         if not merge_succeeded:
             if merge_gate_used == "":
