@@ -7,6 +7,7 @@ Covers: basic git module functionality and error handling via Unknown type.
 Run with: python3 tests/test_workflow_git.py
 """
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -115,6 +116,48 @@ if __name__ == "__main__":
             called_args[0] == ["pr", "list", "--base", "main", "--state", "open", "--json", "number,title"],
             f"got {called_args[0]}"
         )
+
+    print()
+    print("[Section: GitCommandError carries stderr]")
+
+    # Regression: subprocess.CalledProcessError.__str__ reports only the exit status.
+    # Wrapping it as f"...: {e}" therefore dropped git's own diagnostic, which silently
+    # disabled every caller that branches on *why* a command failed (notably
+    # cleanup.py's dirty-tree force-retry, which grepped for "modified or untracked").
+    err = git_module.GitCommandError(
+        128, ["git", "worktree", "remove", "--", "/x"], output="", stderr="fatal: contains modified or untracked files, use --force to delete it\n"
+    )
+    h.test_result(
+        "GitCommandError.__str__ includes stderr",
+        "modified or untracked" in str(err),
+        f"got {str(err)!r}"
+    )
+    h.test_result(
+        "GitCommandError.__str__ still includes the exit status",
+        "exit status 128" in str(err),
+        f"got {str(err)!r}"
+    )
+    h.test_result(
+        "GitCommandError is a CalledProcessError (existing handlers keep catching it)",
+        issubclass(git_module.GitCommandError, subprocess.CalledProcessError)
+    )
+
+    empty = git_module.GitCommandError(1, ["git", "x"], output="", stderr="")
+    h.test_result(
+        "GitCommandError with no stderr does not append a trailing separator",
+        not str(empty).endswith(": "),
+        f"got {str(empty)!r}"
+    )
+
+    # End-to-end through the real subprocess path: the reason surfaced to a caller must
+    # contain git's message, not just the exit code. This is the assertion that would
+    # have caught the original bug.
+    ok, unknown = git_module.remove_worktree(Path("/nonexistent-worktree-xyz"))
+    h.test_result(
+        "remove_worktree surfaces git's stderr in the Unknown reason",
+        ok is False and unknown is not None and "not a working tree" in unknown.reason,
+        f"got {unknown.reason if unknown else None!r}"
+    )
 
     print()
     h.summarize_and_exit()

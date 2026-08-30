@@ -7,10 +7,10 @@ double-merge guard out of inline bash in `commands/merge-and-cleanup.md` and int
 `scripts/workflow/merge.py` / `scripts/workflow/cli.py`, which have their own test coverage
 (`test_workflow_merge.py`, `test_workflow_merge_integration.py`). This suite now only checks the
 doc-content properties that still belong to the `.md` wrapper itself:
-1. No destructive teardown verbs (worktree remove, branch -D, rm -rf) as active commands
+1. No worktree/branch teardown verbs; `rm` only against the command's own /tmp state dir
 2. References /cleanup and passes absolute path ($WT)
 3. Does not re-encode stack logic (per ADR-0011)
-4. Frontmatter allowed-tools excludes destructive verbs (rm, git push)
+4. Frontmatter allowed-tools excludes git push; any Bash(rm:*) grant is documented as /tmp-scoped
 5. Delegates PR/worktree resolution and the push gate to `cli.py merge plan`
 6. Delegates the merge gate to `cli.py merge apply`, checking its exit code before proceeding
 7. Merge gate (Phase 3) comes after PR/worktree resolution (Phase 0 & 1)
@@ -19,6 +19,7 @@ Run with: python3 tests/test_merge_and_cleanup.py
 """
 
 import re
+import shlex
 from _test_harness import REPO_ROOT, Harness
 
 COMMANDS_DIR = REPO_ROOT / "commands"
@@ -80,9 +81,26 @@ t = h.test_result
 # ============================================================================
 # TEST 1: No destructive teardown verbs in active command lines
 # ============================================================================
-print("[Test 1] No destructive teardown verbs (worktree remove, branch -D, rm -rf)")
+print("[Test 1] No worktree/branch teardown; rm confined to the /tmp state dir")
 
-DESTRUCTIVE_VERBS = ["worktree remove", "branch -D", "rm -rf"]
+# Worktree/branch teardown is owned by /cleanup and must never appear here (ADR-0011).
+DESTRUCTIVE_VERBS = ["worktree remove", "branch -D"]
+
+# `rm` is permitted, but ONLY against this command's own PR-scoped /tmp state directory.
+# Anything else -- a worktree path, $WT, a repo path, a bare glob -- is a teardown this
+# command must delegate, so the target is checked rather than the verb being banned outright.
+STATE_DIR_TARGET = re.compile(r'^"?\$MC_STATE_DIR(?:/[^"]*)?"?$|^"?/tmp/merge-and-cleanup\.pr-')
+
+
+def rm_targets(line: str) -> list[str]:
+    """
+    Return the non-flag operands of an `rm` invocation on this line.
+
+    Checked per-operand, not per-line: `rm -rf "$MC_STATE_DIR" "$WT"` must be a violation,
+    and a line-level "does the state dir appear anywhere" substring test would pass it.
+    """
+    tokens = shlex.split(line.split("rm", 1)[1], posix=False)
+    return [tok for tok in tokens if not tok.startswith("-")]
 
 bash_blocks = extract_bash_blocks(MERGE)
 violations = []
@@ -92,6 +110,13 @@ for line_num, block_text in bash_blocks:
         for verb in DESTRUCTIVE_VERBS:
             if verb in line:
                 violations.append(f"line {line_num}: '{verb}'")
+        if re.search(r"\brm\b", line):
+            targets = rm_targets(line)
+            stray = [tk for tk in targets if not STATE_DIR_TARGET.search(tk)]
+            if stray or not targets:
+                violations.append(
+                    f"line {line_num}: 'rm' targets outside the /tmp state dir "
+                    f"({stray or 'no operands'}): {line.strip()}")
 
 t("No destructive verbs as active commands",
   len(violations) == 0,
@@ -151,7 +176,7 @@ print()
 # ============================================================================
 # TEST 4: Frontmatter allowed-tools excludes destructive verbs
 # ============================================================================
-print("[Test 4] Frontmatter allowed-tools excludes Bash(rm:*) and Bash(git push:*)")
+print("[Test 4] Frontmatter allowed-tools excludes Bash(git push:*); Bash(rm:*) is /tmp-scoped")
 
 frontmatter_match = re.search(r"^---\n(.*?)\n---", MERGE, re.DOTALL | re.MULTILINE)
 frontmatter = frontmatter_match.group(1) if frontmatter_match else ""
@@ -159,10 +184,16 @@ frontmatter = frontmatter_match.group(1) if frontmatter_match else ""
 allowed_tools_match = re.search(r"allowed-tools:\s*(.*)$", frontmatter, re.MULTILINE)
 allowed_tools = allowed_tools_match.group(1) if allowed_tools_match else ""
 
-has_rm_tool = "Bash(rm:*)" in allowed_tools or "Bash(rm" in allowed_tools
-t("allowed-tools does NOT contain Bash(rm:*)",
-  not has_rm_tool,
-  "rm operations delegated to /cleanup; should not be in allowed-tools")
+# Bash(rm:*) is granted so Phase 4 can free its own /tmp state dir. The grant itself is
+# unscoped (Claude Code has no directory-prefix form for it), so the guardrail is that the
+# doc must state the /tmp-only scope -- it cannot be widened silently without the claim.
+has_rm_tool = "Bash(rm:*)" in allowed_tools
+rm_scope_documented = "/tmp/merge-and-cleanup.pr-" in MERGE and re.search(
+    r"`Bash\(rm:\*\)`[^\n]*scoped", MERGE)
+t("Bash(rm:*) grant is documented as scoped to the /tmp state dir",
+  (not has_rm_tool) or bool(rm_scope_documented),
+  "allowed-tools grants Bash(rm:*) but the doc does not state it is scoped to "
+  "/tmp/merge-and-cleanup.pr-* state dirs")
 
 has_push_tool = "Bash(git push:*)" in allowed_tools or "Bash(git push" in allowed_tools
 t("allowed-tools does NOT contain Bash(git push:*)",

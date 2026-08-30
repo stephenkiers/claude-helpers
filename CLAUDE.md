@@ -190,6 +190,17 @@ independently rediscovered three times in this repo's own command docs (`command
 and `commands/shipit.md`); if you find a fourth instance, fix it the same way rather than patching
 around it.
 
+**Never write a literal `$0` in a `commands/*.md` shell snippet.** Every `.md` in `commands/` is an
+invocable slash command, and the harness substitutes the invocation's arguments into positional
+tokens in the doc body *before* the shell sees it — so `$0` is rewritten to the user's arguments.
+`awk` is the usual way to hit this, since its only handle on the current record is that token:
+`commands/cleanup.md`'s `_cap8k` helper was written as `awk '{b=length($0)+1; ...}'` and reached
+the model as `awk '{b=length(/Users/.../a-worktree-path)+1; ...}'`, a broken program assembled from a
+filesystem path. Use `python3`, `sed`, or a git command that answers the question directly
+(`git -C <path> branch --show-current` instead of parsing `git worktree list --porcelain`).
+`tests/test_command_doc_shell_conventions.py` enforces this. Files in `prompts/` are exempt — they
+are lazy-loaded by path, never argument-substituted.
+
 ## Agents
 
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back

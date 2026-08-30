@@ -511,5 +511,63 @@ if __name__ == "__main__":
                                     and result.branch_deleted is False
                                 )
 
+        # 11f: a force-retry that SUCCEEDS is not reported as a failure. The safe attempt
+        # being refused is the expected precondition for --force, so recording it in
+        # validation_failures made a fully successful cleanup look like it had failed
+        # (observed on a real merged-PR cleanup).
+        plan_json = json.dumps(_base_plan().to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            mock_branch.return_value = "feature"
+                            mock_sha.return_value = "abc123"
+                            mock_pull.return_value = (True, None)
+                            mock_delete.return_value = (True, None)
+                            mock_remove.side_effect = [
+                                (False, Unknown("fatal: contains modified or untracked files, use --force to delete it")),
+                                (True, None),
+                            ]
+
+                            result, err = apply_cleanup(plan_json)
+
+                            test_result(
+                                "a recovered force-retry records a note, not a validation failure",
+                                result.worktree_removed is True
+                                and result.success is True
+                                and not result.validation_failures
+                                and any("retried with --force" in n for n in result.notes),
+                                f"failures={result.validation_failures} notes={result.notes}"
+                            )
+
+        # 11g: git's real refusal wording (the one that reaches err.reason now that
+        # GitCommandError folds stderr in) triggers the retry.
+        plan_json = json.dumps(_base_plan().to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            mock_branch.return_value = "feature"
+                            mock_sha.return_value = "abc123"
+                            mock_pull.return_value = (True, None)
+                            mock_delete.return_value = (True, None)
+                            mock_remove.side_effect = [
+                                (False, Unknown(
+                                    "Failed to remove worktree /wt: Command '[...]' returned non-zero "
+                                    "exit status 128.: fatal: '/wt' contains modified or untracked files, "
+                                    "use --force to delete it"
+                                )),
+                                (True, None),
+                            ]
+
+                            result, err = apply_cleanup(plan_json)
+
+                            test_result(
+                                "verbatim git refusal text reaches the dirty-tree retry",
+                                mock_remove.call_count == 2 and result.worktree_removed is True
+                            )
+
     print()
     h.summarize_and_exit()

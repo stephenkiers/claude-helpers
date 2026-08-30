@@ -70,6 +70,10 @@ class CleanupResult:
     branch_deleted: bool = False
     validation_passed: bool = True
     validation_failures: List[str] = field(default_factory=list)
+    # Non-fatal observations about how the cleanup reached success (e.g. a safe
+    # worktree removal that had to be retried with --force). Kept separate from
+    # validation_failures so a recovered step is not reported as a failure.
+    notes: List[str] = field(default_factory=list)
     error: Optional[Unknown] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -242,15 +246,40 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
             if success:
                 result.worktree_removed = True
             elif err:
-                result.validation_failures.append(f"Worktree removal failed: {err.reason}")
-                is_dirty_tree_failure = err.reason and ("dirty" in err.reason.lower() or "modified or untracked" in err.reason.lower())
+                # Escalate to --force only for a dirty tree — deliberately NOT for any
+                # failure (a "Permission denied" must not be retried destructively).
+                # This match works only because git.GitCommandError now folds the
+                # subprocess's stderr into err.reason; before that, err.reason held just
+                # "returned non-zero exit status 128" and none of these substrings could
+                # ever appear, so the whole retry was unreachable dead code. "use --force"
+                # is included because it is git's own hint and is the most stable part of
+                # the message. Caveat: git localizes these strings, so a non-English
+                # locale still falls back to the safe (non-forced) path.
+                reason_lower = (err.reason or "").lower()
+                is_dirty_tree_failure = (
+                    "dirty" in reason_lower
+                    or "modified or untracked" in reason_lower
+                    or "use --force" in reason_lower
+                )
+                first_failure = f"Worktree removal failed: {err.reason}"
                 if is_dirty_tree_failure:
                     try:
-                        success, err = git.remove_worktree(Path(plan.target_worktree), force=True, cwd=cwd)
+                        success, retry_err = git.remove_worktree(Path(plan.target_worktree), force=True, cwd=cwd)
                         if success:
+                            # Only a note: the safe attempt being refused is expected
+                            # here (that is what --force is for), so recording it as a
+                            # validation *failure* would report a clean cleanup as failed.
                             result.worktree_removed = True
+                            result.notes.append(f"{first_failure} — retried with --force, succeeded")
+                        else:
+                            result.validation_failures.append(first_failure)
+                            if retry_err:
+                                result.validation_failures.append(f"Forced worktree removal failed: {retry_err.reason}")
                     except Exception as e:
+                        result.validation_failures.append(first_failure)
                         result.validation_failures.append(f"Forced worktree removal error: {e}")
+                else:
+                    result.validation_failures.append(first_failure)
         except Exception as e:
             result.validation_failures.append(f"Worktree removal error: {e}")
 

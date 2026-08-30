@@ -393,10 +393,12 @@ Next, fetch the issue and PR bodies (cheap, read-only — no confirmation needed
 # Issue title + body only (if an issue was detected in 2b). Deliberately skip comments —
 # validation checklists live in the body/test plan, and comment threads can be huge
 # (bots, review chatter). Cap size as a token-cost safety net.
-# Use awk for a codepoint-safe byte cap (head -c can split UTF-8 sequences mid-character).
-# Cap output at ~8000 bytes. length($0) counts bytes on stock macOS/BSD awk (UTF-8 unaware) and
-# codepoints on gawk — on either, 8000 is a conservative safety net, not a strict byte budget.
-_cap8k() { awk 'BEGIN{n=0} {b=length($0)+1; if(n+b>8000){print substr($0,1,8000-n);exit} print; n+=b}'; }
+# Cap output at ~8000 characters, codepoint-safe (head -c can split a UTF-8 sequence
+# mid-character). Uses python3 rather than awk deliberately: awk's only name for the
+# current record is the dollar-zero positional, and that token in a command doc is
+# rewritten by slash-command argument substitution before the shell ever sees it (see
+# CLAUDE.md, "Shell conventions in command docs"). This form has no positionals at all.
+_cap8k() { python3 -c 'import sys; sys.stdout.write(sys.stdin.read()[:8000])'; }
 
 if [ -n "$ISSUE_NUM" ]; then
   RAW_ISSUE=$(gh issue view "$ISSUE_NUM" --json title,body -q '.title, .body' 2>/dev/null || echo "")
@@ -535,6 +537,12 @@ else
   echo "VALIDATION=fail — REGRESSION on main; investigate separately."
   echo "Cleanup will continue (PR already merged, worktree removed)."
 fi
+
+# Non-fatal notes: steps that succeeded but took a recovery path worth reporting
+# (e.g. a worktree removal that had to be retried with --force). These are NOT
+# failures — they are kept out of validation_failures precisely so a recovered
+# cleanup is not reported as a failed one.
+echo "$APPLY_RESULT" | jq -r '.notes[]? | "NOTE: " + .'
 
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage apply-cleanup --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage restack-children >/dev/null 2>&1 || true
