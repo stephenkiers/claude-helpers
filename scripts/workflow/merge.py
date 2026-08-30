@@ -85,14 +85,15 @@ class MergeResult:
 
 @fail_closed
 def plan_merge(
-    arguments: str,
+    arguments: Optional[str] = None,
     cwd: Optional[Path] = None
 ) -> Tuple[Optional[MergePlan], Optional[Unknown]]:
     """
     Plan a merge operation (push gate validation).
 
-    Resolves PR/worktree from arguments (path mode or PR number), then validates
-    the push gate's 4 checks:
+    Resolves PR/worktree from arguments (path mode or PR number), or auto-detects
+    from the current worktree when arguments is empty/None. Then validates the push
+    gate's 4 checks:
     1. Not detached HEAD
     2. No uncommitted/untracked changes
     3. Upstream tracking branch exists
@@ -107,7 +108,20 @@ def plan_merge(
         head_ref: Optional[str] = None
         target_worktree: Optional[str] = None
 
-        if Path(arguments).exists():
+        effective_cwd = cwd or Path.cwd()
+
+        if not arguments or not arguments.strip():
+            if not git.is_linked_worktree(cwd=effective_cwd):
+                return None, Unknown(
+                    "No argument provided and not in a worktree. "
+                    "Run from the worktree you want to merge, or pass a PR number or worktree path."
+                )
+            target_worktree = str(effective_cwd.resolve())
+            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree, cwd)
+            if not pr_number or not head_ref:
+                return None, Unknown(f"Could not resolve PR from worktree {target_worktree}")
+
+        elif Path(arguments).exists():
             target_worktree = str(Path(arguments).resolve())
             pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree, cwd)
             if not pr_number or not head_ref:

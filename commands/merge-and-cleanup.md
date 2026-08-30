@@ -1,14 +1,14 @@
 ---
 name: merge-and-cleanup
-description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
-argument-hint: <PR number | worktree path>
+description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the worktree you want to merge (auto-detects PR), or from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup or /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
+argument-hint: [PR number | worktree path]
 allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
 # Merge and Cleanup
 
-Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Accept either a PR number or a worktree path as input.
+Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Auto-detect the PR when run from the worktree you want to merge, or accept a PR number or worktree path explicitly when run from the main worktree.
 
 **Why `model: haiku`:** every conditional branch here is a literal check against command
 output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
@@ -29,12 +29,14 @@ bounds the blast radius of a misjudgment to "the command halts," not "the wrong 
 
 ### Phase 0 & 1 — Resolve PR, worktree, and run push gate
 
-Accept either a worktree path or a PR number from `$ARGUMENTS`. The plan resolves the PR/worktree and validates the push gate:
-- PR/worktree resolution (cache-first for path mode)
+Auto-detect the PR from the current worktree (when no argument given), or accept a worktree path or PR number from `$ARGUMENTS`. The plan resolves the PR/worktree and validates the push gate:
+- Auto-detection (when run from a linked worktree with no argument) or explicit PR/worktree resolution (cache-first for path mode)
 - 4-check push gate: detached HEAD, uncommitted changes, no upstream, unpushed commits
+- If run from the main worktree with no argument, returns an error (auto-detection only works in a linked worktree)
 
 ```bash
-# Resolve $ARGUMENTS to an absolute path if it's an existing filesystem path; if it's a PR number, pass through unchanged
+# Resolve $ARGUMENTS to an absolute path if it's an existing filesystem path; if it's a PR number or empty, pass through unchanged
+# An empty $ARGUMENTS (or one that's just whitespace) triggers auto-detection from the current worktree
 if [ -e "$ARGUMENTS" ]; then
   ARGUMENTS="$(readlink -f "$ARGUMENTS")"
 fi

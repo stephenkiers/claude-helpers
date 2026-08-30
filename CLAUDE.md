@@ -127,7 +127,7 @@ to get started.
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
-- `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. Takes a PR number
+- `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
 - `/verify-queue` — drain pending "needs measurement" and "needs you" rulings from expert-review claude-action-plans; batched per-repo queue at `<repo>/worktrees/verify-queue.jsonl` drains open items via sync, measurement, and disposition
 - `/fork-planning` — fork a planning session

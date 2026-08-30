@@ -159,6 +159,16 @@ def get_git_dir(cwd: Optional[Path] = None) -> str:
     return run_git_command(["rev-parse", "--git-dir"], cwd=cwd)
 
 
+def get_git_common_dir(cwd: Optional[Path] = None) -> str:
+    """Get git rev-parse --git-common-dir output."""
+    return run_git_command(["rev-parse", "--git-common-dir"], cwd=cwd)
+
+
+def is_linked_worktree(cwd: Optional[Path] = None) -> bool:
+    """True if cwd is inside a linked worktree (not main/bare)."""
+    return get_git_dir(cwd=cwd) != get_git_common_dir(cwd=cwd)
+
+
 def is_ancestor(ancestor: str, descendant: str, cwd: Optional[Path] = None) -> bool:
     """Check if ancestor is an ancestor of descendant using merge-base."""
     try:

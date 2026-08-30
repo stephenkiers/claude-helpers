@@ -371,6 +371,78 @@ if __name__ == "__main__":
                             )
 
         print()
+        print("[Section 12] Auto-detect PR from worktree when no argument given")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        plan_obj, err = plan_merge(None, cwd=wt_dir)
+                        test_result(
+                            "plan_merge(None) in a linked worktree resolves via cwd",
+                            plan_obj and plan_obj.pr_number == 42 and plan_obj.head_ref == "feature"
+                        )
+                        test_result(
+                            "plan_merge(None) calls _resolve_pr_from_worktree with cwd path",
+                            mock_resolve.called and mock_resolve.call_args[0][0] == str(wt_dir.resolve())
+                        )
+
+        print()
+        print("[Section 13] plan_merge with no argument fails in main worktree")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                mock_is_linked.return_value = False
+
+                plan_obj, err = plan_merge(None, cwd=wt_dir)
+                test_result(
+                    "plan_merge(None) in main worktree returns error",
+                    plan_obj is None and err is not None
+                )
+                test_result(
+                    "plan_merge(None) error mentions not being in a worktree",
+                    "not in a worktree" in str(err).lower()
+                )
+
+        print()
+        print("[Section 14] plan_merge with blank string behaves like None")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        plan_obj, err = plan_merge("", cwd=wt_dir)
+                        test_result(
+                            "plan_merge('') in a linked worktree resolves via cwd (regression test)",
+                            plan_obj and plan_obj.pr_number == 42
+                        )
+                        test_result(
+                            "plan_merge('') doesn't use Path('').exists() branch",
+                            mock_resolve.called,
+                            "Should use is_linked_worktree, not Path('').exists()"
+                        )
+
+        print()
         h.summarize_and_exit()
     finally:
         shutil.rmtree(fake_home, ignore_errors=True)
