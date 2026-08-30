@@ -214,9 +214,10 @@ necessary — I could have grepped for the failing test name instead"). This cos
 sentence, since the content is already paid for; do not build any separate tracking/audit mechanism
 for this, and do not retroactively scan past tool calls to produce an efficiency report.
 
-This is a lightweight self-check, not a new gate-failure policy — it doesn't change what
-`shipit.md`/`merge-and-cleanup.md`/`stack-sync.md` already do on failure (stop, report, record
-gotcha, don't commit); it only shapes how the diagnostic read itself is done.
+This doesn't change what `shipit.md`/`merge-and-cleanup.md`/`stack-sync.md` already do on failure
+(stop, report, record gotcha, don't commit) — it only shapes the diagnostic read. Unlike the
+shell-convention check above, there's no static way to verify whether a full log read was actually
+avoidable, so this relies on self-report rather than a lint rule.
 
 ## Agents
 
