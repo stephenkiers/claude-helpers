@@ -169,11 +169,16 @@ and `build`.
 independently-drifting ones.
 
 **Coverage assertion (the actual fix):** `run_checks()` asserts, before returning, that
-`set(executed) | {s.command_type for s in skipped}` equals the set of non-null command keys in the
-cache. A violation returns `Unknown` rather than a silently-incomplete result — this is what makes a
-future silent skip unwritable rather than merely fixed once. Zero eligible commands (empty or
-all-null `commands`) returns `status="no_checks_ran"` and `all_passed=False`, so any legacy wrapper
-still gating on `jq -r '.all_passed // false'` fails closed for free.
+`set(executed) | {s.command_type for s in skipped}` equals `set(commands.keys())` — the full set of
+command keys present in the cache, null-valued ones included, since `build_check_order` records a
+`null_command` skip entry for every present key, not just non-null ones. (An earlier version of this
+assertion compared against only the non-null keys; that failed on any cache explicitly listing every
+command type — the exact schema `commands/shipit.md` documents — since the null-valued keys' skip
+entries then had nothing to match on the right-hand side. Fixed 2026-08-30.) A violation returns
+`Unknown` rather than a silently-incomplete result — this is what makes a future silent skip
+unwritable rather than merely fixed once. Zero eligible commands (empty or all-null `commands`)
+returns `status="no_checks_ran"` and `all_passed=False`, so any legacy wrapper still gating on
+`jq -r '.all_passed // false'` fails closed for free.
 
 **Signature change:** `run_checks(commands, repo_root, timeout) -> Tuple[CheckResults, Optional[Unknown]]`,
 decorated with `@fail_closed`, matching the `(result, Unknown)` convention used elsewhere in the

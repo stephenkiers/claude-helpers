@@ -147,6 +147,45 @@ if __name__ == "__main__":
             )
 
     print()
+    print("[Section 3b] run_checks: a cache listing every command type (mostly null) is not a coverage violation")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_root = Path(tmpdir)
+
+        with mock.patch("workflow.checks.execute_check") as mock_exec:
+            mock_exec.return_value = CheckResult(
+                success=True,
+                returncode=0,
+                stdout="",
+                stderr="",
+                error=None
+            )
+
+            # Matches the documented Cache Schema in commands/shipit.md: every command
+            # type present, with unused ones explicitly null rather than omitted.
+            commands = {
+                "install": None,
+                "format": None,
+                "lint": None,
+                "vet": None,
+                "typecheck": None,
+                "test": "python3 tests/run_all.py",
+                "build": None,
+                "check": None,
+            }
+
+            result, err = run_checks(commands, repo_root=repo_root)
+
+            test_result(
+                "run_checks: fully-enumerated null commands do not trigger a coverage violation (err is None)",
+                err is None
+            )
+            test_result(
+                "run_checks: fully-enumerated null commands still pass with the single non-null command executed",
+                result.all_passed is True and result.executed == ["test"]
+            )
+
+    print()
     print("[Section 4] run_checks handles None/absent commands")
 
     with tempfile.TemporaryDirectory() as tmpdir:

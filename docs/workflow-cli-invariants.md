@@ -130,8 +130,10 @@ independently confirmed no checks apply. `--timeout` bounds the whole run (defau
 ## Check Gate Coverage (ADR-0013 Amendment 3)
 
 **Invariant:** A check gate must never report success without having executed at least one check.
-`executed ∪ skipped` (by command type) must always equal the set of non-null commands in the input
-`commands` map — a gate that silently drops a configured command is a defect, not a valid outcome.
+`executed ∪ skipped` (by command type) must always equal the full set of keys present in the input
+`commands` map — null-valued keys included, since `build_check_order` records a `null_command` skip
+entry for every key present, not just non-null ones — a gate that silently drops a configured
+command is a defect, not a valid outcome.
 
 **Rationale:** `/shipit`'s gate once returned `{"results": [], "all_passed": true}` for a cache with
 `commands.test` set but an empty `parallelizable` array — a check gate that passes having run
@@ -143,9 +145,15 @@ See issue #116.
 commands run and why any command is skipped (`null_command`, `superseded_by_check`, `not_a_check`,
 `not_reached`) — reused by `run_checks()` (`/shipit`), `merge.py`'s merge gate, and `cleanup.py`'s
 post-merge regression gate. `run_checks()` asserts `set(executed) | {s.command_type for s in
-skipped} == non_null_command_keys` before returning; a violation returns `Unknown` instead of a
+skipped} == set(commands.keys())` before returning; a violation returns `Unknown` instead of a
 result that looks complete. Zero eligible commands returns `status="no_checks_ran"` with
 `all_passed=False` (never `True`), so callers still checking only `all_passed` fail closed.
+
+**Historical note:** an earlier version of this assertion compared against only the non-null
+command keys, which meant any cache explicitly listing every command type (the exact schema
+`commands/shipit.md` documents, with unused types set to `null`) failed the assertion on every
+run, since `build_check_order` records a `null_command` skip entry for null-valued keys too. Fixed
+2026-08-30 by comparing against `set(commands.keys())` instead.
 
 ## No Per-Project Configuration (Decision 3)
 

@@ -179,7 +179,10 @@ def run_checks(
 
     Returns:
         (CheckResults, None) on normal execution (pass, fail, or no_checks_ran).
-        (CheckResults, Unknown(...)) if coverage assertion fails (executed ∪ skipped != non-null set).
+        (CheckResults, Unknown(...)) if coverage assertion fails (executed ∪ skipped != the full
+        set of configured command keys — null-valued keys included, since build_check_order
+        records a null_command skip entry for every key present in `commands`, not just non-null
+        ones).
     """
     results = CheckResults()
     planned_order, skip_reasons = build_check_order(commands)
@@ -220,10 +223,11 @@ def run_checks(
         reason = "empty_cache" if not non_null_keys else "all_commands_null"
         return results, Unknown(f"run_checks: {reason}")
 
+    all_keys = set(commands.keys())
     executed_or_skipped = set(results.executed) | {s.command_type for s in results.skipped}
-    if executed_or_skipped != non_null_keys:
+    if executed_or_skipped != all_keys:
         return results, Unknown(
-            f"run_checks: coverage violation — executed/skipped {executed_or_skipped} != non-null {non_null_keys}"
+            f"run_checks: coverage violation — executed/skipped {executed_or_skipped} != configured {all_keys}"
         )
 
     if results.status == "passed":
