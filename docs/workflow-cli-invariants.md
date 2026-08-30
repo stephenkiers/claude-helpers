@@ -37,7 +37,6 @@ This document specifies the safety invariants and contracts that every `scripts/
 - Worktree list parsing and parent detection (ADR-0010 logic).
 - Stack detection from cache or ancestor search (ADR-0011 logic).
 - Project root and repo identity via `gh repo view`.
-- Toolchain detection from config file presence.
 - Cache validation against schema.
 
 **Non-deterministic operations (out of scope Phase 1):**
@@ -121,6 +120,40 @@ git.run_git_command(f"merge-base --is-ancestor {ancestor} {descendant}")
 - Dict/dataclass results for composite data.
 
 **Caller responsibility:** Inspect results and handle errors explicitly; never assume success.
+
+**`checks run` CLI exit codes:** `0` = all executed checks passed, `1` = a check failed, `2` = nothing
+ran (empty/all-null `commands`) or the coverage assertion below was violated. `--allow-no-checks`
+converts `2` → `0` while still reporting `status` in the JSON output, for callers that have
+independently confirmed no checks apply. `--timeout` bounds the whole run (default from
+`SHIPIT_CHECK_TIMEOUT_SECS`).
+
+## Check Gate Coverage (ADR-0013 Amendment 3)
+
+**Invariant:** A check gate must never report success without having executed at least one check.
+`executed ∪ skipped` (by command type) must always equal the full set of keys present in the input
+`commands` map — null-valued keys included, since `build_check_order` records a `null_command` skip
+entry for every key present, not just non-null ones — a gate that silently drops a configured
+command is a defect, not a valid outcome.
+
+**Rationale:** `/shipit`'s gate once returned `{"results": [], "all_passed": true}` for a cache with
+`commands.test` set but an empty `parallelizable` array — a check gate that passes having run
+nothing. `/merge-and-cleanup` independently merged a PR with no gate at all because its check-lookup
+read only `commands.check`. Both are the same failure shape: success reported without verification.
+See issue #116.
+
+**Implementation:** `checks.build_check_order(commands)` is the single source of truth for which
+commands run and why any command is skipped (`null_command`, `superseded_by_check`, `not_a_check`,
+`not_reached`) — reused by `run_checks()` (`/shipit`), `merge.py`'s merge gate, and `cleanup.py`'s
+post-merge regression gate. `run_checks()` asserts `set(executed) | {s.command_type for s in
+skipped} == set(commands.keys())` before returning; a violation returns `Unknown` instead of a
+result that looks complete. Zero eligible commands returns `status="no_checks_ran"` with
+`all_passed=False` (never `True`), so callers still checking only `all_passed` fail closed.
+
+**Historical note:** an earlier version of this assertion compared against only the non-null
+command keys, which meant any cache explicitly listing every command type (the exact schema
+`commands/shipit.md` documents, with unused types set to `null`) failed the assertion on every
+run, since `build_check_order` records a `null_command` skip entry for null-valued keys too. Fixed
+2026-08-30 by comparing against `set(commands.keys())` instead.
 
 ## No Per-Project Configuration (Decision 3)
 

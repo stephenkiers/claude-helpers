@@ -65,6 +65,11 @@ Start these in parallel:
 }
 ```
 
+`parallelizable` is advisory-only display metadata — it is round-tripped on disk but never read by
+the check executor. The canonical run order is fixed (`format → check → lint → typecheck → vet →
+test → build`, with `check` superseding `lint`/`typecheck` when both are set), and every non-null
+command in `commands` runs regardless of whether it appears in `parallelizable`.
+
 **Worktree cache (.claude/github-cache.json)** also stores stacked-PR metadata (transient):
 ```json
 "pr": {
@@ -187,6 +192,14 @@ After detection, write `.claude/repo-cache.json` with all discovered commands. S
 
 **Important:** The cache captures what the project actually uses, not what the language could use. If the project has `make lint` that runs `golangci-lint`, store `"lint": "make lint"` — not the raw `golangci-lint` command. This way, if the Makefile changes what `make lint` does, we pick it up on next refresh.
 
+**Refuse to write an all-null `commands` map.** If every key in `commands` resolved to `null` across
+all four sources (0–3, not counting Source 4's language-default fallback also coming up empty), do
+not silently write that cache — it produces a gate with nothing to run. Stop and tell the user no
+runnable check command could be detected for this project, and ask them to add one to
+`.claude/project.yaml`'s `commands` section (Source 0) before proceeding. The cache is gitignored and
+regenerated per worktree, so an unflagged all-null cache would silently re-roll this gap on every
+fresh worktree.
+
 ## 2. Dependencies
 
 If `node_modules` missing (or `node_modules/.bun` for bun): run cached install command.
@@ -199,29 +212,59 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage run-checks >/
 
 **Skip if recently run:** If lint/typecheck/test were run earlier in this conversation and all passed, skip re-running them. Trust the prior results.
 
-Run every non-null command from the cache in this order: format → check (composite, replaces lint+typecheck if present) → parallelizable group → build.
+Every non-null command in the cache runs — no exceptions. The canonical order is: `format → check`
+(composite, replaces `lint`+`typecheck` if present) `→ lint → typecheck → vet → test → build`, plus
+any other cached command key sorted deterministically between `test` and `build`. This is a literal
+contract, not a best-effort pass: a gate that skips a configured command and still reports success is
+the defect this section exists to prevent (see the Check Gate Coverage invariant in
+`docs/workflow-cli-invariants.md`). `parallelizable` plays no role in which commands run — it is
+display metadata only.
+
+**Resolve `CLAUDE_HELPERS_DIR` first** (same pattern used by `/cleanup` and `/merge-and-cleanup` —
+required so the `scripts.workflow` package import resolves regardless of which repo `/shipit` is
+invoked from):
 
 ```bash
-# Run checks via deterministic CLI
-CHECK_RESULT=$(python3 -m scripts.workflow.cli checks run - < <(cat .claude/repo-cache.json 2>/dev/null || echo '{}'))
-CHECK_PASSED=$(printf '%s' "$CHECK_RESULT" | jq -r '.all_passed // false')
-FAILED_AT=$(printf '%s' "$CHECK_RESULT" | jq -r '.failed_at // empty')
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
 ```
 
-**If a command is null in the cache, skip it.** Don't fall back to language defaults at runtime — all defaults were already resolved during detection and written to the cache.
+```bash
+# Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
+# 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
+CACHE_JSON=$(cat .claude/repo-cache.json 2>/dev/null || echo '{}')
+CHECK_RESULT=$(printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run -)
+CHECK_EXIT=$?
+CHECK_STATUS=$(printf '%s' "$CHECK_RESULT" | jq -r '.status // "unknown"')
+CHECK_EXECUTED=$(printf '%s' "$CHECK_RESULT" | jq -r '.executed // [] | join(", ")')
+```
 
-**On failure:** Stop immediately, report error, record gotcha in cache. Do NOT commit.
+**If a command is null in the cache, skip it.** Don't fall back to language defaults at runtime — all
+defaults were already resolved during detection and written to the cache.
+
+**`CHECK_EXIT=2` (`status: "no_checks_ran"`) is a hard failure, never a silent pass** — it means the
+cache had zero runnable commands (empty or all-null `commands`), or the executor couldn't account
+for every configured command. Do not treat an empty result as "nothing to check." Stop and report it
+the same as a failing check; if the project genuinely has no checks configured, that is itself a gap
+worth surfacing to the user rather than swallowing.
+
+**On any non-zero exit (1 or 2):** Stop immediately, report error (including `$CHECK_EXECUTED` so the
+user can see what did run), record gotcha in cache. Do NOT commit.
 
 ```bash
-if [ "$CHECK_PASSED" != "true" ]; then
-  # Check failed
+if [ "$CHECK_EXIT" != "0" ]; then
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome failure --failure-class test_failure 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class test_failure 2>/dev/null || true
   exit 1
 fi
 ```
 
-On success, continue below and close out `run-checks` there.
+On success, continue below and close out `run-checks` there. Report `$CHECK_EXECUTED` to the user as
+part of confirming the gate actually ran something.
 
 ## 4. Commit
 
@@ -434,11 +477,20 @@ the result:
 **With `$TMP_BODY` finalized, use the deterministic CLI to execute push and PR creation/update:**
 
 ```bash
+# Resolve CLAUDE_HELPERS_DIR again — a new Bash tool call does not inherit shell
+# variables from the Run Checks step above.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+
 # Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
 TMP_MSG=$(mktemp)
 # Write the commit message to TMP_MSG here (if not already done above)
 
-SHIPIT_PLAN=$(python3 -m scripts.workflow.cli shipit plan "$TMP_MSG" --body-file "$TMP_BODY" --title "$TITLE")
+SHIPIT_PLAN=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit plan "$TMP_MSG" --body-file "$TMP_BODY" --title "$TITLE")
 PLAN_OK=$(printf '%s' "$SHIPIT_PLAN" | jq -r '.plan_hash // empty')
 if [ -z "$PLAN_OK" ]; then
   echo "ERROR: Failed to plan shipit" >&2
@@ -448,7 +500,7 @@ fi
 # Apply the plan (stages, commits, pushes, creates/edits PR, writes cache).
 # The CLI detects pr_exists from the same cache read above and calls `gh pr edit`
 # instead of `gh pr create` accordingly — it does not re-decide create-vs-edit itself.
-SHIPIT_RESULT=$(echo "$SHIPIT_PLAN" | python3 -m scripts.workflow.cli shipit apply -)
+SHIPIT_RESULT=$(echo "$SHIPIT_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit apply -)
 SHIPIT_OK=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.success // false')
 if [ "$SHIPIT_OK" != "true" ]; then
   ERROR=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.error // "Unknown error"')

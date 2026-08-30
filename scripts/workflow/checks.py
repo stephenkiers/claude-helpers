@@ -1,7 +1,10 @@
 """
-Toolchain and check detection, and check execution for /shipit.
+Check execution for /shipit, /merge-and-cleanup, and /cleanup.
 
-Phase 1: detection only (read-only). Phase 2: execution for /shipit.
+Shared check ordering (CHECK_ORDER) prevents silent skips: every gate
+verifies the same checks in the same order, and none can pass without
+executing something (unless explicitly configured to skip all checks,
+which is a hard error rather than a silent pass).
 """
 
 import json
@@ -10,125 +13,76 @@ import signal
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+
+from .safety import Unknown, fail_closed
 
 
-class ToolchainDetector:
-    """Detect present toolchains from config files in repo root."""
-
-    @staticmethod
-    def detect_typescript(repo_root: Path) -> bool:
-        """Detect TypeScript from tsconfig.json."""
-        return (repo_root / "tsconfig.json").exists()
-
-    @staticmethod
-    def detect_eslint(repo_root: Path) -> bool:
-        """Detect ESLint from eslint config or eslint.config.js."""
-        configs = [
-            ".eslintrc", ".eslintrc.js", ".eslintrc.json", ".eslintrc.yml",
-            ".eslintrc.yaml", "eslint.config.js"
-        ]
-        return any((repo_root / cfg).exists() for cfg in configs)
-
-    @staticmethod
-    def detect_prettier(repo_root: Path) -> bool:
-        """Detect Prettier from config files."""
-        configs = [
-            ".prettierrc", ".prettierrc.json", ".prettierrc.js",
-            ".prettierrc.cjs", ".prettierrc.yml", ".prettierrc.yaml",
-            "prettier.config.js", "prettier.config.cjs"
-        ]
-        return any((repo_root / cfg).exists() for cfg in configs)
-
-    @staticmethod
-    def detect_python(repo_root: Path) -> bool:
-        """Detect Python from pyproject.toml."""
-        return (repo_root / "pyproject.toml").exists()
-
-    @staticmethod
-    def detect_rust(repo_root: Path) -> bool:
-        """Detect Rust from Cargo.toml."""
-        return (repo_root / "Cargo.toml").exists()
-
-    @staticmethod
-    def detect_node(repo_root: Path) -> bool:
-        """Detect Node.js from package.json."""
-        return (repo_root / "package.json").exists()
-
-    @staticmethod
-    def detect_editorconfig(repo_root: Path) -> bool:
-        """Detect EditorConfig."""
-        return (repo_root / ".editorconfig").exists()
-
-    @staticmethod
-    def detect_biome(repo_root: Path) -> bool:
-        """Detect Biome from biome.json."""
-        return (repo_root / "biome.json").exists()
-
-    @staticmethod
-    def get_npm_scripts(repo_root: Path) -> List[str]:
-        """Extract test/check scripts from package.json if present."""
-        scripts = []
-        pkg_json = repo_root / "package.json"
-        if pkg_json.exists():
-            try:
-                data = json.loads(pkg_json.read_text())
-                package_scripts = data.get("scripts", {})
-                if "test" in package_scripts:
-                    scripts.append("test")
-                if "lint" in package_scripts:
-                    scripts.append("lint")
-                if "type-check" in package_scripts:
-                    scripts.append("type-check")
-            except (json.JSONDecodeError, OSError):
-                pass
-        return scripts
+CHECK_ORDER = ("format", "check", "lint", "typecheck", "vet", "test", "build")
+NON_CHECK_COMMANDS = frozenset({"install"})
+SUPERSEDED_BY_CHECK = ("lint", "typecheck")
 
 
-def detect_toolchains(repo_root: Path) -> Dict[str, bool]:
+@dataclass
+class SkippedCheckReason:
+    """Reason a check was skipped."""
+    command_type: str
+    reason: str  # null_command, superseded_by_check, not_a_check, not_reached
+
+
+def build_check_order(commands: Dict[str, Optional[str]]) -> Tuple[List[str], List[SkippedCheckReason]]:
     """
-    Detect all present toolchains.
+    Build the canonical check execution order.
 
-    Returns dict mapping toolchain names to presence (True/False).
+    Pure function that determines which commands to run and which to skip,
+    producing the single source of truth for all gates (shipit, merge, cleanup).
+
+    Args:
+        commands: Dict of command_type → command_string (from cache).
+
+    Returns:
+        (order, skipped) where:
+        - order: list of command types to execute (non-null, in CHECK_ORDER)
+        - skipped: list of SkippedCheckReason explaining each skipped command
     """
-    detector = ToolchainDetector()
-    return {
-        "typescript": detector.detect_typescript(repo_root),
-        "eslint": detector.detect_eslint(repo_root),
-        "prettier": detector.detect_prettier(repo_root),
-        "python": detector.detect_python(repo_root),
-        "rust": detector.detect_rust(repo_root),
-        "node": detector.detect_node(repo_root),
-        "editorconfig": detector.detect_editorconfig(repo_root),
-        "biome": detector.detect_biome(repo_root),
-    }
+    order = []
+    skipped = []
+    extras = {}
 
+    for cmd_type in CHECK_ORDER:
+        if cmd_type not in commands:
+            continue
 
-def detect_checks(repo_root: Path) -> Dict[str, str]:
-    """
-    Detect checks that would run, ordered by precedence.
+        cmd_value = commands[cmd_type]
 
-    Returns dict mapping check names to their commands (not executed).
-    Order matters — tests first, then lints, then type-checks.
-    """
-    detector = ToolchainDetector()
-    checks = {}
+        if cmd_value is None:
+            skipped.append(SkippedCheckReason(cmd_type, "null_command"))
+        elif cmd_type in NON_CHECK_COMMANDS:
+            skipped.append(SkippedCheckReason(cmd_type, "not_a_check"))
+        elif cmd_type in SUPERSEDED_BY_CHECK and "check" in commands and commands["check"] is not None:
+            skipped.append(SkippedCheckReason(cmd_type, "superseded_by_check"))
+        else:
+            order.append(cmd_type)
 
-    npm_scripts = detector.get_npm_scripts(repo_root)
-    if "test" in npm_scripts:
-        checks["npm_test"] = "npm test"
-    if "lint" in npm_scripts:
-        checks["npm_lint"] = "npm run lint"
-    if "type-check" in npm_scripts:
-        checks["npm_typecheck"] = "npm run type-check"
+    for cmd_type in sorted(commands.keys()):
+        if cmd_type not in CHECK_ORDER:
+            cmd_value = commands[cmd_type]
+            if cmd_value is None:
+                skipped.append(SkippedCheckReason(cmd_type, "null_command"))
+            elif cmd_type in NON_CHECK_COMMANDS:
+                skipped.append(SkippedCheckReason(cmd_type, "not_a_check"))
+            else:
+                extras[cmd_type] = cmd_value
 
-    if detector.detect_rust(repo_root):
-        checks["cargo_test"] = "cargo test"
+    if extras:
+        if "test" in order:
+            insert_idx = order.index("test") + 1
+        else:
+            insert_idx = len(order)
+        for idx, cmd_type in enumerate(sorted(extras.keys())):
+            order.insert(insert_idx + idx, cmd_type)
 
-    if detector.detect_python(repo_root):
-        checks["pytest"] = "pytest"
-
-    return checks
+    return order, skipped
 
 
 @dataclass
@@ -155,17 +109,25 @@ class CheckStepResult:
 
 @dataclass
 class CheckResults:
-    """Results of executing all checks for a /shipit run."""
+    """Results of executing all checks for a gate."""
     results: List[CheckStepResult] = field(default_factory=list)
     all_passed: bool = True
     failed_at: Optional[str] = None
+    planned: List[str] = field(default_factory=list)
+    executed: List[str] = field(default_factory=list)
+    skipped: List[SkippedCheckReason] = field(default_factory=list)
+    status: str = "passed"  # "passed", "failed", "no_checks_ran"
 
     def to_dict(self):
         """Convert to dict for JSON serialization."""
         return {
             "results": [asdict(r) for r in self.results],
             "all_passed": self.all_passed,
-            "failed_at": self.failed_at
+            "failed_at": self.failed_at,
+            "planned": self.planned,
+            "executed": self.executed,
+            "skipped": [asdict(s) for s in self.skipped],
+            "status": self.status
         }
 
 
@@ -197,45 +159,43 @@ def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300) -> CheckRes
         return CheckResult(success=False, error=str(e))
 
 
+@fail_closed
 def run_checks(
     commands: Dict[str, Optional[str]],
     repo_root: Path,
-    parallelizable: Optional[List[str]] = None,
     timeout: int = 300
-) -> CheckResults:
+) -> Tuple[CheckResults, Optional[Unknown]]:
     """
-    Execute checks in order (format → check → parallelizable → build), stopping at first failure.
+    Execute checks in canonical order, stopping at first failure.
 
+    Never reports success without executing at least one check.
     Cached check commands execute via shell=True (intentional for shell syntax like && and pipes).
     Trust boundary: .claude/repo-cache.json content is repo-committer-controlled, not PR/attacker input.
 
     Args:
-        commands: Dict of command type → command string (from cache).
+        commands: Dict of command_type → command_string (from cache).
         repo_root: Path to repo root for cwd of executed commands.
-        parallelizable: List of command types to run in the "parallelizable" group (typically lint, vet, typecheck, test).
         timeout: Timeout per command in seconds (default 300).
 
     Returns:
-        CheckResults with ordered list of per-command results, all_passed, and failed_at fields.
+        (CheckResults, None) on normal execution (pass, fail, or no_checks_ran).
+        (CheckResults, Unknown(...)) if coverage assertion fails (executed ∪ skipped != the full
+        set of configured command keys — null-valued keys included, since build_check_order
+        records a null_command skip entry for every key present in `commands`, not just non-null
+        ones).
     """
-    if parallelizable is None:
-        parallelizable = []
-
     results = CheckResults()
-    order = ["format", "check"]
-    effective_parallelizable = list(parallelizable) if parallelizable else []
-    if commands.get("check"):
-        effective_parallelizable = [c for c in effective_parallelizable if c not in ("lint", "typecheck")]
-    order.extend(effective_parallelizable)
-    order.append("build")
+    planned_order, skip_reasons = build_check_order(commands)
+    results.planned = planned_order
+    results.skipped = skip_reasons
 
-    for cmd_type in order:
-        if cmd_type not in commands or commands[cmd_type] is None:
-            continue
+    non_null_keys = {k for k, v in commands.items() if v is not None}
 
+    for cmd_type in planned_order:
         cmd = commands[cmd_type]
         check_result = execute_check(cmd, cwd=repo_root, timeout=timeout)
 
+        results.executed.append(cmd_type)
         step_result = CheckStepResult(
             command_type=cmd_type,
             command=cmd,
@@ -250,6 +210,27 @@ def run_checks(
         if not check_result.success:
             results.all_passed = False
             results.failed_at = cmd_type
+            results.status = "failed"
+            not_reached = planned_order[planned_order.index(cmd_type) + 1:]
+            results.skipped.extend(
+                SkippedCheckReason(remaining, "not_reached") for remaining in not_reached
+            )
             break
 
-    return results
+    if not results.executed:
+        results.all_passed = False
+        results.status = "no_checks_ran"
+        reason = "empty_cache" if not non_null_keys else "all_commands_null"
+        return results, Unknown(f"run_checks: {reason}")
+
+    all_keys = set(commands.keys())
+    executed_or_skipped = set(results.executed) | {s.command_type for s in results.skipped}
+    if executed_or_skipped != all_keys:
+        return results, Unknown(
+            f"run_checks: coverage violation — executed/skipped {executed_or_skipped} != configured {all_keys}"
+        )
+
+    if results.status == "passed":
+        results.status = "passed"
+
+    return results, None

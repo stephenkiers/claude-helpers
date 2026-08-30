@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Test suite for run_checks() orchestration.
+Test suite for run_checks() orchestration and coverage assertion.
 
-Tests the ordering (format → check → parallelizable → build), stop-at-first-failure,
-and handling of None/absent commands.
+Tests the canonical order, fail-closed behavior, coverage assertion,
+and the guarantee that no gate passes without executing something.
 
 Run with: python3 tests/test_workflow_checks_execute.py
 """
@@ -16,7 +16,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.checks import run_checks, CheckResults, CheckStepResult
+from workflow.checks import run_checks, CheckResult, CheckResults, CheckStepResult
+from workflow.safety import Unknown
 from _test_harness import Harness
 
 
@@ -29,7 +30,11 @@ if __name__ == "__main__":
     result = CheckResults(
         results=[],
         all_passed=True,
-        failed_at=None
+        failed_at=None,
+        planned=[],
+        executed=[],
+        skipped=[],
+        status="passed"
     )
     test_result(
         "CheckResults can be instantiated",
@@ -40,8 +45,8 @@ if __name__ == "__main__":
         result.all_passed is True
     )
     test_result(
-        "CheckResults.failed_at defaults to None",
-        result.failed_at is None
+        "CheckResults.status exists",
+        hasattr(result, "status") and result.status == "passed"
     )
 
     print()
@@ -54,9 +59,7 @@ if __name__ == "__main__":
         def mock_execute_check(command, cwd=None, timeout=300):
             """Mock execute_check that records order."""
             execution_order.append(command)
-            return CheckStepResult(
-                command_type="format",
-                command=command,
+            return CheckResult(
                 success=True,
                 returncode=0,
                 stdout="",
@@ -72,16 +75,13 @@ if __name__ == "__main__":
                 "test": "jest",
                 "build": "npm run build"
             }
-            parallelizable = ["lint", "typecheck", "test"]
 
-            result = run_checks(commands, repo_root=repo_root, parallelizable=parallelizable)
+            result, err = run_checks(commands, repo_root=repo_root)
 
-            # Should execute: format, then parallelize lint/typecheck/test, then build
-            # The parallelizable ones should be in there too, but in any order
-            parallelizable_found = all(
-                cmd in execution_order for cmd in ["eslint .", "tsc --noEmit", "jest"]
+            test_result(
+                "run_checks: returns tuple",
+                isinstance(result, CheckResults) and (err is None or isinstance(err, Unknown))
             )
-
             test_result(
                 "run_checks: format executes first",
                 len(execution_order) > 0 and execution_order[0] == "prettier --write ."
@@ -91,8 +91,8 @@ if __name__ == "__main__":
                 len(execution_order) > 0 and execution_order[-1] == "npm run build"
             )
             test_result(
-                "run_checks: parallelizable commands included",
-                parallelizable_found
+                "run_checks: all non-suppressed commands executed",
+                len(result.executed) == 5
             )
 
     print()
@@ -106,9 +106,7 @@ if __name__ == "__main__":
             """Mock that fails at 'lint' and records all calls."""
             execution_calls.append(command)
             success = "lint" not in command
-            return CheckStepResult(
-                command_type="lint" if "lint" in command else "test",
-                command=command,
+            return CheckResult(
                 success=success,
                 returncode=0 if success else 1,
                 stdout="",
@@ -124,11 +122,9 @@ if __name__ == "__main__":
                 "test": "jest",
                 "build": "npm run build"
             }
-            parallelizable = ["lint", "typecheck", "test"]
 
-            result = run_checks(commands, repo_root=repo_root, parallelizable=parallelizable)
+            result, err = run_checks(commands, repo_root=repo_root)
 
-            # Should not reach build because lint fails
             test_result(
                 "run_checks: stops at first failure",
                 not result.all_passed and "build" not in execution_calls
@@ -136,6 +132,57 @@ if __name__ == "__main__":
             test_result(
                 "run_checks: failed_at is set",
                 result.failed_at == "lint"
+            )
+            test_result(
+                "run_checks: status is 'failed'",
+                result.status == "failed"
+            )
+            test_result(
+                "run_checks: a legitimate stop-at-first-failure is not a coverage violation (err is None)",
+                err is None
+            )
+            test_result(
+                "run_checks: not-yet-reached commands are recorded as skipped(not_reached)",
+                {s.command_type for s in result.skipped if s.reason == "not_reached"} == {"typecheck", "test", "build"}
+            )
+
+    print()
+    print("[Section 3b] run_checks: a cache listing every command type (mostly null) is not a coverage violation")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_root = Path(tmpdir)
+
+        with mock.patch("workflow.checks.execute_check") as mock_exec:
+            mock_exec.return_value = CheckResult(
+                success=True,
+                returncode=0,
+                stdout="",
+                stderr="",
+                error=None
+            )
+
+            # Matches the documented Cache Schema in commands/shipit.md: every command
+            # type present, with unused ones explicitly null rather than omitted.
+            commands = {
+                "install": None,
+                "format": None,
+                "lint": None,
+                "vet": None,
+                "typecheck": None,
+                "test": "python3 tests/run_all.py",
+                "build": None,
+                "check": None,
+            }
+
+            result, err = run_checks(commands, repo_root=repo_root)
+
+            test_result(
+                "run_checks: fully-enumerated null commands do not trigger a coverage violation (err is None)",
+                err is None
+            )
+            test_result(
+                "run_checks: fully-enumerated null commands still pass with the single non-null command executed",
+                result.all_passed is True and result.executed == ["test"]
             )
 
     print()
@@ -148,9 +195,7 @@ if __name__ == "__main__":
         def mock_execute_track(command, cwd=None, timeout=300):
             """Mock that tracks executed commands."""
             executed_commands.append(command)
-            return CheckStepResult(
-                command_type="test",
-                command=command,
+            return CheckResult(
                 success=True,
                 returncode=0,
                 stdout="",
@@ -165,9 +210,8 @@ if __name__ == "__main__":
                 "lint": "eslint .",
                 "test": "jest"
             }
-            parallelizable = ["lint"]
 
-            result = run_checks(commands, repo_root=repo_root, parallelizable=parallelizable)
+            result, err = run_checks(commands, repo_root=repo_root)
 
             test_result(
                 "run_checks: accepts dict with None values",
@@ -175,36 +219,35 @@ if __name__ == "__main__":
             )
             test_result(
                 "run_checks: executes only non-None commands",
-                len(executed_commands) > 0
+                len(executed_commands) == 2 and len(result.executed) == 2
+            )
+            test_result(
+                "run_checks: includes lint (not suppressed when no check)",
+                "lint" in result.executed
             )
 
     print()
-    print("[Section 5] run_checks with check present alongside separate lint/typecheck")
+    print("[Section 5] run_checks with check present suppresses lint/typecheck")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_root = Path(tmpdir)
-        check_called = []
-        lint_called = []
-        typecheck_called = []
-        test_called = []
-        build_called = []
+        executed_types = []
 
         def mock_execute_selective(command, cwd=None, timeout=300):
             """Track which command types are called."""
-            if "check" in command or "custom-check" in command:
-                check_called.append(command)
-            elif "lint" in command:
-                lint_called.append(command)
-            elif "typecheck" in command:
-                typecheck_called.append(command)
-            elif "test" in command or "jest" in command:
-                test_called.append(command)
+            # Parse the command to guess type (simplistic but works for test)
+            if "lint" in command:
+                executed_types.append("lint")
+            elif "typecheck" in command or "tsc" in command:
+                executed_types.append("typecheck")
+            elif "check" in command or "custom-check" in command:
+                executed_types.append("check")
+            elif "jest" in command:
+                executed_types.append("test")
             elif "build" in command:
-                build_called.append(command)
+                executed_types.append("build")
 
-            return CheckStepResult(
-                command_type="format",
-                command=command,
+            return CheckResult(
                 success=True,
                 returncode=0,
                 stdout="",
@@ -213,8 +256,6 @@ if __name__ == "__main__":
             )
 
         with mock.patch("workflow.checks.execute_check", side_effect=mock_execute_selective):
-            # According to plan, if "check" is present, does it replace lint/typecheck?
-            # The plan says "if present, replaces lint+typecheck"
             commands = {
                 "format": "prettier --write .",
                 "check": "custom-check",
@@ -223,35 +264,91 @@ if __name__ == "__main__":
                 "test": "jest",
                 "build": "npm run build"
             }
-            parallelizable = ["lint", "typecheck", "test"]
 
-            result = run_checks(commands, repo_root=repo_root, parallelizable=parallelizable)
+            result, err = run_checks(commands, repo_root=repo_root)
 
-            # Per plan: "check (if present, replaces lint+typecheck)"
-            # So lint and typecheck should NOT be called when check is present
             test_result(
-                "run_checks: check replaces lint when both present",
-                len(check_called) > 0 and len(lint_called) == 0
+                "run_checks: check replaces lint",
+                "check" in result.executed and "lint" not in result.executed
             )
             test_result(
-                "run_checks: check replaces typecheck when both present",
-                len(check_called) > 0 and len(typecheck_called) == 0
+                "run_checks: check replaces typecheck",
+                "check" in result.executed and "typecheck" not in result.executed
             )
             test_result(
-                "run_checks: test still runs (not excluded by check)",
-                len(test_called) > 0
+                "run_checks: lint/typecheck are skipped (visible)",
+                any(s.command_type == "lint" and s.reason == "superseded_by_check" for s in result.skipped) and
+                any(s.command_type == "typecheck" and s.reason == "superseded_by_check" for s in result.skipped)
             )
 
     print()
-    print("[Section 6] run_checks returns CheckResults with all_passed=True when all pass")
+    print("[Section 6] run_checks: nothing ran is never a pass")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_root = Path(tmpdir)
 
         with mock.patch("workflow.checks.execute_check") as mock_exec:
-            mock_exec.return_value = CheckStepResult(
-                command_type="test",
-                command="pytest",
+            # No commands at all
+            result, err = run_checks({}, repo_root=repo_root)
+
+            test_result(
+                "run_checks: empty cache returns Unknown",
+                isinstance(err, Unknown)
+            )
+            test_result(
+                "run_checks: empty cache status is 'no_checks_ran'",
+                result.status == "no_checks_ran"
+            )
+            test_result(
+                "run_checks: empty cache all_passed is False",
+                result.all_passed is False
+            )
+            test_result(
+                "run_checks: empty cache never executed",
+                not mock_exec.called
+            )
+
+    print()
+    print("[Section 7] run_checks: all-null commands is never a pass")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_root = Path(tmpdir)
+
+        with mock.patch("workflow.checks.execute_check") as mock_exec:
+            commands = {
+                "format": None,
+                "check": None,
+                "lint": None,
+                "test": None,
+                "build": None
+            }
+            result, err = run_checks(commands, repo_root=repo_root)
+
+            test_result(
+                "run_checks: all-null returns Unknown",
+                isinstance(err, Unknown)
+            )
+            test_result(
+                "run_checks: all-null status is 'no_checks_ran'",
+                result.status == "no_checks_ran"
+            )
+            test_result(
+                "run_checks: all-null all_passed is False",
+                result.all_passed is False
+            )
+            test_result(
+                "run_checks: all-null never executed",
+                not mock_exec.called
+            )
+
+    print()
+    print("[Section 8] run_checks: single test command passes")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_root = Path(tmpdir)
+
+        with mock.patch("workflow.checks.execute_check") as mock_exec:
+            mock_exec.return_value = CheckResult(
                 success=True,
                 returncode=0,
                 stdout="",
@@ -260,32 +357,69 @@ if __name__ == "__main__":
             )
 
             commands = {
-                "format": "prettier --write .",
-                "lint": "eslint .",
-                "build": "npm run build"
+                "test": "pytest"
             }
 
-            result = run_checks(commands, repo_root=repo_root, parallelizable=[])
+            result, err = run_checks(commands, repo_root=repo_root)
 
             test_result(
-                "run_checks: all_passed=True when all succeed",
+                "run_checks: single command passes without error",
+                err is None
+            )
+            test_result(
+                "run_checks: single command all_passed is True",
                 result.all_passed is True
             )
             test_result(
-                "run_checks: failed_at=None when all succeed",
-                result.failed_at is None
+                "run_checks: single command status is 'passed'",
+                result.status == "passed"
+            )
+            test_result(
+                "run_checks: single command executed",
+                result.executed == ["test"]
             )
 
     print()
-    print("[Section 7] run_checks with timeout")
+    print("[Section 9] run_checks: repo-cache with only commands.test runs it")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_root = Path(tmpdir)
+        executed = []
+
+        def mock_track(command, cwd=None, timeout=300):
+            executed.append(command)
+            return CheckResult(
+                success=True,
+                returncode=0,
+                stdout="",
+                stderr="",
+                error=None
+            )
+
+        with mock.patch("workflow.checks.execute_check", side_effect=mock_track):
+            commands = {
+                "test": "pytest"
+            }
+
+            result, err = run_checks(commands, repo_root=repo_root)
+
+            test_result(
+                "run_checks: test command executed (live repro)",
+                len(executed) == 1 and executed[0] == "pytest"
+            )
+            test_result(
+                "run_checks: test result passes",
+                result.all_passed is True
+            )
+
+    print()
+    print("[Section 10] run_checks with timeout")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_root = Path(tmpdir)
 
         with mock.patch("workflow.checks.execute_check") as mock_exec:
-            mock_exec.return_value = CheckStepResult(
-                command_type="test",
-                command="slow-test",
+            mock_exec.return_value = CheckResult(
                 success=True,
                 returncode=0,
                 stdout="",
@@ -297,20 +431,12 @@ if __name__ == "__main__":
                 "test": "slow-test"
             }
 
-            result = run_checks(commands, repo_root=repo_root, timeout=60)
+            result, err = run_checks(commands, repo_root=repo_root, timeout=60)
 
-            # Verify that execute_check was called with timeout parameter
-            if mock_exec.called:
-                called_kwargs = mock_exec.call_args[1]
-                test_result(
-                    "run_checks: passes timeout to execute_check",
-                    "timeout" in called_kwargs and called_kwargs["timeout"] == 60
-                )
-            else:
-                test_result(
-                    "run_checks: timeout parameter accepted",
-                    True
-                )
+            test_result(
+                "run_checks: passes timeout to execute_check",
+                mock_exec.called and mock_exec.call_args[1]["timeout"] == 60
+            )
 
     print()
     h.summarize_and_exit()

@@ -16,6 +16,7 @@ Usage:
 import sys
 import argparse
 import json
+import os
 import dataclasses
 from pathlib import Path
 
@@ -161,6 +162,16 @@ def main():
         "cache",
         help="Repo cache JSON path or '-' to read from stdin"
     )
+    checks_run_parser.add_argument(
+        "--allow-no-checks",
+        action="store_true",
+        help="Convert exit code 2 (no checks ran) to 0"
+    )
+    checks_run_parser.add_argument(
+        "--timeout",
+        type=int,
+        help="Timeout per check in seconds (default from SHIPIT_CHECK_TIMEOUT_SECS or 300)"
+    )
 
     args = parser.parse_args()
 
@@ -291,14 +302,26 @@ def main():
             try:
                 cache_data = json.loads(cache_input)
                 repo_cache = RepoCacheData.from_dict(cache_data)
-                result = checks.run_checks(
+                timeout = args.timeout
+                if timeout is None:
+                    timeout = int(os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS", "300"))
+                result, err = checks.run_checks(
                     commands=repo_cache.commands,
                     repo_root=Path.cwd(),
-                    parallelizable=repo_cache.parallelizable
+                    timeout=timeout
                 )
                 print(json.dumps(result.to_dict()))
-                if not result.all_passed:
-                    sys.exit(1)
+                exit_code = 0
+                if err:
+                    exit_code = 2
+                elif not result.all_passed:
+                    exit_code = 1
+                elif result.status == "no_checks_ran":
+                    exit_code = 2
+                if args.allow_no_checks and exit_code == 2:
+                    exit_code = 0
+                if exit_code != 0:
+                    sys.exit(exit_code)
             except json.JSONDecodeError as e:
                 output = {"success": False, "error": f"Invalid cache JSON: {e}"}
                 print(json.dumps(output))

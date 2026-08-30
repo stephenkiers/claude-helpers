@@ -201,17 +201,16 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 return result, result.error
 
         if not merge_succeeded:
-            check_cmd, cache_err = _get_repo_cache_check_cmd(Path(plan.target_worktree))
-            if cache_err:
-                result.error = Unknown(f"Merge gate check unavailable: {cache_err}")
-                return result, result.error
-            if check_cmd:
-                success, detail = _run_check_command(check_cmd)
-                if success:
-                    merge_gate_used = "repo-cache check"
+            check_success, gate_applied, check_detail = _run_merge_gate_checks(Path(plan.target_worktree))
+            if not check_success:
+                if check_detail:
+                    result.error = Unknown(f"Merge gate check failed: {check_detail}")
                 else:
-                    result.error = Unknown(f"Merge gate check failed: {detail}")
-                    return result, result.error
+                    result.error = Unknown("Merge gate check failed")
+                return result, result.error
+            if gate_applied:
+                merge_gate_used = "repo-cache check"
+                merge_succeeded = True
 
         if not merge_succeeded:
             if merge_gate_used == "":
@@ -402,37 +401,49 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
-def _get_repo_cache_check_cmd(target_worktree: Path) -> Tuple[Optional[str], Optional[Unknown]]:
-    """
-    Get check command from repo-cache.json if it exists.
+def _get_merge_apply_timeout() -> int:
+    """Get timeout for merge apply, defaulting to 1800s."""
+    return int(os.environ.get("MERGE_APPLY_TIMEOUT_SECS", "1800"))
 
-    Returns (check_cmd, None) if found or file doesn't exist.
-    Returns (None, Unknown(...)) if file exists but is unreadable.
+
+def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:
     """
+    Run repo-cache check gate via run_checks.
+
+    Returns (True, False, None) if no cache exists (gate not applied).
+    Returns (True, True, None) if gate passes.
+    Returns (False, True, diagnostic_message) if gate fails.
+    """
+    from .checks import run_checks
+
     cache_file = target_worktree / ".claude" / "repo-cache.json"
     if not cache_file.exists():
-        return None, None
+        return True, False, None
 
     cache_data, err = read_repo_cache(cache_file)
     if err:
-        return None, err
+        return False, True, str(err)
     if not cache_data:
-        return None, None
-    return cache_data.commands.get("check"), None
+        return True, False, None
 
+    timeout = _get_merge_apply_timeout()
+    result, check_err = run_checks(
+        commands=cache_data.commands,
+        repo_root=target_worktree,
+        timeout=timeout
+    )
 
-def _run_check_command(cmd: str) -> Tuple[bool, Optional[str]]:
-    """
-    Run a check command via the shared checks.py executor.
+    if check_err:
+        return False, True, str(check_err)
 
-    Returns (True, None) on success.
-    Returns (False, diagnostic_message) on failure.
-    """
-    from .checks import execute_check
-    result = execute_check(cmd, cwd=None)
-    if result.success:
-        return True, None
-    return False, result.error or result.stderr or f"exit code {result.returncode}"
+    if not result.all_passed:
+        failed_cmd = result.failed_at or "unknown"
+        return False, True, f"Check '{failed_cmd}' failed"
+
+    if result.status == "no_checks_ran":
+        return False, True, "No checks configured or all checks null"
+
+    return True, True, None
 
 
 def _run_gh_pr_merge(pr_number: int, cwd: Optional[Path]) -> Tuple[bool, Optional[str]]:

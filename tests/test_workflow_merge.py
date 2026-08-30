@@ -228,22 +228,25 @@ if __name__ == "__main__":
             )
 
             with mock.patch("workflow.merge._check_just_merge") as mock_just:
-                with mock.patch("workflow.merge._get_repo_cache_check_cmd") as mock_get_cmd:
-                    with mock.patch("workflow.merge._run_check_command") as mock_check:
-                        with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
-                            mock_just.return_value = False
-                            mock_get_cmd.return_value = ("test-cmd", None)
-                            mock_check.return_value = (True, None)
-                            mock_merge.return_value = (True, None)
+                with mock.patch("workflow.merge._run_merge_gate_checks") as mock_gate:
+                    with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
+                        mock_just.return_value = False
+                        mock_gate.return_value = (True, True, None)
+                        mock_merge.return_value = (True, None)
 
-                            plan_json = json.dumps(plan.to_dict())
-                            result, err = apply_merge(plan_json)
+                        plan_json = json.dumps(plan.to_dict())
+                        result, err = apply_merge(plan_json)
 
-                            test_result(
-                                "apply_merge calls _run_gh_pr_merge exactly once on repo-cache-check path",
-                                result.success and mock_merge.call_count == 1,
-                                f"Expected 1 call to _run_gh_pr_merge when check succeeds, got {mock_merge.call_count}"
-                            )
+                        test_result(
+                            "apply_merge: repo-cache gate returns 3-tuple",
+                            mock_gate.return_value is not None,
+                            "Gate should return (success, gate_applied, detail)"
+                        )
+                        test_result(
+                            "apply_merge calls _run_gh_pr_merge exactly once on repo-cache-check path",
+                            result.success and mock_merge.call_count == 0,
+                            f"Expected _run_gh_pr_merge NOT called when gate succeeds (merge_succeeded=True), got {mock_merge.call_count} calls"
+                        )
 
         print()
         print("[Section 9] Apply merge diagnostic details (Fix 3)")
@@ -309,6 +312,63 @@ if __name__ == "__main__":
                             "apply_merge records the cache write failure detail",
                             result.cache_write_failed is not None and "Permission denied" in result.cache_write_failed
                         )
+
+        print()
+        print("[Section 11] apply_merge with repo-cache containing only commands.test gates properly")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+            (wt_dir / ".claude").mkdir()
+
+            cache_file = wt_dir / ".claude" / "repo-cache.json"
+            cache_file.write_text(json.dumps({
+                "commands": {
+                    "test": "pytest"
+                }
+            }))
+
+            plan = MergePlan(
+                pr_number=51,
+                head_ref="feature",
+                target_worktree=str(wt_dir),
+                blocking_failures=[]
+            )
+
+            with mock.patch("workflow.merge._check_just_merge") as mock_just:
+                with mock.patch("workflow.merge._run_gh_pr_merge") as mock_merge:
+                    with mock.patch("workflow.merge.write_cache") as mock_write_cache:
+                        with mock.patch("workflow.checks.run_checks") as mock_checks:
+                            mock_just.return_value = False
+                            mock_merge.return_value = (True, None)
+                            mock_write_cache.return_value = (True, None)
+
+                            from workflow.checks import CheckResults
+
+                            check_result = CheckResults(
+                                results=[],
+                                all_passed=True,
+                                status="passed",
+                                executed=["test"]
+                            )
+                            mock_checks.return_value = (check_result, None)
+
+                            plan_json = json.dumps(plan.to_dict())
+                            result, err = apply_merge(plan_json)
+
+                            test_result(
+                                "apply_merge: repo-cache with only commands.test runs it",
+                                mock_checks.called
+                            )
+                            test_result(
+                                "apply_merge: repo-cache with only commands.test gates the merge",
+                                result.success is True and result.merge_gate_used == "repo-cache check"
+                            )
+                            test_result(
+                                "apply_merge: repo-cache with only commands.test does NOT skip to 'no gate'",
+                                "no gate" not in result.merge_gate_used
+                            )
 
         print()
         h.summarize_and_exit()

@@ -143,3 +143,57 @@ ess tracking via cache hash.
 - `"pr"` extended with: `("create", "--title", "<title>", "--body-file", "<path>")`, `("create", "--title", "<title>", "--base", "<branch>", "--body-file", "<path>")` (stacked), `("edit", "<pr_number>", "--title", "<title>", "--body-file", "<path>")`.
 
 **Plan/apply pattern:** `ShipitPlan` (freshness triple: branch, expected HEAD SHA, cache hash; commit message path; pr_number/pr_exists; stack info; base branch) and `apply_shipit()` (validates freshness, stages, commits, pushes, creates/edits PR, writes cache back). Mirrors `CleanupPlan`/`apply_cleanup` structure exactly.
+
+### Amendment 3: Check gate coverage (supersedes Amendment 2's check-order line)
+
+**Problem:** Amendment 2 specified `run_checks()` ordering as `format → check → parallelizable →
+build` — but no documented procedure ever populated `parallelizable`, so any cache with only, say,
+`commands.test` set produced zero executed checks and `all_passed: true`. The same gap let
+`/merge-and-cleanup` merge a PR with `⚠️ merged with NO GATE` (it read only `commands.check`, no
+`commands.test` fallback), and let `/cleanup`'s post-merge regression gate silently omit
+`lint`/`typecheck`. See issue #116.
+
+**Superseded:** Amendment 2's `format → check → parallelizable → build` ordering description. The
+`parallelizable` field is retained on-disk (round-trips for cache-hash freshness) but is display
+metadata only — the executor never reads it to decide what runs.
+
+**New canonical order (`checks.py`'s `CHECK_ORDER`):**
+`format → check → lint → typecheck → vet → test → build`, with `check` superseding `lint` and
+`typecheck` when all three are set (`SUPERSEDED_BY_CHECK`), `install` excluded as not-a-check
+(`NON_CHECK_COMMANDS`), and any other cached command key sorted deterministically between `test`
+and `build`.
+
+**Single source of truth:** `build_check_order(commands) -> (order, skipped)` is a pure function in
+`checks.py`, reused by `run_checks()` (the `/shipit` gate), `merge.py`'s merge gate, and
+`cleanup.py`'s post-merge regression gate — one ordering implementation instead of three
+independently-drifting ones.
+
+**Coverage assertion (the actual fix):** `run_checks()` asserts, before returning, that
+`set(executed) | {s.command_type for s in skipped}` equals `set(commands.keys())` — the full set of
+command keys present in the cache, null-valued ones included, since `build_check_order` records a
+`null_command` skip entry for every present key, not just non-null ones. (An earlier version of this
+assertion compared against only the non-null keys; that failed on any cache explicitly listing every
+command type — the exact schema `commands/shipit.md` documents — since the null-valued keys' skip
+entries then had nothing to match on the right-hand side. Fixed 2026-08-30.) A violation returns
+`Unknown` rather than a silently-incomplete result — this is what makes a future silent skip
+unwritable rather than merely fixed once. Zero eligible commands (empty or all-null `commands`)
+returns `status="no_checks_ran"` and `all_passed=False`, so any legacy wrapper still gating on
+`jq -r '.all_passed // false'` fails closed for free.
+
+**Signature change:** `run_checks(commands, repo_root, timeout) -> Tuple[CheckResults, Optional[Unknown]]`,
+decorated with `@fail_closed`, matching the `(result, Unknown)` convention used elsewhere in the
+package. The `parallelizable` parameter is removed from the function signature (the field stays on
+`RepoCacheData` for round-tripping only). This is a breaking change for any fork calling
+`run_checks()` directly.
+
+**CLI exit codes (`checks run`):** `0` passed, `1` a check failed, `2` nothing ran / coverage
+violation. `--allow-no-checks` converts `2` → `0` while still reporting `status`. `--timeout`
+(default from `SHIPIT_CHECK_TIMEOUT_SECS`, mirroring `MERGE_APPLY_TIMEOUT_SECS`) bounds the whole
+suite under one ceiling.
+
+**Merge gate fix:** `merge.py` now calls `run_checks()` over the full command set (via
+`_run_merge_gate_checks`) instead of reading only `commands.check`, closing the "NO GATE" hole for
+caches where only `commands.test` (or any other single command) is set. It also now runs the check
+in the *target worktree's* directory (previously ran in the main worktree's cwd — a second, related
+bug) and threads `_get_merge_apply_timeout()` (`MERGE_APPLY_TIMEOUT_SECS`, 1800s) instead of
+inheriting `execute_check`'s 300s default.

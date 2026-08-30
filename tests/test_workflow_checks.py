@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for toolchain detection.
+Test suite for check ordering and execution.
 
 Run with: python3 tests/test_workflow_checks.py
 """
@@ -12,7 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.checks import detect_toolchains, detect_checks, execute_check
+from workflow.checks import (
+    execute_check, build_check_order, CHECK_ORDER, SkippedCheckReason
+)
 from _test_harness import Harness
 
 
@@ -20,127 +22,90 @@ if __name__ == "__main__":
     h = Harness("WORKFLOW CHECKS TEST SUITE")
     test_result = h.test_result
 
-    print("[Section 1] Toolchain detection")
+    print("[Section 1] build_check_order with standard commands")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_root = Path(tmpdir)
+    commands = {
+        "format": "prettier --write .",
+        "check": "custom-check",
+        "lint": "eslint .",
+        "typecheck": "tsc --noEmit",
+        "test": "jest",
+        "build": "npm run build"
+    }
+    planned, skipped = build_check_order(commands)
 
-        toolchains = detect_toolchains(repo_root)
-        test_result(
-            "detect_toolchains() returns a dict",
-            isinstance(toolchains, dict)
-        )
-        test_result(
-            "detect_toolchains() includes typescript",
-            "typescript" in toolchains
-        )
-        test_result(
-            "detect_toolchains() detects missing TypeScript",
-            toolchains["typescript"] is False
-        )
-
-        (repo_root / "tsconfig.json").touch()
-        toolchains = detect_toolchains(repo_root)
-        test_result(
-            "detect_toolchains() detects TypeScript",
-            toolchains["typescript"] is True
-        )
-
-        (repo_root / "package.json").touch()
-        toolchains = detect_toolchains(repo_root)
-        test_result(
-            "detect_toolchains() detects Node.js",
-            toolchains["node"] is True
-        )
-
-        (repo_root / "Cargo.toml").touch()
-        toolchains = detect_toolchains(repo_root)
-        test_result(
-            "detect_toolchains() detects Rust",
-            toolchains["rust"] is True
-        )
+    test_result(
+        "build_check_order: returns tuple",
+        isinstance(planned, list) and isinstance(skipped, list)
+    )
+    test_result(
+        "build_check_order: format first",
+        len(planned) > 0 and planned[0] == "format"
+    )
+    test_result(
+        "build_check_order: check present",
+        "check" in planned
+    )
+    test_result(
+        "build_check_order: lint suppressed by check",
+        "lint" not in planned and any(s.command_type == "lint" and s.reason == "superseded_by_check" for s in skipped)
+    )
+    test_result(
+        "build_check_order: typecheck suppressed by check",
+        "typecheck" not in planned and any(s.command_type == "typecheck" and s.reason == "superseded_by_check" for s in skipped)
+    )
+    test_result(
+        "build_check_order: test and build still run",
+        "test" in planned and "build" in planned
+    )
 
     print()
-    print("[Section 2] ESLint detection")
+    print("[Section 2] build_check_order with null commands")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_root = Path(tmpdir)
+    commands = {
+        "format": None,
+        "check": None,
+        "lint": "eslint .",
+        "test": "jest"
+    }
+    planned, skipped = build_check_order(commands)
 
-        toolchains = detect_toolchains(repo_root)
-        test_result(
-            "detect_toolchains() detects missing ESLint",
-            toolchains["eslint"] is False
-        )
-
-        (repo_root / ".eslintrc.json").touch()
-        toolchains = detect_toolchains(repo_root)
-        test_result(
-            "detect_toolchains() detects ESLint config",
-            toolchains["eslint"] is True
-        )
-
-    print()
-    print("[Section 3] Check detection with package.json scripts")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_root = Path(tmpdir)
-
-        pkg_json = repo_root / "package.json"
-        pkg_data = {
-            "name": "test-pkg",
-            "scripts": {
-                "test": "jest",
-                "lint": "eslint .",
-                "type-check": "tsc --noEmit"
-            }
-        }
-        pkg_json.write_text(json.dumps(pkg_data))
-
-        checks = detect_checks(repo_root)
-        test_result(
-            "detect_checks() returns a dict",
-            isinstance(checks, dict)
-        )
-        test_result(
-            "detect_checks() detects test script",
-            "npm_test" in checks
-        )
-        test_result(
-            "detect_checks() detects lint script",
-            "npm_lint" in checks
-        )
-        test_result(
-            "detect_checks() detects type-check script",
-            "npm_typecheck" in checks
-        )
+    test_result(
+        "build_check_order: skips null format",
+        any(s.command_type == "format" and s.reason == "null_command" for s in skipped)
+    )
+    test_result(
+        "build_check_order: includes lint when no check",
+        "lint" in planned
+    )
+    test_result(
+        "build_check_order: includes test",
+        "test" in planned
+    )
 
     print()
-    print("[Section 4] Check detection without package.json")
+    print("[Section 3] build_check_order preserves CHECK_ORDER")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_root = Path(tmpdir)
+    commands = {
+        "format": "fmt",
+        "lint": "lint",
+        "typecheck": "type",
+        "test": "test",
+        "build": "build"
+    }
+    planned, skipped = build_check_order(commands)
 
-        checks = detect_checks(repo_root)
-        test_result(
-            "detect_checks() handles missing package.json",
-            isinstance(checks, dict)
-        )
-
-    print()
-    print("[Section 5] Check detection with Rust")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_root = Path(tmpdir)
-        (repo_root / "Cargo.toml").touch()
-
-        checks = detect_checks(repo_root)
-        test_result(
-            "detect_checks() detects cargo test",
-            "cargo_test" in checks
-        )
+    test_result(
+        "build_check_order: format before lint",
+        planned.index("format") < planned.index("lint")
+    )
+    test_result(
+        "build_check_order: test before build",
+        planned.index("test") < planned.index("build")
+    )
 
     print()
-    print("[Section 6] Check execution (Fix 11)")
+    print("[Section 4] Check execution (Fix 11)")
 
     result = execute_check("true", cwd=None)
     test_result(
@@ -164,6 +129,32 @@ if __name__ == "__main__":
     test_result(
         "execute_check: times out after specified timeout",
         not result.success and "timed out" in str(result.error).lower()
+    )
+
+    print()
+    print("[Section 5] build_check_order with extras and install")
+
+    commands = {
+        "format": "fmt",
+        "install": "npm install",
+        "lint": "lint",
+        "test": "test",
+        "custom": "custom-check",
+        "build": "build"
+    }
+    planned, skipped = build_check_order(commands)
+
+    test_result(
+        "build_check_order: skips install (not_a_check)",
+        "install" not in planned and any(s.command_type == "install" and s.reason == "not_a_check" for s in skipped)
+    )
+    test_result(
+        "build_check_order: includes custom command",
+        "custom" in planned
+    )
+    test_result(
+        "build_check_order: custom between test and build",
+        planned.index("test") < planned.index("custom") < planned.index("build")
     )
 
     print()
