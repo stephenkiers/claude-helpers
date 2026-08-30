@@ -133,7 +133,7 @@ class RepoCacheData:
     # distinct from the key being absent entirely, which the .get(...) call sites below
     # already treat identically (both skip the command), so from_dict need not distinguish them.
     commands: Dict[str, Optional[str]] = field(default_factory=dict)
-    # List of command keys that can be parallelized (typically lint, vet); defaults to []
+    # Advisory metadata; not read by run_checks. Kept on-disk only to preserve cache round-tripping.
     parallelizable: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
