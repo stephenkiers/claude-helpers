@@ -533,6 +533,55 @@ if __name__ == "__main__":
                 os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
 
         print()
+        print("[Section 17] PR-resolution error message attribution (auto-detect vs explicit path)")
+
+        # Auto-detect case (no argument): the target IS the invoking shell's
+        # current branch, so the error should say "current branch".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (None, None, str(wt_dir))
+
+                        plan_obj, err = plan_merge(None, cwd=wt_dir)
+                        test_result(
+                            "plan_merge(None) with unresolved PR returns error",
+                            plan_obj is None and err is not None
+                        )
+                        test_result(
+                            "Auto-detect case: error references 'current branch'",
+                            "current branch" in str(err).lower(),
+                            f"got: {err}"
+                        )
+
+        # Explicit-path case: the target is NOT necessarily the invoking
+        # shell's current branch, so the error must NOT say "current branch".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                mock_resolve.return_value = (None, None, str(wt_dir))
+
+                plan_obj, err = plan_merge(str(wt_dir))
+                test_result(
+                    "plan_merge(explicit path) with unresolved PR returns error",
+                    plan_obj is None and err is not None
+                )
+                test_result(
+                    "Explicit-path case: error does NOT reference 'current branch'",
+                    "current branch" not in str(err).lower(),
+                    f"got: {err}"
+                )
+
+        print()
         h.summarize_and_exit()
     finally:
         shutil.rmtree(fake_home, ignore_errors=True)

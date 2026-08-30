@@ -226,6 +226,33 @@ if __name__ == "__main__":
         finally:
             os.chdir(old_cwd_inner)
 
+        # Test 6: is_linked_worktree with cwd nested inside the main worktree
+        # (not the main worktree root itself) must still return False. This is
+        # the misclassification bug from Finding 1: a raw-string comparison of
+        # git-dir/git-common-dir doesn't guarantee matching relative/absolute
+        # forms, which could misclassify a nested cwd as linked.
+        subdir = fixture.main_worktree / "src" / "nested" / "deep"
+        subdir.mkdir(parents=True, exist_ok=True)
+        is_linked = git_module.is_linked_worktree(subdir)
+        test_result(
+            "is_linked_worktree returns False for a nested subdir of the main worktree",
+            is_linked is False,
+            f"got {is_linked} when calling from {subdir}"
+        )
+
+        # Test 7: same nested-subdir case via cwd default (None)
+        old_cwd_inner = os.getcwd()
+        try:
+            os.chdir(subdir)
+            is_linked = git_module.is_linked_worktree(None)
+            test_result(
+                "is_linked_worktree(None) returns False from a nested subdir of the main worktree",
+                is_linked is False,
+                f"got {is_linked} when cwd is {os.getcwd()}"
+            )
+        finally:
+            os.chdir(old_cwd_inner)
+
     finally:
         os.chdir(old_cwd)
         fixture.cleanup()
