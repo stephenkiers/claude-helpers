@@ -166,7 +166,7 @@ def get_git_common_dir(cwd: Optional[Path] = None) -> str:
 
 def is_linked_worktree(cwd: Optional[Path] = None) -> bool:
     """True if cwd is inside a linked worktree (not main/bare)."""
-    resolved_cwd = Path(cwd or Path.cwd())
+    resolved_cwd = Path(cwd or Path.cwd()).resolve()
     git_dir = get_git_dir(cwd=cwd)
     git_common_dir = get_git_common_dir(cwd=cwd)
 

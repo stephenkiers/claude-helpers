@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, MergeResult
+from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, MergeResult, _get_merge_apply_timeout, DEFAULT_MERGE_APPLY_TIMEOUT_SECS
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -480,6 +480,57 @@ if __name__ == "__main__":
                     plan_obj is None and err is not None,
                     "Whitespace in non-linked worktree should error"
                 )
+
+        print()
+        print("[Section 16] _get_merge_apply_timeout handles invalid env var gracefully (regression test)")
+
+        # Test that invalid env var doesn't crash
+        old_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+        try:
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "not-a-number"
+            timeout = _get_merge_apply_timeout()
+            test_result(
+                "_get_merge_apply_timeout on invalid input returns default",
+                timeout == DEFAULT_MERGE_APPLY_TIMEOUT_SECS,
+                f"Expected {DEFAULT_MERGE_APPLY_TIMEOUT_SECS}, got {timeout}"
+            )
+        finally:
+            if old_env is not None:
+                os.environ["MERGE_APPLY_TIMEOUT_SECS"] = old_env
+            else:
+                os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
+
+        # Test that valid integer works
+        old_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+        try:
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "600"
+            timeout = _get_merge_apply_timeout()
+            test_result(
+                "_get_merge_apply_timeout with valid integer returns that value",
+                timeout == 600,
+                f"Expected 600, got {timeout}"
+            )
+        finally:
+            if old_env is not None:
+                os.environ["MERGE_APPLY_TIMEOUT_SECS"] = old_env
+            else:
+                os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
+
+        # Test that negative values fall back to default
+        old_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+        try:
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "-100"
+            timeout = _get_merge_apply_timeout()
+            test_result(
+                "_get_merge_apply_timeout on negative value returns default",
+                timeout == DEFAULT_MERGE_APPLY_TIMEOUT_SECS,
+                f"Expected {DEFAULT_MERGE_APPLY_TIMEOUT_SECS}, got {timeout}"
+            )
+        finally:
+            if old_env is not None:
+                os.environ["MERGE_APPLY_TIMEOUT_SECS"] = old_env
+            else:
+                os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
 
         print()
         h.summarize_and_exit()

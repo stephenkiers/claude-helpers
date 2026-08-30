@@ -424,9 +424,6 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
-def _get_merge_apply_timeout() -> int:
-    """Get timeout for merge apply, defaulting to 1800s."""
-    return int(os.environ.get("MERGE_APPLY_TIMEOUT_SECS", "1800"))
 
 
 def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:
