@@ -27,6 +27,29 @@ _DANGEROUS_GIT_ENV_VARS = (
 )
 
 
+class GitCommandError(subprocess.CalledProcessError):
+    """
+    A CalledProcessError whose str() also carries the subprocess's stderr.
+
+    subprocess.CalledProcessError.__str__ reports only the exit status, so the
+    f"...: {e}" wrapping used throughout this module discarded git's own
+    diagnostic ("contains modified or untracked files, use --force to delete
+    it", "is not a working tree", ...). Callers that branch on *why* a command
+    failed therefore never matched: cleanup.py's dirty-tree retry grepped
+    err.reason for "modified or untracked", which could not appear, so the
+    forced-removal fallback was unreachable dead code.
+
+    Subclassing CalledProcessError (rather than raising a new exception type)
+    keeps every existing `except subprocess.CalledProcessError` call site
+    working unchanged.
+    """
+
+    def __str__(self) -> str:
+        base = super().__str__()
+        detail = (self.stderr or "").strip() or (self.output or "").strip()
+        return f"{base}: {detail}" if detail else base
+
+
 def _run(
     executable: str,
     args: List[str],
@@ -50,6 +73,9 @@ def _run(
             env=env
         )
         return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        # Re-raise carrying stderr so callers can see (and branch on) the real reason.
+        raise GitCommandError(e.returncode, e.cmd, output=e.output, stderr=e.stderr) from None
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"{executable} command timed out after {timeout}s: {' '.join(args)}")
 
