@@ -59,8 +59,9 @@ whatever ad hoc question is actually being asked — including "is this expensiv
 which no fixed report can anticipate.
 
 **Yield fields, not just cost fields.** Findings-produced/accepted/unique/rejected/acted-upon and
-checks-executed/outcome are part of the allowlisted event model precisely so a stage's *output*
-can be weighed against its *cost* — matching the `/implement-with-haiku` example above.
+checks-executed/passed — plus the separate, sibling `outcome` field — are part of the allowlisted
+event model precisely so a stage's *output* can be weighed against its *cost* — matching the
+`/implement-with-haiku` example above.
 
 ## Consequences
 
