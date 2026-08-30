@@ -201,6 +201,23 @@ filesystem path. Use `python3`, `sed`, or a git command that answers the questio
 `tests/test_command_doc_shell_conventions.py` enforces this. Files in `prompts/` are exempt — they
 are lazy-loaded by path, never argument-substituted.
 
+## Inspecting check-gate failures
+
+When a check gate (tests, lint, merge gate, CI) fails and output must be inspected to diagnose it,
+prefer targeted extraction — `grep` for `FAIL`/`Error`/summary lines, `tail` the relevant section —
+over reading the full raw log into context.
+
+If a full dump was genuinely unavoidable (e.g., the failure is only legible with surrounding
+context, or the tool doesn't support partial output), that's fine — but note it to the user in one
+short sentence once the output is already in context (e.g., "that log dump was larger than
+necessary — I could have grepped for the failing test name instead"). This costs only the marginal
+sentence, since the content is already paid for; do not build any separate tracking/audit mechanism
+for this, and do not retroactively scan past tool calls to produce an efficiency report.
+
+This is a lightweight self-check, not a new gate-failure policy — it doesn't change what
+`shipit.md`/`merge-and-cleanup.md`/`stack-sync.md` already do on failure (stop, report, record
+gotcha, don't commit); it only shapes how the diagnostic read itself is done.
+
 ## Agents
 
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
