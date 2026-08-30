@@ -37,6 +37,19 @@ def _bounded(value, max_len=MAX_FIELD_LEN):
     return value
 
 
+def _parse_event_timestamp(ts_str):
+    """Parse an event timestamp string to a timezone-aware datetime, or None on parse error.
+
+    Handles ISO 8601 timestamps with 'Z' suffix (converts to '+00:00') and returns None
+    for any ValueError or TypeError during parsing.
+    """
+    try:
+        ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
+        return datetime.fromisoformat(ts_normalized)
+    except (ValueError, TypeError):
+        return None
+
+
 def read_stdin_json():
     """Read and parse JSON from stdin. Returns dict, or None on error (with message to stderr)."""
     try:
@@ -196,33 +209,72 @@ def cmd_command_begin(args):
     print(command_id)
 
 
+def _compute_stale_recent_split(all_begin_pairs, now, stale_threshold_hours):
+    """Compute stale/recent split for unmatched begins, and count unparseable timestamps.
+
+    Returns a tuple (stale_count, recent_count, unparseable_count).
+
+    Unmatched begins are categorized by age: stale (>= stale_threshold_hours old) are
+    likely abandoned/dropped; recent (< stale_threshold_hours old) may still be in progress.
+    Begins with unparseable timestamps are tracked separately and excluded from both counts.
+    """
+    stale_count = 0
+    recent_count = 0
+    unparseable_count = 0
+
+    for mapping, _ in all_begin_pairs:
+        for begin, end in mapping.values():
+            if not begin or end:
+                continue
+            ts_str = begin.get("timestamp", "")
+            begin_ts = _parse_event_timestamp(ts_str)
+            if begin_ts is None:
+                unparseable_count += 1
+                continue
+            # Both begin_ts and now are timezone-aware, so the comparison is safe
+            age_hours = (now - begin_ts).total_seconds() / 3600
+            if age_hours >= stale_threshold_hours:
+                stale_count += 1
+            else:
+                recent_count += 1
+
+    return stale_count, recent_count, unparseable_count
+
+
+def _build_optional_dict(pairs):
+    """Build a dict from key/value pairs, returning None if the dict would be empty.
+
+    Used by _build_findings_dict and _build_checks_dict to avoid duplication.
+    Only includes pairs where value is not None.
+    """
+    result = {}
+    for key, value in pairs:
+        if value is not None:
+            result[key] = value
+    return result or None
+
+
 def _build_findings_dict(args):
     """Build a findings dict from --findings-* CLI args, or None if none were passed.
 
     Only keys the caller actually supplied are included — findings tracking is
     "where applicable" per the event model, not every stage produces findings.
     """
-    findings = {}
-    for key, value in (
+    return _build_optional_dict((
         ("produced", args.findings_produced),
         ("accepted", args.findings_accepted),
         ("unique", args.findings_unique),
         ("rejected", args.findings_rejected),
         ("acted_upon", args.findings_acted_upon),
-    ):
-        if value is not None:
-            findings[key] = value
-    return findings or None
+    ))
 
 
 def _build_checks_dict(args):
     """Build a checks dict from --checks-* CLI args, or None if neither was passed."""
-    checks = {}
-    if args.checks_executed is not None:
-        checks["executed"] = args.checks_executed
-    if args.checks_passed is not None:
-        checks["passed"] = args.checks_passed
-    return checks or None
+    return _build_optional_dict((
+        ("executed", args.checks_executed),
+        ("passed", args.checks_passed),
+    ))
 
 
 def cmd_command_end(args):
@@ -395,14 +447,9 @@ def cmd_diagnose(args):
     filtered_events = []
     for event in events:
         ts_str = event.get("timestamp", "")
-        try:
-            ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-            ts = datetime.fromisoformat(ts_normalized)
-            if ts >= cutoff_timestamp:
-                filtered_events.append(event)
-        except (ValueError, TypeError):
-            # Skip events with unparseable timestamps
-            pass
+        ts = _parse_event_timestamp(ts_str)
+        if ts is not None and ts >= cutoff_timestamp:
+            filtered_events.append(event)
 
     # Reconcile begin/end pairs by type and correlating id
     sessions = {}  # session_id -> (begin, end or None)
@@ -511,23 +558,9 @@ def cmd_diagnose(args):
     # interrupted/abandoned before it could close (a real gap, but not necessarily a bug).
     # Age against STALE_THRESHOLD_HOURS gives a rough split without guessing which.
     now = datetime.now(timezone.utc)
-    stale_count = 0
-    recent_count = 0
-    for mapping, _ in all_begin_pairs:
-        for begin, end in mapping.values():
-            if not begin or end:
-                continue
-            ts_str = begin.get("timestamp", "")
-            try:
-                ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-                begin_ts = datetime.fromisoformat(ts_normalized)
-            except (ValueError, TypeError):
-                continue
-            age_hours = (now - begin_ts).total_seconds() / 3600
-            if age_hours >= STALE_THRESHOLD_HOURS:
-                stale_count += 1
-            else:
-                recent_count += 1
+    stale_count, recent_count, unparseable_count = _compute_stale_recent_split(
+        all_begin_pairs, now, STALE_THRESHOLD_HOURS
+    )
 
     unmatched_total = total_begins - total_matched
     if unmatched_total:
@@ -536,6 +569,11 @@ def cmd_diagnose(args):
             f"likely abandoned/dropped, not still running), {recent_count} recent "
             f"(<{STALE_THRESHOLD_HOURS}h old — may still be in progress)"
         )
+        if unparseable_count > 0:
+            print(
+                f"  ({unparseable_count} unmatched begin(s) had unparseable timestamps "
+                f"and were excluded from the stale/recent split)"
+            )
 
     # Check thresholds
     passes = match_rate >= 0.95 and unknown_pct < 0.15
@@ -555,9 +593,9 @@ def _add_findings_and_checks_args(subparser):
     """Add the shared --findings-*/--checks-* optional int flags to a command-end/stage-end subparser."""
     subparser.add_argument("--findings-produced", type=int, default=None, help="Findings produced (optional, where applicable)")
     subparser.add_argument("--findings-accepted", type=int, default=None, help="Findings accepted (optional, where applicable)")
-    subparser.add_argument("--findings-unique", type=int, default=None, help="Findings unique to this stage/command (optional)")
-    subparser.add_argument("--findings-rejected", type=int, default=None, help="Findings rejected (optional)")
-    subparser.add_argument("--findings-acted-upon", type=int, default=None, help="Findings acted upon (optional)")
+    subparser.add_argument("--findings-unique", type=int, default=None, help="Findings unique to this stage/command (optional, where applicable)")
+    subparser.add_argument("--findings-rejected", type=int, default=None, help="Findings rejected (optional, where applicable)")
+    subparser.add_argument("--findings-acted-upon", type=int, default=None, help="Findings acted upon (optional, where applicable)")
     subparser.add_argument("--checks-executed", type=int, default=None, help="Checks/tests executed (optional)")
     subparser.add_argument("--checks-passed", type=int, default=None, help="Checks/tests passed (optional)")
 
