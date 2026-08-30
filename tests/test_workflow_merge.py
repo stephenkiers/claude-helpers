@@ -211,7 +211,7 @@ if __name__ == "__main__":
                         )
 
         print()
-        print("[Section 8] Apply merge calls _run_gh_pr_merge exactly once on repo-cache-check path (Fix 1)")
+        print("[Section 8] Apply merge calls gh pr merge after repo-cache gate passes")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
@@ -244,8 +244,8 @@ if __name__ == "__main__":
                         )
                         test_result(
                             "apply_merge calls _run_gh_pr_merge exactly once on repo-cache-check path",
-                            result.success and mock_merge.call_count == 0,
-                            f"Expected _run_gh_pr_merge NOT called when gate succeeds (merge_succeeded=True), got {mock_merge.call_count} calls"
+                            result.success and mock_merge.call_count == 1 and result.merge_gate_used == "repo-cache check",
+                            f"Expected _run_gh_pr_merge called once after gate passes, got {mock_merge.call_count} calls"
                         )
 
         print()
