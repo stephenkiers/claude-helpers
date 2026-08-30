@@ -292,7 +292,11 @@ def _build_findings_dict(args):
 
 
 def _build_checks_dict(args):
-    """Build a checks dict from --checks-* CLI args, or None if none were passed."""
+    """Build a checks dict from --checks-* CLI args, or None if none were passed.
+
+    Only keys the caller actually supplied are included — checks tracking is
+    "where applicable" per the event model, not every stage produces checks.
+    """
     return _build_optional_dict((
         ("executed", args.checks_executed),
         ("passed", args.checks_passed),
@@ -595,7 +599,7 @@ def cmd_diagnose(args):
     split = _compute_stale_recent_split(
         all_begin_pairs, now, STALE_THRESHOLD_HOURS
     )
-    stale_count, recent_count, unparseable_count = split.stale_count, split.recent_count, split.unparseable_count
+    stale_count, recent_count, unparseable_count = split
 
     if unparseable_timestamp_count > 0:
         print(

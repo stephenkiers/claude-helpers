@@ -1660,10 +1660,13 @@ def test_diagnose_end_events_with_unparseable_timestamps_counted():
 
         # The diagnose command should report the unparseable/excluded events
         # We expect to see counts that include both the .begin and .end events with bad timestamps
-        if "unparseable" not in stdout.lower() and "excluded" not in stdout.lower():
-            # It's ok if the output doesn't explicitly show "unparseable" as a label,
-            # but it should at least show diagnostic information
-            pass
+        # The test constructs 3 events with unparseable timestamps, so diagnose should report
+        # something about unparseable events or the count in the output
+        if "unparseable" not in stdout.lower():
+            return False, f"diagnose output should mention unparseable events, got: {stdout}"
+        if "3" not in stdout:
+            # The exact count of 3 should appear somewhere in the output
+            return False, f"diagnose should report 3 unparseable events, got: {stdout}"
 
         return True, ""
 
@@ -1834,9 +1837,15 @@ def test_compute_stale_recent_split_rejects_naive_datetime():
 
         try:
             # Try to call _compute_stale_recent_split with naive datetime
+            # The function expects (all_begin_pairs, now, stale_threshold_hours)
+            # where all_begin_pairs is a list of (mapping_dict, type_name) tuples
+            all_begin_pairs = [
+                ({("test_id"): (test_event, None)}, "command"),
+            ]
             result = run_metrics._compute_stale_recent_split(
-                [test_event],
+                all_begin_pairs,
                 now=naive_now,
+                stale_threshold_hours=12,
             )
             return False, f"should have raised ValueError for naive datetime, got result: {result}"
         except ValueError as e:
@@ -1847,8 +1856,8 @@ def test_compute_stale_recent_split_rejects_naive_datetime():
         except AttributeError:
             # _compute_stale_recent_split might not be directly accessible; that's ok
             return True, "function not directly testable (internal implementation)"
-    except Exception as e:
-        # If we can't import the module, that's also acceptable for this test
+    except (ImportError, ModuleNotFoundError, AttributeError) as e:
+        # If we can't import the module or access the spec, that's also acceptable for this test
         # (the important thing is that the implementation checks this)
         return True, f"module structure prevents direct testing: {e}"
     finally:
@@ -1885,7 +1894,12 @@ def test_compute_stale_recent_split_returns_named_structure():
         ]
 
         try:
-            result = run_metrics._compute_stale_recent_split(events, now=aware_now)
+            # The function expects (all_begin_pairs, now, stale_threshold_hours)
+            # where all_begin_pairs is a list of (mapping_dict, type_name) tuples
+            all_begin_pairs = [
+                ({"id1": (events[0], None), "id2": (events[1], None)}, "command"),
+            ]
+            result = run_metrics._compute_stale_recent_split(all_begin_pairs, now=aware_now, stale_threshold_hours=12)
 
             # The result should be tuple-like with 3 elements
             if not hasattr(result, '__len__') or len(result) != 3:
@@ -1903,7 +1917,7 @@ def test_compute_stale_recent_split_returns_named_structure():
         except AttributeError:
             # Function not accessible; that's ok
             return True, "function not directly testable (internal implementation)"
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError, AttributeError) as e:
         return True, f"module structure prevents direct testing: {e}"
     finally:
         sys.path.pop(0)
