@@ -41,13 +41,18 @@ def _parse_event_timestamp(ts_str):
     """Parse an event timestamp string to a timezone-aware datetime, or None on parse error.
 
     Handles ISO 8601 timestamps with 'Z' suffix (converts to '+00:00') and returns None
-    for any ValueError or TypeError during parsing.
+    for any ValueError or TypeError during parsing, or if the parsed result is timezone-naive.
+    This tool always compares against timezone-aware values, so a naive result can't be used
+    safely and is treated the same as unparseable.
     """
     try:
         ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-        return datetime.fromisoformat(ts_normalized)
+        parsed = datetime.fromisoformat(ts_normalized)
     except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def read_stdin_json():
@@ -231,7 +236,8 @@ def _compute_stale_recent_split(all_begin_pairs, now, stale_threshold_hours):
             if begin_ts is None:
                 unparseable_count += 1
                 continue
-            # Both begin_ts and now are timezone-aware, so the comparison is safe
+            # begin_ts is guaranteed timezone-aware by _parse_event_timestamp, and now is
+            # always timezone-aware (datetime.now(timezone.utc)), so this comparison is safe.
             age_hours = (now - begin_ts).total_seconds() / 3600
             if age_hours >= stale_threshold_hours:
                 stale_count += 1
