@@ -108,7 +108,7 @@ def plan_merge(
         head_ref: Optional[str] = None
         target_worktree: Optional[str] = None
 
-        effective_cwd = cwd or Path.cwd()
+        effective_cwd = (cwd or Path.cwd()).resolve()
 
         if not arguments or not arguments.strip():
             if not git.is_linked_worktree(cwd=effective_cwd):
@@ -116,16 +116,22 @@ def plan_merge(
                     "No argument provided and not in a worktree. "
                     "Run from the worktree you want to merge, or pass a PR number or worktree path."
                 )
-            target_worktree = str(effective_cwd.resolve())
-            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree, cwd)
+            target_worktree = str(effective_cwd)
+            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree)
             if not pr_number or not head_ref:
-                return None, Unknown(f"Could not resolve PR from worktree {target_worktree}")
+                return None, Unknown(
+                    f"Could not resolve PR from worktree {target_worktree}: "
+                    f"no cached PR and current branch has no associated PR (has it been pushed with an open PR?)"
+                )
 
         elif Path(arguments).exists():
             target_worktree = str(Path(arguments).resolve())
-            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree, cwd)
+            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree)
             if not pr_number or not head_ref:
-                return None, Unknown(f"Could not resolve PR from worktree {target_worktree}")
+                return None, Unknown(
+                    f"Could not resolve PR from worktree {target_worktree}: "
+                    f"no cached PR and current branch has no associated PR (has it been pushed with an open PR?)"
+                )
 
         else:
             pr_number, head_ref, target_worktree = _resolve_pr_from_number(arguments, cwd)
@@ -252,7 +258,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         return MergeResult(success=False, error=Unknown(f"apply_merge failed: {e}")), None
 
 
-def _resolve_pr_from_worktree(target_worktree: str, cwd: Optional[Path]) -> Tuple[Optional[int], Optional[str], str]:
+def _resolve_pr_from_worktree(target_worktree: str) -> Tuple[Optional[int], Optional[str], str]:
     """Resolve PR number and head ref from a worktree path."""
     try:
         cache_file = Path(target_worktree) / ".claude" / "github-cache.json"
