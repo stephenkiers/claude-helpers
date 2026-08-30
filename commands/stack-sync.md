@@ -252,10 +252,11 @@ find_children_of() {
       if [ "$cached_parent" = "$parent" ]; then
         local child_wt_dir child_branch child_pr
         child_wt_dir=$(basename "$(dirname "$(dirname "$cache_file")")")
-        child_branch=$(git worktree list --porcelain 2>/dev/null | awk -v wt="$WORKTREE_PARENT/$child_wt_dir" '
-          /^worktree / { found=(substr($0, 10) == wt); next }
-          found && /^branch / { b=substr($0, 8); sub(/^refs\/heads\//, "", b); print b; exit }
-        ')
+        # Ask git directly rather than parsing `worktree list --porcelain`: the path is
+        # already known, this is exact, and it keeps the awk record positional (which
+        # slash-command argument substitution rewrites) out of a command doc entirely.
+        # Empty on a detached HEAD, same as the porcelain scan it replaces.
+        child_branch=$(git -C "$WORKTREE_PARENT/$child_wt_dir" branch --show-current 2>/dev/null)
         if [ -n "$child_branch" ]; then
           child_pr=$(jq -r '.pr.number // ""' "$cache_file" 2>/dev/null)
           CHILD_BRANCHES="${CHILD_BRANCHES}${child_branch}:${child_pr}:${WORKTREE_PARENT}/${child_wt_dir}"$'\n'
@@ -293,21 +294,40 @@ resolve_worktree() {
     echo "$wt_cache"
     return 0
   fi
-  git worktree list --porcelain | awk -v b="$branch" '
-    /^worktree / { wt=substr($0,10); next }
-    /^branch / && wt != "" {
-      br=substr($0,8); sub(/^refs\/heads\//,"",br)
-      if (br==b) { matches[++n]=wt; wt="" }
-    }
-    END {
-      if (n > 1) {
-        printf "ERROR: branch %s is checked out in %d worktrees (ambiguous):\n", b, n > "/dev/stderr"
-        for (i=1; i<=n; i++) printf "  %s\n", matches[i] > "/dev/stderr"
-        exit 3
-      }
-      if (n == 1) print matches[1]
-    }
-  '
+  # python3, not awk: awk's only handle on the current record is its dollar-zero
+  # positional, and slash-command argument substitution rewrites that token inside a
+  # command doc before the shell runs it (see CLAUDE.md, "Shell conventions in command
+  # docs"). Same contract as the awk it replaces: prints the single matching worktree,
+  # prints nothing when there is no match, and exits 3 on an ambiguous multi-match.
+  git worktree list --porcelain | python3 -c '
+import sys
+
+target = sys.argv[1]
+wt = None
+matches = []
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line.startswith("worktree "):
+        wt = line[len("worktree "):]
+    elif line.startswith("branch ") and wt is not None:
+        br = line[len("branch "):]
+        if br.startswith("refs/heads/"):
+            br = br[len("refs/heads/"):]
+        if br == target:
+            matches.append(wt)
+        wt = None
+
+if len(matches) > 1:
+    print(
+        f"ERROR: branch {target} is checked out in {len(matches)} worktrees (ambiguous):",
+        file=sys.stderr,
+    )
+    for m in matches:
+        print(f"  {m}", file=sys.stderr)
+    sys.exit(3)
+if matches:
+    print(matches[0])
+' "$branch"
 }
 
 # walk <parent> <level> — DFS pre-order so ancestors are emitted before their descendants.

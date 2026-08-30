@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: <PR number | worktree path>
-allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*)
+allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
@@ -23,7 +23,7 @@ bounds the blast radius of a misjudgment to "the command halts," not "the wrong 
 - The push gate (Phase 2) is the "one hard-fail" stop — if everything is pushed, `/cleanup` cannot lose work.
 - Merge gate failures stop the command (non-zero exit halts Phase 3, changes nothing).
 - Cleanup failures after a successful merge are reported loudly but do not reverse the merge (it is already irreversible on GitHub).
-- This command deliberately lacks `Bash(rm:*)` and `Bash(git push:*)` in its `allowed-tools` — push and worktree removal are delegated to other phases or `/cleanup`, never done here.
+- `Bash(rm:*)` is granted but scoped only to the command's own `/tmp/merge-and-cleanup.pr-*` state directories (never to worktree or branch removal, which remain delegated to `/cleanup`). `Bash(git push:*)` is deliberately absent — push gates are handled elsewhere.
 
 ## Workflow
 
@@ -89,6 +89,33 @@ fi
 echo "PR #$PR_NUM: $HEAD_REF"
 echo "Resolved worktree: $WT"
 echo "✓ Push gate passed: branch is clean and fully pushed"
+
+# Persist state to disk — Phase 3 runs backgrounded (see below) and Phase 4 runs as a
+# separate Bash call, so neither can rely on these shell variables surviving in-memory.
+# Use a PR-scoped state directory with no pointer indirection to prevent concurrent invocations
+# from cross-wiring state.
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+
+# The path is predictable by design (that is what makes it re-derivable in Phase 3/4), which
+# the random `mktemp -d` it replaced was not. So verify we own a real directory before writing
+# anything into it: `mkdir -p` follows a pre-existing symlink silently, and every subsequent
+# write here — including `wt`, which Phase 4 hands to /cleanup — would land wherever it points.
+if [ -L "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is a symlink — refusing to use it as a state directory" >&2
+  exit 1
+fi
+mkdir -p -m 700 "$MC_STATE_DIR"
+if [ ! -O "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is not owned by the current user — refusing to use it" >&2
+  exit 1
+fi
+
+# Clear stale result files from any previous incomplete run for this PR.
+rm -f "$MC_STATE_DIR/apply_result.json" "$MC_STATE_DIR/apply_result.stderr" "$MC_STATE_DIR/apply_exit_code"
+echo "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
+echo "$PR_NUM" > "$MC_STATE_DIR/pr_num"
+echo "$WT" > "$MC_STATE_DIR/wt"
+echo "State dir: $MC_STATE_DIR"
 ```
 
 ### Phase 3 — Run the merge gate
@@ -99,8 +126,34 @@ Auto-detected, no config key (repo-cache.json is gitignored and per-worktree, so
 2. Else read `.commands.check` from `$WT/.claude/repo-cache.json` via `jq`, then run `gh pr merge --squash`
 3. Else run `gh pr merge --squash` alone, with no gate — this is silent unless flagged, so every reach of this path prints a loud, distinct marker (`⚠️ merged with NO GATE`) rather than looking like a gated merge
 
+**Invoke the block below with the Bash tool's `run_in_background: true`.** The `just merge` path
+commonly runs a full build + E2E boot, which routinely takes several minutes — long enough to hit a
+foreground Bash call's timeout ceiling even though the merge itself is still proceeding fine. A
+backgrounded call has no such ceiling; wait for its completion notification, then move on to Phase 4,
+which reads the result from disk (`$MC_STATE_DIR/apply_result.json` and `$MC_STATE_DIR/apply_exit_code`) rather than from captured stdout.
+
+The merge gate's own subprocess timeout defaults to 1800s and is configurable per-repo by exporting
+`MERGE_APPLY_TIMEOUT_SECS` (a positive integer, in seconds; anything else falls back to the default).
+
+**Before running this block, substitute the literal PR number** (from the `PR #$PR_NUM` output above) in the assignment below.
+
 ```bash
-echo "=== Phase 3: Merge Gate ==="
+echo "=== Phase 3: Merge Gate (backgrounded — may take several minutes) ==="
+
+PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+
+# Cross-check: verify the state dir exists and pr_num matches
+if [ ! -d "$MC_STATE_DIR" ]; then
+  echo "ERROR: State directory $MC_STATE_DIR not found — Phase 1 may not have run" >&2
+  exit 1
+fi
+if [ "$(cat "$MC_STATE_DIR/pr_num" 2>/dev/null)" != "$PR_NUM" ]; then
+  echo "ERROR: PR number mismatch in state directory (expected $PR_NUM, found $(cat "$MC_STATE_DIR/pr_num" 2>/dev/null))" >&2
+  exit 1
+fi
+
+PLAN_JSON="$(cat "$MC_STATE_DIR/plan.json")"
 
 # Apply the merge plan (executes 3-path merge gate, writes cache on success)
 # CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
@@ -114,17 +167,28 @@ if [ -z "$RUN_METRICS_RESOLVED" ]; then
   exit 1
 fi
 CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
-APPLY_RESULT=$(echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply -)
-APPLY_RESULT_CODE=$?
 
-if [ $APPLY_RESULT_CODE -ne 0 ]; then
-  echo "ERROR: Merge apply failed"
+# Write the result to disk instead of only holding it in this call's stdout — Phase 4 is a
+# separate (foreground) Bash call made after this backgrounded one completes, so it reads
+# this file rather than depending on variables from this shell.
+echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply - \
+  > "$MC_STATE_DIR/apply_result.json" 2> "$MC_STATE_DIR/apply_result.stderr"
+echo $? > "$MC_STATE_DIR/apply_exit_code"
+
+# Guard: ensure exit code file exists, is non-empty, contains numeric value, and equals 0
+APPLY_RESULT_CODE="$(cat "$MC_STATE_DIR/apply_exit_code" 2>/dev/null)"
+case "$APPLY_RESULT_CODE" in
+  ''|*[!0-9]*) APPLY_RESULT_CODE="missing-or-malformed" ;;
+esac
+if [ "$APPLY_RESULT_CODE" != "0" ]; then
+  echo "ERROR: Merge apply failed (exit code: $APPLY_RESULT_CODE)"
+  cat "$MC_STATE_DIR/apply_result.stderr" >&2
   exit 1
 fi
 
 # Extract results
-PR_MERGED=$(echo "$APPLY_RESULT" | jq -r '.pr_merged // false')
-MERGE_GATE_USED=$(echo "$APPLY_RESULT" | jq -r '.merge_gate_used // "unknown"')
+PR_MERGED=$(jq -r '.pr_merged // false' "$MC_STATE_DIR/apply_result.json")
+MERGE_GATE_USED=$(jq -r '.merge_gate_used // "unknown"' "$MC_STATE_DIR/apply_result.json")
 
 if [ "$PR_MERGED" = "true" ]; then
   echo "✓ PR #$PR_NUM merged successfully via $MERGE_GATE_USED"
@@ -138,8 +202,39 @@ fi
 
 Confirm the merge actually landed, then invoke `/cleanup` via the Skill tool. Pre-verify the path expands to exactly one directory.
 
+**Only start this phase after the Phase 3 background call's completion notification arrives.** This is
+a separate Bash call from Phase 3, so substitute the literal PR number (from the `PR #$PR_NUM` output in Phase 1)
+in the assignment below, then re-derive `WT` from the state directory rather than assuming it's still set in this shell.
+
 ```bash
 echo "=== Phase 4: Cleanup ==="
+
+PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+
+# Cross-check: verify the state dir exists and pr_num matches
+if [ ! -d "$MC_STATE_DIR" ]; then
+  echo "ERROR: State directory $MC_STATE_DIR not found — Phase 1 may not have run or cleanup may have already occurred" >&2
+  exit 1
+fi
+if [ "$(cat "$MC_STATE_DIR/pr_num" 2>/dev/null)" != "$PR_NUM" ]; then
+  echo "ERROR: PR number mismatch in state directory (expected $PR_NUM, found $(cat "$MC_STATE_DIR/pr_num" 2>/dev/null))" >&2
+  exit 1
+fi
+
+WT="$(cat "$MC_STATE_DIR/wt")"
+
+# Sanity-check the backgrounded Phase 3 call actually finished and succeeded before trusting
+# GitHub's state below — an apply that's still running or that errored should not fall through here.
+# Guard: ensure exit code file exists, is non-empty, contains numeric value, and equals 0
+APPLY_RESULT_CODE="$(cat "$MC_STATE_DIR/apply_exit_code" 2>/dev/null)"
+case "$APPLY_RESULT_CODE" in
+  ''|*[!0-9]*) APPLY_RESULT_CODE="missing-or-malformed" ;;
+esac
+if [ "$APPLY_RESULT_CODE" != "0" ]; then
+  echo "ERROR: Phase 3 merge apply has not completed successfully yet — wait for its notification first"
+  exit 1
+fi
 
 # Verify merge landed
 FINAL_STATE=$(gh pr view "$PR_NUM" --json state -q '.state' 2>/dev/null)
@@ -174,6 +269,16 @@ echo "Path verified unambiguous — invoking /cleanup with: $WT"
 **If `/cleanup` fails after a successful merge, the merge is irreversible but cleanup is idempotent.** Print the exact recovery command and stop:
 ```
 /cleanup <abs-path>
+```
+
+**If `/cleanup` succeeds, run this cleanup block to remove the state directory.** This final step only runs on success; a failed run leaves the state dir intact for debugging.
+
+```bash
+# Clean up state directory now that /cleanup has succeeded
+PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+rm -rf "$MC_STATE_DIR"
+echo "✓ State directory removed"
 ```
 
 ### Phase 5 — Summary

@@ -21,6 +21,11 @@ from .cache import read_repo_cache, write_cache
 from .safety import Unknown, fail_closed
 
 
+# Default timeout for 'just merge' execution (seconds).
+# Override with MERGE_APPLY_TIMEOUT_SECS environment variable.
+DEFAULT_MERGE_APPLY_TIMEOUT_SECS = 1800
+
+
 def merge_lock_path(target_worktree: str) -> Path:
     """
     Resolve the merge-lock path for a target worktree.
@@ -326,6 +331,29 @@ def _run_push_gate(target_worktree: str, head_ref: str, cwd: Optional[Path]) -> 
     return failures
 
 
+def _get_merge_apply_timeout() -> int:
+    """
+    Resolve the timeout for 'just merge' execution from the environment.
+
+    Reads MERGE_APPLY_TIMEOUT_SECS; returns the value if it's a valid positive
+    integer, otherwise returns DEFAULT_MERGE_APPLY_TIMEOUT_SECS.
+
+    Never raises; invalid values silently fall back to the default.
+    """
+    env_value = os.environ.get("MERGE_APPLY_TIMEOUT_SECS", "").strip()
+    if not env_value:
+        return DEFAULT_MERGE_APPLY_TIMEOUT_SECS
+
+    try:
+        timeout_secs = int(env_value)
+        if timeout_secs > 0:
+            return timeout_secs
+    except (ValueError, TypeError):
+        pass
+
+    return DEFAULT_MERGE_APPLY_TIMEOUT_SECS
+
+
 def _check_just_merge(target_worktree: str) -> bool:
     """Check if 'just merge' recipe exists."""
     try:
@@ -354,10 +382,15 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
     Returns (False, diagnostic_message) on failure.
     """
     try:
+        # /merge-and-cleanup now runs this step via a backgrounded Bash call (no harness
+        # foreground timeout ceiling), so this timeout is the only remaining limiter — give
+        # a full build + E2E boot real headroom instead of cutting it close at 600s.
+        # Override with MERGE_APPLY_TIMEOUT_SECS environment variable (default: 1800s).
+        timeout_secs = _get_merge_apply_timeout()
         result = subprocess.run(
             ["just", "merge"],
             cwd=target_worktree,
-            timeout=600,
+            timeout=timeout_secs,
             capture_output=True,
             text=True,
             check=True
