@@ -424,7 +424,6 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
 
 
 
-
 def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:
     """
     Run repo-cache check gate via run_checks.
