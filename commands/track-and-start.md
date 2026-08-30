@@ -82,7 +82,17 @@ Use the CLI to plan the local track operation. The CLI infers all required state
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
-TRACK_PLAN=$(python3 -m scripts.workflow.cli track plan --mode local --plan-file "$PLAN_FILE" --title "$TITLE" \
+
+# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
+# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+
+TRACK_PLAN=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track plan --mode local --plan-file "$PLAN_FILE" --title "$TITLE" \
   --tracker-path "$PROJECT_ISSUES" --plans-dir "$PLANS_DIR")
 PLAN_OK=$(printf '%s' "$TRACK_PLAN" | jq -r '.plan_hash // empty')
 if [ -z "$PLAN_OK" ]; then
@@ -108,7 +118,7 @@ fi
 Apply the plan to create the local issue entry and worktree:
 
 ```bash
-TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | python3 -m scripts.workflow.cli track apply -)
+TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track apply -)
 TRACK_OK=$(printf '%s' "$TRACK_RESULT" | jq -r '.success // false')
 if [ "$TRACK_OK" != "true" ]; then
   ERROR=$(printf '%s' "$TRACK_RESULT" | jq -r '.error // "Unknown error"')
@@ -536,7 +546,16 @@ Cache file location: `${WORKTREE_PARENT}/issues.json` (detected from worktree la
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-issue >/dev/null 2>&1 || true
 
-TRACK_PLAN=$(python3 -m scripts.workflow.cli track plan --mode github --plan-file "$PLAN_FILE" --title "$TITLE" --assignee "$ASSIGNEE")
+# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
+# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
+RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
+if [ -z "$RUN_METRICS_RESOLVED" ]; then
+  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
+  exit 1
+fi
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+
+TRACK_PLAN=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track plan --mode github --plan-file "$PLAN_FILE" --title "$TITLE" --assignee "$ASSIGNEE")
 PLAN_OK=$(printf '%s' "$TRACK_PLAN" | jq -r '.plan_hash // empty')
 if [ -z "$PLAN_OK" ]; then
   echo "ERROR: Failed to plan track" >&2
@@ -564,7 +583,7 @@ fi
 **Third, apply the plan to create the GitHub issue and all associated state:**
 
 ```bash
-TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | python3 -m scripts.workflow.cli track apply -)
+TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track apply -)
 TRACK_OK=$(printf '%s' "$TRACK_RESULT" | jq -r '.success // false')
 if [ "$TRACK_OK" != "true" ]; then
   ERROR=$(printf '%s' "$TRACK_RESULT" | jq -r '.error // "Unknown error"')
