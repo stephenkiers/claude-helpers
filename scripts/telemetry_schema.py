@@ -29,6 +29,27 @@ class SessionState(TypedDict, total=False):
     stage: Optional[str]
 
 
+class FindingsCounts(TypedDict, total=False):
+    """Typed representation of the findings event field.
+
+    All fields optional; a stage may report only the subset that applies.
+    """
+    produced: int
+    accepted: int
+    unique: int
+    rejected: int
+    acted_upon: int
+
+
+class ChecksCounts(TypedDict, total=False):
+    """Typed representation of the checks event field.
+
+    All fields optional; a stage may report only the subset that applies.
+    """
+    executed: int
+    passed: int
+
+
 SCHEMA_VERSION = 1
 UNKNOWN = "unknown"
 
