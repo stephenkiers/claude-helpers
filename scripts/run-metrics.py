@@ -17,6 +17,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 # Add scripts/ to path so we can import telemetry_schema
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,12 +27,40 @@ import telemetry_schema
 MAX_STDIN_BYTES = 1_048_576  # 1 MiB — hook payloads are small metadata blobs, never larger
 MAX_FIELD_LEN = 4096  # defense-in-depth cap on any single pass-through metadata field
 
+# diagnose: age past which an unmatched begin is reported as "stale" rather than "recent"
+STALE_THRESHOLD_HOURS = 12
+
+
+class StaleRecentSplit(NamedTuple):
+    """Result of stale/recent split computation for unmatched begins."""
+    stale_count: int
+    recent_count: int
+    unparseable_count: int
+
 
 def _bounded(value, max_len=MAX_FIELD_LEN):
     """Truncate a string value to max_len chars; pass through non-strings unchanged."""
     if isinstance(value, str) and len(value) > max_len:
         return value[:max_len]
     return value
+
+
+def _parse_event_timestamp(ts_str):
+    """Parse an event timestamp string to a timezone-aware datetime, or None on parse error.
+
+    Handles ISO 8601 timestamps with 'Z' suffix (converts to '+00:00') and returns None
+    for any ValueError or TypeError during parsing, or if the parsed result is timezone-naive.
+    This tool always compares against timezone-aware values, so a naive result can't be used
+    safely and is treated the same as unparseable.
+    """
+    try:
+        ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
+        parsed = datetime.fromisoformat(ts_normalized)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def read_stdin_json():
@@ -193,6 +222,87 @@ def cmd_command_begin(args):
     print(command_id)
 
 
+def _compute_stale_recent_split(all_begin_pairs, now, stale_threshold_hours):
+    """Compute stale/recent split for unmatched begins, and count unparseable timestamps.
+
+    Returns a StaleRecentSplit with fields stale_count, recent_count, unparseable_count.
+
+    Unmatched begins are categorized by age: stale (>= stale_threshold_hours old) are
+    likely abandoned/dropped; recent (< stale_threshold_hours old) may still be in progress.
+    Begins with unparseable timestamps are tracked separately and excluded from both counts.
+
+    Precondition: `now` must be timezone-aware (e.g., datetime.now(timezone.utc)).
+    """
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware (e.g., datetime.now(timezone.utc))")
+
+    stale_count = 0
+    recent_count = 0
+    unparseable_count = 0
+
+    for mapping, _ in all_begin_pairs:
+        for begin, end in mapping.values():
+            if not begin or end:
+                continue
+            ts_str = begin.get("timestamp", "")
+            begin_ts = _parse_event_timestamp(ts_str)
+            # Defense-in-depth: upstream filtering (validate_event in append_event) should
+            # guarantee all logged events have parseable timestamps, but we track unparseable
+            # ones here anyway to catch any regressions or edge cases that slip through.
+            if begin_ts is None:
+                unparseable_count += 1
+                continue
+            # begin_ts is guaranteed timezone-aware by _parse_event_timestamp, and now is
+            # always timezone-aware (datetime.now(timezone.utc)), so this comparison is safe.
+            age_hours = (now - begin_ts).total_seconds() / 3600
+            if age_hours >= stale_threshold_hours:
+                stale_count += 1
+            else:
+                recent_count += 1
+
+    return StaleRecentSplit(stale_count, recent_count, unparseable_count)
+
+
+def _build_optional_dict(pairs):
+    """Build a dict from key/value pairs, returning None if the dict would be empty.
+
+    Used by _build_findings_dict and _build_checks_dict to avoid duplication.
+    Only includes pairs where value is not None.
+    """
+    result = {}
+    for key, value in pairs:
+        if value is not None:
+            result[key] = value
+    return result or None
+
+
+def _build_findings_dict(args):
+    """Build a findings dict from --findings-* CLI args, or None if none were passed.
+
+    Only keys the caller actually supplied are included — findings tracking is
+    "where applicable" per the event model, not every stage produces findings.
+    """
+    return _build_optional_dict((
+        ("produced", args.findings_produced),
+        ("accepted", args.findings_accepted),
+        ("unique", args.findings_unique),
+        ("rejected", args.findings_rejected),
+        ("acted_upon", args.findings_acted_upon),
+    ))
+
+
+def _build_checks_dict(args):
+    """Build a checks dict from --checks-* CLI args, or None if none were passed.
+
+    Only keys the caller actually supplied are included — checks tracking is
+    "where applicable" per the event model, not every stage produces checks.
+    """
+    return _build_optional_dict((
+        ("executed", args.checks_executed),
+        ("passed", args.checks_passed),
+    ))
+
+
 def cmd_command_end(args):
     """Record a command.end event. Outcome is required; --command-id is optional (resolved from state).
 
@@ -236,8 +346,14 @@ def cmd_command_end(args):
         command=args.command,
         outcome=outcome,
         state_mismatch=state_mismatch,
+        findings=_build_findings_dict(args),
+        checks=_build_checks_dict(args),
     )
-    telemetry_schema.append_event(args.log, event)
+    try:
+        telemetry_schema.append_event(args.log, event)
+    except ValueError as e:
+        print(f"Error: invalid telemetry event: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print("command.end recorded", file=sys.stderr)
 
@@ -321,8 +437,14 @@ def cmd_stage_end(args):
         command_id=command_id,
         outcome=outcome,
         state_mismatch=state_mismatch,
+        findings=_build_findings_dict(args),
+        checks=_build_checks_dict(args),
     )
-    telemetry_schema.append_event(args.log, event)
+    try:
+        telemetry_schema.append_event(args.log, event)
+    except ValueError as e:
+        print(f"Error: invalid telemetry event: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print("stage.end recorded", file=sys.stderr)
 
@@ -357,16 +479,15 @@ def cmd_diagnose(args):
     cutoff_timestamp = datetime.now(timezone.utc) - timedelta(days=args.window_days)
 
     filtered_events = []
+    unparseable_timestamp_count = 0
     for event in events:
         ts_str = event.get("timestamp", "")
-        try:
-            ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-            ts = datetime.fromisoformat(ts_normalized)
-            if ts >= cutoff_timestamp:
-                filtered_events.append(event)
-        except (ValueError, TypeError):
-            # Skip events with unparseable timestamps
-            pass
+        ts = _parse_event_timestamp(ts_str)
+        if ts is not None and ts >= cutoff_timestamp:
+            filtered_events.append(event)
+        elif ts is None:
+            # Track events with unparseable/naive timestamps at window-filter stage
+            unparseable_timestamp_count += 1
 
     # Reconcile begin/end pairs by type and correlating id
     sessions = {}  # session_id -> (begin, end or None)
@@ -470,6 +591,35 @@ def cmd_diagnose(args):
             rate = 1.0 if begins == 0 else matched / begins
             print(f"  {stage_name}: {rate:.1%} ({matched}/{begins})")
 
+    # Stale vs. recent unmatched begins. A begin with no end yet may just belong to a
+    # command/stage that's still running (not a defect) or one whose session was
+    # interrupted/abandoned before it could close (a real gap, but not necessarily a bug).
+    # Age against STALE_THRESHOLD_HOURS gives a rough split without guessing which.
+    now = datetime.now(timezone.utc)
+    split = _compute_stale_recent_split(
+        all_begin_pairs, now, STALE_THRESHOLD_HOURS
+    )
+    stale_count, recent_count, unparseable_count = split
+
+    if unparseable_timestamp_count > 0:
+        print(
+            f"Warning: {unparseable_timestamp_count} event(s) had unparseable/naive timestamps "
+            f"and were excluded from this report"
+        )
+
+    unmatched_total = total_begins - total_matched
+    if unmatched_total:
+        print(
+            f"Unmatched begins by age: {stale_count} stale (>={STALE_THRESHOLD_HOURS}h old — "
+            f"likely abandoned/dropped, not still running), {recent_count} recent "
+            f"(<{STALE_THRESHOLD_HOURS}h old — may still be in progress)"
+        )
+        if unparseable_count > 0:
+            print(
+                f"  ({unparseable_count} unmatched begin(s) had unparseable timestamps "
+                f"and were excluded from the stale/recent split)"
+            )
+
     # Check thresholds
     passes = match_rate >= 0.95 and unknown_pct < 0.15
     if passes:
@@ -482,6 +632,17 @@ def cmd_diagnose(args):
         if unknown_pct >= 0.15:
             print(f"  - Unknown token fields {unknown_pct:.1%} >= 15%")
         sys.exit(1)
+
+
+def _add_findings_and_checks_args(subparser):
+    """Add the shared --findings-*/--checks-* optional int flags to a command-end/stage-end subparser."""
+    subparser.add_argument("--findings-produced", type=int, default=None, help="Findings produced (optional, where applicable)")
+    subparser.add_argument("--findings-accepted", type=int, default=None, help="Findings accepted (optional, where applicable)")
+    subparser.add_argument("--findings-unique", type=int, default=None, help="Findings unique to this stage/command (optional, where applicable)")
+    subparser.add_argument("--findings-rejected", type=int, default=None, help="Findings rejected (optional, where applicable)")
+    subparser.add_argument("--findings-acted-upon", type=int, default=None, help="Findings acted upon (optional, where applicable)")
+    subparser.add_argument("--checks-executed", type=int, default=None, help="Checks/tests executed (optional)")
+    subparser.add_argument("--checks-passed", type=int, default=None, help="Checks/tests passed (optional)")
 
 
 def main():
@@ -538,6 +699,7 @@ def main():
         "--failure-class",
         help="Failure class (required if outcome=failure)",
     )
+    _add_findings_and_checks_args(sp_command_end)
     sp_command_end.set_defaults(func=cmd_command_end)
 
     # stage-begin
@@ -561,6 +723,7 @@ def main():
         "--failure-class",
         help="Failure class (required if outcome=failure)",
     )
+    _add_findings_and_checks_args(sp_stage_end)
     sp_stage_end.set_defaults(func=cmd_stage_end)
 
     # diagnose

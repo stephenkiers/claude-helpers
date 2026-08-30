@@ -44,6 +44,11 @@ to North Star Nick).
 - [ADR-0015: Leave PR comments as pending draft review](0015-leave-pr-comments-draft-review.md) —
   posts an expert-review's curated findings as a pending (draft) GitHub review; never auto-submits.
   Amends ADR-0009's no-auto-post line by crossing it only at the draft layer.
+- [ADR-0016: Usage and yield telemetry](0016-usage-yield-telemetry.md) — retroactive ADR for the
+  opt-in local JSONL telemetry log; session-scoped state-file correlation (verified safe
+  sequentially, not yet under concurrent subagents); privacy allowlist; no built-in cost-report
+  views by design — the raw log is made Claude-queryable instead, so cost can be weighed against
+  yield in a discussion rather than auto-optimized
 
 ## Format
 

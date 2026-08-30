@@ -29,6 +29,27 @@ class SessionState(TypedDict, total=False):
     stage: Optional[str]
 
 
+class FindingsCounts(TypedDict, total=False):
+    """Typed representation of the findings event field.
+
+    All fields optional; a stage may report only the subset that applies.
+    """
+    produced: int
+    accepted: int
+    unique: int
+    rejected: int
+    acted_upon: int
+
+
+class ChecksCounts(TypedDict, total=False):
+    """Typed representation of the checks event field.
+
+    All fields optional; a stage may report only the subset that applies.
+    """
+    executed: int
+    passed: int
+
+
 SCHEMA_VERSION = 1
 UNKNOWN = "unknown"
 
@@ -45,6 +66,8 @@ EVENT_TYPES = frozenset({
 
 OUTCOME_STATUSES = frozenset({"success", "failure", "interrupted"})
 FAILURE_CLASSES = frozenset({"timeout", "api_error", "test_failure", "guard_block", "other"})
+FINDINGS_KEYS = frozenset(FindingsCounts.__annotations__.keys())
+CHECKS_KEYS = frozenset(ChecksCounts.__annotations__.keys())
 
 
 def outcome_success() -> dict:
@@ -201,7 +224,10 @@ def validate_event(event: dict) -> list:
         ts_str = event.get("timestamp", "")
         try:
             ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-            datetime.fromisoformat(ts_normalized)
+            parsed_ts = datetime.fromisoformat(ts_normalized)
+            # Timestamp must be timezone-aware
+            if parsed_ts.tzinfo is None:
+                errors.append(f"timestamp must be timezone-aware (include 'Z' or a UTC offset), got a naive timestamp: {ts_str}")
         except (ValueError, TypeError):
             errors.append(f"timestamp not parseable as ISO format: {ts_str}")
 
@@ -241,6 +267,30 @@ def validate_event(event: dict) -> list:
                     errors.append("outcome with status='failure' must have a 'class' field")
                 elif outcome.get("class") not in FAILURE_CLASSES:
                     errors.append(f"outcome.class not in {FAILURE_CLASSES}, got {outcome.get('class')}")
+
+    # Check findings if present: dict of non-negative ints, keys a subset of the allowed set
+    if "findings" in event:
+        findings = event.get("findings")
+        if not isinstance(findings, dict):
+            errors.append("findings must be a dict")
+        else:
+            for key, value in findings.items():
+                if key not in FINDINGS_KEYS:
+                    errors.append(f"findings key not in {FINDINGS_KEYS}, got {key}")
+                elif not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    errors.append(f"findings.{key} must be a non-negative int, got {value!r}")
+
+    # Check checks if present: dict of non-negative ints, keys a subset of the allowed set
+    if "checks" in event:
+        checks = event.get("checks")
+        if not isinstance(checks, dict):
+            errors.append("checks must be a dict")
+        else:
+            for key, value in checks.items():
+                if key not in CHECKS_KEYS:
+                    errors.append(f"checks key not in {CHECKS_KEYS}, got {key}")
+                elif not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    errors.append(f"checks.{key} must be a non-negative int, got {value!r}")
 
     return errors
 
