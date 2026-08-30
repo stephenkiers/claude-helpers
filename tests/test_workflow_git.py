@@ -160,4 +160,102 @@ if __name__ == "__main__":
     )
 
     print()
+    print("[Section: is_linked_worktree with real git operations]")
+
+    # Import GitFixture for real git testing
+    import os
+    from _git_fixture import GitFixture
+
+    # Test 1: is_linked_worktree returns False for main worktree
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+
+        fixture.create_initial_commit("initial")
+        fixture.create_branch("feature/test")
+
+        # Test main worktree returns False
+        is_linked = git_module.is_linked_worktree(fixture.main_worktree)
+        test_result(
+            "is_linked_worktree returns False for main worktree",
+            is_linked is False,
+            f"got {is_linked}"
+        )
+
+        # Test 2: is_linked_worktree returns True for linked worktree
+        wt_path = fixture.create_worktree("feature/test")
+        is_linked = git_module.is_linked_worktree(wt_path)
+        test_result(
+            "is_linked_worktree returns True for linked worktree",
+            is_linked is True,
+            f"got {is_linked}"
+        )
+
+        # Test 3: is_linked_worktree with explicit Path object
+        is_linked = git_module.is_linked_worktree(Path(wt_path))
+        test_result(
+            "is_linked_worktree works with Path objects",
+            is_linked is True,
+            f"got {is_linked}"
+        )
+
+        # Test 4: is_linked_worktree with None defaults to cwd
+        old_cwd_inner = os.getcwd()
+        try:
+            os.chdir(wt_path)
+            is_linked = git_module.is_linked_worktree(None)
+            test_result(
+                "is_linked_worktree(None) uses current working directory",
+                is_linked is True,
+                f"got {is_linked}"
+            )
+        finally:
+            os.chdir(old_cwd_inner)
+
+        # Test 5: is_linked_worktree with main worktree as cwd when None
+        old_cwd_inner = os.getcwd()
+        try:
+            os.chdir(fixture.main_worktree)
+            is_linked = git_module.is_linked_worktree(None)
+            test_result(
+                "is_linked_worktree(None) from main worktree returns False",
+                is_linked is False,
+                f"got {is_linked}"
+            )
+        finally:
+            os.chdir(old_cwd_inner)
+
+        # Test 6: is_linked_worktree with cwd nested inside the main worktree
+        # (not the main worktree root itself) must still return False. This is
+        # the misclassification bug from Finding 1: a raw-string comparison of
+        # git-dir/git-common-dir doesn't guarantee matching relative/absolute
+        # forms, which could misclassify a nested cwd as linked.
+        subdir = fixture.main_worktree / "src" / "nested" / "deep"
+        subdir.mkdir(parents=True, exist_ok=True)
+        is_linked = git_module.is_linked_worktree(subdir)
+        test_result(
+            "is_linked_worktree returns False for a nested subdir of the main worktree",
+            is_linked is False,
+            f"got {is_linked} when calling from {subdir}"
+        )
+
+        # Test 7: same nested-subdir case via cwd default (None)
+        old_cwd_inner = os.getcwd()
+        try:
+            os.chdir(subdir)
+            is_linked = git_module.is_linked_worktree(None)
+            test_result(
+                "is_linked_worktree(None) returns False from a nested subdir of the main worktree",
+                is_linked is False,
+                f"got {is_linked} when cwd is {os.getcwd()}"
+            )
+        finally:
+            os.chdir(old_cwd_inner)
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
     h.summarize_and_exit()

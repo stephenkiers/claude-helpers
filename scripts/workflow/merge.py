@@ -85,14 +85,15 @@ class MergeResult:
 
 @fail_closed
 def plan_merge(
-    arguments: str,
+    arguments: Optional[str] = None,
     cwd: Optional[Path] = None
 ) -> Tuple[Optional[MergePlan], Optional[Unknown]]:
     """
     Plan a merge operation (push gate validation).
 
-    Resolves PR/worktree from arguments (path mode or PR number), then validates
-    the push gate's 4 checks:
+    Resolves PR/worktree from arguments (path mode or PR number), or auto-detects
+    from the current linked worktree when arguments is empty/None. Then validates the push
+    gate's 4 checks:
     1. Not detached HEAD
     2. No uncommitted/untracked changes
     3. Upstream tracking branch exists
@@ -107,11 +108,24 @@ def plan_merge(
         head_ref: Optional[str] = None
         target_worktree: Optional[str] = None
 
-        if Path(arguments).exists():
-            target_worktree = str(Path(arguments).resolve())
-            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree, cwd)
+        effective_cwd = (cwd or Path.cwd()).resolve()
+
+        if not arguments or not arguments.strip():
+            if not git.is_linked_worktree(cwd=effective_cwd):
+                return None, Unknown(
+                    "No argument provided and not in a linked worktree. "
+                    "Run from the linked worktree you want to merge, or pass a PR number or worktree path."
+                )
+            target_worktree = str(effective_cwd)
+            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree)
             if not pr_number or not head_ref:
-                return None, Unknown(f"Could not resolve PR from worktree {target_worktree}")
+                return None, Unknown(_unresolved_pr_message(target_worktree, is_current=True))
+
+        elif Path(arguments).exists():
+            target_worktree = str(Path(arguments).resolve())
+            pr_number, head_ref, _ = _resolve_pr_from_worktree(target_worktree)
+            if not pr_number or not head_ref:
+                return None, Unknown(_unresolved_pr_message(target_worktree, is_current=False))
 
         else:
             pr_number, head_ref, target_worktree = _resolve_pr_from_number(arguments, cwd)
@@ -237,7 +251,16 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         return MergeResult(success=False, error=Unknown(f"apply_merge failed: {e}")), None
 
 
-def _resolve_pr_from_worktree(target_worktree: str, cwd: Optional[Path]) -> Tuple[Optional[int], Optional[str], str]:
+def _unresolved_pr_message(target_worktree: str, is_current: bool) -> str:
+    """Build the 'could not resolve PR' error message, worded correctly for the two call sites."""
+    branch_desc = "current branch" if is_current else "worktree's checked-out branch"
+    return (
+        f"Could not resolve PR from worktree {target_worktree}: "
+        f"no cached PR and {branch_desc} has no associated PR (has it been pushed with an open PR?)"
+    )
+
+
+def _resolve_pr_from_worktree(target_worktree: str) -> Tuple[Optional[int], Optional[str], str]:
     """Resolve PR number and head ref from a worktree path."""
     try:
         cache_file = Path(target_worktree) / ".claude" / "github-cache.json"
@@ -400,9 +423,6 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
-def _get_merge_apply_timeout() -> int:
-    """Get timeout for merge apply, defaulting to 1800s."""
-    return int(os.environ.get("MERGE_APPLY_TIMEOUT_SECS", "1800"))
 
 
 def _run_merge_gate_checks(target_worktree: Path) -> Tuple[bool, bool, Optional[str]]:

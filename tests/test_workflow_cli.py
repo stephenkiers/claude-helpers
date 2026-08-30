@@ -148,4 +148,35 @@ if __name__ == "__main__":
     )
 
     print()
+    print("[Section 7] merge plan with zero arguments (optional argument)")
+
+    # Test that merge plan accepts zero arguments without argparse error
+    # Use a scratch tempdir (not a linked worktree) to test deterministically
+    with tempfile.TemporaryDirectory() as scratch_dir:
+        result = run_cli("merge", "plan", cwd=scratch_dir)
+        test_result(
+            "CLI accepts 'merge plan' with zero arguments (no argparse error)",
+            result.returncode != 2,  # argparse errors return 2
+            f"Got exit code {result.returncode}, stderr: {result.stderr}"
+        )
+
+        # When run from non-linked worktree/main, it should fail gracefully
+        # (not with argparse error)
+        try:
+            output = json.loads(result.stdout)
+            test_result(
+                "CLI outputs valid JSON on 'merge plan' with zero args",
+                isinstance(output, dict),
+                f"Got: {result.stdout}"
+            )
+        except json.JSONDecodeError:
+            # It's okay if it's not JSON - the important thing is it didn't
+            # raise an argparse error (exit code 2)
+            test_result(
+                "CLI doesn't raise argparse error on 'merge plan' zero args",
+                result.returncode == 1,  # Should be a normal error, not argparse error
+                f"Exit code {result.returncode}, stderr: {result.stderr}"
+            )
+
+    print()
     h.summarize_and_exit()

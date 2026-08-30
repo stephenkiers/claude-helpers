@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, MergeResult
+from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, MergeResult, _get_merge_apply_timeout, DEFAULT_MERGE_APPLY_TIMEOUT_SECS
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -369,6 +369,217 @@ if __name__ == "__main__":
                                 "apply_merge: repo-cache with only commands.test does NOT skip to 'no gate'",
                                 "no gate" not in result.merge_gate_used
                             )
+
+        print()
+        print("[Section 12] Auto-detect PR from worktree when no argument given")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        plan_obj, err = plan_merge(None, cwd=wt_dir)
+                        test_result(
+                            "plan_merge(None) in a linked worktree resolves via cwd",
+                            plan_obj and plan_obj.pr_number == 42 and plan_obj.head_ref == "feature"
+                        )
+                        test_result(
+                            "plan_merge(None) calls _resolve_pr_from_worktree with cwd path",
+                            mock_resolve.called and mock_resolve.call_args[0][0] == str(wt_dir.resolve())
+                        )
+
+        print()
+        print("[Section 13] plan_merge with no argument fails in main worktree")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                mock_is_linked.return_value = False
+
+                plan_obj, err = plan_merge(None, cwd=wt_dir)
+                test_result(
+                    "plan_merge(None) in main worktree returns error",
+                    plan_obj is None and err is not None
+                )
+                test_result(
+                    "plan_merge(None) error mentions not being in a linked worktree",
+                    "not in a linked worktree" in str(err).lower()
+                )
+
+        print()
+        print("[Section 14] plan_merge with blank string behaves like None")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                        plan_obj, err = plan_merge("", cwd=wt_dir)
+                        test_result(
+                            "plan_merge('') in a linked worktree resolves via cwd (regression test)",
+                            plan_obj and plan_obj.pr_number == 42
+                        )
+                        test_result(
+                            "plan_merge('') doesn't use Path('').exists() branch",
+                            mock_resolve.called,
+                            "Should use is_linked_worktree, not Path('').exists()"
+                        )
+
+        print()
+        print("[Section 15] plan_merge with whitespace-only argument behaves like None")
+
+        for ws in ["   ", "\t", "  \t  \n  "]:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmppath = Path(tmpdir)
+                wt_dir = tmppath / "worktree"
+                wt_dir.mkdir()
+
+                with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                    with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                        with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                            mock_is_linked.return_value = True
+                            mock_gate.return_value = []
+                            mock_resolve.return_value = (42, "feature", str(wt_dir))
+
+                            plan_obj, err = plan_merge(ws, cwd=wt_dir)
+                            test_result(
+                                f"plan_merge({ws!r}) with whitespace resolves via cwd",
+                                plan_obj and plan_obj.pr_number == 42,
+                                "Whitespace-only string should behave like None"
+                            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                mock_is_linked.return_value = False
+
+                # Test whitespace-only fails in main worktree
+                plan_obj, err = plan_merge("   ", cwd=wt_dir)
+                test_result(
+                    "plan_merge('   ') in main worktree returns error",
+                    plan_obj is None and err is not None,
+                    "Whitespace in non-linked worktree should error"
+                )
+
+        print()
+        print("[Section 16] _get_merge_apply_timeout handles invalid env var gracefully (regression test)")
+
+        # Test that invalid env var doesn't crash
+        old_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+        try:
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "not-a-number"
+            timeout = _get_merge_apply_timeout()
+            test_result(
+                "_get_merge_apply_timeout on invalid input returns default",
+                timeout == DEFAULT_MERGE_APPLY_TIMEOUT_SECS,
+                f"Expected {DEFAULT_MERGE_APPLY_TIMEOUT_SECS}, got {timeout}"
+            )
+        finally:
+            if old_env is not None:
+                os.environ["MERGE_APPLY_TIMEOUT_SECS"] = old_env
+            else:
+                os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
+
+        # Test that valid integer works
+        old_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+        try:
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "600"
+            timeout = _get_merge_apply_timeout()
+            test_result(
+                "_get_merge_apply_timeout with valid integer returns that value",
+                timeout == 600,
+                f"Expected 600, got {timeout}"
+            )
+        finally:
+            if old_env is not None:
+                os.environ["MERGE_APPLY_TIMEOUT_SECS"] = old_env
+            else:
+                os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
+
+        # Test that negative values fall back to default
+        old_env = os.environ.get("MERGE_APPLY_TIMEOUT_SECS")
+        try:
+            os.environ["MERGE_APPLY_TIMEOUT_SECS"] = "-100"
+            timeout = _get_merge_apply_timeout()
+            test_result(
+                "_get_merge_apply_timeout on negative value returns default",
+                timeout == DEFAULT_MERGE_APPLY_TIMEOUT_SECS,
+                f"Expected {DEFAULT_MERGE_APPLY_TIMEOUT_SECS}, got {timeout}"
+            )
+        finally:
+            if old_env is not None:
+                os.environ["MERGE_APPLY_TIMEOUT_SECS"] = old_env
+            else:
+                os.environ.pop("MERGE_APPLY_TIMEOUT_SECS", None)
+
+        print()
+        print("[Section 17] PR-resolution error message attribution (auto-detect vs explicit path)")
+
+        # Auto-detect case (no argument): the target IS the invoking shell's
+        # current branch, so the error should say "current branch".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge.git.is_linked_worktree") as mock_is_linked:
+                with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                    with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                        mock_is_linked.return_value = True
+                        mock_gate.return_value = []
+                        mock_resolve.return_value = (None, None, str(wt_dir))
+
+                        plan_obj, err = plan_merge(None, cwd=wt_dir)
+                        test_result(
+                            "plan_merge(None) with unresolved PR returns error",
+                            plan_obj is None and err is not None
+                        )
+                        test_result(
+                            "Auto-detect case: error references 'current branch'",
+                            "current branch" in str(err).lower(),
+                            f"got: {err}"
+                        )
+
+        # Explicit-path case: the target is NOT necessarily the invoking
+        # shell's current branch, so the error must NOT say "current branch".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            wt_dir = tmppath / "worktree"
+            wt_dir.mkdir()
+
+            with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
+                mock_resolve.return_value = (None, None, str(wt_dir))
+
+                plan_obj, err = plan_merge(str(wt_dir))
+                test_result(
+                    "plan_merge(explicit path) with unresolved PR returns error",
+                    plan_obj is None and err is not None
+                )
+                test_result(
+                    "Explicit-path case: error does NOT reference 'current branch'",
+                    "current branch" not in str(err).lower(),
+                    f"got: {err}"
+                )
 
         print()
         h.summarize_and_exit()
