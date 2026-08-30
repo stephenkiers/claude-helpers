@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from _test_harness import REPO_ROOT, Harness
@@ -304,6 +305,64 @@ def test_stage_end_requires_failure_class():
         return True, ""
 
 
+def test_stage_end_records_findings_and_checks():
+    """stage-end with --findings-*/--checks-* flags writes a findings/checks dict on the event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "stage-end",
+                "--stage-id", "st1",
+                "--command-id", "c1",
+                "--stage", "build",
+                "--outcome", "success",
+                "--findings-produced", "5",
+                "--findings-accepted", "3",
+                "--checks-executed", "10",
+                "--checks-passed", "9",
+            ],
+        )
+        if code != 0:
+            return False, f"exit code {code}, stderr: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if event.get("findings") != {"produced": 5, "accepted": 3}:
+            return False, f"unexpected findings dict: {event.get('findings')}"
+        if event.get("checks") != {"executed": 10, "passed": 9}:
+            return False, f"unexpected checks dict: {event.get('checks')}"
+
+        return True, ""
+
+
+def test_stage_end_omits_findings_and_checks_when_not_passed():
+    """stage-end without any --findings-*/--checks-* flags omits both fields entirely."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "stage-end",
+                "--stage-id", "st1",
+                "--command-id", "c1",
+                "--stage", "build",
+                "--outcome", "success",
+            ],
+        )
+        if code != 0:
+            return False, f"exit code {code}, stderr: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if "findings" in event or "checks" in event:
+            return False, f"findings/checks should be omitted when not passed: {event}"
+
+        return True, ""
+
+
 def test_read_stdin_json_caps_at_1mib():
     """read_stdin_json caps input at 1 MiB before parsing."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -572,6 +631,51 @@ def test_diagnose_prints_per_stage_breakdown():
         has_stage_breakdown = ("build" in stdout or "test" in stdout or "stage" in stdout.lower())
         if not has_stage_breakdown:
             return False, f"diagnose output missing per-stage breakdown: {stdout}"
+
+        return True, ""
+
+
+def test_diagnose_stale_vs_recent_unmatched_breakdown():
+    """diagnose splits unmatched begins into stale (old, likely abandoned) vs recent (may
+    still be in progress) by age, so a low match rate can be told apart from an active session."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+
+        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+
+        events = [
+            {
+                # Old, unmatched begin — well past the 6h staleness threshold.
+                "schema_version": 1, "event_type": "command.begin",
+                "timestamp": "2026-08-01T12:00:00Z", "session_id": "s1",
+                "command_id": "c-stale", "command": "test",
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+            {
+                # Fresh, unmatched begin — plausibly still running.
+                "schema_version": 1, "event_type": "command.begin",
+                "timestamp": recent_ts, "session_id": "s1",
+                "command_id": "c-recent", "command": "test",
+                "turns": "unknown", "elapsed_seconds": "unknown", "retries": "unknown",
+                "peak_concurrency": "unknown", "transcript_size": "unknown",
+                "output_artifact_size": "unknown",
+            },
+        ]
+
+        with open(log_path, "w") as f:
+            for event in events:
+                f.write(json.dumps(event) + "\n")
+
+        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose", "--window-days", "3650"])
+
+        if "Unmatched begins by age" not in stdout:
+            return False, f"diagnose output missing stale/recent breakdown: {stdout}"
+        if "1 stale" not in stdout:
+            return False, f"expected 1 stale unmatched begin, got: {stdout}"
+        if "1 recent" not in stdout:
+            return False, f"expected 1 recent unmatched begin, got: {stdout}"
 
         return True, ""
 
@@ -1546,6 +1650,12 @@ if __name__ == "__main__":
     passed, msg = test_stage_end_requires_failure_class()
     test_result("stage-end requires failure-class for failure", passed, msg)
 
+    passed, msg = test_stage_end_records_findings_and_checks()
+    test_result("stage-end records findings/checks when flags passed", passed, msg)
+
+    passed, msg = test_stage_end_omits_findings_and_checks_when_not_passed()
+    test_result("stage-end omits findings/checks when flags absent", passed, msg)
+
     print()
 
     print("[Section 5] diagnose")
@@ -1581,6 +1691,9 @@ if __name__ == "__main__":
 
     passed, msg = test_diagnose_prints_per_stage_breakdown()
     test_result("diagnose prints per-stage breakdown", passed, msg)
+
+    passed, msg = test_diagnose_stale_vs_recent_unmatched_breakdown()
+    test_result("diagnose splits unmatched begins into stale vs recent", passed, msg)
 
     print()
 

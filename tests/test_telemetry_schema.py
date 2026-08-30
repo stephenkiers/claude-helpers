@@ -241,6 +241,66 @@ def test_validate_failure_bad_class():
     return any("class" in e.lower() for e in errors), f"got errors: {errors}"
 
 
+def test_validate_findings_accepts_valid_keys():
+    """validate_event accepts a findings dict with only allowlisted, non-negative int keys."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": 5, "accepted": 3, "unique": 2, "rejected": 1, "acted_upon": 1},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"got errors: {errors}"
+
+
+def test_validate_findings_rejects_unknown_key():
+    """validate_event catches a findings key outside the allowlist."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"bogus_key": 1},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_findings_rejects_negative_value():
+    """validate_event catches a negative findings count."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        findings={"produced": -1},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("findings" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_checks_accepts_valid_keys():
+    """validate_event accepts a checks dict with only allowlisted, non-negative int keys."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": 10, "passed": 9},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return errors == [], f"got errors: {errors}"
+
+
+def test_validate_checks_rejects_non_int_value():
+    """validate_event catches a non-int checks value."""
+    event = telemetry_schema.build_event(
+        "stage.end",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        checks={"executed": "unknown"},
+    )
+    errors = telemetry_schema.validate_event(event)
+    return any("checks" in e.lower() for e in errors), f"got errors: {errors}"
+
+
 def test_append_event_creates_file():
     """append_event creates the log file and appends one line."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -916,6 +976,21 @@ if __name__ == "__main__":
 
     passed, msg = test_validate_failure_bad_class()
     test_result("invalid failure.class caught", passed, msg)
+
+    passed, msg = test_validate_findings_accepts_valid_keys()
+    test_result("findings dict with valid keys accepted", passed, msg)
+
+    passed, msg = test_validate_findings_rejects_unknown_key()
+    test_result("findings dict rejects unknown key", passed, msg)
+
+    passed, msg = test_validate_findings_rejects_negative_value()
+    test_result("findings dict rejects negative value", passed, msg)
+
+    passed, msg = test_validate_checks_accepts_valid_keys()
+    test_result("checks dict with valid keys accepted", passed, msg)
+
+    passed, msg = test_validate_checks_rejects_non_int_value()
+    test_result("checks dict rejects non-int value", passed, msg)
 
     print()
 

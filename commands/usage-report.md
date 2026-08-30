@@ -26,18 +26,16 @@ python3 "$HOME/.claude/scripts/run-metrics.py" diagnose --window-days 30
 Present these two blocks to the user as-is (you may add a short heading above each, but do not
 alter, recompute, or summarize the numbers inside them).
 
-## 2. Instruction to future-Claude: deeper breakdowns are out of scope for this pass
+## 2. Instruction to future-Claude: deeper breakdowns are ad hoc, not built-in
 
 If the user asks for something `diagnose` doesn't print — a parent-vs-subagent cost split, cost
-per accepted finding, retry/zero-yield stage detection, or a concurrency-band breakdown — do
-**not** invent aggregation logic to produce it. Getting those numbers correctly would require
-reading `~/.claude/telemetry/events.jsonl` directly (the default log path) and aggregating with
-plain `jq`/`python`, but this command doc deliberately does not implement that aggregation in
-this pass. The plan defers those deeper `/usage-report` views to a future pass, once real
-baseline telemetry data exists to validate the aggregation logic against (see the phase 7–8
-sequencing in the originating plan). Guessing at output shape now, with no real data to check it
-against, would just produce numbers nobody can trust. Tell the user this is deferred, and that
-`diagnose`'s output is the full extent of this command today.
+per accepted finding, retry/zero-yield stage detection, or a concurrency-band breakdown — this is
+a deliberate design choice (ADR-0016), not a gap to fill in with a new subcommand. Read
+`docs/metrics.md`'s "Querying the Log Directly" section for starting `jq`/`python` patterns
+against `~/.claude/telemetry/events.jsonl`, adapt them to the specific question, and answer it
+directly in conversation. Do not build a new deterministic report or aggregation command for this
+— the log stays a flat file meant to be queried fresh per question, since a fixed report can't
+anticipate every value-vs-cost question worth asking (see ADR-0016's rationale).
 
 ## 3. Never fabricate numbers
 

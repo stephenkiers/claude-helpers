@@ -79,8 +79,14 @@ Every event emitted by `run-metrics.py` carries these fields:
   - `cache_read` (integer or `"unknown"`)
   - `cache_creation` (integer or `"unknown"`)
 - `outcome` (object) — success/failure/interrupted shape (see above)
-- `findings` (integer) — count of findings in a review
-- `checks` (object) — executed/outcome summary for checks (structure defined per use case)
+- `findings` (object) — findings yield for a `command.end`/`stage.end`, "where applicable" (a
+  stage with nothing finding-shaped to report simply omits this field). Keys are a subset of
+  `produced`, `accepted`, `unique`, `rejected`, `acted_upon`, each a non-negative integer. Set via
+  `--findings-produced`/`--findings-accepted`/`--findings-unique`/`--findings-rejected`/
+  `--findings-acted-upon` on `command-end`/`stage-end`.
+- `checks` (object) — checks/tests executed and outcome for a `command.end`/`stage.end`. Keys are
+  a subset of `executed`, `passed`, each a non-negative integer. Set via `--checks-executed`/
+  `--checks-passed` on `command-end`/`stage-end`.
 - `token_confidence` (string) — confidence level of token counts (e.g., `"low"`, `"high"`)
 
 ## Hook Wiring
@@ -331,6 +337,85 @@ These thresholds were defined **before any baseline data exists**, per the issue
 - **<15% of token/cache fields are `"unknown"` across successful runs** — ensures reasonable token capture rate
 
 Run `diagnose` regularly to track telemetry data quality over time.
+
+### Interpreting a low match rate
+
+`diagnose` also splits unmatched `*.begin` events into **stale** (≥6h old — likely a session
+that was interrupted or abandoned before it closed out, or a genuine correlation bug) vs.
+**recent** (<6h old — plausibly still in progress; not evidence of a defect on its own).
+
+This split exists because a low match rate has two very different causes with different fixes:
+
+1. **A correlation bug** — an `*.end` call site not firing on some code path (e.g. an early-exit
+   or error branch), or IDs failing to resolve across process boundaries.
+2. **Genuine session interruption** — a user closes the terminal, denies a permission and abandons
+   the flow, or `/clear`s mid-command. No `*.end` event is possible for these, and no amount of
+   code fixing raises the match rate further.
+
+Investigating the pre-existing gap (repo history before the session-scoped state-file fix,
+PR #107) found no evidence of case 2's sibling failure mode — an `*.end` arriving with the
+*wrong* correlating ID (which would show up as an "orphan" end with no matching begin anywhere in
+the log). Every unmatched begin in the log had no corresponding end at all. Comparing before/after
+that fix's merge timestamp showed match rate jump from ~37% to ~90% (stage-level) — most of the
+original gap was case 1, and PR #107 fixed the dominant instance of it. The residual gap is spread
+thin across many stages/commands with no single dominant offender, consistent with a mix of
+case 2 and normal measurement noise (a command still running when `diagnose` samples the log).
+Do not assume a new low match rate is automatically a bug — use the stale/recent split and check
+whether unmatched begins cluster in one stage/command (a fixable wiring gap) or spread evenly
+(more likely case 2).
+
+## Querying the Log Directly
+
+There is deliberately no built-in report generator beyond `diagnose` (see ADR-0016). The log is a
+flat JSONL file meant to be read directly — by a human with `jq`, or by a Claude session asked an
+ad hoc question ("is `/implement-with-haiku` worth its token cost?", "which stage fails most
+often?"). These are starting query patterns, not an exhaustive API — adapt the `jq` filter to the
+actual question being asked.
+
+**Caveat before anything else:** `run-metrics.py`'s events do **not** carry token/cost data — the
+writer only sees hook payload metadata, which doesn't include token counts. Token and turn counts
+come from `claude-transcript-metrics.py parse --transcript PATH`, run separately against a
+session's transcript file and joined by `session_id`/`agent_id` at read time (see "Transcript
+Parsing" above). Any cost question requires that join; the `events.jsonl` log alone answers
+frequency, outcome, and timing questions, not token cost.
+
+**Counts by command and outcome:**
+
+```bash
+jq -r 'select(.event_type == "command.end") | [.command, .outcome.status] | @tsv' \
+  ~/.claude/telemetry/events.jsonl | sort | uniq -c | sort -rn
+```
+
+**Which stages fail or get interrupted most often:**
+
+```bash
+jq -r 'select(.event_type == "stage.end" and .outcome.status != "success") |
+  [.stage, .outcome.status, (.outcome.class // "-")] | @tsv' \
+  ~/.claude/telemetry/events.jsonl | sort | uniq -c | sort -rn
+```
+
+**Elapsed time by command (where known — many events predate `elapsed_seconds` being wired up
+everywhere, so filter out `"unknown"`):**
+
+```bash
+jq -r 'select(.event_type == "command.end" and .elapsed_seconds != "unknown") |
+  [.command, .elapsed_seconds] | @tsv' \
+  ~/.claude/telemetry/events.jsonl
+```
+
+**Token/cost by command (requires the transcript-parser join described above):** find the
+session's `command.begin`/`command.end` pair for its `session_id`, locate that session's
+transcript file, run `claude-transcript-metrics.py parse --transcript PATH --session-id ID`, and
+combine the resulting `tokens` dict with the command/stage records sharing that `session_id`. This
+is inherently a small ad hoc script per question, not a fixed report — write it fresh each time
+against the specific question being asked.
+
+**Findings/yield vs. cost (once the findings/checks fields land — see the "yield fields" note in
+ADR-0016):** filter `*.end` events for the relevant fields alongside `elapsed_seconds`/token data
+from the join above, to weigh output against cost per the self-measurement goal in ADR-0016 —
+e.g., "does `/implement-with-haiku` produce enough accepted findings/successful outcomes per token
+to justify its cost, relative to other commands?" is exactly the kind of question this log exists
+to answer once yield fields are recorded.
 
 ## Privacy Allowlist
 

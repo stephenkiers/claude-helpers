@@ -45,6 +45,8 @@ EVENT_TYPES = frozenset({
 
 OUTCOME_STATUSES = frozenset({"success", "failure", "interrupted"})
 FAILURE_CLASSES = frozenset({"timeout", "api_error", "test_failure", "guard_block", "other"})
+FINDINGS_KEYS = frozenset({"produced", "accepted", "unique", "rejected", "acted_upon"})
+CHECKS_KEYS = frozenset({"executed", "passed"})
 
 
 def outcome_success() -> dict:
@@ -241,6 +243,30 @@ def validate_event(event: dict) -> list:
                     errors.append("outcome with status='failure' must have a 'class' field")
                 elif outcome.get("class") not in FAILURE_CLASSES:
                     errors.append(f"outcome.class not in {FAILURE_CLASSES}, got {outcome.get('class')}")
+
+    # Check findings if present: dict of non-negative ints, keys a subset of the allowed set
+    if "findings" in event:
+        findings = event.get("findings")
+        if not isinstance(findings, dict):
+            errors.append("findings must be a dict")
+        else:
+            for key, value in findings.items():
+                if key not in FINDINGS_KEYS:
+                    errors.append(f"findings key not in {FINDINGS_KEYS}, got {key}")
+                elif not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    errors.append(f"findings.{key} must be a non-negative int, got {value!r}")
+
+    # Check checks if present: dict of non-negative ints, keys a subset of the allowed set
+    if "checks" in event:
+        checks = event.get("checks")
+        if not isinstance(checks, dict):
+            errors.append("checks must be a dict")
+        else:
+            for key, value in checks.items():
+                if key not in CHECKS_KEYS:
+                    errors.append(f"checks key not in {CHECKS_KEYS}, got {key}")
+                elif not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    errors.append(f"checks.{key} must be a non-negative int, got {value!r}")
 
     return errors
 

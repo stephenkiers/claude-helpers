@@ -26,6 +26,9 @@ import telemetry_schema
 MAX_STDIN_BYTES = 1_048_576  # 1 MiB — hook payloads are small metadata blobs, never larger
 MAX_FIELD_LEN = 4096  # defense-in-depth cap on any single pass-through metadata field
 
+# diagnose: age past which an unmatched begin is reported as "stale" rather than "recent"
+STALE_THRESHOLD_HOURS = 6
+
 
 def _bounded(value, max_len=MAX_FIELD_LEN):
     """Truncate a string value to max_len chars; pass through non-strings unchanged."""
@@ -193,6 +196,35 @@ def cmd_command_begin(args):
     print(command_id)
 
 
+def _build_findings_dict(args):
+    """Build a findings dict from --findings-* CLI args, or None if none were passed.
+
+    Only keys the caller actually supplied are included — findings tracking is
+    "where applicable" per the event model, not every stage produces findings.
+    """
+    findings = {}
+    for key, value in (
+        ("produced", args.findings_produced),
+        ("accepted", args.findings_accepted),
+        ("unique", args.findings_unique),
+        ("rejected", args.findings_rejected),
+        ("acted_upon", args.findings_acted_upon),
+    ):
+        if value is not None:
+            findings[key] = value
+    return findings or None
+
+
+def _build_checks_dict(args):
+    """Build a checks dict from --checks-* CLI args, or None if neither was passed."""
+    checks = {}
+    if args.checks_executed is not None:
+        checks["executed"] = args.checks_executed
+    if args.checks_passed is not None:
+        checks["passed"] = args.checks_passed
+    return checks or None
+
+
 def cmd_command_end(args):
     """Record a command.end event. Outcome is required; --command-id is optional (resolved from state).
 
@@ -236,6 +268,8 @@ def cmd_command_end(args):
         command=args.command,
         outcome=outcome,
         state_mismatch=state_mismatch,
+        findings=_build_findings_dict(args),
+        checks=_build_checks_dict(args),
     )
     telemetry_schema.append_event(args.log, event)
 
@@ -321,6 +355,8 @@ def cmd_stage_end(args):
         command_id=command_id,
         outcome=outcome,
         state_mismatch=state_mismatch,
+        findings=_build_findings_dict(args),
+        checks=_build_checks_dict(args),
     )
     telemetry_schema.append_event(args.log, event)
 
@@ -470,6 +506,37 @@ def cmd_diagnose(args):
             rate = 1.0 if begins == 0 else matched / begins
             print(f"  {stage_name}: {rate:.1%} ({matched}/{begins})")
 
+    # Stale vs. recent unmatched begins. A begin with no end yet may just belong to a
+    # command/stage that's still running (not a defect) or one whose session was
+    # interrupted/abandoned before it could close (a real gap, but not necessarily a bug).
+    # Age against STALE_THRESHOLD_HOURS gives a rough split without guessing which.
+    now = datetime.now(timezone.utc)
+    stale_count = 0
+    recent_count = 0
+    for mapping, _ in all_begin_pairs:
+        for begin, end in mapping.values():
+            if not begin or end:
+                continue
+            ts_str = begin.get("timestamp", "")
+            try:
+                ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
+                begin_ts = datetime.fromisoformat(ts_normalized)
+            except (ValueError, TypeError):
+                continue
+            age_hours = (now - begin_ts).total_seconds() / 3600
+            if age_hours >= STALE_THRESHOLD_HOURS:
+                stale_count += 1
+            else:
+                recent_count += 1
+
+    unmatched_total = total_begins - total_matched
+    if unmatched_total:
+        print(
+            f"Unmatched begins by age: {stale_count} stale (>={STALE_THRESHOLD_HOURS}h old — "
+            f"likely abandoned/dropped, not still running), {recent_count} recent "
+            f"(<{STALE_THRESHOLD_HOURS}h old — may still be in progress)"
+        )
+
     # Check thresholds
     passes = match_rate >= 0.95 and unknown_pct < 0.15
     if passes:
@@ -482,6 +549,17 @@ def cmd_diagnose(args):
         if unknown_pct >= 0.15:
             print(f"  - Unknown token fields {unknown_pct:.1%} >= 15%")
         sys.exit(1)
+
+
+def _add_findings_and_checks_args(subparser):
+    """Add the shared --findings-*/--checks-* optional int flags to a command-end/stage-end subparser."""
+    subparser.add_argument("--findings-produced", type=int, default=None, help="Findings produced (optional, where applicable)")
+    subparser.add_argument("--findings-accepted", type=int, default=None, help="Findings accepted (optional, where applicable)")
+    subparser.add_argument("--findings-unique", type=int, default=None, help="Findings unique to this stage/command (optional)")
+    subparser.add_argument("--findings-rejected", type=int, default=None, help="Findings rejected (optional)")
+    subparser.add_argument("--findings-acted-upon", type=int, default=None, help="Findings acted upon (optional)")
+    subparser.add_argument("--checks-executed", type=int, default=None, help="Checks/tests executed (optional)")
+    subparser.add_argument("--checks-passed", type=int, default=None, help="Checks/tests passed (optional)")
 
 
 def main():
@@ -538,6 +616,7 @@ def main():
         "--failure-class",
         help="Failure class (required if outcome=failure)",
     )
+    _add_findings_and_checks_args(sp_command_end)
     sp_command_end.set_defaults(func=cmd_command_end)
 
     # stage-begin
@@ -561,6 +640,7 @@ def main():
         "--failure-class",
         help="Failure class (required if outcome=failure)",
     )
+    _add_findings_and_checks_args(sp_stage_end)
     sp_stage_end.set_defaults(func=cmd_stage_end)
 
     # diagnose
