@@ -190,6 +190,23 @@ if __name__ == "__main__":
             f"got {stderr_output!r}"
         )
 
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.return_value = "not valid json"
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            result = git_module.pr_list_json("main", ["number", "title"])
+        test_result(
+            "pr_list_json returns [] on JSONDecodeError",
+            result == [],
+            f"got {result}"
+        )
+        stderr_output = stderr_capture.getvalue()
+        test_result(
+            "pr_list_json prints [workflow.git] diagnostic to stderr on JSONDecodeError",
+            "[workflow.git]" in stderr_output and "pr_list_json" in stderr_output,
+            f"got {stderr_output!r}"
+        )
+
     print()
     print("[Section: GitCommandError carries stderr]")
 

@@ -227,12 +227,20 @@ def _json_flag(fields: List[str]) -> List[str]:
 
 def _warn_gh_failure(context: str, e: Exception) -> None:
     """Print a diagnostic for a swallowed gh failure. Stderr only — cli.py's
-    output contract is a single JSON blob on stdout."""
-    print(f"[workflow.git] {context}: {e}", file=sys.stderr)
+    output contract is a single JSON blob on stdout. Never lets a failure in
+    the diagnostic write itself (e.g. BrokenPipeError) escape and break the
+    caller's "always return {}/[]" contract."""
+    try:
+        print(f"[workflow.git] {context}: {e}", file=sys.stderr)
+    except Exception:
+        pass
 
 
 def repo_view_json(json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
-    """Run 'gh repo view --json <args>' and return parsed JSON."""
+    """Run 'gh repo view --json <args>' and return parsed JSON.
+
+    On failure, emits a `[workflow.git] ...` stderr diagnostic before returning {}.
+    """
     try:
         output = run_gh_command(["repo", "view", *_json_flag(json_args)], cwd=cwd)
         return json.loads(output) if output else {}
@@ -251,7 +259,10 @@ def gh_api_user_json(cwd: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
-    """Run 'gh pr view <branch> --json <args>' and return parsed JSON."""
+    """Run 'gh pr view <branch> --json <args>' and return parsed JSON.
+
+    On failure, emits a `[workflow.git] ...` stderr diagnostic before returning {}.
+    """
     try:
         output = run_gh_command(["pr", "view", *_json_flag(json_args), "--", branch], cwd=cwd)
         return json.loads(output) if output else {}
@@ -261,7 +272,10 @@ def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) 
 
 
 def pr_list_json(base_branch: str, json_fields: List[str], cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
-    """Run 'gh pr list --base <base_branch> --state open --json <fields>' and return parsed JSON list."""
+    """Run 'gh pr list --base <base_branch> --state open --json <fields>' and return parsed JSON list.
+
+    On failure, emits a `[workflow.git] ...` stderr diagnostic before returning [].
+    """
     try:
         args = ["pr", "list", "--base", base_branch, "--state", "open", *_json_flag(json_fields)]
         output = run_gh_command(args, cwd=cwd)
