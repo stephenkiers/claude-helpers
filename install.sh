@@ -28,11 +28,21 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)"; then
-    FOUND_VERSION="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
-    echo "Error: python3 ${FOUND_VERSION} found, but scripts/workflow/ requires Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}+." >&2
-    echo "Install a newer python3 via https://www.python.org/downloads/ or your platform package" >&2
-    echo "manager, then re-run ./install.sh." >&2
+# Capture stderr from version check to detect broken shims (e.g., corrupt symlink).
+# The check is the `if` condition itself (not a separate assignment) so `set -e`
+# doesn't abort the script the instant python3 exits non-zero.
+if ! stderr_out=$(python3 -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)" 2>&1); then
+    if [ -n "$stderr_out" ]; then
+        # Interpreter ran but errored (e.g., broken shim)
+        echo "Error: python3 failed to run: $stderr_out" >&2
+    else
+        # Version check failed (interpreter is too old)
+        FOUND_VERSION="$(python3 -c 'import platform; print(platform.python_version())')"
+        echo "Error: python3 ${FOUND_VERSION} found, but scripts/workflow/ (used by /track-and-start, /shipit," >&2
+        echo "/cleanup, /merge-and-cleanup) requires Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}+." >&2
+        echo "Install a newer python3 via https://www.python.org/downloads/ or your platform package" >&2
+        echo "manager (e.g. 'brew install python3' on macOS), then re-run ./install.sh." >&2
+    fi
     exit 1
 fi
 

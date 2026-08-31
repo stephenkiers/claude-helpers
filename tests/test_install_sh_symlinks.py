@@ -544,6 +544,117 @@ def test_second_run_skips_relink_of_correct_symlink():
         return True, ""
 
 
+def test_python3_not_found():
+    """install.sh fails when python3 is not found in PATH."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        test_home = tmpdir_path / "home"
+        test_home.mkdir()
+
+        source_repo = tmpdir_path / "repo"
+        source_repo.mkdir()
+        commands_dir = source_repo / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "test_cmd.md").write_text("test command\n")
+
+        install_sh_copy = setup_test_repo_with_install_sh(tmpdir_path, source_repo)
+
+        # Create an empty bin directory
+        fake_bin_dir = tmpdir_path / "no_python3_bin"
+        fake_bin_dir.mkdir()
+
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+        # Set PATH to include only /bin (which has bash) and our fake empty bin dir
+        # This excludes typical Homebrew/pyenv locations where python3 lives
+        env["PATH"] = "/bin:" + str(fake_bin_dir)
+
+        code, stdout, stderr = run_bash_script([str(install_sh_copy)], env=env)
+
+        # Should exit with non-zero code
+        if code == 0:
+            return False, "install.sh should have failed when python3 is not found"
+
+        # Error message should mention python3 not found
+        if "python3 not found" not in stderr:
+            return False, f"expected 'python3 not found' in stderr, got: {stderr}"
+
+        # Error should mention the affected commands
+        if "/track-and-start" not in stderr or "/shipit" not in stderr:
+            return False, f"expected mention of affected commands in stderr, got: {stderr}"
+
+        return True, ""
+
+
+def test_python3_old_version():
+    """install.sh fails with the 'too old' message when python3 resolves but is < 3.8."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        test_home = tmpdir_path / "home"
+        test_home.mkdir()
+
+        source_repo = tmpdir_path / "repo"
+        source_repo.mkdir()
+        commands_dir = source_repo / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "test_cmd.md").write_text("test command\n")
+
+        install_sh_copy = setup_test_repo_with_install_sh(tmpdir_path, source_repo)
+
+        fake_bin_dir = tmpdir_path / "fake_bin"
+        fake_bin_dir.mkdir()
+
+        # Fake python3 that behaves like a genuinely old (but not broken) interpreter:
+        # the version-check invocation (`-c "import sys; sys.exit(...)"`) fails silently
+        # (no stderr) with exit 1, and the follow-up version-string invocation
+        # (`-c 'import platform; print(...)'`) succeeds and reports an old version.
+        # This exercises the "too old" branch specifically, distinct from the
+        # broken-shim branch (which fires when the version-check call itself emits stderr).
+        fake_python3 = fake_bin_dir / "python3"
+        fake_python3.write_text("""#!/bin/sh
+# Fake python3 simulating a genuinely old (3.6.0) interpreter.
+case "$2" in
+    *platform.python_version*)
+        echo "3.6.0"
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+""")
+        fake_python3.chmod(0o755)
+
+        if not fake_python3.exists():
+            return False, f"fake python3 file was not created at {fake_python3}"
+        if not os.access(fake_python3, os.X_OK):
+            return False, f"fake python3 file is not executable: {fake_python3}"
+
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+        env["PATH"] = str(fake_bin_dir) + ":" + env.get("PATH", "")
+
+        code, stdout, stderr = run_bash_script([str(install_sh_copy)], env=env)
+
+        if code == 0:
+            return False, "install.sh should have exited with non-zero code when python3 is too old"
+
+        if "3.6.0" not in stderr:
+            return False, f"expected the detected old version '3.6.0' in stderr, got: {stderr}"
+
+        if "requires Python" not in stderr:
+            return False, f"expected the 'too old' error text in stderr, got: {stderr}"
+
+        # install.sh's python3 check should prevent symlink installation and exit early
+        claude_commands = test_home / ".claude" / "commands"
+        if claude_commands.exists() and len(list(claude_commands.glob("*"))) > 0:
+            return False, "install.sh should have exited before symlinking when python3 check fails"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("INSTALL.SH RECURSIVE SYMLINK TEST SUITE")
     test_result = h.test_result
@@ -596,6 +707,15 @@ if __name__ == "__main__":
     print("[Section 8] Idempotent second run")
     passed, msg = test_second_run_skips_relink_of_correct_symlink()
     test_result("second run skips re-linking an already-correct symlink", passed, msg)
+
+    print()
+
+    print("[Section 9] Python3 precondition checks")
+    passed, msg = test_python3_not_found()
+    test_result("install.sh fails when python3 not found", passed, msg)
+
+    passed, msg = test_python3_old_version()
+    test_result("install.sh fails when python3 version is too old", passed, msg)
 
     print()
 
