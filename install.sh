@@ -37,11 +37,16 @@ if ! stderr_out=$(python3 -c "import sys; sys.exit(0 if sys.version_info >= (${M
         echo "Error: python3 failed to run: $stderr_out" >&2
     else
         # Version check failed (interpreter is too old)
-        FOUND_VERSION="$(python3 -c 'import platform; print(platform.python_version())')"
-        echo "Error: python3 ${FOUND_VERSION} found, but scripts/workflow/ (used by /track-and-start, /shipit," >&2
-        echo "/cleanup, /merge-and-cleanup) requires Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}+." >&2
-        echo "Install a newer python3 via https://www.python.org/downloads/ or your platform package" >&2
-        echo "manager (e.g. 'brew install python3' on macOS), then re-run ./install.sh." >&2
+        # Wrap the version retrieval as an if condition to handle failure under set -e
+        if stderr_out=$(python3 -c 'import platform; print(platform.python_version())' 2>&1); then
+            FOUND_VERSION="$stderr_out"
+            echo "Error: python3 ${FOUND_VERSION} found, but scripts/workflow/ (used by /track-and-start, /shipit," >&2
+            echo "/cleanup, /merge-and-cleanup) requires Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}+." >&2
+            echo "Install a newer python3 via https://www.python.org/downloads/ or your platform package" >&2
+            echo "manager (e.g. 'brew install python3' on macOS), then re-run ./install.sh." >&2
+        else
+            echo "Error: python3 version check failed (could not retrieve version string) — this may indicate a broken or corrupted python3 installation." >&2
+        fi
     fi
     exit 1
 fi

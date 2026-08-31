@@ -125,65 +125,97 @@ except SystemExit as e:
 
 
 def test_version_guard_allows_python_38():
-    """main() should allow Python 3.8."""
+    """main() should allow Python 3.8 to proceed past the version guard."""
     code = """
 import sys
 from scripts.workflow.cli import main
-# Don't actually call main() since it may require valid arguments
-# Instead, just verify that importing and having the right version_info doesn't fail
-if sys.version_info >= (3, 8):
-    sys.exit(0)
-else:
-    sys.exit(1)
+
+try:
+    main()
+except SystemExit:
+    pass
 """
 
     returncode, stdout, stderr = run_python_with_monkeypatch("3.8.0", code)
 
-    # Should exit with 0 (the test code exits 0 if version is >= 3.8)
-    if returncode != 0:
-        return False, f"main() should allow Python 3.8, but got exit code {returncode}. stderr: {stderr}"
+    # If the version guard blocked Python 3.8, stderr would contain the version guard error message.
+    # If the guard passed, stderr would be empty (argparse help printed to stdout, not stderr).
+    stderr_lower = stderr.lower()
+    if "3.8" in stderr_lower or "required" in stderr_lower:
+        return False, f"version guard should not block Python 3.8, but got stderr: {stderr}"
+
+    # If argparse usage is printed to stdout (not stderr) and we get exit code 1 or 2, that's fine
+    # (it means the guard passed but argparse failed on missing subcommand)
+    if "usage" in stdout.lower():
+        return True, ""
+
+    # If we got any other output, that's unexpected
+    if stdout or stderr:
+        return False, f"unexpected output when calling main() with Python 3.8. stdout: {stdout}, stderr: {stderr}"
 
     return True, ""
 
 
 def test_version_guard_allows_python_39():
-    """main() should allow Python 3.9."""
+    """main() should allow Python 3.9 to proceed past the version guard."""
     code = """
 import sys
 from scripts.workflow.cli import main
-# Just verify that having Python 3.9 doesn't trigger the version guard
-if sys.version_info >= (3, 8):
-    sys.exit(0)
-else:
-    sys.exit(1)
+
+try:
+    main()
+except SystemExit:
+    pass
 """
 
     returncode, stdout, stderr = run_python_with_monkeypatch("3.9.0", code)
 
-    # Should exit with 0
-    if returncode != 0:
-        return False, f"main() should allow Python 3.9, but got exit code {returncode}. stderr: {stderr}"
+    # If the version guard blocked Python 3.9, stderr would contain the version guard error message.
+    # If the guard passed, stderr would be empty (argparse help printed to stdout, not stderr).
+    stderr_lower = stderr.lower()
+    if "3.8" in stderr_lower or "required" in stderr_lower:
+        return False, f"version guard should not block Python 3.9, but got stderr: {stderr}"
+
+    # If argparse usage is printed to stdout (not stderr) and we get exit code 1 or 2, that's fine
+    # (it means the guard passed but argparse failed on missing subcommand)
+    if "usage" in stdout.lower():
+        return True, ""
+
+    # If we got any other output, that's unexpected
+    if stdout or stderr:
+        return False, f"unexpected output when calling main() with Python 3.9. stdout: {stdout}, stderr: {stderr}"
 
     return True, ""
 
 
 def test_version_guard_allows_python_310():
-    """main() should allow Python 3.10."""
+    """main() should allow Python 3.10 to proceed past the version guard."""
     code = """
 import sys
 from scripts.workflow.cli import main
-# Just verify that having Python 3.10 doesn't trigger the version guard
-if sys.version_info >= (3, 8):
-    sys.exit(0)
-else:
-    sys.exit(1)
+
+try:
+    main()
+except SystemExit:
+    pass
 """
 
     returncode, stdout, stderr = run_python_with_monkeypatch("3.10.0", code)
 
-    # Should exit with 0
-    if returncode != 0:
-        return False, f"main() should allow Python 3.10, but got exit code {returncode}. stderr: {stderr}"
+    # If the version guard blocked Python 3.10, stderr would contain the version guard error message.
+    # If the guard passed, stderr would be empty (argparse help printed to stdout, not stderr).
+    stderr_lower = stderr.lower()
+    if "3.8" in stderr_lower or "required" in stderr_lower:
+        return False, f"version guard should not block Python 3.10, but got stderr: {stderr}"
+
+    # If argparse usage is printed to stdout (not stderr) and we get exit code 1 or 2, that's fine
+    # (it means the guard passed but argparse failed on missing subcommand)
+    if "usage" in stdout.lower():
+        return True, ""
+
+    # If we got any other output, that's unexpected
+    if stdout or stderr:
+        return False, f"unexpected output when calling main() with Python 3.10. stdout: {stdout}, stderr: {stderr}"
 
     return True, ""
 
@@ -228,18 +260,30 @@ def test_version_error_mentions_affected_commands():
     code = """
 from scripts.workflow.cli import main
 try:
-    main([])
+    main()
 except SystemExit:
     pass
 """
 
     returncode, stdout, stderr = run_python_with_monkeypatch("3.6.0", code)
 
-    # The error message should mention some of the affected commands
-    # Based on the plan: /track-and-start, /shipit, /cleanup, /merge-and-cleanup
-    # At minimum, the stderr should indicate what's wrong
+    # Stderr must be present
     if not stderr:
         return False, "main() should print error to stderr for old Python"
+
+    # Should mention Python 3.8+ requirement
+    stderr_lower = stderr.lower()
+    if "3.8" not in stderr_lower:
+        return False, f"expected '3.8' version requirement in stderr, got: {stderr}"
+
+    # Should mention at least one of the affected commands
+    affected_commands = ["track-and-start", "shipit", "cleanup", "merge-and-cleanup"]
+    if not any(cmd in stderr for cmd in affected_commands):
+        return False, f"expected affected commands (e.g., '/track-and-start', '/shipit') in stderr, got: {stderr}"
+
+    # Should indicate that Python is required
+    if "required" not in stderr_lower and "require" not in stderr_lower:
+        return False, f"expected 'required' or 'require' in error message, got: {stderr}"
 
     return True, ""
 
