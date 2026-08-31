@@ -217,14 +217,14 @@ if __name__ == "__main__":
     )
 
     # git commit -F <path>
-    allowed, reason = check_mutation_allowed(["commit", "-F", "--", "/tmp/msg.txt"])
+    allowed, reason = check_mutation_allowed(["commit", "-F", "/tmp/msg.txt"])
     test_result(
-        "check_mutation_allowed: allowed git commit -F with -- separator",
+        "check_mutation_allowed: allowed git commit -F <path>",
         allowed and reason is None,
         f"got allowed={allowed}, reason={reason}"
     )
 
-    allowed, reason = check_mutation_allowed(["commit", "-F", "--", ""])
+    allowed, reason = check_mutation_allowed(["commit", "-F", ""])
     test_result(
         "check_mutation_allowed: rejects commit -F with empty path",
         not allowed and reason is not None

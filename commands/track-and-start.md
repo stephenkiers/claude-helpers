@@ -82,7 +82,10 @@ Use the CLI to plan the local track operation. The CLI infers all required state
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
-TRACK_PLAN=$(python3 -m scripts.workflow.cli track plan --mode local --plan-file "$PLAN_FILE" --title "$TITLE" \
+
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+TRACK_PLAN=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track plan --mode local --plan-file "$PLAN_FILE" --title "$TITLE" \
   --tracker-path "$PROJECT_ISSUES" --plans-dir "$PLANS_DIR")
 PLAN_OK=$(printf '%s' "$TRACK_PLAN" | jq -r '.plan_hash // empty')
 if [ -z "$PLAN_OK" ]; then
@@ -108,7 +111,9 @@ fi
 Apply the plan to create the local issue entry and worktree:
 
 ```bash
-TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | python3 -m scripts.workflow.cli track apply -)
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track apply -)
 TRACK_OK=$(printf '%s' "$TRACK_RESULT" | jq -r '.success // false')
 if [ "$TRACK_OK" != "true" ]; then
   ERROR=$(printf '%s' "$TRACK_RESULT" | jq -r '.error // "Unknown error"')
@@ -536,7 +541,9 @@ Cache file location: `${WORKTREE_PARENT}/issues.json` (detected from worktree la
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-issue >/dev/null 2>&1 || true
 
-TRACK_PLAN=$(python3 -m scripts.workflow.cli track plan --mode github --plan-file "$PLAN_FILE" --title "$TITLE" --assignee "$ASSIGNEE")
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+TRACK_PLAN=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track plan --mode github --plan-file "$PLAN_FILE" --title "$TITLE" --assignee "$ASSIGNEE")
 PLAN_OK=$(printf '%s' "$TRACK_PLAN" | jq -r '.plan_hash // empty')
 if [ -z "$PLAN_OK" ]; then
   echo "ERROR: Failed to plan track" >&2
@@ -564,7 +571,9 @@ fi
 **Third, apply the plan to create the GitHub issue and all associated state:**
 
 ```bash
-TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | python3 -m scripts.workflow.cli track apply -)
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+TRACK_RESULT=$(printf '%s' "$TRACK_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track apply -)
 TRACK_OK=$(printf '%s' "$TRACK_RESULT" | jq -r '.success // false')
 if [ "$TRACK_OK" != "true" ]; then
   ERROR=$(printf '%s' "$TRACK_RESULT" | jq -r '.error // "Unknown error"')
