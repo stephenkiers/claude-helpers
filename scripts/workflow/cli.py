@@ -61,6 +61,24 @@ def _run_apply(apply_fn, plan_json):
 
 
 def main():
+    # Runtime guard: scripts/workflow/ requires python3 3.8+
+    if sys.version_info < (3, 8):
+        print(
+            "Error: Python 3.8 or later is required by scripts/workflow/ "
+            "(used by /track-and-start, /shipit, /cleanup, /merge-and-cleanup).",
+            file=sys.stderr
+        )
+        print(
+            "Current Python version: {}.{}.{}".format(*sys.version_info[:3]),
+            file=sys.stderr
+        )
+        print(
+            "Install a newer python3 via https://www.python.org/downloads/ or your platform package manager "
+            "(e.g., 'brew install python3' on macOS).",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description="Deterministic workflow CLI",
         prog="python3 -m scripts.workflow.cli"
