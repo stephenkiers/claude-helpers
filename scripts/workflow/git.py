@@ -6,6 +6,7 @@ string interpolation into a shell command. Includes timeouts.
 """
 
 import os
+import sys
 import subprocess
 import json
 from pathlib import Path
@@ -224,12 +225,19 @@ def _json_flag(fields: List[str]) -> List[str]:
     return ["--json", ",".join(fields)]
 
 
+def _warn_gh_failure(context: str, e: Exception) -> None:
+    """Print a diagnostic for a swallowed gh failure. Stderr only — cli.py's
+    output contract is a single JSON blob on stdout."""
+    print(f"[workflow.git] {context}: {e}", file=sys.stderr)
+
+
 def repo_view_json(json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
     """Run 'gh repo view --json <args>' and return parsed JSON."""
     try:
         output = run_gh_command(["repo", "view", *_json_flag(json_args)], cwd=cwd)
         return json.loads(output) if output else {}
-    except (json.JSONDecodeError, subprocess.CalledProcessError):
+    except (json.JSONDecodeError, subprocess.CalledProcessError) as e:
+        _warn_gh_failure(f"repo_view_json({json_args})", e)
         return {}
 
 
@@ -245,9 +253,10 @@ def gh_api_user_json(cwd: Optional[Path] = None) -> Dict[str, Any]:
 def pr_view_json(branch: str, json_args: List[str], cwd: Optional[Path] = None) -> Dict[str, Any]:
     """Run 'gh pr view <branch> --json <args>' and return parsed JSON."""
     try:
-        output = run_gh_command(["pr", "view", *_json_flag(json_args), "--", branch], cwd=cwd, check=False)
+        output = run_gh_command(["pr", "view", *_json_flag(json_args), "--", branch], cwd=cwd)
         return json.loads(output) if output else {}
-    except (json.JSONDecodeError, subprocess.CalledProcessError):
+    except (json.JSONDecodeError, subprocess.CalledProcessError) as e:
+        _warn_gh_failure(f"pr_view_json({branch!r}, {json_args})", e)
         return {}
 
 
@@ -255,9 +264,10 @@ def pr_list_json(base_branch: str, json_fields: List[str], cwd: Optional[Path] =
     """Run 'gh pr list --base <base_branch> --state open --json <fields>' and return parsed JSON list."""
     try:
         args = ["pr", "list", "--base", base_branch, "--state", "open", *_json_flag(json_fields)]
-        output = run_gh_command(args, cwd=cwd, check=False)
+        output = run_gh_command(args, cwd=cwd)
         return json.loads(output) if output else []
-    except (json.JSONDecodeError, subprocess.CalledProcessError):
+    except (json.JSONDecodeError, subprocess.CalledProcessError) as e:
+        _warn_gh_failure(f"pr_list_json({base_branch!r}, {json_fields})", e)
         return []
 
 

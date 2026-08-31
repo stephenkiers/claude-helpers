@@ -9,6 +9,8 @@ Run with: python3 tests/test_workflow_git.py
 
 import subprocess
 import sys
+import io
+import contextlib
 from pathlib import Path
 from unittest import mock
 
@@ -115,6 +117,77 @@ if __name__ == "__main__":
             "pr_list_json comma-joins multi-field --json",
             called_args[0] == ["pr", "list", "--base", "main", "--state", "open", "--json", "number,title"],
             f"got {called_args[0]}"
+        )
+
+    print()
+    print("[Section 5] Stderr diagnostic on gh failures")
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["gh", "repo", "view"], stderr="auth failed")
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            result = git_module.repo_view_json(["name", "owner"])
+        test_result(
+            "repo_view_json returns {} on CalledProcessError",
+            result == {},
+            f"got {result}"
+        )
+        stderr_output = stderr_capture.getvalue()
+        test_result(
+            "repo_view_json prints [workflow.git] diagnostic to stderr",
+            "[workflow.git]" in stderr_output and "repo_view_json" in stderr_output,
+            f"got {stderr_output!r}"
+        )
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["gh", "pr", "view"], stderr="no PR found")
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            result = git_module.pr_view_json("nonexistent-branch", ["headRefName", "state"])
+        test_result(
+            "pr_view_json returns {} on CalledProcessError",
+            result == {},
+            f"got {result}"
+        )
+        stderr_output = stderr_capture.getvalue()
+        test_result(
+            "pr_view_json prints [workflow.git] diagnostic to stderr",
+            "[workflow.git]" in stderr_output and "pr_view_json" in stderr_output,
+            f"got {stderr_output!r}"
+        )
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["gh", "pr", "list"], stderr="network error")
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            result = git_module.pr_list_json("main", ["number", "title"])
+        test_result(
+            "pr_list_json returns [] on CalledProcessError",
+            result == [],
+            f"got {result}"
+        )
+        stderr_output = stderr_capture.getvalue()
+        test_result(
+            "pr_list_json prints [workflow.git] diagnostic to stderr",
+            "[workflow.git]" in stderr_output and "pr_list_json" in stderr_output,
+            f"got {stderr_output!r}"
+        )
+
+    with mock.patch("workflow.git.run_gh_command") as mock_run:
+        mock_run.side_effect = git_module.GitCommandError(1, ["gh", "repo", "view"], stderr="auth failed")
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            result = git_module.repo_view_json(["name"])
+        test_result(
+            "repo_view_json returns {} on GitCommandError",
+            result == {},
+            f"got {result}"
+        )
+        stderr_output = stderr_capture.getvalue()
+        test_result(
+            "repo_view_json diagnostic works with GitCommandError subclass",
+            "[workflow.git]" in stderr_output and "repo_view_json" in stderr_output,
+            f"got {stderr_output!r}"
         )
 
     print()
