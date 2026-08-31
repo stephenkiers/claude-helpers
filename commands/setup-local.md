@@ -11,6 +11,9 @@ repo files. This is idempotent — safe to run any time.
 
 ## What it does
 
+Requires `python3` 3.8+ (used by `scripts/workflow/`) — `install.sh` checks this first and fails
+with a clear message if it's missing or too old.
+
 Runs `./install.sh` from the repo root, which:
 - Creates **file-level symlinks** from `~/.claude/{commands,reviewers,prompts,agents,scripts}/` into
   this repo's corresponding directories, so your personal files can coexist alongside repo files.

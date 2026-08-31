@@ -8,6 +8,8 @@ philosophy and [docs/adr/](docs/adr/) for the design decisions behind it.
 
 ## Setup (new machine or re-sync)
 
+**Precondition:** `install.sh` now checks for Python 3.8+ (required by `scripts/workflow/`); it will fail loudly and early if python3 is missing or too old.
+
 Run `/setup-local` in this repo (or `./install.sh` for the no-Claude path). It is idempotent — safe to
 re-run any time.
 
