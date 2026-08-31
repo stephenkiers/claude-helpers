@@ -10,7 +10,16 @@
 # That's intentional: commands that source this run the installed CLI by design, not
 # an in-progress feature-branch copy.
 
-RESOLVE_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+# BASH_SOURCE is bash-only; zsh's ${(%):-%x} prompt-expansion is its non-obvious
+# equivalent for the sourced file's own path. Don't "simplify" this back to a single
+# BASH_SOURCE line — that's the exact regression this branch fixes.
+if [ -n "${BASH_SOURCE:-}" ]; then
+  RESOLVE_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  RESOLVE_SCRIPT_PATH="$(readlink -f "${(%):-%x}")"
+else
+  RESOLVE_SCRIPT_PATH=""
+fi
 RESOLVE_EXIT=$?
 
 if [ $RESOLVE_EXIT -ne 0 ] || [ -z "$RESOLVE_SCRIPT_PATH" ]; then
