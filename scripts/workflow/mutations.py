@@ -5,10 +5,20 @@ The mutation funnel is the single choke point for all destructive git and gh
 operations this module builds directly. It enforces that only exact argument
 shapes in the allowlist are permitted, rejecting anything not explicitly
 allowed (including attempts to smuggle extra flags). Placeholder values
-(e.g. "<path>", "<name>") never match an operand starting with "-", and the
-argv builders in git.py insert a literal "--" end-of-options separator
-immediately before each placeholder value to keep a malicious-looking value
-from being parsed as a flag even if it slipped past that check.
+(e.g. "<path>", "<name>") never match an operand starting with "-", and for
+the "worktree", "branch", and "pull" subcommands, the argv builders in git.py
+insert a literal "--" end-of-options separator immediately before each
+*positional* placeholder value to keep a malicious-looking value from being
+parsed as a flag even if it slipped past that check. The "push", "pr", and
+"issue" subcommands rely solely on this dash-rejection for protection — they
+have no "--" in their allowlist shapes and their builders do not insert one.
+Placeholders that are instead consumed as a flag's mandatory argument
+(e.g. "-F <path>") never need "--": git already takes the very next token as
+that flag's value, dash-prefixed or not, so inserting "--" there would itself
+misparse — the "--" would become -F's argument and <path> would fall through
+as a stray positional pathspec. The "add" subcommand has no positional
+placeholder (its shape is ("-A",)), and "commit" relies on the flag-argument
+protection described above.
 
 Subcommand keys (per ADR-0013 and Amendment 2): "worktree", "branch", "pull"
 (git), "add", "commit", "push" (git, /shipit), "pr" (gh, including /shipit), and
@@ -39,7 +49,7 @@ MUTATION_ALLOWLIST = {
         ("-A",): "git add -A",
     },
     "commit": {
-        ("-F", "--", "<path>"): "git commit -F -- <path>",
+        ("-F", "<path>"): "git commit -F <path>",
     },
     "push": {
         ("-u", "<remote>", "<branch>"): "git push -u <remote> <branch>",

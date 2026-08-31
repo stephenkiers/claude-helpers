@@ -225,15 +225,8 @@ required so the `scripts.workflow` package import resolves regardless of which r
 invoked from):
 
 ```bash
-RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
-if [ -z "$RUN_METRICS_RESOLVED" ]; then
-  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
-  exit 1
-fi
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
-```
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-```bash
 # Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
 # 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
 CACHE_JSON=$(cat .claude/repo-cache.json 2>/dev/null || echo '{}')
@@ -479,12 +472,7 @@ the result:
 ```bash
 # Resolve CLAUDE_HELPERS_DIR again — a new Bash tool call does not inherit shell
 # variables from the Run Checks step above.
-RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
-if [ -z "$RUN_METRICS_RESOLVED" ]; then
-  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
-  exit 1
-fi
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
 # Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
 TMP_MSG=$(mktemp)

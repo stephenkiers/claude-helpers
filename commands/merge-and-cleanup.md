@@ -42,17 +42,8 @@ if [ -e "$ARGUMENTS" ]; then
 fi
 
 # Call plan_merge to resolve PR/worktree and run push gate
-# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
-# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
-# Intentionally resolves to whichever checkout /setup-local last symlinked (conventionally
-# main), not this worktree — /cleanup and /merge-and-cleanup run the installed, canonical
-# CLI by design, not an in-progress feature-branch copy.
-RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
-if [ -z "$RUN_METRICS_RESOLVED" ]; then
-  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
-  exit 1
-fi
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
 PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge plan "$ARGUMENTS")
 PLAN_RESULT=$?
 
@@ -158,17 +149,7 @@ fi
 PLAN_JSON="$(cat "$MC_STATE_DIR/plan.json")"
 
 # Apply the merge plan (executes 3-path merge gate, writes cache on success)
-# CLAUDE_HELPERS_DIR: run-metrics.py lives at <repo>/scripts/run-metrics.py, so two dirname
-# calls from its resolved (symlink-following) path yields the claude-helpers repo root.
-# Intentionally resolves to whichever checkout /setup-local last symlinked (conventionally
-# main), not this worktree — /cleanup and /merge-and-cleanup run the installed, canonical
-# CLI by design, not an in-progress feature-branch copy.
-RUN_METRICS_RESOLVED="$(readlink -f "$HOME/.claude/scripts/run-metrics.py")"
-if [ -z "$RUN_METRICS_RESOLVED" ]; then
-  echo "ERROR: could not resolve ~/.claude/scripts/run-metrics.py — run /setup-local to (re)install claude-helpers symlinks" >&2
-  exit 1
-fi
-CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RUN_METRICS_RESOLVED")")"
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
 # Write the result to disk instead of only holding it in this call's stdout — Phase 4 is a
 # separate (foreground) Bash call made after this backgrounded one completes, so it reads

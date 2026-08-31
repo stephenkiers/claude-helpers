@@ -439,7 +439,7 @@ def commit_with_message_file(message_path: Path, cwd: Optional[Path] = None) -> 
     """
     from .mutations import check_mutation_allowed
 
-    args = ["commit", "-F", "--", str(message_path)]
+    args = ["commit", "-F", str(message_path)]
 
     allowed, reason = check_mutation_allowed(args)
     if not allowed:
