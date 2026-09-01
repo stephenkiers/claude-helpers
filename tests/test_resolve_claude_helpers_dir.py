@@ -14,6 +14,7 @@ Run with: python3 tests/test_resolve_claude_helpers_dir.py
 """
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,22 @@ def run_bash(script_text, env=None):
         env=env,
     )
     return result.returncode, result.stdout, result.stderr
+
+
+def run_zsh(script_text, env=None):
+    """Run zsh script in a subshell. Returns (returncode, stdout, stderr)."""
+    if shutil.which("zsh") is None:
+        return 1, "", "zsh is not installed or not in PATH"
+    try:
+        result = subprocess.run(
+            ["zsh", "-c", script_text],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except FileNotFoundError:
+        return 1, "", "zsh binary not found"
 
 
 def test_script_exists():
@@ -89,6 +106,45 @@ def test_script_resolves_correct_directory():
         """
 
         code, stdout, stderr = run_bash(test_script)
+
+        if code != 0:
+            return False, f"sourcing failed: {stderr}"
+
+        result_dir = stdout.strip()
+        # Normalize paths using readlink -f for comparison (handles /private prefix on macOS)
+        expected_dir = str(Path(fake_repo).resolve())
+        if result_dir != expected_dir:
+            return (
+                False,
+                f"CLAUDE_HELPERS_DIR is {result_dir}, expected {expected_dir}",
+            )
+
+        return True, ""
+
+
+def test_script_resolves_correct_directory_zsh():
+    """Test that sourcing the script from zsh sets CLAUDE_HELPERS_DIR to correct path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        # Create a fake directory structure matching the real repo
+        # The script expects to be at <repo>/scripts/resolve-claude-helpers-dir.sh
+        fake_repo = tmpdir_path / "fake_repo"
+        fake_repo.mkdir()
+        scripts_dir = fake_repo / "scripts"
+        scripts_dir.mkdir()
+
+        # Copy the real script to the fake location
+        fake_script = scripts_dir / "resolve-claude-helpers-dir.sh"
+        fake_script.write_text(RESOLVE_SCRIPT.read_text())
+
+        # Create a zsh script that sources the fake script and prints CLAUDE_HELPERS_DIR
+        test_script = f"""
+        source "{fake_script}" || exit 1
+        echo "$CLAUDE_HELPERS_DIR"
+        """
+
+        code, stdout, stderr = run_zsh(test_script)
 
         if code != 0:
             return False, f"sourcing failed: {stderr}"
@@ -214,6 +270,50 @@ def test_script_does_not_kill_sourcing_shell():
         return True, ""
 
 
+def test_script_unsupported_shell():
+    """Test that script fails and reports error on unsupported shell (neither bash nor zsh)."""
+    # /bin/sh is bash-in-POSIX-mode on macOS, so it still sets BASH_SOURCE when
+    # dot-sourced — dash is a genuine POSIX shell with neither BASH_SOURCE nor
+    # ZSH_VERSION, which is what actually exercises the "unsupported shell" branch.
+    if shutil.which("dash") is None:
+        return True, "dash not installed or not in PATH — skipping unsupported-shell check"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        # Create a fake directory structure
+        fake_repo = tmpdir_path / "fake_repo"
+        fake_repo.mkdir()
+        scripts_dir = fake_repo / "scripts"
+        scripts_dir.mkdir()
+
+        fake_script = scripts_dir / "resolve-claude-helpers-dir.sh"
+        fake_script.write_text(RESOLVE_SCRIPT.read_text())
+
+        # Use '.' instead of 'source' for POSIX portability. Don't use || true;
+        # let dash exit with the actual status.
+        test_script = f". '{fake_script}'"
+
+        result = subprocess.run(
+            ["dash", "-c", test_script],
+            capture_output=True,
+            text=True,
+        )
+
+        # Script should fail (non-zero exit code)
+        if result.returncode == 0:
+            return False, "script should return non-zero on unsupported shell"
+
+        # Check for ERROR in stderr
+        if "ERROR" not in result.stderr:
+            return (
+                False,
+                f"stderr should contain ERROR message, got: {result.stderr!r}",
+            )
+
+        return True, ""
+
+
 def test_no_old_inline_pattern_in_commands():
     """Test that no command doc contains the old inline RUN_METRICS_RESOLVED pattern."""
     offenders = []
@@ -327,6 +427,13 @@ def main():
         msg,
     )
 
+    passed, msg = test_script_resolves_correct_directory_zsh()
+    h.test_result(
+        "script resolves CLAUDE_HELPERS_DIR to correct directory (zsh)",
+        passed,
+        msg,
+    )
+
     passed, msg = test_script_exports_variable()
     h.test_result("CLAUDE_HELPERS_DIR is exported to subshells", passed, msg)
 
@@ -341,6 +448,13 @@ def main():
     passed, msg = test_script_does_not_kill_sourcing_shell()
     h.test_result(
         "script uses return 1 (doesn't kill sourcing shell)",
+        passed,
+        msg,
+    )
+
+    passed, msg = test_script_unsupported_shell()
+    h.test_result(
+        "script reports error on unsupported shell (sh without bash/zsh)",
         passed,
         msg,
     )
