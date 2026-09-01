@@ -92,8 +92,8 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   isolated worktree. Step 1 is replaced by `eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"`,
   which creates `REVIEW_DIR`, the worktree, `full-diff.patch`, `diff-index.md`, and `pr-context.md`;
   Steps 4–11 run unchanged against `${WORKTREE_PATH}`. **Skipped** in PR mode: the prior-review cache
-  check, Step 12 (rulings loop), Step 13 (cache write) — ADR-0009: never write to a repo you don't
-  own. No pr-comment-guide, walkthrough, or posted-comments: the closing message lists the *Needs you*
+  check (Step 0 sub-step 1), Step 12 (rulings loop), Step 13 (cache write) — ADR-0009: never write to
+  a repo you don't own. No pr-comment-guide, walkthrough, or posted-comments: the closing message lists the *Needs you*
   items verbatim (the candidate PR comments — you post them on GitHub yourself) plus links, then
   offers the worktree-cleanup question. Mutually exclusive with named reviewers and `--force`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
@@ -155,26 +155,38 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
 
 1. **Prior-review fast-path check** (skip entirely if PR mode):
    ```bash
+   set -euo pipefail
    # Collect only what's needed for the short-circuit check — no REVIEW_DIR, mkdir, gh call, etc.
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
    HASH=$(git rev-parse --short HEAD)
-   DIRTY=$(git status --porcelain)
+   # Tracked-file changes only — untracked clutter (editor swap files, build artifacts) isn't
+   # relevant to "does the committed state match what was reviewed" and would cause alarm fatigue.
+   DIRTY=$(git status --porcelain --untracked-files=no)
    ```
    
    Then read `.claude/github-cache.json` and check if `review.lastRun` exists AND `review.branch` == `BRANCH`:
    - **Skip this entire sub-step** if either condition is false; nothing to short-circuit — fall through to sub-step 2.
-   - **On a match,** print the message below and wait for confirmation (unless `--force`/`-y` in the raw arguments):
+   - **On a match, always print the banner below** (this happens regardless of `--force`/`-y`):
      ```
-     ⚠️  Already reviewed at commit {review.commit}{" (current)" if review.commit == HASH else f" — HEAD is now {HASH}"}.
+     ℹ️  Already reviewed at commit {review.commit}{" (current)" if review.commit == HASH else f" — HEAD is now {HASH}"}.
        Last run: {review.lastRun}  ·  Reviewers: {review.reviewers joined}
        Findings: {critical}C / {high}H / {medium}M / {low}L
        Checkpoint: {review.reviewDir}
-     {"⚠️  Working tree has uncommitted changes not reflected in that review." if DIRTY else ""}
+     ```
+     Then, only if `DIRTY` is non-empty, print this additional caveat line — omit it entirely when the
+     tree is clean, rather than leaving a blank line:
+     ```
+     ⚠️  Working tree has uncommitted changes not reflected in that review.
+     ```
+   - **Unless `--force`/`-y` is present in the raw arguments**, also print the confirmation prompt and
+     wait for the user's answer:
+     ```
      Re-run anyway? (prior results are preserved — this run writes to a new timestamped dir, never
      overwriting {review.reviewDir})
      ```
-   - If the user declines (or `AskUserQuestion` returns no), exit cleanly here — nothing else has run.
-   - If `--force`/`-y` is present in raw arguments or user confirms, continue to sub-step 2.
+     If the user declines (or `AskUserQuestion` returns no), exit cleanly here — nothing else has run.
+   - If `--force`/`-y` is present in raw arguments, skip the confirmation prompt (the banner above still
+     printed) and continue to sub-step 2. Same if the user confirms.
 
 2. Resolve paths and create the checkpoint directory:
    ```bash

@@ -79,7 +79,7 @@ The deviation is recorded here rather than discovered later.
 - **Good:** effort 5 reuses the named-selection path — "everyone" adds zero new control flow.
 - **Good:** PR mode inherits Triage, so peer review findings now land in the same decision buckets
   as author review instead of a bespoke guide format.
-- **Good:** the ADR-0009 write boundary is stated once (PR mode skips Steps 0.5/12/13) instead of
+- **Good:** the ADR-0009 write boundary is stated once (PR mode skips Steps 0 sub-step 1/12/13) instead of
   being re-encoded per command.
 - **Cost:** `--effort` is manual. The beta deliberately had no auto-gate ("you are the gate"); the
   ladder keeps that — a complexity auto-gate remains future work.

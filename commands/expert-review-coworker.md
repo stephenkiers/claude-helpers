@@ -48,7 +48,7 @@ This exports (among others): `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BR
 
 ## Step 2 — Project Context Detection
 
-Same as `/expert-review` Step 0, sub-steps 2–4, but rooted at `${WORKTREE_PATH}`:
+Same as `/expert-review` Step 0, sub-steps 3–5, but rooted at `${WORKTREE_PATH}`:
 
 1. **Project YAML**: Read `${WORKTREE_PATH}/.claude/project.yaml` if present → `PROJECT_CONTEXT` (text, for passing to Summarizer)
 2. **Detected languages**: Parse `${REVIEW_DIR}/diff-index.md` for changed-file extensions → `DETECTED_LANGUAGES` (comma-separated list)
