@@ -25,8 +25,8 @@ this ADR; it was closed unmerged.
 | Level | Name | What runs |
 |---|---|---|
 | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`) → 1 merge agent (`prompts/swarm-merge.md`) → `final-report.md` → Triage |
-| 2 | focused pair | Router picks exactly the top 2 judgment reviewers; Carl + Cody + Consistency Checker still run; full pipeline otherwise |
-| 3 | pair + Bob | Effort 2 plus `uncle-bob` pre-seated (full-patch read, like named mode) |
+| 2 | reviewer pods | Two independent compact-lens pods share one neutral evidence packet, followed by batched Q&A and neutral verification |
+| 3 | routed pair + Bob | Independent path: Router's top 2 plus `uncle-bob` pre-seated (full-patch read, like named mode) |
 | 4 | normal | Current behavior, unchanged |
 | 5 | everyone | All `index.yaml` reviewers, implemented as named-selection over the full index — the router is bypassed with no new code path |
 
@@ -35,12 +35,10 @@ identical regardless of how the findings were produced. `--effort` + named revie
 (the user is sizing the run twice); `--model` stays orthogonal, with the effort-1 merge agent
 pinned to sonnet unless `--model` was explicit.
 
-**Monotonic-cost rationale for the reduced always-run set at 2–3.** Sam System reads the full patch
-— he is not a cheap seat — so at levels 2–3 he runs only if the router's top-2 includes him. Code
-Rot Cody and the Consistency Checker stay always-run even there: they are pinned-haiku cheap, and
-they are precisely the check on a 2-person panel's characteristic failure mode — claims nobody else
-was routed to verify. Contrarian Carl still runs last, always: a contrarian is most valuable exactly
-when the panel is smallest.
+**Monotonic-cost rationale for level 3.** Sam System reads the full patch — he is not a cheap seat —
+so he runs only if the router's top-2 includes him. Code Rot Cody and the Consistency Checker stay
+always-run because they are pinned-haiku checks on unverified claims. Contrarian Carl still runs
+last. Level 2 instead uses the isolated pod path defined in `prompts/expert-review-panel.md`.
 
 **Decision 2: PR mode — a positional `<github-pr-url>` argument folds coworker review into
 `/expert-review`.**

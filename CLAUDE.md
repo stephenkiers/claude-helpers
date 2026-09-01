@@ -92,11 +92,12 @@ to get started.
   cross-review), then a **Triage Chief** that turns the report into a decision list and records what
   you rule. Takes `[reviewers...]`, `--model haiku|sonnet|opus|fable` (panel tier; router
   and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step), and
-  optional `--effort 1–5` (ADR-0012: 1 = 6 haiku scouts + merge, 2 = router's top 2, 3 = + uncle-bob,
-  4 = default full panel, 5 = everyone). When `--effort` is not passed, default is heuristic-derived
-  from `~/.claude/effort-heuristic.yaml` (copy `prompts/effort-heuristic.yaml.template` to configure;
-  project-level `.claude/effort-heuristic.yaml` overrides user-level). A positional GitHub PR URL
-  switches to PR mode: review a coworker's PR in an isolated worktree (no cache/rulings writes — ADR-0009).
+  optional `--effort 1–5` (ADR-0012: 1 = 6 haiku scouts + merge, 2 = two compact-lens reviewer pods,
+  3 = routed top 2 + uncle-bob, 4 = default full panel, 5 = everyone). When `--effort` is not passed,
+  default is heuristic-derived from `~/.claude/effort-heuristic.yaml` (copy
+  `prompts/effort-heuristic.yaml.template` to configure; project-level `.claude/effort-heuristic.yaml`
+  overrides user-level). A positional GitHub PR URL switches to PR mode: review a coworker's PR in
+  an isolated worktree (no cache/rulings writes — ADR-0009).
 - `/expert-review-coworker` — **deprecated** (still functional): superseded by `/expert-review
   <github-pr-url> [--effort N]` (ADR-0012). Peer PR review with the pr-comment-guide + walkthrough
   flow: fetch a coworker's PR into an isolated worktree, run the same shared blind-first panel
