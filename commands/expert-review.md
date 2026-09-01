@@ -143,13 +143,40 @@ already-reviewed commit never overwrites the prior run):
 
 ### Step 0: Setup
 
-**PR mode:** if `PR_MODE=true` (Step 3 parses arguments, but a PR URL is recognizable at a glance —
-check before anything else here), skip sub-steps 1 and 5's prior-review check entirely: the setup
-script (Step 1) creates `REVIEW_DIR` itself, and ADR-0009 forbids reading/writing prior-review cache
-in a repo you don't own. Sub-steps 2–4 still run, rooted at `${WORKTREE_PATH}` instead of the cwd
-(read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`, etc.).
+**Prior-review fast-path:** the prior-review short-circuit check now runs first, before any setup work
+(path/REVIEW_DIR resolution, `mkdir`, `gh repo view`, `.claude/project.yaml` read, language/modifier
+detection). When the user declines a re-run, nothing else has executed — saving the setup cost.
 
-1. Resolve paths and create the checkpoint directory:
+**PR mode:** if `PR_MODE=true` (Step 3 parses arguments, but a PR URL is recognizable at a glance —
+check before anything else here), skip the entire prior-review fast-path check (sub-step 1 below): the
+setup script (Step 1) creates `REVIEW_DIR` itself, and ADR-0009 forbids reading/writing prior-review
+cache in a repo you don't own. Sub-steps 2–6 still run, rooted at `${WORKTREE_PATH}` instead of the
+cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`, etc.).
+
+1. **Prior-review fast-path check** (skip entirely if PR mode):
+   ```bash
+   # Collect only what's needed for the short-circuit check — no REVIEW_DIR, mkdir, gh call, etc.
+   BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
+   HASH=$(git rev-parse --short HEAD)
+   DIRTY=$(git status --porcelain)
+   ```
+   
+   Then read `.claude/github-cache.json` and check if `review.lastRun` exists AND `review.branch` == `BRANCH`:
+   - **Skip this entire sub-step** if either condition is false; nothing to short-circuit — fall through to sub-step 2.
+   - **On a match,** print the message below and wait for confirmation (unless `--force`/`-y` in the raw arguments):
+     ```
+     ⚠️  Already reviewed at commit {review.commit}{" (current)" if review.commit == HASH else f" — HEAD is now {HASH}"}.
+       Last run: {review.lastRun}  ·  Reviewers: {review.reviewers joined}
+       Findings: {critical}C / {high}H / {medium}M / {low}L
+       Checkpoint: {review.reviewDir}
+     {"⚠️  Working tree has uncommitted changes not reflected in that review." if DIRTY else ""}
+     Re-run anyway? (prior results are preserved — this run writes to a new timestamped dir, never
+     overwriting {review.reviewDir})
+     ```
+   - If the user declines (or `AskUserQuestion` returns no), exit cleanly here — nothing else has run.
+   - If `--force`/`-y` is present in raw arguments or user confirms, continue to sub-step 2.
+
+2. Resolve paths and create the checkpoint directory:
    ```bash
    set -euo pipefail
 
@@ -194,41 +221,27 @@ in a repo you don't own. Sub-steps 2–4 still run, rooted at `${WORKTREE_PATH}`
    recompute (`git rev-parse` / `gh repo view`); recompute them in each Bash block that needs them,
    or carry the already-known literal values forward as text, rather than persisting them to disk.
 
-2. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
+3. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
    and pass to all reviewer prompts. Key extractions:
-   - `techStack.language` → primary language (skips detection in step 3)
+   - `techStack.language` → primary language (skips detection in step 4)
    - `fragility.*` → Fragile Feynman; `docStyle` → Contract Chris;
      `typeChecker`, `propertyTestingLib` → Tara TypeSafe
    - `adrs`, `invariants`, `redLines`, `terminology` → all reviewers
 
-3. **Detect project languages** (skip if `techStack.language` set): `Cargo.toml` → rust,
+4. **Detect project languages** (skip if `techStack.language` set): `Cargo.toml` → rust,
    `package.json` → typescript; otherwise majority file extension among changed files
    (`.go`, `.rb`, `.py`, …). A diff can have multiple languages; collect all that appear as
    `DETECTED_LANGUAGES`.
 
-4. **Detect project modifiers** from CLAUDE.md or `.claude/review-config.md`: a
+5. **Detect project modifiers** from CLAUDE.md or `.claude/review-config.md`: a
    `## Review Modifiers` section, or phrases like "pre-release" / "greenfield" / "backwards
    compatibility is not a concern" → `greenfield: true`; `internal: true` for internal tools.
    These are defined in the expert framework (Project Modifiers section) — pass any detected
    modifiers to every reviewer prompt.
 
-5. **Gather plan/ticket context and review history (cache-first):**
+6. **Gather plan/ticket context** (cache-first, excludes the prior-review check which now runs in sub-step 1):
    - Read `.claude/github-cache.json`. If `issue.body` exists → business context; `issue.title`
      → summarizer prompt; `issue.url` → report.
-   - **Prior-review check:** if `review.lastRun` exists AND `review.branch` == `BRANCH`, print:
-     ```
-     ℹ️ Previous review found on this branch:
-       Last run: {review.lastRun}
-       Commit: {review.commit}{" (current)" if == HASH else " (older — current is {HASH})"}
-       Reviewers: {review.reviewers joined}
-       Findings: {critical}C / {high}H / {medium}M / {low}L
-       Checkpoint: {review.reviewDir}
-     ```
-     Then — unless `--force`/`-y` — ask before proceeding: same commit → "This exact commit was
-     already reviewed. Re-run anyway? (prior results in `{review.reviewDir}` are preserved — the
-     timestamped `{REVIEW_DIR}` means this never overwrites them)"; different commit → "Re-run for
-     the current commit? (prior results in `{review.reviewDir}` are preserved; new results go to a
-     different folder)". Wait for explicit confirmation; exit cleanly if declined.
    - **Fallback (no cache):** search `~/.claude/plans/*.md` for mentions of this branch/project;
      also check for kanban files (`*-kanban.md`) in project root or docs/.
    - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
@@ -283,7 +296,7 @@ this step and continue at Step 2.
 **PR URL.** If any positional argument matches `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$`
 (checked **before** reviewer-name matching — a URL is never a reviewer name), set `PR_MODE=true` and
 store it as `PR_URL`. PR mode is mutually exclusive with named reviewers and with `--force` — error
-on either combination. The prior-review cache check (Step 0.5), Step 12, and Step 13 are skipped in
+on either combination. The prior-review cache check (Step 0 sub-step 1), Step 12, and Step 13 are skipped in
 PR mode (ADR-0009 write boundary); see the PR Mode section below.
 
 **Effort.** `--effort <1|2|3|4|5>` → `EFFORT`; error on any other value (including `--effort 0` and
@@ -345,7 +358,7 @@ When `PR_MODE=true`:
 - **Reused unchanged:** Steps 2–3 (reviewer discovery, argument parsing) and Steps 4–11 of the
   shared panel (with `WORKTREE_PATH` set, so project-context and source reads root at the PR
   worktree) including the Triage Chief — PR mode *does* triage.
-- **Skipped:** the prior-review cache check (Step 0.5), the local-diff step (Step 1 — replaced by
+- **Skipped:** the prior-review cache check (Step 0 sub-step 1), the local-diff step (Step 1 — replaced by
   the setup script), Step 12's ruling loop, and Step 13's cache write. ADR-0009: never write to a
   repo you don't own. Rulings are the author's to record, not yours.
 - **Not produced:** `pr-comment-guide.md`, the interactive walk-through, `posted-comments.md`.
