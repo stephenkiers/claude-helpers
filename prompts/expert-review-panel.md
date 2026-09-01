@@ -453,8 +453,8 @@ is the sole shared framework/diff/project/ADR inventory for both pods.
 order: `tara-typesafe`, `contract-chris`, `know-it-all-nigel`. Select Pod 2 as follows, without a
 separate model call:
 
-- Pod 2 is always `architecture-reliability`, fixed order: `sam-system`, `mozart`, `eric-evans`,
-  `rachel`, `fragile-feynman`, `vera-verifier` — `manifest.json`'s high-risk tags do not change pod
+- Pod 2 is always `architecture-reliability`, fixed order: `sam-system`, `mozart`, `eric-evans`, `rachel`,
+  `fragile-feynman`, `vera-verifier` — `manifest.json`'s high-risk tags do not change pod
   selection; specialist independence for high-risk findings happens after neutral verification in
   P5, via `pod-verifier.md`'s promotion criteria (explicit high-risk tag → promotion), not by
   altering which lenses ran.
@@ -498,8 +498,7 @@ incomplete packet is now checked against the primary sources here, not simply tr
 Require the sentinel and retry once; if the retry also fails, write a FAILED `pod-verification.md`
 noting verification could not complete (mirroring P3's pattern) rather than silently blocking the
 run — the Amalgamator must then report pod-path findings as unverified rather than presenting them
-as confirmed. This verifier handles every pod finding by default; do not launch per-lens Pass 2
-agents.
+as confirmed. This verifier handles every pod finding by default; do not launch per-lens Pass 2 agents.
 
 After verification, launch a fresh standalone specialist only for each verifier-listed promotion.
 A promotion is valid only for a grounded uncertain/disputed High/Critical finding or an explicit
