@@ -26,7 +26,7 @@ this ADR; it was closed unmerged.
 |---|---|---|
 | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`) → 1 merge agent (`prompts/swarm-merge.md`) → `final-report.md` → Triage |
 | 2 | reviewer pods | Two independent compact-lens pods share one neutral evidence packet, followed by batched Q&A and neutral verification |
-| 3 | pair + Bob | Independent path: Router's top 2 plus `uncle-bob` pre-seated (full-patch read, like named mode) |
+| 3 | routed pair + Bob | Independent path: Router's top 2 plus `uncle-bob` pre-seated (full-patch read, like named mode) |
 | 4 | normal | Current behavior, unchanged |
 | 5 | everyone | All `index.yaml` reviewers, implemented as named-selection over the full index — the router is bypassed with no new code path |
 

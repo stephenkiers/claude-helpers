@@ -57,7 +57,7 @@ h.test_result(
     "every lens requires attribution and explicit NO_FINDING",
     bool(re.search(r"every\s+assigned lens key exactly once", panel))
     and "explicit `NO_FINDING`" in panel
-    and "attribution" in pod_prompt,
+    and "attribution and either a non-empty `findings` list or the scalar `NO_FINDING`" in pod_prompt,
 )
 h.test_result(
     "deduplication happens after independent lens passes",
@@ -92,6 +92,11 @@ h.test_result(
     "grounded uncertain/disputed High/Critical" in panel
     and "Do not promote Medium/Low" in panel
     and "explicit high-risk tag" in verifier,
+)
+h.test_result(
+    "verifier classifies into all four labels and stays neutral",
+    "Classify each item `CONFIRMED`, `RESOLVED`, `DOWNGRADED`, or `DISPUTED`" in verifier
+    and "Do not introduce new findings and do not favor a" in verifier,
 )
 h.test_result(
     "pod and verifier artifacts retain injection and truncation guards",
