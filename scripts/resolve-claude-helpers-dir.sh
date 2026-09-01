@@ -16,6 +16,7 @@
 if [ -n "${BASH_SOURCE:-}" ]; then
   RESOLVE_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 elif [ -n "${ZSH_VERSION:-}" ]; then
+  # shellcheck disable=SC2296 # intentional zsh-only construct: ${(%):-%x} is not valid in POSIX sh
   RESOLVE_SCRIPT_PATH="$(readlink -f "${(%):-%x}")"
 else
   RESOLVE_SCRIPT_PATH=""

@@ -14,6 +14,7 @@ Run with: python3 tests/test_resolve_claude_helpers_dir.py
 """
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,13 +48,18 @@ def run_bash(script_text, env=None):
 
 def run_zsh(script_text, env=None):
     """Run zsh script in a subshell. Returns (returncode, stdout, stderr)."""
-    result = subprocess.run(
-        ["zsh", "-c", script_text],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    return result.returncode, result.stdout, result.stderr
+    if shutil.which("zsh") is None:
+        return 1, "", "zsh is not installed or not in PATH"
+    try:
+        result = subprocess.run(
+            ["zsh", "-c", script_text],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except FileNotFoundError:
+        return 1, "", "zsh binary not found"
 
 
 def test_script_exists():
@@ -264,6 +270,50 @@ def test_script_does_not_kill_sourcing_shell():
         return True, ""
 
 
+def test_script_unsupported_shell():
+    """Test that script fails and reports error on unsupported shell (neither bash nor zsh)."""
+    # /bin/sh is bash-in-POSIX-mode on macOS, so it still sets BASH_SOURCE when
+    # dot-sourced — dash is a genuine POSIX shell with neither BASH_SOURCE nor
+    # ZSH_VERSION, which is what actually exercises the "unsupported shell" branch.
+    if shutil.which("dash") is None:
+        return True, "dash not installed or not in PATH — skipping unsupported-shell check"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        # Create a fake directory structure
+        fake_repo = tmpdir_path / "fake_repo"
+        fake_repo.mkdir()
+        scripts_dir = fake_repo / "scripts"
+        scripts_dir.mkdir()
+
+        fake_script = scripts_dir / "resolve-claude-helpers-dir.sh"
+        fake_script.write_text(RESOLVE_SCRIPT.read_text())
+
+        # Use '.' instead of 'source' for POSIX portability. Don't use || true;
+        # let dash exit with the actual status.
+        test_script = f". '{fake_script}'"
+
+        result = subprocess.run(
+            ["dash", "-c", test_script],
+            capture_output=True,
+            text=True,
+        )
+
+        # Script should fail (non-zero exit code)
+        if result.returncode == 0:
+            return False, "script should return non-zero on unsupported shell"
+
+        # Check for ERROR in stderr
+        if "ERROR" not in result.stderr:
+            return (
+                False,
+                f"stderr should contain ERROR message, got: {result.stderr!r}",
+            )
+
+        return True, ""
+
+
 def test_no_old_inline_pattern_in_commands():
     """Test that no command doc contains the old inline RUN_METRICS_RESOLVED pattern."""
     offenders = []
@@ -398,6 +448,13 @@ def main():
     passed, msg = test_script_does_not_kill_sourcing_shell()
     h.test_result(
         "script uses return 1 (doesn't kill sourcing shell)",
+        passed,
+        msg,
+    )
+
+    passed, msg = test_script_unsupported_shell()
+    h.test_result(
+        "script reports error on unsupported shell (sh without bash/zsh)",
         passed,
         msg,
     )
