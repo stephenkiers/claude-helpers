@@ -77,7 +77,7 @@ The design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
 A full `/expert-review` with many personas is **not cheap** — it spins up a summarizer, a router,
 multiple expert passes, and Q&A subagents. Mechanical steps run on Haiku to keep this sane
 ([ADR-0004](docs/adr/0004-model-cost-routing.md)); the `--effort 1–5` ladder scales the panel down
-to a 6-scout swarm (`--effort 1`) or a focused pair (`--effort 2`) for small diffs
+to a 6-scout swarm (`--effort 1`) or two shared-context reviewer pods (`--effort 2`) for small diffs
 ([ADR-0012](docs/adr/0012-effort-ladder-and-pr-mode.md)), and you can scope a run to specific
 reviewers (`/expert-review security,types`). Start small before running the whole panel.
 

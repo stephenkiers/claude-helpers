@@ -1,0 +1,60 @@
+# Compact detection contracts for the effort-2 reviewer pods.
+# These are deliberately factual and terse. Full reviewer personas remain the authority for
+# standalone reviews and effort levels 3-5.
+
+lenses:
+  tara-typesafe:
+    attribution: Tara TypeSafe
+    look_for: [invalid states, unchecked boundary data, unsafe casts, incomplete state transitions]
+    do_not_flag: [style-only type preferences, proven internal invariants]
+    questions: [Can invalid data cross this boundary, Is every state transition represented]
+    evidence: A changed path and line plus the concrete invalid value or transition.
+  contract-chris:
+    attribution: Contract Chris
+    look_for: [missing preconditions, ambiguous failure behavior, swallowed external errors]
+    do_not_flag: [private helpers whose contract is obvious and enforced by callers]
+    questions: [What inputs are valid, What happens when external state fails]
+    evidence: A changed callable and a reachable violating input or error path.
+  know-it-all-nigel:
+    attribution: Know-It-All Nigel
+    look_for: [language-semantic mistakes, non-idiomatic constructs that change behavior, API misuse]
+    do_not_flag: [subjective syntax preferences, equivalent idioms]
+    questions: [Does the language or library actually guarantee the assumed behavior]
+    evidence: A changed path and line plus the relevant language or API semantic.
+  sam-system:
+    attribution: Sam System
+    look_for: [broken cross-file wiring, unused injected values, mismatched producer-consumer contracts]
+    do_not_flag: [local style, hypothetical integrations absent from the change]
+    questions: [Does each changed value reach and affect its intended consumer]
+    evidence: An end-to-end path:line data-flow trace.
+  mozart:
+    attribution: Mozart
+    look_for: [event ordering bugs, missing subscriptions, duplicated orchestration, lost messages]
+    do_not_flag: [direct calls where eventing adds no concrete benefit]
+    questions: [Who publishes, who consumes, and how are ordering and cleanup guaranteed]
+    evidence: Producer and consumer path:line references and the failing sequence.
+  eric-evans:
+    attribution: Eric Evans
+    look_for: [leaky domain boundaries, contradictory vocabulary, misplaced domain rules]
+    do_not_flag: [renaming preferences without a demonstrated misunderstanding]
+    questions: [Does this model preserve the domain invariant at the correct boundary]
+    evidence: Changed declarations/usages showing the boundary or invariant violation.
+  rachel:
+    attribution: Rachel
+    look_for: [races, stale async work, lock or cancellation errors, unsafe shared state]
+    do_not_flag: [concurrency concerns without an interleaving that reaches bad behavior]
+    questions: [What interleaving, cancellation, or retry makes this fail]
+    evidence: A concrete event interleaving with path:line anchors.
+  fragile-feynman:
+    attribution: Fragile Feynman
+    look_for: [hidden ordering assumptions, unsafe defaults, retry fragility, migration assumptions]
+    do_not_flag: [generic disaster scenarios unrelated to the changed behavior]
+    questions: [Which plausible changed assumption produces the first failure]
+    evidence: A specific assumption, trigger, and observable failure rooted in changed lines.
+  vera-verifier:
+    attribution: Vera Verifier
+    look_for: [tests passing for the wrong reason, mock divergence, assertions that miss changed behavior]
+    do_not_flag: [missing tests without a concrete unverified risk]
+    questions: [Would this test fail if the implementation's claimed behavior were broken]
+    evidence: Test and implementation path:line references with a short desk-check.
+

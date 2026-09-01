@@ -76,18 +76,17 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   | Level | Name | What runs |
   |---|---|---|
   | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`, CRITIC `path:line` grounding) → 1 sonnet merge agent → `final-report.md` → Triage → `claude-action-plan.md`. Skips Summarizer/Router/Carl/Q&A/Pass 2/Amalgamator. |
-  | 2 | focused pair | Router picks exactly the top 2 judgment reviewers; Carl + Cody + Consistency Checker still run; full pipeline otherwise (Q&A, Pass 2, Amalgamator, Triage). |
-  | 3 | pair + Bob | Effort 2 plus `uncle-bob` pre-seated (full-patch read, like named mode). |
+  | 2 | reviewer pods | Two independent pod agents apply 9 compact, attributed lenses over one shared neutral evidence packet; one batched Q&A scout and one neutral verifier; standalone specialists only for grounded uncertain High/Critical or explicit high-risk findings. |
+  | 3 | routed pair + Bob | Independent path: Router's top 2 plus `uncle-bob` pre-seated (full-patch read). |
   | 4 | normal | Full panel; the heuristic's ceiling and the fallback when no config or `--effort` is given. |
   | 5 | everyone | All `index.yaml` reviewers; implemented as named-selection over the full index (router bypassed). |
 
   Interaction rules: `--effort` + named reviewers = **error**. `--all --effort 5` is accepted
   (redundant); `--all` + `--effort 1|2|3` is accepted — effort wins. `--model` stays orthogonal; at
   effort 1 the merge agent is `PANEL_MODEL` if `--model` was explicit, else pinned sonnet; scouts are
-  always haiku. Triage runs at every level (output contract identical). Sam System at levels 2–3
-  runs only if the router's top-2 includes him (keeps the ladder monotonic in cost; Cody and the
-  Consistency Checker stay always-run because pinned-haiku cheap and they catch a 2-person panel's
-  unchecked-claim failure mode).
+  always haiku. Triage runs at every level (output contract identical). Level 2 uses its pod path.
+  On the independent level-3 path, Sam System runs only if the router's top-2 includes him; Cody and
+  the Consistency Checker stay always-run.
 - `<github-pr-url>`: a positional argument matching `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$`
   (checked before reviewer-name matching) switches to **PR mode** — review a coworker's PR in an
   isolated worktree. Step 1 is replaced by `eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"`,
@@ -108,7 +107,7 @@ Examples: `/expert-review --model haiku` (whole panel, cheapest — good for a s
 `/expert-review rachel,security-sage` (two reviewers, no router) ·
 `/expert-review --model fable` (use fable for the amalgamator and panel) ·
 `/expert-review --effort 1` (6 haiku scouts + one merge + triage — the cheap screen) ·
-`/expert-review --effort 2` (router's top 2 + the always-run mechanical set) ·
+`/expert-review --effort 2` (two reviewer pods over one shared evidence packet) ·
 `/expert-review https://github.com/owner/repo/pull/123` (PR mode — review a coworker's PR) ·
 `/expert-review https://github.com/owner/repo/pull/123 --effort 1` (swarm against the PR worktree)
 
@@ -126,6 +125,11 @@ already-reviewed commit never overwrites the prior run):
 | `pr-context.md` | `setup-pr-worktree.sh` (PR mode); main thread (effort 1, local mode) | Step 1 / swarm path — PR title, description, metadata; synthesized from branch/plan context in local-mode swarm |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
+| `review-context/*` | Neutral packet builder | Effort 2 — shared factual evidence loaded by both pods |
+| `*-pod.md` | Two pod agents | Effort 2 — per-lens attributed results plus post-pass deduplication |
+| `pod-questions-answered.md` | One Haiku scout | Effort 2 — all pod questions in one batch |
+| `pod-verification.md` | Neutral verifier | Effort 2 — batched Pass 2 and conditional specialist recommendations |
+| `review-metrics.json` | Main thread | Effort 2 — calls, tokens, context, timing, verdicts, and comparison fields |
 | `{reviewer}-pass1.md` | Each Pass 1 subagent | Step 6 (Consistency Checker + Cody included) |
 | `contrarian-carl-pass1.md` | Carl | Step 7 — no Pass 2, presented as-is |
 | `{reviewer}-questions-answered.md` | Haiku Q&A | Step 8 — only reviewers with open questions |
@@ -377,7 +381,9 @@ the run to named selection over the full index.
 
 The panel writes `summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `contrarian-carl-pass1.md`,
 `{reviewer}-questions-answered.md`, `{reviewer}-pass2.md`, and `final-report.md` into `REVIEW_DIR`
-(the swarm path writes only `pr-context.md`, a stub `tagged-sections.md`, and `final-report.md`).
+(the effort-2 pod path writes `review-context/`, two pod checkpoints, one batched Q&A checkpoint,
+one verification checkpoint, optional specialist checkpoints, metrics, and `final-report.md`; the
+swarm path writes only `pr-context.md`, a stub `tagged-sections.md`, and `final-report.md`).
 When it returns, resume at Step 11 below.
 
 ### Step 11: Triage Chief (one agent) → `claude-action-plan.md`
@@ -494,7 +500,8 @@ echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > 
 Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
 
 `$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
-`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts).
+`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts),
+and, when `EFFORT=2`, `metricsPath` pointing to `{REVIEW_DIR}/review-metrics.json`.
 
 ---
 
