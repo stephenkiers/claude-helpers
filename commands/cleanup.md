@@ -192,10 +192,11 @@ echo "CURRENT_WORKTREE=$CURRENT_WORKTREE"
 echo "CURRENT_BRANCH=$CURRENT_BRANCH"
 echo "MAIN_WORKTREE=$MAIN_WORKTREE"
 echo "Now in main worktree, safe to proceed"
-```
 
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-target --outcome success 2>/dev/null || true
+# Every failure path above already exited with its own stage-end; reaching here means success.
+# Fired here (not in a trailing block) so it isn't skippable by a NEEDS_CONFIRMATION pause below.
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage-id "$TELEMETRY_STAGE_ID" --stage resolve-target --outcome success 2>/dev/null || true
+```
 
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
