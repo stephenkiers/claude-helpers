@@ -22,11 +22,30 @@ class SessionState(TypedDict, total=False):
     """Typed representation of session-scoped state dict.
 
     Fields command_id, command, stage_id, stage are optional; either present or absent.
+    `command_began_at`/`stage_began_at` hold ISO timestamps used to compute
+    elapsed_seconds when the matching end event resolves via this state file.
+
+    Note: session_began_at and the per-agent began_at map live in a SEPARATE file
+    (see session_meta_path) rather than here, because command-end unconditionally
+    deletes this file on completion (test_command_end_deletes_state_file) — sharing
+    a file would wipe session/agent timing whenever a command finished.
     """
     command_id: Optional[str]
     command: Optional[str]
+    command_began_at: Optional[str]
     stage_id: Optional[str]
     stage: Optional[str]
+    stage_began_at: Optional[str]
+
+
+class SessionMeta(TypedDict, total=False):
+    """Typed representation of the session-scoped meta state dict (session_meta_path).
+
+    Kept separate from SessionState (state_path) because that file is deleted
+    wholesale by command-end; session/agent timing must survive command lifecycles.
+    """
+    session_began_at: Optional[str]
+    agents: dict
 
 
 class FindingsCounts(TypedDict, total=False):
@@ -321,6 +340,20 @@ def state_path(session_id: str, state_dir: Path = None) -> Path:
     return state_dir / f"{safe_id}.json"
 
 
+def session_meta_path(session_id: str, state_dir: Path = None) -> Path:
+    """Return the session-meta state file path for a given session_id.
+
+    Deliberately a different file from state_path(): that file is deleted wholesale
+    by resolve_and_clear_command_state on every command-end, so session_began_at and
+    per-agent began_at timestamps (which must outlive individual command lifecycles)
+    are tracked here instead.
+    """
+    if state_dir is None:
+        state_dir = default_state_dir()
+    safe_id = session_id if re.match(r"^[A-Za-z0-9_-]+$", session_id or "") else "unknown"
+    return state_dir / f"{safe_id}.session.json"
+
+
 def load_and_update_state(path: Path, mutate_fn) -> dict:
     """Atomically read-modify-write a JSON state file.
 
@@ -383,14 +416,24 @@ def load_and_update_state(path: Path, mutate_fn) -> dict:
         os.close(fd)
 
 
-def init_command_state(path: Path, command_id: str, command: str) -> None:
+def init_command_state(path: Path, command_id: str, command: str, began_at: Optional[str] = None) -> None:
     """Atomically initialize session state for a new command lifecycle.
 
     Replaces any prior state unconditionally (a new command-begin always wins —
     this matches command-begin's existing behavior of starting a fresh lifecycle).
+
+    began_at (an ISO timestamp) is stashed so a later command-end resolving via this
+    same state file can compute elapsed_seconds.
     """
     def mutate(state: dict) -> dict:
-        return {"command_id": command_id, "command": command, "stage_id": None, "stage": None}
+        return {
+            "command_id": command_id,
+            "command": command,
+            "command_began_at": began_at,
+            "stage_id": None,
+            "stage": None,
+            "stage_began_at": None,
+        }
     load_and_update_state(path, mutate)
 
 
@@ -409,13 +452,17 @@ def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], c
       describes). If the state's command_id differs (a concurrent command-begin already
       replaced it, or --command-id was passed for a different lifecycle), the state is left
       UNTOUCHED (do not clear it) and a warning is printed to stderr.
+    - began_at is only surfaced when the state actually cleared (i.e. this call is
+      genuinely closing the lifecycle the state describes) — otherwise there's no
+      trustworthy correlation between the resolved command_id and any stored timestamp.
 
-    Returns (command_id, state_mismatch, cleared) as a tuple.
+    Returns (command_id, state_mismatch, cleared, began_at) as a tuple.
     """
     result = {}
 
     def mutate(state: dict) -> dict:
         recorded_command_id = state.get("command_id")
+        recorded_began_at = state.get("command_began_at")
         if command_id_arg:
             command_id = command_id_arg
             state_mismatch = None
@@ -427,12 +474,14 @@ def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], c
         result["state_mismatch"] = state_mismatch
         if recorded_command_id and recorded_command_id == command_id:
             result["cleared"] = True
+            result["began_at"] = recorded_began_at
             try:
                 os.unlink(str(path))
             except (OSError, FileNotFoundError):
                 pass
             return {}
         result["cleared"] = False
+        result["began_at"] = None
         return state
 
     load_and_update_state(path, mutate)
@@ -442,15 +491,20 @@ def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], c
             "(state belongs to a different, concurrently in-flight command)",
             file=sys.stderr,
         )
-    return result["command_id"], result["state_mismatch"], result.get("cleared", False)
+    return result["command_id"], result["state_mismatch"], result.get("cleared", False), result.get("began_at")
 
 
-def resolve_and_set_stage_state(path: Path, command_id_arg: Optional[str], stage_id: str, stage_name: str) -> str:
+def resolve_and_set_stage_state(
+    path: Path, command_id_arg: Optional[str], stage_id: str, stage_name: str, began_at: Optional[str] = None
+) -> str:
     """Atomically resolve command_id and write stage fields into state for stage-begin.
 
     Single critical section: resolves command_id (explicit command_id_arg wins; else the
     state's existing command_id; else telemetry_schema.UNKNOWN), then sets stage_id/stage
     on the same state dict, preserving whatever command_id/command was already present.
+
+    began_at (an ISO timestamp) is stashed so a later stage-end resolving via this same
+    state file can compute elapsed_seconds.
 
     Returns the resolved command_id.
     """
@@ -462,6 +516,7 @@ def resolve_and_set_stage_state(path: Path, command_id_arg: Optional[str], stage
         result["command_id"] = command_id
         state["stage_id"] = stage_id
         state["stage"] = stage_name
+        state["stage_began_at"] = began_at
         return state
 
     load_and_update_state(path, mutate)
@@ -482,14 +537,17 @@ def resolve_and_clear_stage_state(
       lifecycle is still in flight) ONLY if the state's own stage_id equals the resolved
       stage_id. If it differs (a concurrent stage-begin already replaced it), the stage
       fields are left UNTOUCHED and a warning is printed to stderr.
+    - began_at is only surfaced when the stage fields actually cleared — otherwise there's
+      no trustworthy correlation between the resolved stage_id and any stored timestamp.
 
-    Returns (command_id, stage_id, state_mismatch) as a tuple.
+    Returns (command_id, stage_id, state_mismatch, began_at) as a tuple.
     """
     result = {}
 
     def mutate(state: dict) -> dict:
         recorded_stage_id = state.get("stage_id")
         recorded_command_id = state.get("command_id")
+        recorded_began_at = state.get("stage_began_at")
         if stage_id_arg:
             stage_id = stage_id_arg
             state_mismatch = None
@@ -503,10 +561,13 @@ def resolve_and_clear_stage_state(
         result["state_mismatch"] = state_mismatch
         if recorded_stage_id and recorded_stage_id == stage_id:
             result["cleared"] = True
+            result["began_at"] = recorded_began_at
             state["stage_id"] = None
             state["stage"] = None
+            state["stage_began_at"] = None
             return state
         result["cleared"] = False
+        result["began_at"] = None
         return state
 
     load_and_update_state(path, mutate)
@@ -516,7 +577,59 @@ def resolve_and_clear_stage_state(
             "(state belongs to a different, concurrently in-flight stage)",
             file=sys.stderr,
         )
-    return result["command_id"], result["stage_id"], result["state_mismatch"]
+    return result["command_id"], result["stage_id"], result["state_mismatch"], result.get("began_at")
+
+
+def record_agent_began_at(path: Path, agent_id: str, began_at: str) -> None:
+    """Atomically record an agent's begin timestamp, keyed by agent_id, in the session state.
+
+    Stored in a per-agent-id dict (not a single-slot field) because multiple agents can
+    be in flight concurrently within one session — unlike the single-slot command/stage
+    fields, agent_id keys don't collide with each other.
+    """
+    def mutate(state: dict) -> dict:
+        agents = state.get("agents")
+        if not isinstance(agents, dict):
+            agents = {}
+        agents[agent_id] = began_at
+        state["agents"] = agents
+        return state
+
+    load_and_update_state(path, mutate)
+
+
+def resolve_and_clear_agent_began_at(path: Path, agent_id: str) -> Optional[str]:
+    """Atomically pop and return an agent's begin timestamp, or None if never recorded."""
+    result = {}
+
+    def mutate(state: dict) -> dict:
+        agents = state.get("agents")
+        if not isinstance(agents, dict):
+            agents = {}
+        result["began_at"] = agents.pop(agent_id, None)
+        state["agents"] = agents
+        return state
+
+    load_and_update_state(path, mutate)
+    return result["began_at"]
+
+
+def init_session_state(path: Path, began_at: str) -> None:
+    """Record a session's begin timestamp in its state file, preserving other fields."""
+    def mutate(state: dict) -> dict:
+        state["session_began_at"] = began_at
+        return state
+
+    load_and_update_state(path, mutate)
+
+
+def get_session_began_at(path: Path) -> Optional[str]:
+    """Best-effort read of a session's begin timestamp. Does not mutate or clear state."""
+    def mutate(state: dict) -> dict:
+        return state
+
+    state = load_and_update_state(path, mutate)
+    return state.get("session_began_at")
 
 
 def prune_stale_state(state_dir: Path = None, max_age_seconds: int = 86400) -> None:

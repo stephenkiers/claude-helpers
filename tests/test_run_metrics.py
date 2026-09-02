@@ -1923,6 +1923,161 @@ def test_compute_stale_recent_split_returns_named_structure():
         sys.path.pop(0)
 
 
+def test_begin_events_have_unknown_elapsed_seconds():
+    """*.begin events always have elapsed_seconds == 'unknown' (nothing to measure yet)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "s"], env=env)
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        for e in events:
+            if e.get("elapsed_seconds") != "unknown":
+                return False, f"{e['event_type']} should have elapsed_seconds=unknown, got {e.get('elapsed_seconds')}"
+
+        return True, ""
+
+
+def test_stage_end_computes_elapsed_seconds():
+    """stage-end computes elapsed_seconds from the stage-begin timestamp via the state file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "s"], env=env)
+        time.sleep(1.1)
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "s", "--outcome", "success"], env=env)
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        stage_end = next(e for e in events if e["event_type"] == "stage.end")
+
+        elapsed = stage_end.get("elapsed_seconds")
+        if not isinstance(elapsed, int) or elapsed < 1:
+            return False, f"expected elapsed_seconds >= 1 (int), got {elapsed!r}"
+
+        return True, ""
+
+
+def test_command_end_computes_elapsed_seconds():
+    """command-end computes elapsed_seconds from the command-begin timestamp via the state file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
+        time.sleep(1.1)
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        command_end = next(e for e in events if e["event_type"] == "command.end")
+
+        elapsed = command_end.get("elapsed_seconds")
+        if not isinstance(elapsed, int) or elapsed < 1:
+            return False, f"expected elapsed_seconds >= 1 (int), got {elapsed!r}"
+
+        return True, ""
+
+
+def test_agent_end_computes_elapsed_seconds():
+    """agent-end computes elapsed_seconds from the agent-begin timestamp."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        begin_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t", "cwd": "/tmp"})
+        end_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t"})
+
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"], stdin_text=begin_payload)
+        time.sleep(1.1)
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=end_payload)
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        agent_end = next(e for e in events if e["event_type"] == "agent.end")
+
+        elapsed = agent_end.get("elapsed_seconds")
+        if not isinstance(elapsed, int) or elapsed < 1:
+            return False, f"expected elapsed_seconds >= 1 (int), got {elapsed!r}"
+
+        return True, ""
+
+
+def test_session_end_computes_elapsed_seconds():
+    """session-end computes elapsed_seconds from the session-begin timestamp."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        payload = json.dumps({"session_id": session_id, "cwd": "/tmp"})
+
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-begin"], stdin_text=payload)
+        time.sleep(1.1)
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-end"], stdin_text=payload)
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        session_end = next(e for e in events if e["event_type"] == "session.end")
+
+        elapsed = session_end.get("elapsed_seconds")
+        if not isinstance(elapsed, int) or elapsed < 1:
+            return False, f"expected elapsed_seconds >= 1 (int), got {elapsed!r}"
+
+        return True, ""
+
+
+def test_agent_elapsed_survives_command_end():
+    """An agent's began_at timestamp must survive command-end's state-file deletion.
+
+    Regression test: session/agent timing lives in a separate file (session_meta_path)
+    from the command/stage state file, because command-end unconditionally deletes the
+    latter (test_command_end_deletes_state_file). An agent spawned before a command ends
+    but that finishes after must still get a real elapsed_seconds, not 'unknown'.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
+
+        agent_begin_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t", "cwd": "/tmp"})
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"], stdin_text=agent_begin_payload)
+
+        time.sleep(1.1)
+
+        # command-end fires while the agent is still "in flight"
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)
+
+        agent_end_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t"})
+        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=agent_end_payload)
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        agent_end = next(e for e in events if e["event_type"] == "agent.end")
+
+        elapsed = agent_end.get("elapsed_seconds")
+        if not isinstance(elapsed, int) or elapsed < 1:
+            return False, f"agent's elapsed_seconds should have survived command-end, got {elapsed!r}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -2096,6 +2251,27 @@ if __name__ == "__main__":
 
     passed, msg = test_compute_stale_recent_split_returns_named_structure()
     test_result("_compute_stale_recent_split returns 3-element named structure", passed, msg)
+
+    print()
+
+    print("[Section 11] elapsed_seconds computation")
+    passed, msg = test_begin_events_have_unknown_elapsed_seconds()
+    test_result("*.begin events have elapsed_seconds='unknown'", passed, msg)
+
+    passed, msg = test_stage_end_computes_elapsed_seconds()
+    test_result("stage-end computes elapsed_seconds from state", passed, msg)
+
+    passed, msg = test_command_end_computes_elapsed_seconds()
+    test_result("command-end computes elapsed_seconds from state", passed, msg)
+
+    passed, msg = test_agent_end_computes_elapsed_seconds()
+    test_result("agent-end computes elapsed_seconds from session meta", passed, msg)
+
+    passed, msg = test_session_end_computes_elapsed_seconds()
+    test_result("session-end computes elapsed_seconds from session meta", passed, msg)
+
+    passed, msg = test_agent_elapsed_survives_command_end()
+    test_result("agent elapsed_seconds survives command-end's state deletion", passed, msg)
 
     print()
 

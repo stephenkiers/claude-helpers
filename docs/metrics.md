@@ -53,7 +53,7 @@ Every event emitted by `run-metrics.py` carries these fields:
 - `timestamp` (ISO 8601 string) — UTC time the event was recorded
 - `session_id` (string) — session UUID or `"unknown"` (defaults from `CLAUDE_CODE_SESSION_ID` environment variable when not explicitly passed via CLI flag)
 - `turns` (integer or string) — number of conversation turns; defaults to literal string `"unknown"` when not captured
-- `elapsed_seconds` (integer or string) — wall-clock elapsed time; defaults to literal string `"unknown"` when not captured
+- `elapsed_seconds` (integer or string) — wall-clock seconds between a lifecycle's begin and end event, computed automatically by `run-metrics.py` from the begin timestamp stashed in the session state file (`session.begin`/`session.end` and `agent.begin`/`agent.end` use a separate `<session_id>.session.json` meta file so agent/session timing survives `command-end`'s state-file deletion; `command.begin`/`command.end` and `stage.begin`/`stage.end` use the regular per-session state file). Always `"unknown"` on `*.begin` events (nothing to measure yet) and on any `*.end` event whose begin never resolved via state (explicit `--command-id`/`--stage-id` that doesn't match what's in state, missing/stale state file, or clock skew producing a negative delta) — never a fabricated number.
 - `retries` (integer or string) — number of retries; defaults to literal string `"unknown"` when not captured
 - `peak_concurrency` (integer or string) — peak number of concurrent tasks; defaults to literal string `"unknown"` when not captured
 - `transcript_size` (integer or string) — size of transcript output artifact in bytes; defaults to literal string `"unknown"` when not captured
@@ -207,17 +207,32 @@ When a `CLAUDE_CODE_SESSION_ID` environment variable is set (always true in Clau
 {
   "command_id": "hex-uuid or null",
   "command": "command-name or null",
+  "command_began_at": "ISO timestamp or null",
   "stage_id": "hex-uuid or null",
-  "stage": "stage-name or null"
+  "stage": "stage-name or null",
+  "stage_began_at": "ISO timestamp or null"
 }
 ```
 
 ### Behavior
 
-- **`command-begin`:** Writes `{"command_id": ..., "command": ..., "stage_id": null, "stage": null}`, replacing any prior state. Opportunistically prunes state files older than 24 hours as a side effect (best-effort; failures are silently ignored).
-- **`stage-begin`:** Updates `stage_id` and `stage` fields, leaving `command_id` and `command` intact. Reads `command_id` from state file if no explicit `--command-id` flag is given.
-- **`stage-end`:** Clears the `stage_id` and `stage` fields back to null (command may still be in flight). Reads `stage_id` and `command_id` from state if not explicitly provided.
-- **`command-end`:** Deletes the session's state file entirely (command lifecycle is complete). Reads `command_id` from state if not explicitly provided.
+- **`command-begin`:** Writes `{"command_id": ..., "command": ..., "command_began_at": ..., "stage_id": null, "stage": null, "stage_began_at": null}`, replacing any prior state. Opportunistically prunes state files older than 24 hours as a side effect (best-effort; failures are silently ignored).
+- **`stage-begin`:** Updates `stage_id`, `stage`, and `stage_began_at`, leaving `command_id`/`command`/`command_began_at` intact. Reads `command_id` from state file if no explicit `--command-id` flag is given.
+- **`stage-end`:** Clears the `stage_id`/`stage`/`stage_began_at` fields back to null (command may still be in flight). Reads `stage_id` and `command_id` from state if not explicitly provided, and — only when the stage-id resolution is a genuine match (not a mismatched explicit override) — uses `stage_began_at` to compute `elapsed_seconds`.
+- **`command-end`:** Deletes the session's state file entirely (command lifecycle is complete). Reads `command_id` from state if not explicitly provided, and — only on a genuine match — uses `command_began_at` to compute `elapsed_seconds`.
+
+### Session-Meta File (separate from the state file above)
+
+`session-begin`/`session-end` and `agent-begin`/`agent-end` track their own begin timestamps in a **separate** file, `~/.claude/telemetry/state/<session_id>.session.json`, rather than the state file above:
+
+```json
+{
+  "session_began_at": "ISO timestamp or null",
+  "agents": {"<agent_id>": "ISO timestamp", "...": "..."}
+}
+```
+
+This is deliberately not the same file: `command-end` deletes the state file wholesale on every command, and doing the same to session/agent timing would wipe an in-flight agent's `began_at` the moment its parent command finished (agents can outlive the command that spawned them). `agents` is a dict keyed by `agent_id` — unlike the single-slot `stage_id`/`command_id` fields, multiple agents can be in flight concurrently within one session without clobbering each other.
 
 ### ID Resolution (Precedence)
 
@@ -394,8 +409,8 @@ jq -r 'select(.event_type == "stage.end" and .outcome.status != "success") |
   ~/.claude/telemetry/events.jsonl | sort | uniq -c | sort -rn
 ```
 
-**Elapsed time by command (where known — many events predate `elapsed_seconds` being wired up
-everywhere, so filter out `"unknown"`):**
+**Elapsed time by command (where known — events logged before `elapsed_seconds` was wired up have
+no begin timestamp to compute from, so filter out `"unknown"`):**
 
 ```bash
 jq -r 'select(.event_type == "command.end" and .elapsed_seconds != "unknown") |
