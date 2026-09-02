@@ -8,7 +8,7 @@ PR comment tone matters — it sets the register of review conversation, and it'
 
 Two problems block this today:
 
-1. **No portable tone guide** — reviewers have personal style, but it lives in their heads or scattered across past reviews. There's no standard, portable, portable format for capturing "here's how I sound" so others can model on it or CI can reference it.
+1. **No portable tone guide** — reviewers have personal style, but it lives in their heads or scattered across past reviews. There's no standard, portable format for capturing "here's how I sound" so others can model on it or CI can reference it.
 2. **No discovery** — even if someone wanted to adopt a team's review voice, discovering "what is the team's actual tone" requires reading through years of reviews by hand.
 
 ## Decision

@@ -1,6 +1,6 @@
 ---
 description: Auto-generate a personal style-guide.json from your review history, with human confirmation before writing.
-allowed-tools: Bash(gh api:*), Bash(gh search:*), Bash(gh pr:*), Read, Write, Glob, Grep
+allowed-tools: Bash(gh api user*), Bash(gh api graphql*), Bash(gh search prs*), Read, Write, Glob, Grep
 ---
 
 # Generate Style Guide
@@ -97,7 +97,24 @@ If confirmed, write the file with:
 
 No `_instructions` field (that's only in the template). Validate the JSON before writing:
 ```bash
-python3 -c "import json; json.dump(...); json.load(...)"
+python3 << 'EOF'
+import json, os
+# Construct and validate the style guide object
+data = {
+    "version": 1,
+    "source": "generated",
+    "generatedAt": "2026-09-02T15:30:45Z",
+    "scope": {"repos": ["owner/repo"]},
+    "examples": [...],
+    "toneNotes": [...]
+}
+# Validate JSON structure (json.dump will raise on non-serializable objects)
+json.dumps(data)
+# Write to file
+path = os.path.expanduser("~/.claude/style-guide.json")
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+EOF
 ```
 
 Report success: "Wrote `~/.claude/style-guide.json` with 12 examples and 5 tone notes, scoped to ['acme/backend', 'acme/frontend']."

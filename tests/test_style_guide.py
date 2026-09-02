@@ -230,7 +230,19 @@ t("frontmatter has 'allowed-tools' field",
 allowed_tools_match = re.search(r"^allowed-tools:\s*(.+)$", GENERATE_STYLE_GUIDE, re.MULTILINE)
 allowed_tools = allowed_tools_match.group(1) if allowed_tools_match else ""
 
-# Check for destructive gh subcommands (these should NOT be present)
+# Check that allowed-tools does not grant unscoped destructive capabilities
+# Reject: Bash(gh:*), Bash(gh api:*), Bash(gh pr:*) without read-specific scope
+unscoped_destructive = [
+    r"Bash\(gh:\*\)",           # Unscoped gh
+    r"Bash\(gh\s+api:\*\)",      # All gh api calls (includes destructive mutations)
+    r"Bash\(gh\s+pr:\*\)",       # All gh pr calls (includes merge, close, etc.)
+]
+has_unscoped_destructive = any(re.search(pattern, allowed_tools) for pattern in unscoped_destructive)
+t("allowed-tools restricts gh to read-only subcommands",
+  not has_unscoped_destructive,
+  "Frontmatter should not grant unscoped Bash(gh api:*), Bash(gh pr:*), or Bash(gh:*) — only specific read operations like Bash(gh api user*), Bash(gh search prs*), Bash(gh api graphql*)")
+
+# Additionally verify command body doesn't contain destructive operations
 destructive_patterns = [
     r"gh\s+pr\s+merge",
     r"gh\s+api\s+graphql\s+-f\s+query=.*mutation",
@@ -239,7 +251,7 @@ destructive_patterns = [
     r"--method\s+POST"
 ]
 has_destructive = any(re.search(pattern, GENERATE_STYLE_GUIDE, re.IGNORECASE) for pattern in destructive_patterns)
-t("allowed-tools excludes destructive gh subcommands",
+t("command body contains no destructive operations",
   not has_destructive,
   "Command should not include destructive operations like 'gh pr merge' or 'gh api graphql' mutations")
 
