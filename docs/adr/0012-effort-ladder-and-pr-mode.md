@@ -6,7 +6,7 @@
 
 `/expert-review-coworker-beta` proved a fast/cheap tier works: 6 haiku scouts with CRITIC
 `path:line` grounding plus one sonnet merge, end-to-end in a couple of minutes. But a side-by-side
-on PR instacart/bento-cli#254 showed it misses the full panel's substantive findings — the two
+on a real PR showed it misses the full panel's substantive findings — the two
 approaches are complements, not competitors. Meanwhile the full pipeline (~40 subagent spawns,
 ~30 minutes) is overkill for small diffs, and there was no sanctioned middle ground between "six
 scouts" and "everyone, twice."

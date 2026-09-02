@@ -46,7 +46,7 @@ The default is **terse and collaborative.** A comment that lands in one line bea
 Model your drafts on how a real reviewer actually comments (these are real examples):
 
 - "This has no test coverage? Can we add coverage for it?"
-- "Is this safe? It is pulling third party js into instacart.com... has security signed off on this?"
+- "Is this safe? It is pulling third party js into our checkout page... has security signed off on this?"
 - "Is there a way to validate the integrity, or simply use our own CDN?"
 - "Can we add `.replace(/'/g, \"&#39;\")` to harden the guard"
 - "Was this supposed to be checked in?"
