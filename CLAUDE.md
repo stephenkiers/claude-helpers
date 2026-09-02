@@ -84,6 +84,17 @@ or a project-level ruling conflicts with a preference, the project-level rule wi
 personal defaults that projects can override. Copy `prompts/preferences.yaml.template` from this repo
 to get started.
 
+## PR comment tone (style-guide.json)
+
+Create `~/.claude/style-guide.json` to define your personal PR comment tone and style. This file
+contains real examples of how you write code review comments and freeform notes on what they have in
+common — used by `/pr-comment-guide` to model tone when drafting PR comments. The system works out of
+the box with a sensible default before you personalize it; load the default via a two-layer cascade
+(personal file → shipped default) so you're never blocked. Generate a personal style guide via
+`/generate-style-guide`, which analyzes your review history and asks for confirmation before writing,
+or manually copy `prompts/style-guide.json.template` and edit it. See [ADR-0017](docs/adr/0017-style-guide-cascade.md)
+for the design and why this is separate from the reviewer-context cascade.
+
 ## Commands
 
 **Review & planning**
@@ -110,6 +121,8 @@ to get started.
 - `/leave-pr-comments` — post an expert-review's curated findings to a coworker's PR as a pending
   (draft) GitHub review with inline comments; never auto-submits (the human clicks Submit). Consumes
   the walk-through's kept set. Takes a PR URL or review-dir path. See ADR-0015 (amends ADR-0009).
+- `/generate-style-guide` — auto-generate a personal `~/.claude/style-guide.json` from your review
+  history, capturing your actual PR comment tone (with human confirmation before writing).
 - `/expert-pre-mortem` — standalone fragility pre-mortem (Fragile Feynman)
 - `/expert-rebase` — rebase on origin/main; convene experts on conflicting hunks
 - `/review-stats` — **currently non-functional** (stub). The underlying ledger was removed in chore/29;
