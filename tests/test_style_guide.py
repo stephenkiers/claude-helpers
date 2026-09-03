@@ -410,16 +410,16 @@ t("template has 'version' field set to 1",
 print()
 print("[Tone Loading] pr-comment-guide.md mentions loading from examples array")
 
-t("pr-comment-guide.md references 'examples' loading",
-  bool(re.search(r"examples|load.*examples|examples.*from", PR_COMMENT_GUIDE, re.IGNORECASE)),
-  "Tone section should describe loading from examples array")
+t("pr-comment-guide.md loads the examples array from style-guide.json",
+  bool(re.search(r"[Ll]oad the `examples` array from your resolved `style-guide\.json`", PR_COMMENT_GUIDE)),
+  "Tone section should explicitly describe loading the examples array from style-guide.json")
 
 t("pr-comment-guide.md does not have hardcoded bullet list of comments",
   not bool(re.search(
-    r'- ".{10,}.{10,}"\s*\n- ".{10,}.{10,}"',
+    r'(?:- ".{10,}.{10,}"\s*\n){5,}',
     PR_COMMENT_GUIDE
   )),
-  "Should not have six hardcoded example bullets — must load from cascade")
+  "Should not have a run of five or more hardcoded example bullets — must load from cascade")
 
 # ============================================================================
 # GENERATE-STYLE-GUIDE DETAILED REQUIREMENTS
@@ -443,16 +443,31 @@ t("command filters to author.login == $login",
   "author.login" in GENERATE_STYLE_GUIDE,
   "Must filter review comments to only the invoking user's own comments")
 
-t("command mentions pre-filtering trivial/short comments",
-  bool(re.search(r"trivial|short|fewer|20 words|bot|noise", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
-  "Step 5 should describe filtering out trivial/short comments")
+_jq_filter_match = re.search(r'--jq \'(\[\.data\.repository[^\n]*\])\'', GENERATE_STYLE_GUIDE)
+
+t("jq filter for author.login is present and extractable",
+  _jq_filter_match is not None,
+  "Step 4's --jq filter should be present in the documented shape")
+
+if _jq_filter_match:
+    _jq_filter = _jq_filter_match.group(1)
+    t("jq filter interpolates the resolved login, not a bare unbound $login",
+      "{login}" in _jq_filter and "$login" not in _jq_filter,
+      "The --jq filter must interpolate the resolved {login} placeholder directly "
+      "(consistent with {owner}/{repo}/{pr_number}) rather than reference an unbound $login, "
+      "which jq would not resolve and which would silently match nothing or error")
+
+t("command filters noise, not comments by word count",
+  bool(re.search(r"[Dd]rop noise, not short comments", GENERATE_STYLE_GUIDE))
+  and not bool(re.search(r"\b20\s*words\b", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+  "Step 5 should filter by noise pattern (bot markers, lgtm/nit, duplicates), not by a word-count floor")
 
 t("command specifies 6-12 examples range",
-  bool(re.search(r"6.*12|6-12|6 to 12", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+  bool(re.search(r"6-12 representative examples", GENERATE_STYLE_GUIDE)),
   "Command should specify picking 6-12 representative examples")
 
 t("command specifies 3-6 toneNotes range",
-  bool(re.search(r"3.*6|3-6|3 to 6.*tone", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+  bool(re.search(r"3-6 `toneNotes`", GENERATE_STYLE_GUIDE)),
   "Command should specify drafting 3-6 toneNotes")
 
 t("command specifies examples are verbatim or lightly trimmed",
@@ -460,23 +475,24 @@ t("command specifies examples are verbatim or lightly trimmed",
   "Command should require examples to be verbatim or lightly trimmed, never rewritten into different register")
 
 t("command explicitly addresses genericizing sensitive content",
-  bool(re.search(r"genericiz|sensitive|employer|flag.*generic|explicit", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+  bool(re.search(r"genericiz", GENERATE_STYLE_GUIDE, re.IGNORECASE))
+  and bool(re.search(r"sensitive content", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
   "Command should explicitly describe flagging and genericizing sensitive content")
 
 t("command writes source='generated'",
-  bool(re.search(r'"source":\s*"generated"|source.*generated', GENERATE_STYLE_GUIDE)),
+  bool(re.search(r'"source":\s*"generated"', GENERATE_STYLE_GUIDE)),
   "Generated file should have source: 'generated'")
 
 t("command writes real generatedAt timestamp",
-  bool(re.search(r"generatedAt|ISO-8601|timestamp", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+  bool(re.search(r'"generatedAt":\s*"<ISO-8601 timestamp>"', GENERATE_STYLE_GUIDE)),
   "Generated file should have generatedAt set to ISO-8601 timestamp")
 
 t("command writes scope with repos list",
-  bool(re.search(r'"scope".*repos|scope.*repos|repos.*owner/repo', GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+  bool(re.search(r'"scope":\s*\{"repos":\s*\[', GENERATE_STYLE_GUIDE)),
   "Generated file should have scope.repos listing searched repositories")
 
-t("command validates JSON before writing",
-  bool(re.search(r"json|validate", GENERATE_STYLE_GUIDE, re.IGNORECASE)),
+t("command validates JSON before writing to disk",
+  bool(re.search(r"json\.dumps\(data\)\s*#\s*validate before touching disk", GENERATE_STYLE_GUIDE)),
   "Command should validate generated JSON before writing to disk")
 
 # ============================================================================
@@ -581,9 +597,9 @@ t("setup-local.md explicitly documents auto-seed divergence from preferences.yam
 
 t("setup-local.md explains why personal style-guide.json isn't auto-seeded",
   bool(re.search(
-    r"personal|generate|manual.*copy|template|confirmation",
+    r"/generate-style-guide.*manual copying of `prompts/style-guide\.json\.template`",
     SETUP_LOCAL,
-    re.IGNORECASE
+    re.DOTALL
   )),
   "Should explain that users get it via /generate-style-guide or manual template copy")
 
