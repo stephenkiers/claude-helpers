@@ -38,7 +38,7 @@ Drop:
 
 ## Step 4 — Apply Peer Tone
 
-Terse, curious, direct. A real peer types one or two sentences — usually a question — and moves on.
+Terse, curious, direct. A real peer types one or two sentences — usually a question — and moves on. This section is a condensed, prose-only restatement of tone guidance used on this latency-optimized fast path, and is intentionally NOT wired into the `style-guide.json` cascade — this omission is deliberate, not an oversight.
 
 **Rules of thumb:**
 - Prefer a **question** over an assertion: "Is this safe?" not "This is a security risk because..."

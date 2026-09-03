@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "source": "manual",
+  "generatedAt": null,
+  "scope": null,
+  "_instructions": "This file documents your personal PR comment tone and style. Edit to reflect how you actually write code review comments. Since JSON has no comment syntax, this _instructions field substitutes as documentation. Schema: 'version' (always 1), 'source' ('manual' for hand-authored files), 'generatedAt' (null for manual files; ISO-8601 timestamp if auto-generated via /generate-style-guide), 'scope' (null for personal files; {'repos': ['owner/repo', ...]} if auto-generated), 'examples' (array of 6-12 verbatim PR comment strings you've written), 'toneNotes' (array of 3-6 short freeform pattern notes describing what your examples have in common). See /generate-style-guide to auto-generate this file from your review history, or edit this template directly to hand-author it.",
+  "examples": [
+    "REPLACE ME: paste one of your own real PR review comments here",
+    "REPLACE ME: paste another representative example",
+    "REPLACE ME: add more examples (6-12 total, verbatim from your actual reviews)",
+    "REPLACE ME: keep going — the schema documented below expects at least 6",
+    "REPLACE ME: a fifth example",
+    "REPLACE ME: a sixth example — this is the documented minimum, add more if you have them"
+  ],
+  "toneNotes": [
+    "REPLACE ME: describe a pattern these examples share (e.g., 'prefers questions over assertions')",
+    "REPLACE ME: add 2-5 more freeform notes about the tone/style these examples demonstrate",
+    "REPLACE ME: a third note — this is the documented minimum, add up to 6 if useful"
+  ]
+}
