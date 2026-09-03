@@ -63,12 +63,29 @@ def _parse_event_timestamp(ts_str):
     return parsed
 
 
+def _guarded_state_op(fn, *args, **kwargs):
+    """Call a telemetry_schema state operation, swallowing OSError/PermissionError
+    with a stderr warning instead of propagating (state I/O failures must never
+    crash the CLI — the event still gets recorded, just without state-derived data).
+
+    Returns fn's return value, or None if it raised.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except (OSError, PermissionError) as e:
+        print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        return None
+
+
 def _compute_elapsed(began_at, end_timestamp):
     """Compute whole-second elapsed duration between an ISO began_at and end timestamp.
 
     Returns telemetry_schema.UNKNOWN (never a fabricated number) if began_at is
     missing/unparseable, if end_timestamp is unparseable, or if the delta is negative
     (clock skew or corrupt state) — matching the schema's "never a fabricated zero" rule.
+    Note this does not cap an unusually large forward delta from a mid-lifecycle clock jump
+    (laptop sleep, NTP step) — such a delta is surfaced as a large-but-plausible elapsed_seconds
+    rather than "unknown", since capping risks masking a genuinely long-running lifecycle.
     """
     if not began_at:
         return telemetry_schema.UNKNOWN
@@ -106,13 +123,16 @@ def cmd_session_begin(args):
     repo = os.path.basename(cwd.rstrip("/")) if cwd != telemetry_schema.UNKNOWN else telemetry_schema.UNKNOWN
     timestamp = datetime.now(timezone.utc).isoformat()
 
+    # Opportunistic cleanup of stale state files (24h cutoff)
+    _guarded_state_op(telemetry_schema.prune_stale_state, args.state_dir)
+
     if session_id != telemetry_schema.UNKNOWN:
-        try:
-            telemetry_schema.init_session_state(
-                telemetry_schema.session_meta_path(session_id, args.state_dir), timestamp
-            )
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        _guarded_state_op(
+            telemetry_schema.init_session_state,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+            timestamp,
+        )
 
     event = telemetry_schema.build_event(
         "session.begin",
@@ -138,13 +158,12 @@ def cmd_session_end(args):
 
     elapsed_seconds = telemetry_schema.UNKNOWN
     if session_id != telemetry_schema.UNKNOWN:
-        try:
-            began_at = telemetry_schema.get_session_began_at(
-                telemetry_schema.session_meta_path(session_id, args.state_dir)
-            )
-            elapsed_seconds = _compute_elapsed(began_at, timestamp)
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        began_at = _guarded_state_op(
+            telemetry_schema.resolve_and_clear_session_began_at,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+        )
+        elapsed_seconds = _compute_elapsed(began_at, timestamp)
 
     event = telemetry_schema.build_event(
         "session.end",
@@ -173,12 +192,13 @@ def cmd_agent_begin(args):
     timestamp = datetime.now(timezone.utc).isoformat()
 
     if session_id != telemetry_schema.UNKNOWN and agent_id != telemetry_schema.UNKNOWN:
-        try:
-            telemetry_schema.record_agent_began_at(
-                telemetry_schema.session_meta_path(session_id, args.state_dir), agent_id, timestamp
-            )
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        _guarded_state_op(
+            telemetry_schema.record_agent_began_at,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+            agent_id,
+            timestamp,
+        )
 
     event = telemetry_schema.build_event(
         "agent.begin",
@@ -216,13 +236,13 @@ def cmd_agent_end(args):
 
     elapsed_seconds = telemetry_schema.UNKNOWN
     if session_id != telemetry_schema.UNKNOWN and agent_id != telemetry_schema.UNKNOWN:
-        try:
-            began_at = telemetry_schema.resolve_and_clear_agent_began_at(
-                telemetry_schema.session_meta_path(session_id, args.state_dir), agent_id
-            )
-            elapsed_seconds = _compute_elapsed(began_at, timestamp)
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        began_at = _guarded_state_op(
+            telemetry_schema.resolve_and_clear_agent_began_at,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+            agent_id,
+        )
+        elapsed_seconds = _compute_elapsed(began_at, timestamp)
 
     event = telemetry_schema.build_event(
         "agent.end",
@@ -249,22 +269,17 @@ def cmd_command_begin(args):
     timestamp = datetime.now(timezone.utc).isoformat()
 
     # Opportunistic cleanup of stale state files (24h cutoff)
-    try:
-        telemetry_schema.prune_stale_state(args.state_dir)
-    except (OSError, PermissionError) as e:
-        print(f"telemetry: state access failed: {e}", file=sys.stderr)
+    _guarded_state_op(telemetry_schema.prune_stale_state, args.state_dir)
 
     # Write state file if session_id is known
     if session_id != telemetry_schema.UNKNOWN:
-        try:
-            telemetry_schema.init_command_state(
-                telemetry_schema.state_path(session_id, args.state_dir),
-                command_id,
-                args.command,
-                timestamp,
-            )
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        _guarded_state_op(
+            telemetry_schema.init_command_state,
+            telemetry_schema.state_path(session_id, args.state_dir),
+            command_id,
+            args.command,
+            timestamp,
+        )
 
     event = telemetry_schema.build_event(
         "command.begin",
@@ -386,13 +401,17 @@ def cmd_command_end(args):
     state_mismatch = None
     elapsed_seconds = telemetry_schema.UNKNOWN
     if session_id != telemetry_schema.UNKNOWN:
-        try:
-            command_id, state_mismatch, _, began_at = telemetry_schema.resolve_and_clear_command_state(
-                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.command
-            )
-            elapsed_seconds = _compute_elapsed(began_at, timestamp)
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        resolution = _guarded_state_op(
+            telemetry_schema.resolve_and_clear_command_state,
+            telemetry_schema.state_path(session_id, args.state_dir),
+            args.command_id,
+            args.command,
+        )
+        if resolution is not None:
+            command_id, state_mismatch, _, began_at = resolution
+            # Only compute elapsed_seconds if there's no state mismatch
+            if state_mismatch is None:
+                elapsed_seconds = _compute_elapsed(began_at, timestamp)
     if args.command_id:
         command_id = args.command_id
     if not command_id:
@@ -430,12 +449,16 @@ def cmd_stage_begin(args):
 
     command_id = telemetry_schema.UNKNOWN
     if session_id != telemetry_schema.UNKNOWN:
-        try:
-            command_id = telemetry_schema.resolve_and_set_stage_state(
-                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, stage_id, args.stage, timestamp
-            )
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        resolved_cmd_id = _guarded_state_op(
+            telemetry_schema.resolve_and_set_stage_state,
+            telemetry_schema.state_path(session_id, args.state_dir),
+            args.command_id,
+            stage_id,
+            args.stage,
+            timestamp,
+        )
+        if resolved_cmd_id is not None:
+            command_id = resolved_cmd_id
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
 
@@ -479,13 +502,18 @@ def cmd_stage_end(args):
     state_mismatch = None
     elapsed_seconds = telemetry_schema.UNKNOWN
     if session_id != telemetry_schema.UNKNOWN:
-        try:
-            command_id, stage_id, state_mismatch, began_at = telemetry_schema.resolve_and_clear_stage_state(
-                telemetry_schema.state_path(session_id, args.state_dir), args.command_id, args.stage_id, args.stage
-            )
-            elapsed_seconds = _compute_elapsed(began_at, timestamp)
-        except (OSError, PermissionError) as e:
-            print(f"telemetry: state access failed: {e}", file=sys.stderr)
+        resolution = _guarded_state_op(
+            telemetry_schema.resolve_and_clear_stage_state,
+            telemetry_schema.state_path(session_id, args.state_dir),
+            args.command_id,
+            args.stage_id,
+            args.stage,
+        )
+        if resolution is not None:
+            command_id, stage_id, state_mismatch, began_at = resolution
+            # Only compute elapsed_seconds if there's no state mismatch
+            if state_mismatch is None:
+                elapsed_seconds = _compute_elapsed(began_at, timestamp)
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
     if not stage_id:

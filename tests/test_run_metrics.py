@@ -8,6 +8,7 @@ and the diagnose command's match rate calculation.
 Run with: python3 tests/test_run_metrics.py
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -872,6 +873,9 @@ def test_missing_state_file_degrades_to_unknown():
         if event.get("command_id") != "unknown":
             return False, f"command_id should be 'unknown', got: {event.get('command_id')}"
 
+        if event.get("elapsed_seconds") != "unknown":
+            return False, f"elapsed_seconds should be 'unknown' when no state, got: {event.get('elapsed_seconds')}"
+
         return True, ""
 
 
@@ -932,6 +936,9 @@ def test_stage_name_mismatch_sets_flag():
         if stage_end_event.get("command_id") != cmd_id_from_begin:
             return False, f"stage_id mismatch should not corrupt command ID: {stage_end_event.get('command_id')} vs {cmd_id_from_begin}"
 
+        if stage_end_event.get("elapsed_seconds") != "unknown":
+            return False, f"elapsed_seconds should be 'unknown' when stage name mismatches, got: {stage_end_event.get('elapsed_seconds')}"
+
         return True, ""
 
 
@@ -980,6 +987,9 @@ def test_command_name_mismatch_sets_flag():
         # Verify that command_id still matches the begin event
         if cmd_end_event.get("command_id") != cmd_id_from_begin:
             return False, f"command name mismatch should not corrupt command ID: {cmd_end_event.get('command_id')} vs {cmd_id_from_begin}"
+
+        if cmd_end_event.get("elapsed_seconds") != "unknown":
+            return False, f"elapsed_seconds should be 'unknown' when command name mismatches, got: {cmd_end_event.get('elapsed_seconds')}"
 
         return True, ""
 
@@ -1923,6 +1933,69 @@ def test_compute_stale_recent_split_returns_named_structure():
         sys.path.pop(0)
 
 
+def test_compute_elapsed_missing_began_at():
+    """_compute_elapsed returns UNKNOWN when began_at is None or falsy."""
+    # Import run_metrics to test _compute_elapsed directly
+    run_metrics_path = REPO_ROOT / "scripts" / "run-metrics.py"
+    spec = importlib.util.spec_from_file_location("run_metrics", run_metrics_path)
+    run_metrics_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_metrics_module)
+
+    # Test None
+    result = run_metrics_module._compute_elapsed(None, "2026-08-26T12:00:10Z")
+    if result != run_metrics_module.telemetry_schema.UNKNOWN:
+        return False, f"expected UNKNOWN for None began_at, got {result!r}"
+
+    # Test empty string
+    result = run_metrics_module._compute_elapsed("", "2026-08-26T12:00:10Z")
+    if result != run_metrics_module.telemetry_schema.UNKNOWN:
+        return False, f"expected UNKNOWN for empty began_at, got {result!r}"
+
+    return True, ""
+
+
+def test_compute_elapsed_unparseable_began_at():
+    """_compute_elapsed returns UNKNOWN when began_at is not parseable."""
+    run_metrics_path = REPO_ROOT / "scripts" / "run-metrics.py"
+    spec = importlib.util.spec_from_file_location("run_metrics", run_metrics_path)
+    run_metrics_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_metrics_module)
+
+    result = run_metrics_module._compute_elapsed("not-a-timestamp", "2026-08-26T12:00:10Z")
+    if result != run_metrics_module.telemetry_schema.UNKNOWN:
+        return False, f"expected UNKNOWN for unparseable began_at, got {result!r}"
+
+    return True, ""
+
+
+def test_compute_elapsed_unparseable_end_timestamp():
+    """_compute_elapsed returns UNKNOWN when end_timestamp is not parseable."""
+    run_metrics_path = REPO_ROOT / "scripts" / "run-metrics.py"
+    spec = importlib.util.spec_from_file_location("run_metrics", run_metrics_path)
+    run_metrics_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_metrics_module)
+
+    result = run_metrics_module._compute_elapsed("2026-08-26T12:00:00Z", "not-a-timestamp")
+    if result != run_metrics_module.telemetry_schema.UNKNOWN:
+        return False, f"expected UNKNOWN for unparseable end_timestamp, got {result!r}"
+
+    return True, ""
+
+
+def test_compute_elapsed_negative_delta():
+    """_compute_elapsed returns UNKNOWN when end is before begin (negative delta)."""
+    run_metrics_path = REPO_ROOT / "scripts" / "run-metrics.py"
+    spec = importlib.util.spec_from_file_location("run_metrics", run_metrics_path)
+    run_metrics_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_metrics_module)
+
+    result = run_metrics_module._compute_elapsed("2026-08-26T12:00:10Z", "2026-08-26T12:00:00Z")
+    if result != run_metrics_module.telemetry_schema.UNKNOWN:
+        return False, f"expected UNKNOWN for negative delta, got {result!r}"
+
+    return True, ""
+
+
 def test_begin_events_have_unknown_elapsed_seconds():
     """*.begin events always have elapsed_seconds == 'unknown' (nothing to measure yet)."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1955,11 +2028,16 @@ def test_stage_end_computes_elapsed_seconds():
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "s"], env=env)
         time.sleep(1.1)
-        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "s", "--outcome", "success"], env=env)
+        code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "s", "--outcome", "success"], env=env)
+
+        if code != 0:
+            return False, f"stage-end failed: exit {code}, stderr: {stderr}"
 
         with open(log_path) as f:
             events = [json.loads(line) for line in f if line.strip()]
-        stage_end = next(e for e in events if e["event_type"] == "stage.end")
+        stage_end = next((e for e in events if e["event_type"] == "stage.end"), None)
+        if stage_end is None:
+            return False, "no stage.end event found in log"
 
         elapsed = stage_end.get("elapsed_seconds")
         if not isinstance(elapsed, int) or elapsed < 1:
@@ -1978,11 +2056,16 @@ def test_command_end_computes_elapsed_seconds():
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "c"], env=env)
         time.sleep(1.1)
-        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)
+        code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)
+
+        if code != 0:
+            return False, f"command-end failed: exit {code}, stderr: {stderr}"
 
         with open(log_path) as f:
             events = [json.loads(line) for line in f if line.strip()]
-        command_end = next(e for e in events if e["event_type"] == "command.end")
+        command_end = next((e for e in events if e["event_type"] == "command.end"), None)
+        if command_end is None:
+            return False, "no command.end event found in log"
 
         elapsed = command_end.get("elapsed_seconds")
         if not isinstance(elapsed, int) or elapsed < 1:
@@ -2003,11 +2086,16 @@ def test_agent_end_computes_elapsed_seconds():
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"], stdin_text=begin_payload)
         time.sleep(1.1)
-        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=end_payload)
+        code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=end_payload)
+
+        if code != 0:
+            return False, f"agent-end failed: exit {code}, stderr: {stderr}"
 
         with open(log_path) as f:
             events = [json.loads(line) for line in f if line.strip()]
-        agent_end = next(e for e in events if e["event_type"] == "agent.end")
+        agent_end = next((e for e in events if e["event_type"] == "agent.end"), None)
+        if agent_end is None:
+            return False, "no agent.end event found in log"
 
         elapsed = agent_end.get("elapsed_seconds")
         if not isinstance(elapsed, int) or elapsed < 1:
@@ -2027,11 +2115,16 @@ def test_session_end_computes_elapsed_seconds():
 
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-begin"], stdin_text=payload)
         time.sleep(1.1)
-        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-end"], stdin_text=payload)
+        code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "session-end"], stdin_text=payload)
+
+        if code != 0:
+            return False, f"session-end failed: exit {code}, stderr: {stderr}"
 
         with open(log_path) as f:
             events = [json.loads(line) for line in f if line.strip()]
-        session_end = next(e for e in events if e["event_type"] == "session.end")
+        session_end = next((e for e in events if e["event_type"] == "session.end"), None)
+        if session_end is None:
+            return False, "no session.end event found in log"
 
         elapsed = session_end.get("elapsed_seconds")
         if not isinstance(elapsed, int) or elapsed < 1:
@@ -2065,11 +2158,16 @@ def test_agent_elapsed_survives_command_end():
         run_script(["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "c", "--outcome", "success"], env=env)
 
         agent_end_payload = json.dumps({"session_id": session_id, "agent_id": "a1", "agent_type": "t"})
-        run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=agent_end_payload)
+        code, stdout, stderr = run_script(["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"], stdin_text=agent_end_payload)
+
+        if code != 0:
+            return False, f"agent-end failed: exit {code}, stderr: {stderr}"
 
         with open(log_path) as f:
             events = [json.loads(line) for line in f if line.strip()]
-        agent_end = next(e for e in events if e["event_type"] == "agent.end")
+        agent_end = next((e for e in events if e["event_type"] == "agent.end"), None)
+        if agent_end is None:
+            return False, "no agent.end event found in log"
 
         elapsed = agent_end.get("elapsed_seconds")
         if not isinstance(elapsed, int) or elapsed < 1:
@@ -2255,6 +2353,18 @@ if __name__ == "__main__":
     print()
 
     print("[Section 11] elapsed_seconds computation")
+    passed, msg = test_compute_elapsed_missing_began_at()
+    test_result("_compute_elapsed returns UNKNOWN for missing began_at", passed, msg)
+
+    passed, msg = test_compute_elapsed_unparseable_began_at()
+    test_result("_compute_elapsed returns UNKNOWN for unparseable began_at", passed, msg)
+
+    passed, msg = test_compute_elapsed_unparseable_end_timestamp()
+    test_result("_compute_elapsed returns UNKNOWN for unparseable end_timestamp", passed, msg)
+
+    passed, msg = test_compute_elapsed_negative_delta()
+    test_result("_compute_elapsed returns UNKNOWN for negative delta (end before begin)", passed, msg)
+
     passed, msg = test_begin_events_have_unknown_elapsed_seconds()
     test_result("*.begin events have elapsed_seconds='unknown'", passed, msg)
 
