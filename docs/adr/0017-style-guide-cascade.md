@@ -80,8 +80,5 @@ The `prompts/peer-merge.md` prompt (`peer-merge` agent) is a latency-optimized, 
 - **Good:** Tone is separate from reviewer personas and preferences, keeping each dimension focused.
 - **Cost:** Three files could now hold tone-related data: `style-guide.json`, `preferences.yaml`, and reviewer persona bodies. Convention: genuine tone examples and patterns in `style-guide.json`, emphasis/framing lens in `preferences.yaml`, reviewer-specific guidance in persona YAML.
 - **Constraint:** Since `style-guide.json` is loaded by `/pr-comment-guide` on every run, file I/O is unavoidable. But the cascade is two files max, so the cost is predictable.
-
-## Cross-references
-
-- [ADR-0005](0005-three-layer-context-cascade.md) — the reviewer-context cascade (four layers, separate from this tone cascade)
-- [ADR-0007](0007-triage-and-decision-memory.md) — decision memory and the precedent for human-confirmed auto-generated config
+- **See also:** [ADR-0005](0005-three-layer-context-cascade.md) — the reviewer-context cascade (four layers, separate from this tone cascade)
+- **See also:** [ADR-0007](0007-triage-and-decision-memory.md) — decision memory and the precedent for human-confirmed auto-generated config
