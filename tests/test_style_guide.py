@@ -121,16 +121,16 @@ t("style-guide.json toneNotes is non-empty",
   len(style_guide.get("toneNotes", [])) > 0,
   "toneNotes array is empty")
 
-# Check for "instacart" (employer name) in examples or toneNotes
+# Regression guard: literal keyword "instacart" (a previously-leaked employer name) must not reappear in examples or toneNotes — not a general employer-name detector
 examples_text = " ".join(style_guide.get("examples", []))
 toneNotes_text = " ".join(style_guide.get("toneNotes", []))
-t("no 'instacart' in examples",
+t("no 'instacart' literal keyword regression in examples",
   "instacart" not in examples_text.lower(),
-  "Found employer name 'instacart' in examples — must be genericized")
+  "Regression: employer name 'instacart' literal reappeared in examples — must be genericized")
 
-t("no 'instacart' in toneNotes",
+t("no 'instacart' literal keyword regression in toneNotes",
   "instacart" not in toneNotes_text.lower(),
-  "Found employer name 'instacart' in toneNotes — must be genericized")
+  "Regression: employer name 'instacart' literal reappeared in toneNotes — must be genericized")
 
 # ============================================================================
 # STYLE-GUIDE.JSON.TEMPLATE
@@ -247,14 +247,14 @@ t("allowed-tools restricts gh to read-only subcommands",
   "Frontmatter should not grant unscoped Bash(gh api:*), Bash(gh pr:*), or Bash(gh:*) — only specific read operations like Bash(gh api user*), Bash(gh search prs*), Bash(gh api graphql*)")
 
 # Additionally verify command body doesn't contain destructive operations
-destructive_patterns = [
-    r"gh\s+pr\s+merge",
-    r"gh\s+api\s+graphql\s+-f\s+query=.*mutation",
-    r"--method\s+DELETE",
-    r"--method\s+PATCH",
-    r"--method\s+POST"
+destructive_patterns_with_flags = [
+    (r"gh\s+pr\s+merge", re.IGNORECASE),
+    (r"gh\s+api\s+graphql\s+-f\s+query=['\"][^'\"]*mutation", re.IGNORECASE | re.DOTALL),
+    (r"--method\s+DELETE", re.IGNORECASE),
+    (r"--method\s+PATCH", re.IGNORECASE),
+    (r"--method\s+POST", re.IGNORECASE)
 ]
-has_destructive = any(re.search(pattern, GENERATE_STYLE_GUIDE, re.IGNORECASE) for pattern in destructive_patterns)
+has_destructive = any(re.search(pattern, GENERATE_STYLE_GUIDE, flags) for pattern, flags in destructive_patterns_with_flags)
 t("command body contains no destructive operations",
   not has_destructive,
   "Command should not include destructive operations like 'gh pr merge' or 'gh api graphql' mutations")
