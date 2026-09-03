@@ -227,12 +227,13 @@ When a `CLAUDE_CODE_SESSION_ID` environment variable is set (always true in Clau
 
 ```json
 {
+  "session_id": "session-id or null",
   "session_began_at": "ISO timestamp or null",
-  "agents": {"<agent_id>": "ISO timestamp", "...": "..."}
+  "agents": {"<agent_id>": {"session_id": "session-id", "began_at": "ISO timestamp"}, "...": "..."}
 }
 ```
 
-This is deliberately not the same file: `command-end` deletes the state file wholesale on every command, and doing the same to session/agent timing would wipe an in-flight agent's `began_at` the moment its parent command finished (agents can outlive the command that spawned them). `agents` is a dict keyed by `agent_id` — unlike the single-slot `stage_id`/`command_id` fields, multiple agents can be in flight concurrently within one session without clobbering each other.
+This is deliberately not the same file: `command-end` deletes the state file wholesale on every command, and doing the same to session/agent timing would wipe an in-flight agent's `began_at` the moment its parent command finished (agents can outlive the command that spawned them). `agents` is a dict keyed by `agent_id` — unlike the single-slot `stage_id`/`command_id` fields, multiple agents can be in flight concurrently within one session without clobbering each other. Each stored value (both the top-level `session_id` and each `agents` entry's `session_id`) exists to back a genuine-match CAS guard, mirroring the command/stage path below: `session-end` only returns `session_began_at` and deletes this file when the file's recorded `session_id` equals the session_id it was called with, and `agent-end` only returns an agent's `began_at` when that agent's stored `session_id` matches — otherwise the read is refused (returns nothing usable) and a warning is logged to stderr, and the file/entry is left as-is (session) or popped without being trusted (agent). This guards against session IDs containing characters outside `session_meta_path`'s filename-safe set, which all collide onto the same `unknown.session.json` file. `session-end`'s file deletion on a genuine match also sweeps any orphaned `agents` entries left behind by an agent whose `agent-end` never fired — a session ending is that file's natural end of life.
 
 ### ID Resolution (Precedence)
 
@@ -250,6 +251,8 @@ If `stage-end` or `command-end` is called with a stage/command name that does no
 
 - `stage-begin --stage foo` followed by `stage-end --stage bar` (without explicit `--stage-id`) → `state_mismatch: true`
 - `command-begin --command shipit` followed by `command-end --command expert-review` (without explicit `--command-id`) → `state_mismatch: true`
+
+Whenever `state_mismatch` is set to `true`, `elapsed_seconds` is also forced to `"unknown"` even though the underlying command_id/stage_id still resolved via a genuine match — a name mismatch signals that the caller and the state file disagree about what lifecycle is actually running, so the state's timestamp is no longer trusted enough to report as this event's duration.
 
 ### Degradation When Session Unknown
 
