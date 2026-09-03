@@ -52,7 +52,8 @@ to North Star Nick).
 - [ADR-0017: Portable tone/style guide (style-guide.json)](0017-style-guide-cascade.md) — a
   two-layer cascade for capturing and sharing personal PR comment tone; separate from ADR-0005's
   reviewer-context cascade; `/generate-style-guide` auto-discovers tone from review history with
-  human confirmation before writing (ADR-0007 precedent)
+  human confirmation before writing (continues ADR-0007's confirm-before-write pattern for
+  `decisions.yaml`, which was itself always human-confirmed, not reverted for being unconfirmed)
 
 ## Format
 

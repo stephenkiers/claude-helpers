@@ -92,8 +92,9 @@ common — used by `/pr-comment-guide` to model tone when drafting PR comments. 
 the box with a sensible default before you personalize it; load the default via a two-layer cascade
 (personal file → shipped default) so you're never blocked. Generate a personal style guide via
 `/generate-style-guide`, which analyzes your review history and asks for confirmation before writing,
-or manually copy `prompts/style-guide.json.template` and edit it. See [ADR-0017](docs/adr/0017-style-guide-cascade.md)
-for the design and why this is separate from the reviewer-context cascade.
+or manually copy `prompts/style-guide.json.template` and edit it. See
+[ADR-0017 Style guide cascade](docs/adr/0017-style-guide-cascade.md) for the design and why this is
+separate from the reviewer-context cascade.
 
 ## Commands
 

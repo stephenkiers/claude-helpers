@@ -58,7 +58,7 @@ Unlike `preferences.yaml` (auto-copied from its template on setup — see ADR-00
 
 `/generate-style-guide` is a command that searches the user's PR review history, extracts representative comments, distills them into examples and tone notes, and presents the draft to the user for confirmation before writing. This is the **load-bearing safeguard** — because the resulting file shapes how `/pr-comment-guide` models tone, and auto-appended machine files that influence review behavior must be human-reviewed first.
 
-This is direct lineage from ADR-0007's lesson: this repo once tried an auto-appended `decisions.yaml` file and reverted it in favor of hand-authored/confirmed config. The philosophy is the same: machines can draft and propose, but humans confirm before a tool starts shaping review behavior.
+This continues the confirm-before-write pattern ADR-0007 established for `decisions.yaml`: escalation answers only ever landed in `decisions.yaml` after a human confirmed them via `AskUserQuestion` — that file was human-confirmed from inception, not reverted for being unconfirmed. (`decisions.yaml` was later removed in chore/29, for unrelated maintenance-cost reasons — see ADR-0007's amendment.) The philosophy here is the same: machines can draft and propose, but humans confirm before a tool starts shaping review behavior.
 
 ### Why not in the reviewer-context cascade?
 
