@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "source": "default",
+  "generatedAt": null,
+  "scope": null,
+  "examples": [
+    "This has no test coverage? Can we add coverage for it?",
+    "Is this safe? It is pulling third party js into our checkout page... has security signed off on this?",
+    "Is there a way to validate the integrity, or simply use our own CDN?",
+    "Can we add `.replace(/'/g, \"&#39;\")` to harden the guard",
+    "Was this supposed to be checked in?",
+    "I am confused why some things use translations, some things are hard coded strings, and if these are all by design?"
+  ],
+  "toneNotes": [
+    "Prefer a question over an assertion—ask what matters rather than declaring a problem.",
+    "No hedging, no preamble (no 'I know this is out of scope but'), no hypotheticals—just the observation or the ask.",
+    "Name the fix directly when it's obvious; don't justify it or build a case for why it matters.",
+    "No reviewer attribution ('three of us think') and no re-explaining what the author already knows.",
+    "Terse and collegial—usually one or two sentences, enough for the author to know what you mean."
+  ]
+}

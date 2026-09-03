@@ -21,6 +21,10 @@ Runs `./install.sh` from the repo root, which:
 - Prunes stale symlinks that point into this repo (dangling links or non-regular-file targets).
 - Creates `~/.claude/preferences.yaml` from `prompts/preferences.yaml.template` if missing
   (never overwrites an existing file).
+- Symlinks `prompts/style-guide.json` (the shipped default) into `~/.claude/prompts/style-guide.json`
+  like any other file under `prompts/`; note that `~/.claude/style-guide.json` (the personal style
+  guide) is never auto-created from a template (unlike preferences.yaml), only via `/generate-style-guide`
+  or manual copying of `prompts/style-guide.json.template`.
 - Registers telemetry hooks in `~/.claude/settings.json` (opt-in via `--with-telemetry`; see below).
 
 Because these are file-level symlinks (not directory symlinks), you can drop your own personal or
