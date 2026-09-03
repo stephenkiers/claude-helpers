@@ -1187,6 +1187,422 @@ def test_validate_checks_all_valid_keys():
     return True, ""
 
 
+# ============================================================================
+# Session/Agent state management tests (new in this pass)
+# ============================================================================
+
+
+def test_init_session_state_stores_session_id_and_began_at():
+    """init_session_state stores both session_id and session_began_at."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        # Read file back
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("session_id") != session_id:
+            return False, f"session_id not stored correctly: {state}"
+        if state.get("session_began_at") != began_at:
+            return False, f"session_began_at not stored correctly: {state}"
+
+        return True, ""
+
+
+def test_init_session_state_preserves_agents_on_repeat_call():
+    """init_session_state preserves existing agents dict on repeat calls."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        began_at1 = "2026-08-26T12:00:00Z"
+        began_at2 = "2026-08-26T12:05:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # First call
+        telemetry_schema.init_session_state(state_path, session_id, began_at1)
+
+        # Manually add an agent entry to the state file
+        def add_agent(state):
+            if "agents" not in state:
+                state["agents"] = {}
+            state["agents"]["agent-1"] = {"session_id": session_id, "began_at": "2026-08-26T12:00:30Z"}
+            return state
+
+        telemetry_schema.load_and_update_state(state_path, add_agent)
+
+        # Second call (repeat) with different began_at
+        telemetry_schema.init_session_state(state_path, session_id, began_at2)
+
+        # Read file back
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        # Check that session_began_at was updated to began_at2
+        if state.get("session_began_at") != began_at2:
+            return False, f"session_began_at not updated: {state}"
+
+        # Check that agents dict was preserved
+        if "agents" not in state or "agent-1" not in state.get("agents", {}):
+            return False, f"agents dict not preserved on repeat call: {state}"
+
+        if state["agents"]["agent-1"].get("began_at") != "2026-08-26T12:00:30Z":
+            return False, f"agent entry was modified: {state}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_session_began_at_returns_when_session_id_matches():
+    """resolve_and_clear_session_began_at returns began_at when session_id matches."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        # Call resolve_and_clear with matching session_id
+        result = telemetry_schema.resolve_and_clear_session_began_at(state_path, session_id)
+
+        if result != began_at:
+            return False, f"expected {began_at}, got {result}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_session_began_at_returns_none_on_mismatch():
+    """resolve_and_clear_session_began_at returns None when session_id doesn't match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        other_session_id = "test-session-456"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        # Call resolve_and_clear with mismatched session_id
+        result = telemetry_schema.resolve_and_clear_session_began_at(state_path, other_session_id)
+
+        if result is not None:
+            return False, f"expected None on mismatch, got {result}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_session_began_at_deletes_file_on_match():
+    """resolve_and_clear_session_began_at deletes the entire file on session_id match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        if not state_path.exists():
+            return False, "state file should exist before resolve_and_clear"
+
+        # Call resolve_and_clear with matching session_id
+        telemetry_schema.resolve_and_clear_session_began_at(state_path, session_id)
+
+        if state_path.exists():
+            return False, "state file should be deleted after resolve_and_clear with matching session_id"
+
+        return True, ""
+
+
+def test_resolve_and_clear_session_began_at_leaves_file_untouched_on_mismatch():
+    """resolve_and_clear_session_began_at leaves file untouched when session_id doesn't match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        other_session_id = "test-session-456"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        # Call resolve_and_clear with mismatched session_id
+        telemetry_schema.resolve_and_clear_session_began_at(state_path, other_session_id)
+
+        # File should still exist
+        if not state_path.exists():
+            return False, "file should still exist on session_id mismatch"
+
+        # Content should be unchanged
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("session_id") != session_id or state.get("session_began_at") != began_at:
+            return False, f"file content changed on mismatch: {state}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_session_began_at_sweeps_agents_on_delete():
+    """resolve_and_clear_session_began_at deletes orphaned agent entries when deleting the file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        # Add some agent entries
+        def add_agents(state):
+            if "agents" not in state:
+                state["agents"] = {}
+            state["agents"]["agent-1"] = {"session_id": session_id, "began_at": "2026-08-26T12:00:30Z"}
+            state["agents"]["agent-2"] = {"session_id": session_id, "began_at": "2026-08-26T12:00:45Z"}
+            return state
+
+        telemetry_schema.load_and_update_state(state_path, add_agents)
+
+        # Verify agents exist before deletion
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        if len(state.get("agents", {})) != 2:
+            return False, f"agents not stored: {state}"
+
+        # Call resolve_and_clear
+        telemetry_schema.resolve_and_clear_session_began_at(state_path, session_id)
+
+        # File should be deleted entirely (no agents left behind)
+        if state_path.exists():
+            return False, "file should be deleted, including all agent entries"
+
+        return True, ""
+
+
+def test_record_agent_began_at_stores_with_session_id():
+    """record_agent_began_at stores agent entry with session_id."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        agent_id = "agent-1"
+        began_at = "2026-08-26T12:00:30Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # Initialize session state first
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        # Record agent
+        telemetry_schema.record_agent_began_at(state_path, session_id, agent_id, began_at)
+
+        # Read file back
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if "agents" not in state or agent_id not in state["agents"]:
+            return False, f"agent not stored: {state}"
+
+        agent_entry = state["agents"][agent_id]
+        if agent_entry.get("session_id") != session_id:
+            return False, f"agent session_id not stored: {agent_entry}"
+        if agent_entry.get("began_at") != began_at:
+            return False, f"agent began_at not stored: {agent_entry}"
+
+        return True, ""
+
+
+def test_record_agent_began_at_overwrites_on_repeat():
+    """record_agent_began_at overwrites on repeat calls for same agent_id."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        agent_id = "agent-1"
+        began_at1 = "2026-08-26T12:00:30Z"
+        began_at2 = "2026-08-26T12:00:45Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # Initialize session state
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        # Record agent first time
+        telemetry_schema.record_agent_began_at(state_path, session_id, agent_id, began_at1)
+
+        # Record agent second time with different began_at
+        telemetry_schema.record_agent_began_at(state_path, session_id, agent_id, began_at2)
+
+        # Read file back
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        agent_entry = state["agents"][agent_id]
+        if agent_entry.get("began_at") != began_at2:
+            return False, f"agent began_at not updated on repeat: {agent_entry}"
+
+        # Should still have session_id
+        if agent_entry.get("session_id") != session_id:
+            return False, f"agent session_id lost on repeat: {agent_entry}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_agent_began_at_returns_when_session_id_matches():
+    """resolve_and_clear_agent_began_at returns began_at when session_id matches."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        agent_id = "agent-1"
+        began_at = "2026-08-26T12:00:30Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # Initialize session and record agent
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+        telemetry_schema.record_agent_began_at(state_path, session_id, agent_id, began_at)
+
+        # Call resolve_and_clear with matching session_id
+        result = telemetry_schema.resolve_and_clear_agent_began_at(state_path, session_id, agent_id)
+
+        if result != began_at:
+            return False, f"expected {began_at}, got {result}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_agent_began_at_returns_none_on_session_mismatch():
+    """resolve_and_clear_agent_began_at returns None when session_id doesn't match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        other_session_id = "test-session-456"
+        agent_id = "agent-1"
+        began_at = "2026-08-26T12:00:30Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # Initialize session and record agent
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+        telemetry_schema.record_agent_began_at(state_path, session_id, agent_id, began_at)
+
+        # Call resolve_and_clear with mismatched session_id
+        result = telemetry_schema.resolve_and_clear_agent_began_at(state_path, other_session_id, agent_id)
+
+        if result is not None:
+            return False, f"expected None on session mismatch, got {result}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_agent_began_at_pops_even_on_mismatch():
+    """resolve_and_clear_agent_began_at removes agent entry even when session_id doesn't match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        other_session_id = "test-session-456"
+        agent_id = "agent-1"
+        began_at = "2026-08-26T12:00:30Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # Initialize session and record agent
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+        telemetry_schema.record_agent_began_at(state_path, session_id, agent_id, began_at)
+
+        # Verify agent exists
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        if agent_id not in state.get("agents", {}):
+            return False, "agent should exist before resolve_and_clear"
+
+        # Call resolve_and_clear with mismatched session_id
+        telemetry_schema.resolve_and_clear_agent_began_at(state_path, other_session_id, agent_id)
+
+        # Agent should be removed even though session_id didn't match
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if agent_id in state.get("agents", {}):
+            return False, f"agent should be popped on resolve_and_clear even with session mismatch: {state}"
+
+        return True, ""
+
+
+def test_resolve_and_clear_agent_began_at_handles_old_format_string():
+    """resolve_and_clear_agent_began_at treats old-format string entries as no-match and pops them."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        agent_id = "agent-1"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # Initialize session
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        # Manually create an old-format string entry (simulating pre-change code)
+        def add_old_format_agent(state):
+            if "agents" not in state:
+                state["agents"] = {}
+            # Old format: just a string, not a dict
+            state["agents"][agent_id] = "2026-08-26T12:00:30Z"
+            return state
+
+        telemetry_schema.load_and_update_state(state_path, add_old_format_agent)
+
+        # Verify old format exists
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        if not isinstance(state["agents"][agent_id], str):
+            return False, f"old format not set up correctly: {state}"
+
+        # Call resolve_and_clear - should return None (no match for old format)
+        result = telemetry_schema.resolve_and_clear_agent_began_at(state_path, session_id, agent_id)
+
+        if result is not None:
+            return False, f"old-format string should be treated as no-match, but got: {result}"
+
+        # Entry should still be popped
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if agent_id in state.get("agents", {}):
+            return False, f"old-format string entry should be popped: {state}"
+
+        return True, ""
+
+
+def test_init_session_state_on_uninitialized_file():
+    """init_session_state creates file with session_id and began_at on first call."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "test-session-123"
+        began_at = "2026-08-26T12:00:00Z"
+
+        state_path = telemetry_schema.state_path(session_id, state_dir)
+
+        # File doesn't exist yet
+        if state_path.exists():
+            return False, "state file should not exist yet"
+
+        # Call init_session_state
+        telemetry_schema.init_session_state(state_path, session_id, began_at)
+
+        # Read file back
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        # Should have session_id and session_began_at
+        if state.get("session_id") != session_id:
+            return False, f"session_id not stored: {state}"
+        if state.get("session_began_at") != began_at:
+            return False, f"session_began_at not stored: {state}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -1441,6 +1857,52 @@ if __name__ == "__main__":
 
     passed, msg = test_load_and_update_state_with_locking()
     test_result("load_and_update_state maintains atomicity under concurrent access", passed, msg)
+
+    print()
+
+    # Session/Agent state management tests
+    print("[Section 9] Session/Agent state management")
+    passed, msg = test_init_session_state_stores_session_id_and_began_at()
+    test_result("init_session_state stores session_id and began_at", passed, msg)
+
+    passed, msg = test_init_session_state_preserves_agents_on_repeat_call()
+    test_result("init_session_state preserves agents on repeat call", passed, msg)
+
+    passed, msg = test_init_session_state_on_uninitialized_file()
+    test_result("init_session_state creates agents dict on new file", passed, msg)
+
+    passed, msg = test_resolve_and_clear_session_began_at_returns_when_session_id_matches()
+    test_result("resolve_and_clear_session_began_at returns when session_id matches", passed, msg)
+
+    passed, msg = test_resolve_and_clear_session_began_at_returns_none_on_mismatch()
+    test_result("resolve_and_clear_session_began_at returns None on mismatch", passed, msg)
+
+    passed, msg = test_resolve_and_clear_session_began_at_deletes_file_on_match()
+    test_result("resolve_and_clear_session_began_at deletes file on match", passed, msg)
+
+    passed, msg = test_resolve_and_clear_session_began_at_leaves_file_untouched_on_mismatch()
+    test_result("resolve_and_clear_session_began_at leaves file untouched on mismatch", passed, msg)
+
+    passed, msg = test_resolve_and_clear_session_began_at_sweeps_agents_on_delete()
+    test_result("resolve_and_clear_session_began_at sweeps agents on delete", passed, msg)
+
+    passed, msg = test_record_agent_began_at_stores_with_session_id()
+    test_result("record_agent_began_at stores agent with session_id", passed, msg)
+
+    passed, msg = test_record_agent_began_at_overwrites_on_repeat()
+    test_result("record_agent_began_at overwrites on repeat", passed, msg)
+
+    passed, msg = test_resolve_and_clear_agent_began_at_returns_when_session_id_matches()
+    test_result("resolve_and_clear_agent_began_at returns when session_id matches", passed, msg)
+
+    passed, msg = test_resolve_and_clear_agent_began_at_returns_none_on_session_mismatch()
+    test_result("resolve_and_clear_agent_began_at returns None on session mismatch", passed, msg)
+
+    passed, msg = test_resolve_and_clear_agent_began_at_pops_even_on_mismatch()
+    test_result("resolve_and_clear_agent_began_at pops even on session mismatch", passed, msg)
+
+    passed, msg = test_resolve_and_clear_agent_began_at_handles_old_format_string()
+    test_result("resolve_and_clear_agent_began_at handles old-format string entries", passed, msg)
 
     print()
 
