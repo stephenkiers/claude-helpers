@@ -95,7 +95,7 @@ test -f ~/.claude/style-guide.json && echo exists || echo none
 If it exists, read it and summarize for the user how it compares to the new draft — how many examples/toneNotes it currently has, and whether it looks hand-edited (`"source": "manual"` or missing `"source"`) vs. previously generated (`"source": "generated"`). If it looks hand-edited, say so explicitly: "Your current `~/.claude/style-guide.json` does not look machine-generated — overwriting it will discard any manual edits."
 
 Present the full draft to the user — all 6-12 examples and all tone notes — as a JSON preview (legible formatted JSON, not raw string dump). Explicitly state, naming the exact destination path and what happens to any existing file:
-> "This draft is derived from your actual review comments and shapes how `/pr-comment-guide` will model tone going forward. Please review for accuracy and sensitive content, then confirm to write it to `~/.claude/style-guide.json`[, replacing your existing file there — a backup will be saved to `~/.claude/style-guide.json.bak`]."
+> "This draft is derived from your actual review comments and shapes how `/pr-comment-guide` will model tone going forward. Please review for accuracy and sensitive content, then confirm to write it to `~/.claude/style-guide.json`[, replacing your existing file there — a backup will be saved to `~/.claude/style-guide.json.bak.<timestamp>`]."
 
 This is the **load-bearing safeguard** — machine-derived files that shape review tone must be human-reviewed before they're trusted. This continues the confirm-before-write pattern ADR-0007 established for `decisions.yaml`: that pattern was human-confirmed from inception, so this design doesn't fix a gap in it, it reuses it. Never auto-write without explicit confirmation.
 
@@ -141,7 +141,7 @@ If confirmed:
    EOF
    ```
 
-Report success, including whether a backup was made: "Wrote `~/.claude/style-guide.json` with 12 examples and 5 tone notes, scoped to ['acme/backend', 'acme/frontend']. Your previous file was backed up to `~/.claude/style-guide.json.bak`."
+Report success, including whether a backup was made: "Wrote `~/.claude/style-guide.json` with 12 examples and 5 tone notes, scoped to ['acme/backend', 'acme/frontend']. Your previous file was backed up to `~/.claude/style-guide.json.bak.<timestamp>`."
 
 ## Constraints
 

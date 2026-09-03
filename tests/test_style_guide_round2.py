@@ -176,10 +176,6 @@ t("Tone section says cascade chains regardless of failure mode",
 # ============================================================================
 print("\n[Finding 8] ADR-0017 format: no standalone Cross-references section")
 
-t("ADR-0017 has Consequences section",
-  "## Consequences" in ADR17,
-  "Expected '## Consequences' section not found")
-
 t("ADR-0017 cross-references (ADR-0005, ADR-0007) are in Consequences",
   re.search(r"## Consequences.*ADR-0005.*ADR-0007", ADR17, re.DOTALL) is not None,
   "Expected ADR-0005 and ADR-0007 cross-references in Consequences section")
