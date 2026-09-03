@@ -7,10 +7,14 @@
   "examples": [
     "REPLACE ME: paste one of your own real PR review comments here",
     "REPLACE ME: paste another representative example",
-    "REPLACE ME: add more examples (6-12 total, verbatim from your actual reviews)"
+    "REPLACE ME: add more examples (6-12 total, verbatim from your actual reviews)",
+    "REPLACE ME: keep going — the schema documented below expects at least 6",
+    "REPLACE ME: a fifth example",
+    "REPLACE ME: a sixth example — this is the documented minimum, add more if you have them"
   ],
   "toneNotes": [
     "REPLACE ME: describe a pattern these examples share (e.g., 'prefers questions over assertions')",
-    "REPLACE ME: add 2-5 more freeform notes about the tone/style these examples demonstrate"
+    "REPLACE ME: add 2-5 more freeform notes about the tone/style these examples demonstrate",
+    "REPLACE ME: a third note — this is the documented minimum, add up to 6 if useful"
   ]
 }
