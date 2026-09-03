@@ -410,9 +410,9 @@ t("template has 'version' field set to 1",
 print()
 print("[Tone Loading] pr-comment-guide.md mentions loading from examples array")
 
-t("pr-comment-guide.md loads the examples array from style-guide.json",
-  bool(re.search(r"[Ll]oad the `examples` array from your resolved `style-guide\.json`", PR_COMMENT_GUIDE)),
-  "Tone section should explicitly describe loading the examples array from style-guide.json")
+t("pr-comment-guide.md loads both examples and toneNotes arrays from style-guide.json",
+  bool(re.search(r"[Ll]oad.*both.*`examples`.*`toneNotes`|[Ll]oad and apply both `examples` and `toneNotes`", PR_COMMENT_GUIDE, re.IGNORECASE | re.DOTALL)),
+  "Tone section should explicitly describe loading both the examples and toneNotes arrays from style-guide.json")
 
 t("pr-comment-guide.md does not have hardcoded bullet list of comments",
   not bool(re.search(
@@ -443,19 +443,20 @@ t("command filters to author.login == $login",
   "author.login" in GENERATE_STYLE_GUIDE,
   "Must filter review comments to only the invoking user's own comments")
 
-_jq_filter_match = re.search(r'--jq \'(\[\.data\.repository[^\n]*\])\'', GENERATE_STYLE_GUIDE)
+_jq_arg_match = re.search(r'jq --arg login "{login}"', GENERATE_STYLE_GUIDE)
+_jq_filter_match = re.search(r'jq --arg login "{login}"\s+\'(\[[^\']+\])\'', GENERATE_STYLE_GUIDE)
 
 t("jq filter for author.login is present and extractable",
   _jq_filter_match is not None,
-  "Step 4's --jq filter should be present in the documented shape")
+  "Step 4's piped jq invocation with --arg binding should be present in the documented shape")
 
 if _jq_filter_match:
     _jq_filter = _jq_filter_match.group(1)
-    t("jq filter interpolates the resolved login, not a bare unbound $login",
-      "{login}" in _jq_filter and "$login" not in _jq_filter,
-      "The --jq filter must interpolate the resolved {login} placeholder directly "
-      "(consistent with {owner}/{repo}/{pr_number}) rather than reference an unbound $login, "
-      "which jq would not resolve and which would silently match nothing or error")
+    t("jq filter uses --arg bound $login variable, not bare string interpolation",
+      "$login" in _jq_filter and "select(.author.login == $login)" in GENERATE_STYLE_GUIDE,
+      "The jq filter must reference login as $login (bound via jq --arg), "
+      "following CLAUDE.md's shell-convention rule: never interpolate variables into --jq strings, "
+      "always bind them via jq --arg so jq owns the escaping")
 
 t("command filters noise, not comments by word count",
   bool(re.search(r"[Dd]rop noise, not short comments", GENERATE_STYLE_GUIDE))
