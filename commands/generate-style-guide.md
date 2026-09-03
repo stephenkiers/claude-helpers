@@ -36,11 +36,11 @@ For each scoped repo, search for PRs the user has commented on:
 gh search prs --repo {owner}/{repo} --commenter {login} --state all --limit 30
 ```
 
-Collect these PR URLs for the next step.
+Collect these PR URLs for the next step. If a given repo's search errors (e.g. repo not found, no access, API error), skip that repo and continue with the rest; note the count of skipped repos in the final report.
 
 ## Step 4: Fetch user's own review-thread comments
 
-Use the GraphQL API to fetch all review-thread comments on the found PRs, filtered client-side to your own comments only — never anyone else's:
+Use the GraphQL API to fetch all review-thread comments on the found PRs, filtered client-side to your own comments only — never anyone else's. **Before executing any `gh api graphql` call, verify the query string does not contain the literal keyword `mutation` (case-insensitive) — if it does, stop and report an error instead of executing.**
 
 ```bash
 gh api graphql -f query='
@@ -63,11 +63,11 @@ gh api graphql -f query='
       }
     }
   }
-' -f owner={owner} -f repo={repo} -F pr={pr_number} \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[] | select(.author.login == "{login}")]'
+' -f owner={owner} -f repo={repo} -F pr={pr_number} |
+jq --arg login "{login}" '[.data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[] | select(.author.login == $login)]'
 ```
 
-Adapt this pattern from `commands/pr-comments.md`'s GraphQL section for `reviewThreads`. `{login}` here is the value resolved in Step 1 — interpolate it directly into the `--jq` filter string exactly like `{owner}`/`{repo}`/`{pr_number}` above, so the comparison actually runs (a bare `$login` inside the `--jq` expression is not a bound variable and would silently match nothing, or error).
+Adapt this pattern from `commands/pr-comments.md`'s GraphQL section for `reviewThreads`. The GraphQL variables `{owner}`, `{repo}`, and `{pr_number}` are bound via `-f`/`-F` flags (proper GraphQL variable bindings), while `{login}` is bound via `jq --arg` so the shell/jq boundary is safe, following the established convention in CLAUDE.md.
 
 **This command is read-only.** Never construct or execute a GraphQL `mutation { ... }` operation — only the `query` shown above.
 
@@ -77,12 +77,12 @@ If a given PR's GraphQL fetch errors, skip that PR and continue with the rest; n
 
 Drop noise, not short comments: bot markers, exact "lgtm"/"nit"-only comments, and exact duplicates of another kept comment. Do **not** filter by word count — a load-bearing feature of this file is capturing the invoking user's actual tone, and short, direct comments (e.g. "why not just delete this?") are exactly the voice worth keeping. Keep only real code review observations/questions.
 
-If fewer than ~4-6 substantive comments survive this filter, tell the user explicitly (e.g. "Only 3 substantive comments found across the searched scope — style guide quality will be limited") and offer to widen scope (more repos, `--org`, or removing scope restrictions) rather than proceeding silently with too little material.
+If fewer than ~4-6 substantive comments survive this filter, tell the user explicitly (e.g. "Only 3 substantive comments found across 2 repos and 5 PRs searched — style guide quality will be limited") and offer to widen scope (more repos, `--org`, or removing scope restrictions) rather than proceeding silently with too little material.
 
 ## Step 6: LLM distillation step (in-conversation)
 
 Analyze the collected comments and:
-1. **Pick 6-12 representative examples** — verbatim or lightly trimmed (never rewritten into a different register). These should span different concern types (e.g., some are security-focused, some are architecture, some are testing) so the examples show your full review voice, not just one flavor.
+1. **Pick 6-12 representative examples** — or all surviving examples if fewer than 6 remain — verbatim or lightly trimmed (never rewritten into a different register). These should span different concern types (e.g., some are security-focused, some are architecture, some are testing) so the examples show your full review voice, not just one flavor.
 2. **Draft 3-6 `toneNotes`** — short freeform observations about what these examples have in common. Things like: "prefers questions over assertions," "no hedging or preamble," "names fixes directly," "no reviewer attribution," etc.
 3. **Flag and genericize sensitive content** — if any example contains employer names, internal URLs, proprietary jargon, or client names, explicitly call it out (e.g., "Example 4 references internal tool X—stripping it for portability"). Do this explicitly, never silently rewrite it. If an example is too tied to proprietary context to genericize cleanly, drop it and pick a different one.
 
@@ -107,8 +107,10 @@ If confirmed:
 
 1. **Back up any existing file first.** If `~/.claude/style-guide.json` exists:
    ```bash
-   cp ~/.claude/style-guide.json ~/.claude/style-guide.json.bak
+   timestamp=$(date +%s)
+   cp ~/.claude/style-guide.json ~/.claude/style-guide.json.bak.$timestamp || { echo "Backup failed — aborting"; exit 1; }
    ```
+   This timestamps the backup (e.g., `~/.claude/style-guide.json.bak.1725286245`) so repeated or interrupted runs don't clobber a prior backup. If `cp` fails, stop immediately and report the error rather than proceeding to overwrite.
 2. **Construct the JSON** with:
    - `"version": 1`
    - `"source": "generated"`
