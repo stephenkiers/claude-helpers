@@ -37,9 +37,9 @@ This applies equally to the `examples` and `toneNotes` arrays loaded from `style
 
 ## Tone
 
-> Load your personal tone and style guide from `~/.claude/style-guide.json` if it exists, otherwise from `~/.claude/prompts/style-guide.json` (the shipped default). The file contains real examples of your tone and freeform notes on what they have in common. If you haven't created a personal style guide yet, `/generate-style-guide` will analyze your review history and draft one for you (with confirmation before writing).
+> Load your personal tone and style guide from `~/.claude/style-guide.json` if it exists, otherwise from `~/.claude/prompts/style-guide.json` (the shipped default). These files contain real examples of your tone (`examples` array) and freeform notes on what they have in common (`toneNotes` array). If you haven't created a personal style guide yet, `/generate-style-guide` will analyze your review history and draft one for you (with confirmation before writing).
 >
-> **If neither file is present or readable**, do not fail — fall back to a small set of last-resort inline examples: "Is this safe?", "Can we add `.replace(...)`", "Why not just delete this?" Note in the output's Summary section that no style guide was found and comments were drafted from generic defaults, so the reader knows the tone wasn't personalized.
+> The cascade chains through three layers: (1) personal file, (2) shipped default file, (3) last-resort inline examples ("Is this safe?", "Can we add `.replace(...)`", "Why not just delete this?"). At any layer, if the file is missing, unreadable, or unparseable (invalid JSON), try the next layer. **Load and apply both `examples` and `toneNotes` together** from whichever layer succeeds. Skip any entry in either array that starts with "REPLACE ME" (case-insensitive) — that's unedited template placeholder text. If either array ends up empty after filtering, or either contains fewer than a handful of entries (roughly 4–6), proceed to the next layer. Note in the output's Summary section which cascade layer was used and why — "no style guide was found and comments were drafted from generic defaults" when using the inline layer, or "personal style guide's examples were empty/placeholder-only; shipped default was used instead" when falling back from personal to shipped default — so the reader knows how much the tone was personalized.
 
 **Terse, curious, direct. A real peer types one or two sentences — usually a question — and moves on.**
 
@@ -47,7 +47,7 @@ The default is **terse and collaborative.** A comment that lands in one line bea
 
 **Length follows facts.** Terseness is the default, not a hard cap. If there are concrete, non-obvious facts the author genuinely needs — a specific line the bug fires on, a reproduction, a value that proves the concern — include them; a few extra sentences earns its length. What to cut is *filler*, not *facts*: hedging, preamble, reviewer-attribution, re-explaining known code, hypothetical scenarios. When in doubt, shorter.
 
-Model your drafts on how a real reviewer actually comments. Load the `examples` array from your resolved `style-guide.json` file (personal or default) and notice the patterns these real examples share. Skip any `examples` or `toneNotes` entry that starts with "REPLACE ME" (case-insensitive) — that's unedited template placeholder text, not a real example. If filtering leaves the `examples` array empty, fall back to the shipped default `~/.claude/prompts/style-guide.json` instead of the personal file.
+Model your drafts on how a real reviewer actually comments. Apply the patterns from the `examples` and `toneNotes` arrays you loaded from the cascade above; notice what these real examples have in common.
 
 Notice what these do NOT do: no "I know this is out of scope but," no "would it be worth," no reviewer-attribution ("three of us landed on..."), no re-explaining what the function does, no "the day someone writes X." Observe these patterns in whatever examples are loaded from your style guide — they are the shared properties of real peer review comments.
 
