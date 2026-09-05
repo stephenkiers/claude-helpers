@@ -70,6 +70,29 @@ If the check passes, extract directives from the file's sections by matching lit
   this action plan still lack a recorded ruling and will be skipped: [titles]. Resolve them via
   /expert-review's ruling flow before re-running if you want them included.` Non-blocking — matches
   this command's existing "surface, don't block" pattern.
+
+**Severity extraction (new):** Alongside the above, extract the `Severity` field from each item for a
+count-by-severity tally:
+- **Doing it** table rows → read the `Severity` column directly (e.g., `HIGH`, `Medium`, `LOW`).
+- **STATUS: decided** or **STATUS: measured** items → read the inline `**Severity**: <value>` from the
+  item's `**Where**: path:line · **Severity**: HIGH · **Raised by**: Reviewer` line.
+- **STATUS: pending-decision** or **STATUS: pending-measurement** items → read the same inline
+  `**Severity**:` field, and collect both the finding title and severity for the exclusion warning.
+- **Normalization:** convert to uppercase (`Medium` → `MEDIUM`), strip trailing parentheticals (e.g.,
+  `HIGH (disputed; ...)` → `HIGH`). Any value outside `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` is treated
+  as unclassified (e.g., a row with `Severity: cluster` or `Severity: unassigned`); include it in the
+  item's processing but drop it from the per-severity tally to avoid breaking the count.
+
+**Severity counters (new):** Maintain two per-severity counters while building directives:
+- **Completed severities**: tally the `Severity` value for every `[accepted: doing-it]` or
+  `[decided: ruling recorded]` directive created (i.e., all items that actually became directives
+  per the rules above).
+- **Skipped-pending severities**: tally the `Severity` value for every `STATUS: pending-decision` or
+  `STATUS: pending-measurement` item excluded from directives (unrelated to the pending-exclusion
+  warning — this is a side count tracking the severity of work not yet approved).
+- Note: items with `STATUS: no-op` are excluded from both counters, consistent with them already
+  being excluded from directives entirely.
+
 - **Deferred** and the **gut check** section are never turned into directives.
 
 This parsed, tagged directive list becomes "the plan" fed into Step 3 ("Split the plan into work
@@ -946,6 +969,19 @@ across 2 parallel units; the round-2/round-3 fan-out ran concurrently and added 
 wall-clock despite 4:30 of combined agent compute").
 
 Then a one-line **experiment read**: which rounds and sweeps produced signal, which didn't.
+
+**Only when `PLAN_SOURCE=claude-action-plan`:** emit a one-line **severity recap**, tallying the
+completed and skipped-pending severities from the Step 1 count (omit zero-count severity values to
+keep it scannable). Examples:
+- All completed (no pending skips): `Action plan: (0 Critical, 9 High, 3 Medium, 8 Low) — all
+  completed.`
+- Partial with pending: `Action plan: (6 High, 3 Medium, 5 Low) completed, (3 Low) skipped — still
+  pending a ruling.`
+- If the Round 1 line shows `Failed: <c>` > 0, append to this sentence: ` Note: <c> round-1
+  unit(s) failed — some items above may not actually be applied; see ROUND 1 status.`
+
+For GitHub-issue or conversation-plan sources (where severity data is unavailable), **omit this
+sentence entirely** — no recap.
 
 Suggested next steps:
 - Review the diff and run `/expert-review`
