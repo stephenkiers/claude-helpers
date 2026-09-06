@@ -218,6 +218,15 @@ filesystem path. Use `python3`, `sed`, or a git command that answers the questio
 `tests/test_command_doc_shell_conventions.py` enforces this. Files in `prompts/` are exempt — they
 are lazy-loaded by path, never argument-substituted.
 
+**Never pipe a shell variable holding JSON through `echo "$VAR" | jq ...` (or `| python3 ...`).**
+In zsh, the `echo` builtin reinterprets backslash escapes (`\n`, `\"`, etc.) inside the string,
+silently corrupting valid JSON before the consumer ever sees it. Always use `printf '%s' "$VAR" | jq ...`
+(or `| python3 ...`) instead — `printf '%s'` performs no escape interpretation. This was
+independently discovered in `/track-and-start`'s use of the track-plan CLI, and `commands/track-and-start.md`
+already follows this convention everywhere it consumes CLI JSON output directly from the CLI
+(the `printf '%s' "$JSON_VAR" | jq` pattern) — this note exists so newly-written bash blocks
+(and the cache-merge idiom used elsewhere in that same file) don't regress it.
+
 ## Inspecting check-gate failures
 
 When a check gate (tests, lint, merge gate, CI) fails and output must be inspected to diagnose it,

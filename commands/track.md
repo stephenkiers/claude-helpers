@@ -86,7 +86,7 @@ EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 # Write to a temp file and mv on success so a jq failure never truncates the existing cache
 # (a bare `> github-cache.json` redirect truncates the file before jq runs).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
+printf '%s' "$EXISTING" | jq --arg branch "$(git branch --show-current)" \
   --argjson id "$ISSUE_NUM" \
   --arg title "$TITLE" \
   --arg plan "$PLAN_FILE" \
@@ -219,7 +219,7 @@ EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 # failure never truncates the existing cache (a bare `> github-cache.json` redirect
 # truncates the file before jq runs, even if jq then errors out).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --arg branch "$BRANCH" \
+printf '%s' "$EXISTING" | jq --arg branch "$BRANCH" \
   --argjson number "$ISSUE_NUM" \
   --arg url "$ISSUE_URL" \
   --arg title "$ISSUE_TITLE" \

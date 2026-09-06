@@ -501,7 +501,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage apply-cleanup
 
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-APPLY_RESULT=$(echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup apply -)
+APPLY_RESULT=$(printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup apply -)
 APPLY_RESULT_CODE=$?
 
 if [ $APPLY_RESULT_CODE -ne 0 ]; then
@@ -511,7 +511,7 @@ if [ $APPLY_RESULT_CODE -ne 0 ]; then
 fi
 
 # Extract validation status from result
-VALIDATION_STATUS=$(echo "$APPLY_RESULT" | jq -r '.validation_passed // true')
+VALIDATION_STATUS=$(printf '%s' "$APPLY_RESULT" | jq -r '.validation_passed // true')
 if [ "$VALIDATION_STATUS" = "true" ]; then
   echo "VALIDATION=pass — merged main is green"
 else
@@ -523,7 +523,7 @@ fi
 # (e.g. a worktree removal that had to be retried with --force). These are NOT
 # failures — they are kept out of validation_failures precisely so a recovered
 # cleanup is not reported as a failed one.
-echo "$APPLY_RESULT" | jq -r '.notes[]? | "NOTE: " + .'
+printf '%s' "$APPLY_RESULT" | jq -r '.notes[]? | "NOTE: " + .'
 
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage apply-cleanup --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage restack-children >/dev/null 2>&1 || true
@@ -555,14 +555,14 @@ if [ "$PR_STATE" = "MERGED" ]; then
   [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
 
   # Read stacked children from the plan (detected during plan_cleanup)
-  STACKED_CHILDREN=$(echo "$PLAN_JSON" | jq -r '.stacked_children // []')
-  CHILD_COUNT=$(echo "$STACKED_CHILDREN" | jq 'length')
-  GH_CHILD_LOOKUP_FAILED=$(echo "$PLAN_JSON" | jq -r '.gh_lookup_failed // false')
+  STACKED_CHILDREN=$(printf '%s' "$PLAN_JSON" | jq -r '.stacked_children // []')
+  CHILD_COUNT=$(printf '%s' "$STACKED_CHILDREN" | jq 'length')
+  GH_CHILD_LOOKUP_FAILED=$(printf '%s' "$PLAN_JSON" | jq -r '.gh_lookup_failed // false')
 
   # Build CHILD_BRANCHES in the same format as before: newline-separated "branch:pr:worktree" records
   CHILD_BRANCHES=""
   if [ "$CHILD_COUNT" -gt 0 ]; then
-    CHILD_BRANCHES=$(echo "$STACKED_CHILDREN" | jq -r '.[] | "\(.branch):\(.pr_number // ""):\(.worktree_path // "")"')
+    CHILD_BRANCHES=$(printf '%s' "$STACKED_CHILDREN" | jq -r '.[] | "\(.branch):\(.pr_number // ""):\(.worktree_path // "")"')
   fi
 
   if [ "$GH_CHILD_LOOKUP_FAILED" = "true" ]; then
@@ -578,7 +578,7 @@ if [ "$PR_STATE" = "MERGED" ]; then
     # Step 2.5's apply_cleanup already deleted the local $CURRENT_BRANCH ref, so a live
     # `git rev-parse "$CURRENT_BRANCH"` here would fail — use the HEAD SHA plan_cleanup
     # captured before any mutation ran instead.
-    MERGED_TIP=$(echo "$PLAN_JSON" | jq -r '.expected_head_sha // empty')
+    MERGED_TIP=$(printf '%s' "$PLAN_JSON" | jq -r '.expected_head_sha // empty')
     if [ -z "$MERGED_TIP" ]; then
       echo "ERROR: Could not capture the merged branch tip SHA. Cannot emit safe restack runbook."
       echo "Please retry /cleanup after the branch is re-created or manually perform restack."
