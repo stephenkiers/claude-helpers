@@ -237,7 +237,7 @@ Or (non-stacked):
 ```bash
 # Cache-first PR state check
 GITHUB_CACHE=$(cat "${CURRENT_WORKTREE}/.claude/github-cache.json" 2>/dev/null || echo '{}')
-CACHED_PR_STATE=$(echo "$GITHUB_CACHE" | jq -r '.pr.state // empty' 2>/dev/null)
+CACHED_PR_STATE=$(printf '%s' "$GITHUB_CACHE" | jq -r '.pr.state // empty' 2>/dev/null)
 
 if [ "$CACHED_PR_STATE" = "MERGED" ]; then
   PR_STATE="MERGED"
@@ -282,14 +282,14 @@ After confirming the issue is closed, update both caches.
 
 ```bash
 # Detect issue from worktree cache first, then branch name
-ISSUE_NUM=$(echo "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
+ISSUE_NUM=$(printf '%s' "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
 if [ -z "$ISSUE_NUM" ]; then
   # Strip any type prefix (feature/, fix/, chore/) before matching the leading number
   ISSUE_NUM=$(echo "$CURRENT_BRANCH" | sed 's|.*/||' | grep -oE '^[0-9]+' || echo "")
 fi
 
 # Check worktree cache for issue state
-CACHED_ISSUE_STATE=$(echo "$GITHUB_CACHE" | jq -r '.issue.state // empty' 2>/dev/null)
+CACHED_ISSUE_STATE=$(printf '%s' "$GITHUB_CACHE" | jq -r '.issue.state // empty' 2>/dev/null)
 
 if [ -n "$ISSUE_NUM" ]; then
   # Locate issues.json — layouts differ, so probe candidates in order:

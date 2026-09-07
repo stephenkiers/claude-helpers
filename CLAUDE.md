@@ -218,14 +218,14 @@ filesystem path. Use `python3`, `sed`, or a git command that answers the questio
 `tests/test_command_doc_shell_conventions.py` enforces this. Files in `prompts/` are exempt — they
 are lazy-loaded by path, never argument-substituted.
 
-**Never pipe a shell variable holding JSON through `echo "$VAR" | jq ...` (or `| python3 ...`).**
+**Never pipe a shell variable holding untrusted or externally-derived content through `echo "$VAR" | jq ...` (or `| python3 ...`).**
 In zsh, the `echo` builtin reinterprets backslash escapes (`\n`, `\"`, etc.) inside the string,
-silently corrupting valid JSON before the consumer ever sees it. Always use `printf '%s' "$VAR" | jq ...`
-(or `| python3 ...`) instead — `printf '%s'` performs no escape interpretation. This was
-independently discovered in `/track-and-start`'s use of the track-plan CLI, and `commands/track-and-start.md`
-already follows this convention everywhere it consumes CLI JSON output directly from the CLI
-(the `printf '%s' "$JSON_VAR" | jq` pattern) — this note exists so newly-written bash blocks
-(and the cache-merge idiom used elsewhere in that same file) don't regress it.
+silently corrupting JSON or other structured data before the consumer ever sees it. Always use `printf '%s' "$VAR" | jq ...`
+(or `| python3 ...`) instead — `printf '%s'` performs no escape interpretation. This issue was
+independently discovered in `/track-and-start`: its CLI JSON output consumption already used
+`printf '%s'` (the `printf '%s' "$JSON_VAR" | jq` pattern), but the disk-cache-merge idiom
+(reading `.claude/github-cache.json` from disk and merging it) needed fixing. This note exists
+so newly-written bash blocks don't regress the printf pattern.
 
 ## Inspecting check-gate failures
 
