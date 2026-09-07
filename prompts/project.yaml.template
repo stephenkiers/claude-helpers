@@ -6,6 +6,7 @@
 #
 # Referenced by:
 #   /expert-review          — techStack, adrs, invariants, redLines, fragility
+#   /expert-is-it-done      — isItDone
 #   /shipit                 — commands (overrides auto-detection)
 #   /expert-harden-types    — typeChecker, commands.typecheck
 #   /expert-harden-contracts — docStyle, commands.test
