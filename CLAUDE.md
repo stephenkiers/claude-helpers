@@ -126,6 +126,11 @@ separate from the reviewer-context cascade.
   history, capturing your actual PR comment tone (with human confirmation before writing).
 - `/expert-pre-mortem` — standalone fragility pre-mortem (Fragile Feynman)
 - `/expert-rebase` — rebase on origin/main; convene experts on conflicting hunks
+- `/expert-is-it-done` — post-merge definition-of-done audit: run after an epic/issue's PRs have
+  merged, checks E2E coverage gaps, overdue feature flags, loose ends (TODOs, stale caches), and a
+  lightweight `/expert-review --effort 2` second look per merged PR; reports Done/Missing/Deferred
+  buckets. Read-only and advisory — never edits code or creates issues without confirmation. Takes
+  an issue number, or auto-detects from `.claude/github-cache.json`.
 - `/review-stats` — **currently non-functional** (stub). The underlying ledger was removed in chore/29;
   see `commands/review-stats.md` and the ADR-0007 amendment.
 

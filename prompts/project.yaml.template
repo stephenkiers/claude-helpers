@@ -6,6 +6,7 @@
 #
 # Referenced by:
 #   /expert-review          — techStack, adrs, invariants, redLines, fragility
+#   /expert-is-it-done      — isItDone
 #   /shipit                 — commands (overrides auto-detection)
 #   /expert-harden-types    — typeChecker, commands.typecheck
 #   /expert-harden-contracts — docStyle, commands.test
@@ -112,3 +113,27 @@ terminology:
   tenant: "An organization account (not 'customer', 'client', or 'org')"
   workspace: "A sub-unit within a tenant (not 'project' or 'team')"
   event: "An internal domain event, not a webhook or external notification"
+
+# ─── Is It Done ────────────────────────────────────────────────────────────────
+# Used by /expert-is-it-done for its post-merge definition-of-done audit.
+# Both sub-sections are optional and independent — omit either to skip that check.
+isItDone:
+  e2eCoverage:
+    # Glob(s) for user-facing source files that should have E2E coverage.
+    componentGlobs:
+      - "src/components/**/*.tsx"
+    # E2E test file(s)/glob(s) to grep for references to each touched component's name.
+    testFiles:
+      - "tests/e2e/**/*.ts"
+  featureFlags:
+    # File containing the flag registry with per-flag cleanup dates.
+    registryFile: src/experimental_flags.rs
+    # Key/field name that carries the due-date value (compared against `date +%F`).
+    cleanupField: cleanup_by
+    # Other files that reference flags and should be checked alongside the registry
+    # (e.g. a cross-language mirror) — purely informational, listed in the report.
+    mirrorFiles:
+      - src/experimentalFlags.ts
+  # Glob(s) of planning docs to check for stale references to a closed issue.
+  planningDocsGlobs:
+    - "docs/planning/*.md"
