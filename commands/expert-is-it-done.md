@@ -2,7 +2,7 @@
 name: expert-is-it-done
 description: Post-merge definition-of-done audit — run after an epic/issue's PRs have already merged to main. Checks for E2E coverage gaps, overdue feature flags, a lightweight second-look quality pass, and loose ends (TODOs, stale caches). Read-only and advisory: never edits code, never mutates GitHub state, never creates issues without explicit confirmation.
 argument-hint: [issue number | issue URL]
-allowed-tools: Bash(gh issue view:*), Bash(gh pr list:*), Bash(grep:*), Bash(rg:*), Bash(date:*), Bash(jq:*), Read, Glob, Skill, Write, AskUserQuestion
+allowed-tools: Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(grep:*), Bash(rg:*), Bash(date:*), Bash(jq:*), Read, Glob, Skill, Write, AskUserQuestion
 ---
 
 # Is It Done?
@@ -66,14 +66,13 @@ to catch PRs linked via GitHub's structural close-reference mechanism:
 
 ```bash
 # Body-text search
-PR_LIST_JSON=$(gh pr list --search "$ISSUE_NUM in:body" --state merged \
-  --json number,title,url,baseRefName,headRefName,mergedAt,files 2>/dev/null)
-if [ $? -ne 0 ]; then
+if PR_LIST_JSON=$(gh pr list --search "$ISSUE_NUM in:body" --state merged \
+  --json number,title,url,baseRefName,headRefName,mergedAt,files 2>/dev/null); then
+  AGGREGATION_FAILED=false
+else
   AGGREGATION_FAILED=true
   PR_LIST_JSON='[]'
   echo "WARNING: gh pr list failed — PR aggregation status: FAILED (gh error, results below are incomplete)"
-else
-  AGGREGATION_FAILED=false
 fi
 
 # Also query closedByPullRequestsReferences to catch structurally-linked PRs
@@ -244,19 +243,19 @@ to the `--json` field list in Phase 0 if not already present):
 CHECK3_STATUS="ok"
 CHECK3_REVIEWS=""
 
-while IFS= read -r pr_json; do
-  pr_number=$(echo "$pr_json" | jq -r '.number')
-  pr_title=$(echo "$pr_json" | jq -r '.title')
-  pr_url=$(echo "$pr_json" | jq -r '.url')
-  
-  # Ask user for per-PR confirmation
-  AskUserQuestion "Run /expert-review --effort 2 quality pass on PR #$pr_number ($pr_title)?" "[Run / Skip]"
-  # Only invoke /expert-review if user selects "Run"
-  
-  # ... invoke /expert-review "$pr_url" --effort 2 and capture REVIEW_DIR
-  # Append to CHECK3_REVIEWS for Phase 2 reporting
-done < <(echo "$PR_LIST_JSON" | jq -c '.[]')
+# List of {number, title, url} to iterate; per-PR confirmation below uses AskUserQuestion,
+# a tool call — not shell — so it's shown as prose, not inside this bash block.
+PR_ITER_JSON=$(echo "$PR_LIST_JSON" | jq -c '.[]')
 ```
+
+For each `pr_json` line above, extract `pr_number`, `pr_title`, `pr_url` (via `jq`), then use
+`AskUserQuestion`: "Run `/expert-review --effort 2` quality pass on PR #`$pr_number` (`$pr_title`)?"
+with options `Run` / `Skip`.
+
+- If the user selects **Run**: invoke `Skill(expert-review)` with `$pr_url --effort 2`, capture
+  the resulting `REVIEW_DIR`, and append it to `CHECK3_REVIEWS` for Phase 2 reporting.
+- If the user selects **Skip**: record that PR as skipped (still list it under Quality pass in
+  Phase 2, noting "skipped by user") and move to the next PR.
 
 **Why PR mode, not a reconstructed diff range:** `/expert-review`'s local mode computes
 `git diff main...HEAD` — it assumes `main` is a real, current branch, which breaks for anything
@@ -281,8 +280,9 @@ quality pass skipped. If PRs exist, invoke `/expert-review <pr-url> --effort 2` 
 
 #### Check 4: Loose ends
 
-Always runs (no project-specific configuration needed for the first two sub-checks). Status is `ok`
-unless otherwise noted (cache mismatch is informational, not a failure):
+Always runs (no project-specific configuration needed for the first two sub-checks). Set
+`CHECK4_STATUS="ok"` unless otherwise noted (cache mismatch is informational, not a failure — it
+does not set `CHECK4_STATUS="incomplete"`):
 
 1. **TODO/FIXME referencing the issue:** `rg -n "TODO|FIXME" $TOUCHED_FILES` filtered to lines
    also mentioning `#$ISSUE_NUM` or the issue number bare. Report each with file path and line number.
@@ -345,11 +345,13 @@ If nothing to report here, write exactly one line: "None."
 
 ## 📋 Recommendation
 
-Check the aggregate status of all checks above (CHECK1_STATUS, CHECK2_STATUS, CHECK3_STATUS, etc.):
+Check the aggregate status across `CHECK1_STATUS`, `CHECK2_STATUS`, `CHECK3_STATUS`,
+`CHECK4_STATUS`, `AGGREGATION_FAILED`, and `TRUNCATION_FLAGGED`:
 
-- If any check returned `incomplete` or `failed`, write: "Some checks could not fully verify
-  their scope (see above) — treat any 'no gaps found' verdict as provisional. Review the
-  incomplete/failed checks manually before closing #<N>."
+- If any `CHECK*_STATUS` is `incomplete`/`failed`, or `AGGREGATION_FAILED=true`, or
+  `TRUNCATION_FLAGGED=true`, write: "Some checks could not fully verify their scope (see above) —
+  treat any 'no gaps found' verdict as provisional. Review the incomplete/failed checks manually
+  before closing #<N>."
 - Else if there are Missing items, write: "Open follow-up issue(s) for the Missing items before
   closing #<N>."
 - Else write: "Close #<N> as-is — no blocking gaps found."
