@@ -53,12 +53,12 @@ if [ $PLAN_RESULT -ne 0 ]; then
 fi
 
 # Extract resolved values
-PR_NUM=$(echo "$PLAN_JSON" | jq -r '.pr_number')
-HEAD_REF=$(echo "$PLAN_JSON" | jq -r '.head_ref')
-WT=$(echo "$PLAN_JSON" | jq -r '.target_worktree')
+PR_NUM=$(printf '%s' "$PLAN_JSON" | jq -r '.pr_number')
+HEAD_REF=$(printf '%s' "$PLAN_JSON" | jq -r '.head_ref')
+WT=$(printf '%s' "$PLAN_JSON" | jq -r '.target_worktree')
 
 # Check for push gate failures (blocking_failures is a list)
-BLOCKING=$(echo "$PLAN_JSON" | jq -r '.blocking_failures[]' 2>/dev/null)
+BLOCKING=$(printf '%s' "$PLAN_JSON" | jq -r '.blocking_failures[]' 2>/dev/null)
 if [ -n "$BLOCKING" ]; then
   echo "ERROR: Push gate failed:"
   echo "$BLOCKING" | sed 's/^/  - /'
@@ -154,7 +154,7 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: c
 # Write the result to disk instead of only holding it in this call's stdout — Phase 4 is a
 # separate (foreground) Bash call made after this backgrounded one completes, so it reads
 # this file rather than depending on variables from this shell.
-echo "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply - \
+printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply - \
   > "$MC_STATE_DIR/apply_result.json" 2> "$MC_STATE_DIR/apply_result.stderr"
 echo $? > "$MC_STATE_DIR/apply_exit_code"
 
