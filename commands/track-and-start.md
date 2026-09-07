@@ -406,7 +406,7 @@ EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
 # Write to a temp file and mv on success so a jq failure never truncates the existing cache
 # (a bare `> github-cache.json` redirect truncates the file before jq runs).
 TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --arg body "<new plan content>" \
+printf '%s' "$EXISTING" | jq --arg body "<new plan content>" \
   '.issue.body = $body' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
