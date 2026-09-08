@@ -407,7 +407,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/
    - `swarm-contribution.md` (effort 1 merged scouts)
    - `domain-requirements-pod.md` and `contracts-risk-pod.md` (effort 2 pod contributions)
    - `contrarian-carl-contribution.md` (Carl's input from Step 4)
-   
+
    Present every `### [Name]'s Input` block found in any of them. No new presentation-logic branching needed; the block shape is identical across all three sources (per-expert, swarm, and pod files).
 3. **Present BOTH to the user** in this order:
    - **Open Questions Summary** — the organized/deduped open questions from the digest (from Step 5) for the actual decision UI. Start here so the user sees the key decision points first.
