@@ -27,25 +27,17 @@ The filename in the receipt must match the actual file written, and counts must 
 
 ## File Format and Sentinel
 
-The subagent writes to:
-```
-{PLAN_SESSION_DIR}/{expert}-{suffix}.md
-```
+The subagent writes to a file path and sentinel pattern determined by its context:
 
-Where `{suffix}` is context-dependent:
-- Step 3 (contributions): `{expert}-contribution.md`
-- Step 4 (Carl): `contrarian-carl-contribution.md`
-- Step 8 (alignment): `{expert}-alignment.md`
+| Context | File path | Sentinel | Notes |
+|---------|-----------|----------|-------|
+| Step 3 (per-expert contributions, effort 3–5) | `{PLAN_SESSION_DIR}/{expert}-contribution.md` | `<!-- contribution-end -->` | Effort 3–5 standard path |
+| Step 3 (swarm merge, effort 1) | `{PLAN_SESSION_DIR}/swarm-contribution.md` | `<!-- contribution-end -->` | Effort 1 swarm path — reuses contribution sentinel |
+| Step 3 (pod contributions, effort 2) | `{PLAN_SESSION_DIR}/{pod-id}-pod.md` | `<!-- pod-end -->` | Effort 2 pod path — separate sentinel |
+| Step 4 (Carl) | `{PLAN_SESSION_DIR}/contrarian-carl-contribution.md` | `<!-- contribution-end -->` | After per-expert barrier |
+| Step 8 (alignment) | `{PLAN_SESSION_DIR}/{expert}-alignment.md` | `<!-- alignment-end -->` | Per-expert alignment pass |
 
-The file **must end with the sentinel on a new line**:
-```
-<!-- {type}-end -->
-```
-
-Where `{type}` matches context:
-- Step 3: `contribution-end`
-- Step 4: `contribution-end`
-- Step 8: `alignment-end`
+The file **must end with its designated sentinel on a new line**.
 
 ## Stand-In File on Repeated Failure
 
@@ -68,6 +60,12 @@ EOF
 This ensures downstream globbing operations find a file for every selected expert, even if some
 subagents failed. The file is marked with `Decision: FAILED` so diagnostic/summary steps can count
 failures separately from successes.
+
+## Pod Barriers (Effort 2)
+
+A **pod is one atomic unit** for the join barrier. The three join conditions (receipt, file-exists, sentinel) apply to the WHOLE pod file, not per-persona/per-lens. A pod that fails twice gets ONE stand-in `Decision: FAILED` file for that entire pod (covering all 4 personas in that pod), not per-persona stand-ins.
+
+This is pod-atomic granularity, matching `~/.claude/prompts/reviewer-pod.md`'s existing review-mode precedent (effort 2 on the review side). The stand-in file follows the same template as any other stand-in (see above), with `{expert}` replaced by `{pod-id}` and `{suffix}` = `pod`: one `Decision: FAILED` file covers the entire pod, not a separate stand-in per persona.
 
 ## Failure Outcomes
 
