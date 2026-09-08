@@ -58,23 +58,72 @@ Every call below is non-fatal (see docs/metrics.md's telemetry call-site convent
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup >/dev/null 2>&1 || true
 
-# Checkpoint-abandonment reconciliation: scan ~/.claude/plan-sessions/ for any checkpoint
-# stage-begin entries with no matching stage-end. These represent planning sessions the user
-# abandoned (stopped responding without explicitly declining). Backfill --outcome interrupted
-# telemetry for them.
+# Checkpoint-abandonment reconciliation: scan the telemetry log for any `checkpoint` stage.begin
+# events with no matching stage.end. These represent /expert-plan-v2 sessions the user abandoned
+# (stopped responding without explicitly declining the Step 6 checkpoint, so no stage-end could
+# ever fire from inside that conversation). Backfill --outcome interrupted for them directly via
+# telemetry_schema (not the stage-end CLI, which resolves state against the *current* session —
+# wrong session for a backfill written from /cleanup). Only backfills begins older than 1 hour,
+# to avoid racing a checkpoint that's still legitimately in progress in another window.
 python3 -c "
-import json
 import os
-from pathlib import Path
-from datetime import datetime, timezone
+import sys
+sys.path.insert(0, os.path.expanduser('~/.claude/scripts'))
+import json
+from datetime import datetime, timezone, timedelta
+import telemetry_schema
 
-sessions_dir = Path(os.path.expanduser('~/.claude/plan-sessions'))
-if sessions_dir.exists():
-    # Scan for session directories with checkpoint stages
-    for session_path in sessions_dir.rglob('.'):
-        # Future work: parse session state and backfill missing stage-end calls
-        # For now, this is a placeholder for the reconciliation logic
-        pass
+log_path = telemetry_schema.default_log_path()
+if log_path.exists():
+    events = []
+    with open(log_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    checkpoint_begins = {}   # stage_id -> event
+    ended_stage_ids = set()
+    for event in events:
+        if event.get('event_type') == 'stage.begin' and event.get('stage') == 'checkpoint':
+            stage_id = event.get('stage_id')
+            if stage_id and stage_id != telemetry_schema.UNKNOWN:
+                checkpoint_begins[stage_id] = event
+        elif event.get('event_type') == 'stage.end':
+            stage_id = event.get('stage_id')
+            if stage_id:
+                ended_stage_ids.add(stage_id)
+
+    now = datetime.now(timezone.utc)
+    backfilled = 0
+    for stage_id, begin in checkpoint_begins.items():
+        if stage_id in ended_stage_ids:
+            continue
+        ts_str = begin.get('timestamp', '')
+        try:
+            began_at = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        except ValueError:
+            continue
+        if now - began_at < timedelta(hours=1):
+            continue  # too recent — may still be in progress
+        end_event = telemetry_schema.build_event(
+            'stage.end',
+            session_id=begin.get('session_id', telemetry_schema.UNKNOWN),
+            timestamp=now.isoformat(),
+            stage_id=stage_id,
+            stage='checkpoint',
+            command_id=begin.get('command_id', telemetry_schema.UNKNOWN),
+            outcome=telemetry_schema.outcome_interrupted(),
+            elapsed_seconds=(now - began_at).total_seconds(),
+        )
+        telemetry_schema.append_event(log_path, end_event)
+        backfilled += 1
+    if backfilled:
+        print(f'Reconciled {backfilled} abandoned checkpoint(s)', file=sys.stderr)
 " || true
 ```
 

@@ -15,7 +15,7 @@ A checkpoint-based, parallel planning pipeline:
 4. **Contrarian Carl** — sequential, AFTER the join barrier from step 3. Spawn one subagent with Carl's persona, fed the contribution file paths from step 3.
 5. **Digest** — spawn one subagent (sonnet, mechanical merge, pinned) with role prompt `~/.claude/prompts/plan-digest.md`, given the contribution file paths (including Carl's). Writes `open-questions.md`.
 6. **Checkpoint (hard stop)** — read `open-questions.md` AND all individual `{expert}-contribution.md` files, and present BOTH to the user: every expert's full Domain/Requirements/Risks/Recommended-Approach/Open-Questions block plus the organized/deduped open questions from the digest for the actual decision UI. Use `AskUserQuestion` for 2-4-option questions, markdown + conversation for open-ended ones or themes with >4 questions — same as v1 Step 4. Wait for answers.
-7. **Synthesis (Opus, hard-pinned)** — spawn ONE subagent (opus) that merges ticket + all contribution files (paths, not pasted content) + Carl's contribution + the user's Step-6 decisions into one plan, using v1's synthesis template (`## Goal`, `## Decisions Made`, `## Approach`, `## Implementation Steps`, `## Risks and Mitigations`, `## Testing Strategy`, `## Out of Scope`). Writes the plan to `~/.claude/plans/{slug}.md` directly (this is the ONE role permitted to write outside `plan-sessions/`, because it's the final deliverable, not a checkpoint).
+7. **Synthesis (Opus, hard-pinned)** — spawn ONE subagent (opus) that merges ticket + all contribution files (paths, not pasted content) + Carl's contribution + the user's Step-6 decisions into one plan, using v1's synthesis template (`## Goal`, `## Decisions Made`, `## Approach`, `## Implementation Steps`, `## Risks and Mitigations`, `## Testing Strategy`, `## Out of Scope`). The subagent writes to `{PLAN_SESSION_DIR}/plan.md` (staying within its checkpoint dir, same file-scope discipline as every other role); the orchestrator then copies that file to `~/.claude/plans/{slug}.md` as the final deliverable — the ONE path that ends up outside `plan-sessions/`, because it's the final deliverable, not a checkpoint.
 8. **Alignment pass** (new, Opus-pinned — only if effort > 3 per the ladder below) — spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`~/.claude/plans/{slug}.md`) and flag anything misaligned with their domain. Short receipts; any flagged issues get appended to the plan under a NEW `## Alignment Notes` section — visible, not silently folded in. If no expert flags anything, still note "No alignment issues flagged" rather than omitting the section silently.
 9. **Present** — print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of any alignment notes as the handoff. Suggest `/expert-review-plan` (validation) and `/track-and-start` (execution) as next steps, matching v1's closing message style.
 
@@ -377,7 +377,16 @@ This creates an audit trail of what was decided and by whom.]
 
 On failure: `stage-end --stage synthesize-plan --outcome failure --failure-class synthesis-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class synthesis-failed 2>/dev/null || true`, then stop.
 
+After the subagent's receipt confirms `{PLAN_SESSION_DIR}/plan.md` was written, copy it to its final deliverable location:
+
 ```bash
+mkdir -p "$HOME/.claude/plans"
+if ! cp "$PLAN_SESSION_DIR/plan.md" "$HOME/.claude/plans/${SLUG}.md"; then
+  echo "ERROR: Failed to copy plan.md to ~/.claude/plans/${SLUG}.md" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome failure --failure-class copy-failed 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --outcome failure --failure-class copy-failed 2>/dev/null || true
+  exit 1
+fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome success 2>/dev/null || true
 # Note: Telemetry flags (--turns, --retries, --output-artifact-size) are not wired for
 # synthesis stage yet — subagent metrics are planned as future telemetry work.
