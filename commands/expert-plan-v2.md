@@ -10,8 +10,8 @@ model: sonnet
 A checkpoint-based, parallel planning pipeline:
 
 1. **Gather context** — ticket (GitHub issue URL via `gh issue view`, or conversation-provided description, or ask), project context (`.claude/project.yaml`, `CLAUDE.md`, relevant `git log`).
-2. **Route** — spawn ONE subagent (sonnet) with role prompt `~/.claude/prompts/plan-router.md` to select experts scaled by `--effort`, reading only the ticket + `reviewers/index.yaml` + the narrow `planReview.focusAreas` field of candidate reviewers.
-3. **Parallel isolated contributions** — spawn one **parallel subagent per selected expert** in a SINGLE message (join-barrier pattern: receipt + file-on-disk + sentinel line at end of file, one retry on failure, stand-in file on second failure). Each subagent writes `{expert}-contribution.md`; returns a one-line receipt only, never the content.
+2. **Route** — spawn ONE subagent (sonnet) with role prompt `~/.claude/prompts/plan-router.md` to select experts scaled by `--effort`, reading only the ticket + `reviewers/index.yaml` + the narrow `planReview.focusAreas` field of candidate reviewers. (Effort 1/2 skip routing — see Effort Ladder)
+3. **Parallel isolated contributions** — spawn one **parallel subagent per selected expert** in a SINGLE message (join-barrier pattern: receipt + file-on-disk + sentinel line at end of file, one retry on failure, stand-in file on second failure). Each subagent writes `{expert}-contribution.md`; returns a one-line receipt only, never the content. (Effort 1/2 skip routing — see Effort Ladder)
 4. **Contrarian Carl** — sequential, AFTER the join barrier from step 3. Spawn one subagent with Carl's persona, fed the contribution file paths from step 3.
 5. **Digest** — spawn one subagent (sonnet, mechanical merge, pinned) with role prompt `~/.claude/prompts/plan-digest.md`, given the contribution file paths (including Carl's). Writes `open-questions.md`.
 6. **Checkpoint (hard stop)** — read `open-questions.md` AND all individual `{expert}-contribution.md` files, and present BOTH to the user: every expert's full Domain/Requirements/Risks/Recommended-Approach/Open-Questions block plus the organized/deduped open questions from the digest for the actual decision UI. Use `AskUserQuestion` for 2-4-option questions, markdown + conversation for open-ended ones or themes with >4 questions — same as v1 Step 4. Wait for answers.
@@ -45,7 +45,7 @@ A checkpoint-based, parallel planning pipeline:
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25 · **fable** $10/$50.
 
-Examples: `/expert-plan-v2 --model haiku` (contributors run haiku; synthesis and alignment still run opus — see Model Policy) · `/expert-plan-v2 --effort 4` (default: 4-6 experts + Carl, full pipeline with alignment pass) · `/expert-plan-v2 --effort 5` (everyone, full depth) · `/expert-plan-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue). **Note: effort levels 1-3 (swarm/pod modes) are planned future work — effort currently unchanged across 1-4 (falls back to full contributor panel). See [ADR-0012](../docs/adr/0012-effort-ladder-and-model-cost-routing.md) for planned scaling paths.**
+Examples: `/expert-plan-v2 --model haiku` (contributors run haiku; synthesis and alignment still run opus — see Model Policy) · `/expert-plan-v2 --effort 4` (default: 4-6 experts + Carl, full pipeline with alignment pass) · `/expert-plan-v2 --effort 5` (everyone, full depth) · `/expert-plan-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue).
 
 ## Checkpoint Files
 
@@ -54,8 +54,10 @@ All artifacts live in `{PLAN_SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}
 
 | File | Written by | When |
 |------|-----------|------|
-| `selected-experts.md` | Router | Step 2 — routing decision, expert names, reasoning |
-| `{expert}-contribution.md` | Each Contributor subagent | Step 3 — one per selected expert (including Carl, if applicable) |
+| `selected-experts.md` | Router (or stub) | Step 2 (or Step 3 stub) — routing decision, expert names, reasoning |
+| `{expert}-contribution.md` | Each Contributor subagent | Step 3 — effort 3–5, one per selected expert (including Carl, if applicable) |
+| `swarm-contribution.md` | Swarm merge agent | Step 3 — effort 1 path, merged 3-scout contribution |
+| `{pod-id}-pod.md` (×2) | Pod agent | Step 3 — effort 2 path, one file per pod (`domain-requirements-pod.md`, `contracts-risk-pod.md`) |
 | `contrarian-carl-contribution.md` | Contrarian Carl | Step 4 — (only if Carl not already selected by router) |
 | `open-questions.md` | Digest | Step 5 — deduped/organized open questions from all contributors |
 | `{expert}-alignment.md` | Each expert (alignment pass) | Step 8 — one per selected expert, short alignment notes or empty |
@@ -138,7 +140,7 @@ if [ "$EFFORT_EXPLICIT" = "0" ]; then
   elif [ -f "$HOME/.claude/effort-heuristic.yaml" ]; then
     EFFORT_FROM_HEURISTIC=$(python3 -c "import yaml; print(yaml.safe_load(open('$HOME/.claude/effort-heuristic.yaml')).get('default_effort', 4))" 2>/dev/null || echo 4)
   fi
-  # Clamp to [2,4] per planning's current implementation (efforts 1-3 fallback to full panel anyway)
+  # Clamp to [2,4] per planning's current implementation (efforts 1-2 have dedicated swarm/pod paths; effort 3 uses router)
   if [ "$EFFORT_FROM_HEURISTIC" -lt 2 ]; then
     EFFORT=2
   elif [ "$EFFORT_FROM_HEURISTIC" -gt 4 ]; then
@@ -222,11 +224,18 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage expert-contri
 
 ### Effort N subsections (Route step)
 
-See the **Effort Ladder** table below (in the "Effort Ladder" section) for a concise reference of
-what each effort level does. This section documents the routing behavior per level; the table is
-the source of truth — other sites in this doc reference it to avoid drift.
+**Routing behavior by effort level:**
+- **Effort 1 and 2**: Skip the router entirely. Effort 1 runs the Swarm Path (fixed 3-scout set); Effort 2 runs the Pod Path (fixed 2-pod set, documented below).
+- **Effort 3, 4, and 5**: Run the standard router (Step 2) as documented, passing `EFFORT` through unchanged. The router's panel size varies by effort; panel composition follows `prompts/plan-router.md`'s guidance.
 
 ## Step 3: Parallel Isolated Contributions
+
+**Effort-gated entry point:**
+- If `EFFORT` is 1 → run the **Swarm Path** (see "### Effort 1 — Swarm Path" subsection below), then skip the rest of this Step 3's body and proceed directly to Step 4.
+- If `EFFORT` is 2 → run the **Pod Path** (see "### Effort 2 — Pod Path" subsection below), then skip the rest of this Step 3's body and proceed directly to Step 4.
+- Otherwise (`EFFORT` is 3, 4, or 5) → proceed with this Step 3's body as documented (standard per-expert path, unchanged).
+
+**Standard Path (Effort 3–5):**
 
 Spawn one `expert-reviewer` subagent PER selected expert in a SINGLE message (join-barrier pattern from `expert-review-panel.md` Step 6: receipt + file-on-disk + sentinel line at end of file, one retry on failure, stand-in file on second failure so the barrier never hangs).
 
@@ -252,11 +261,103 @@ but should be flagged as partial success (telemetry: `--outcome success` but wit
 contributions failed). The digest should treat `Decision: FAILED` specially — acknowledge the
 failure in its output.
 
+### Effort 1 — Swarm Path
+
+**Entry point:** If `EFFORT=1`, this subsection replaces the standard per-expert path above.
+
+Spawn 3 `expert-reviewer` subagents (model: haiku) in ONE message, each given:
+- Role prompt: `~/.claude/prompts/plan-swarm-scout.md` (no checkpoint file written; scouts return inline)
+- Persona YAML: one fixed scout persona per agent:
+  - Scout 1: `~/.claude/reviewers/north-star-nick.yaml`
+  - Scout 2: `~/.claude/reviewers/tara-typesafe.yaml`
+  - Scout 3: `~/.claude/reviewers/security-sage.yaml`
+- The ticket (full requirement/context)
+
+The scouts return their contribution INLINE (no file to disk) as their tool-call result. The orchestrator collects the 3 scouts' inline output text (all 3 calls are in one message, so all 3 results return together).
+
+Then spawn ONE `expert-reviewer` subagent (model: sonnet) with:
+- Role prompt: `~/.claude/prompts/plan-swarm-merge.md`
+- The 3 scouts' inline output PASTED into its prompt (not paths — there is nothing on disk yet)
+- The ticket
+
+It writes `{PLAN_SESSION_DIR}/swarm-contribution.md` (containing 3 named `### [Name]'s Input` sections, one shared `<!-- contribution-end -->` sentinel) and returns receipt:
+```
+swarm-contribution.md written — {n} requirements, {n} risks, {n} open questions (3 scouts merged)
+```
+
+**Stub `selected-experts.md`:** Since the router did not run, write a stub file `{PLAN_SESSION_DIR}/selected-experts.md`:
+```
+# Swarm Path (Effort 1)
+
+## Panel Decision
+
+| Reviewer | Selected | Reason |
+|----------|----------|--------|
+| north-star-nick | Yes | Effort 1 swarm scout |
+| tara-typesafe | Yes | Effort 1 swarm scout |
+| security-sage | Yes | Effort 1 swarm scout |
+| contrarian-carl | Yes | Runs after swarm merge (Step 4) |
+
+## Note
+
+Effort 1 uses a fixed 3-scout swarm (no router). Contrarian Carl still runs sequentially after the swarm merge.
+```
+
+This stub mirrors how `expert-review-panel.md`'s swarm path stubs its routing record, so downstream steps that expect the file to exist don't break.
+
+**Join barrier:** Apply `join-barrier-pattern.md`'s pattern with `{type}` = `contribution`, `{suffix}` = `swarm-contribution.md`. The merge agent writes a file, so standard file-exists + sentinel checks apply. No join-barrier retry logic needed for the scouts (inline output either returns or the Task call fails — no file-existence/sentinel check applies to inline output); the merge agent DOES follow the existing join-barrier pattern (receipt + file-exists + sentinel).
+
+**Recovery for failed scout Task calls:** If any scout's Task call fails (crash, timeout, or returns no output), re-run the full 3-scout batch, not individual scouts. A failed scout cannot be retried in isolation because scouts run in parallel by design; a retry must restore the full parallel set to preserve independence. On repeated failure (two full re-runs), write a stand-in `swarm-contribution.md` with `Decision: FAILED` so downstream steps detect the failure cleanly (do not hang waiting for the merge agent).
+
+**Carl (Step 4) after the barrier:** Carl still runs sequentially after Step 3 (Step 4), reading `swarm-contribution.md` as his input file (instead of the usual per-expert contribution files). Step 4's mechanism and telemetry remain unchanged.
+
+### Effort 2 — Pod Path
+
+**Entry point:** If `EFFORT=2`, this subsection replaces the standard per-expert path above.
+
+Spawn 2 `expert-reviewer` subagents (model: `PANEL_MODEL`) in ONE message, each given:
+- Role prompt: `~/.claude/prompts/plan-pod.md`
+- Pod ID and ordered persona list (from fixed pod definitions below)
+- The ticket
+
+Each pod writes its contribution file:
+- Pod 1 (`domain-requirements`): `{PLAN_SESSION_DIR}/domain-requirements-pod.md`
+- Pod 2 (`contracts-risk`): `{PLAN_SESSION_DIR}/contracts-risk-pod.md`
+
+Both files contain multiple `### [Name]'s Input` blocks (one per persona in the pod) and end in ONE shared `<!-- pod-end -->` sentinel. Expected receipt format (per `plan-pod.md`):
+```
+{pod-id} | lenses: {n} | requirements: {n} | risks: {n} | open-questions: {n} | wrote: {path}
+```
+
+**Pod definitions (hardcoded, fixed order):** See the 4 personas listed in `plan-pod.md`'s Your Mandate section. Two canonical pods:
+- **Pod 1 (domain-requirements):** the 4 personas listed in `plan-pod.md` (first pod definition)
+- **Pod 2 (contracts-risk):** the 4 personas listed in `plan-pod.md` (second pod definition)
+
+**Join barrier (pod-atomic):** Apply `join-barrier-pattern.md`'s pattern with `{type}` = `pod`, `{suffix}` = `{pod-id}-pod.md`. **Critical deviation:** the barrier's unit of retry/stand-in is the WHOLE POD, not an individual persona. A pod that fails twice gets ONE stand-in `Decision: FAILED` file for that entire pod (covering all personas in that pod), not per-persona stand-ins. This is pod-atomic granularity, matching `reviewer-pod.md`'s review-mode precedent.
+
+**Stub `selected-experts.md`:** Write a stub file `{PLAN_SESSION_DIR}/selected-experts.md`:
+```
+# Pod Path (Effort 2)
+
+## Pods
+
+| Pod ID | Members | Count |
+|--------|--------|-------|
+| domain-requirements | See `plan-pod.md` Your Mandate (Pod 1) | 4 |
+| contracts-risk | See `plan-pod.md` Your Mandate (Pod 2) | 4 |
+
+## Note
+
+Effort 2 uses two parallel pods (no router). Each pod is one atomic unit for the join barrier. Contrarian Carl still runs after both pods merge (Step 4).
+```
+
+This stub mirrors the swarm path's stub, preserving transparency for downstream steps.
+
+**Carl (Step 4) after the barrier:** Carl still runs sequentially after Step 3 (Step 4), reading BOTH `{PLAN_SESSION_DIR}/domain-requirements-pod.md` and `{PLAN_SESSION_DIR}/contracts-risk-pod.md` as his input files (instead of the usual per-expert contribution files). Step 4's mechanism and telemetry remain unchanged — the subagent simply receives both pod paths instead of individual paths.
+
 ### Effort N subsections (Contribution step)
 
-See the **Effort Ladder** table below for what each level contributes. The swarm/pod paths
-(effort 1/2/3) are planned future work; currently, all efforts fall back to the full contributor
-panel for contribution mode.
+Effort 1 and 2 use their dedicated paths documented above: "### Effort 1 — Swarm Path" and "### Effort 2 — Pod Path". Effort 3 and above reuse the standard per-expert path documented in this Step 3's body (only the router's panel size differs per effort, per `plan-router.md`).
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage expert-contributions --outcome success 2>/dev/null || true
@@ -268,6 +369,11 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage contrarian >/
 Sequential, AFTER the join barrier from Step 3.
 
 Spawn one `expert-reviewer` subagent with Carl's persona (`~/.claude/reviewers/contrarian-carl.yaml`) plus `~/.claude/prompts/plan-contribution-contract.md`, fed the CONTRIBUTION FILE PATHS from Step 3 (not pasted content, not conversation) — mirroring how `/expert-review`'s Carl reads Pass 1 files, not the accumulated conversation.
+
+**Effort-specific input files** (which Step 3 output Carl reads):
+- Effort 1: `swarm-contribution.md`
+- Effort 2: both `domain-requirements-pod.md` and `contracts-risk-pod.md`
+- Effort 3–5: all individual `{expert}-contribution.md` files from Step 3
 
 Model: `PANEL_MODEL`. Writes `{PLAN_SESSION_DIR}/contrarian-carl-contribution.md`.
 
@@ -303,7 +409,13 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/
 **STOP here and present to the user:**
 
 1. Read `{PLAN_SESSION_DIR}/open-questions.md` (small — this is the fix for the 5-hour p90 wait).
-2. Read all individual `{PLAN_SESSION_DIR}/{expert}-contribution.md` files (paths from Step 3 and Carl from Step 4).
+2. Read all contribution-shaped files present in `{PLAN_SESSION_DIR}` regardless of source:
+   - `{expert}-contribution.md` (effort 3–5 per-expert contributions)
+   - `swarm-contribution.md` (effort 1 merged scouts)
+   - `domain-requirements-pod.md` and `contracts-risk-pod.md` (effort 2 pod contributions)
+   - `contrarian-carl-contribution.md` (Carl's input from Step 4)
+
+   Present every `### [Name]'s Input` block found in any of them. No new presentation-logic branching needed; the block shape is identical across all three sources (per-expert, swarm, and pod files).
 3. **Present BOTH to the user** in this order:
    - **Open Questions Summary** — the organized/deduped open questions from the digest (from Step 5) for the actual decision UI. Start here so the user sees the key decision points first.
    - **Expert Contributions** — every expert's full Domain/Requirements/Risks/Recommended-Approach/Open-Questions block (unmerged, unfiltered, showing independent perspectives). This is why the user runs v2: "I don't want an action plan to come out of this... I want to see all the different people... it keeps me in the middle of decisions" (quoted from the issue). Full context follows the question summary.
@@ -329,7 +441,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-pl
 
 Spawn ONE `expert-reviewer` subagent (`model: opus` — explicitly pinned, not `PANEL_MODEL`) that reads:
 - The ticket/requirement (gathered in Step 1)
-- All contribution file paths from Steps 3 and 4 (not pasted contents)
+- All contribution file paths from Steps 3 and 4 (not pasted contents). **Note:** The path SET varies by effort: individual `{expert}-contribution.md` files (effort 3–5), `swarm-contribution.md` (effort 1), or two `{pod-id}-pod.md` files (effort 2). The mechanism (pass paths, not contents) is unchanged; only the file set differs.
 - The user's answers from Step 6
 
 And merges them into one plan using v1's synthesis template:
@@ -482,6 +594,9 @@ Call `ExitPlanMode`.
 |---|---|---|---|
 | Router | sonnet | never — pinned | Narrow judgment, cheap |
 | Contributor (incl. Carl) | sonnet | `--model <haiku\|sonnet\|opus\|fable>` | Parallelizable, independent |
+| Swarm Scout | haiku | never — pinned | Fast screening, effort 1 only |
+| Swarm Merge | sonnet | never — pinned | Effort 1 merge, not overridable |
+| Pod Agent | `PANEL_MODEL` | `--model <haiku\|sonnet\|opus\|fable>` | Effort 2, pod-atomic units |
 | Digest | sonnet | never — pinned | Mechanical merge, not `PANEL_MODEL` |
 | Synthesis | opus | never — pinned | Judgment-heavy, final deliverable |
 | Alignment pass | opus | never — pinned | Alignment is a judgment task; same tier as synthesis |
@@ -500,7 +615,7 @@ When `--effort` is omitted, default is heuristic-derived from `~/.claude/effort-
 | 4 | default: routed 4-6 + Carl | Independent contributors | YES — full pipeline |
 | 5 | everyone relevant | Independent contributors | YES — full pipeline |
 
-**Implementation note:** Full mechanical implementation of the swarm/pod paths (effort 1/2/3 paths, mirroring `expert-review-panel.md`) is deferred — this documents the intended behavior. Effort 4 (default, full pipeline) and effort 5 (everyone) are the two fully implemented and load-bearing paths today. Effort 1/2/3 should print a note: "Full effort-{N} path (swarm/pod mode) is not yet implemented; falling back to effort 4 (full contributor panel). See `docs/adr/0012-effort-ladder-and-model-cost-routing.md` for planned scaling — the routing decision and synthesis remain correct, but contribution mode differs."
+Effort 1 uses the **Swarm Path** — 3 haiku scouts merge into one contribution file. Effort 2 uses the **Pod Path** — 2 compact-lens pods run in parallel. Effort 3 and above use the standard router with per-expert contributions (see subsections below for mechanical details). The swarm and pod paths mirror the review-side effort ladder in `prompts/expert-review-panel.md`.
 
 ---
 
@@ -513,8 +628,7 @@ telemetry is emitted and when execution stops. Use this pattern consistently:
 On failure: `stage-end --stage <name> --outcome failure --failure-class <class> 2>/dev/null || true`, then `command-end --outcome failure --failure-class <class> 2>/dev/null || true`, then stop.
 ```
 
-Replace `<name>` with the current stage name and `<class>` with a descriptive failure class
-(e.g. `context-load-failed`, `router-failed`, `contribution-barrier-failed`).
+Replace `<name>` with the current stage name and `<class>` with a descriptive failure class. Examples (non-exhaustive): `context-load-failed`, `router-failed`, `contribution-barrier-failed`, `swarm-scout-failed`, `swarm-merge-failed`, `pod-write-failed`, `pod-barrier-failed`, `carl-failed`, `digest-failed`, `synthesis-failed`.
 
 ## Telemetry Call Sites
 
@@ -529,10 +643,13 @@ Use the exact `run-metrics.py` call-site convention (matching `commands/expert-p
 
 ## References
 
-This command references three new prompt files (being written in a parallel pass):
-- `~/.claude/prompts/plan-router.md` — role prompt for the Router subagent (Step 2)
+This command references six prompt files:
+- `~/.claude/prompts/plan-router.md` — role prompt for the Router subagent (Step 2, effort 3–5)
 - `~/.claude/prompts/plan-digest.md` — role prompt for the Digest subagent (Step 5)
 - `~/.claude/prompts/plan-contribution-contract.md` — output-format contract read alongside a persona YAML by each Contributor subagent (Steps 3, 4; Step 8's alignment pass uses persona only, not the contract)
+- `~/.claude/prompts/plan-swarm-scout.md` — role prompt for effort-1 haiku scouts (Step 3 swarm path)
+- `~/.claude/prompts/plan-swarm-merge.md` — role prompt for effort-1 swarm merge agent (Step 3 swarm path)
+- `~/.claude/prompts/plan-pod.md` — role prompt for effort-2 pod agents (Step 3 pod path)
 
 Subagents in this command run as `subagent_type: "expert-reviewer"`, exactly like `/expert-review`'s Pass 1 reviewers. The agent has `permissionMode: bypassPermissions`, no `Edit` tool, no write-capable Bash — it can only Read/Grep/Glob/Write-one-file.
 
