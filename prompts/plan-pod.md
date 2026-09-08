@@ -25,8 +25,8 @@ persona:
    format
 5. Finish writing that block before starting the next persona
 
-Sequential execution ensures each persona works independently without earlier lenses biasing later
-ones. A lens is never required to find a concern — produce its honest perspective.
+Sequential execution ensures each persona works independently without earlier personas biasing later
+ones. Do not let an earlier persona's already-written block create a concern or steer the framing of a later persona's contribution. A persona is never required to find a concern — produce its honest perspective.
 
 ## Output Format
 
@@ -82,7 +82,7 @@ The file contains:
    ```
 
 The sentinel tells the orchestrator's join barrier that your write completed successfully. Note:
-this sentinel is **distinct from `contribution-end`** (used by swarm scouts). The pod file is a
+this sentinel is **distinct from `contribution-end`** (used by the swarm merge agent, `plan-swarm-merge.md`). The pod file is a
 new file shape, and the orchestrator's join barrier must recognize the different sentinel.
 
 ## Step 3 — Receipt
@@ -92,6 +92,8 @@ Return **only** this one-line receipt (never the file content):
 ```
 {pod-id} | lenses: {n} | requirements: {n} | risks: {n} | open-questions: {n} | wrote: {path}
 ```
+
+(Pod receipts use pipe-delimited fields instead of the standard narrative format because pods are atomic units; the `lenses` count and full path are essential for join-barrier tracking of pod-level granularity.)
 
 Where:
 - `{n} lenses` = number of personas in your pod (e.g., 4 for either canonical pod)
@@ -111,7 +113,7 @@ domain-requirements | lenses: 4 | requirements: 18 | risks: 6 | open-questions: 
 fails to produce (e.g., you run out of time, encounter an error you cannot recover from), the
 **entire pod fails together**. The orchestrator's join barrier will write one stand-in
 `{pod-id}-pod.md` file with `Decision: FAILED` for the whole pod, not per-persona. This is by
-design: all lenses in a pod are meant to work together, and partial pods are unreliable to
+design: all personas in a pod are meant to work together, and partial pods are unreliable to
 downstream synthesis.
 
 If you cannot complete your pod, emit a receipt anyway (e.g., with partial counts) so the

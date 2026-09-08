@@ -369,10 +369,6 @@ def main():
     broken_adr_link = "0012-effort-ladder-and-model-cost-routing.md"
     broken_found = False
     try:
-        result = (
-            str(REPO_ROOT)
-            .split("\n")
-        )  # dummy to avoid subprocess for now, will use grep
         # Use grep to search for broken link in all markdown files
         import subprocess
 

@@ -10,8 +10,8 @@ model: sonnet
 A checkpoint-based, parallel planning pipeline:
 
 1. **Gather context** — ticket (GitHub issue URL via `gh issue view`, or conversation-provided description, or ask), project context (`.claude/project.yaml`, `CLAUDE.md`, relevant `git log`).
-2. **Route** — spawn ONE subagent (sonnet) with role prompt `~/.claude/prompts/plan-router.md` to select experts scaled by `--effort`, reading only the ticket + `reviewers/index.yaml` + the narrow `planReview.focusAreas` field of candidate reviewers.
-3. **Parallel isolated contributions** — spawn one **parallel subagent per selected expert** in a SINGLE message (join-barrier pattern: receipt + file-on-disk + sentinel line at end of file, one retry on failure, stand-in file on second failure). Each subagent writes `{expert}-contribution.md`; returns a one-line receipt only, never the content.
+2. **Route** — spawn ONE subagent (sonnet) with role prompt `~/.claude/prompts/plan-router.md` to select experts scaled by `--effort`, reading only the ticket + `reviewers/index.yaml` + the narrow `planReview.focusAreas` field of candidate reviewers. (Effort 1/2 skip routing — see Effort Ladder)
+3. **Parallel isolated contributions** — spawn one **parallel subagent per selected expert** in a SINGLE message (join-barrier pattern: receipt + file-on-disk + sentinel line at end of file, one retry on failure, stand-in file on second failure). Each subagent writes `{expert}-contribution.md`; returns a one-line receipt only, never the content. (Effort 1/2 skip routing — see Effort Ladder)
 4. **Contrarian Carl** — sequential, AFTER the join barrier from step 3. Spawn one subagent with Carl's persona, fed the contribution file paths from step 3.
 5. **Digest** — spawn one subagent (sonnet, mechanical merge, pinned) with role prompt `~/.claude/prompts/plan-digest.md`, given the contribution file paths (including Carl's). Writes `open-questions.md`.
 6. **Checkpoint (hard stop)** — read `open-questions.md` AND all individual `{expert}-contribution.md` files, and present BOTH to the user: every expert's full Domain/Requirements/Risks/Recommended-Approach/Open-Questions block plus the organized/deduped open questions from the digest for the actual decision UI. Use `AskUserQuestion` for 2-4-option questions, markdown + conversation for open-ended ones or themes with >4 questions — same as v1 Step 4. Wait for answers.
@@ -140,7 +140,7 @@ if [ "$EFFORT_EXPLICIT" = "0" ]; then
   elif [ -f "$HOME/.claude/effort-heuristic.yaml" ]; then
     EFFORT_FROM_HEURISTIC=$(python3 -c "import yaml; print(yaml.safe_load(open('$HOME/.claude/effort-heuristic.yaml')).get('default_effort', 4))" 2>/dev/null || echo 4)
   fi
-  # Clamp to [2,4] per planning's current implementation (efforts 1-3 fallback to full panel anyway)
+  # Clamp to [2,4] per planning's current implementation (efforts 1-2 have dedicated swarm/pod paths; effort 3 uses router)
   if [ "$EFFORT_FROM_HEURISTIC" -lt 2 ]; then
     EFFORT=2
   elif [ "$EFFORT_FROM_HEURISTIC" -gt 4 ]; then
@@ -307,6 +307,8 @@ This stub mirrors how `expert-review-panel.md`'s swarm path stubs its routing re
 
 **Join barrier:** Apply `join-barrier-pattern.md`'s pattern with `{type}` = `contribution`, `{suffix}` = `swarm-contribution.md`. The merge agent writes a file, so standard file-exists + sentinel checks apply. No join-barrier retry logic needed for the scouts (inline output either returns or the Task call fails — no file-existence/sentinel check applies to inline output); the merge agent DOES follow the existing join-barrier pattern (receipt + file-exists + sentinel).
 
+**Recovery for failed scout Task calls:** If any scout's Task call fails (crash, timeout, or returns no output), re-run the full 3-scout batch, not individual scouts. A failed scout cannot be retried in isolation because scouts run in parallel by design; a retry must restore the full parallel set to preserve independence. On repeated failure (two full re-runs), write a stand-in `swarm-contribution.md` with `Decision: FAILED` so downstream steps detect the failure cleanly (do not hang waiting for the merge agent).
+
 **Carl (Step 4) after the barrier:** Carl still runs sequentially after Step 3 (Step 4), reading `swarm-contribution.md` as his input file (instead of the usual per-expert contribution files). Step 4's mechanism and telemetry remain unchanged.
 
 ### Effort 2 — Pod Path
@@ -327,9 +329,9 @@ Both files contain multiple `### [Name]'s Input` blocks (one per persona in the 
 {pod-id} | lenses: {n} | requirements: {n} | risks: {n} | open-questions: {n} | wrote: {path}
 ```
 
-**Pod definitions (hardcoded, fixed order):**
-- **Pod 1 (domain-requirements):** North Star Nick, Business Beth, Eric Evans, Data Scientist Dana
-- **Pod 2 (contracts-risk):** Tara TypeSafe, Security Sage, Sam System, Fragile Feynman
+**Pod definitions (hardcoded, fixed order):** See the 4 personas listed in `plan-pod.md`'s Your Mandate section. Two canonical pods:
+- **Pod 1 (domain-requirements):** the 4 personas listed in `plan-pod.md` (first pod definition)
+- **Pod 2 (contracts-risk):** the 4 personas listed in `plan-pod.md` (second pod definition)
 
 **Join barrier (pod-atomic):** Apply `join-barrier-pattern.md`'s pattern with `{type}` = `pod`, `{suffix}` = `{pod-id}-pod.md`. **Critical deviation:** the barrier's unit of retry/stand-in is the WHOLE POD, not an individual persona. A pod that fails twice gets ONE stand-in `Decision: FAILED` file for that entire pod (covering all personas in that pod), not per-persona stand-ins. This is pod-atomic granularity, matching `reviewer-pod.md`'s review-mode precedent.
 
@@ -339,10 +341,10 @@ Both files contain multiple `### [Name]'s Input` blocks (one per persona in the 
 
 ## Pods
 
-| Pod ID | Lenses | Count |
+| Pod ID | Members | Count |
 |--------|--------|-------|
-| domain-requirements | North Star Nick, Business Beth, Eric Evans, Data Scientist Dana | 4 |
-| contracts-risk | Tara TypeSafe, Security Sage, Sam System, Fragile Feynman | 4 |
+| domain-requirements | See `plan-pod.md` Your Mandate (Pod 1) | 4 |
+| contracts-risk | See `plan-pod.md` Your Mandate (Pod 2) | 4 |
 
 ## Note
 
@@ -592,6 +594,9 @@ Call `ExitPlanMode`.
 |---|---|---|---|
 | Router | sonnet | never — pinned | Narrow judgment, cheap |
 | Contributor (incl. Carl) | sonnet | `--model <haiku\|sonnet\|opus\|fable>` | Parallelizable, independent |
+| Swarm Scout | haiku | never — pinned | Fast screening, effort 1 only |
+| Swarm Merge | sonnet | never — pinned | Effort 1 merge, not overridable |
+| Pod Agent | `PANEL_MODEL` | `--model <haiku\|sonnet\|opus\|fable>` | Effort 2, pod-atomic units |
 | Digest | sonnet | never — pinned | Mechanical merge, not `PANEL_MODEL` |
 | Synthesis | opus | never — pinned | Judgment-heavy, final deliverable |
 | Alignment pass | opus | never — pinned | Alignment is a judgment task; same tier as synthesis |

@@ -53,6 +53,9 @@ FAILED
 ## Reason
 Agent returned no output or a truncated write after two attempts.
 
+## Failed-After
+(For pod agents only: the index of the last completed persona before failure, or "none" if no personas completed.)
+
 <!-- {type}-end -->
 EOF
 ```
