@@ -376,6 +376,21 @@ def _build_checks_dict(args):
     ))
 
 
+def _build_metric_kwargs(args):
+    """Build kwargs for turns, retries, output_artifact_size from CLI args.
+
+    Always populates all three keys (turns, retries, output_artifact_size) in the returned dict,
+    using telemetry_schema.UNKNOWN as the sentinel for unset optional int values
+    (matching the schema's "never a fabricated 0" rule). This ensures consistent dict shape
+    regardless of which CLI flags were supplied by the caller.
+    """
+    return {
+        "turns": args.turns if args.turns is not None else telemetry_schema.UNKNOWN,
+        "retries": args.retries if args.retries is not None else telemetry_schema.UNKNOWN,
+        "output_artifact_size": args.output_artifact_size if args.output_artifact_size is not None else telemetry_schema.UNKNOWN,
+    }
+
+
 def cmd_command_end(args):
     """Record a command.end event. Outcome is required; --command-id is optional (resolved from state).
 
@@ -417,6 +432,7 @@ def cmd_command_end(args):
     if not command_id:
         command_id = telemetry_schema.UNKNOWN
 
+    metric_kwargs = _build_metric_kwargs(args)
     event = telemetry_schema.build_event(
         "command.end",
         session_id=session_id,
@@ -428,6 +444,9 @@ def cmd_command_end(args):
         elapsed_seconds=elapsed_seconds,
         findings=_build_findings_dict(args),
         checks=_build_checks_dict(args),
+        turns=metric_kwargs["turns"],
+        retries=metric_kwargs["retries"],
+        output_artifact_size=metric_kwargs["output_artifact_size"],
     )
     try:
         telemetry_schema.append_event(args.log, event)
@@ -519,6 +538,7 @@ def cmd_stage_end(args):
     if not stage_id:
         stage_id = telemetry_schema.UNKNOWN
 
+    metric_kwargs = _build_metric_kwargs(args)
     event = telemetry_schema.build_event(
         "stage.end",
         session_id=session_id,
@@ -531,6 +551,9 @@ def cmd_stage_end(args):
         elapsed_seconds=elapsed_seconds,
         findings=_build_findings_dict(args),
         checks=_build_checks_dict(args),
+        turns=metric_kwargs["turns"],
+        retries=metric_kwargs["retries"],
+        output_artifact_size=metric_kwargs["output_artifact_size"],
     )
     try:
         telemetry_schema.append_event(args.log, event)
@@ -737,6 +760,13 @@ def _add_findings_and_checks_args(subparser):
     subparser.add_argument("--checks-passed", type=int, default=None, help="Checks/tests passed (optional)")
 
 
+def _add_metric_args(subparser):
+    """Add the shared --output-artifact-size, --turns, --retries optional int flags to a command-end/stage-end subparser."""
+    subparser.add_argument("--output-artifact-size", type=int, default=None, help="Size in bytes of the artifact produced (optional)")
+    subparser.add_argument("--turns", type=int, default=None, help="Number of agent turns (optional)")
+    subparser.add_argument("--retries", type=int, default=None, help="Number of retries (optional)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Record telemetry events to the local log.",
@@ -792,6 +822,7 @@ def main():
         help="Failure class (required if outcome=failure)",
     )
     _add_findings_and_checks_args(sp_command_end)
+    _add_metric_args(sp_command_end)
     sp_command_end.set_defaults(func=cmd_command_end)
 
     # stage-begin
@@ -816,6 +847,7 @@ def main():
         help="Failure class (required if outcome=failure)",
     )
     _add_findings_and_checks_args(sp_stage_end)
+    _add_metric_args(sp_stage_end)
     sp_stage_end.set_defaults(func=cmd_stage_end)
 
     # diagnose
