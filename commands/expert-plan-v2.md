@@ -322,9 +322,9 @@ Each pod writes its contribution file:
 - Pod 1 (`domain-requirements`): `{PLAN_SESSION_DIR}/domain-requirements-pod.md`
 - Pod 2 (`contracts-risk`): `{PLAN_SESSION_DIR}/contracts-risk-pod.md`
 
-Both files contain multiple `### [Name]'s Input` blocks (one per persona in the pod) and end in ONE shared `<!-- pod-end -->` sentinel. Expected receipt format:
+Both files contain multiple `### [Name]'s Input` blocks (one per persona in the pod) and end in ONE shared `<!-- pod-end -->` sentinel. Expected receipt format (per `plan-pod.md`):
 ```
-{pod-id}-pod.md written — {n} requirements, {n} risks, {n} open questions ({N} personas)
+{pod-id} | lenses: {n} | requirements: {n} | risks: {n} | open-questions: {n} | wrote: {path}
 ```
 
 **Pod definitions (hardcoded, fixed order):**
@@ -367,6 +367,11 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage contrarian >/
 Sequential, AFTER the join barrier from Step 3.
 
 Spawn one `expert-reviewer` subagent with Carl's persona (`~/.claude/reviewers/contrarian-carl.yaml`) plus `~/.claude/prompts/plan-contribution-contract.md`, fed the CONTRIBUTION FILE PATHS from Step 3 (not pasted content, not conversation) — mirroring how `/expert-review`'s Carl reads Pass 1 files, not the accumulated conversation.
+
+**Effort-specific input files** (which Step 3 output Carl reads):
+- Effort 1: `swarm-contribution.md`
+- Effort 2: both `domain-requirements-pod.md` and `contracts-risk-pod.md`
+- Effort 3–5: all individual `{expert}-contribution.md` files from Step 3
 
 Model: `PANEL_MODEL`. Writes `{PLAN_SESSION_DIR}/contrarian-carl-contribution.md`.
 
