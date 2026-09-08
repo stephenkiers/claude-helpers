@@ -36,5 +36,5 @@ Create `/expert-plan-v2` as a parallel-only architecture with checkpoint-based c
 - **Architecture mirrors code review** — `/expert-review`'s subagent blind-first panel
   (`expert-review-panel.md`) is the template; planning borrows its join-barrier pattern and
   "the file is the contract" discipline (documented in `agents/expert-reviewer.md`).
-- **Effort ladder** (per ADR-0012) applies to both v1 and v2; v2's implementation covers efforts 4-5
-  fully today, with efforts 1-3 (swarm/pod modes) planned as future work.
+- **Effort ladder** (per ADR-0012) applies to both v1 and v2; v2's implementation covers efforts 1-5
+  fully today, including swarm/pod modes for efforts 1-3.
