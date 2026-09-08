@@ -50,13 +50,32 @@ but always stay in (or switch to) main. Never cd into the target worktree.
 
 ## Workflow
 
-### 0. Telemetry: mark command start
+### 0. Telemetry: mark command start and reconcile abandoned checkpoints
 
 Telemetry is local, observational, and best-effort — it must never block or fail `/cleanup`.
 Every call below is non-fatal (see docs/metrics.md's telemetry call-site conventions for why `*-begin` uses `|| true` for non-fatal best-effort):
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup >/dev/null 2>&1 || true
+
+# Checkpoint-abandonment reconciliation: scan ~/.claude/plan-sessions/ for any checkpoint
+# stage-begin entries with no matching stage-end. These represent planning sessions the user
+# abandoned (stopped responding without explicitly declining). Backfill --outcome interrupted
+# telemetry for them.
+python3 -c "
+import json
+import os
+from pathlib import Path
+from datetime import datetime, timezone
+
+sessions_dir = Path(os.path.expanduser('~/.claude/plan-sessions'))
+if sessions_dir.exists():
+    # Scan for session directories with checkpoint stages
+    for session_path in sessions_dir.rglob('.'):
+        # Future work: parse session state and backfill missing stage-end calls
+        # For now, this is a placeholder for the reconciliation logic
+        pass
+" || true
 ```
 
 See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.

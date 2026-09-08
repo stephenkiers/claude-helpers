@@ -2643,6 +2643,55 @@ def test_agent_begin_rejects_turns_flag():
         return True, ""
 
 
+def test_command_end_with_turns_non_numeric():
+    """command-end --turns with non-numeric value rejects it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "command-end", "--command", "test", "--outcome", "success", "--turns", "abc"],
+        )
+        # argparse should reject non-numeric for type=int
+        if code == 0:
+            return False, "should reject non-numeric --turns"
+        return True, ""
+
+
+def test_command_end_with_retries_non_numeric():
+    """command-end --retries with non-numeric value rejects it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "command-end", "--command", "test", "--outcome", "success", "--retries", "xyz"],
+        )
+        if code == 0:
+            return False, "should reject non-numeric --retries"
+        return True, ""
+
+
+def test_command_end_with_output_artifact_size_non_numeric():
+    """command-end --output-artifact-size with non-numeric value rejects it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "command-end", "--command", "test", "--outcome", "success", "--output-artifact-size", "huge"],
+        )
+        if code == 0:
+            return False, "should reject non-numeric --output-artifact-size"
+        return True, ""
+
+
+def test_stage_end_with_retries_non_numeric():
+    """stage-end --retries with non-numeric value rejects it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "stage-end", "--stage", "test", "--outcome", "success", "--retries", "foo"],
+        )
+        if code == 0:
+            return False, "should reject non-numeric --retries"
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -2906,6 +2955,18 @@ if __name__ == "__main__":
 
     passed, msg = test_agent_begin_rejects_turns_flag()
     test_result("agent-begin rejects --turns (out of scope)", passed, msg)
+
+    passed, msg = test_command_end_with_turns_non_numeric()
+    test_result("command-end rejects --turns with non-numeric value", passed, msg)
+
+    passed, msg = test_command_end_with_retries_non_numeric()
+    test_result("command-end rejects --retries with non-numeric value", passed, msg)
+
+    passed, msg = test_command_end_with_output_artifact_size_non_numeric()
+    test_result("command-end rejects --output-artifact-size with non-numeric value", passed, msg)
+
+    passed, msg = test_stage_end_with_retries_non_numeric()
+    test_result("stage-end rejects --retries with non-numeric value", passed, msg)
 
     print()
 

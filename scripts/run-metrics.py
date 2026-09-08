@@ -379,24 +379,16 @@ def _build_checks_dict(args):
 def _build_metric_kwargs(args):
     """Build kwargs for turns, retries, output_artifact_size from CLI args.
 
-    Returns a dict of only the keys that were supplied (not None), using
-    telemetry_schema.UNKNOWN as the sentinel for unset optional int values
-    (matching the schema's "never a fabricated 0" rule).
+    Always populates all three keys (turns, retries, output_artifact_size) in the returned dict,
+    using telemetry_schema.UNKNOWN as the sentinel for unset optional int values
+    (matching the schema's "never a fabricated 0" rule). This ensures consistent dict shape
+    regardless of which CLI flags were supplied by the caller.
     """
-    result = {}
-    if args.turns is not None:
-        result["turns"] = args.turns
-    else:
-        result["turns"] = telemetry_schema.UNKNOWN
-    if args.retries is not None:
-        result["retries"] = args.retries
-    else:
-        result["retries"] = telemetry_schema.UNKNOWN
-    if args.output_artifact_size is not None:
-        result["output_artifact_size"] = args.output_artifact_size
-    else:
-        result["output_artifact_size"] = telemetry_schema.UNKNOWN
-    return result
+    return {
+        "turns": args.turns if args.turns is not None else telemetry_schema.UNKNOWN,
+        "retries": args.retries if args.retries is not None else telemetry_schema.UNKNOWN,
+        "output_artifact_size": args.output_artifact_size if args.output_artifact_size is not None else telemetry_schema.UNKNOWN,
+    }
 
 
 def cmd_command_end(args):

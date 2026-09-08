@@ -132,9 +132,19 @@ def main():
     print("Note: literal $0 check is already covered by test_command_doc_shell_conventions.py")
 
     # Test 5: Contract file has all four open-question sub-fields
+    # Anchor check to the schema-definition section (### Open Question Examples) to avoid
+    # false positives from examples in intro text.
     if contract_exists:
+        schema_section_start = contract_content.find("#### Open Question Examples")
+        if schema_section_start == -1:
+            # Fallback to looking for the format examples section
+            schema_section_start = contract_content.find("#### Format")
+
+        # Extract just the schema definition section for this check
+        check_text = contract_content[schema_section_start:] if schema_section_start != -1 else contract_content
+
         required_subfields = ["_Why it matters_", "_Recommendation_", "_Confounders_", "_Source_"]
-        subfields_found = [sf in contract_content for sf in required_subfields]
+        subfields_found = [sf in check_text for sf in required_subfields]
         all_subfields_present = all(subfields_found)
         missing_subfields = [
             sf for sf, found in zip(required_subfields, subfields_found) if not found

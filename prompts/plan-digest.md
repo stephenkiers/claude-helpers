@@ -16,6 +16,13 @@ understand what questions matter and where expert opinions differ.
 Your prompt will provide paths to all `{expert}-contribution.md` files from the planning session.
 Read them all using the Read tool.
 
+**Stand-in `FAILED` contributions:** if a contribution file's top line reads `Decision: FAILED`
+(a subagent failed after two retries and a stand-in was written in its place), do not silently fold
+it into the deduplication pass as if it had no opinion — that expert's perspective is simply
+missing, not "in agreement" or "no comment." List it in a short "Missing contributions" note at
+the top of your digest (which expert, that it failed, and to treat any open questions in its domain
+as unreviewed by that expert) before the themed question sections.
+
 ## Your Output
 
 Produce a navigational summary in `{PLAN_SESSION_DIR}/open-questions.md`.

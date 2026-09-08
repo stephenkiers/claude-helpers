@@ -75,7 +75,7 @@ Each open question follows this exact format:
   - _Why it matters_: [What this decision affects in the plan — be specific about consequences]
   - _Recommendation_: [Your suggested answer, based on your domain expertise — NOT a decision, the human still decides]
   - _Confounders_: [Things that could make your recommendation wrong — other constraints, trade-offs, or context your domain doesn't have. "None" if straightforward.]
-  - _Source_: [silent | ambiguous | disagreement] — why this is a question, not a decision
+  - _Source_: [silent | ambiguous] — why this is a question, not a decision
 ```
 
 All four fields are required. Do not skip `_Confounders_` — this is where you name the limits of
@@ -83,13 +83,16 @@ your own domain expertise and surface the trade-offs others must consider.
 
 #### Source Classification
 
-Classify why each question is a question, not a decision:
+Classify why each question is a question, not a decision. Contributors must use one of:
 
 - **silent**: The ticket doesn't mention this at all. Your domain identified a gap.
 - **ambiguous**: The ticket mentions it but could be read multiple ways. You're surfacing the ambiguity.
-- **disagreement**: Multiple experts disagree on this point (and you're listing it when your
-  recommendation differs from another expert's). Name the other expert(s) and their position in the
-  question or recommendation.
+
+**Note:** The `disagreement` classification is reserved for the Digest step (Step 5), after all
+contributors' perspectives are merged. As an isolated contributor, you do not have access to other
+experts' input, so you cannot authoritatively classify "disagreement". Use `silent` or `ambiguous`
+to surface the question; the digest will categorize it as disagreement if other experts recommend
+differently.
 
 #### Open Question Examples
 
@@ -111,14 +114,11 @@ Classify why each question is a question, not a decision:
   - _Source_: ambiguous
 ```
 
-**Disagreement** (experts differ):
-```markdown
-- **Should this be a new service or extend the existing API service?**
-  - _Why it matters_: This affects scalability, team ownership, deployment cadence, and operational complexity.
-  - _Recommendation_: Extend the existing service (Uncle Bob + Penny Pincher position). New service adds operational overhead unless scale justifies it.
-  - _Confounders_: The existing service is already at 80% load. If this feature is security-critical, isolation justifies a new service (Security Sage's position). Scope Creep Steve would argue for new service to enable independent scaling later.
-  - _Source_: disagreement (Penny Pincher vs. Security Sage)
-```
+**Disagreement is a digest-time label, not a contributor `_Source_` value.** As an isolated
+contributor you never write `_Source_: disagreement` yourself — you don't have access to other
+experts' input to know one exists. Write your own recommendation as `silent` or `ambiguous`; if
+another expert independently raises the same question with a different recommendation, the Digest
+step (Step 5) is what pairs the two and labels the merged entry as a disagreement for the human.
 
 ## The "Ask, Don't Assume" Rule
 
@@ -161,6 +161,13 @@ After writing your contribution file, return **only a one-line receipt** as your
 ```
 
 Example: `security-sage-contribution.md written — 4 requirements, 2 risks, 1 open question`
+
+**Critical: Your file must end with the join-barrier sentinel on a new line:**
+```
+<!-- contribution-end -->
+```
+
+The orchestrator's join barrier waits for three conditions per expert: receipt returned, file exists on disk, and file ends with `<!-- contribution-end -->`. Without this sentinel, the orchestrator cannot detect whether your write succeeded, and will retry or emit a stand-in file.
 
 Do not return your contribution itself. Your report is the file, not the message. Returning the
 full contribution in your final message would double-load the orchestrator's context (once from the
