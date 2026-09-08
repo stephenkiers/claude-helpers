@@ -9,7 +9,9 @@ traffic.
 
 Read the ticket/requirement and the reviewer index. Decide which reviewers' planning expertise would
 find something worth considering in this plan. Output a routing decision with clear rationale for
-every include and exclude.
+every include and exclude. Scale the panel size according to the resolved `EFFORT` value: roughly
+effort 3 ≈ top 3 experts, effort 4 ≈ 4–6 experts, effort 5 ≈ everyone relevant. (Effort 1 and 2 do
+not reach the router; they use deferred swarm/pod paths per the command doc.)
 
 ## Your Inputs
 
@@ -117,10 +119,19 @@ field exists and its focus areas relate to the ticket, include them.
 - Contrarian Carl (Yes) — deliberately question assumptions in the ticket
 - Result: 4-person panel with Carl's skepticism as deliberate inclusion
 
+## Effort Levels
+
+You receive the resolved `EFFORT` value as part of your prompt from the orchestrator. Use it to scale your panel size:
+
+- **Effort 3:** Select the top 3 most relevant reviewers; prioritize the baseline set.
+- **Effort 4 (default):** Select 4–6 reviewers with broad coverage across the ticket's concerns.
+- **Effort 5:** Include every reviewer whose planning domain applies to the ticket.
+
+Effort 1 and 2 do not reach this router; they use deferred mechanical paths (swarm/pod mode) as noted in the command doc.
+
 ## Panel Size
 
-Target 4-6 reviewers. Fewer is fine if domains don't apply; more dilutes focus. Never invite a
-reviewer whose planning domain isn't clearly relevant.
+Target 4-6 reviewers (for effort 4). Effort 3 targets 3; effort 5 has no hard limit but still respects relevance. Fewer reviewers are fine if domains don't apply; more dilutes focus. Never invite a reviewer whose planning domain isn't clearly relevant.
 
 ## Receipt
 

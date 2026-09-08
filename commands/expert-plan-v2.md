@@ -41,11 +41,11 @@ A checkpoint-based, parallel planning pipeline:
 
   `--effort` is manual (future work: complexity auto-gate based on ticket size).
 
-- `--model <haiku|sonnet|opus|fable>`: model for the **contributor panel** — experts in Steps 3 and 4 (Contributor subagents incl. Carl), Digest (Step 5) stays sonnet-pinned. Default: inherit this command's model (`sonnet`). Router (Step 2) is sonnet-pinned regardless. Synthesis (Step 7) and Alignment (Step 8) are opus-pinned regardless.
+- `--model <haiku|sonnet|opus|fable>`: model for the **contributor panel** — experts in Steps 3 and 4 (Contributor subagents incl. Carl) only. Unlike `/expert-review`, synthesis (Step 7) and the alignment pass (Step 8) stay opus-pinned regardless of `--model` — see the Model Policy table below. Digest (Step 5) also stays sonnet-pinned. Router (Step 2) is sonnet-pinned regardless. Default: inherit this command's model (`sonnet`).
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25 · **fable** $10/$50.
 
-Examples: `/expert-plan-v2 --model haiku` (whole pipeline, cheap tier) · `/expert-plan-v2 --effort 1` (3 scouts + merge — the cheap screen) · `/expert-plan-v2 --effort 5` (everyone, full depth) · `/expert-plan-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue).
+Examples: `/expert-plan-v2 --model haiku` (contributors run haiku; synthesis and alignment still run opus — see Model Policy) · `/expert-plan-v2 --effort 1` (3 scouts + merge — the cheap screen) · `/expert-plan-v2 --effort 5` (everyone, full depth) · `/expert-plan-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue).
 
 ## Checkpoint Files
 
@@ -70,7 +70,7 @@ Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat
 
 Call `EnterPlanMode` immediately. All subsequent work happens in plan mode.
 
-Then set up the checkpoint directory:
+Then set up the checkpoint directory and parse `--effort`:
 
 ```bash
 set -euo pipefail
@@ -97,8 +97,29 @@ TIMESTAMP=$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)
 PLAN_SESSION_DIR="$HOME/.claude/plan-sessions/${REPO_KEY}/${SLUG}-${TIMESTAMP}"
 mkdir -p "$PLAN_SESSION_DIR"
 
+# Parse --effort from command arguments, or fall back to heuristic (same cascade as /expert-review)
+EFFORT=4
+if [ $# -gt 0 ]; then
+  for i in $(seq 1 $((${#@}))); do
+    if [ "${!i}" = "--effort" ] && [ $((i + 1)) -le $# ]; then
+      i=$((i + 1))
+      EFFORT="${!i}"
+      break
+    fi
+  done
+fi
+
+# If --effort not provided, check for heuristic config (project-level first, then user-level)
+if [ "$EFFORT" = "4" ]; then
+  if [ -f "$PROJECT_ROOT/.claude/effort-heuristic.yaml" ]; then
+    EFFORT=$(python3 -c "import yaml; print(yaml.safe_load(open('$PROJECT_ROOT/.claude/effort-heuristic.yaml')).get('default_effort', 4))" 2>/dev/null || echo 4)
+  elif [ -f "$HOME/.claude/effort-heuristic.yaml" ]; then
+    EFFORT=$(python3 -c "import yaml; print(yaml.safe_load(open('$HOME/.claude/effort-heuristic.yaml')).get('default_effort', 4))" 2>/dev/null || echo 4)
+  fi
+fi
+
 # Export for use in subsequent steps
-export PLAN_SESSION_DIR REPO_KEY SLUG PROJECT_ROOT
+export PLAN_SESSION_DIR REPO_KEY SLUG PROJECT_ROOT EFFORT
 ```
 
 ### Telemetry: mark command start
@@ -129,6 +150,8 @@ Collect the input to plan against:
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
 
+On failure: `stage-end --stage gather-context --outcome failure --failure-class context-load-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class context-load-failed 2>/dev/null || true`, then stop.
+
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage route-experts >/dev/null 2>&1 || true
@@ -143,6 +166,8 @@ The router outputs to `{PLAN_SESSION_DIR}/selected-experts.md` with:
 2. Per-expert sections with reasoning
 
 The orchestrator (you) reads ONLY that one file, never loads the full reviewer table into your own context — this is the whole point of the port.
+
+On failure: `stage-end --stage route-experts --outcome failure --failure-class router-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class router-failed 2>/dev/null || true`, then stop.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage route-experts --outcome success 2>/dev/null || true
@@ -194,6 +219,8 @@ Agent returned no output or a truncated write after two attempts.
 EOF
 ```
 
+On failure (if multiple experts fail or the barrier times out): `stage-end --stage expert-contributions --outcome failure --failure-class contribution-barrier-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class contribution-barrier-failed 2>/dev/null || true`, then stop.
+
 ### Effort N subsections (Contribution step)
 
 **Effort 1:** 3 haiku scouts contribute independently.
@@ -224,6 +251,8 @@ contrarian-carl | DEEP-DIVE | contributions: {new_requirements, questioned_assum
 
 Note: If Carl was already selected by the Router in Step 2, this step still runs (Carl always contributes last, after seeing everyone else's input). The orchestrator should check `selected-experts.md` from Step 2 to know whether this is Carl's only run or his second/fresh pass.
 
+On failure: `stage-end --stage contrarian --outcome failure --failure-class carl-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class carl-failed 2>/dev/null || true`, then stop.
+
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage contrarian --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage digest-questions >/dev/null 2>&1 || true
@@ -234,6 +263,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage digest-questi
 Spawn one `expert-reviewer` subagent (`model: sonnet`, mechanical merge, pinned — not `PANEL_MODEL`) with role prompt `~/.claude/prompts/plan-digest.md`, given the contribution file paths (paths only, not contents) from Steps 3 and 4 (including Carl's). It reads all contributions, deduplicates/organizes open questions by theme, and writes `{PLAN_SESSION_DIR}/open-questions.md`.
 
 Expected output: organized markdown with `## Theme` sections, each containing 2-4 key questions deduped across contributors.
+
+On failure: `stage-end --stage digest-questions --outcome failure --failure-class digest-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class digest-failed 2>/dev/null || true`, then stop.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage digest-questions --outcome success 2>/dev/null || true
@@ -317,13 +348,24 @@ This creates an audit trail of what was decided and by whom.]
 
 **Output file:** The subagent writes the plan to `~/.claude/plans/{slug}.md` directly (not to `{PLAN_SESSION_DIR}`). This is the ONE role in this whole pipeline permitted to write outside the checkpoint directory, because it's the final deliverable, not a checkpoint. The subagent instructions must state this explicitly as the reason it deviates from the checkpoint-dir convention, referencing `agents/expert-reviewer.md`'s file-scope rule.
 
+On failure: `stage-end --stage synthesize-plan --outcome failure --failure-class synthesis-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class synthesis-failed 2>/dev/null || true`, then stop.
+
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome success 2>/dev/null || true
 ```
 
 ## Step 8: Alignment Pass (Opus-Pinned — Only if Effort > 3)
 
-**Skip guard:** If `--effort 1|2|3`, skip this entire step and proceed to Step 9.
+**Skip guard:** If `EFFORT` is 1, 2, or 3, skip this entire step and proceed to Step 9. Do not emit telemetry calls for a skipped stage.
+
+```bash
+if [ "$EFFORT" -le 3 ]; then
+  # Alignment pass skipped for efforts 1-3
+  true
+else
+  # Alignment pass runs for efforts 4-5
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage alignment-pass >/dev/null 2>&1 || true
+```
 
 Spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`~/.claude/plans/{slug}.md`) and flag anything misaligned with their domain.
 
@@ -349,9 +391,11 @@ No alignment issues flagged by the expert panel.
 
 This preserves transparency — a human reading the plan knows the alignment pass ran (or didn't).
 
+On failure (if join barrier times out or experts fail): `stage-end --stage alignment-pass --outcome failure --failure-class alignment-barrier-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class alignment-barrier-failed 2>/dev/null || true`, then stop.
+
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage alignment-pass >/dev/null 2>&1 || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage alignment-pass --outcome success 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage alignment-pass --outcome success 2>/dev/null || true
+fi
 ```
 
 ## Step 9: Present

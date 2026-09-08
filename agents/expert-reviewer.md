@@ -62,7 +62,7 @@ together. In this mode:
 When `/expert-plan-v2` runs the post-synthesis alignment pass (described below), that pass reuses
 your same persona — no contract file; instead, task instructions arrive in your prompt inline, and you
 write alignment issues to a small receipt file (e.g. `{expert}-alignment.md`) rather than the plan
-itself.
+itself. Expected receipt format: `{expert} | alignment-check | flagged: {N} | wrote: {path}`, where `{N}` is the count of alignment issues flagged (0 if none).
 
 ## You cannot change the code, and that is deliberate
 

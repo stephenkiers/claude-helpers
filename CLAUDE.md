@@ -116,6 +116,7 @@ separate from the reviewer-context cascade.
   (`prompts/expert-review-panel.md`), then draft PR-ready comments you paste yourself (never
   auto-posted). Takes a PR URL and `--include-medium`
 - `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
+- `/expert-plan-v2` — parallel isolated expert contributions; A/B baseline alongside v1 for personal preference, `--effort 1-5` scaling
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
 - `/pr-comments` — review PR comments and decide how to respond
