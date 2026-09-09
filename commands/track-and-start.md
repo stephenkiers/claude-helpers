@@ -1,6 +1,6 @@
 ---
 name: track-and-start
-description: Use when user says "/track-and-start" to create a GitHub issue (or local plan), branch, and worktree in one step. Requires plan mode or a resolvable plan-file path argument.
+description: Use when user says "/track-and-start" to create a GitHub issue (or local plan), branch, and worktree in one step.
 ---
 
 # Track and Start - Combined Issue, Branch, and Worktree Workflow
@@ -61,6 +61,14 @@ ARG1="${1:-}"
 ARG2="${2:-}"
 ```
 
+**Known limitation:** `set -- $ARGUMENTS_CLEAN` word-splits on whitespace — a plan-file path containing
+a space (e.g. `/track-and-start "~/My Plans/foo.md"`) will be split across `$ARG1`/`$ARG2` incorrectly.
+This is a pre-existing constraint of how this doc's slash-command arguments are parsed (only a single
+`$ARGUMENTS` string is available, with no quoting/array support), not something this ticket introduces
+or attempts to solve; if a path with spaces is passed, expect Stage A's "does not exist" error rather
+than a silent misparse into the wrong entry mode. Use a path without spaces, or rename/symlink the
+file, as a workaround.
+
 **Entry mode dispatch:** One ordered `if/elif/elif/elif/else` chain (never independent `if`s).
 
 | # | Condition | `ENTRY_MODE` | `IN_PLAN_MODE` | Plan file source |
@@ -82,7 +90,7 @@ First, compute the shell-testable classification (this part IS deterministic bas
 
 ```bash
 ARG1_IS_TICKET=0
-echo "$ARG1" | grep -qE '^[A-Z]+-[0-9]+$' && ARG1_IS_TICKET=1
+printf '%s' "$ARG1" | grep -qE '^[A-Z]+-[0-9]+$' && ARG1_IS_TICKET=1
 
 ARG1_IS_FILE=0
 [ -n "$ARG1" ] && [ -f "$ARG1" ] && ARG1_IS_FILE=1
@@ -120,28 +128,61 @@ This section resolves and validates the plan file for modes that require it. It 
 
 **Note:** `TITLE` is an unstated partial function — it is never assigned in either tracker mode (tracker and tracker-with-path), only in path-arg and plan-mode. In tracker modes, `BRANCH` and `TICKET_TITLE` come from the tracker and must not be overridden.
 
+### Stage 0: Plan-Mode Disk Write (plan-mode only)
+
+For every other mode, `$PLAN_FILE` already points at an on-disk file (`$ARG1`/`$ARG2`). Plan mode
+is the one case with no file yet — this stage writes one, **before** Stage A runs, so plan-mode falls
+through Stage A/B exactly like every other mode instead of duplicating their logic:
+
+```bash
+if [ "$ENTRY_MODE" = "plan-mode" ]; then
+  mkdir -p ~/.claude/plans
+
+  # PLAN_CONTENT here is the in-memory plan text from this live plan-mode session.
+
+  # Derive a best-effort slug from that content (lightweight, separate from Stage B's
+  # authoritative extraction below — this one runs against content that isn't on disk yet).
+  BEST_EFFORT_SLUG=$(printf '%s' "$PLAN_CONTENT" | grep -m 1 -E '^# ' 2>/dev/null | sed 's/^#[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-30)
+
+  UTC_TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+  if [ -n "$BEST_EFFORT_SLUG" ]; then
+    PLAN_FILENAME="${UTC_TIMESTAMP}-${BEST_EFFORT_SLUG}.md"
+  else
+    PLAN_FILENAME="${UTC_TIMESTAMP}.md"
+  fi
+  PLAN_FILE="$HOME/.claude/plans/${PLAN_FILENAME}"
+
+  printf '%s' "$PLAN_CONTENT" > "$PLAN_FILE" 2>&1
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to write plan file to $PLAN_FILE" >&2
+    exit 1
+  fi
+fi
+```
+
+`PLAN_FILE` is now set for plan-mode exactly as it is for `path-arg`/`tracker-with-path` — Stage A
+below validates it (a fresh write should always pass, but Stage A is what actually confirms that,
+not a second, duplicated set of the same five checks) and Stage B derives `TITLE` from it.
+
 ### Stage A: Plan File Validation
 
-Resolve to an absolute path (expand a leading `~`; a relative path resolves against the caller's cwd), then check in order:
+Runs for `ENTRY_MODE ∈ {path-arg, tracker-with-path, plan-mode}` — the same check sequence for all
+three, since by this point `PLAN_FILE` is set one way or another (from `$ARG1`, `$ARG2`, or Stage 0's
+write). Resolve to an absolute path (expand a leading `~`; a relative path resolves against the
+caller's cwd; plan-mode's `$PLAN_FILE` from Stage 0 is already absolute), then check in order:
 
 ```bash
 if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
-  # Determine plan file source
-  if [ "$ENTRY_MODE" = "plan-mode" ]; then
-    # Plan file will be written in Step 3 below; skip validation for now
-    VALIDATE_PLAN=0
-  else
-    # path-arg or tracker-with-path: resolve and validate $ARG1 or $ARG2
+  if [ "$ENTRY_MODE" != "plan-mode" ]; then
+    # path-arg or tracker-with-path: resolve $ARG1 or $ARG2 into an absolute PLAN_FILE.
+    # plan-mode already set PLAN_FILE to an absolute path in Stage 0 above.
     if [ "$ENTRY_MODE" = "path-arg" ]; then
       PLAN_FILE_ARG="$ARG1"
     else
       # tracker-with-path
       PLAN_FILE_ARG="$ARG2"
     fi
-    VALIDATE_PLAN=1
-  fi
-  
-  if [ "$VALIDATE_PLAN" = 1 ]; then
+
     # Expand tilde if present
     if [[ "$PLAN_FILE_ARG" =~ ^~ ]]; then
       PLAN_FILE="${PLAN_FILE_ARG/#\~/$HOME}"
@@ -153,52 +194,55 @@ if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ] || 
         PLAN_FILE="$(cd "$OLDPWD" 2>/dev/null && pwd)/$PLAN_FILE_ARG" || PLAN_FILE="$(pwd)/$PLAN_FILE_ARG"
       fi
     fi
-    
-    # Check 1: path exists
-    if [ ! -e "$PLAN_FILE" ]; then
-      echo "ERROR: Plan-file argument does not exist: $PLAN_FILE" >&2
-      echo "  If you meant a tracker ticket, ticket IDs are uppercase (e.g. \`PPS-166\`)" >&2
-      exit 1
-    fi
-    
-    # Check 2: path is a regular file (not a directory, not a broken symlink)
-    if [ ! -f "$PLAN_FILE" ]; then
-      echo "ERROR: Plan-file argument is not a regular file: $PLAN_FILE" >&2
-      exit 1
-    fi
-    
-    # Check 3: path is readable
-    if [ ! -r "$PLAN_FILE" ]; then
-      echo "ERROR: Plan-file argument is not readable: $PLAN_FILE" >&2
-      exit 1
-    fi
-    
-    # Check 4: file is non-empty (has at least one non-whitespace byte)
-    if ! grep -q '[^ \t\n\r]' "$PLAN_FILE"; then
-      echo "ERROR: Plan-file argument is empty: $PLAN_FILE" >&2
-      exit 1
-    fi
-    
-    # Check 5: file size is at or under 1 MiB
-    FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null)
-    if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 1048576 ]; then
-      echo "ERROR: Plan-file argument is too large (>1 MiB): $PLAN_FILE" >&2
-      exit 1
-    fi
-    
-    # Read PLAN_CONTENT from validated path
-    PLAN_CONTENT=$(cat "$PLAN_FILE" 2>&1)
-    if [ $? -ne 0 ]; then
-      echo "ERROR: Failed to read plan file: $PLAN_FILE" >&2
-      exit 1
-    fi
+  fi
+
+  # Check 1: path exists
+  if [ ! -e "$PLAN_FILE" ]; then
+    echo "ERROR: Plan-file argument does not exist: $PLAN_FILE" >&2
+    echo "  If you meant a tracker ticket, ticket IDs are uppercase (e.g. \`PPS-166\`)" >&2
+    exit 1
+  fi
+
+  # Check 2: path is a regular file (not a directory, not a broken symlink)
+  if [ ! -f "$PLAN_FILE" ]; then
+    echo "ERROR: Plan-file argument is not a regular file: $PLAN_FILE" >&2
+    exit 1
+  fi
+
+  # Check 3: path is readable
+  if [ ! -r "$PLAN_FILE" ]; then
+    echo "ERROR: Plan-file argument is not readable: $PLAN_FILE" >&2
+    exit 1
+  fi
+
+  # Check 4: file is non-empty (has at least one non-whitespace byte)
+  if ! grep -q '[^ \t\n\r]' "$PLAN_FILE"; then
+    echo "ERROR: Plan-file argument is empty: $PLAN_FILE" >&2
+    exit 1
+  fi
+
+  # Check 5: file size is at or under 1 MiB
+  FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null)
+  if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 1048576 ]; then
+    echo "ERROR: Plan-file argument is too large (>1 MiB): $PLAN_FILE" >&2
+    exit 1
+  fi
+
+  # Read PLAN_CONTENT from validated path (for plan-mode this re-reads the file Stage 0 just
+  # wrote, confirming the write round-tripped correctly)
+  PLAN_CONTENT=$(cat "$PLAN_FILE" 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to read plan file: $PLAN_FILE" >&2
+    exit 1
   fi
 fi
 ```
 
 ### Stage B: Title Derivation (path-arg and plan-mode only)
 
-This stage runs only for `ENTRY_MODE ∈ {path-arg, plan-mode}`. In tracker modes, `TICKET_TITLE` comes from the tracker instead.
+This stage runs only for `ENTRY_MODE ∈ {path-arg, plan-mode}` — the single, shared, authoritative
+title-derivation implementation for both. In tracker modes, `TICKET_TITLE` comes from the tracker
+instead and this stage does not run.
 
 **Stage B1: Extract first H1 from file:**
 
@@ -206,10 +250,10 @@ This stage runs only for `ENTRY_MODE ∈ {path-arg, plan-mode}`. In tracker mode
 if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
   # First `# ` H1 anywhere in file wins (not necessarily first line)
   TITLE=$(grep -m 1 -E '^# ' "$PLAN_FILE" 2>/dev/null | sed 's/^#[[:space:]]*//')
-  
+
   # If extracted H1 strips to empty/whitespace-only, treat as "no H1" and fall through to Step 2
   TITLE=$(printf '%s' "$TITLE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-  
+
   if [ -z "$TITLE" ]; then
     # No usable H1 — proceed to Step 2 (slugify filename)
     TITLE=""
@@ -225,12 +269,11 @@ if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
     # Slugify the filename stem (lowercase, non-alnum → `-`, collapse/trim dashes)
     FILENAME=$(basename "$PLAN_FILE" .md)
     TITLE=$(printf '%s' "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
-    
-    # Check denylist: plan | untitled | draft | new | readme
+
     TITLE_LOWER=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
     # Strip trailing -<digits> or space <digits> suffix for denylist check
     TITLE_FOR_DENY=$(printf '%s' "$TITLE_LOWER" | sed 's/-[0-9]*$//; s/ [0-9]*$//')
-    
+
     if printf '%s' "$TITLE_FOR_DENY" | grep -qE '^(plan|untitled|draft|new|readme)$'; then
       echo "ERROR: Could not derive a title — add a \`# \` heading or rename the file" >&2
       exit 1
@@ -240,94 +283,6 @@ fi
 ```
 
 **When Stage B completes:** `$TITLE` is guaranteed non-empty.
-
-### Stage C: Plan-Mode Writing
-
-For `ENTRY_MODE=plan-mode`, write the plan to disk and then run Stages A and B on the written file:
-
-```bash
-if [ "$ENTRY_MODE" = "plan-mode" ]; then
-  mkdir -p ~/.claude/plans
-  
-  # Derive a best-effort slug from the plan content (lightweight, separate from Stage B)
-  # Extract first H1 for slug, or fallback to empty slug
-  BEST_EFFORT_SLUG=$(printf '%s' "$PLAN_CONTENT" | grep -m 1 -E '^# ' 2>/dev/null | sed 's/^#[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-30)
-  
-  # Construct filename: <UTC-timestamp>[-<best-effort-slug>].md
-  UTC_TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
-  if [ -n "$BEST_EFFORT_SLUG" ]; then
-    PLAN_FILENAME="${UTC_TIMESTAMP}-${BEST_EFFORT_SLUG}.md"
-  else
-    PLAN_FILENAME="${UTC_TIMESTAMP}.md"
-  fi
-  
-  PLAN_FILE="$HOME/.claude/plans/${PLAN_FILENAME}"
-  
-  # Write plan to disk
-  printf '%s' "$PLAN_CONTENT" > "$PLAN_FILE" 2>&1
-  if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to write plan file to $PLAN_FILE" >&2
-    exit 1
-  fi
-  
-  # Now run Stages A and B on the written file
-  # Stage A validation (already passed since we just wrote it, but check anyway)
-  
-  # Check 1: path exists (just wrote it, so passes)
-  if [ ! -e "$PLAN_FILE" ]; then
-    echo "ERROR: Plan-file write verification failed: file does not exist at $PLAN_FILE" >&2
-    exit 1
-  fi
-  
-  # Check 2: path is a regular file
-  if [ ! -f "$PLAN_FILE" ]; then
-    echo "ERROR: Plan-file write verification failed: not a regular file at $PLAN_FILE" >&2
-    exit 1
-  fi
-  
-  # Check 3: path is readable
-  if [ ! -r "$PLAN_FILE" ]; then
-    echo "ERROR: Plan-file write verification failed: not readable at $PLAN_FILE" >&2
-    exit 1
-  fi
-  
-  # Check 4: file is non-empty (content was non-empty when written, verify)
-  if ! grep -q '[^ \t\n\r]' "$PLAN_FILE"; then
-    echo "ERROR: Plan-file write verification failed: file is empty at $PLAN_FILE" >&2
-    exit 1
-  fi
-  
-  # Check 5: file size is at or under 1 MiB
-  FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null)
-  if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 1048576 ]; then
-    echo "ERROR: Plan-file write verification failed: file too large (>1 MiB) at $PLAN_FILE" >&2
-    exit 1
-  fi
-  
-  # Stage B: Title derivation for plan-mode
-  # First `# ` H1 anywhere in file wins (not necessarily first line)
-  TITLE=$(grep -m 1 -E '^# ' "$PLAN_FILE" 2>/dev/null | sed 's/^#[[:space:]]*//')
-  
-  # If extracted H1 strips to empty/whitespace-only, treat as "no H1" and fall through to Step 2
-  TITLE=$(printf '%s' "$TITLE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-  
-  if [ -z "$TITLE" ]; then
-    # No usable H1 — proceed to fallback (slugify filename)
-    FILENAME=$(basename "$PLAN_FILE" .md)
-    TITLE=$(printf '%s' "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
-    
-    # Check denylist: plan | untitled | draft | new | readme
-    TITLE_LOWER=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
-    # Strip trailing -<digits> or space <digits> suffix for denylist check
-    TITLE_FOR_DENY=$(printf '%s' "$TITLE_LOWER" | sed 's/-[0-9]*$//; s/ [0-9]*$//')
-    
-    if printf '%s' "$TITLE_FOR_DENY" | grep -qE '^(plan|untitled|draft|new|readme)$'; then
-      echo "ERROR: Could not derive a title — add a \`# \` heading or rename the file" >&2
-      exit 1
-    fi
-  fi
-fi
-```
 
 ## Project Detection
 
