@@ -211,8 +211,18 @@ disk (`~/.claude/plans/<timestamp>[-<slug>].md`) before processing.
 regular-file, readable, non-empty, size cap ≤1 MiB) and title derivation (first `# ` H1 or
 slugified filename, with denylist `plan|untitled|draft|new|readme`) both live in the wrapper, not
 the CLI — consistent with the wrapper-does-judgment / CLI-stays-deterministic split this ADR
-establishes.
+establishes. The wrapper performs these checks because they require judgment about user intent
+(e.g., distinguishing a missing file from a typo in a ticket ID, or deciding whether a filename
+"plan.md" is a legitimate title or a denylist hit) and UX clarity (error messages surface to the
+user before any mutations). The CLI assumes it receives only pre-validated, pre-derived inputs.
 
 **CLI contract unchanged:** `scripts/workflow/cli.py`'s `--plan-file` and `--title` arguments already
 accepted arbitrary paths and titles. The wrapper now provides them explicitly and validated; the CLI
 continues to treat them as opaque inputs (no re-validation, no re-derivation).
+
+**Known limitation — bash slugify duplication:** The wrapper's title derivation in `commands/track-and-start.md`
+(slugifying filename stems) duplicates the `slugify()` logic from `scripts/workflow/track.py`, neither is
+tested directly against the other, and they can diverge over time. This duplication is accepted in the
+interest of keeping the wrapper's deterministic bash blocks self-contained and testable without invoking
+Python. A future amendment may extract a shared slugify function and verify both callers use it
+identically, but doing so now is out of scope for this ticket.

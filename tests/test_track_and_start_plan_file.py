@@ -44,67 +44,55 @@ def main():
         f"Expected: {entry_modes}. Found: {[m for m in entry_modes if m in doc_text]}",
     )
 
-    # Test 2: IN_PLAN_MODE variable exists and appears near ExitPlanMode
-    in_plan_mode_present = "IN_PLAN_MODE" in doc_text
-    h.test_result(
-        "IN_PLAN_MODE variable is documented in the file",
-        in_plan_mode_present,
-    )
-
-    if in_plan_mode_present:
-        # Look for ExitPlanMode and check for IN_PLAN_MODE nearby
-        exit_plan_mode_pattern = r"ExitPlanMode"
-        matches = list(re.finditer(exit_plan_mode_pattern, doc_text))
-
-        # For each ExitPlanMode, check if IN_PLAN_MODE appears within ~400 chars before
-        nearby_count = 0
-        for match in matches:
-            start_pos = max(0, match.start() - 400)
-            context = doc_text[start_pos : match.end()]
-            if "IN_PLAN_MODE" in context:
-                nearby_count += 1
-
+    # Test 2: ExitPlanMode call in Pivot Detection is properly gated by IN_PLAN_MODE
+    # Find the actual call site in Pivot Detection step 7 and verify it checks IN_PLAN_MODE
+    pivot_section_start = doc_text.find("### Step 4d: Execute Pivot")
+    if pivot_section_start == -1:
         h.test_result(
-            "IN_PLAN_MODE appears near ExitPlanMode calls (Pivot Detection context)",
-            nearby_count >= len(matches) * 0.5 if matches else True,
-            f"Found {nearby_count}/{len(matches)} ExitPlanMode calls with IN_PLAN_MODE nearby",
+            "Pivot Detection section (Step 4d) exists",
+            False,
+            "Section not found",
+        )
+    else:
+        # Extract the section until the next ### heading
+        next_section_start = doc_text.find("\n### ", pivot_section_start + 1)
+        pivot_section = doc_text[pivot_section_start:next_section_start] if next_section_start != -1 else doc_text[pivot_section_start:]
+
+        # Look for the specific ExitPlanMode call site in this section
+        # It should be preceded by "If IN_PLAN_MODE=1" or similar condition
+        has_call = "ExitPlanMode" in pivot_section
+        has_condition_check = "IN_PLAN_MODE=1" in pivot_section or "IN_PLAN_MODE = 1" in pivot_section
+        has_conditional_structure = "if" in pivot_section.lower() and "IN_PLAN_MODE" in pivot_section
+
+        is_properly_gated = has_call and has_condition_check and has_conditional_structure
+        h.test_result(
+            "ExitPlanMode call in Pivot Detection is gated by explicit IN_PLAN_MODE=1 check",
+            is_properly_gated,
+            f"call={has_call}, condition={has_condition_check}, structure={has_conditional_structure}",
         )
 
-    # Test 3: No unconditional "Call ExitPlanMode" instruction
-    # The phrase should have a condition (IN_PLAN_MODE or if) nearby, or be in a design/comment section
-    call_exit_plan_pattern = r"Call\s+`?ExitPlanMode`?"
-    call_matches = list(re.finditer(call_exit_plan_pattern, doc_text, re.IGNORECASE))
+    # Test 3: Do NOT unconditionally call ExitPlanMode when IN_PLAN_MODE=0
+    # Verify that the Pivot Detection section explicitly handles the IN_PLAN_MODE=0 case
+    # without calling ExitPlanMode (printing handoff block instead)
+    if pivot_section_start != -1:
+        next_section_start = doc_text.find("\n### ", pivot_section_start + 1)
+        pivot_section = doc_text[pivot_section_start:next_section_start] if next_section_start != -1 else doc_text[pivot_section_start:]
 
-    unconditional_found = []
-    for match in call_matches:
-        # Check 400 chars before for condition markers
-        start_pos = max(0, match.start() - 400)
-        context_before = doc_text[start_pos : match.start()]
+        # Check for the "If IN_PLAN_MODE=0" branch
+        has_zero_case = "IN_PLAN_MODE=0" in pivot_section or "IN_PLAN_MODE = 0" in pivot_section
+        # The zero case should print the handoff block, not call ExitPlanMode
+        has_handoff_in_zero_context = False
+        if has_zero_case:
+            # Look for the pattern where IN_PLAN_MODE=0 leads to handoff printing
+            zero_case_pattern = r"If\s+`IN_PLAN_MODE=0`.*?print(?:s)?\s+the\s+standard\s+handoff"
+            has_handoff_in_zero_context = bool(re.search(zero_case_pattern, pivot_section, re.IGNORECASE | re.DOTALL))
 
-        has_condition = (
-            "IN_PLAN_MODE" in context_before or
-            " if " in context_before.lower() or
-            "when " in context_before.lower()
+        is_properly_negated = has_zero_case and has_handoff_in_zero_context
+        h.test_result(
+            "Pivot Detection explicitly handles IN_PLAN_MODE=0 (prints handoff, does NOT call ExitPlanMode)",
+            is_properly_negated,
+            f"zero_case={has_zero_case}, handoff_in_zero={has_handoff_in_zero_context}",
         )
-
-        # Also allow in design/comment sections (not a real instruction)
-        line_start = doc_text.rfind("\n", 0, match.start()) + 1
-        line_text = doc_text[line_start : match.end()]
-        is_comment_or_design = (
-            "design" in line_text.lower() or
-            "//" in line_text or
-            "comment" in line_text.lower() or
-            "general" in line_text.lower()
-        )
-
-        if not has_condition and not is_comment_or_design:
-            unconditional_found.append((match.start(), match.group()))
-
-    h.test_result(
-        "ExitPlanMode calls are properly conditioned on IN_PLAN_MODE",
-        len(unconditional_found) <= 4,
-        f"Found {len(unconditional_found)} potentially unconditional calls (allow in design/comment sections)",
-    )
 
     # Test 4: Title-derivation denylist appears exactly once
     # Look for the specific pattern where all 5 denylist words appear in sequence/close together
@@ -120,7 +108,6 @@ def main():
 
     denylist_occurrences = 0
     for pattern in denylist_patterns_to_find:
-        # Use a more restrictive window (100 chars) to keep pattern tight
         matches = re.findall(pattern, doc_text, re.IGNORECASE | re.DOTALL)
         if matches:
             # Count unique matches (avoid duplicates from different patterns)
@@ -156,6 +143,7 @@ def main():
             error_section = error_section[:next_section.start() + 4]
 
         # Check for required error conditions (case-insensitive substring matches)
+        # Use re.search for keyword checks to handle regex patterns properly
         conditions_to_check = [
             ("plan-file path does not exist", ["does not exist", "not exist", "nonexistent"]),
             ("plan-file path is not a regular file", ["not a regular file", "not a file", "directory"]),
@@ -168,17 +156,29 @@ def main():
         ]
 
         found_conditions = []
+        missing_conditions = []
         for description, keywords in conditions_to_check:
-            found = any(
-                kw.lower() in error_section.lower() for kw in keywords
-            )
+            found = False
+            for kw in keywords:
+                try:
+                    # Try as regex pattern first (for patterns like "write.*plan")
+                    if re.search(kw, error_section, re.IGNORECASE):
+                        found = True
+                        break
+                except re.error:
+                    # Fall back to substring match if regex is invalid
+                    if kw.lower() in error_section.lower():
+                        found = True
+                        break
             found_conditions.append(found)
+            if not found:
+                missing_conditions.append(description)
 
         found_count = sum(found_conditions)
         h.test_result(
-            f"Error Handling section covers all 8 required conditions (plan-file path, regular file, readable, empty, too large, denylist, write failure, ambiguous args)",
-            found_count >= 6,  # At least 6/8, some may be worded very differently
-            f"Found mentions of {found_count}/8 conditions",
+            f"Error Handling section covers all 8 required conditions (with per-condition reporting)",
+            found_count == 8,  # Must be exactly 8/8
+            f"Found {found_count}/8 conditions. Missing: {', '.join(missing_conditions) if missing_conditions else 'none'}",
         )
 
     # Test 7: Frontmatter and Requirements section
@@ -231,19 +231,23 @@ def main():
         f"Found {len(echo_arguments_matches)} instances" if echo_arguments_matches else "",
     )
 
-    # Test 9: Note that positional-zero token test is covered by existing test
+    # Test 9: Entry mode dispatch produces ENTRY_MODE and IN_PLAN_MODE variables
+    # The "After you've made the judgment above, record it" section should echo both variables
+    dispatch_output_section = doc_text.find("echo \"ENTRY_MODE=$ENTRY_MODE IN_PLAN_MODE=$IN_PLAN_MODE\"")
+    has_entry_mode_output = dispatch_output_section != -1
     h.test_result(
-        "Positional-zero token test ($0) is delegated to test_command_doc_shell_conventions.py",
-        True,
-        "This suite complements that one; no duplication needed",
+        "Entry mode dispatch section explicitly echoes both ENTRY_MODE and IN_PLAN_MODE variables",
+        has_entry_mode_output,
+        "Expected echo statement not found in dispatch section",
     )
 
-    # Test 10: Shell conventions test still passes (informational, not a hard requirement here)
+    # Test 10: Shell conventions test file exists and would validate this command
     shell_conventions_file = REPO_ROOT / "tests" / "test_command_doc_shell_conventions.py"
+    file_exists = shell_conventions_file.is_file()
     h.test_result(
-        "test_command_doc_shell_conventions.py exists for complementary checks",
-        shell_conventions_file.is_file(),
-        str(shell_conventions_file),
+        "test_command_doc_shell_conventions.py exists to validate this command",
+        file_exists,
+        str(shell_conventions_file) if not file_exists else "",
     )
 
     print()

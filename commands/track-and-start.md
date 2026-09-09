@@ -75,16 +75,16 @@ file, as a workaround.
 |---|-----------|--------------|-----------------|-------------------|
 | 1 | `$ARG1` matches `^[A-Z]+-[0-9]+$` **and** NOT an existing regular file (`-f`) **and** no `$ARG2` | `tracker` | 1 (plan mode still required) | none |
 | 2 | `$ARG1` matches the regex **and** NOT an existing regular file **and** `$ARG2` present (non-empty) | `tracker-with-path` | 0 | `$ARG2` |
-| 3a | `$ARG1` present (non-matching regex, OR matching-but-`-f`-true — a real file on disk wins) **and no `$ARG2`** | `path-arg` | model-determined | `$ARG1` |
-| 3b | `$ARG1` present **and** `$ARG2` present, not matching branch 2 | — (error) | — | error: "Ambiguous arguments" |
-| 4 | no `$ARG1`, plan mode currently active | `plan-mode` | 1 | written to disk |
-| 5 | otherwise | — (error) | — | error: "Neither plan mode nor a plan-file path" |
+| 3 | `$ARG1` present (non-matching regex, OR matching-but-`-f`-true — a real file on disk wins) **and no `$ARG2`** | `path-arg` | model-determined | `$ARG1` |
+| 4 | `$ARG1` present **and** `$ARG2` present, not matching branch 2 | — (error) | — | error: "Ambiguous arguments" |
+| 5 | no `$ARG1`, plan mode currently active | `plan-mode` | 1 | written to disk |
+| 6 | otherwise | — (error) | — | error: "Neither plan mode nor a plan-file path" |
 
 **Critical notes:**
-- Branches 1/2/3a's-file-check/3b are shell-testable (grep/`-f`/string equality).
-- "Plan mode currently active" (3a and 4) is **NOT shell-testable** — pure model judgment.
-- **Tiebreaker:** If `$ARG1` matches tracker-ticket pattern AND exists as a file, the file wins (branch 3a).
-- **Critical:** `IN_PLAN_MODE` gates `ExitPlanMode` in Pivot Detection (Step 6), never `ENTRY_MODE`. Branch 3a can have `ENTRY_MODE=path-arg` but `IN_PLAN_MODE=1` (live session + path arg).
+- Branches 1/2/3/4 are shell-testable (grep/`-f`/string equality).
+- "Plan mode currently active" (branches 3 and 5) is **NOT shell-testable** — pure model judgment.
+- **Tiebreaker** (only when `$ARG2` is absent): If `$ARG1` matches tracker-ticket pattern AND exists as a file, the file wins (branch 3).
+- **Critical:** `IN_PLAN_MODE` gates `ExitPlanMode` in Pivot Detection (Step 6), never `ENTRY_MODE`. Branch 3 can have `ENTRY_MODE=path-arg` but `IN_PLAN_MODE=1` (live session + path arg).
 
 First, compute the shell-testable classification (this part IS deterministic bash — run it and read back the four booleans):
 
@@ -108,10 +108,11 @@ Then assign `ENTRY_MODE` and `IN_PLAN_MODE` yourself (the model), by walking thi
 
 1. If `ARG1_IS_TICKET=1` and `ARG1_IS_FILE=0` and `ARG2_PRESENT=0` → `ENTRY_MODE=tracker`, `IN_PLAN_MODE=1` (plan mode is still required for this branch; if you are not actually in plan mode, stop and emit the "Neither plan mode nor a plan-file path argument" error instead of forcing this branch).
 2. Else if `ARG1_IS_TICKET=1` and `ARG1_IS_FILE=0` and `ARG2_PRESENT=1` → `ENTRY_MODE=tracker-with-path`, `IN_PLAN_MODE=0`.
-3. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=0` (this covers both a non-matching `$ARG1` and the matching-but-`ARG1_IS_FILE=1` tiebreaker case) → `ENTRY_MODE=path-arg`. For `IN_PLAN_MODE`, assess whether this session is *currently* in plan mode (the same judgment the old "Validate plan mode" step already required) — set `IN_PLAN_MODE=1` if so, `IN_PLAN_MODE=0` otherwise. **This is the branch the ticket exists to fix: a live plan-mode session that also passes a path must still get `IN_PLAN_MODE=1`, even though the path — not the live session — is the plan content source.**
-4. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=1` (and branch 2 didn't already match) → **error**, do not assign `ENTRY_MODE`: "Ambiguous arguments — both a first and second argument were given, but the first is not a tracker ticket ID."
+3. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=0` (this covers both a non-matching `$ARG1` and the matching-but-`ARG1_IS_FILE=1` tiebreaker case) → `ENTRY_MODE=path-arg`. For `IN_PLAN_MODE`, assess whether this session is *currently* in plan mode (the same judgment the old "Validate plan mode" step already required) — set `IN_PLAN_MODE=1` if so, `IN_PLAN_MODE=0` otherwise. **This is the branch the ticket exists to fix: a live plan-mode session that also passes a path must still get `IN_PLAN_MODE=1`, even though the path — not the live session — is the plan content source.** This branch 3 assessment is not shell-testable; it requires model judgment about whether plan mode is currently active.
+
+4. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=1` (and branch 2 didn't already match) → **error**, stop here and do not proceed: "Ambiguous arguments — cannot handle both a first and second argument in this context."
 5. Else if `ARG1_PRESENT=0` and you are currently in plan mode → `ENTRY_MODE=plan-mode`, `IN_PLAN_MODE=1`. The plan file will be written to disk in Stage C below.
-6. Else (`ARG1_PRESENT=0` and you are not in plan mode) → **error**, do not assign `ENTRY_MODE`: "Neither plan mode nor a plan-file path argument was provided. Use `/plan` first, or pass a plan file path."
+6. Else (`ARG1_PRESENT=0` and you are not in plan mode) → **error**, stop here and do not proceed: "Neither plan mode nor a plan-file path argument was provided. Use `/plan` first, or pass a plan file path."
 
 ```bash
 # After you've made the judgment above, record it so later bash blocks in this doc can read it:
@@ -132,13 +133,13 @@ This section resolves and validates the plan file for modes that require it. It 
 
 For every other mode, `$PLAN_FILE` already points at an on-disk file (`$ARG1`/`$ARG2`). Plan mode
 is the one case with no file yet — this stage writes one, **before** Stage A runs, so plan-mode falls
-through Stage A/B exactly like every other mode instead of duplicating their logic:
+through Stage A/B exactly like every other mode instead of duplicating their logic.
+
+**Before running the bash block below:** Bind `PLAN_CONTENT` to the live plan text from this plan-mode session. This is the same judgment the Entry Mode Dispatch section already required — if you assigned `ENTRY_MODE=plan-mode`, you already determined that plan mode is active and this variable holds the user's plan content. Record it now so the bash block can write it to disk.
 
 ```bash
 if [ "$ENTRY_MODE" = "plan-mode" ]; then
   mkdir -p ~/.claude/plans
-
-  # PLAN_CONTENT here is the in-memory plan text from this live plan-mode session.
 
   # Derive a best-effort slug from that content (lightweight, separate from Stage B's
   # authoritative extraction below — this one runs against content that isn't on disk yet).
@@ -152,8 +153,9 @@ if [ "$ENTRY_MODE" = "plan-mode" ]; then
   fi
   PLAN_FILE="$HOME/.claude/plans/${PLAN_FILENAME}"
 
-  printf '%s' "$PLAN_CONTENT" > "$PLAN_FILE" 2>&1
+  printf '%s' "$PLAN_CONTENT" > "$PLAN_FILE"
   if [ $? -ne 0 ]; then
+    rm -f "$PLAN_FILE"
     echo "ERROR: Failed to write plan file to $PLAN_FILE" >&2
     exit 1
   fi
@@ -191,7 +193,7 @@ if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ] || 
       if [[ "$PLAN_FILE_ARG" == /* ]]; then
         PLAN_FILE="$PLAN_FILE_ARG"
       else
-        PLAN_FILE="$(cd "$OLDPWD" 2>/dev/null && pwd)/$PLAN_FILE_ARG" || PLAN_FILE="$(pwd)/$PLAN_FILE_ARG"
+        PLAN_FILE="$(pwd)/$PLAN_FILE_ARG"
       fi
     fi
   fi
@@ -216,24 +218,38 @@ if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ] || 
   fi
 
   # Check 4: file is non-empty (has at least one non-whitespace byte)
-  if ! grep -q '[^ \t\n\r]' "$PLAN_FILE"; then
+  if ! grep -q '[^[:space:]]' "$PLAN_FILE"; then
     echo "ERROR: Plan-file argument is empty: $PLAN_FILE" >&2
     exit 1
   fi
 
   # Check 5: file size is at or under 1 MiB
-  FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null)
-  if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 1048576 ]; then
-    echo "ERROR: Plan-file argument is too large (>1 MiB): $PLAN_FILE" >&2
+  FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null || wc -c < "$PLAN_FILE" 2>/dev/null)
+  if [ -z "$FILE_SIZE" ]; then
+    echo "ERROR: Could not determine plan file size: $PLAN_FILE" >&2
+    exit 1
+  fi
+  if [ "$FILE_SIZE" -gt 1048576 ]; then
+    echo "ERROR: Plan-file argument is too large (${FILE_SIZE} bytes > 1 MiB limit): $PLAN_FILE" >&2
     exit 1
   fi
 
   # Read PLAN_CONTENT from validated path (for plan-mode this re-reads the file Stage 0 just
   # wrote, confirming the write round-tripped correctly)
-  PLAN_CONTENT=$(cat "$PLAN_FILE" 2>&1)
+  PLAN_CONTENT=$(cat "$PLAN_FILE")
   if [ $? -ne 0 ]; then
     echo "ERROR: Failed to read plan file: $PLAN_FILE" >&2
     exit 1
+  fi
+  
+  # For plan-mode, verify content round-trip: written content length must match read length
+  if [ "$ENTRY_MODE" = "plan-mode" ]; then
+    WRITTEN_LEN=$(printf '%s' "$PLAN_CONTENT" | wc -c)
+    READ_LEN=$(printf '%s' "$(cat "$PLAN_FILE")" | wc -c)
+    if [ "$WRITTEN_LEN" != "$READ_LEN" ]; then
+      echo "ERROR: Plan file write/read mismatch: wrote $WRITTEN_LEN bytes, read $READ_LEN bytes" >&2
+      exit 1
+    fi
   fi
 fi
 ```
@@ -271,13 +287,19 @@ if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
     TITLE=$(printf '%s' "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
 
     TITLE_LOWER=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
-    # Strip trailing -<digits> or space <digits> suffix for denylist check
-    TITLE_FOR_DENY=$(printf '%s' "$TITLE_LOWER" | sed 's/-[0-9]*$//; s/ [0-9]*$//')
+    # Strip trailing -<digits> (OS dedup-style suffix only) for denylist check
+    TITLE_FOR_DENY=$(printf '%s' "$TITLE_LOWER" | sed 's/-[0-9]*$//')
 
     if printf '%s' "$TITLE_FOR_DENY" | grep -qE '^(plan|untitled|draft|new|readme)$'; then
       echo "ERROR: Could not derive a title — add a \`# \` heading or rename the file" >&2
       exit 1
     fi
+  fi
+  
+  # Check that TITLE is non-empty after all derivation attempts
+  if [ -z "$TITLE" ]; then
+    echo "ERROR: Could not derive a title — add a \`# \` heading or rename the file" >&2
+    exit 1
   fi
 fi
 ```
@@ -323,6 +345,8 @@ Before generating an ID, scan `issues.json` for existing entries with overlappin
 ### Plan and Apply (Local Mode)
 
 **Print metadata confirmation** (for `ENTRY_MODE ∈ {path-arg, tracker-with-path}`):
+
+*Note: This block also appears in Tracker Ticket Mode (Worktree Creation), Pivot Detection, and Creating the Issue sections. Keep these blocks in sync.*
 
 ```bash
 if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ]; then
@@ -535,7 +559,16 @@ WORKTREE_DIR=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 
 Run Project Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly (the branch name comes from the tracker and must not be renamed):
 
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
+
+cd "$MAIN_WORKTREE"
+WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
+```
+
 **Print metadata confirmation** (for `ENTRY_MODE=tracker-with-path`):
+
+*Note: This block also appears in Local Plan Mode, Pivot Detection, and Creating the Issue sections. Keep these blocks in sync.*
 
 ```bash
 if [ "$ENTRY_MODE" = "tracker-with-path" ]; then
@@ -554,10 +587,6 @@ fi
 ```
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
-
-cd "$MAIN_WORKTREE"
-WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
 ```
 
@@ -675,6 +704,8 @@ EOF
 ```
 
 **2. Print metadata confirmation** (for `ENTRY_MODE ∈ {path-arg, tracker-with-path}` and `IN_PLAN_MODE=0`):
+
+*Note: This block also appears in Local Plan Mode, Tracker Ticket Mode, and Creating the Issue sections. Keep these blocks in sync.*
 
 ```bash
 if ([ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ]) && [ "$IN_PLAN_MODE" = "0" ]; then
@@ -859,6 +890,8 @@ Cache file location: `${WORKTREE_PARENT}/issues.json` (detected from worktree la
 
 **Print metadata confirmation** (for `ENTRY_MODE ∈ {path-arg, tracker-with-path}`):
 
+*Note: This block also appears in Local Plan Mode, Tracker Ticket Mode, and Pivot Detection sections. Keep these blocks in sync.*
+
 ```bash
 if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ]; then
   # Always print path + mtime line (even if CONFIRM_ECHO=0)
@@ -1032,7 +1065,7 @@ if [ -f "$PROJECT_ISSUES" ]; then
       jq --argjson idx "$MATCH_IDX" '.[$idx].status = "in_progress"' \
         "$PROJECT_ISSUES" > "${PROJECT_ISSUES}.tmp" && mv "${PROJECT_ISSUES}.tmp" "$PROJECT_ISSUES"
       MATCHED_TITLE=$(jq -r --argjson idx "$MATCH_IDX" '.[$idx].title' "$PROJECT_ISSUES")
-      echo "Updated issues.json: "$MATCHED_TITLE" → in_progress"
+      echo "Updated issues.json: \"$MATCHED_TITLE\" → in_progress"
     fi
   fi
 fi
@@ -1093,13 +1126,15 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-s
 |-----------|--------|
 | Neither plan mode nor a plan-file path argument nor a tracker ticket ID | Error: "No valid entry point detected. Either use plan mode, pass a plan-file path, or pass a tracker ticket ID (e.g., `PPS-166`)." |
 | Plan-file argument does not exist | Error: "Plan-file argument does not exist: {path}" + hint: "If you meant a tracker ticket, ticket IDs are uppercase (e.g. `PPS-166`)" |
-| Plan-file argument is not a regular file | Error: "Plan-file argument is not a regular file: {path}" |
-| Plan-file argument is not readable | Error: "Plan-file argument is not readable: {path}" |
-| Plan-file argument is empty | Error: "Plan-file argument is empty: {path}" |
-| Plan-file argument is too large (>1 MiB) | Error: "Plan-file argument is too large (>1 MiB): {path}" |
+| Plan-file argument is not a regular file | Error: "Plan-file argument is not a regular file: {path}" + hint: "Verify the path points to a file, not a directory or symlink" |
+| Plan-file argument is not readable | Error: "Plan-file argument is not readable: {path}" + hint: "Check file permissions; run `chmod u+r` if needed" |
+| Plan-file argument is empty | Error: "Plan-file argument is empty: {path}" + hint: "Add content to the file, or pass a different plan file" |
+| Plan-file argument is too large (>1 MiB) | Error: "Plan-file argument is too large ({size} bytes > 1 MiB limit): {path}" + hint: "Split the plan into smaller files or remove extraneous content" |
+| Could not determine plan file size | Error: "Could not determine plan file size: {path}" |
 | Could not derive a title from plan file | Error: "Could not derive a title — add a `# ` heading or rename the file" |
 | Failed to write plan file (plan-mode) | Error: "Failed to write plan file to {path}" |
-| Ambiguous arguments | Error: "Ambiguous arguments — cannot parse both $ARG1 and $ARG2 in this context" |
+| Plan file write/read round-trip failed (plan-mode) | Error: "Plan file write/read mismatch: wrote {bytes1} bytes, read {bytes2} bytes" |
+| Ambiguous arguments | Error: "Ambiguous arguments — cannot handle both a first and second argument in this context." |
 | Not in a git repo | Error: "Must be in a git repository with a GitHub remote" |
 | No GitHub remote (non-tracker modes) | Error: "No GitHub remote found. Add one with `gh repo create` or `git remote add`" |
 | `track plan` fails | Error: Output the `Unknown` reason from plan (e.g., "failed to fetch HEAD SHA", "not in git repo") |
