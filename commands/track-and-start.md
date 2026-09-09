@@ -1,6 +1,6 @@
 ---
 name: track-and-start
-description: Use when user says "/track-and-start" to create a GitHub issue (or local plan), branch, and worktree in one step. Requires plan mode.
+description: Use when user says "/track-and-start" to create a GitHub issue (or local plan), branch, and worktree in one step. Requires plan mode or a resolvable plan-file path argument.
 ---
 
 # Track and Start - Combined Issue, Branch, and Worktree Workflow
@@ -9,25 +9,24 @@ Creates a GitHub issue (or local plan file) from the plan, generates a branch na
 
 ## Requirements
 
-- **Must be in plan mode** with a valid plan file
-- Current directory must be within a git repository with a GitHub remote
-- If called with a tracker ticket ID argument (`[A-Z]+-\d+`), a GitHub remote is **not** required.
+- Plan mode **or** a resolvable plan-file path argument (`$ARG1`, or `$ARG2` alongside a tracker ticket ID); tracker ticket mode works with `[A-Z]+-\d+` patterns
+- Current directory must be within a git repository (GitHub remote required for non-tracker modes)
+- If called with a tracker ticket ID argument (`[A-Z]+-\d+`), a GitHub remote is **not** required
 
 ## Behavior
 
-1. Validate plan mode and plan file exist
-2. Read original plan content (preserve for cache — no modifications)
-3. Check args for tracker ticket ID → if argument matches [A-Z]+-\d+, enter Tracker Ticket mode (highest priority; skips steps 4–7)
-4. Detect project from git remote and worktree layout
-5. Check for local plan mode
-6. Pivot detection
-7. Duplicate detection
-8. Create GitHub issue with original plan as body
-9. Generate branch name from issue type and title
-10. Create worktree in correct location
-11. Output handoff commands for user to start implementation
+1. Parse arguments and determine entry mode (plan mode, plan-file path, tracker ticket, or combination)
+2. Resolve and validate plan file if in a path-based mode
+3. Detect project from git remote and worktree layout (skipped only if tracker mode has no GitHub remote)
+4. Check for local plan mode
+5. Pivot detection
+6. Duplicate detection
+7. Create GitHub issue with original plan as body
+8. Generate branch name from issue type and title
+9. Create worktree in correct location
+10. Output handoff commands for user to start implementation
 
-**Note:** This skill does NOT call ExitPlanMode or continue implementation, **except** in the pivot flow where the user is already in the correct worktree — in that case, ExitPlanMode is called so the user can approve and begin implementing immediately.
+**Note:** This skill does NOT call ExitPlanMode or continue implementation, **except** in the pivot flow, and only when the session is still in plan mode (`IN_PLAN_MODE=1`) — in that case the user is already in the correct worktree, so ExitPlanMode is called so they can approve and begin implementing immediately. `IN_PLAN_MODE` tracks whether the session is *currently* in plan mode, independently of where the plan content came from — a live plan-mode session that also passes a plan-file path argument still has `IN_PLAN_MODE=1` and still gets `ExitPlanMode` called. The pivot flow prints the standard handoff block instead only when `IN_PLAN_MODE=0` (a path-arg or tracker-with-path invocation made outside of a live plan-mode session).
 
 ## Telemetry: mark command start
 
@@ -39,6 +38,296 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command track-and
 ```
 
 See `docs/metrics.md`'s "Telemetry Call-Site Conventions" section for the full mechanism.
+
+## Argument Parsing and Entry Mode Dispatch
+
+Parse arguments and determine the entry mode (plan mode, path argument, tracker ticket, or combination). This is the **only** place `ENTRY_MODE` and `IN_PLAN_MODE` are assigned.
+
+**First, extract confirmation flag and parse positional arguments:**
+
+```bash
+CONFIRM_ECHO=1
+ARGUMENTS_CLEAN="$ARGUMENTS"
+
+# Strip --yes / --no-confirm flags and set CONFIRM_ECHO
+if printf '%s' "$ARGUMENTS_CLEAN" | grep -qE '\s*--no-confirm\s*|\s*--yes\s*'; then
+  CONFIRM_ECHO=0
+  ARGUMENTS_CLEAN=$(printf '%s' "$ARGUMENTS_CLEAN" | sed -E 's/\s*(--no-confirm|--yes)\s*/ /g; s/\s+/ /g; s/^\s*//; s/\s*$//')
+fi
+
+# Parse positional arguments
+set -- $ARGUMENTS_CLEAN
+ARG1="${1:-}"
+ARG2="${2:-}"
+```
+
+**Entry mode dispatch:** One ordered `if/elif/elif/elif/else` chain (never independent `if`s).
+
+| # | Condition | `ENTRY_MODE` | `IN_PLAN_MODE` | Plan file source |
+|---|-----------|--------------|-----------------|-------------------|
+| 1 | `$ARG1` matches `^[A-Z]+-[0-9]+$` **and** NOT an existing regular file (`-f`) **and** no `$ARG2` | `tracker` | 1 (plan mode still required) | none |
+| 2 | `$ARG1` matches the regex **and** NOT an existing regular file **and** `$ARG2` present (non-empty) | `tracker-with-path` | 0 | `$ARG2` |
+| 3a | `$ARG1` present (non-matching regex, OR matching-but-`-f`-true — a real file on disk wins) **and no `$ARG2`** | `path-arg` | model-determined | `$ARG1` |
+| 3b | `$ARG1` present **and** `$ARG2` present, not matching branch 2 | — (error) | — | error: "Ambiguous arguments" |
+| 4 | no `$ARG1`, plan mode currently active | `plan-mode` | 1 | written to disk |
+| 5 | otherwise | — (error) | — | error: "Neither plan mode nor a plan-file path" |
+
+**Critical notes:**
+- Branches 1/2/3a's-file-check/3b are shell-testable (grep/`-f`/string equality).
+- "Plan mode currently active" (3a and 4) is **NOT shell-testable** — pure model judgment.
+- **Tiebreaker:** If `$ARG1` matches tracker-ticket pattern AND exists as a file, the file wins (branch 3a).
+- **Critical:** `IN_PLAN_MODE` gates `ExitPlanMode` in Pivot Detection (Step 6), never `ENTRY_MODE`. Branch 3a can have `ENTRY_MODE=path-arg` but `IN_PLAN_MODE=1` (live session + path arg).
+
+First, compute the shell-testable classification (this part IS deterministic bash — run it and read back the four booleans):
+
+```bash
+ARG1_IS_TICKET=0
+echo "$ARG1" | grep -qE '^[A-Z]+-[0-9]+$' && ARG1_IS_TICKET=1
+
+ARG1_IS_FILE=0
+[ -n "$ARG1" ] && [ -f "$ARG1" ] && ARG1_IS_FILE=1
+
+ARG1_PRESENT=0
+[ -n "$ARG1" ] && ARG1_PRESENT=1
+
+ARG2_PRESENT=0
+[ -n "$ARG2" ] && ARG2_PRESENT=1
+
+echo "ARG1_IS_TICKET=$ARG1_IS_TICKET ARG1_IS_FILE=$ARG1_IS_FILE ARG1_PRESENT=$ARG1_PRESENT ARG2_PRESENT=$ARG2_PRESENT"
+```
+
+Then assign `ENTRY_MODE` and `IN_PLAN_MODE` yourself (the model), by walking this **ordered** chain — never as independent `if`s, and never write these two branches as unconditioned shell with a "change this if needed" placeholder, since "is plan mode currently active" is not something a bash predicate in this environment can answer; it is a judgment you already know from the conversation you are in:
+
+1. If `ARG1_IS_TICKET=1` and `ARG1_IS_FILE=0` and `ARG2_PRESENT=0` → `ENTRY_MODE=tracker`, `IN_PLAN_MODE=1` (plan mode is still required for this branch; if you are not actually in plan mode, stop and emit the "Neither plan mode nor a plan-file path argument" error instead of forcing this branch).
+2. Else if `ARG1_IS_TICKET=1` and `ARG1_IS_FILE=0` and `ARG2_PRESENT=1` → `ENTRY_MODE=tracker-with-path`, `IN_PLAN_MODE=0`.
+3. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=0` (this covers both a non-matching `$ARG1` and the matching-but-`ARG1_IS_FILE=1` tiebreaker case) → `ENTRY_MODE=path-arg`. For `IN_PLAN_MODE`, assess whether this session is *currently* in plan mode (the same judgment the old "Validate plan mode" step already required) — set `IN_PLAN_MODE=1` if so, `IN_PLAN_MODE=0` otherwise. **This is the branch the ticket exists to fix: a live plan-mode session that also passes a path must still get `IN_PLAN_MODE=1`, even though the path — not the live session — is the plan content source.**
+4. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=1` (and branch 2 didn't already match) → **error**, do not assign `ENTRY_MODE`: "Ambiguous arguments — both a first and second argument were given, but the first is not a tracker ticket ID."
+5. Else if `ARG1_PRESENT=0` and you are currently in plan mode → `ENTRY_MODE=plan-mode`, `IN_PLAN_MODE=1`. The plan file will be written to disk in Stage C below.
+6. Else (`ARG1_PRESENT=0` and you are not in plan mode) → **error**, do not assign `ENTRY_MODE`: "Neither plan mode nor a plan-file path argument was provided. Use `/plan` first, or pass a plan file path."
+
+```bash
+# After you've made the judgment above, record it so later bash blocks in this doc can read it:
+# ENTRY_MODE="<tracker|tracker-with-path|path-arg|plan-mode>"
+# IN_PLAN_MODE=<0|1>
+echo "ENTRY_MODE=$ENTRY_MODE IN_PLAN_MODE=$IN_PLAN_MODE"
+```
+
+`ENTRY_MODE` and `IN_PLAN_MODE` are each assigned exactly once, by this section, and never reassigned later in this doc.
+
+## Plan File Resolution
+
+This section resolves and validates the plan file for modes that require it. It runs for `ENTRY_MODE ∈ {path-arg, tracker-with-path, plan-mode}` only; NOT for plain `tracker` mode. It produces `PLAN_FILE`, `PLAN_CONTENT`, and (for path-arg and plan-mode only) `TITLE`.
+
+**Note:** `TITLE` is an unstated partial function — it is never assigned in either tracker mode (tracker and tracker-with-path), only in path-arg and plan-mode. In tracker modes, `BRANCH` and `TICKET_TITLE` come from the tracker and must not be overridden.
+
+### Stage A: Plan File Validation
+
+Resolve to an absolute path (expand a leading `~`; a relative path resolves against the caller's cwd), then check in order:
+
+```bash
+if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
+  # Determine plan file source
+  if [ "$ENTRY_MODE" = "plan-mode" ]; then
+    # Plan file will be written in Step 3 below; skip validation for now
+    VALIDATE_PLAN=0
+  else
+    # path-arg or tracker-with-path: resolve and validate $ARG1 or $ARG2
+    if [ "$ENTRY_MODE" = "path-arg" ]; then
+      PLAN_FILE_ARG="$ARG1"
+    else
+      # tracker-with-path
+      PLAN_FILE_ARG="$ARG2"
+    fi
+    VALIDATE_PLAN=1
+  fi
+  
+  if [ "$VALIDATE_PLAN" = 1 ]; then
+    # Expand tilde if present
+    if [[ "$PLAN_FILE_ARG" =~ ^~ ]]; then
+      PLAN_FILE="${PLAN_FILE_ARG/#\~/$HOME}"
+    else
+      # Relative path resolves against caller's cwd
+      if [[ "$PLAN_FILE_ARG" == /* ]]; then
+        PLAN_FILE="$PLAN_FILE_ARG"
+      else
+        PLAN_FILE="$(cd "$OLDPWD" 2>/dev/null && pwd)/$PLAN_FILE_ARG" || PLAN_FILE="$(pwd)/$PLAN_FILE_ARG"
+      fi
+    fi
+    
+    # Check 1: path exists
+    if [ ! -e "$PLAN_FILE" ]; then
+      echo "ERROR: Plan-file argument does not exist: $PLAN_FILE" >&2
+      echo "  If you meant a tracker ticket, ticket IDs are uppercase (e.g. \`PPS-166\`)" >&2
+      exit 1
+    fi
+    
+    # Check 2: path is a regular file (not a directory, not a broken symlink)
+    if [ ! -f "$PLAN_FILE" ]; then
+      echo "ERROR: Plan-file argument is not a regular file: $PLAN_FILE" >&2
+      exit 1
+    fi
+    
+    # Check 3: path is readable
+    if [ ! -r "$PLAN_FILE" ]; then
+      echo "ERROR: Plan-file argument is not readable: $PLAN_FILE" >&2
+      exit 1
+    fi
+    
+    # Check 4: file is non-empty (has at least one non-whitespace byte)
+    if ! grep -q '[^ \t\n\r]' "$PLAN_FILE"; then
+      echo "ERROR: Plan-file argument is empty: $PLAN_FILE" >&2
+      exit 1
+    fi
+    
+    # Check 5: file size is at or under 1 MiB
+    FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null)
+    if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 1048576 ]; then
+      echo "ERROR: Plan-file argument is too large (>1 MiB): $PLAN_FILE" >&2
+      exit 1
+    fi
+    
+    # Read PLAN_CONTENT from validated path
+    PLAN_CONTENT=$(cat "$PLAN_FILE" 2>&1)
+    if [ $? -ne 0 ]; then
+      echo "ERROR: Failed to read plan file: $PLAN_FILE" >&2
+      exit 1
+    fi
+  fi
+fi
+```
+
+### Stage B: Title Derivation (path-arg and plan-mode only)
+
+This stage runs only for `ENTRY_MODE ∈ {path-arg, plan-mode}`. In tracker modes, `TICKET_TITLE` comes from the tracker instead.
+
+**Stage B1: Extract first H1 from file:**
+
+```bash
+if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
+  # First `# ` H1 anywhere in file wins (not necessarily first line)
+  TITLE=$(grep -m 1 -E '^# ' "$PLAN_FILE" 2>/dev/null | sed 's/^#[[:space:]]*//')
+  
+  # If extracted H1 strips to empty/whitespace-only, treat as "no H1" and fall through to Step 2
+  TITLE=$(printf '%s' "$TITLE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  
+  if [ -z "$TITLE" ]; then
+    # No usable H1 — proceed to Step 2 (slugify filename)
+    TITLE=""
+  fi
+fi
+```
+
+**Stage B2: Fallback to slugified filename if no H1:**
+
+```bash
+if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "plan-mode" ]; then
+  if [ -z "$TITLE" ]; then
+    # Slugify the filename stem (lowercase, non-alnum → `-`, collapse/trim dashes)
+    FILENAME=$(basename "$PLAN_FILE" .md)
+    TITLE=$(printf '%s' "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
+    
+    # Check denylist: plan | untitled | draft | new | readme
+    TITLE_LOWER=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+    # Strip trailing -<digits> or space <digits> suffix for denylist check
+    TITLE_FOR_DENY=$(printf '%s' "$TITLE_LOWER" | sed 's/-[0-9]*$//; s/ [0-9]*$//')
+    
+    if printf '%s' "$TITLE_FOR_DENY" | grep -qE '^(plan|untitled|draft|new|readme)$'; then
+      echo "ERROR: Could not derive a title — add a \`# \` heading or rename the file" >&2
+      exit 1
+    fi
+  fi
+fi
+```
+
+**When Stage B completes:** `$TITLE` is guaranteed non-empty.
+
+### Stage C: Plan-Mode Writing
+
+For `ENTRY_MODE=plan-mode`, write the plan to disk and then run Stages A and B on the written file:
+
+```bash
+if [ "$ENTRY_MODE" = "plan-mode" ]; then
+  mkdir -p ~/.claude/plans
+  
+  # Derive a best-effort slug from the plan content (lightweight, separate from Stage B)
+  # Extract first H1 for slug, or fallback to empty slug
+  BEST_EFFORT_SLUG=$(printf '%s' "$PLAN_CONTENT" | grep -m 1 -E '^# ' 2>/dev/null | sed 's/^#[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-30)
+  
+  # Construct filename: <UTC-timestamp>[-<best-effort-slug>].md
+  UTC_TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+  if [ -n "$BEST_EFFORT_SLUG" ]; then
+    PLAN_FILENAME="${UTC_TIMESTAMP}-${BEST_EFFORT_SLUG}.md"
+  else
+    PLAN_FILENAME="${UTC_TIMESTAMP}.md"
+  fi
+  
+  PLAN_FILE="$HOME/.claude/plans/${PLAN_FILENAME}"
+  
+  # Write plan to disk
+  printf '%s' "$PLAN_CONTENT" > "$PLAN_FILE" 2>&1
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to write plan file to $PLAN_FILE" >&2
+    exit 1
+  fi
+  
+  # Now run Stages A and B on the written file
+  # Stage A validation (already passed since we just wrote it, but check anyway)
+  
+  # Check 1: path exists (just wrote it, so passes)
+  if [ ! -e "$PLAN_FILE" ]; then
+    echo "ERROR: Plan-file write verification failed: file does not exist at $PLAN_FILE" >&2
+    exit 1
+  fi
+  
+  # Check 2: path is a regular file
+  if [ ! -f "$PLAN_FILE" ]; then
+    echo "ERROR: Plan-file write verification failed: not a regular file at $PLAN_FILE" >&2
+    exit 1
+  fi
+  
+  # Check 3: path is readable
+  if [ ! -r "$PLAN_FILE" ]; then
+    echo "ERROR: Plan-file write verification failed: not readable at $PLAN_FILE" >&2
+    exit 1
+  fi
+  
+  # Check 4: file is non-empty (content was non-empty when written, verify)
+  if ! grep -q '[^ \t\n\r]' "$PLAN_FILE"; then
+    echo "ERROR: Plan-file write verification failed: file is empty at $PLAN_FILE" >&2
+    exit 1
+  fi
+  
+  # Check 5: file size is at or under 1 MiB
+  FILE_SIZE=$(stat -f%z "$PLAN_FILE" 2>/dev/null || stat -c%s "$PLAN_FILE" 2>/dev/null)
+  if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt 1048576 ]; then
+    echo "ERROR: Plan-file write verification failed: file too large (>1 MiB) at $PLAN_FILE" >&2
+    exit 1
+  fi
+  
+  # Stage B: Title derivation for plan-mode
+  # First `# ` H1 anywhere in file wins (not necessarily first line)
+  TITLE=$(grep -m 1 -E '^# ' "$PLAN_FILE" 2>/dev/null | sed 's/^#[[:space:]]*//')
+  
+  # If extracted H1 strips to empty/whitespace-only, treat as "no H1" and fall through to Step 2
+  TITLE=$(printf '%s' "$TITLE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  
+  if [ -z "$TITLE" ]; then
+    # No usable H1 — proceed to fallback (slugify filename)
+    FILENAME=$(basename "$PLAN_FILE" .md)
+    TITLE=$(printf '%s' "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
+    
+    # Check denylist: plan | untitled | draft | new | readme
+    TITLE_LOWER=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+    # Strip trailing -<digits> or space <digits> suffix for denylist check
+    TITLE_FOR_DENY=$(printf '%s' "$TITLE_LOWER" | sed 's/-[0-9]*$//; s/ [0-9]*$//')
+    
+    if printf '%s' "$TITLE_FOR_DENY" | grep -qE '^(plan|untitled|draft|new|readme)$'; then
+      echo "ERROR: Could not derive a title — add a \`# \` heading or rename the file" >&2
+      exit 1
+    fi
+  fi
+fi
+```
 
 ## Project Detection
 
@@ -77,6 +366,29 @@ Before generating an ID, scan `issues.json` for existing entries with overlappin
 | **Create new entry** | Generate a new ID, add a new entry to issues.json |
 
 ### Plan and Apply (Local Mode)
+
+**Print metadata confirmation** (for `ENTRY_MODE ∈ {path-arg, tracker-with-path}`):
+
+```bash
+if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ]; then
+  # Always print path + mtime line (even if CONFIRM_ECHO=0)
+  PLAN_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$PLAN_FILE" 2>/dev/null || stat -c '%y' "$PLAN_FILE" 2>/dev/null | cut -d' ' -f1,2)
+  echo "**Resolved plan file:** \`$PLAN_FILE\` (modified: $PLAN_MTIME)"
+  
+  # Print other details only if CONFIRM_ECHO != 0
+  if [ "$CONFIRM_ECHO" != "0" ]; then
+    echo "**Title:** $TITLE"
+    echo "**Branch:** feature/{issue_number}-<slug>"
+    echo "**Worktree:** $WORKTREE_PARENT/{issue_number}-<slug>"
+    if [ -n "$REPO" ]; then
+      echo "**Target repo:** $REPO"
+    else
+      echo "**Target repo:** (no GitHub remote — local mode)"
+    fi
+  fi
+  echo
+fi
+```
 
 Use the CLI to plan the local track operation. The CLI infers all required state (slug, branch naming, collision detection):
 
@@ -183,18 +495,19 @@ cd <worktree-path> && claude "/implement-with-haiku"
 
 ## Tracker Ticket Mode
 
-Activates when `/track-and-start` is called with a ticket ID argument matching `[A-Z]+-\d+` (e.g., `PPS-166`). It looks up the ticket via MCP, uses the tracker's branch name, creates a worktree named from the lowercase ticket ID, writes the standard `github-cache.json` shape, and does not require a GitHub remote. Steps 1 and 2 (validate plan mode, read original plan) still run first — the plan content becomes the cache `body`. This mode is self-contained (like Local Plan Mode): its own detection, resolution, cache write, and handoff, merging back into the shared worktree creation block. The branch name comes from the tracker and must not be renamed.
+Activates when `/track-and-start` is called with a ticket ID argument matching `[A-Z]+-\d+` (e.g., `PPS-166`). It looks up the ticket via MCP, uses the tracker's branch name, creates a worktree named from the lowercase ticket ID, writes the standard `github-cache.json` shape, and does not require a GitHub remote. For `ENTRY_MODE=tracker`, plan mode is still required and the plan content becomes the cache `body`. For `ENTRY_MODE=tracker-with-path`, the plan content comes from the resolved `$ARG2` path instead of the live session. This mode is self-contained (like Local Plan Mode): its own resolution, cache write, and handoff, merging back into the shared worktree creation block. The branch name comes from the tracker and must not be renamed.
 
-#### Detection
+#### Entry Mode Detection
+
+Entry into this mode (`ENTRY_MODE=tracker` or `ENTRY_MODE=tracker-with-path`) is determined by the shared Entry Mode Dispatch section above.
 
 ```bash
-TICKET_ID=""
-if echo "${1:-}" | grep -qE '^[A-Z]+-[0-9]+$'; then
-  TICKET_ID="${1}"
-fi
+TICKET_ID="$ARG1"
 ```
 
-If `TICKET_ID` is empty, fall through to step 4 (Project Detection) as normal.
+**For `ENTRY_MODE=tracker-with-path`:** Plan File Resolution's Stage A (Plan File Validation) has already resolved and validated `$ARG2` into `PLAN_FILE` and `PLAN_CONTENT`. Stage B (Title Derivation) is skipped because `TICKET_TITLE` comes from the tracker and must not be overridden.
+
+**For `ENTRY_MODE=tracker`:** Plan mode is still required as in today's flow. `PLAN_CONTENT` is read from the live session (the model's assessment).
 
 #### Tracker Resolution
 
@@ -266,6 +579,24 @@ WORKTREE_DIR=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 #### Worktree Creation
 
 Run Project Detection from `~/.claude/prompts/worktree-reference.md` to get `MAIN_WORKTREE` and `WORKTREE_PARENT`. Then create the worktree directly (the branch name comes from the tracker and must not be renamed):
+
+**Print metadata confirmation** (for `ENTRY_MODE=tracker-with-path`):
+
+```bash
+if [ "$ENTRY_MODE" = "tracker-with-path" ]; then
+  # Always print path + mtime line (even if CONFIRM_ECHO=0)
+  PLAN_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$PLAN_FILE" 2>/dev/null || stat -c '%y' "$PLAN_FILE" 2>/dev/null | cut -d' ' -f1,2)
+  echo "**Resolved plan file:** \`$PLAN_FILE\` (modified: $PLAN_MTIME)"
+  
+  # Print other details only if CONFIRM_ECHO != 0
+  if [ "$CONFIRM_ECHO" != "0" ]; then
+    echo "**Ticket title:** $TICKET_TITLE"
+    echo "**Branch:** $BRANCH"
+    echo "**Worktree:** $WORKTREE_PATH"
+  fi
+  echo
+fi
+```
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
@@ -388,7 +719,25 @@ EOF
 )"
 ```
 
-**2. Replace issue body with the new plan:**
+**2. Print metadata confirmation** (for `ENTRY_MODE ∈ {path-arg, tracker-with-path}` and `IN_PLAN_MODE=0`):
+
+```bash
+if ([ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ]) && [ "$IN_PLAN_MODE" = "0" ]; then
+  # Always print path + mtime line (even if CONFIRM_ECHO=0)
+  PLAN_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$PLAN_FILE" 2>/dev/null || stat -c '%y' "$PLAN_FILE" 2>/dev/null | cut -d' ' -f1,2)
+  echo "**Resolved plan file:** \`$PLAN_FILE\` (modified: $PLAN_MTIME)"
+  
+  # Print other details only if CONFIRM_ECHO != 0
+  if [ "$CONFIRM_ECHO" != "0" ]; then
+    echo "**Title:** $TITLE"
+    echo "**Branch:** feature/{issue_number}-<slug>"
+    echo "**Worktree:** $WORKTREE_PARENT/{issue_number}-<slug>"
+  fi
+  echo
+fi
+```
+
+**3. Replace issue body with the new plan:**
 
 ```bash
 gh issue edit "$ISSUE_NUM" --repo "$REPO" --body "$(cat <<'EOF'
@@ -397,7 +746,7 @@ EOF
 )"
 ```
 
-**3. Update `.claude/github-cache.json` in the current worktree:**
+**4. Update `.claude/github-cache.json` in the current worktree:**
 
 Only update `issue.body` — preserve everything else (`branch`, `issue.number`, `issue.url`, `issue.title`, `issue.state`, and any `pr` section).
 
@@ -410,11 +759,11 @@ printf '%s' "$EXISTING" | jq --arg body "<new plan content>" \
   '.issue.body = $body' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
 ```
 
-**4. Update project-level `issues.json` cache:**
+**5. Update project-level `issues.json` cache:**
 
 Update the issue's body in `$CACHE_FILE` so future duplicate detection runs against the current plan.
 
-**5. Output pivot confirmation:**
+**6. Output pivot confirmation:**
 
 ```
 ## Pivot Complete!
@@ -427,13 +776,29 @@ Update the issue's body in `$CACHE_FILE` so future duplicate detection runs agai
 - Local caches updated
 ```
 
-**6. Close telemetry and call `ExitPlanMode`:**
+**7. Close telemetry and conditionally call `ExitPlanMode`:**
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome success 2>/dev/null || true
 ```
 
+**If `IN_PLAN_MODE=1`** (user is in a live plan-mode session):
 Call `ExitPlanMode` — since the user is already in the correct worktree, they can approve the plan and begin implementing immediately. The plan file content is the new plan (it triggered `/track-and-start`).
+
+**If `IN_PLAN_MODE=0`** (user passed a path-arg or tracker-with-path, not in live plan mode):
+Skip `ExitPlanMode` and print the standard handoff block instead:
+
+```
+## Ready to implement!
+
+**Plan:** `<plan-file-path>`
+**Branch:** `<branch-name>`
+**Worktree:** `<worktree-path>`
+
+### Start implementation:
+
+cd <worktree-path> && claude "/implement-with-haiku"
+```
 
 **Do NOT** proceed to Steps 5-9 after a successful pivot.
 
@@ -493,12 +858,13 @@ Proceed directly to issue creation — no user prompt needed.
 
 ### "Pivot to existing" Flow
 
-If the user chooses to pivot to an existing issue, execute **steps 1–2 of
-[Pivot Detection Step 4d](#step-4d-execute-pivot)** (archive-then-replace, same ordering guarantee,
-same abort-on-comment-failure rule) against `$EXISTING_ISSUE_NUM` — fetching its body first if not
+If the user chooses to pivot to an existing issue, execute **steps 1 and 3 of
+[Pivot Detection Step 4d](#step-4d-execute-pivot)** (archive-then-replace — step 2 there is the
+metadata confirmation print, which does not apply to this flow; same ordering guarantee, same
+abort-on-comment-failure rule) against `$EXISTING_ISSUE_NUM` — fetching its body first if not
 already available (`gh issue view "$EXISTING_ISSUE_NUM" --repo "$REPO" --json body -q '.body'`).
 
-Then, instead of 4d's steps 3–6 (this pivot targets a duplicate-detection match, not the current
+Then, instead of 4d's steps 4–7 (this pivot targets a duplicate-detection match, not the current
 worktree's issue):
 
 1. **Skip issue creation** — use the existing issue number for branch naming: `{type}/{existing-issue#}-{slug}`
@@ -535,6 +901,25 @@ After creating a new issue, append it to the local JSON cache so subsequent comm
 Cache file location: `${WORKTREE_PARENT}/issues.json` (detected from worktree layout — see [Project Detection](#project-detection))
 
 ## Creating the Issue (GitHub Mode)
+
+**Print metadata confirmation** (for `ENTRY_MODE ∈ {path-arg, tracker-with-path}`):
+
+```bash
+if [ "$ENTRY_MODE" = "path-arg" ] || [ "$ENTRY_MODE" = "tracker-with-path" ]; then
+  # Always print path + mtime line (even if CONFIRM_ECHO=0)
+  PLAN_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$PLAN_FILE" 2>/dev/null || stat -c '%y' "$PLAN_FILE" 2>/dev/null | cut -d' ' -f1,2)
+  echo "**Resolved plan file:** \`$PLAN_FILE\` (modified: $PLAN_MTIME)"
+  
+  # Print other details only if CONFIRM_ECHO != 0
+  if [ "$CONFIRM_ECHO" != "0" ]; then
+    echo "**Title:** $TITLE"
+    echo "**Branch:** feature/{issue_number}-<slug>"
+    echo "**Worktree:** $WORKTREE_PARENT/{issue_number}-<slug>"
+    echo "**Target repo:** $REPO"
+  fi
+  echo
+fi
+```
 
 **First, plan the track operation to detect duplicates and infer all required metadata:**
 
@@ -692,7 +1077,7 @@ if [ -f "$PROJECT_ISSUES" ]; then
       jq --argjson idx "$MATCH_IDX" '.[$idx].status = "in_progress"' \
         "$PROJECT_ISSUES" > "${PROJECT_ISSUES}.tmp" && mv "${PROJECT_ISSUES}.tmp" "$PROJECT_ISSUES"
       MATCHED_TITLE=$(jq -r --argjson idx "$MATCH_IDX" '.[$idx].title' "$PROJECT_ISSUES")
-      echo "Updated issues.json: \"$MATCHED_TITLE\" → in_progress"
+      echo "Updated issues.json: "$MATCHED_TITLE" → in_progress"
     fi
   fi
 fi
@@ -751,10 +1136,17 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-s
 
 | Condition | Action |
 |-----------|--------|
-| Not in plan mode | Error: "Must be in plan mode. Use `/plan` first to create a plan." |
-| No plan file | Error: "No plan file found. Create a plan first." |
+| Neither plan mode nor a plan-file path argument nor a tracker ticket ID | Error: "No valid entry point detected. Either use plan mode, pass a plan-file path, or pass a tracker ticket ID (e.g., `PPS-166`)." |
+| Plan-file argument does not exist | Error: "Plan-file argument does not exist: {path}" + hint: "If you meant a tracker ticket, ticket IDs are uppercase (e.g. `PPS-166`)" |
+| Plan-file argument is not a regular file | Error: "Plan-file argument is not a regular file: {path}" |
+| Plan-file argument is not readable | Error: "Plan-file argument is not readable: {path}" |
+| Plan-file argument is empty | Error: "Plan-file argument is empty: {path}" |
+| Plan-file argument is too large (>1 MiB) | Error: "Plan-file argument is too large (>1 MiB): {path}" |
+| Could not derive a title from plan file | Error: "Could not derive a title — add a `# ` heading or rename the file" |
+| Failed to write plan file (plan-mode) | Error: "Failed to write plan file to {path}" |
+| Ambiguous arguments | Error: "Ambiguous arguments — cannot parse both $ARG1 and $ARG2 in this context" |
 | Not in a git repo | Error: "Must be in a git repository with a GitHub remote" |
-| No GitHub remote | Error: "No GitHub remote found. Add one with `gh repo create` or `git remote add`" |
+| No GitHub remote (non-tracker modes) | Error: "No GitHub remote found. Add one with `gh repo create` or `git remote add`" |
 | `track plan` fails | Error: Output the `Unknown` reason from plan (e.g., "failed to fetch HEAD SHA", "not in git repo") |
 | Plan went stale (HEAD SHA changed) | Error: "Plan went stale — HEAD has advanced since planning. Re-run `/track-and-start` to create a fresh plan." |
 | Plan went stale (cache changed) | Error: "Plan went stale — repo cache changed. Re-run `/track-and-start` to create a fresh plan." |

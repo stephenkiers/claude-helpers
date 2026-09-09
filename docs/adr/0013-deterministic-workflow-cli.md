@@ -197,3 +197,22 @@ caches where only `commands.test` (or any other single command) is set. It also 
 in the *target worktree's* directory (previously ran in the main worktree's cwd — a second, related
 bug) and threads `_get_merge_apply_timeout()` (`MERGE_APPLY_TIMEOUT_SECS`, 1800s) instead of
 inheriting `execute_check`'s 300s default.
+
+### Amendment 4: Plan-file path argument support for `/track-and-start`
+
+**Wrapper-side change:** The wrapper (`commands/track-and-start.md`) now always explicitly resolves
+and assigns `PLAN_FILE` and `TITLE` (via a new shared Entry Mode Dispatch + Plan File Resolution
+sections) before invoking `track plan`, instead of relying on live plan-mode session context to
+silently supply them. This enables `/track-and-start` to accept a plan-file path argument (`$ARG1`
+as a path, or `$ARG2` alongside a tracker ticket ID in `$ARG1`), and to write plan-mode plans to
+disk (`~/.claude/plans/<timestamp>[-<slug>].md`) before processing.
+
+**Validation and title derivation moved to wrapper:** Plan-file path validation (existence,
+regular-file, readable, non-empty, size cap ≤1 MiB) and title derivation (first `# ` H1 or
+slugified filename, with denylist `plan|untitled|draft|new|readme`) both live in the wrapper, not
+the CLI — consistent with the wrapper-does-judgment / CLI-stays-deterministic split this ADR
+establishes.
+
+**CLI contract unchanged:** `scripts/workflow/cli.py`'s `--plan-file` and `--title` arguments already
+accepted arbitrary paths and titles. The wrapper now provides them explicitly and validated; the CLI
+continues to treat them as opaque inputs (no re-validation, no re-derivation).
