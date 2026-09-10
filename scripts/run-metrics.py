@@ -219,6 +219,9 @@ def cmd_agent_end(args):
     Explicitly discards last_assistant_message, background_tasks, and session_crons
     (never written to telemetry). SubagentStop hook carries no failure signal, so we
     record success as the default outcome.
+
+    Parses agent_transcript_path if present, extracts token usage, and records it
+    in the usage state via record_agent_usage.
     """
     payload = read_stdin_json()
     if payload is None:
@@ -233,14 +236,37 @@ def cmd_agent_end(args):
     agent_id = _bounded(payload.get("agent_id", telemetry_schema.UNKNOWN))
     agent_type = _bounded(payload.get("agent_type", telemetry_schema.UNKNOWN))
     timestamp = datetime.now(timezone.utc).isoformat()
+    recorded_at = timestamp
 
     elapsed_seconds = telemetry_schema.UNKNOWN
+    tokens_dict = {"input": telemetry_schema.UNKNOWN, "output": telemetry_schema.UNKNOWN,
+                   "cache_read": telemetry_schema.UNKNOWN, "cache_creation": telemetry_schema.UNKNOWN}
+    token_confidence = None
+    usage_status = "unparseable"
+
+    agent_transcript_path = payload.get("agent_transcript_path")
+    if agent_transcript_path:
+        transcript_path = Path(agent_transcript_path)
+        if transcript_path.is_file():
+            try:
+                parse_result = telemetry_schema.parse_transcript_tokens(transcript_path)
+                tokens_dict = parse_result.get("tokens", tokens_dict)
+                token_confidence = "low"
+                if telemetry_schema.counted_tokens(tokens_dict) is not None:
+                    usage_status = "counted"
+            except Exception:
+                usage_status = "unparseable"
+
     if session_id != telemetry_schema.UNKNOWN and agent_id != telemetry_schema.UNKNOWN:
         began_at = _guarded_state_op(
-            telemetry_schema.resolve_and_clear_agent_began_at,
+            telemetry_schema.record_agent_usage,
             telemetry_schema.session_meta_path(session_id, args.state_dir),
             session_id,
             agent_id,
+            tokens=tokens_dict,
+            token_confidence=token_confidence,
+            status=usage_status,
+            recorded_at=recorded_at,
         )
         elapsed_seconds = _compute_elapsed(began_at, timestamp)
 
@@ -252,6 +278,8 @@ def cmd_agent_end(args):
         agent_type=agent_type,
         outcome=telemetry_schema.outcome_success(),
         elapsed_seconds=elapsed_seconds,
+        tokens=tokens_dict,
+        token_confidence=token_confidence,
     )
     telemetry_schema.append_event(args.log, event)
     print("agent.end recorded", file=sys.stderr)
@@ -749,6 +777,132 @@ def cmd_diagnose(args):
         sys.exit(1)
 
 
+def cmd_usage_check(args):
+    """Read usage state and report on threshold status.
+
+    Outputs a single line with usage gate status, then a JSON object with all relevant fields.
+    Exit code: 0 if DECISION is 'proceed', 10 if 'ask'.
+    """
+    session_id = args.session_id
+    if session_id is None:
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
+
+    threshold = args.threshold
+
+    state = _guarded_state_op(
+        telemetry_schema.read_usage_state,
+        telemetry_schema.session_meta_path(session_id, args.state_dir),
+        session_id,
+    )
+
+    if state is None:
+        state = {
+            "available": False,
+            "session_mismatch": False,
+            "counted_tokens": 0,
+            "is_floor": False,
+            "accounted": 0,
+            "total_known": 0,
+            "last_reported_crossing_at_tokens": None,
+            "seams_checked": [],
+            "has_unaccounted_no_agent_id": False,
+            "leftover_launched_not_accounted": 0,
+        }
+
+    if args.mark_reported and state.get("available") and not state.get("session_mismatch"):
+        _guarded_state_op(
+            telemetry_schema.mark_usage_crossing_reported,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+        )
+        state = _guarded_state_op(
+            telemetry_schema.read_usage_state,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+        ) or state
+
+    if args.seam != "final":
+        _guarded_state_op(
+            telemetry_schema.record_seam_checked,
+            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            session_id,
+            args.seam,
+        )
+
+    if state.get("session_mismatch"):
+        gate_state = "session-mismatch"
+    elif not state.get("available"):
+        gate_state = "unavailable"
+    else:
+        counted = state.get("counted_tokens", 0) + (state.get("unaccounted_no_agent_id_tokens", 0) or 0)
+        gate_state = telemetry_schema.threshold_state(
+            counted,
+            threshold,
+            state.get("last_reported_crossing_at_tokens"),
+        )
+
+    is_floor = state.get("is_floor", False)
+    if gate_state == "over-threshold-unreported" or gate_state == "unavailable" or gate_state == "session-mismatch" or is_floor:
+        decision = "ask"
+    else:
+        decision = "proceed"
+
+    accounted = state.get("accounted", 0)
+    total_known = state.get("total_known", 0)
+    counted_total = state.get("counted_tokens", 0) + (state.get("unaccounted_no_agent_id_tokens", 0) or 0)
+
+    if threshold > 0:
+        pct = round(100 * counted_total / threshold)
+    else:
+        pct = 0
+
+    if gate_state == "unavailable":
+        counted_str = "n/a"
+    else:
+        counted_str = f"{counted_total:,}"
+
+    count_label = "counted>=" if is_floor else "counted="
+
+    printed_line = f"USAGE-GATE: seam={args.seam} {count_label}{counted_str} threshold={threshold:,} ({pct}%) agents={accounted}/{total_known} accounted state={gate_state} DECISION: {decision}"
+
+    if args.seam in ("round1-join", "final"):
+        printed_line += " (counts input+output+cache_creation; excludes cache_read; upstream token_confidence is always reported as \"low\")"
+
+    if gate_state == "unavailable":
+        printed_line += " — no telemetry state found; install with install.sh --with-telemetry, or this session has not produced any subagent activity yet"
+    elif gate_state == "session-mismatch":
+        printed_line += " — session id mismatch in stored usage state; telemetry is installed but tokens may be misattributed across sessions"
+
+    print(printed_line)
+
+    json_output = {
+        "seam": args.seam,
+        "counted_tokens": counted_total if gate_state != "unavailable" else 0,
+        "threshold": threshold,
+        "pct": pct,
+        "accounted": accounted,
+        "total_known": total_known,
+        "state": gate_state,
+        "decision": decision,
+        "last_reported_crossing_at_tokens": state.get("last_reported_crossing_at_tokens"),
+        "is_floor": is_floor,
+    }
+
+    if args.seam == "final":
+        seams_checked = state.get("seams_checked", [])
+        seams_dict = {}
+        for seam_name in ["round1-join", "gate-fix-loop", "pre-fanout", "post-fanout", "pre-round4"]:
+            seams_dict[seam_name] = "yes" if seam_name in seams_checked else "no"
+
+        seams_line = "USAGE-GATE-SEAMS: " + " ".join(f"{k}={v}" for k, v in seams_dict.items())
+        print(seams_line)
+        json_output["seams_checked"] = seams_dict
+
+    print(json.dumps(json_output, sort_keys=True))
+
+    sys.exit(0 if decision == "proceed" else 10)
+
+
 def _add_findings_and_checks_args(subparser):
     """Add the shared --findings-*/--checks-* optional int flags to a command-end/stage-end subparser."""
     subparser.add_argument("--findings-produced", type=int, default=None, help="Findings produced (optional, where applicable)")
@@ -862,6 +1016,35 @@ def main():
         help="Report on events from the last N days (default: 30)",
     )
     sp_diagnose.set_defaults(func=cmd_diagnose)
+
+    # usage-check
+    sp_usage_check = subparsers.add_parser(
+        "usage-check",
+        help="Check token usage against threshold",
+    )
+    sp_usage_check.add_argument(
+        "--seam",
+        required=True,
+        choices=["round1-join", "gate-fix-loop", "pre-fanout", "post-fanout", "pre-round4", "final"],
+        help="Gating seam name",
+    )
+    sp_usage_check.add_argument(
+        "--threshold",
+        type=int,
+        default=telemetry_schema.USAGE_GATE_DEFAULT_THRESHOLD,
+        help=f"Token threshold (default: {telemetry_schema.USAGE_GATE_DEFAULT_THRESHOLD})",
+    )
+    sp_usage_check.add_argument(
+        "--session-id",
+        default=None,
+        help="Session ID (default: from CLAUDE_CODE_SESSION_ID env or 'unknown')",
+    )
+    sp_usage_check.add_argument(
+        "--mark-reported",
+        action="store_true",
+        help="Mark the crossing as reported",
+    )
+    sp_usage_check.set_defaults(func=cmd_usage_check)
 
     args = parser.parse_args()
     args.func(args)
