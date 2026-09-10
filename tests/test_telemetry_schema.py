@@ -1603,6 +1603,451 @@ def test_init_session_state_on_uninitialized_file():
         return True, ""
 
 
+def test_parse_transcript_tokens_extracts_usage():
+    """parse_transcript_tokens extracts token usage from transcript."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 50}}},
+            {"type": "assistant", "message": {"id": "msg_2", "usage": {"input_tokens": 75, "output_tokens": 25}}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        if result["turns"] != 2:
+            return False, f"expected 2 turns, got {result['turns']}"
+        tokens = result["tokens"]
+        if tokens["input"] != 175 or tokens["output"] != 75:
+            return False, f"token sum wrong: {tokens}"
+        return True, ""
+
+
+def test_parse_transcript_tokens_dedup_by_message_id():
+    """parse_transcript_tokens deduplicates by message.id, keeping last."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}},
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 20}}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        if result["turns"] != 1:
+            return False, f"expected 1 turn (deduped), got {result['turns']}"
+        if result["tokens"]["output"] != 20:
+            return False, f"expected last output_tokens=20, got {result['tokens']['output']}"
+        return True, ""
+
+
+def test_parse_transcript_tokens_unknown_on_missing_key():
+    """parse_transcript_tokens returns 'unknown' for token keys never seen."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100}}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        tokens = result["tokens"]
+        if tokens["input"] != 100:
+            return False, f"input not 100: {tokens}"
+        if tokens["output"] != telemetry_schema.UNKNOWN:
+            return False, f"output should be unknown: {tokens}"
+        if tokens["cache_creation"] != telemetry_schema.UNKNOWN:
+            return False, f"cache_creation should be unknown: {tokens}"
+        return True, ""
+
+
+def test_counted_tokens_sums_three_keys():
+    """counted_tokens sums input, output, cache_creation."""
+    tokens = {"input": 100, "output": 50, "cache_creation": 30, "cache_read": 999}
+    result = telemetry_schema.counted_tokens(tokens)
+    if result != 180:
+        return False, f"expected 180 (100+50+30), got {result}"
+    return True, ""
+
+
+def test_counted_tokens_returns_none_on_unknown():
+    """counted_tokens returns None if any of the three keys is 'unknown'."""
+    tokens = {"input": 100, "output": telemetry_schema.UNKNOWN, "cache_creation": 30}
+    result = telemetry_schema.counted_tokens(tokens)
+    if result is not None:
+        return False, f"expected None, got {result}"
+    return True, ""
+
+
+def test_counted_tokens_excludes_cache_read():
+    """counted_tokens does not include cache_read in sum."""
+    tokens = {"input": 100, "output": 50, "cache_creation": 30, "cache_read": 1000}
+    result = telemetry_schema.counted_tokens(tokens)
+    if result != 180:
+        return False, f"cache_read should be excluded, got {result}"
+    return True, ""
+
+
+def test_record_agent_usage_folds_tokens():
+    """record_agent_usage folds counted tokens into usage.counted_tokens."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        agent_id = "a1"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens = {"input": 100, "output": 50, "cache_creation": 25, "cache_read": 0}
+        result = telemetry_schema.record_agent_usage(
+            state_path, session_id, agent_id,
+            tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("usage", {}).get("counted_tokens") != 175:
+            return False, f"counted_tokens should be 175, got {state.get('usage', {}).get('counted_tokens')}"
+        return True, ""
+
+
+def test_record_agent_usage_idempotent_on_repeat():
+    """record_agent_usage is idempotent for repeated agent_id (first call wins)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        agent_id = "a1"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens1 = {"input": 100, "output": 50, "cache_creation": 25, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, agent_id,
+            tokens=tokens1, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        tokens2 = {"input": 200, "output": 100, "cache_creation": 50, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, agent_id,
+            tokens=tokens2, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:45Z"
+        )
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("usage", {}).get("counted_tokens") != 175:
+            return False, f"should keep first value 175, got {state.get('usage', {}).get('counted_tokens')}"
+        return True, ""
+
+
+def test_record_agent_usage_session_mismatch_guard():
+    """record_agent_usage refuses to fold tokens on session_id mismatch."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        other_session_id = "s456"
+        agent_id = "a1"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens = {"input": 100, "output": 50, "cache_creation": 25, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, agent_id,
+            tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        tokens2 = {"input": 200, "output": 100, "cache_creation": 50, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, other_session_id, "a2",
+            tokens=tokens2, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:45Z"
+        )
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("usage", {}).get("counted_tokens") != 175:
+            return False, f"should not fold mismatched tokens, got {state.get('usage', {}).get('counted_tokens')}"
+
+        agents = state.get("usage", {}).get("agents", {})
+        if "a2" in agents and agents["a2"].get("status") != "session-mismatch":
+            return False, f"a2 should have status=session-mismatch, got {agents['a2']}"
+        return True, ""
+
+
+def test_record_agent_usage_unknown_agent_id():
+    """record_agent_usage for agent_id=='unknown' folds into unaccounted_no_agent_id_tokens."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens = {"input": 100, "output": 50, "cache_creation": 25, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, telemetry_schema.UNKNOWN,
+            tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("usage", {}).get("unaccounted_no_agent_id_tokens", 0) != 175:
+            return False, f"unaccounted should be 175, got {state.get('usage', {}).get('unaccounted_no_agent_id_tokens')}"
+        return True, ""
+
+
+def test_read_usage_state_unavailable_on_missing_file():
+    """read_usage_state returns available=False for missing file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "nonexistent.json"
+        result = telemetry_schema.read_usage_state(state_path, "s123")
+        if result["available"]:
+            return False, "should be unavailable for missing file"
+        return True, ""
+
+
+def test_threshold_state_under_threshold():
+    """threshold_state returns 'under-threshold' when counted <= threshold."""
+    result = telemetry_schema.threshold_state(100, 200, None)
+    if result != "under-threshold":
+        return False, f"expected under-threshold, got {result}"
+    return True, ""
+
+
+def test_threshold_state_over_unreported():
+    """threshold_state returns 'over-threshold-unreported' on first crossing."""
+    result = telemetry_schema.threshold_state(300, 200, None)
+    if result != "over-threshold-unreported":
+        return False, f"expected over-threshold-unreported, got {result}"
+    return True, ""
+
+
+def test_threshold_state_over_reported():
+    """threshold_state returns 'over-threshold-reported' when within same increment."""
+    result = telemetry_schema.threshold_state(250, 200, 100)
+    if result != "over-threshold-reported":
+        return False, f"expected over-threshold-reported, got {result}"
+    return True, ""
+
+
+def test_threshold_state_escalation_on_new_increment():
+    """threshold_state escalates to unreported when counting crosses next increment."""
+    result = telemetry_schema.threshold_state(301, 200, 100)
+    if result != "over-threshold-unreported":
+        return False, f"expected over-threshold-unreported on new increment, got {result}"
+    return True, ""
+
+
+def test_mark_usage_crossing_reported_monotonic():
+    """mark_usage_crossing_reported sets last_reported to current counted_tokens."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens = {"input": 100, "output": 50, "cache_creation": 25, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, "a1",
+            tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        telemetry_schema.mark_usage_crossing_reported(state_path, session_id)
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        if state.get("usage", {}).get("last_reported_crossing_at_tokens") != 175:
+            return False, f"last_reported should be 175 (current counted_tokens), got {state.get('usage', {}).get('last_reported_crossing_at_tokens')}"
+        return True, ""
+
+
+def test_record_seam_checked_appends():
+    """record_seam_checked appends seam to seams_checked list."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+        telemetry_schema.record_seam_checked(state_path, session_id, "gate-fix-loop")
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        seams = state.get("usage", {}).get("seams_checked", [])
+        if seams != ["round1-join", "gate-fix-loop"]:
+            return False, f"seams should be ['round1-join', 'gate-fix-loop'], got {seams}"
+        return True, ""
+
+
+def test_record_seam_checked_dedupes():
+    """record_seam_checked deduplicates (no duplicate seams)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+
+        seams = state.get("usage", {}).get("seams_checked", [])
+        if len(seams) != 1 or seams[0] != "round1-join":
+            return False, f"should dedupe, got {seams}"
+        return True, ""
+
+
+def _spend(state_path, session_id, agent_id, counted_amount):
+    tokens = {"input": counted_amount, "output": 0, "cache_creation": 0, "cache_read": 0}
+    telemetry_schema.record_agent_usage(
+        state_path, session_id, agent_id,
+        tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+    )
+
+
+def test_round1_join_mints_active_run_baseline():
+    """record_seam_checked(seam='round1-join') mints active_run with the current total as baseline."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        _spend(state_path, session_id, "a1", 90000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        active_run = state.get("usage", {}).get("active_run", {})
+        if active_run.get("baseline_counted_tokens") != 90000:
+            return False, f"expected baseline 90000, got {active_run.get('baseline_counted_tokens')}"
+        if not active_run.get("run_id"):
+            return False, "active_run should have a run_id"
+        return True, ""
+
+
+def test_read_usage_state_counted_tokens_relative_to_baseline():
+    """read_usage_state's counted_tokens excludes the active run's baseline (fix 6 / decision 13)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        _spend(state_path, session_id, "a1", 90000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        result = telemetry_schema.read_usage_state(state_path, session_id)
+        if result["counted_tokens"] != 0:
+            return False, f"round1-join itself should show 0 (round-1 spend is the baseline), got {result['counted_tokens']}"
+
+        _spend(state_path, session_id, "a2", 16000)
+        result2 = telemetry_schema.read_usage_state(state_path, session_id)
+        if result2["counted_tokens"] != 16000:
+            return False, f"post-baseline spend should show 16000, got {result2['counted_tokens']}"
+        return True, ""
+
+
+def test_round1_join_reinvocation_resets_budget():
+    """A second round1-join in the same session re-mints the baseline (fresh budget per run)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        _spend(state_path, session_id, "a1", 90000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+        telemetry_schema.record_seam_checked(state_path, session_id, "pre-fanout")
+
+        telemetry_schema.mark_usage_crossing_reported(state_path, session_id)
+
+        _spend(state_path, session_id, "a2", 5000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        usage = state.get("usage", {})
+        if usage.get("last_reported_crossing_at_tokens") is not None:
+            return False, f"re-invocation must reset last_reported_crossing_at_tokens, got {usage.get('last_reported_crossing_at_tokens')}"
+        if usage.get("seams_checked") != ["round1-join"]:
+            return False, f"re-invocation must reset seams_checked to just the new call, got {usage.get('seams_checked')}"
+        if usage.get("active_run", {}).get("baseline_counted_tokens") != 95000:
+            return False, f"new baseline should absorb all spend so far (95000), got {usage.get('active_run', {}).get('baseline_counted_tokens')}"
+        return True, ""
+
+
+def test_read_usage_state_folds_unaccounted_no_agent_id_tokens():
+    """read_usage_state's counted_tokens includes unaccounted_no_agent_id_tokens (regression: was never read back)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens = {"input": 1000, "output": 0, "cache_creation": 0, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, telemetry_schema.UNKNOWN,
+            tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        result = telemetry_schema.read_usage_state(state_path, session_id)
+        if result["counted_tokens"] != 1000:
+            return False, f"unaccounted_no_agent_id_tokens should fold into counted_tokens, got {result['counted_tokens']}"
+        return True, ""
+
+
+def test_mark_floor_reported_latches():
+    """mark_floor_reported latches last_reported_floor_count monotonically."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        telemetry_schema.mark_floor_reported(state_path, session_id, 3)
+        telemetry_schema.mark_floor_reported(state_path, session_id, 1)
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        if state.get("usage", {}).get("last_reported_floor_count") != 3:
+            return False, f"should stay monotonic at 3, got {state.get('usage', {}).get('last_reported_floor_count')}"
+        return True, ""
+
+
+def test_read_usage_state_unavailable_when_only_seam_checked():
+    """A seam check alone (no agent ever accounted) must not flip available to True."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        result = telemetry_schema.read_usage_state(state_path, session_id)
+        if result["available"]:
+            return False, "a bare seam check with no accounted agent must not report available=True"
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -1903,6 +2348,98 @@ if __name__ == "__main__":
 
     passed, msg = test_resolve_and_clear_agent_began_at_handles_old_format_string()
     test_result("resolve_and_clear_agent_began_at handles old-format string entries", passed, msg)
+
+    print()
+
+    # Usage tracking and token accounting tests
+    print("[Section 10] Transcript parsing and token accounting")
+    passed, msg = test_parse_transcript_tokens_extracts_usage()
+    test_result("parse_transcript_tokens extracts usage", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_dedup_by_message_id()
+    test_result("parse_transcript_tokens deduplicates by message.id", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_unknown_on_missing_key()
+    test_result("parse_transcript_tokens returns 'unknown' for missing keys", passed, msg)
+
+    passed, msg = test_counted_tokens_sums_three_keys()
+    test_result("counted_tokens sums input+output+cache_creation", passed, msg)
+
+    passed, msg = test_counted_tokens_returns_none_on_unknown()
+    test_result("counted_tokens returns None on 'unknown'", passed, msg)
+
+    passed, msg = test_counted_tokens_excludes_cache_read()
+    test_result("counted_tokens excludes cache_read", passed, msg)
+
+    print()
+
+    # Agent usage recording tests
+    print("[Section 11] Agent usage recording")
+    passed, msg = test_record_agent_usage_folds_tokens()
+    test_result("record_agent_usage folds counted tokens", passed, msg)
+
+    passed, msg = test_record_agent_usage_idempotent_on_repeat()
+    test_result("record_agent_usage idempotent on repeat agent_id", passed, msg)
+
+    passed, msg = test_record_agent_usage_session_mismatch_guard()
+    test_result("record_agent_usage guards on session_id mismatch", passed, msg)
+
+    passed, msg = test_record_agent_usage_unknown_agent_id()
+    test_result("record_agent_usage handles agent_id='unknown'", passed, msg)
+
+    print()
+
+    # Usage state reading tests
+    print("[Section 12] Usage state reading")
+    passed, msg = test_read_usage_state_unavailable_on_missing_file()
+    test_result("read_usage_state unavailable for missing file", passed, msg)
+
+    print()
+
+    # Threshold and crossing tests
+    print("[Section 13] Threshold calculation and seam tracking")
+    passed, msg = test_threshold_state_under_threshold()
+    test_result("threshold_state: under-threshold", passed, msg)
+
+    passed, msg = test_threshold_state_over_unreported()
+    test_result("threshold_state: over-threshold-unreported on first crossing", passed, msg)
+
+    passed, msg = test_threshold_state_over_reported()
+    test_result("threshold_state: over-threshold-reported within increment", passed, msg)
+
+    passed, msg = test_threshold_state_escalation_on_new_increment()
+    test_result("threshold_state: escalate on new increment", passed, msg)
+
+    passed, msg = test_mark_usage_crossing_reported_monotonic()
+    test_result("mark_usage_crossing_reported monotonic", passed, msg)
+
+    passed, msg = test_record_seam_checked_appends()
+    test_result("record_seam_checked appends seam", passed, msg)
+
+    passed, msg = test_record_seam_checked_dedupes()
+    test_result("record_seam_checked deduplicates", passed, msg)
+
+    print()
+
+    # Run-scoped budget tests (fix 6 / decision 13)
+    print("[Section 14] Run-scoped budget (active_run baseline)")
+    passed, msg = test_round1_join_mints_active_run_baseline()
+    test_result("round1-join mints active_run baseline", passed, msg)
+
+    passed, msg = test_read_usage_state_counted_tokens_relative_to_baseline()
+    test_result("read_usage_state counted_tokens relative to baseline", passed, msg)
+
+    passed, msg = test_round1_join_reinvocation_resets_budget()
+    test_result("round1-join re-invocation resets budget", passed, msg)
+
+    passed, msg = test_read_usage_state_folds_unaccounted_no_agent_id_tokens()
+    test_result("read_usage_state folds unaccounted_no_agent_id_tokens", passed, msg)
+
+    passed, msg = test_mark_floor_reported_latches()
+    test_result("mark_floor_reported latches monotonically", passed, msg)
+
+    passed, msg = test_read_usage_state_unavailable_when_only_seam_checked()
+    test_result("read_usage_state unavailable when only seam checked", passed, msg)
 
     print()
 
