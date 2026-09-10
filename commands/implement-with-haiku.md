@@ -131,24 +131,43 @@ command's defaults, the project file wins.
 
 Do not read `CLAUDE.md` or `.claude/project.yaml` into this context. Every agent launched below
 reads them itself from its own working directory — see the "Project conventions" block used in
-every launch prompt. (Same rule already applied to reviewer personas in `commands/expert-review.md`'s
-context-discipline note, following ADR-0001's progressive-disclosure principle — this command just
-never got it.)
+every launch prompt. Following ADR-0001's progressive-disclosure principle, each subagent loads
+its own context on demand rather than receiving it pre-loaded from the orchestrator. (For comparison:
+`expert-review.md` uses a different, complementary pattern: read `.claude/project.yaml` once
+centrally and distribute the value into every reviewer prompt, achieving the same goal of keeping
+the orchestrator's context lean.)
 
 **Stage timing.** Each agent self-measures and returns an `ELAPSED_SECONDS:` line. Report per-round
 agent compute, not end-to-end wall clock (which includes idle between turns).
 
-### Project conventions reference block (used in edits below)
+### Canonical launch prompt blocks (used in all agent prompts below)
 
-This block is defined once here for reference; you will paste it into prompts where indicated in
-the steps below:
+These three blocks are defined once here for reference. **Use identical wording each time they
+appear** in every agent launch prompt — they are the single source of truth. Maintaining consistent
+wording across all launch sites prevents drift.
 
-**Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
-`<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
-`<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
-regardless of which worktree you are otherwise working in — a fresh worktree only contains
-tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
-uncommitted-but-modified conventions file that the main worktree actually has.
+**Block A — Project conventions:**
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
+
+**Block B — Working directory line:**
+> `Working directory: <path>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
+
+Where `<path>` is replaced with the absolute path for the specific launch (e.g., `WT_PATH`,
+`R2_WT_PATH`, `MAIN_WT_PATH`).
+
+**Block C — Full report trailer reference (choose based on launch type):**
+
+For writable passes:
+> [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
+
+For read-only passes:
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
 
 ## Step 2.5: Pre-flight orphan sweep
 
@@ -265,17 +284,18 @@ Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for comple
 When each unit's `plan-implementer` agent returns, **immediately** process it before the next
 one arrives. The orchestrator serializes all applies/commits — never concurrently.
 
-**First: validate the report.** All five trailer lines must be present:
+**First: validate the report.** All four handoff-critical trailer lines must be present:
 - `ELAPSED_SECONDS: <n | unknown>`
 - `VERIFIED: pass | fail | n/a`
 - `FILES_TOUCHED:` (with paths on subsequent lines)
 - `STAGED: yes | no`
-- `REPORT_FILE: <path> | none`
 
-If any trailer line is missing → **interrupted handoff**: surface the unit's report and offer:
+If any of these four lines is missing → **interrupted handoff**: surface the unit's report and offer:
 - Re-run this unit (re-launch with the same prompt in its existing worktree)
 - Inspect its worktree diff manually
 - Mark failed and continue with remaining units
+
+`REPORT_FILE:` is handled separately — see the Report-file check below.
 
 **Never trust the trailer — verify via git.** Regardless of what `STAGED:` says, check the
 worktree yourself first:
@@ -305,8 +325,9 @@ If the main worktree is dirty on files owned by a **still-running** unit, do not
 anything yet that would sweep those files in; note it and re-check at that unit's completion.
 
 **If the worktree is genuinely empty** (no staged changes after the above, and main worktree
-clean on this unit's files): Mark unit `failed`. Leave its worktree in place for inspection.
-Surface the report and reason.
+clean on this unit's files): Mark unit `failed`. Record `<unit-id>: no report (unit failed)` for
+use in Round 3 pass 1's input list below (same pattern as the Step 4c report-file check uses for
+missing unit reports). Leave its worktree in place for inspection. Surface the report and reason.
 
 **The inverse is a lost-work anomaly, not a success:** if the worktree is genuinely empty (both
 `git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty — worktree-wide check, not file-scoped) **but** the
@@ -462,8 +483,8 @@ Max **K = 3** iterations. On each iteration:
 
 1. Launch a fix `plan-implementer` agent (background) in an isolated worktree branched from current
    HEAD (not START_SHA). Prompt it with:
-   - A literal line **`Working directory: <path to this fix worktree>`** (same exact prefix as
-     Step 4b — required for `plan-implementer` to `cd` there)
+   - A literal line **`Working directory: <path to this fix worktree>`** (this exact prefix —
+     `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else)
    - The specific failures from the gate (compile errors, stub locations, tamper flags)
    - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
    - "Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
@@ -532,8 +553,8 @@ separate Bash calls).
 
 Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test author** prompt:
 
-> **`Working directory: <R2_WT_PATH literal absolute path>`** (this exact prefix — required for
-> `plan-implementer` to `cd` there before doing anything else)
+> `Working directory: <R2_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
 >
 > Your job is to write tests for the plan below. The plan has already been implemented by a prior
 > pass — but you must **not** look at how it was implemented. Tests written from the implementation
@@ -638,7 +659,14 @@ reporting findings into the final summary only:
 > repeated at 3 or more call sites. Report each as: symbol/pattern, call sites (file:line), and a
 > one-line suggested extraction. Do not edit anything.
 >
-> [Full report trailer — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
+>
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 **Doc-drift check:**
 > `Working directory: <MAIN_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
@@ -651,7 +679,14 @@ reporting findings into the final summary only:
 >
 > **Plan:** [verbatim plan]
 >
-> [Full report trailer — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
+>
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 ---
 

@@ -84,6 +84,7 @@ src/bar.ts
 **Step E — Report file:**
 `REPORT_FILE: <absolute path>` — if your prompt named a report file for you to write, the exact
 path you wrote it to (must match the path your prompt named).
+`REPORT_FILE: failed — <reason>` — if the `Write` call used to produce the report file errored.
 `REPORT_FILE: none` — if your prompt named no report file for you to write.
 
 ## Honest reporting — never fake green
@@ -112,6 +113,9 @@ If you genuinely cannot implement a step without one of the above, report `VERIF
     status.
   - one or more input files at absolute paths your prompt explicitly names as a prior pass's
     report for you to `Read`. Reading them is not a violation of the working-directory constraint.
+  These are the **only out-of-cwd exceptions** this agent is permitted: writing its own report
+  file, and reading a prior round's report file, both at orchestrator-named absolute paths. Any
+  other out-of-cwd read or write is not permitted and should be treated as an anomaly.
 - Only touch files in your **owned-files list** if one was provided. Files marked **forbidden**
   in your prompt must not be read or modified.
 - Staging only, no commits: only these git subcommands are permitted — `rev-parse`, `add`,
