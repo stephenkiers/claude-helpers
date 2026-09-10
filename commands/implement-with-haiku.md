@@ -1,6 +1,7 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
+argument-hint: "[--pause-at gate|fanout|round4|summary|all[,...]] [plan source: issue number | issue URL | claude-action-plan.md path]"
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent, AskUserQuestion
 ---
 
 # Implement with Haiku
@@ -21,9 +22,62 @@ The flow:
 6. **Round 4 — Test cleanup** (orchestrator-run) — delete clearly-junk tests, relocate + rename the
    survivors to the repo's own test layout/naming convention
 
+## Step 0: Parse flags
+
+Parse command-line flags before plan detection. Extract `--pause-at` if present:
+
+```bash
+set -f   # $ARGUMENTS is word-split below; keep glob metacharacters from expanding
+PAUSE_AT=""
+ARGS_FOR_PLAN=""
+for _a in $ARGUMENTS; do
+  case "$_a" in
+    --pause-at=*)
+      PAUSE_AT="${_a#--pause-at=}"
+      ;;
+    --pause-at)
+      # Next argument is the value; will be captured in the next iteration
+      CAPTURE_NEXT_PAUSE_VALUE=true
+      ;;
+    *)
+      if [ "${CAPTURE_NEXT_PAUSE_VALUE:-false}" = "true" ]; then
+        PAUSE_AT="$_a"
+        CAPTURE_NEXT_PAUSE_VALUE=false
+      else
+        ARGS_FOR_PLAN="$ARGS_FOR_PLAN $_a"
+      fi
+      ;;
+  esac
+done
+set +f
+
+# Expand "all" to all checkpoint names
+if [ "$PAUSE_AT" = "all" ]; then
+  PAUSE_AT="gate,fanout,round4,summary"
+fi
+
+# Validate each checkpoint name
+if [ -n "$PAUSE_AT" ]; then
+  for _name in $(printf '%s' "$PAUSE_AT" | tr ',' '\n'); do
+    case "$_name" in
+      gate|fanout|round4|summary) ;;
+      *)
+        echo "ERROR: unknown checkpoint name '$_name' (valid: gate, fanout, round4, summary, all)" >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
+
+# Trim leading/trailing whitespace from ARGS_FOR_PLAN
+ARGS_FOR_PLAN=$(printf '%s' "$ARGS_FOR_PLAN" | sed 's/^ //; s/ $//')
+
+echo "PAUSE_AT='$PAUSE_AT'"
+```
+
 ## Step 1: Find the plan
 
-In priority order:
+In priority order (scanning `$ARGS_FOR_PLAN`, which has had `--pause-at...` tokens removed):
 
 0. **Args contain a path to an existing `claude-action-plan.md` file** → read it directly, set
    `PLAN_SOURCE=claude-action-plan`. If the path doesn't exist, fall through to priority 1–3 below
@@ -428,6 +482,40 @@ If any units are `failed` (worktree genuinely empty), surface a summary and ask 
 - Abort the run
 - Proceed to the gate with the successfully-merged units only
 
+### Pause point: gate
+
+Check if `gate` is in `$PAUSE_AT` and pause here for confirmation if so:
+
+```bash
+if printf '%s' "$PAUSE_AT" | grep -q "\\bgate\\b"; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-gate >/dev/null 2>&1 || true
+  
+  # Prompt the user
+  # "Round 1 is complete and committed. The Integration Gate (build, type-check, anti-tamper scan) is about to run. Proceed now, stop here (all Round 1 work is safe), or proceed and skip remaining pauses?"
+  
+  # Use AskUserQuestion with three options: Proceed / Stop here / Proceed and don't pause again
+  # Capture the response and branch accordingly
+  
+  # If user chooses "Stop here":
+  if [ "$PAUSE_CHOICE" = "stop" ]; then
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-gate --outcome interrupted 2>/dev/null || true
+    git status --short
+    echo "Paused at gate checkpoint. Round 1 is complete and committed. Exiting cleanly."
+    exit 0
+  fi
+  
+  # If user chooses "Proceed and don't pause again this run":
+  if [ "$PAUSE_CHOICE" = "proceed-no-more-asks" ]; then
+    PAUSE_AT=""
+  fi
+  
+  # For any "proceed" choice:
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-gate --outcome success 2>/dev/null || true
+fi
+```
+
+**What's preserved:** All Round 1 units have been merged and committed. The Integration Gate has not run yet.
+
 ---
 
 ## Integration Gate (Part B — runs after all units merge, before round 2)
@@ -575,6 +663,40 @@ Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: as
 with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
 (the last option re-runs the same command with `--mark-reported` added). Round 1 is committed and
 gate-clean; no tests or reviews exist yet.
+
+### Pause point: fanout
+
+Check if `fanout` is in `$PAUSE_AT` and pause here for confirmation if so:
+
+```bash
+if printf '%s' "$PAUSE_AT" | grep -q "\\bfanout\\b"; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-fanout >/dev/null 2>&1 || true
+  
+  # Prompt the user
+  # "The Integration Gate passed and is committed. Round 2 (spec-blind tests), Round 3 (adversary review), and sweeps are about to run in parallel. Proceed now, stop here, or proceed and skip remaining pauses?"
+  
+  # Use AskUserQuestion with three options: Proceed / Stop here / Proceed and don't pause again
+  # Capture the response and branch accordingly
+  
+  # If user chooses "Stop here":
+  if [ "$PAUSE_CHOICE" = "stop" ]; then
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-fanout --outcome interrupted 2>/dev/null || true
+    git status --short
+    echo "Paused at fanout checkpoint. Integration Gate passed and committed. Exiting cleanly."
+    exit 0
+  fi
+  
+  # If user chooses "Proceed and don't pause again this run":
+  if [ "$PAUSE_CHOICE" = "proceed-no-more-asks" ]; then
+    PAUSE_AT=""
+  fi
+  
+  # For any "proceed" choice:
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-fanout --outcome success 2>/dev/null || true
+fi
+```
+
+**What's preserved:** The Integration Gate passed and is committed. Round 2 (spec-blind tests), Round 3 pass 1 (adversary), and the sweeps have not started yet.
 
 ### Round 2: Spec-blind test author (own worktree)
 
@@ -939,6 +1061,40 @@ the entire run.
 - **Test-only** run → Round 4 **applies** (relocating/cleaning the delivered tests is the point).
 - **Full** run → Round 4 **applies**.
 
+### Pause point: round4
+
+Check if `round4` is in `$PAUSE_AT` and pause here for confirmation if so:
+
+```bash
+if printf '%s' "$PAUSE_AT" | grep -q "\\bround4\\b"; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-round4 >/dev/null 2>&1 || true
+  
+  # Prompt the user
+  # "Rounds 1–3 are complete and committed, with all tests and fixes applied. Round 4 will clean up and relocate tests to your repo's convention. Proceed now, stop here, or proceed and skip remaining pauses?"
+  
+  # Use AskUserQuestion with three options: Proceed / Stop here / Proceed and don't pause again
+  # Capture the response and branch accordingly
+  
+  # If user chooses "Stop here":
+  if [ "$PAUSE_CHOICE" = "stop" ]; then
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-round4 --outcome interrupted 2>/dev/null || true
+    git status --short
+    echo "Paused at round4 checkpoint. Rounds 1–3 are complete and committed. Exiting cleanly."
+    exit 0
+  fi
+  
+  # If user chooses "Proceed and don't pause again this run":
+  if [ "$PAUSE_CHOICE" = "proceed-no-more-asks" ]; then
+    PAUSE_AT=""
+  fi
+  
+  # For any "proceed" choice:
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-round4 --outcome success 2>/dev/null || true
+fi
+```
+
+**What's preserved:** Round 2 (spec-blind tests) and Round 3 (adversary review + fixes) are complete and committed. Round 4 (test cleanup and relocation) has not started yet.
+
 ### 4.1 Enumerate the new tests (the working set)
 
 **Recompute** the working set at Round-4 time rather than reusing the `TEST_FILES` value from Part C:
@@ -1116,6 +1272,42 @@ orchestrator's own verification — never trust round self-reports.
 
 ---
 
+## Pause point: summary
+
+Check if `summary` is in `$PAUSE_AT` and pause here for confirmation before the final summary:
+
+```bash
+if printf '%s' "$PAUSE_AT" | grep -q "\\bsummary\\b"; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-summary >/dev/null 2>&1 || true
+  
+  # Prompt the user
+  # "All implementation rounds are complete and committed. The final summary and telemetry log are about to be generated. Proceed now, stop here, or proceed and skip any remaining pause points?"
+  
+  # Use AskUserQuestion with three options: Proceed / Stop here / Proceed and don't pause again
+  # Capture the response and branch accordingly
+  
+  # If user chooses "Stop here":
+  if [ "$PAUSE_CHOICE" = "stop" ]; then
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-summary --outcome interrupted 2>/dev/null || true
+    git status --short
+    echo "Paused at summary checkpoint. All rounds are complete and committed. Exiting cleanly."
+    exit 0
+  fi
+  
+  # If user chooses "Proceed and don't pause again this run":
+  if [ "$PAUSE_CHOICE" = "proceed-no-more-asks" ]; then
+    PAUSE_AT=""
+  fi
+  
+  # For any "proceed" choice:
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-summary --outcome success 2>/dev/null || true
+fi
+```
+
+**What's preserved:** All rounds (1–4) are complete and committed. Only the final summary report remains.
+
+---
+
 ## Final summary
 
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
@@ -1172,6 +1364,11 @@ USAGE GATE LOG (subagent token accounting — accumulate seam lines as printed, 
   Final:              <USAGE-GATE: line verbatim from seam final, then USAGE-GATE-SEAMS: line from seam final>
   Agents accounted:   <N>/<M>  (from agents=N/M field in final seam output)
   Token confidence:   low (upstream `token_confidence` is always reported as "low" per ADR-0016)
+PAUSE LOG (content-driven checkpoints — only when --pause-at is configured)
+  gate:               <proceed | stopped | proceed-no-more-asks | not-configured>
+  fanout:             <proceed | stopped | proceed-no-more-asks | not-configured>
+  round4:             <proceed | stopped | proceed-no-more-asks | not-configured>
+  summary:            <proceed | stopped | proceed-no-more-asks | not-configured>
 TIMING (agent compute per round — self-measured; excludes idle between turns)
   Round 1 (implement):        <mm:ss>  [<N> units in parallel]
   Gate convergence:           <i> iteration(s)
