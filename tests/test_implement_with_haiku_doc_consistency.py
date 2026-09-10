@@ -78,14 +78,14 @@ for field in required_fields:
 
 # REPORT_FILE should be explicitly deferred
 t("Step 4c defers REPORT_FILE handling separately",
-  "REPORT_FILE" in step_4c and ("handled separately" in step_4c.lower() or "see" in step_4c.lower()),
-  "Step 4c should explicitly defer REPORT_FILE to other sections")
+  "REPORT_FILE" in step_4c and "handled separately" in step_4c.lower(),
+  "Step 4c should explicitly say REPORT_FILE is 'handled separately' from other sections")
 
-# There should be a Report-file check section that handles it separately
-report_file_check = "Report-file check" in IMPLEMENT_WITH_HAIKU
-t("REPORT_FILE has a separate 'Report-file check' section",
+# There should be a Report-file check section (bolded heading) that handles it separately
+report_file_check = re.search(r"\*\*Report-file check", IMPLEMENT_WITH_HAIKU) is not None
+t("REPORT_FILE has a separate 'Report-file check' section (bolded heading)",
   report_file_check,
-  "Should have a separate section handling REPORT_FILE")
+  "Should have a bolded '**Report-file check' heading handling REPORT_FILE")
 
 print()
 
@@ -106,8 +106,8 @@ t("Duplication sweep section exists",
 if duplication_section:
     duplication_text = duplication_section.group(1)
     t("Duplication sweep includes Project-conventions block",
-      "Project conventions:" in duplication_text,
-      "Project-conventions block missing in Duplication sweep")
+      "**Project conventions:**" in duplication_text and "CLAUDE.md" in duplication_text,
+      "Project-conventions block (bolded label + CLAUDE.md reference) missing in Duplication sweep")
 
 # Find "**Doc-drift check:**" section
 docrift_section = re.search(
@@ -121,8 +121,8 @@ t("Doc-drift check section exists",
 if docrift_section:
     docrift_text = docrift_section.group(1)
     t("Doc-drift check includes Project-conventions block",
-      "Project conventions:" in docrift_text,
-      "Project-conventions block missing in Doc-drift check")
+      "**Project conventions:**" in docrift_text and "CLAUDE.md" in docrift_text,
+      "Project-conventions block (bolded label + CLAUDE.md reference) missing in Doc-drift check")
 
 print()
 
@@ -159,25 +159,36 @@ print()
 # ============================================================================
 print("[Directives 6 & 7] Full report trailer reference consistency")
 
-# Count subsection headings that have "read-only" in them (actual read-only pass sections)
-# Pattern: ### ... read-only ...
-read_only_headings = list(re.finditer(
-    r"### .+?read-only.+?\n(.*?)(?=\n### |\n## |\Z)",
-    IMPLEMENT_WITH_HAIKU, re.I | re.S
-))
+# Find all "### "/"## " heading positions first (single-line match only, no DOTALL) so a
+# heading whose title doesn't mention "read-only" can never be skipped over into later text
+# that happens to contain the phrase — that bug previously made this check match spurious
+# unrelated sections (verified via mutation: it silently matched "### Parse claude-action-plan.md
+# into directives" and "### Apply Round 2's diff" instead of the two real read-only headings).
+heading_matches = list(re.finditer(r"^(#{2,3}) .*$", IMPLEMENT_WITH_HAIKU, re.MULTILINE))
+read_only_headings = []
+for idx, heading_match in enumerate(heading_matches):
+    title_line = heading_match.group(0)
+    if "read-only" not in title_line.lower():
+        continue
+    body_start = heading_match.end() + 1
+    body_end = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(IMPLEMENT_WITH_HAIKU)
+    read_only_headings.append(IMPLEMENT_WITH_HAIKU[body_start:body_end])
 
 t("Found read-only pass sections (by heading)",
   len(read_only_headings) > 0,
   "No read-only pass sections found by heading")
 
 # For each read-only section, check consistency
-for i, section in enumerate(read_only_headings):
-    section_text = section.group(1)
-    has_full_report_ref = "Full report trailer" in section_text
+for i, section_text in enumerate(read_only_headings):
+    has_full_report_ref = (
+        "Full report trailer per plan-implementer instructions" in section_text
+        and "STAGED: no (read-only pass)" in section_text
+    )
 
     t(f"Read-only section {i+1} has report trailer reference",
       has_full_report_ref,
-      f"Read-only section {i+1} should reference full report trailer")
+      f"Read-only section {i+1} should reference 'Full report trailer per plan-implementer "
+      f"instructions' with the 'STAGED: no (read-only pass)' clause")
 
 print()
 
