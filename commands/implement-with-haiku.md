@@ -483,8 +483,9 @@ Max **K = 3** iterations. On each iteration:
 
 1. Launch a fix `plan-implementer` agent (background) in an isolated worktree branched from current
    HEAD (not START_SHA). Prompt it with:
-   - A literal line **`Working directory: <path to this fix worktree>`** (this exact prefix —
-     `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else)
+   - A literal line **`Working directory: <FIX_WT_PATH>`** (this exact prefix —
+     `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else),
+     where `<FIX_WT_PATH>` is the absolute path of this iteration's fix worktree
    - The specific failures from the gate (compile errors, stub locations, tamper flags)
    - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
    - "Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
