@@ -1,7 +1,7 @@
 ---
 description: Parallel expert planning with isolated contributions (v2) — A-B baseline alongside /expert-plan. Scales better on large tickets — subagents write checkpoints instead of accumulating in orchestrator context.
 argument-hint: [--effort 1|2|3|4|5] [--model haiku|sonnet|opus|fable]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(python3:*), Read, Glob, Grep, Task, Write, EnterPlanMode, ExitPlanMode, AskUserQuestion
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion
 model: sonnet
 ---
 
@@ -64,13 +64,50 @@ All artifacts live in `{PLAN_SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}
 
 Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat convention used by `/fork-planning` and `/expert-review-plan`; written by Synthesis subagent in Step 7).
 
+## Plan Mode (deliberately not used here)
+
+Unlike v1, this command does **not** call `EnterPlanMode`/`ExitPlanMode`. Plan Mode restricts the
+session's `Write` tool to a single designated plan file — a fine fit for v1, which does everything
+in the main thread and produces exactly one artifact. v2's whole mechanism is the opposite: many
+subagents, each writing its own checkpoint file (`selected-experts.md`, `{expert}-contribution.md`,
+`open-questions.md`, `plan.md`, `{expert}-alignment.md`) under `~/.claude/plan-sessions/`. Entering
+Plan Mode here breaks the pipeline outright — the first subagent that tries to write its checkpoint
+file hits the single-file restriction.
+
+Step 6's hard-stop checkpoint (`AskUserQuestion`, waiting for real answers before synthesis) is v2's
+human-in-the-loop gate and serves the same purpose Plan Mode serves for v1: nothing gets built until
+the user has weighed in. No code in the working tree is ever touched by this command either way —
+the orchestrator's `allowed-tools` has no `Edit` and no write-capable Bash beyond the plan-session
+housekeeping (`mkdir`, `cp`), and the panel subagents are separately capability-restricted (no `Edit`,
+no write-capable Bash — see CLAUDE.md's "Panel agents are capability-restricted, not dialog-gated").
+
+**If the invoking session is already in Plan Mode** (the user was mid-plan at the interactive-session
+level — independent of this command — when they typed `/expert-plan-v2`), that pre-existing Plan Mode
+still restricts `Write` to a single designated plan file, which the checkpoint pipeline cannot work
+under. Step 0 below checks for this explicitly and exits it deterministically before doing anything
+else, rather than leaving it to be improvised per-run.
+
 ---
 
 ## Instructions
 
-### Step 0: Enter Plan Mode and Setup
+### Step 0: Setup
 
-Call `EnterPlanMode` immediately. All subsequent work happens in plan mode.
+**Plan Mode guard (first action, before anything else):** If the invoking session is already in Plan
+Mode — check whether `ExitPlanMode` is available/expected in this turn — call `ExitPlanMode` right
+away with a short plan body explaining the situation, e.g.:
+
+> This session was already in Plan Mode. `/expert-plan-v2` is a multi-agent planning pipeline that
+> writes its own working artifacts (routing decision, per-expert contributions, digest, synthesized
+> plan) to `~/.claude/plan-sessions/` and its final deliverable to `~/.claude/plans/{slug}.md`. None
+> of this touches the repository — approving here only lets those checkpoint files be written, not
+> any code change. Approve to proceed with the pipeline (Steps 1–9 below); the pipeline's own Step 6
+> checkpoint is still the real decision gate before synthesis.
+
+Wait for the user's approval before continuing. If declined, stop cleanly (no telemetry has started
+yet, so no `command-end` call is needed). If the session was not in Plan Mode, skip this guard
+entirely and proceed directly to setup below — do not call `EnterPlanMode` or `ExitPlanMode` in that
+case.
 
 Then set up the checkpoint directory and parse `--effort`:
 
@@ -583,8 +620,6 @@ Always include the alignment pass status line, even if it says "skipped", so the
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v2 --outcome success 2>/dev/null || true
 ```
-
-Call `ExitPlanMode`.
 
 ---
 
