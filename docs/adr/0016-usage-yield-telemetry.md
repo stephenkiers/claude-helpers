@@ -66,12 +66,70 @@ event model precisely so a stage's *output* can be weighed against its *cost* �
 ## Consequences
 
 - Telemetry is opt-in and additive; a repo or fork that doesn't run `install.sh --with-telemetry`
-  is unaffected.
+  is unaffected. *(Amended: see Amendment section below on opted-out behavior under the usage gate.)*
 - No dashboards or automated thresholds exist to game — the design deliberately resists producing
-  a single number a future change could be tempted to minimize at the expense of value.
+  a single number a future change could be tempted to minimize at the expense of value. *(Amended:
+  see Amendment section below on the single threshold that now exists.)*
 - Concurrent-subagent correlation safety is an open verification gap, not yet resolved; instrumenting
   `/expert-review` or `/implement-with-haiku` before resolving it risks cross-attributed stage
-  records under the session-state-file mechanism.
+  records under the session-state-file mechanism. *(Amended: see Amendment section below on
+  resolved state-file concurrency and remaining re-fire hazard.)*
 - `/usage-report` will likely never grow deterministic aggregation views under this design; treat
   requests for "a report that shows X" as a cue to write a documented query pattern instead, not a
   new subcommand.
+
+## Amendment — Per-subagent token accounting and the `/implement-with-haiku` usage gate
+
+**Concurrent-subagent correlation: partially resolved, with one hazard class remaining.**
+The original Consequences section flagged a race where concurrent subagent writes could clobber the
+session-state file. This specific race is now resolved: `load_and_update_state` already holds an
+`fcntl.flock` exclusive lock for the duration of its read-modify-write cycle, and the in-file shape
+already keys per-agent data by `agent_id` inside a shared dict, preventing per-agent state clobbering.
+A DIFFERENT hazard class remains open: a `SubagentStop` hook firing more than once for the same agent
+(a "re-fire") is a possible failure mode that any future new hook on an event with a blocking hook chain
+must independently guard against. This feature's own mitigation for re-fires (idempotent-on-status
+folding; see (d) below) is a specific fix, not a general principle — the ADR records the hazard class
+for future reference, not just this feature's workaround.
+
+**First production consumer of telemetry's usage data.**
+`/implement-with-haiku` is the first consumer of this ADR's telemetry data for any decision beyond
+passive observation. Prior to this, all telemetry was observational only — the log existed to answer
+"what happened and why," not to alter flow control. This feature marks the boundary: `agent.end` events
+now carry populated `tokens` and `token_confidence` fields (previously present in the event schema's
+allowlist but never populated by any writer) and are read by an automated usage gate.
+
+**Carve-out: usage data gates `/implement-with-haiku` fan-outs only.**
+The rule is narrow: *"usage totals may gate `/implement-with-haiku`'s round fan-out, and nothing else;
+the 'observational only' rule stands everywhere else, and usage data must not silently touch routing or
+model selection."* This carve-out is explicit and bounded — a future change to route or select models
+based on usage must negotiate an amendment to this ADR, not infer permission from the existence of this
+gate. Routing and model selection remain off-limits for usage data.
+
+**Counted metrics and token-confidence caveat.**
+The usage gate's counted metric is: input tokens + output tokens + cache-creation tokens, **excluding**
+cache-read tokens (rationale: a single real verified subagent transcript had cache-read alone already
+exceeding the 130k-token threshold, so counting it would trigger the gate on literally every run's first
+checkpoint, making it useless as a decision signal). `token_confidence` is a hardcoded `"low"` string
+constant in `claude-transcript-metrics.py`, not a computed assessment of any particular transcript's
+quality — it must never be read as a signal about a specific transcript's trustworthiness, only as a
+blanket disclaimer on the whole mechanism (per-message output tokens in Claude Code transcripts are
+unreliable placeholders, so all per-transcript token totals carry inherently low confidence, whether the
+metric "looks good" or not).
+
+**Opted-out telemetry: proceed with notice, not blocking ask.**
+The original Consequences section stated telemetry is opt-in and unaffected repos are unaffected. This
+is partially falsified by this feature: a session without telemetry installed now gets `state=unavailable`
+at `/implement-with-haiku`'s seams, which should render as `DECISION: proceed` with a one-line notice
+pointing to install instructions, not as a blocking `ask` interrupt. The design intent is "this is
+optional, proceed by default when unavailable; install for real tracking." The command doc for
+`/implement-with-haiku` is the authority on the actual behavior (see USAGE GATE LOG block in Final
+summary section), so if the `usage-check` implementation differs from this ADR's stated intent,
+surface that discrepancy as a handoff item.
+
+**Single threshold now exists; it's a stop-and-ask, never an optimizer.**
+The original Consequences section stated "no dashboards or automated thresholds exist." This is
+partially falsified: `/implement-with-haiku` now ships exactly one automated threshold (130k tokens by
+default, overridable via `--threshold` flag). This threshold is never fed back into routing, model
+selection, or any optimization loop — it surfaces as a stop-and-ask to the human, with options to
+proceed, stop, or defer the interrupt until the next increment. The threshold is a gate control surface,
+not an optimizer input.

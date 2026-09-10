@@ -279,6 +279,13 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
 
 Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for completions."
 
+**Note on usage-gate seams:** No usage-gate check is inserted inside this round-1 fan-out. Both
+round-1's parallel per-unit launches (here) and the post-gate four-way concurrent launch are atomic,
+single messages launching multiple background agents at once — there is no "next not-yet-launched unit"
+to gate mid-flight. The usage-gate depends on `agent_transcript_path`, which only exists once
+`SubagentStop` fires for a given agent, so mid-fan-out polling is structurally impossible. Usage
+gates run only after all concurrent agents in a fan-out have completed.
+
 ## Step 4c: Process unit completions (serialized apply-and-commit)
 
 When each unit's `plan-implementer` agent returns, **immediately** process it before the next
@@ -408,6 +415,15 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
 
+Run the usage gate:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
+```
+Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
+with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
+(the last option re-runs the same command with `--mark-reported` added). All merged units are already
+committed; nothing is pending if the human stops here.
+
 If any units are `failed` (worktree genuinely empty), surface a summary and ask the human whether to:
 - Abort the run
 - Proceed to the gate with the successfully-merged units only
@@ -497,7 +513,15 @@ Max **K = 3** iterations. On each iteration:
 3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the main worktree, tear down worktree after).
 4. Re-run Gate steps 1–3 on the updated tree.
-5. If gate passes → exit loop. If still failing and iterations < K → repeat.
+5. Run the usage gate before deciding:
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam gate-fix-loop
+   ```
+   Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
+   with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
+   (the last option re-runs the same command with `--mark-reported` added). The gate is still failing; the
+   outstanding failures (already surfaced) remain unresolved if the human stops here.
+6. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide.
 
@@ -529,6 +553,11 @@ to proceed. Round 2 gets its own worktree with the diff-handoff protocol, which 
 it alongside Round 3 pass 1 safe — Round 3 pass 1 only reads the main worktree's round-1 result and
 never touches Round 2's tests.
 
+**Note on usage-gate seams:** No usage-gate check is inserted inside this post-gate fan-out either.
+Like the round-1 fan-out above, the concurrent launch of round 2, round 3 pass 1, and the two sweeps
+is atomic — there is no seam where some agents have completed and others remain pending. Usage gates
+run after this entire fan-out has joined and all its agents have provided transcript data via `SubagentStop` events.
+
 Record the current HEAD before launching:
 ```bash
 git rev-parse HEAD  # store as ROUND2_START_SHA
@@ -537,6 +566,15 @@ IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation 
 
 Tell the user: "Gate passed (round sizing: <classification>). Launching round 2 (spec-blind tests),
 round 3 pass 1 (adversary), and post-gate sweeps in parallel."
+
+Run the usage gate:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-fanout
+```
+Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
+with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
+(the last option re-runs the same command with `--mark-reported` added). Round 1 is committed and
+gate-clean; no tests or reviews exist yet.
 
 ### Round 2: Spec-blind test author (own worktree)
 
@@ -785,6 +823,15 @@ backstop for an unattended run).
 These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
 final summary.
 
+Run the usage gate:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam post-fanout
+```
+Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
+with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
+(the last option re-runs the same command with `--mark-reported` added). Round 2's tests are committed;
+Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the session closes here.
+
 ### Round 3 follow-up (short)
 
 Collect: `TEST_FILES` (above), the Part C flags (`dedup` / `vacuous` / `weak-assertion`), and Round 3 pass 1's proposed fixes.
@@ -876,6 +923,16 @@ same discipline still applies: **never trust a self-report; verify every claim v
 re-running the tests yourself.**
 
 ### 4.0 Applicability
+
+Run the usage gate:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-round4
+```
+Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
+with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
+(the last option re-runs the same command with `--mark-reported` added). Round 4 itself has no subagent
+and its token cost is not budgeted; this seam functions as the last stop-or-continue checkpoint for
+the entire run.
 
 - **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
 - **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
@@ -1064,6 +1121,16 @@ orchestrator's own verification — never trust round self-reports.
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
 wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
 
+**Usage gate log.** Accumulate each seam's `USAGE-GATE:` output line as the run progresses (the
+orchestrator displays these to the user at each seam). In the final summary, render each seam's line
+verbatim — a skipped seam must show as a visibly MISSING row in this enumerated list (a gap, not
+merely an absence from the transcript). At the end, run `usage-check --seam final` one more time and
+include both its `USAGE-GATE:` line and its `USAGE-GATE-SEAMS:` line verbatim. The `USAGE-GATE-SEAMS:` line
+is the authoritative record of which seams were actually reached during this run (generated from on-disk state, not narrated by the orchestrator). Extract the per-agent accounted/unaccounted tally
+(the `agents=N/M` field) from the final seam output and include it here; note once that upstream
+`token_confidence` is always hardcoded as `"low"` (a blanket disclaimer on the mechanism, not a
+signal about any specific transcript's trustworthiness).
+
 ```
 ROUND SIZING: <mechanical | test-only | full>
 ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]
@@ -1096,6 +1163,15 @@ ROUND 4 — Test cleanup (orchestrator-run)
 SWEEPS
   Duplication findings: <count>
   Doc-drift findings: <count>
+USAGE GATE LOG (subagent token accounting — accumulate seam lines as printed, then render final summary)
+  Round 1 join:       <USAGE-GATE: line verbatim from seam>
+  Gate fix-loop:      <USAGE-GATE: line verbatim from seam or SKIPPED>
+  Post-gate fanout:   <USAGE-GATE: line verbatim from seam>
+  After fanout:       <USAGE-GATE: line verbatim from seam>
+  Pre-round 4:        <USAGE-GATE: line verbatim from seam>
+  Final:              <USAGE-GATE: line verbatim from seam final, then USAGE-GATE-SEAMS: line from seam final>
+  Agents accounted:   <N>/<M>  (from agents=N/M field in final seam output)
+  Token confidence:   low (upstream `token_confidence` is always reported as "low" per ADR-0016)
 TIMING (agent compute per round — self-measured; excludes idle between turns)
   Round 1 (implement):        <mm:ss>  [<N> units in parallel]
   Gate convergence:           <i> iteration(s)
