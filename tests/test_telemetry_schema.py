@@ -1914,6 +1914,140 @@ def test_record_seam_checked_dedupes():
         return True, ""
 
 
+def _spend(state_path, session_id, agent_id, counted_amount):
+    tokens = {"input": counted_amount, "output": 0, "cache_creation": 0, "cache_read": 0}
+    telemetry_schema.record_agent_usage(
+        state_path, session_id, agent_id,
+        tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+    )
+
+
+def test_round1_join_mints_active_run_baseline():
+    """record_seam_checked(seam='round1-join') mints active_run with the current total as baseline."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        _spend(state_path, session_id, "a1", 90000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        active_run = state.get("usage", {}).get("active_run", {})
+        if active_run.get("baseline_counted_tokens") != 90000:
+            return False, f"expected baseline 90000, got {active_run.get('baseline_counted_tokens')}"
+        if not active_run.get("run_id"):
+            return False, "active_run should have a run_id"
+        return True, ""
+
+
+def test_read_usage_state_counted_tokens_relative_to_baseline():
+    """read_usage_state's counted_tokens excludes the active run's baseline (fix 6 / decision 13)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        _spend(state_path, session_id, "a1", 90000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        result = telemetry_schema.read_usage_state(state_path, session_id)
+        if result["counted_tokens"] != 0:
+            return False, f"round1-join itself should show 0 (round-1 spend is the baseline), got {result['counted_tokens']}"
+
+        _spend(state_path, session_id, "a2", 16000)
+        result2 = telemetry_schema.read_usage_state(state_path, session_id)
+        if result2["counted_tokens"] != 16000:
+            return False, f"post-baseline spend should show 16000, got {result2['counted_tokens']}"
+        return True, ""
+
+
+def test_round1_join_reinvocation_resets_budget():
+    """A second round1-join in the same session re-mints the baseline (fresh budget per run)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        _spend(state_path, session_id, "a1", 90000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+        telemetry_schema.record_seam_checked(state_path, session_id, "pre-fanout")
+
+        telemetry_schema.mark_usage_crossing_reported(state_path, session_id)
+
+        _spend(state_path, session_id, "a2", 5000)
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        usage = state.get("usage", {})
+        if usage.get("last_reported_crossing_at_tokens") is not None:
+            return False, f"re-invocation must reset last_reported_crossing_at_tokens, got {usage.get('last_reported_crossing_at_tokens')}"
+        if usage.get("seams_checked") != ["round1-join"]:
+            return False, f"re-invocation must reset seams_checked to just the new call, got {usage.get('seams_checked')}"
+        if usage.get("active_run", {}).get("baseline_counted_tokens") != 95000:
+            return False, f"new baseline should absorb all spend so far (95000), got {usage.get('active_run', {}).get('baseline_counted_tokens')}"
+        return True, ""
+
+
+def test_read_usage_state_folds_unaccounted_no_agent_id_tokens():
+    """read_usage_state's counted_tokens includes unaccounted_no_agent_id_tokens (regression: was never read back)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        tokens = {"input": 1000, "output": 0, "cache_creation": 0, "cache_read": 0}
+        telemetry_schema.record_agent_usage(
+            state_path, session_id, telemetry_schema.UNKNOWN,
+            tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
+        )
+
+        result = telemetry_schema.read_usage_state(state_path, session_id)
+        if result["counted_tokens"] != 1000:
+            return False, f"unaccounted_no_agent_id_tokens should fold into counted_tokens, got {result['counted_tokens']}"
+        return True, ""
+
+
+def test_mark_floor_reported_latches():
+    """mark_floor_reported latches last_reported_floor_count monotonically."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        telemetry_schema.mark_floor_reported(state_path, session_id, 3)
+        telemetry_schema.mark_floor_reported(state_path, session_id, 1)
+
+        with open(state_path) as f:
+            state = json.loads(f.read())
+        if state.get("usage", {}).get("last_reported_floor_count") != 3:
+            return False, f"should stay monotonic at 3, got {state.get('usage', {}).get('last_reported_floor_count')}"
+        return True, ""
+
+
+def test_read_usage_state_unavailable_when_only_seam_checked():
+    """A seam check alone (no agent ever accounted) must not flip available to True."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir)
+        session_id = "s123"
+        state_path = telemetry_schema.session_meta_path(session_id, state_dir)
+        telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
+
+        telemetry_schema.record_seam_checked(state_path, session_id, "round1-join")
+
+        result = telemetry_schema.read_usage_state(state_path, session_id)
+        if result["available"]:
+            return False, "a bare seam check with no accounted agent must not report available=True"
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -2284,6 +2418,28 @@ if __name__ == "__main__":
 
     passed, msg = test_record_seam_checked_dedupes()
     test_result("record_seam_checked deduplicates", passed, msg)
+
+    print()
+
+    # Run-scoped budget tests (fix 6 / decision 13)
+    print("[Section 14] Run-scoped budget (active_run baseline)")
+    passed, msg = test_round1_join_mints_active_run_baseline()
+    test_result("round1-join mints active_run baseline", passed, msg)
+
+    passed, msg = test_read_usage_state_counted_tokens_relative_to_baseline()
+    test_result("read_usage_state counted_tokens relative to baseline", passed, msg)
+
+    passed, msg = test_round1_join_reinvocation_resets_budget()
+    test_result("round1-join re-invocation resets budget", passed, msg)
+
+    passed, msg = test_read_usage_state_folds_unaccounted_no_agent_id_tokens()
+    test_result("read_usage_state folds unaccounted_no_agent_id_tokens", passed, msg)
+
+    passed, msg = test_mark_floor_reported_latches()
+    test_result("mark_floor_reported latches monotonically", passed, msg)
+
+    passed, msg = test_read_usage_state_unavailable_when_only_seam_checked()
+    test_result("read_usage_state unavailable when only seam checked", passed, msg)
 
     print()
 

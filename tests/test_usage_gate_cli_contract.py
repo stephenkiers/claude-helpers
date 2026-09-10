@@ -395,6 +395,111 @@ def test_session_id_env_fallback():
         return True, ""
 
 
+def run_agent_lifecycle(state_dir, session_id, agent_id, transcript_path=None):
+    """Run agent-begin then agent-end (with optional transcript) via stdin JSON payloads."""
+    begin_payload = json.dumps({"session_id": session_id, "agent_id": agent_id})
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", state_dir, "agent-begin"],
+        input=begin_payload, capture_output=True, text=True,
+    )
+    end_obj = {"session_id": session_id, "agent_id": agent_id}
+    if transcript_path:
+        end_obj["agent_transcript_path"] = transcript_path
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--state-dir", state_dir, "agent-end"],
+        input=json.dumps(end_obj), capture_output=True, text=True,
+    )
+
+
+def test_floor_ask_latches_until_new_unparseable_agent():
+    """An unparseable agent asks once; --mark-reported latches it until a NEW one appears (fix 12)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_id = "floor-latch-sess"
+        run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path="/nonexistent/path.jsonl")
+
+        code1, stdout1, _ = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+        if "DECISION: ask" not in stdout1 or code1 != 10:
+            return False, f"first check with unparseable agent should ask, got code={code1} stdout={stdout1}"
+
+        code2, stdout2, _ = run_usage_check(
+            ["--seam", "round1-join", "--session-id", session_id, "--mark-reported"], state_dir=tmpdir
+        )
+        if "DECISION: proceed" not in stdout2:
+            return False, f"--mark-reported should latch and proceed immediately, got: {stdout2}"
+
+        code3, stdout3, _ = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
+        if "DECISION: ask" in stdout3:
+            return False, f"same unparseable agent must not re-ask after latching, got: {stdout3}"
+
+        run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path="/nonexistent/path2.jsonl")
+        code4, stdout4, _ = run_usage_check(["--seam", "post-fanout", "--session-id", session_id], state_dir=tmpdir)
+        if "DECISION: ask" not in stdout4 or code4 != 10:
+            return False, f"a NEW unparseable agent must re-trigger the ask, got code={code4} stdout={stdout4}"
+
+        return True, ""
+
+
+def test_over_threshold_reported_shows_next_ask_boundary():
+    """over-threshold-reported's printed line shows the last-reported total and next ask boundary (fix 16)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_id = "next-ask-sess"
+        transcript = Path(tmpdir) / "t.jsonl"
+        transcript.write_text(json.dumps({
+            "type": "assistant", "sessionId": session_id,
+            "message": {"id": "m1", "usage": {
+                "input_tokens": 100000, "output_tokens": 50000,
+                "cache_creation_input_tokens": 5000, "cache_read_input_tokens": 0,
+            }},
+        }) + "\n")
+
+        run_usage_check(["--seam", "round1-join", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir)
+        run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path=str(transcript))
+
+        run_usage_check(
+            ["--seam", "pre-fanout", "--session-id", session_id, "--threshold", "100000", "--mark-reported"],
+            state_dir=tmpdir,
+        )
+        code, stdout, _ = run_usage_check(
+            ["--seam", "post-fanout", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir
+        )
+
+        if "state=over-threshold-reported" not in stdout:
+            return False, f"expected over-threshold-reported state, got: {stdout}"
+        if "already reported at 155,000" not in stdout or "next ask at 255,000" not in stdout:
+            return False, f"expected last-reported/next-ask boundary text, got: {stdout}"
+        if code != 0:
+            return False, f"already-reported crossing should proceed, got exit {code}"
+
+        return True, ""
+
+
+def test_round1_join_reinvocation_shows_fresh_budget():
+    """A second round1-join call in the same session shows 0, not the prior run's cumulative total (fix 6)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_id = "fresh-budget-sess"
+        transcript = Path(tmpdir) / "t.jsonl"
+        transcript.write_text(json.dumps({
+            "type": "assistant", "sessionId": session_id,
+            "message": {"id": "m1", "usage": {
+                "input_tokens": 90000, "output_tokens": 0,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            }},
+        }) + "\n")
+
+        run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path=str(transcript))
+        run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+
+        _, stdout_mid, _ = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
+        if "counted=0" not in stdout_mid:
+            return False, f"pre-fanout right after round1-join with no further spend should show 0, got: {stdout_mid}"
+
+        _, stdout_reinvoke, _ = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+        if "counted=0" not in stdout_reinvoke:
+            return False, f"re-invocation's round1-join must show a fresh (0) budget, got: {stdout_reinvoke}"
+
+        return True, ""
+
+
 def main():
     h = Harness("USAGE-CHECK CLI CONTRACT TEST SUITE")
 
@@ -415,6 +520,9 @@ def main():
     h.test_result("JSON keys all present", *test_json_keys_required())
     h.test_result("agents field N/M format", *test_agents_field_format())
     h.test_result("session-id env fallback", *test_session_id_env_fallback())
+    h.test_result("floor ask latches until new unparseable agent", *test_floor_ask_latches_until_new_unparseable_agent())
+    h.test_result("over-threshold-reported shows next-ask boundary", *test_over_threshold_reported_shows_next_ask_boundary())
+    h.test_result("round1-join re-invocation shows fresh budget", *test_round1_join_reinvocation_shows_fresh_budget())
 
     print()
     h.summarize_and_exit()
