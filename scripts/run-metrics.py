@@ -842,9 +842,13 @@ def cmd_usage_check(args):
         )
 
     is_floor = state.get("is_floor", False)
-    if gate_state == "over-threshold-unreported" or gate_state == "unavailable" or gate_state == "session-mismatch" or is_floor:
+    if gate_state == "over-threshold-unreported" or gate_state == "session-mismatch" or is_floor:
         decision = "ask"
     else:
+        # gate_state == "unavailable" is deliberately NOT an ask: an opted-out repo (no
+        # install.sh --with-telemetry) or a session that hasn't launched any subagents yet
+        # must stay unaffected, per ADR-0016's own "opt-out is unaffected" guarantee. It gets
+        # a one-line notice instead (see below), never a blocking DECISION: ask.
         decision = "proceed"
 
     accounted = state.get("accounted", 0)
