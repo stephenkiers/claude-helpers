@@ -490,7 +490,11 @@ Always prints two lines:
 **Decision semantics:**
 
 - `DECISION: proceed` — usage is under threshold (or `state=unavailable`, which defaults to proceed with notice)
-- `DECISION: ask` — fires when: usage is over threshold AND hasn't been reported yet OR has crossed a further full increment since the last report, OR any agent is unaccounted for, OR no usable telemetry state exists at all (`state=unavailable` should return proceed, not ask — see next caveat)
+- `DECISION: ask` — fires when: usage is over threshold AND hasn't been reported yet OR has crossed a further full increment since the last report, OR a *new* unparseable/mismatched/leftover agent has appeared since the last `--mark-reported` (latched — see below), OR `state=session-mismatch`
+
+**Latching (non-threshold asks):** an unparseable agent or a `state=unavailable`/`session-mismatch` condition does not ask at every seam for the rest of the run. `state=unavailable` never asks at all (see above). An unparseable/mismatched/leftover agent asks once; `--mark-reported` latches the current floor-agent count (`usage.last_reported_floor_count`), and the seam only asks again once a *new* such agent appears (floor-agent count grows past the latched value).
+
+**Fresh budget per run:** `usage.counted_tokens` (and `unaccounted_no_agent_id_tokens`) are session-cumulative — the write path never resets them, since the same `SubagentStop` handler also feeds `/expert-review` and `/expert-plan-v2`. To make "a re-invocation starts a fresh budget" true, the *reader* mints `usage.active_run = {run_id, started_at, baseline_counted_tokens}` every time `--seam round1-join` is checked (this command's own first seam), and every seam's `counted=`/`DECISION:` is `counted_tokens - baseline_counted_tokens`, not the raw session-cumulative total. Round 1's own spend becomes part of the baseline the moment `round1-join` fires (it already happened — sunk cost); from `round1-join` onward, the gate measures only what rounds 2–4 add on top of that baseline. Re-invoking `/implement-with-haiku` in the same Claude Code session re-mints a fresh baseline (and resets `seams_checked`, `last_reported_crossing_at_tokens`, `last_reported_floor_count`) at that invocation's own `round1-join` call.
 
 **Exit code:** secondary signal (0 for proceed, 10 for ask). The command doc must act on the printed `DECISION:` field text, not the exit code.
 
@@ -501,21 +505,32 @@ Stored at `~/.claude/telemetry/state/<session_id>.json` (same session state file
 ```json
 {
   "usage": {
-    "counted_tokens": 84302,
+    "session_id": "abc123",
+    "counted_tokens": 149302,
+    "unaccounted_no_agent_id_tokens": 0,
     "last_reported_crossing_at_tokens": 65000,
+    "last_reported_floor_count": 0,
     "seams_checked": ["round1-join", "gate-fix-loop"],
+    "active_run": {
+      "run_id": "9f2a...",
+      "started_at": "2026-09-10T12:00:00+00:00",
+      "baseline_counted_tokens": 65000
+    },
     "agents": {
-      "<agent_id>": {"status": "accounted", "tokens": 42151},
-      "<agent_id>": {"status": "unaccounted"}
+      "<agent_id>": {"session_id": "abc123", "status": "counted", "counted_tokens": 42151},
+      "<agent_id>": {"session_id": "abc123", "status": "unparseable", "counted_tokens": null}
     }
   }
 }
 ```
 
-- `counted_tokens` — cumulative sum of input + output + cache_creation tokens across all agents
-- `last_reported_crossing_at_tokens` — the token count at which the gate last returned `DECISION: ask` (used to avoid re-asking until usage crosses a further increment)
-- `seams_checked` — list of seam IDs where usage-check has run during this session
-- `agents` — map of per-agent data; `status` is either `accounted` (transcript parsed successfully) or `unaccounted` (missing, unparseable, or still in flight)
+- `counted_tokens` — cumulative sum of input + output + cache_creation tokens across all agents, session-wide (not reset between `/implement-with-haiku` invocations — see "Fresh budget per run" above)
+- `unaccounted_no_agent_id_tokens` — tokens from agents whose `SubagentStop` payload had no usable `agent_id` (never folded into a per-agent entry, since there's no key to fold them under)
+- `last_reported_crossing_at_tokens` — the (session-cumulative) token count at which the gate last returned `DECISION: ask` for a threshold crossing
+- `last_reported_floor_count` — the unparseable/mismatched/leftover agent count last acknowledged via `--mark-reported`; the floor-agent latch described above
+- `seams_checked` — list of seam IDs checked during the *current run* (reset at each `round1-join`)
+- `active_run` — the current run's baseline, minted at `round1-join`; `counted=`/`DECISION:` at every seam are `counted_tokens - active_run.baseline_counted_tokens`
+- `agents` — map of per-agent data (keyed by `agent_id`); `status` is one of `counted` (transcript parsed successfully), `unparseable` (missing/corrupt transcript), or `session-mismatch`
 
 ### Query Pattern: Token Totals by Session
 

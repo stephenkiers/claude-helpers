@@ -788,10 +788,23 @@ def cmd_usage_check(args):
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
 
     threshold = args.threshold
+    state_path = telemetry_schema.session_meta_path(session_id, args.state_dir)
+
+    # Fix 6/13: record the seam check BEFORE reading state for the gate computation below.
+    # round1-join mints/resets usage.active_run inside record_seam_checked, and this call's
+    # own gate decision must see that fresh baseline — not the pre-reset session-cumulative
+    # total — or the very first seam check of a new run would report stale numbers.
+    if args.seam != "final":
+        _guarded_state_op(
+            telemetry_schema.record_seam_checked,
+            state_path,
+            session_id,
+            args.seam,
+        )
 
     state = _guarded_state_op(
         telemetry_schema.read_usage_state,
-        telemetry_schema.session_meta_path(session_id, args.state_dir),
+        state_path,
         session_id,
     )
 
@@ -807,42 +820,54 @@ def cmd_usage_check(args):
             "seams_checked": [],
             "has_unaccounted_no_agent_id": False,
             "leftover_launched_not_accounted": 0,
+            "floor_count": 0,
+            "last_reported_floor_count": 0,
         }
 
     if args.mark_reported and state.get("available") and not state.get("session_mismatch"):
         _guarded_state_op(
             telemetry_schema.mark_usage_crossing_reported,
-            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            state_path,
             session_id,
+        )
+        _guarded_state_op(
+            telemetry_schema.mark_floor_reported,
+            state_path,
+            session_id,
+            state.get("floor_count", 0),
         )
         state = _guarded_state_op(
             telemetry_schema.read_usage_state,
-            telemetry_schema.session_meta_path(session_id, args.state_dir),
+            state_path,
             session_id,
         ) or state
 
-    if args.seam != "final":
-        _guarded_state_op(
-            telemetry_schema.record_seam_checked,
-            telemetry_schema.session_meta_path(session_id, args.state_dir),
-            session_id,
-            args.seam,
-        )
+    # read_usage_state's "counted_tokens" already folds in unaccounted_no_agent_id_tokens and
+    # is relative to the active run's baseline — do not add unaccounted_no_agent_id_tokens again.
+    counted_total = state.get("counted_tokens", 0)
 
     if state.get("session_mismatch"):
         gate_state = "session-mismatch"
     elif not state.get("available"):
         gate_state = "unavailable"
     else:
-        counted = state.get("counted_tokens", 0) + (state.get("unaccounted_no_agent_id_tokens", 0) or 0)
         gate_state = telemetry_schema.threshold_state(
-            counted,
+            counted_total,
             threshold,
             state.get("last_reported_crossing_at_tokens"),
         )
 
+    # Fix 12: latch the non-threshold ask triggers. is_floor alone would re-ask at every
+    # seam for the rest of the run; only ask again once floor_count has grown past what was
+    # already latched via --mark-reported (i.e. a *new* unparseable/mismatched/leftover agent
+    # appeared since the last report). state=unavailable is handled separately below — it is
+    # deliberately never an ask (see decision below), so it needs no latch of its own.
     is_floor = state.get("is_floor", False)
-    if gate_state == "over-threshold-unreported" or gate_state == "session-mismatch" or is_floor:
+    floor_count = state.get("floor_count", 0)
+    last_reported_floor_count = state.get("last_reported_floor_count", 0)
+    floor_ask = is_floor and floor_count > last_reported_floor_count
+
+    if gate_state == "over-threshold-unreported" or gate_state == "session-mismatch" or floor_ask:
         decision = "ask"
     else:
         # gate_state == "unavailable" is deliberately NOT an ask: an opted-out repo (no
@@ -853,7 +878,6 @@ def cmd_usage_check(args):
 
     accounted = state.get("accounted", 0)
     total_known = state.get("total_known", 0)
-    counted_total = state.get("counted_tokens", 0) + (state.get("unaccounted_no_agent_id_tokens", 0) or 0)
 
     if threshold > 0:
         pct = round(100 * counted_total / threshold)
@@ -876,6 +900,10 @@ def cmd_usage_check(args):
         printed_line += " — no telemetry state found; install with install.sh --with-telemetry, or this session has not produced any subagent activity yet"
     elif gate_state == "session-mismatch":
         printed_line += " — session id mismatch in stored usage state; telemetry is installed but tokens may be misattributed across sessions"
+    elif gate_state == "over-threshold-reported":
+        last_reported = state.get("last_reported_crossing_at_tokens") or 0
+        next_ask_at = last_reported + threshold
+        printed_line += f" — already reported at {last_reported:,}; next ask at {next_ask_at:,}"
 
     print(printed_line)
 

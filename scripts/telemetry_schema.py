@@ -13,7 +13,8 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional, TypedDict, Union
 
@@ -73,6 +74,18 @@ class AgentUsageEntry(TypedDict, total=False):
     recorded_at: str
 
 
+class ActiveRun(TypedDict, total=False):
+    """The current /implement-with-haiku run's budget baseline.
+
+    Minted fresh every time seam="round1-join" is checked, so a re-invocation
+    in the same Claude Code session starts a fresh budget (decision 13) instead
+    of inheriting the whole session's cumulative usage.
+    """
+    run_id: str
+    started_at: str
+    baseline_counted_tokens: int
+
+
 class UsageState(TypedDict, total=False):
     """Usage tracking state, stored under SessionMeta.usage.
 
@@ -83,8 +96,10 @@ class UsageState(TypedDict, total=False):
     counted_tokens: int
     unaccounted_no_agent_id_tokens: int
     last_reported_crossing_at_tokens: Optional[int]
+    last_reported_floor_count: int
     seams_checked: list
     agents: dict[str, AgentUsageEntry]
+    active_run: ActiveRun
 
 
 class SessionMeta(TypedDict, total=False):
@@ -967,10 +982,16 @@ def read_usage_state(path: Path, session_id: str) -> dict:
             "seams_checked": [],
             "has_unaccounted_no_agent_id": False,
             "leftover_launched_not_accounted": 0,
+            "floor_count": 0,
+            "last_reported_floor_count": 0,
         }
 
     usage = state.get("usage")
-    if not usage or not isinstance(usage, dict):
+    # "available" means at least one agent has actually been accounted (usage.session_id is
+    # only ever set by record_agent_usage) — not merely that a seam has been checked. Fix 6's
+    # record_seam_checked can create a non-empty usage dict (active_run, seams_checked) before
+    # any agent ever finishes; that alone must not flip state from unavailable to under-threshold.
+    if not usage or not isinstance(usage, dict) or not usage.get("session_id"):
         return {
             "available": False,
             "session_mismatch": False,
@@ -982,6 +1003,8 @@ def read_usage_state(path: Path, session_id: str) -> dict:
             "seams_checked": [],
             "has_unaccounted_no_agent_id": False,
             "leftover_launched_not_accounted": 0,
+            "floor_count": 0,
+            "last_reported_floor_count": 0,
         }
 
     usage_session_id = usage.get("session_id")
@@ -997,6 +1020,8 @@ def read_usage_state(path: Path, session_id: str) -> dict:
             "seams_checked": usage.get("seams_checked", []),
             "has_unaccounted_no_agent_id": False,
             "leftover_launched_not_accounted": 0,
+            "floor_count": 0,
+            "last_reported_floor_count": usage.get("last_reported_floor_count", 0),
         }
 
     counted_tokens_total = usage.get("counted_tokens", 0)
@@ -1027,18 +1052,41 @@ def read_usage_state(path: Path, session_id: str) -> dict:
 
     total_known = accounted_count + unparseable_mismatched_count + leftover_count
     is_floor = has_unaccounted or unparseable_mismatched_count > 0 or leftover_count > 0
+    floor_count = unparseable_mismatched_count + leftover_count
+
+    # Scope the reader to the active run's budget (decision 13): usage.counted_tokens and
+    # unaccounted_no_agent_id_tokens are session-cumulative (the write path never resets them),
+    # so subtract the baseline minted at this run's round1-join to make a re-invocation start
+    # a fresh budget instead of inheriting the whole session's total. No active_run yet (a
+    # session that hasn't hit round1-join this run) means baseline 0 — unchanged behavior.
+    active_run = usage.get("active_run")
+    baseline = 0
+    if isinstance(active_run, dict):
+        baseline = active_run.get("baseline_counted_tokens", 0) or 0
+
+    raw_total = counted_tokens_total + unaccounted_no_agent_id
+    relative_total = max(0, raw_total - baseline)
+
+    raw_last_reported = usage.get("last_reported_crossing_at_tokens")
+    relative_last_reported = None
+    if raw_last_reported is not None:
+        relative_last_reported = max(0, raw_last_reported - baseline)
 
     return {
         "available": True,
         "session_mismatch": False,
-        "counted_tokens": counted_tokens_total,
+        "counted_tokens": relative_total,
+        "unaccounted_no_agent_id_tokens": unaccounted_no_agent_id,
         "is_floor": is_floor,
         "accounted": accounted_count,
         "total_known": total_known,
-        "last_reported_crossing_at_tokens": usage.get("last_reported_crossing_at_tokens"),
+        "last_reported_crossing_at_tokens": relative_last_reported,
         "seams_checked": usage.get("seams_checked", []),
         "has_unaccounted_no_agent_id": has_unaccounted,
         "leftover_launched_not_accounted": leftover_count,
+        "floor_count": floor_count,
+        "last_reported_floor_count": usage.get("last_reported_floor_count", 0),
+        "active_run_id": active_run.get("run_id") if isinstance(active_run, dict) else None,
     }
 
 
@@ -1074,15 +1122,7 @@ def record_agent_usage(
         usage_session_id = usage.get("session_id")
         if usage_session_id is None:
             usage["session_id"] = session_id
-        elif usage_session_id != session_id:
-            session_mismatch = True
-        else:
-            session_mismatch = False
-
-        if usage_session_id and usage_session_id != session_id:
-            session_mismatch = True
-        else:
-            session_mismatch = False
+        session_mismatch = bool(usage_session_id and usage_session_id != session_id)
 
         begin_entry = agents_begin_map.pop(agent_id, None)
         began_at = None
@@ -1173,7 +1213,7 @@ def mark_usage_crossing_reported(path: Path, session_id: str) -> None:
         if usage_session_id and usage_session_id != session_id:
             return state
 
-        current_counted = usage.get("counted_tokens", 0)
+        current_counted = usage.get("counted_tokens", 0) + (usage.get("unaccounted_no_agent_id_tokens", 0) or 0)
         existing_reported = usage.get("last_reported_crossing_at_tokens")
         new_reported = max(existing_reported or 0, current_counted)
         usage["last_reported_crossing_at_tokens"] = new_reported
@@ -1184,10 +1224,12 @@ def mark_usage_crossing_reported(path: Path, session_id: str) -> None:
     load_and_update_state(path, mutate)
 
 
-def record_seam_checked(path: Path, session_id: str, seam: str) -> None:
-    """Atomically record that a seam has been checked.
+def mark_floor_reported(path: Path, session_id: str, floor_count: int) -> None:
+    """Atomically latch the floor-agent count as reported (fix 12: non-threshold ask latching).
 
-    Appends seam to usage.seams_checked if not already present (deduplicates).
+    Sets last_reported_floor_count to the max of floor_count and the existing value
+    (monotonic, never regresses). A caller re-asks only once floor_count grows beyond
+    this latched value (a *new* unparseable/session-mismatch/leftover agent appeared).
     Refuses (no-op) if usage.session_id is set and differs from session_id.
     """
     path = Path(path)
@@ -1200,6 +1242,51 @@ def record_seam_checked(path: Path, session_id: str, seam: str) -> None:
         usage_session_id = usage.get("session_id")
         if usage_session_id and usage_session_id != session_id:
             return state
+
+        existing = usage.get("last_reported_floor_count", 0)
+        usage["last_reported_floor_count"] = max(existing or 0, floor_count)
+
+        state["usage"] = usage
+        return state
+
+    load_and_update_state(path, mutate)
+
+
+def record_seam_checked(path: Path, session_id: str, seam: str) -> None:
+    """Atomically record that a seam has been checked.
+
+    Appends seam to usage.seams_checked if not already present (deduplicates).
+    Refuses (no-op) if usage.session_id is set and differs from session_id.
+
+    Fix 6 (decision 13): when seam=="round1-join", mints a fresh usage.active_run
+    {run_id, started_at, baseline_counted_tokens} and resets seams_checked,
+    last_reported_crossing_at_tokens, and last_reported_floor_count — this is
+    /implement-with-haiku's own first seam, so every re-invocation in the same
+    Claude Code session starts a fresh budget instead of inheriting the whole
+    session's cumulative usage (which also accrues from other commands sharing
+    the same SubagentStop write path, e.g. /expert-review, /expert-plan-v2).
+    """
+    path = Path(path)
+
+    def mutate(state: dict) -> dict:
+        usage = state.get("usage", {})
+        if not isinstance(usage, dict):
+            usage = {}
+
+        usage_session_id = usage.get("session_id")
+        if usage_session_id and usage_session_id != session_id:
+            return state
+
+        if seam == "round1-join":
+            baseline = usage.get("counted_tokens", 0) + (usage.get("unaccounted_no_agent_id_tokens", 0) or 0)
+            usage["active_run"] = {
+                "run_id": uuid.uuid4().hex,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "baseline_counted_tokens": baseline,
+            }
+            usage["seams_checked"] = []
+            usage["last_reported_crossing_at_tokens"] = None
+            usage["last_reported_floor_count"] = 0
 
         seams = usage.get("seams_checked", [])
         if not isinstance(seams, list):
