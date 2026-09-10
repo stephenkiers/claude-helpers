@@ -116,14 +116,58 @@ whether the run ends up single- or multi-unit:
 SCRATCH=$(mktemp -d)
 ```
 
-Also read these files using the `Read` tool if they exist (skip silently if not):
-- `CLAUDE.md` — project conventions and coding rules
-- `.claude/project.yaml` — project-specific context
-- `.claude/implement-with-haiku.md` — project-specific gates and overrides for this
-  command; where it conflicts with this command's defaults, the project file wins
+Record the absolute paths of your current directory and `$SCRATCH` as literal strings — every prompt
+you compose below must contain the resolved absolute path, never the shell variable name, because
+shell variables do not persist between separate Bash tool calls and a prompt containing the literal
+text `$SCRATCH/...` hands the agent a path that does not exist:
+```bash
+pwd            # record the printed value as MAIN_WT_PATH (a literal string you will paste below)
+echo "$SCRATCH"   # record the printed value as SCRATCH_PATH (a literal string you will paste below)
+```
+
+Also read `.claude/implement-with-haiku.md` using the `Read` tool if it exists (skip silently if
+not) — project-specific gates and overrides for this command; where it conflicts with this
+command's defaults, the project file wins.
+
+Do not read `CLAUDE.md` or `.claude/project.yaml` into this context. Every agent launched below
+reads them itself from its own working directory — see the "Project conventions" block used in
+every launch prompt. Following ADR-0001's progressive-disclosure principle, each subagent loads
+its own context on demand rather than receiving it pre-loaded from the orchestrator. (For comparison:
+`expert-review.md` uses a different, complementary pattern: read `.claude/project.yaml` once
+centrally and distribute the value into every reviewer prompt, achieving the same goal of keeping
+the orchestrator's context lean.)
 
 **Stage timing.** Each agent self-measures and returns an `ELAPSED_SECONDS:` line. Report per-round
 agent compute, not end-to-end wall clock (which includes idle between turns).
+
+### Canonical launch prompt blocks (used in all agent prompts below)
+
+These three blocks are defined once here for reference. **Use identical wording each time they
+appear** in every agent launch prompt — they are the single source of truth. Maintaining consistent
+wording across all launch sites prevents drift.
+
+**Block A — Project conventions:**
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
+
+**Block B — Working directory line:**
+> `Working directory: <path>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
+
+Where `<path>` is replaced with the absolute path for the specific launch (e.g., `WT_PATH`,
+`R2_WT_PATH`, `MAIN_WT_PATH`).
+
+**Block C — Full report trailer reference (choose based on launch type):**
+
+For writable passes:
+> [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
+
+For read-only passes:
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
 
 ## Step 2.5: Pre-flight orphan sweep
 
@@ -212,8 +256,7 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
   first step greps for it verbatim to `cd` there before doing anything else)
 - The branch name
 - The 5 most recent commit messages (for commit style)
-- Contents of `CLAUDE.md` if found (under a "Project conventions" heading)
-- Contents of `.claude/project.yaml` if found (under a "Project context" heading)
+- The Project conventions block (see Step 2)
 - Names of any style/lint/format config files found in Step 2
 - The shared contracts/interfaces extracted in Step 3
 - `OWNED FILES (only touch these):` — the unit's owned-files list
@@ -227,7 +270,12 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
   > treat it as open, do not propose an alternative, do not flag it back as ambiguous.**
 - The verification commands from the plan (or `n/a` if none for this unit)
 - The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section, which
-  ends in `STAGED: yes | no`, not a commit)
+  ends in `REPORT_FILE: <path> | none`, not a commit)
+- A literal line `Report file: <SCRATCH_PATH>/round1-<unit-id>-report.md` (absolute path, with
+  `<unit-id>` substituted for this unit and `<SCRATCH_PATH>` the literal path recorded in Step 2).
+  Instruct the agent: "When you finish, use the `Write` tool to write your report — steps
+  completed, deviations, verification result — to that exact path, and set `REPORT_FILE:` in your
+  trailer to it. Keep what you return in your reply to the trailer plus at most two sentences."
 
 Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for completions."
 
@@ -236,16 +284,18 @@ Confirm to the user: "Launched N round-1 unit(s) in parallel. Waiting for comple
 When each unit's `plan-implementer` agent returns, **immediately** process it before the next
 one arrives. The orchestrator serializes all applies/commits — never concurrently.
 
-**First: validate the report.** All four trailer lines must be present:
+**First: validate the report.** All four handoff-critical trailer lines must be present:
 - `ELAPSED_SECONDS: <n | unknown>`
 - `VERIFIED: pass | fail | n/a`
 - `FILES_TOUCHED:` (with paths on subsequent lines)
 - `STAGED: yes | no`
 
-If any trailer line is missing → **interrupted handoff**: surface the unit's report and offer:
+If any of these four lines is missing → **interrupted handoff**: surface the unit's report and offer:
 - Re-run this unit (re-launch with the same prompt in its existing worktree)
 - Inspect its worktree diff manually
 - Mark failed and continue with remaining units
+
+`REPORT_FILE:` is handled separately — see the Report-file check below.
 
 **Never trust the trailer — verify via git.** Regardless of what `STAGED:` says, check the
 worktree yourself first:
@@ -275,8 +325,9 @@ If the main worktree is dirty on files owned by a **still-running** unit, do not
 anything yet that would sweep those files in; note it and re-check at that unit's completion.
 
 **If the worktree is genuinely empty** (no staged changes after the above, and main worktree
-clean on this unit's files): Mark unit `failed`. Leave its worktree in place for inspection.
-Surface the report and reason.
+clean on this unit's files): Mark unit `failed`. Record `<unit-id>: no report (unit failed)` for
+use in Round 3 pass 1's input list below (same pattern as the Step 4c report-file check uses for
+missing unit reports). Leave its worktree in place for inspection. Surface the report and reason.
 
 **The inverse is a lost-work anomaly, not a success:** if the worktree is genuinely empty (both
 `git -C "$WT_PATH" status --porcelain` and `git -C "$WT_PATH" diff HEAD` are empty — worktree-wide check, not file-scoped) **but** the
@@ -285,6 +336,14 @@ changes needed" — **first check the main worktree for the unit's work** (`git 
 -- <owned-files>` in main). If the work is sitting there, this is cwd drift, not lost work —
 proceed to the salvage procedure below. If main is clean on the unit's files, treat it as an
 interrupted handoff and use the Incomplete-report menu (Re-run / Inspect / Skip / Abort) below.
+
+**Report-file check (per unit):** verify `<SCRATCH_PATH>/round1-<unit-id>-report.md` exists and is
+non-empty yourself (`wc -c < <path>` — zero or missing is a failure) before trusting the agent's
+`REPORT_FILE:` line. Unlike the Round 3 pass-1 handoff below, a missing or empty round-1 unit report
+does **not** trigger a retry of the unit (the unit's implementation work already succeeded and
+re-running the full prompt risks a duplicate/conflicting diff over already-staged work, just to
+regenerate a prose file). Instead, record `<unit-id>: no report (unit succeeded; report file
+missing or empty)` for use in Round 3 pass 1's input list below, and continue.
 
 ### Salvage procedure for cwd drift
 
@@ -424,14 +483,15 @@ Max **K = 3** iterations. On each iteration:
 
 1. Launch a fix `plan-implementer` agent (background) in an isolated worktree branched from current
    HEAD (not START_SHA). Prompt it with:
-   - A literal line **`Working directory: <path to this fix worktree>`** (same exact prefix as
-     Step 4b — required for `plan-implementer` to `cd` there)
+   - A literal line **`Working directory: <FIX_WT_PATH>`** (this exact prefix —
+     `plan-implementer`'s first step greps for it verbatim to `cd` there before doing anything else),
+     where `<FIX_WT_PATH>` is the absolute path of this iteration's fix worktree
    - The specific failures from the gate (compile errors, stub locations, tamper flags)
    - "Fix only these specific failures. Do not touch test files. Do not modify build config scripts."
    - "Stage your changes (`git add -A`) and do not commit. The orchestrator applies your diff and
      commits it."
    - The owned files that need fixing
-   - Full project context
+   - The Project conventions block (see Step 2)
 2. When it returns, validate its trailer (same incomplete-report check as Step 4c, `STAGED:` not
    `COMMITTED:`).
 3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
@@ -486,10 +546,16 @@ R2_WT_PATH="${WT_PARENT}/${R2_BRANCH}"
 git worktree add "$R2_WT_PATH" -b "$R2_BRANCH" "$ROUND2_START_SHA"
 ```
 
+`R2_WT_PATH` is fully determined by strings you already hold as literals (`WT_PARENT` from Step 2.5,
+`BRANCH` from Step 2.5) — compute its literal absolute value yourself and use that literal string
+below, never the shell variable name (same rule as decision 14: a prompt containing the literal text
+`$R2_WT_PATH` hands the agent a path that does not exist, since shell variables don't persist across
+separate Bash calls).
+
 Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test author** prompt:
 
-> **`Working directory: $R2_WT_PATH`** (this exact prefix — required for `plan-implementer` to
-> `cd` there before doing anything else)
+> `Working directory: <R2_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
 >
 > Your job is to write tests for the plan below. The plan has already been implemented by a prior
 > pass — but you must **not** look at how it was implemented. Tests written from the implementation
@@ -527,9 +593,14 @@ Launch a background `plan-implementer` in `$R2_WT_PATH` with a **spec-blind test
 >    any forbidden file or run `git diff`/`git status`, or `SPEC_BLIND: no` followed by what you
 >    read and why. Be honest — this is for evaluating whether the spec-blind constraint holds.
 >
-> [Full report trailer per plan-implementer instructions, ending in `STAGED: yes | no`]
+> [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
 >
-> [Project conventions, project context]
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 ### Round 3 pass 1: Adversary, read-only (main worktree)
 
@@ -539,12 +610,18 @@ Round 2 worktree.
 
 Launch a background `plan-implementer` (main worktree, read-only in practice — no edits) with:
 
+> `Working directory: <MAIN_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
+>
 > You are an adversarial reviewer. A prior pass implemented this plan. Your job is to find
 > divergence between the implementation and the plan — assume something is wrong somewhere. Don't
 > confirm correctness; argue against it.
 >
 > **Plan:** [verbatim plan]
-> **Round 1 report (implementer):** [report]
+> **Round 1 unit reports — read each of these files:** [one absolute path per successful unit,
+> i.e. `<SCRATCH_PATH>/round1-<unit-id>-report.md` for each]. Units with no report (see Step 4c)
+> are listed here as `<unit-id>: no report (unit failed)` or `<unit-id>: no report (unit
+> succeeded; report file missing or empty)` as applicable — do not fabricate a report for them.
 > **Implementation files:** [IMPL_FILES]
 >
 > Treat this as your plan:
@@ -552,14 +629,23 @@ Launch a background `plan-implementer` (main worktree, read-only in practice —
 > 2. Investigate divergence: where does the implementation drift from the plan? What did the
 >    implementer rationalize past? Where would this break in production? Consider edge cases,
 >    error paths, concurrent access, malformed input, resource leaks, missing validation.
-> 3. **Do not edit any files in this pass** — a second, shorter pass will apply fixes after tests
+> 3. **Do not edit any files in this pass, except the report file named below, which you must `Write`** — a second, shorter pass will apply fixes after tests
 >    exist. For each finding, write out the proposed fix (as a description, not a diff) and note
 >    whether it looks unambiguous or needs human judgment.
-> 4. Report: issues found (numbered), each as a proposed fix or a flag for ambiguity.
+> 4. Write your numbered findings to `<SCRATCH_PATH>/round3-pass1-report.md` using the `Write`
+>    tool: a numbered list, each item with *finding*, *proposed fix (description, not a diff)*,
+>    and *unambiguous | needs-human-judgment*. Set `REPORT_FILE:` in your trailer to that path.
+>    In your reply, return only a one-or-two-line summary plus the trailer — do not repeat the
+>    findings inline.
 >
-> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`]
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
 >
-> [Project conventions, project context]
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 ### Sweeps (read-only, Haiku, findings only — never auto-fixed)
 
@@ -567,13 +653,26 @@ Two more background `plan-implementer` agents, both read-only against the main w
 reporting findings into the final summary only:
 
 **Duplication sweep:**
+> `Working directory: <MAIN_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
+>
 > From this diff's new/changed symbols [IMPL_FILES], `rg` the repo for the same logic shape
 > repeated at 3 or more call sites. Report each as: symbol/pattern, call sites (file:line), and a
 > one-line suggested extraction. Do not edit anything.
 >
-> [Full report trailer — `STAGED: no (read-only pass)`]
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
+>
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 **Doc-drift check:**
+> `Working directory: <MAIN_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
+>
 > This diff is: [IMPL_FILES]. If it touches, or the plan below names, any ADR/CHANGELOG/README
 > file, verify each doc claim against the actual code — flag anything the doc asserts that the
 > diff contradicts or doesn't support. Also flag code changes that contradict an ADR named in the
@@ -581,7 +680,14 @@ reporting findings into the final summary only:
 >
 > **Plan:** [verbatim plan]
 >
-> [Full report trailer — `STAGED: no (read-only pass)`]
+> [Full report trailer per plan-implementer instructions — `STAGED: no (read-only pass)`, ending in `REPORT_FILE: <path> | none`]
+>
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 ---
 
@@ -685,10 +791,14 @@ Collect: `TEST_FILES` (above), the Part C flags (`dedup` / `vacuous` / `weak-ass
 
 Launch a background `plan-implementer` (main worktree) with:
 
+> `Working directory: <MAIN_WT_PATH>` (this exact prefix — `plan-implementer`'s first step greps for
+> it verbatim to `cd` there before doing anything else)
+>
 > You did an adversarial read-only pass earlier on this implementation and proposed fixes (below).
 > Since then, spec-blind tests were written. Your job now:
 >
-> **Your earlier findings and proposed fixes:** [Round 3 pass 1 report]
+> **Your earlier findings and proposed fixes — read this file:**
+> `<SCRATCH_PATH>/round3-pass1-report.md`
 > **New test files:** [TEST_FILES]
 > **Automated flags on the new tests:** [Part C flags, if any — `dedup` / `vacuous` / `weak-assertion`]
 >
@@ -724,9 +834,14 @@ Launch a background `plan-implementer` (main worktree) with:
 >
 >    Report final test status.
 >
-> [Full report trailer per plan-implementer instructions, ending in `STAGED: yes | no`]
+> [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
 >
-> [Project conventions, project context]
+> **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
+> `<MAIN_WT_PATH>/.claude/project.yaml` (skip either silently if it does not exist), where
+> `<MAIN_WT_PATH>` is the literal absolute path recorded in Step 2. Read them from that path
+> regardless of which worktree you are otherwise working in — a fresh worktree only contains
+> tracked files, so a relative `./CLAUDE.md` read from inside it can silently miss an untracked or
+> uncommitted-but-modified conventions file that the main worktree actually has.
 
 **Applying and verifying Round 3's fixes:** same diff-apply pattern as Round 2 above. Before
 committing, validate scope — `git -C <its worktree or the diff> diff --staged --name-only` should
@@ -860,10 +975,36 @@ that changes pass/fail counts beyond the intended deletions is a mistake, not cl
 
 ---
 
+## Report-file handoff check (applies wherever a prompt names a `Report file:`)
+
+Before forwarding a report path into any later prompt, verify the file yourself — never trust the
+agent's `REPORT_FILE:` line alone (same discipline as `STAGED:` / `VERIFIED:`). Check existence
+*and* non-emptiness in one command, on the path **you** named, not the one the agent reported:
+```bash
+wc -c < "<absolute report path>"
+```
+Missing file → command errors. Empty file → `0`. Either is a failure.
+
+**Round 1 unit reports:** see Step 4c's report-file check above — no retry, record as missing, continue.
+
+**Round 3 pass-1 report (the one handoff that actually gates a downstream decision):** on failure,
+re-launch that agent once with the identical prompt. If the file is still missing or empty after
+the retry, hard-stop that stage — do not forward an empty or absent report, and never treat it as
+"no findings found." Surface it via the Incomplete-report menu (Re-run / Inspect / Skip / Abort)
+and record it in the final summary.
+
+A `REPORT_FILE:` line that disagrees with the path you named is a report-file failure too — treat
+it exactly the same way.
+
+---
+
 ## Incomplete report handling (applies to every round and every unit)
 
 A report missing any of the four required trailer lines (`ELAPSED_SECONDS`, `VERIFIED`,
 `FILES_TOUCHED`, `STAGED`) is an **interrupted handoff** — do not silently proceed.
+
+A missing `REPORT_FILE:` line is not itself an interrupted handoff — note it and continue. What
+matters is the file on disk at the path you named; see the Report-file handoff check above.
 
 Surface the truncated report and offer a menu:
 - **Re-run** — re-launch with the same prompt (unit retains its worktree / state)
@@ -945,6 +1086,7 @@ ROUND 3 — Adversary (pass 1 + follow-up)
   Fixed: <count>   Flagged: <count>
   Weak assertion findings: <count>  ← test-quality signal
   Round-3 test status: <P passed, F failed>
+  Report-file handoffs: <ok | retried: n | FAILED: stage>
 ROUND 4 — Test cleanup (orchestrator-run)
   Convention detected: <co-located | mirrored-tree | tests-dir> / <naming pattern>
   Junk-detection evidence: mutation-smoke <ran | skipped: reason>, reference-check ran

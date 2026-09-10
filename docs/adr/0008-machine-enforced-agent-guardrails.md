@@ -113,3 +113,26 @@ incidents wasted duplicate runs by Re-running without salvaging from main first.
 The fixed destructive-git half (this ADR's main scope), the `cd`-at-start prevention in
 `plan-implementer.md`, flat worktree placement, and the detection + salvage half (in
 `implement-with-haiku.md`) together close the incident class.
+
+## Amendment: Named out-of-cwd exceptions for report files (2026-09-09)
+
+The working-directory boundary constraint ("only touch files inside the current working directory")
+was refined with two named exceptions, both at orchestrator-designated absolute paths:
+
+1. **Report-file write** — a report file at an absolute path the orchestrator's prompt explicitly names
+   for the agent to `Write` — required when named, not a code edit, does not change `STAGED:` status.
+2. **Prior-report reads** — one or more input files at absolute paths the orchestrator's prompt
+   explicitly names as a prior pass's report for the agent to `Read` — not a violation of the
+   working-directory constraint.
+
+These exceptions apply to the `/implement-with-haiku` workflow's multi-round structure: each round
+reads the prior round's report file and writes its own, all at orchestrator-named absolute paths
+in a shared scratch directory. The exceptions close a legitimate pattern, not a loophole — reads
+and writes are always at the path the orchestrator names in the prompt, never agent-chosen paths.
+
+The `plan-implementer.md` Constraints section now explicitly documents these exceptions and closes
+with: "These are the **only out-of-cwd exceptions** this agent is permitted: writing its own report
+file, and reading a prior round's report file, both at orchestrator-named absolute paths. Any other
+out-of-cwd read or write is not permitted and should be treated as an anomaly." This statement
+clarifies the boundary so the agent and future maintainers (or anomaly detectors) know what
+out-of-cwd activity is expected and what is unexpected.
