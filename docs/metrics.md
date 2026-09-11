@@ -73,6 +73,12 @@ Every event emitted by `run-metrics.py` carries these fields:
 - `agent_type` (string) — agent type (e.g., `"expert-reviewer"`)
 - `parent` (string) — parent agent type if nested
 - `model` (string) — model name (e.g., `"claude-sonnet-4-20250514"`)
+- `effort` (string) — expert-review panel effort level, one of `"1"`..`"5"`. Set via `--effort` on
+  `command-begin`/`stage-end`.
+- `mode` (string) — expert-review run mode, one of `"local"`, `"pr"`, `"coworker"`. Set via `--mode`
+  on `command-begin`/`stage-end`.
+- `reviewer_count` (integer) — number of reviewers selected for the panel. Set via
+  `--reviewer-count` on `command-begin`/`stage-end`.
 - `tokens` (object) — token counts with keys:
   - `input` (integer or `"unknown"`)
   - `output` (integer or `"unknown"`)
