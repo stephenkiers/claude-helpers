@@ -2048,6 +2048,90 @@ def test_read_usage_state_unavailable_when_only_seam_checked():
         return True, ""
 
 
+def test_build_event_with_effort_mode_reviewer_count():
+    """build_event includes effort, mode, and reviewer_count when provided."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        effort="3",
+        mode="local",
+        reviewer_count=8,
+    )
+    return (
+        event.get("effort") == "3"
+        and event.get("mode") == "local"
+        and event.get("reviewer_count") == 8
+    ), f"got event: {event}"
+
+
+def test_build_event_omits_optional_effort_mode_reviewer_count():
+    """build_event omits effort, mode, reviewer_count when None."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        effort=None,
+        mode=None,
+        reviewer_count=None,
+    )
+    return (
+        "effort" not in event
+        and "mode" not in event
+        and "reviewer_count" not in event
+    ), f"got event keys: {event.keys()}"
+
+
+def test_validate_event_rejects_invalid_effort():
+    """validate_event flags an effort value not in EFFORT_LEVELS."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+    )
+    event["effort"] = "6"  # Invalid effort level
+    errors = telemetry_schema.validate_event(event)
+    return any("effort" in e.lower() and "not in" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_event_rejects_invalid_mode():
+    """validate_event flags a mode value not in RUN_MODES."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+    )
+    event["mode"] = "bogus"  # Invalid mode
+    errors = telemetry_schema.validate_event(event)
+    return any("mode" in e.lower() and "not in" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_event_rejects_negative_reviewer_count():
+    """validate_event flags a negative reviewer_count."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+    )
+    event["reviewer_count"] = -1  # Negative count
+    errors = telemetry_schema.validate_event(event)
+    return any("reviewer_count" in e.lower() and "non-negative" in e.lower() for e in errors), f"got errors: {errors}"
+
+
+def test_validate_event_accepts_valid_effort_mode_reviewer_count():
+    """validate_event accepts a valid event with effort, mode, and reviewer_count."""
+    event = telemetry_schema.build_event(
+        "command.begin",
+        session_id="123",
+        timestamp="2026-08-26T12:00:00Z",
+        effort="2",
+        mode="pr",
+        reviewer_count=5,
+    )
+    errors = telemetry_schema.validate_event(event)
+    return len(errors) == 0, f"got errors: {errors}"
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -2440,6 +2524,28 @@ if __name__ == "__main__":
 
     passed, msg = test_read_usage_state_unavailable_when_only_seam_checked()
     test_result("read_usage_state unavailable when only seam checked", passed, msg)
+
+    print()
+
+    # Effort/mode/reviewer_count field tests
+    print("[Section 15] Effort, mode, and reviewer_count fields")
+    passed, msg = test_build_event_with_effort_mode_reviewer_count()
+    test_result("build_event includes effort, mode, reviewer_count when provided", passed, msg)
+
+    passed, msg = test_build_event_omits_optional_effort_mode_reviewer_count()
+    test_result("build_event omits effort, mode, reviewer_count when None", passed, msg)
+
+    passed, msg = test_validate_event_rejects_invalid_effort()
+    test_result("validate_event rejects invalid effort value", passed, msg)
+
+    passed, msg = test_validate_event_rejects_invalid_mode()
+    test_result("validate_event rejects invalid mode value", passed, msg)
+
+    passed, msg = test_validate_event_rejects_negative_reviewer_count()
+    test_result("validate_event rejects negative reviewer_count", passed, msg)
+
+    passed, msg = test_validate_event_accepts_valid_effort_mode_reviewer_count()
+    test_result("validate_event accepts valid effort, mode, reviewer_count", passed, msg)
 
     print()
 
