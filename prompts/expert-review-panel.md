@@ -26,14 +26,14 @@ calling commands stay stable.
 
 ### Step 4: Summarizer → `summary.md`
 
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage summarize >/dev/null 2>&1 || true
-```
-
 **Skip guard (effort):** If `EFFORT=1`, skip Steps 4–10 entirely and run the Swarm Path section
 below instead — the swarm has no Summarizer. If `EFFORT=2`, skip Steps 4–10 entirely and run the
 Reviewer Pod Path below. Do not run the ordinary Router, per-persona Pass 1, Carl, per-reviewer Q&A,
 or per-reviewer Pass 2 in addition to the pod path.
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage summarize >/dev/null 2>&1 || true
+```
 
 **Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller — e.g.
 `/expert-review-coworker` — may have produced it during setup), skip this step and reuse
@@ -342,7 +342,15 @@ you when the agents finish. Track per-reviewer status by checking for files, nev
 notifications.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pass1 --outcome success 2>/dev/null || true
+PASS1_END_ARGS=(--stage pass1 --outcome success)
+# For routed (non-named) runs, record reviewer_count by counting pass1 files
+if [ "${NAMED_SELECTION:-false}" != true ]; then
+  REVIEWER_COUNT=$(ls -1 "$REVIEW_DIR"/*-pass1.md 2>/dev/null | wc -l)
+  if [ $REVIEWER_COUNT -gt 0 ]; then
+    PASS1_END_ARGS+=(--reviewer-count "$REVIEWER_COUNT")
+  fi
+fi
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${PASS1_END_ARGS[@]}" 2>/dev/null || true
 ```
 
 ### Step 7: Contrarian Carl (after the barrier) → `contrarian-carl-pass1.md`
@@ -507,8 +515,12 @@ packet directory, and returns a receipt. Write `review-context/manifest.json` la
 `"complete": true`. Do not launch pods unless all six files exist and the completion marker parses. If not, invalidate
 the attempt first — delete `{REVIEW_DIR}/review-context/` so a partially-written file from the failed
 attempt cannot masquerade as complete — then retry packet generation once. If the retry still fails,
-**fail closed**: stop the run, do not launch any pods, and report to the human exactly which packet
-file(s) are missing or invalid; never proceed to P2/P3 with a partial or guessed packet. This packet
+**fail closed**:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pods --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+```
+Stop the run, do not launch any pods, and report to the human exactly which packet file(s) are missing or invalid; never proceed to P2/P3 with a partial or guessed packet. This packet
 is the sole shared framework/diff/project/ADR inventory for both pods.
 
 **P2 — Select the second pod.** Pod 1 is always `contracts-correctness`, with lenses in this fixed
@@ -688,7 +700,12 @@ Write {REVIEW_DIR}/final-report.md in the amalgamator template your mandate spec
 `{REVIEW_DIR}/final-report.md` exists and the merge agent returned its
 `swarm-merge | final-report written | …` receipt. If not, re-run the merge agent **once**; if the
 re-run also fails, stop retrying — report the merge as failed and proceed to the caller's Step 11
-only if a usable `final-report.md` exists; otherwise stop and report.
+only if a usable `final-report.md` exists; otherwise:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage swarm-merge --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+```
+Stop and report.
 
 **Step S4 — stub `tagged-sections.md`.** Downstream readers (Triage, humans browsing the review
 directory) expect the file; synthesize a stub so its absence never reads as a crashed run:

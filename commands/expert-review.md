@@ -204,7 +204,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    - If `--force`/`-y` is present in raw arguments, skip the confirmation prompt (the banner above still
      printed) and continue to sub-step 2. Same if the user confirms.
 
-   On confirm (or `--force`) or when sub-step skipped (no match, or PR mode):
+   On confirm (or `--force`) or when sub-step skipped (no match):
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
    ```
@@ -301,11 +301,14 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage resolve-scope
 belongs to the deprecated commands' comment guide, which PR mode does not produce):
 
 ```bash
-if ! eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"; then
+SETUP_OUTPUT=$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")
+SETUP_STATUS=$?
+if [ $SETUP_STATUS -ne 0 ]; then
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
+eval "$SETUP_OUTPUT"
 ```
 
 This exports `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`,
@@ -320,6 +323,7 @@ this step and continue at Step 2.
   ```bash
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
   ```
 - Write both diff artifacts once, so every later step passes a path instead of re-deriving or
   inlining the diff:
@@ -352,14 +356,24 @@ this step and continue at Step 2.
 **PR URL.** If any positional argument matches `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$`
 (checked **before** reviewer-name matching — a URL is never a reviewer name), set `PR_MODE=true` and
 store it as `PR_URL`. PR mode is mutually exclusive with named reviewers and with `--force` — error
-on either combination. The prior-review cache check (Step 0 sub-step 1), Step 12, and Step 13 are skipped in
+on either combination:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+```
+The prior-review cache check (Step 0 sub-step 1), Step 12, and Step 13 are skipped in
 PR mode (ADR-0009 write boundary); see the PR Mode section below.
 
 **Effort.** `--effort <1|2|3|4|5>` → `EFFORT`; error on any other value (including `--effort 0` and
 `--effort 6`). When `--effort` is passed, set `EFFORT_EXPLICIT=true`, use that effort directly, and skip
 the heuristic entirely. When `--effort` is not passed, set `EFFORT_EXPLICIT=false` and apply the **effort
 heuristic** (see sub-section below). Default fallback `EFFORT=4`. `--effort` + named reviewers = **error**
-(say so and exit). `--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted
+(say so and exit):
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+```
+`--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted
 — effort wins. Effort 5 **lowers to named selection**: set `NAMED_SELECTION=true` and `NAMED_REVIEWERS`
 to the full `index.yaml` reviewer list (space-separated, lowercased) — the router is bypassed with no
 new code path. Print the resolved effort and its source at run start, alongside the resolved panel model
@@ -413,7 +427,11 @@ STAGE_END_ARGS=(--stage resolve-scope --outcome success --effort "$EFFORT")
 [ -n "${PANEL_MODEL:-}" ] && STAGE_END_ARGS+=(--model "$PANEL_MODEL")
 STAGE_END_ARGS+=(--mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)")
 if [ "${NAMED_SELECTION:-false}" = true ]; then
-  REVIEWER_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
+  # Count explicitly-named reviewers plus the four always-run reviewers
+  # (sam-system, code-rot-cody, consistency-checker, contrarian-carl)
+  NAMED_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
+  ALWAYS_RUN_COUNT=4
+  REVIEWER_COUNT=$((NAMED_COUNT + ALWAYS_RUN_COUNT))
   STAGE_END_ARGS+=(--reviewer-count "$REVIEWER_COUNT")
 fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${STAGE_END_ARGS[@]}" 2>/dev/null || true
