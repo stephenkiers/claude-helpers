@@ -174,7 +174,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    # relevant to "does the committed state match what was reviewed" and would cause alarm fatigue.
    DIRTY=$(git status --porcelain --untracked-files=no)
    ```
-   
+
    Then read `.claude/github-cache.json` and check if `review.lastRun` exists AND `review.branch` == `BRANCH`:
    - **Skip this entire sub-step** if either condition is false; nothing to short-circuit — fall through to sub-step 2.
    - **On a match, always print the banner below** (this happens regardless of `--force`/`-y`):
@@ -203,7 +203,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
      Nothing else has run.
    - If `--force`/`-y` is present in raw arguments, skip the confirmation prompt (the banner above still
      printed) and continue to sub-step 2. Same if the user confirms.
-     
+
    On confirm (or `--force`) or when sub-step skipped (no match, or PR mode):
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
