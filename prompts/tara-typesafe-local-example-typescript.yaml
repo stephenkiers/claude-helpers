@@ -1,5 +1,7 @@
 # Example .claude/reviewers/tara-typesafe-local.yaml for a TypeScript project
 # Copy to your project at: .claude/reviewers/tara-typesafe-local.yaml
+# This is local, gitignored state — add `.claude/reviewers/*-local.yaml` to `.gitignore`; don't commit it.
+# See ~/.claude/reviewers/README.md for retrofit guidance.
 # Extends the global Tara TypeSafe reviewer with TypeScript-specific type-tightening patterns.
 
 extends: tara-typesafe
