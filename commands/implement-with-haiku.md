@@ -1,7 +1,6 @@
 ---
-description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review. Supports `--pause-at` checkpoints to confirm before each major stage."
-argument-hint: "[--pause-at gate|fanout|round4|all[,...]] [plan source: issue number | issue URL | claude-action-plan.md path]"
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent, AskUserQuestion
+description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
 ---
 
 # Implement with Haiku
@@ -22,71 +21,9 @@ The flow:
 6. **Round 4 — Test cleanup** (orchestrator-run) — delete clearly-junk tests, relocate + rename the
    survivors to the repo's own test layout/naming convention
 
-## Step 0: Parse flags
-
-Parse command-line flags before plan detection. Extract `--pause-at` if present:
-
-```bash
-set -f   # $ARGUMENTS is word-split below; keep glob metacharacters from expanding
-PAUSE_AT=""
-ARGS_FOR_PLAN=""
-for _a in $ARGUMENTS; do
-  case "$_a" in
-    --pause-at=*)
-      PAUSE_AT="${_a#--pause-at=}"
-      ;;
-    --pause-at)
-      # Next argument is the value; will be captured in the next iteration
-      CAPTURE_NEXT_PAUSE_VALUE=true
-      ;;
-    *)
-      if [ "${CAPTURE_NEXT_PAUSE_VALUE:-false}" = "true" ]; then
-        PAUSE_AT="$_a"
-        CAPTURE_NEXT_PAUSE_VALUE=false
-      else
-        ARGS_FOR_PLAN="$ARGS_FOR_PLAN $_a"
-      fi
-      ;;
-  esac
-done
-set +f
-
-# Expand "all" to all checkpoint names (note: summary checkpoint is not pausable)
-if [ "$PAUSE_AT" = "all" ]; then
-  PAUSE_AT="gate,fanout,round4"
-fi
-
-# Validate each checkpoint name (note: valid names are gate, fanout, round4, and the all shorthand)
-if [ -n "$PAUSE_AT" ]; then
-  for _name in $(printf '%s' "$PAUSE_AT" | tr ',' '\n'); do
-    case "$_name" in
-      gate|fanout|round4) ;;
-      all)
-        echo "ERROR: 'all' must be passed alone, not combined with other checkpoint names" >&2
-        exit 1
-        ;;
-      *)
-        echo "ERROR: unknown checkpoint name '$_name' (valid: gate, fanout, round4, all)" >&2
-        exit 1
-        ;;
-    esac
-  done
-fi
-
-# Trim leading/trailing whitespace from ARGS_FOR_PLAN
-ARGS_FOR_PLAN=$(printf '%s' "$ARGS_FOR_PLAN" | sed 's/^ //; s/ $//')
-
-echo "PAUSE_AT='$PAUSE_AT'"
-```
-
-**Examples:**
-- `--pause-at gate` — pause only before the Integration Gate runs
-- `--pause-at gate,round4` — pause before the gate and before test cleanup
-- `--pause-at all` — pause at all pausable checkpoints (gate, fanout, round4)
-
 ## Step 1: Find the plan
 
-In priority order (scanning `$ARGS_FOR_PLAN`, which has had `--pause-at...` tokens removed):
+In priority order:
 
 0. **Args contain a path to an existing `claude-action-plan.md` file** → read it directly, set
    `PLAN_SOURCE=claude-action-plan`. If the path doesn't exist, fall through to priority 1–3 below
@@ -478,67 +415,19 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
 
-Run the usage gate:
+**Checkpoint 1/5 — Round 1 join.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). All merged units are already
-committed; nothing is pending if the human stops here.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 1/5 done: round 1 join. All merged units are
+already committed; nothing is pending if you stop here. If that token count looks large, run
+`/compact` first. Reply 'continue' when ready for the integration gate." Then stop and wait for the
+user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself,
+and ignore the printed line's `DECISION:` field (it's informational only).
 
 If any units are `failed` (worktree genuinely empty), surface a summary and ask the human whether to:
 - Abort the run
 - Proceed to the gate with the successfully-merged units only
-
----
-
-## Pause-point procedure
-
-**When a checkpoint is requested via `--pause-at <name>`**, use this unified procedure at each call site, substituting the checkpoint-specific parameters shown in the table below.
-
-The procedure:
-1. Call `stage-begin` with the stage ID
-2. Use `AskUserQuestion` to present the three-option prompt (Proceed, Stop here, Proceed and don't ask again)
-3. Based on the response (the orchestrator receives this directly from the `AskUserQuestion` tool call — see "Fail-closed handling" below):
-   - **Proceed**: Call `stage-end` with outcome `success`, and continue
-   - **Stop here**: Call `stage-end` with outcome `interrupted`, print status and resume message, then exit with status 0
-   - **Proceed and don't ask again**: Drop this checkpoint and all later checkpoints from the literal `--pause-at` value the orchestrator is tracking (see "Orchestrator persistence mechanism" below), then proceed to the next stage
-
-**Pause telemetry is deliberately silent:** The `stage-begin` and `stage-end` calls do not print user-facing output (unlike the usage-gate's `USAGE-GATE:` line). Pause telemetry is best-effort observational only — failures to record are silenced and do not interrupt the run.
-
-**Orchestrator persistence mechanism (decision 14 convention):** The `--pause-at` value parsed in Step 0 is a shell variable that does not automatically persist into subsequent Bash tool calls. The orchestrator must record the resulting comma-separated value (e.g., `gate,fanout,round4`) as a literal string in its own prompt context after Step 0, keeping it as a resolved decision reference for the rest of the run. At each checkpoint below, the entry condition says explicitly: "Check whether `<checkpoint-name>` appears in the literal `--pause-at` value you recorded in Step 0" — do not re-invoke a shell test against a variable named `$PAUSE_AT`, since it will not exist. If the user chose "Proceed and don't pause again" at an earlier checkpoint, the orchestrator drops that checkpoint (and any later checkpoints) from the literal value it is tracking for the rest of this run.
-
-**Fail-closed handling for `AskUserQuestion` responses:** The orchestrator receives the user's choice directly from the `AskUserQuestion` tool call in its own context — there is no `$PAUSE_CHOICE` shell variable; branch on the answer directly when composing the next tool call. If `AskUserQuestion`'s result is anything other than the three defined options (should not normally happen, but treat defensively), the orchestrator must treat it as "Stop here" (fail-closed, matching ADR-0013), not "Proceed".
-
-**Checkpoint parameter table:**
-
-| Checkpoint | Stage ID | Entry Condition | Prompt Message | Resume Message |
-|---|---|---|---|---|
-| gate | pause-gate | Before Integration Gate runs | "Round 1 is complete and committed. The Integration Gate (build, type-check, anti-tamper scan) is about to run. Proceed now, stop here (all Round 1 work is safe), or proceed and skip remaining pauses?" | "Paused at gate checkpoint. Round 1 complete. To resume, manually trigger the Integration Gate step." |
-| fanout | pause-fanout | After gate passes, before Round 2/3 fan-out | "The Integration Gate passed and is committed. Round 2 (spec-blind tests), Round 3 (adversary review), and sweeps are about to run in parallel. Proceed now, stop here (gate is safe), or proceed and skip remaining pauses?" | "Paused at fanout checkpoint. Integration Gate complete. To resume, manually trigger Round 2 and Round 3." |
-| round4 | pause-round4 | Before Round 4 (test cleanup) | "Rounds 1–3 are complete and committed, with all tests and fixes applied. Round 4 will clean up and relocate tests to your repo's convention. Proceed now, stop here (all tests are committed), or proceed and skip remaining pauses?" | "Paused at round4 checkpoint. Rounds 1–3 complete. To resume, manually trigger Round 4 (test cleanup and relocation)." |
-
-### Pause point: gate
-
-**Check if `gate` was requested via `--pause-at`**. If so, pause here for confirmation.
-
-**Note:** Check whether `gate` appears in the literal `--pause-at` value you recorded in Step 0. (See "Orchestrator persistence mechanism" above — do not test a shell variable named `$PAUSE_AT`, since it does not persist across Bash calls.)
-
-Apply the **Pause-point procedure** (see above) with parameters from the checkpoint parameter table:
-- **Checkpoint:** gate
-- **Stage ID:** pause-gate
-- **Prompt Message:** "Round 1 is complete and committed. The Integration Gate (build, type-check, anti-tamper scan) is about to run. Proceed now, stop here (all Round 1 work is safe), or proceed and skip remaining pauses?"
-- **Resume Message:** "Paused at gate checkpoint. Round 1 complete. To resume, manually trigger the Integration Gate step."
-
-**Record in PAUSE LOG:**
-- `stopped` if the user chose "Stop here"
-- `proceed-no-more-asks` if the user chose "Proceed and don't pause again"
-- `proceed` if the user chose "Proceed"
-- `not-configured` if `--pause-at` did not include `gate`
-- `unreachable` if the run's Round-sizing classification means this checkpoint is never reached (N/A for gate — it's always reached if Round 1 completes)
-
-**What's preserved:** All Round 1 units have been merged and committed. The Integration Gate has not run yet.
 
 ---
 
@@ -625,14 +514,15 @@ Max **K = 3** iterations. On each iteration:
 3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the main worktree, tear down worktree after).
 4. Re-run Gate steps 1–3 on the updated tree.
-5. Run the usage gate before deciding:
+5. **Checkpoint 2/5 — Gate fix-loop.** Run:
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam gate-fix-loop
    ```
-   Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-   with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-   (the last option re-runs the same command with `--mark-reported` added). The gate is still failing; the
-   outstanding failures (already surfaced) remain unresolved if the human stops here.
+   Print the `USAGE-GATE:` line verbatim, then say: "Step 2/5 checkpoint: gate fix-loop (iteration
+   <i>/<K>). The gate is still failing; the outstanding failures (already surfaced) remain unresolved
+   if you stop here. If that token count looks large, run `/compact` first. Reply 'continue' when
+   ready." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
+   compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 6. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide.
@@ -676,36 +566,15 @@ git rev-parse HEAD  # store as ROUND2_START_SHA
 IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files
 ```
 
-Tell the user: "Gate passed (round sizing: <classification>). Launching round 2 (spec-blind tests),
-round 3 pass 1 (adversary), and post-gate sweeps in parallel."
-
-Run the usage gate:
+**Checkpoint 3/5 — Pre-fanout.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-fanout
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). Round 1 is committed and
-gate-clean; no tests or reviews exist yet.
-
-### Pause point: fanout
-
-**Check if `fanout` was requested via `--pause-at`**. If so, pause here for confirmation. (Skip if the orchestrator already dropped this checkpoint via "don't ask again" at an earlier checkpoint, or if the run's Round-sizing classification skips Rounds 2–3 — see below for `unreachable` status.)
-
-Apply the **Pause-point procedure** (see above) with parameters from the checkpoint parameter table:
-- **Checkpoint:** fanout
-- **Stage ID:** pause-fanout
-- **Prompt Message:** "The Integration Gate passed and is committed. Round 2 (spec-blind tests), Round 3 (adversary review), and sweeps are about to run in parallel. Proceed now, stop here (gate is safe), or proceed and skip remaining pauses?"
-- **Resume Message:** "Paused at fanout checkpoint. Integration Gate complete. To resume, manually trigger Round 2 and Round 3."
-
-**Record in PAUSE LOG:**
-- `stopped` if user chose "Stop here"
-- `proceed-no-more-asks` if user chose "Proceed and don't pause again"
-- `proceed` if user chose "Proceed"
-- `not-configured` if `--pause-at` did not include `fanout`
-- `unreachable` if the run's Round-sizing classification is "mechanical" (no Rounds 2–3 run) — log this as `unreachable` rather than `not-configured` to distinguish "user didn't ask" from "this run skips these rounds"
-
-**What's preserved:** The Integration Gate passed and is committed. Round 2 (spec-blind tests), Round 3 pass 1 (adversary), and the sweeps have not started yet.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 3/5 done: gate passed (round sizing:
+<classification>). Round 1 is committed and gate-clean; no tests or reviews exist yet. If that token
+count looks large, run `/compact` first. Reply 'continue' to launch round 2, round 3 pass 1, and the
+sweeps." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
+compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 
 ### Round 2: Spec-blind test author (own worktree)
 
@@ -954,14 +823,15 @@ backstop for an unattended run).
 These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
 final summary.
 
-Run the usage gate:
+**Checkpoint 4/5 — Post-fanout.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam post-fanout
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). Round 2's tests are committed;
-Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the session closes here.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 4/5 done: post-fanout. Round 2's tests are
+committed; Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the
+session closes here. If that token count looks large, run `/compact` first. Reply 'continue' to apply
+round 3's fixes." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do
+not compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 
 ### Round 3 follow-up (short)
 
@@ -1055,39 +925,20 @@ re-running the tests yourself.**
 
 ### 4.0 Applicability
 
-Run the usage gate:
+**Checkpoint 5/5 — Pre-round 4.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-round4
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). Round 4 itself has no subagent
-and its token cost is not budgeted; this seam functions as the last stop-or-continue checkpoint for
-the entire run.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 5/5 done: pre-round 4. Round 4 itself has no
+subagent cost; this is the last checkpoint for the run. If that token count looks large, run
+`/compact` first. Reply 'continue' to run test cleanup." Then stop and wait for the user's next
+message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself, and ignore
+the printed line's `DECISION:` field.
 
 - **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
 - **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
 - **Test-only** run → Round 4 **applies** (relocating/cleaning the delivered tests is the point).
 - **Full** run → Round 4 **applies**.
-
-### Pause point: round4
-
-**Check if `round4` was requested via `--pause-at`**. If so, pause here for confirmation. (Skip if the orchestrator already dropped this checkpoint via "don't ask again" at an earlier checkpoint, or if the run's Round-sizing classification skips Round 4 — see below for `unreachable` status.)
-
-Apply the **Pause-point procedure** (see above) with parameters from the checkpoint parameter table:
-- **Checkpoint:** round4
-- **Stage ID:** pause-round4
-- **Prompt Message:** "Rounds 1–3 are complete and committed, with all tests and fixes applied. Round 4 will clean up and relocate tests to your repo's convention. Proceed now, stop here (all tests are committed), or proceed and skip remaining pauses?"
-- **Resume Message:** "Paused at round4 checkpoint. Rounds 1–3 complete. To resume, manually trigger Round 4 (test cleanup and relocation)."
-
-**Record in PAUSE LOG:**
-- `stopped` if user chose "Stop here"
-- `proceed-no-more-asks` if user chose "Proceed and don't pause again"
-- `proceed` if user chose "Proceed"
-- `not-configured` if `--pause-at` did not include `round4`
-- `unreachable` if the run's Round-sizing classification is "mechanical" (Round 4 skipped) — log as `unreachable` to distinguish from "not configured"
-
-**What's preserved:** Round 2 (spec-blind tests) and Round 3 (adversary review + fixes) are complete and committed. Round 4 (test cleanup and relocation) has not started yet.
 
 ### 4.1 Enumerate the new tests (the working set)
 
@@ -1322,13 +1173,6 @@ USAGE GATE LOG (subagent token accounting — accumulate seam lines as printed, 
   Final:              <USAGE-GATE: line verbatim from seam final, then USAGE-GATE-SEAMS: line from seam final>
   Agents accounted:   <N>/<M>  (from agents=N/M field in final seam output)
   Token confidence:   low (upstream `token_confidence` is always reported as "low" per ADR-0016)
-
-**Pause telemetry note:** Unlike the usage gate (which prints a `USAGE-GATE:` line to the user), pause checkpoint telemetry calls (`stage-begin` and `stage-end` for pause checkpoints) are deliberately silent and best-effort — they do not print to the console and do not block the run if they fail. This distinguishes them from the usage gate's user-facing output convention.
-
-PAUSE LOG (content-driven checkpoints — only when --pause-at is configured; values are proceed | stopped | proceed-no-more-asks | not-configured | unreachable)
-  gate:               <value>
-  fanout:             <value>
-  round4:             <value>
 TIMING (agent compute per round — self-measured; excludes idle between turns)
   Round 1 (implement):        <mm:ss>  [<N> units in parallel]
   Gate convergence:           <i> iteration(s)
