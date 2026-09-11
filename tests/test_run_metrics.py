@@ -2695,6 +2695,8 @@ def test_stage_end_with_retries_non_numeric():
 # ============================================================================
 # Tests for effort, mode, and reviewer-count fields
 # ============================================================================
+# _spec_blind: This section is intentionally duplicated in tests/test_run_metrics_effort_mode_reviewer_count.py
+# for independent CLI contract coverage.
 
 def test_command_begin_with_new_flags():
     """command-begin with --effort, --model, --mode, --reviewer-count emits them in the event."""
