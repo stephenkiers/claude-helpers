@@ -215,6 +215,66 @@ else
   fi
 fi
 
+# --- Step E.5: Materialize reviewer's local project context into the PR worktree ---
+# Trust boundary: in PR mode the worktree is a checkout of a branch a stranger controls.
+# The reviewer's own local context (project.yaml and *-local.yaml files) is the only
+# local context the panel reads. If the PR branch itself tracks a project.yaml or local
+# overrides, they are moved aside to .from-pr suffixes and never read by the panel —
+# a malicious PR must not reframe its own vulnerable pattern as a deliberate invariant.
+
+# Create target directories
+mkdir -p "${WORKTREE_PATH}/.claude" >&2 || {
+  echo "WARNING: Failed to create ${WORKTREE_PATH}/.claude" >&2
+}
+mkdir -p "${WORKTREE_PATH}/.claude/reviewers" >&2 || {
+  echo "WARNING: Failed to create ${WORKTREE_PATH}/.claude/reviewers" >&2
+}
+
+# Copy project.yaml from reviewer's main worktree if it exists
+if [ -f "${MAIN_WORKTREE}/.claude/project.yaml" ]; then
+  cp "${MAIN_WORKTREE}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml" >&2 || {
+    echo "WARNING: Failed to copy project.yaml from ${MAIN_WORKTREE}/.claude/project.yaml" >&2
+  }
+else
+  # Reviewer has no local project.yaml, but PR worktree checkout may have one.
+  # Move it aside so it is never read by the panel.
+  if [ -f "${WORKTREE_PATH}/.claude/project.yaml" ]; then
+    mv "${WORKTREE_PATH}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml.from-pr" >&2 || {
+      echo "WARNING: Failed to move ${WORKTREE_PATH}/.claude/project.yaml to .from-pr" >&2
+    }
+    echo "Note: PR branch's own .claude/project.yaml quarantined to .from-pr; reviewer has no local override" >&2
+  fi
+fi
+
+# Copy reviewers/*-local.yaml files from reviewer's main worktree if they exist
+if [ -d "${MAIN_WORKTREE}/.claude/reviewers" ]; then
+  for local_file in "${MAIN_WORKTREE}/.claude/reviewers"/*-local.yaml; do
+    if [ -f "$local_file" ]; then
+      filename=$(basename "$local_file")
+      cp "$local_file" "${WORKTREE_PATH}/.claude/reviewers/$filename" >&2 || {
+        echo "WARNING: Failed to copy $filename from ${MAIN_WORKTREE}/.claude/reviewers/" >&2
+      }
+    fi
+  done
+fi
+
+# Move any PR-branch-resident *-local.yaml files aside if reviewer has no local overrides
+if [ -d "${WORKTREE_PATH}/.claude/reviewers" ]; then
+  for pr_local_file in "${WORKTREE_PATH}/.claude/reviewers"/*-local.yaml; do
+    if [ -f "$pr_local_file" ]; then
+      filename=$(basename "$pr_local_file")
+      # Check if this file exists in the reviewer's main worktree
+      if ! [ -f "${MAIN_WORKTREE}/.claude/reviewers/$filename" ]; then
+        # Reviewer has no local override for this file; move it aside
+        mv "$pr_local_file" "${pr_local_file}.from-pr" >&2 || {
+          echo "WARNING: Failed to move $pr_local_file to .from-pr" >&2
+        }
+        echo "Note: PR branch's own .claude/reviewers/$filename quarantined to .from-pr; reviewer has no local override" >&2
+      fi
+    fi
+  done
+fi
+
 # --- Step F: Write diff artifacts ---
 git -C "${WORKTREE_PATH}" fetch origin "${BASE_BRANCH}" >&2 2>/dev/null || true
 git -C "${WORKTREE_PATH}" diff "origin/${BASE_BRANCH}...HEAD" > "${REVIEW_DIR}/full-diff.patch"
