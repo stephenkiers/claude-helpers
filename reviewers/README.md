@@ -161,7 +161,7 @@ See `~/.claude/prompts/project-example-{python,rust,typescript}.yaml` for full e
 printf '%s\n' '.claude/project.yaml' >> .gitignore
 
 # 2. Only if it is already tracked: .gitignore does nothing for a file git already knows about.
-git rm --cached .claude/project.yaml     # keeps your local copy on disk
+git ls-files --error-unmatch .claude/project.yaml >/dev/null 2>&1 && git rm --cached .claude/project.yaml || true     # keeps your local copy on disk
 
 # 3. One commit carrying BOTH changes, so the two never ship apart.
 git add .gitignore
@@ -235,7 +235,7 @@ Only create `{expert}-local.yaml` when you need expert-specific project knowledg
 printf '%s\n' '.claude/reviewers/*-local.yaml' >> .gitignore
 
 # 2. Only if it is already tracked: .gitignore does nothing for a file git already knows about.
-git rm --cached .claude/reviewers/{expert-name}-local.yaml     # keeps your local copy on disk
+git ls-files --error-unmatch .claude/reviewers/{expert-name}-local.yaml >/dev/null 2>&1 && git rm --cached .claude/reviewers/{expert-name}-local.yaml || true     # keeps your local copy on disk
 
 # 3. One commit carrying BOTH changes, so the two never ship apart.
 git add .gitignore
