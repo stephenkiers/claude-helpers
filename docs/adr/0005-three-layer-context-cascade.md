@@ -82,3 +82,30 @@ win on conflict — preferences are personal defaults that projects can override
 
 See [ADR-0007](0007-triage-and-decision-memory.md)'s second amendment, which removed `decisions.yaml`,
 for the rationale behind moving to a user-preference-based approach.
+
+## Amendment — .claude/project.yaml and local overrides are gitignored, local state (issue #165)
+
+The ADR-0007 amendment above uses "hand-authored" to distinguish `project.yaml` (human-written) from
+`decisions.yaml` (machine-appended). But "hand-authored" describes *who writes the file*, not *where
+it lives*. `.claude/project.yaml` and `.claude/reviewers/{name}-local.yaml` are **local, per-checkout
+state** — they belong on the same tier as `.claude/github-cache.json` and `.claude/repo-cache.json`
+(cached metadata that varies between worktrees and reviewers) and should be gitignored from the start.
+
+**The gotcha:** `.gitignore` has no effect on files git already tracks. If a project committed
+`.claude/project.yaml` before adding an ignore rule, it remains tracked and continues to appear in
+diffs and commits. To fix it, untrack the file as well as ignoring it (see `reviewers/README.md` for
+the full procedure; the short form is `git rm --cached .claude/project.yaml`, then add the ignore
+rule).
+
+**The exception:** This repo's own `.claude/reviewers/north-star-nick-local.yaml` stays tracked
+deliberately. It wires North Star Nick to `docs/adr/` so changes to these ADRs are reviewed against
+the ADRs themselves — dogfooding the review system. This is not a pattern for consuming projects to
+copy; it is the sole exception and specific to this repo's use case.
+
+**Consequence for PR mode:** Because `.claude/project.yaml` lives in the working tree but is never in
+git history, an isolated PR-review worktree created by `scripts/setup-pr-worktree.sh` cannot inherit
+it from the PR author's repo. Instead, the script materializes the *reviewer's own* `~/.claude/project.yaml`
+and their own `.claude/reviewers/*-local.yaml` overrides into the throwaway checkout — bringing their
+local context, not the author's. This is [ADR-0009](0009-peer-review-and-shared-panel.md)-compatible:
+the reviewer is working in an isolated, throwaway worktree with their own local files; nothing is
+written to the coworker's tracked history, and nothing is committed or pushed.
