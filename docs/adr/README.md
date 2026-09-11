@@ -49,7 +49,8 @@ to North Star Nick).
   sequentially, not yet under concurrent subagents); privacy allowlist; no built-in cost-report
   views by design — the raw log is made Claude-queryable instead, so cost can be weighed against
   yield in a discussion rather than auto-optimized; amended with per-subagent token accounting and
-  the `/implement-with-haiku` usage gate
+  the `/implement-with-haiku` usage gate; note that ADR-0019 (content-driven pause checkpoints) is
+  independent and separately branded
 - [ADR-0017: Portable tone/style guide (style-guide.json)](0017-style-guide-cascade.md) — a
   two-layer cascade for capturing and sharing personal PR comment tone; separate from ADR-0005's
   reviewer-context cascade; `/generate-style-guide` auto-discovers tone from review history with
@@ -58,6 +59,11 @@ to North Star Nick).
 - [ADR-0018: Parallel planning with checkpoint-based isolation](0018-parallel-planning-checkpoint-architecture.md) —
   `/expert-plan-v2` as a parallel-only alternative to v1, with subagents writing checkpoint files
   instead of accumulating context in the orchestrator; amended with Plan Mode guard logic
+- [ADR-0019: Content-driven pause checkpoints](0019-content-driven-pause-checkpoints.md) — an
+  opt-in `--pause-at` flag for `/implement-with-haiku` enabling pause-for-confirmation at four
+  named step boundaries (gate, fanout, round4, summary); independent of ADR-0016's usage gate
+  (data-driven vs. content-driven); off by default (backward-compatible with non-interactive
+  callers); clean-stop with no rollback when declined
 
 ## Format
 
