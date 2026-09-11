@@ -301,7 +301,11 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage resolve-scope
 belongs to the deprecated commands' comment guide, which PR mode does not produce):
 
 ```bash
-eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"
+if ! eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
+fi
 ```
 
 This exports `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`,
