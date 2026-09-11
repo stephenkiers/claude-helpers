@@ -1,7 +1,7 @@
 ---
 description: Parallel expert planning with isolated contributions (v2) — A-B baseline alongside /expert-plan. Scales better on large tickets — subagents write checkpoints instead of accumulating in orchestrator context.
 argument-hint: [--effort 1|2|3|4|5] [--model haiku|sonnet|opus|fable]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(python3:*), Read, Glob, Grep, Task, Write, EnterPlanMode, ExitPlanMode, AskUserQuestion
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -17,7 +17,7 @@ A checkpoint-based, parallel planning pipeline:
 6. **Checkpoint (hard stop)** — read `open-questions.md` AND all individual `{expert}-contribution.md` files, and present BOTH to the user: every expert's full Domain/Requirements/Risks/Recommended-Approach/Open-Questions block plus the organized/deduped open questions from the digest for the actual decision UI. Use `AskUserQuestion` for 2-4-option questions, markdown + conversation for open-ended ones or themes with >4 questions — same as v1 Step 4. Wait for answers.
 7. **Synthesis (Opus, hard-pinned)** — spawn ONE subagent (opus) that merges ticket + all contribution files (paths, not pasted content) + Carl's contribution + the user's Step-6 decisions into one plan, using v1's synthesis template (`## Goal`, `## Decisions Made`, `## Approach`, `## Implementation Steps`, `## Risks and Mitigations`, `## Testing Strategy`, `## Out of Scope`). The subagent writes to `{PLAN_SESSION_DIR}/plan.md` (staying within its checkpoint dir, same file-scope discipline as every other role); the orchestrator then copies that file to `~/.claude/plans/{slug}.md` as the final deliverable — the ONE path that ends up outside `plan-sessions/`, because it's the final deliverable, not a checkpoint.
 8. **Alignment pass** (new, Opus-pinned — only if effort > 3 per the ladder below) — spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`~/.claude/plans/{slug}.md`) and flag anything misaligned with their domain. Short receipts; any flagged issues get appended to the plan under a NEW `## Alignment Notes` section — visible, not silently folded in. If no expert flags anything, still note "No alignment issues flagged" rather than omitting the section silently.
-9. **Present** — print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of any alignment notes as the handoff. Suggest `/expert-review-plan` (validation) and `/track-and-start` (execution) as next steps, matching v1's closing message style.
+9. **Present** — print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of any alignment notes as the handoff. Suggest `/expert-review-plan` (validation) and `/track-and-start ~/.claude/plans/{slug}.md` (execution) as next steps, matching v1's closing message style.
 
 **Why subagents (not main thread)?** Two reasons. *Isolation*: a contributor running in the main thread can see every prior contributor's output sitting in context — a fresh subagent cannot. Each contributor stays blind to the others, preserving independent, uninfluenced perspective. *Scale*: sequential main-thread experts accumulate enormous context by the sixth reviewer; subagents start clean. Parallelism is the bonus, not the reason. The orchestrator's context stays small by reading only one file per subagent — the checkpoint file — never pasting content into prompts.
 
@@ -64,13 +64,77 @@ All artifacts live in `{PLAN_SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}
 
 Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat convention used by `/fork-planning` and `/expert-review-plan`; written by Synthesis subagent in Step 7).
 
+## Plan Mode (guard and reconciliation)
+
+Unlike v1, this command does **not** call `EnterPlanMode`. Plan Mode restricts the session's `Write`
+tool to a single designated plan file — a fine fit for v1, which does everything in the main thread
+and produces exactly one artifact. v2's whole mechanism is the opposite: many subagents, each writing
+its own checkpoint file (`selected-experts.md`, `{expert}-contribution.md`, `open-questions.md`,
+`plan.md`, `{expert}-alignment.md`) under `~/.claude/plan-sessions/`. If Plan Mode were left active
+when v2 runs, the first subagent that tries to write its checkpoint file would hit the single-file
+restriction and fail.
+
+Step 6 (the hard-stop checkpoint, where `AskUserQuestion` waits for real answers before synthesis) is v2's
+human-in-the-loop gate. It serves the same role that Plan Mode serves for v1: nothing gets built until
+the user has weighed in. No code in the working tree is ever touched — the orchestrator's `allowed-tools`
+includes no `Edit` and no write-capable Bash, and panel subagents carry the same restrictions,
+enforced as real, tool-level controls. The file scope of `Write`, `python3`, and `cp` operations is a
+prompt-level convention (subagents write only to their designated checkpoint files under `~/.claude/plan-sessions/`
+and orchestrator operations are limited to `plan-sessions/` and `~/.claude/plans/`), not a tool-enforced
+restriction — see CLAUDE.md's "Panel agents are capability-restricted, not dialog-gated" section for
+the distinction between real controls (no `Edit`, no write-capable Bash) and residual risk (file-scope
+convention on `Write`).
+
+**If the invoking session is already in Plan Mode** (the user was mid-plan at the interactive-session
+level — independent of this command — when they typed `/expert-plan-v2`), that pre-existing Plan Mode
+still restricts `Write` to a single designated plan file, which the checkpoint pipeline cannot work
+under. Step 0 (the Plan Mode guard, documented in detail below) checks for this explicitly and exits
+Plan Mode deterministically before any subagent work begins, rather than leaving it to be improvised
+per-run.
+
 ---
 
 ## Instructions
 
-### Step 0: Enter Plan Mode and Setup
+### Step 0: Setup
 
-Call `EnterPlanMode` immediately. All subsequent work happens in plan mode.
+**Plan Mode guard (first action, before anything else):** Check the harness's Plan Mode system
+message for this turn — the same signal `/track-and-start` uses for its `IN_PLAN_MODE` check — and
+record the result once as `WAS_IN_PLAN_MODE` (0 or 1). This predicate is the Plan Mode system message
+itself, never `ExitPlanMode` tool availability (an errored or unavailable tool call is not evidence
+that the session was never in Plan Mode — see the failure-path behavior below).
+
+If `WAS_IN_PLAN_MODE=1`: explain the situation to the
+user in a chat message (without writing or editing the plan file), then call `ExitPlanMode` right away,
+e.g.:
+
+"This session is already in Plan Mode. `/expert-plan-v2` is a multi-agent planning pipeline that writes
+working artifacts (routing decision, per-expert contributions, digest, synthesized plan) to
+`~/.claude/plan-sessions/` and its final deliverable to `~/.claude/plans/{slug}.md`. The `ExitPlanMode`
+dialog will appear — approve to exit Plan Mode and proceed with the pipeline (Steps 1–9 below). When the
+dialog appears, pick an option that does **not** clear context (e.g., 'Manual Edit Approval' or 'No', not
+'Clear Context'). The pipeline's own Step 6 checkpoint is the real decision gate before synthesis."
+
+Wait for the user's approval in the dialog. If they decline, stop cleanly (no telemetry has started
+yet, so no `command-end` call is needed). When they approve: approving exits Plan Mode for the entire
+session. v2 writes only to `~/.claude/plan-sessions/` and `~/.claude/plans/` — no code changes. If you
+want later edits to still require your approval (rather than being auto-approved), select 'Manual Edit
+Approval' instead of other options.
+
+If `WAS_IN_PLAN_MODE=0`, skip this guard entirely and proceed directly to setup below — do not call
+`EnterPlanMode` or `ExitPlanMode` in that case.
+
+**Failure-path behavior:** When `WAS_IN_PLAN_MODE=1` and the guard calls `ExitPlanMode`:
+  - If the user **declines** the dialog: stop cleanly (no telemetry call needed yet).
+  - If `ExitPlanMode` **errors**: `WAS_IN_PLAN_MODE=1` already established that the session is in
+    Plan Mode, so an error here is not evidence the guard can skip — report "Plan Mode is still
+    active. Press Shift+Tab to switch modes, then re-run `/expert-plan-v2`" and use `guard_block`
+    to stop the pipeline.
+
+  Only when `WAS_IN_PLAN_MODE=0` from the start does the run proceed without calling `ExitPlanMode`
+  at all.
+
+**Recovery:** If a `Write` or `mkdir` denial during the checkpoint pipeline mentions Plan Mode, Plan Mode is still active despite the guard. Press Shift+Tab to exit, then re-run `/expert-plan-v2`.
 
 Then set up the checkpoint directory and parse `--effort`:
 
@@ -575,7 +639,7 @@ Alignment pass: [Yes — 3 experts flagged issues (see "## Alignment Notes" in p
 
 Next steps:
   - `/expert-review-plan {slug}` — validation pass (optional)
-  - `/track-and-start` — create issue branch and worktree for implementation
+  - `/track-and-start ~/.claude/plans/{slug}.md` — create issue branch and worktree for implementation
 ```
 
 Always include the alignment pass status line, even if it says "skipped", so the user knows what ran.
@@ -583,8 +647,6 @@ Always include the alignment pass status line, even if it says "skipped", so the
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v2 --outcome success 2>/dev/null || true
 ```
-
-Call `ExitPlanMode`.
 
 ---
 
@@ -661,7 +723,7 @@ Subagents in this command run as `subagent_type: "expert-reviewer"`, exactly lik
 - **Parallel contributions**: All contributors run at once (unlike v1's sequential main-thread experts), with each returning a one-line receipt, not its report.
 - **Checkpoint early**: Resolving ambiguity before synthesis (Step 6) prevents rework.
 - **File-first discipline**: Subagents write checkpoints; you read files, not embedded reports. Every prompt you write stays in your context for the whole run.
-- **Composable**: This command produces a plan → `/expert-review-plan` validates it → `/track-and-start` ships it.
+- **Composable**: This command produces a plan → `/expert-review-plan` validates it → `/track-and-start ~/.claude/plans/{slug}.md` ships it.
 
 ---
 
