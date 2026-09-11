@@ -109,6 +109,15 @@ yet, so no `command-end` call is needed). If the session was not in Plan Mode, s
 entirely and proceed directly to setup below — do not call `EnterPlanMode` or `ExitPlanMode` in that
 case.
 
+**Failure-path behavior:** If the judgment about whether the session is already in Plan Mode is ambiguous
+(e.g., the `ExitPlanMode` tool appears unavailable or returns an error), treat the session as "not in
+Plan Mode" and proceed directly to setup below. Note this fallback explicitly in your response to the user.
+This guard is a defensive check; if it cannot determine state reliably, the safe default is to proceed
+without gating. A downstream `Write` failure during the checkpoint pipeline may be a symptom of this guard
+having been missed or failed — cross-reference the CLAUDE.md note on panel agents' write-scoping restriction
+(the subagents can only Write their designated checkpoint file, per `agents/expert-reviewer.md`'s file-scope
+discipline) to diagnose such a failure.
+
 Then set up the checkpoint directory and parse `--effort`:
 
 ```bash
