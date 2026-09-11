@@ -5,7 +5,7 @@ Test suite for usage-gate seam structure in implement-with-haiku.md.
 Covers:
   - All 5 required seam IDs appear in the command doc
   - Each seam is near a section heading (expected to be a decision point)
-  - Each seam mentions AskUserQuestion (the mechanism for asking the user)
+  - Each seam is an unconditional stop-and-wait checkpoint, not an AskUserQuestion decision
   - The Final summary mentions usage gate seams
   - No literal $0 or problematic echo patterns in usage-check snippets
 
@@ -70,8 +70,14 @@ def test_seams_are_unique():
     return True, ""
 
 
-def test_seams_mention_ask_user_question():
-    """Each seam's usage-check command is near an AskUserQuestion instruction."""
+def test_seams_are_unconditional_checkpoints():
+    """Each seam is an unconditional stop-and-wait checkpoint, not a gated AskUserQuestion ask.
+
+    Per the (2026-09-11) simplification: the usage-gate no longer computes a proceed/stop
+    decision or calls AskUserQuestion. Every seam always stops and waits for the user's plain
+    'continue' reply, and the doc explicitly instructs the orchestrator not to call
+    AskUserQuestion or act on the usage-check script's DECISION field.
+    """
     doc_path = REPO_ROOT / "commands" / "implement-with-haiku.md"
 
     if not doc_path.exists():
@@ -79,13 +85,16 @@ def test_seams_mention_ask_user_question():
 
     doc_content = doc_path.read_text()
 
-    # Check that AskUserQuestion is mentioned (the mechanism for asking)
-    if "AskUserQuestion" not in doc_content:
-        return False, "AskUserQuestion not mentioned in implement-with-haiku.md"
+    if "do not call `AskUserQuestion`" not in doc_content:
+        return False, "expected 'do not call `AskUserQuestion`' instruction not found"
 
-    # Check that usage-check command is mentioned
     if "usage-check" not in doc_content:
         return False, "usage-check command not mentioned in implement-with-haiku.md"
+
+    for i in range(1, 6):
+        marker = f"Checkpoint {i}/5"
+        if marker not in doc_content:
+            return False, f"missing unconditional checkpoint marker: {marker}"
 
     return True, ""
 
@@ -171,7 +180,7 @@ def main():
 
     h.test_result("all 5 seams present in doc", *test_all_seams_present())
     h.test_result("seams are unique", *test_seams_are_unique())
-    h.test_result("seams mention AskUserQuestion", *test_seams_mention_ask_user_question())
+    h.test_result("seams are unconditional checkpoints", *test_seams_are_unconditional_checkpoints())
     h.test_result("final summary mentions USAGE-GATE", *test_final_summary_mentions_usage_gate())
     h.test_result("no literal $0 in usage-check snippets", *test_no_literal_dollar_zero_in_usage_check_snippets())
     h.test_result("no echo pipe in usage-check snippets", *test_no_echo_pipe_in_usage_check_snippets())
