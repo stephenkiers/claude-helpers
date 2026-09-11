@@ -143,6 +143,11 @@ already-reviewed commit never overwrites the prior run):
 
 ### Step 0: Setup
 
+Emit `command-begin`:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-review >/dev/null 2>&1 || true
+```
+
 **Prior-review fast-path:** the prior-review short-circuit check now runs first, before any setup work
 (path/REVIEW_DIR resolution, `mkdir`, `gh repo view`, `.claude/project.yaml` read, language/modifier
 detection). When the user declines a re-run, nothing else has executed — saving the setup cost.
@@ -150,11 +155,17 @@ detection). When the user declines a re-run, nothing else has executed — savin
 **PR mode:** if `PR_MODE=true` (Step 3 parses arguments, but a PR URL is recognizable at a glance —
 check before anything else here), skip the entire prior-review fast-path check (sub-step 1 below): the
 setup script (Step 1) creates `REVIEW_DIR` itself, and ADR-0009 forbids reading/writing prior-review
-cache in a repo you don't own. Sub-steps 2–6 still run, rooted at `${WORKTREE_PATH}` instead of the
+cache in a repo you don't own. Emit the prior-review-shortcircuit stage markers back-to-back (begin then end):
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage prior-review-shortcircuit >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
+```
+Sub-steps 2–6 still run, rooted at `${WORKTREE_PATH}` instead of the
 cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`, etc.).
 
 1. **Prior-review fast-path check** (skip entirely if PR mode):
    ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage prior-review-shortcircuit >/dev/null 2>&1 || true
    set -euo pipefail
    # Collect only what's needed for the short-circuit check — no REVIEW_DIR, mkdir, gh call, etc.
    BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
@@ -184,11 +195,26 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
      Re-run anyway? (prior results are preserved — this run writes to a new timestamped dir, never
      overwriting {review.reviewDir})
      ```
-     If the user declines (or `AskUserQuestion` returns no), exit cleanly here — nothing else has run.
+     If the user declines (or `AskUserQuestion` returns no), emit the stage-end and command-end, then exit cleanly:
+     ```bash
+     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
+     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome success 2>/dev/null || true
+     ```
+     Nothing else has run.
    - If `--force`/`-y` is present in raw arguments, skip the confirmation prompt (the banner above still
      printed) and continue to sub-step 2. Same if the user confirms.
+     
+   On confirm (or `--force`) or when sub-step skipped (no match, or PR mode):
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
+   ```
 
 2. Resolve paths and create the checkpoint directory:
+
+   Emit `stage-begin --stage setup`:
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage setup >/dev/null 2>&1 || true
+   ```
    ```bash
    set -euo pipefail
 
@@ -259,7 +285,17 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    - Plan context found → give it to the summarizer (Step 4) and to Sam System as "Known
      Integration Concerns" (Step 6); cross-reference in the final report.
 
+Emit `stage-end --stage setup --outcome success`:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage setup --outcome success 2>/dev/null || true
+```
+
 ### Step 1: Determine Review Scope
+
+Emit `stage-begin --stage resolve-scope`:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage resolve-scope >/dev/null 2>&1 || true
+```
 
 **PR mode:** replace this whole step with the coworker setup call (no `--include-medium` — that flag
 belongs to the deprecated commands' comment guide, which PR mode does not produce):
@@ -276,7 +312,11 @@ this step and continue at Step 2.
 
 **Local mode (default):**
 
-- `git diff --name-only main...HEAD`. If empty, inform the user and exit.
+- `git diff --name-only main...HEAD`. If empty, emit failure telemetry and inform the user, then exit:
+  ```bash
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+  ```
 - Write both diff artifacts once, so every later step passes a path instead of re-deriving or
   inlining the diff:
   ```bash
@@ -363,6 +403,18 @@ synthesis loop. Otherwise (or `--all`) → all reviewers, `NAMED_SELECTION=false
 (Step 9), Amalgamator (Step 10), and the Triage Chief (Step 11) — and to nothing else. Print the
 resolved panel model with the reviewer count when the run starts.
 
+Emit `stage-end --stage resolve-scope` with shape flags:
+```bash
+STAGE_END_ARGS=(--stage resolve-scope --outcome success --effort "$EFFORT")
+[ -n "${PANEL_MODEL:-}" ] && STAGE_END_ARGS+=(--model "$PANEL_MODEL")
+STAGE_END_ARGS+=(--mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)")
+if [ "${NAMED_SELECTION:-false}" = true ]; then
+  REVIEWER_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
+  STAGE_END_ARGS+=(--reviewer-count "$REVIEWER_COUNT")
+fi
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${STAGE_END_ARGS[@]}" 2>/dev/null || true
+```
+
 ### PR Mode (positional `<github-pr-url>`)
 
 When `PR_MODE=true`:
@@ -393,6 +445,13 @@ When `PR_MODE=true`:
   ```bash
   git -C "${MAIN_WORKTREE}" worktree remove "${WORKTREE_PATH}" --force
   git -C "${MAIN_WORKTREE}" branch -D "${BRANCH_NAME}"
+  ```
+
+  **Happy-path command-end (PR mode).** Emit `command-end` here, after the worktree-cleanup
+  question is answered (regardless of which option was chosen) — this is PR mode's actual end of
+  flow, since it never reaches Step 13:
+  ```bash
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome success 2>/dev/null || true
   ```
 
 ### Steps 4–10: Expert Review Panel (shared)
@@ -446,6 +505,13 @@ from the receipt, so the orchestrator and the Chief cannot disagree on it.
 
 **Skipped in PR mode** (`PR_MODE=true`) — the *Needs you* items are listed verbatim in the closing
 message instead; rulings are the author's to record, not yours (ADR-0009).
+
+Emit `stage-begin --stage rulings` (non-PR mode only):
+```bash
+if [ "${PR_MODE:-false}" != true ]; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage rulings >/dev/null 2>&1 || true
+fi
+```
 
 Read **only** `{REVIEW_DIR}/claude-action-plan.md` — not the pass files, not the final report. This is
 the one file the orchestrator reads, and it is small by construction.
@@ -509,10 +575,23 @@ conversation, when they report back, or when `/verify-queue` drains it — at wh
 the human) edits `STATUS: measured` and `DECISION: {result}` in place. There is no hand-editing path
 for this field anymore.
 
+Emit `stage-end --stage rulings --outcome success` (non-PR mode only):
+```bash
+if [ "${PR_MODE:-false}" != true ]; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage rulings --outcome success 2>/dev/null || true
+fi
+```
+
 ### Step 13: Cache Review Metadata
 
 **Skipped in PR mode** (`PR_MODE=true`) — ADR-0009: never write to a repo you don't own.
 
+Emit `stage-begin --stage cache-metadata` (non-PR mode only):
+```bash
+if [ "${PR_MODE:-false}" != true ]; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage cache-metadata >/dev/null 2>&1 || true
+fi
+```
 
 Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
 
@@ -527,6 +606,19 @@ Write to a `mktemp`-generated temp file colocated with the target, then `mv` onl
 `$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
 `reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts),
 and, when `EFFORT=2`, `metricsPath` pointing to `{REVIEW_DIR}/review-metrics.json`.
+
+Emit `stage-end --stage cache-metadata --outcome success` (non-PR mode only):
+```bash
+if [ "${PR_MODE:-false}" != true ]; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage cache-metadata --outcome success 2>/dev/null || true
+fi
+```
+
+**Happy-path command-end (non-PR mode).** Emit `command-end` at the very end of the command, after
+Step 13's cache write:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome success 2>/dev/null || true
+```
 
 ---
 
