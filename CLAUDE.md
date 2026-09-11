@@ -197,7 +197,9 @@ commands that need them read them by path. Put a new reference doc in `prompts/`
 
 Create `.claude/project.yaml` in any project to give reviewers and `/shipit` project-specific context.
 Copy `prompts/project.yaml.template` to start; see `prompts/project-example-{python,rust,typescript}.yaml`
-for full examples, and `*-local-example-*.yaml` for per-reviewer overrides.
+for full examples, and `*-local-example-*.yaml` for per-reviewer overrides. `.claude/project.yaml` is
+local and gitignored state, the same tier as `.claude/*.json` caches; this repo's tracked
+`north-star-nick-local.yaml` is the one deliberate exception. See `reviewers/README.md` for the full context.
 
 ## Cascade & overrides
 

@@ -31,6 +31,10 @@ Because these are file-level symlinks (not directory symlinks), you can drop you
 project-specific commands/reviewers into `~/.claude/{dir}/` and they will coexist with the repo's
 files untouched.
 
+**Note on project-specific overrides:** When adopting this helpers repo in an existing project, first
+add `.claude/project.yaml` to `.gitignore` before creating it, so it stays local and never gets
+tracked. See `~/.claude/reviewers/README.md` for the full context on local overrides.
+
 ## Steps
 
 1. Resolve the repo root (the directory this command lives in).
