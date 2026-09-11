@@ -72,3 +72,32 @@ making this safe for non-interactive callers like `/track-and-start`.
   over remaining checkpoints.
 - The pause mechanism is **purely prompt-level** — no hook support needed. Hooks cannot see
   step-level semantics; the command doc itself is where the prompt occurs.
+
+## Amendment (2026-09-11): superseded by unconditional stop-and-wait checkpoints
+
+The opt-in `--pause-at` flag, its `all` shorthand, and the `AskUserQuestion`-based three-option UI
+described above were removed. All five checkpoints (`round1-join`, `gate-fix-loop`, `pre-fanout`,
+`post-fanout`, `pre-round4`) now **always** stop unconditionally: the command prints the
+`USAGE-GATE:` line and a one-line status, then stops and waits for the user's next message — no
+flag, no `AskUserQuestion`, no proceed/stop decision computed by the tool.
+
+**Why:** the `AskUserQuestion`-based decision (parsing `--pause-at`, evaluating which named
+checkpoint fired, presenting three options) was itself burning tokens and adding a decision point
+on every run, for a feature that in practice was either always wanted (safety checkpoints between
+expensive, hard-to-undo rounds) or not worth the flag's discoverability cost. Removing the
+conditional collapses two previously-independent mechanisms (this ADR's content-driven pause,
+ADR-0016's data-driven usage gate) at each of the five seams into one unconditional stop that also
+prints the usage-gate's token count.
+
+**Consequence for this ADR's specific claims:** the "off by default, safe for non-interactive
+callers like `/track-and-start`" guarantee (Decision and Consequences sections above) no longer
+holds literally — there is no longer an off state. In practice this is not a functional regression:
+every existing call site that invokes `/implement-with-haiku` (all four in `commands/track-and-start.md`)
+prints a `cd <worktree> && claude "/implement-with-haiku"` command for a human to copy-paste and run
+in their own interactive terminal session — there is no headless/automated invocation anywhere in
+this repo today. A human is present at every current call site to reply "continue". If a genuinely
+unattended/headless caller is ever added, it will hang at the first checkpoint; that caller would
+need its own mechanism (e.g. a flag to skip checkpoints) at the time it's introduced, not before.
+
+**Status:** the `all`/named-checkpoint table, the three-option UI, and the "declined" language above
+are historical — read them as describing the pre-2026-09-11 design.
