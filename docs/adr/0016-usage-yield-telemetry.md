@@ -134,9 +134,9 @@ selection, or any optimization loop — it surfaces as a stop-and-ask to the hum
 proceed, stop, or defer the interrupt until the next increment. The threshold is a gate control surface,
 not an optimizer input.
 
-## Amendment — expert-review command/stage shape fields (effort, mode, reviewer_count)
+## Amendment — expert-review command/stage shape fields (effort, model, mode, reviewer_count)
 
-These three fields exist specifically to make `/expert-review`'s subagent spawns (`expert-reviewer` and
+These four fields exist specifically to make `/expert-review`'s subagent spawns (`expert-reviewer` and
 `expert-scout` agent types) joinable to their run's shape — effort level, model tier, run mode, reviewer
 count — via `command_id`. Before this amendment, 14% of Claude Code usage (the full span of subagent
 spawns) was previously unattributable to any run shape, preventing any analysis that answered questions

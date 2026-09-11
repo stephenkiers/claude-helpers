@@ -12,6 +12,9 @@ Covers:
 4. Valid values are recorded in the telemetry event
 5. Optional flags can be omitted without error
 
+_spec_blind: This suite is intentionally duplicated with tests/test_run_metrics.py (Section 13)
+for independent CLI contract coverage. See cross-reference in that file (line ~2699).
+
 Run with: python3 tests/test_run_metrics_effort_mode_reviewer_count.py
 """
 
@@ -214,9 +217,6 @@ def test_command_begin_rejects_invalid_effort():
         )
         if code == 0:
             return False, "Should have rejected effort=10 but succeeded"
-        if "effort" not in stderr.lower() and "1,2,3,4,5" not in stderr:
-            # Some help message should appear
-            pass
 
         return True, ""
 
