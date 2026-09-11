@@ -67,7 +67,8 @@ making this safe for non-interactive callers like `/track-and-start`.
 - **Clean stops preserve work** — a user who chooses "Stop here" gets committed code/tests they can
   review or continue manually. This matches the real per-round commits already in place; nothing
   new is lost if the session ends.
-- **Three-option UI matches `/expert-plan-v2`'s checkpoint** UI, reducing cognitive load when
-  users move between the two commands.
+- Both use `AskUserQuestion` for their checkpoint prompts. The `/implement-with-haiku` UI adds
+  a "don't pause again" option not present in `/expert-plan-v2`, giving users mid-run control
+  over remaining checkpoints.
 - The pause mechanism is **purely prompt-level** — no hook support needed. Hooks cannot see
   step-level semantics; the command doc itself is where the prompt occurs.

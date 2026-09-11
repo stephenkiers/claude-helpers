@@ -500,12 +500,16 @@ If any units are `failed` (worktree genuinely empty), surface a summary and ask 
 The procedure:
 1. Call `stage-begin` with the stage ID
 2. Use `AskUserQuestion` to present the three-option prompt (Proceed, Stop here, Proceed and don't ask again)
-3. Based on the response:
-   - **Proceed**: Call `stage-end` with outcome `success`, clear `PAUSE_CHOICE` for the next checkpoint, and continue
+3. Based on the response (the orchestrator receives this directly from the `AskUserQuestion` tool call — see "Fail-closed handling" below):
+   - **Proceed**: Call `stage-end` with outcome `success`, and continue
    - **Stop here**: Call `stage-end` with outcome `interrupted`, print status and resume message, then exit with status 0
-   - **Proceed and don't ask again**: Clear the `$PAUSE_AT` variable in the **orchestrator prompt** (so subsequent checkpoints see it as empty and skip their entry conditions), then proceed to the next stage
+   - **Proceed and don't ask again**: Drop this checkpoint and all later checkpoints from the literal `--pause-at` value the orchestrator is tracking (see "Orchestrator persistence mechanism" below), then proceed to the next stage
 
 **Pause telemetry is deliberately silent:** The `stage-begin` and `stage-end` calls do not print user-facing output (unlike the usage-gate's `USAGE-GATE:` line). Pause telemetry is best-effort observational only — failures to record are silenced and do not interrupt the run.
+
+**Orchestrator persistence mechanism (decision 14 convention):** The `--pause-at` value parsed in Step 0 is a shell variable that does not automatically persist into subsequent Bash tool calls. The orchestrator must record the resulting comma-separated value (e.g., `gate,fanout,round4`) as a literal string in its own prompt context after Step 0, keeping it as a resolved decision reference for the rest of the run. At each checkpoint below, the entry condition says explicitly: "Check whether `<checkpoint-name>` appears in the literal `--pause-at` value you recorded in Step 0" — do not re-invoke a shell test against a variable named `$PAUSE_AT`, since it will not exist. If the user chose "Proceed and don't pause again" at an earlier checkpoint, the orchestrator drops that checkpoint (and any later checkpoints) from the literal value it is tracking for the rest of this run.
+
+**Fail-closed handling for `AskUserQuestion` responses:** The orchestrator receives the user's choice directly from the `AskUserQuestion` tool call in its own context — there is no `$PAUSE_CHOICE` shell variable; branch on the answer directly when composing the next tool call. If `AskUserQuestion`'s result is anything other than the three defined options (should not normally happen, but treat defensively), the orchestrator must treat it as "Stop here" (fail-closed, matching ADR-0013), not "Proceed".
 
 **Checkpoint parameter table:**
 
@@ -519,39 +523,15 @@ The procedure:
 
 **Check if `gate` was requested via `--pause-at`**. If so, pause here for confirmation.
 
-**Note:** At this point in the orchestrator, `PAUSE_AT` is a shell variable from Step 0 that does not automatically persist into subsequent Bash calls. **Re-read the current value of `PAUSE_AT` from the environment or file state** before proceeding. Alternatively, if the orchestrator has already reached the "don't ask again" decision in an earlier checkpoint, skip this block entirely by checking the orchestrator's persisted state.
+**Note:** Check whether `gate` appears in the literal `--pause-at` value you recorded in Step 0. (See "Orchestrator persistence mechanism" above — do not test a shell variable named `$PAUSE_AT`, since it does not persist across Bash calls.)
 
-If `gate` is in the current pause set:
+Apply the **Pause-point procedure** (see above) with parameters from the checkpoint parameter table:
+- **Checkpoint:** gate
+- **Stage ID:** pause-gate
+- **Prompt Message:** "Round 1 is complete and committed. The Integration Gate (build, type-check, anti-tamper scan) is about to run. Proceed now, stop here (all Round 1 work is safe), or proceed and skip remaining pauses?"
+- **Resume Message:** "Paused at gate checkpoint. Round 1 complete. To resume, manually trigger the Integration Gate step."
 
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-gate >/dev/null 2>&1 || true
-```
-
-Then use `AskUserQuestion` with three options:
-- **Option 1:** "Proceed" — continue to the Integration Gate
-- **Option 2:** "Stop here" — exit cleanly with the current state committed
-- **Option 3:** "Proceed and don't pause again this run" — continue and clear the remaining checkpoints
-
-**If user chooses "Stop here":**
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-gate --outcome interrupted 2>/dev/null || true
-git status --short
-echo ""
-echo "Paused at gate checkpoint. Round 1 is complete and committed."
-echo "To resume: manually run the Integration Gate step (build, type-check, anti-tamper scan)."
-exit 0
-```
-
-**If user chooses "Proceed and don't pause again":** Update the orchestrator state to clear `$PAUSE_AT` for all subsequent checkpoints, then continue.
-
-**If user chooses "Proceed":** Continue to the Integration Gate.
-
-**For any continue choice**, record success:
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-gate --outcome success 2>/dev/null || true
-```
-
-**Record in PAUSE LOG:** At the end of the run, record the gate checkpoint outcome as:
+**Record in PAUSE LOG:**
 - `stopped` if the user chose "Stop here"
 - `proceed-no-more-asks` if the user chose "Proceed and don't pause again"
 - `proceed` if the user chose "Proceed"
@@ -710,37 +690,13 @@ gate-clean; no tests or reviews exist yet.
 
 ### Pause point: fanout
 
-**Check if `fanout` was requested via `--pause-at`**. If so, pause here for confirmation. (Skip if `--pause-at` included "don't ask again" from the gate checkpoint, or if the run's Round-sizing classification skips Rounds 2–3 — see below for `unreachable` status.)
+**Check if `fanout` was requested via `--pause-at`**. If so, pause here for confirmation. (Skip if the orchestrator already dropped this checkpoint via "don't ask again" at an earlier checkpoint, or if the run's Round-sizing classification skips Rounds 2–3 — see below for `unreachable` status.)
 
-If `fanout` is in the current pause set:
-
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-fanout >/dev/null 2>&1 || true
-```
-
-Then use `AskUserQuestion` with three options:
-- **Option 1:** "Proceed" — continue to Round 2/3 fan-out
-- **Option 2:** "Stop here" — exit cleanly with the gate result committed
-- **Option 3:** "Proceed and don't pause again this run" — continue and clear remaining checkpoints
-
-**If user chooses "Stop here":**
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-fanout --outcome interrupted 2>/dev/null || true
-git status --short
-echo ""
-echo "Paused at fanout checkpoint. Integration Gate is complete and committed."
-echo "To resume: manually trigger Round 2 (spec-blind tests) and Round 3 (adversary review)."
-exit 0
-```
-
-**If user chooses "Proceed and don't pause again":** Update orchestrator state to clear remaining checkpoints, then proceed.
-
-**If user chooses "Proceed":** Continue to the fan-out.
-
-**For any continue choice:**
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-fanout --outcome success 2>/dev/null || true
-```
+Apply the **Pause-point procedure** (see above) with parameters from the checkpoint parameter table:
+- **Checkpoint:** fanout
+- **Stage ID:** pause-fanout
+- **Prompt Message:** "The Integration Gate passed and is committed. Round 2 (spec-blind tests), Round 3 (adversary review), and sweeps are about to run in parallel. Proceed now, stop here (gate is safe), or proceed and skip remaining pauses?"
+- **Resume Message:** "Paused at fanout checkpoint. Integration Gate complete. To resume, manually trigger Round 2 and Round 3."
 
 **Record in PAUSE LOG:**
 - `stopped` if user chose "Stop here"
@@ -1116,37 +1072,13 @@ the entire run.
 
 ### Pause point: round4
 
-**Check if `round4` was requested via `--pause-at`**. If so, pause here for confirmation. (Skip if user selected "don't ask again" earlier, or if the run's Round-sizing classification skips Round 4 — see below for `unreachable` status.)
+**Check if `round4` was requested via `--pause-at`**. If so, pause here for confirmation. (Skip if the orchestrator already dropped this checkpoint via "don't ask again" at an earlier checkpoint, or if the run's Round-sizing classification skips Round 4 — see below for `unreachable` status.)
 
-If `round4` is in the current pause set:
-
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pause-round4 >/dev/null 2>&1 || true
-```
-
-Then use `AskUserQuestion` with three options:
-- **Option 1:** "Proceed" — continue to Round 4 (test cleanup and relocation)
-- **Option 2:** "Stop here" — exit cleanly with Rounds 1–3 committed
-- **Option 3:** "Proceed and don't pause again this run" — continue to Round 4 and final summary
-
-**If user chooses "Stop here":**
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-round4 --outcome interrupted 2>/dev/null || true
-git status --short
-echo ""
-echo "Paused at round4 checkpoint. Rounds 1–3 complete and all fixes committed."
-echo "To resume: manually trigger Round 4 (test cleanup, relocation, and final summary)."
-exit 0
-```
-
-**If user chooses "Proceed and don't pause again":** Update orchestrator state if any later checkpoints exist.
-
-**If user chooses "Proceed":** Continue to Round 4.
-
-**For any continue choice:**
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage pause-round4 --outcome success 2>/dev/null || true
-```
+Apply the **Pause-point procedure** (see above) with parameters from the checkpoint parameter table:
+- **Checkpoint:** round4
+- **Stage ID:** pause-round4
+- **Prompt Message:** "Rounds 1–3 are complete and committed, with all tests and fixes applied. Round 4 will clean up and relocate tests to your repo's convention. Proceed now, stop here (all tests are committed), or proceed and skip remaining pauses?"
+- **Resume Message:** "Paused at round4 checkpoint. Rounds 1–3 complete. To resume, manually trigger Round 4 (test cleanup and relocation)."
 
 **Record in PAUSE LOG:**
 - `stopped` if user chose "Stop here"
