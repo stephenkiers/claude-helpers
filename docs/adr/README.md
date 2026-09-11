@@ -20,7 +20,8 @@ to North Star Nick).
 - [ADR-0004: Model cost routing (Haiku for mechanical work)](0004-model-cost-routing.md)
 - [ADR-0005: Context cascade](0005-three-layer-context-cascade.md) — amended by ADR-0007 (a fourth
   layer; the heading dropped "Three-layer" but the filename is kept for inbound links); amended again
-  with `preferences.yaml` as a global user-preference lens
+  with `preferences.yaml` as a global user-preference lens; amended again with local-state gitignore
+  guidance for `.claude/project.yaml` and `reviewers/*-local.yaml` (issue #165)
 - [ADR-0006: Reviewer output-format carve-outs](0006-reviewer-output-format-carve-outs.md) — amended
   by ADR-0007 (additive fields are not carve-outs)
 - [ADR-0007: Triage and decision memory](0007-triage-and-decision-memory.md) — amends ADR-0004
@@ -31,7 +32,9 @@ to North Star Nick).
 - [ADR-0009: Peer review and shared panel](0009-peer-review-and-shared-panel.md) — the blind-first
   two-pass panel extracted to a shared prompt consumed by both `/expert-review` and
   `/expert-review-coworker`; peer review is collegial and omits Triage Chief — amended by ADR-0015
-  (draft review posting crosses the no-auto-post line only at the draft layer)
+  (draft review posting crosses the no-auto-post line only at the draft layer); amended again to
+  narrow the no-write-to-a-repo-you-don't-own line for the reviewer's own local context files
+  copied into PR-review worktrees (issue #165)
 - [ADR-0010: Worktree clone layout](0010-worktree-clone-layout.md) — the default-branch checkout
   lives at `<repos-root>/<repo>/worktrees/<default-branch>`, not at the repo root; siblings created
   by `/track-and-start` live alongside it; detection keys off the parent directory being named

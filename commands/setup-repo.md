@@ -128,6 +128,8 @@ esac
    git clone -- "$REMOTE" "$DEST"
    ```
 
+4a. **Before creating `.claude/project.yaml` in the new project**, add it to `.gitignore` first so it doesn't accidentally get tracked. If it's already tracked, run `git rm --cached .claude/project.yaml` before ignoring it. See `~/.claude/reviewers/README.md` for the full context.
+
 5. **Confirm and hand off:**
 
    ```

@@ -91,7 +91,7 @@ allowlist, and how to opt-in via `./install.sh --with-telemetry`.
 ## Project context
 
 Drop a `.claude/project.yaml` into any project to give the reviewers your tech stack, ADRs, invariants,
-and terminology. Copy [`prompts/project.yaml.template`](prompts/project.yaml.template) to begin.
+and terminology — this file is local and gitignored. Copy [`prompts/project.yaml.template`](prompts/project.yaml.template) to begin. See [`reviewers/README.md`](reviewers/README.md) for full context on per-reviewer overrides.
 
 ## Dependencies
 

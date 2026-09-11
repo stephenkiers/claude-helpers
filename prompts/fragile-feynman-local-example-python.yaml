@@ -1,5 +1,7 @@
 # Example .claude/reviewers/fragile-feynman-local.yaml for a Python project
 # Copy to your project at: .claude/reviewers/fragile-feynman-local.yaml
+# This is local, gitignored state — add `.claude/reviewers/*-local.yaml` to `.gitignore`; don't commit it.
+# See ~/.claude/reviewers/README.md for retrofit guidance.
 # Extends the global Fragile Feynman reviewer with Python-specific fragility patterns.
 
 extends: fragile-feynman

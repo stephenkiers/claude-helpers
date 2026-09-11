@@ -1,6 +1,8 @@
 # .claude/project.yaml — canonical project context for Claude Code reviewers and commands
 #
 # Copy this file to your project at: .claude/project.yaml
+# This is local, gitignored state — add `.claude/project.yaml` to `.gitignore`; don't commit it.
+# See ~/.claude/reviewers/README.md for retrofit guidance.
 # All fields are optional. Omit what you don't need.
 # Reviewers and commands read this once per session and use it to skip auto-detection.
 #

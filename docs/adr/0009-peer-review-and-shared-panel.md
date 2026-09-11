@@ -53,3 +53,13 @@ API is permitted, because the human still gates submission. The draft is invisib
 until the reviewer clicks "Submit review" in GitHub's UI, so the human-in-the-loop gate survives at
 the submit layer — only the copy-paste friction at the draft layer is removed. See ADR-0015 for the
 full decision.
+
+## Amendment — Local context files do not flow to peer worktrees (issue #165)
+
+The "never write to a repo you don't own" principle (Decision 3 above) has one narrow exception: the
+setup script for PR-review worktrees materializes the *reviewer's own* local context files
+(`.claude/project.yaml` and `.claude/reviewers/*-local.yaml`) into the throwaway checkout. This
+carries the reviewer's personal preferences and local overrides, not the author's — so the exception
+respects ownership (nothing written to the coworker's tracked history) and does not violate the
+principle. See [ADR-0005](0005-three-layer-context-cascade.md)'s latest amendment for the full
+rationale and consequence.
