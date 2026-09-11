@@ -222,13 +222,18 @@ fi
 # overrides, they are moved aside to .from-pr suffixes and never read by the panel —
 # a malicious PR must not reframe its own vulnerable pattern as a deliberate invariant.
 
-# Create target directories
-mkdir -p "${WORKTREE_PATH}/.claude" >&2 || {
-  echo "WARNING: Failed to create ${WORKTREE_PATH}/.claude" >&2
-}
-mkdir -p "${WORKTREE_PATH}/.claude/reviewers" >&2 || {
-  echo "WARNING: Failed to create ${WORKTREE_PATH}/.claude/reviewers" >&2
-}
+# Create target directories (guard against pre-existing symlinks, hard-fail on error)
+[ -L "${WORKTREE_PATH}/.claude" ] && rm -f "${WORKTREE_PATH}/.claude"
+if ! mkdir -p "${WORKTREE_PATH}/.claude" >&2; then
+  echo "ERROR: Failed to create ${WORKTREE_PATH}/.claude" >&2
+  exit 1
+fi
+
+[ -L "${WORKTREE_PATH}/.claude/reviewers" ] && rm -f "${WORKTREE_PATH}/.claude/reviewers"
+if ! mkdir -p "${WORKTREE_PATH}/.claude/reviewers" >&2; then
+  echo "ERROR: Failed to create ${WORKTREE_PATH}/.claude/reviewers" >&2
+  exit 1
+fi
 
 # Clear stale .from-pr quarantine files from a prior run against this same worktree (re-review
 # after the author pushed new commits). `git reset --hard` above does not remove untracked files,
@@ -239,16 +244,29 @@ rm -f "${WORKTREE_PATH}/.claude/reviewers/"*-local.yaml.from-pr 2>/dev/null || t
 
 # Copy project.yaml from reviewer's main worktree if it exists
 if [ -f "${MAIN_WORKTREE}/.claude/project.yaml" ]; then
-  cp "${MAIN_WORKTREE}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml" >&2 || {
-    echo "WARNING: Failed to copy project.yaml from ${MAIN_WORKTREE}/.claude/project.yaml" >&2
-  }
+  # Reviewer has a local project.yaml. Quarantine any existing PR-branch version first.
+  [ -L "${WORKTREE_PATH}/.claude/project.yaml" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml"
+  if [ -f "${WORKTREE_PATH}/.claude/project.yaml" ]; then
+    if ! mv "${WORKTREE_PATH}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml.from-pr" >&2; then
+      echo "ERROR: Failed to quarantine ${WORKTREE_PATH}/.claude/project.yaml to .from-pr" >&2
+      exit 1
+    fi
+  fi
+  # Now copy reviewer's project.yaml (guard destination against symlinks)
+  [ -L "${WORKTREE_PATH}/.claude/project.yaml" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml"
+  if ! cp "${MAIN_WORKTREE}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml" >&2; then
+    echo "ERROR: Failed to copy project.yaml from ${MAIN_WORKTREE}/.claude/project.yaml" >&2
+    exit 1
+  fi
 else
   # Reviewer has no local project.yaml, but PR worktree checkout may have one.
   # Move it aside so it is never read by the panel.
+  [ -L "${WORKTREE_PATH}/.claude/project.yaml" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml"
   if [ -f "${WORKTREE_PATH}/.claude/project.yaml" ]; then
-    mv "${WORKTREE_PATH}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml.from-pr" >&2 || {
-      echo "WARNING: Failed to move ${WORKTREE_PATH}/.claude/project.yaml to .from-pr" >&2
-    }
+    if ! mv "${WORKTREE_PATH}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml.from-pr" >&2; then
+      echo "ERROR: Failed to move ${WORKTREE_PATH}/.claude/project.yaml to .from-pr" >&2
+      exit 1
+    fi
     echo "Note: PR branch's own .claude/project.yaml quarantined to .from-pr; reviewer has no local override" >&2
   fi
 fi
@@ -258,9 +276,24 @@ if [ -d "${MAIN_WORKTREE}/.claude/reviewers" ]; then
   for local_file in "${MAIN_WORKTREE}/.claude/reviewers"/*-local.yaml; do
     if [ -f "$local_file" ]; then
       filename=$(basename "$local_file")
-      cp "$local_file" "${WORKTREE_PATH}/.claude/reviewers/$filename" >&2 || {
-        echo "WARNING: Failed to copy $filename from ${MAIN_WORKTREE}/.claude/reviewers/" >&2
-      }
+      dest_path="${WORKTREE_PATH}/.claude/reviewers/$filename"
+
+      # Quarantine any existing PR-branch version first
+      [ -L "$dest_path" ] && rm -f "$dest_path"
+      if [ -f "$dest_path" ]; then
+        [ -L "${dest_path}.from-pr" ] && rm -f "${dest_path}.from-pr"
+        if ! mv "$dest_path" "${dest_path}.from-pr" >&2; then
+          echo "ERROR: Failed to quarantine $dest_path to .from-pr" >&2
+          exit 1
+        fi
+      fi
+
+      # Now copy reviewer's version (guard destination against symlinks)
+      [ -L "$dest_path" ] && rm -f "$dest_path"
+      if ! cp "$local_file" "$dest_path" >&2; then
+        echo "ERROR: Failed to copy $filename from ${MAIN_WORKTREE}/.claude/reviewers/" >&2
+        exit 1
+      fi
     fi
   done
 fi
@@ -268,15 +301,20 @@ fi
 # Move any PR-branch-resident *-local.yaml files aside if reviewer has no local overrides
 if [ -d "${WORKTREE_PATH}/.claude/reviewers" ]; then
   for pr_local_file in "${WORKTREE_PATH}/.claude/reviewers"/*-local.yaml; do
-    if [ -f "$pr_local_file" ]; then
+    if [ -f "$pr_local_file" ] || [ -L "$pr_local_file" ]; then
       filename=$(basename "$pr_local_file")
       # Check if this file exists in the reviewer's main worktree
       if ! [ -f "${MAIN_WORKTREE}/.claude/reviewers/$filename" ]; then
         # Reviewer has no local override for this file; move it aside
-        mv "$pr_local_file" "${pr_local_file}.from-pr" >&2 || {
-          echo "WARNING: Failed to move $pr_local_file to .from-pr" >&2
-        }
-        echo "Note: PR branch's own .claude/reviewers/$filename quarantined to .from-pr; reviewer has no local override" >&2
+        [ -L "$pr_local_file" ] && rm -f "$pr_local_file"
+        if [ -f "$pr_local_file" ]; then
+          [ -L "${pr_local_file}.from-pr" ] && rm -f "${pr_local_file}.from-pr"
+          if ! mv "$pr_local_file" "${pr_local_file}.from-pr" >&2; then
+            echo "ERROR: Failed to move $pr_local_file to .from-pr" >&2
+            exit 1
+          fi
+          echo "Note: PR branch's own .claude/reviewers/$filename quarantined to .from-pr; reviewer has no local override" >&2
+        fi
       fi
     fi
   done
