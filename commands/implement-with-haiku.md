@@ -415,14 +415,15 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
 
-Run the usage gate:
+**Checkpoint 1/5 — Round 1 join.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). All merged units are already
-committed; nothing is pending if the human stops here.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 1/5 done: round 1 join. All merged units are
+already committed; nothing is pending if you stop here. If that token count looks large, run
+`/compact` first. Reply 'continue' when ready for the integration gate." Then stop and wait for the
+user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself,
+and ignore the printed line's `DECISION:` field (it's informational only).
 
 If any units are `failed` (worktree genuinely empty), surface a summary and ask the human whether to:
 - Abort the run
@@ -513,14 +514,15 @@ Max **K = 3** iterations. On each iteration:
 3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the main worktree, tear down worktree after).
 4. Re-run Gate steps 1–3 on the updated tree.
-5. Run the usage gate before deciding:
+5. **Checkpoint 2/5 — Gate fix-loop.** Run:
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam gate-fix-loop
    ```
-   Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-   with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-   (the last option re-runs the same command with `--mark-reported` added). The gate is still failing; the
-   outstanding failures (already surfaced) remain unresolved if the human stops here.
+   Print the `USAGE-GATE:` line verbatim, then say: "Step 2/5 checkpoint: gate fix-loop (iteration
+   <i>/<K>). The gate is still failing; the outstanding failures (already surfaced) remain unresolved
+   if you stop here. If that token count looks large, run `/compact` first. Reply 'continue' when
+   ready." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
+   compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 6. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide.
@@ -564,17 +566,15 @@ git rev-parse HEAD  # store as ROUND2_START_SHA
 IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files
 ```
 
-Tell the user: "Gate passed (round sizing: <classification>). Launching round 2 (spec-blind tests),
-round 3 pass 1 (adversary), and post-gate sweeps in parallel."
-
-Run the usage gate:
+**Checkpoint 3/5 — Pre-fanout.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-fanout
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). Round 1 is committed and
-gate-clean; no tests or reviews exist yet.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 3/5 done: gate passed (round sizing:
+<classification>). Round 1 is committed and gate-clean; no tests or reviews exist yet. If that token
+count looks large, run `/compact` first. Reply 'continue' to launch round 2, round 3 pass 1, and the
+sweeps." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
+compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 
 ### Round 2: Spec-blind test author (own worktree)
 
@@ -823,14 +823,15 @@ backstop for an unattended run).
 These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
 final summary.
 
-Run the usage gate:
+**Checkpoint 4/5 — Post-fanout.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam post-fanout
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). Round 2's tests are committed;
-Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the session closes here.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 4/5 done: post-fanout. Round 2's tests are
+committed; Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the
+session closes here. If that token count looks large, run `/compact` first. Reply 'continue' to apply
+round 3's fixes." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do
+not compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 
 ### Round 3 follow-up (short)
 
@@ -924,15 +925,15 @@ re-running the tests yourself.**
 
 ### 4.0 Applicability
 
-Run the usage gate:
+**Checkpoint 5/5 — Pre-round 4.** Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-round4
 ```
-Quote the printed `USAGE-GATE:` line back to the user verbatim. If `DECISION: ask`, use `AskUserQuestion`
-with options: *Proceed*, *Stop here*, and *Proceed and don't ask again until the next threshold increment*
-(the last option re-runs the same command with `--mark-reported` added). Round 4 itself has no subagent
-and its token cost is not budgeted; this seam functions as the last stop-or-continue checkpoint for
-the entire run.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 5/5 done: pre-round 4. Round 4 itself has no
+subagent cost; this is the last checkpoint for the run. If that token count looks large, run
+`/compact` first. Reply 'continue' to run test cleanup." Then stop and wait for the user's next
+message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself, and ignore
+the printed line's `DECISION:` field.
 
 - **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
 - **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
