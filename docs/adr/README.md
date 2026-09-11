@@ -56,6 +56,9 @@ to North Star Nick).
   reviewer-context cascade; `/generate-style-guide` auto-discovers tone from review history with
   human confirmation before writing (continues ADR-0007's confirm-before-write pattern for
   `decisions.yaml`, which was itself always human-confirmed, not reverted for being unconfirmed)
+- [ADR-0018: Parallel planning with checkpoint-based isolation](0018-parallel-planning-checkpoint-architecture.md) —
+  `/expert-plan-v2` as a parallel-only alternative to v1, with subagents writing checkpoint files
+  instead of accumulating context in the orchestrator; amended with Plan Mode guard logic
 - [ADR-0019: Content-driven pause checkpoints](0019-content-driven-pause-checkpoints.md) — an
   opt-in `--pause-at` flag for `/implement-with-haiku` enabling pause-for-confirmation at four
   named step boundaries (gate, fanout, round4, summary); independent of ADR-0016's usage gate
