@@ -360,6 +360,7 @@ on either combination:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+exit 1
 ```
 The prior-review cache check (Step 0 sub-step 1), Step 12, and Step 13 are skipped in
 PR mode (ADR-0009 write boundary); see the PR Mode section below.
@@ -372,6 +373,7 @@ heuristic** (see sub-section below). Default fallback `EFFORT=4`. `--effort` + n
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage resolve-scope --outcome failure --failure-class other 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+exit 1
 ```
 `--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted
 — effort wins. Effort 5 **lowers to named selection**: set `NAMED_SELECTION=true` and `NAMED_REVIEWERS`
@@ -427,11 +429,17 @@ STAGE_END_ARGS=(--stage resolve-scope --outcome success --effort "$EFFORT")
 [ -n "${PANEL_MODEL:-}" ] && STAGE_END_ARGS+=(--model "$PANEL_MODEL")
 STAGE_END_ARGS+=(--mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)")
 if [ "${NAMED_SELECTION:-false}" = true ]; then
-  # Count explicitly-named reviewers plus the four always-run reviewers
-  # (sam-system, code-rot-cody, consistency-checker, contrarian-carl)
+  # Count explicitly-named reviewers plus whichever of the four always-run reviewers
+  # (sam-system, code-rot-cody, consistency-checker, contrarian-carl) are NOT already
+  # named — a named reviewer that happens to be one of the always-run four must not be
+  # counted twice (mirrors the dedup in prompts/expert-review-panel.md's panel-decision
+  # table builder).
   NAMED_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
-  ALWAYS_RUN_COUNT=4
-  REVIEWER_COUNT=$((NAMED_COUNT + ALWAYS_RUN_COUNT))
+  EXTRA_ALWAYS_RUN_COUNT=0
+  for r in sam-system code-rot-cody consistency-checker contrarian-carl; do
+    echo "$NAMED_REVIEWERS" | grep -qw "$r" || EXTRA_ALWAYS_RUN_COUNT=$((EXTRA_ALWAYS_RUN_COUNT + 1))
+  done
+  REVIEWER_COUNT=$((NAMED_COUNT + EXTRA_ALWAYS_RUN_COUNT))
   STAGE_END_ARGS+=(--reviewer-count "$REVIEWER_COUNT")
 fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${STAGE_END_ARGS[@]}" 2>/dev/null || true
