@@ -97,7 +97,9 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
 - Contrarian Carl (runs last, always).
 
 **Effort 3 exception:** Sam System is not pre-seated — he runs only if the router's top-2 includes
-him. Cody and the Consistency Checker stay always-run, and Carl still runs last.
+him. Cody and the Consistency Checker stay always-run, and Carl still runs last. The stage structure
+remains unchanged (summarize → route → pass1 → contrarian → qa → pass2 → amalgamate); effort 3 differs
+only in which reviewers are selected, not in the stages themselves.
 
 The router is told these four are pre-seated and to treat them as included for the decision table.
 
