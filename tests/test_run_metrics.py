@@ -2692,6 +2692,166 @@ def test_stage_end_with_retries_non_numeric():
         return True, ""
 
 
+# ============================================================================
+# Tests for effort, mode, and reviewer-count fields
+# ============================================================================
+# _spec_blind: This section is intentionally duplicated in tests/test_run_metrics_effort_mode_reviewer_count.py
+# for independent CLI contract coverage.
+
+def test_command_begin_with_new_flags():
+    """command-begin with --effort, --model, --mode, --reviewer-count emits them in the event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "command-begin",
+                "--command", "expert-review",
+                "--effort", "3",
+                "--model", "sonnet",
+                "--mode", "local",
+                "--reviewer-count", "8",
+            ],
+            env={**os.environ, "CLAUDE_CODE_SESSION_ID": "s123"},
+        )
+        if code != 0:
+            return False, f"exit code {code}, stderr: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if event.get("effort") != "3":
+            return False, f"expected effort='3', got {event.get('effort')!r}"
+        if event.get("model") != "sonnet":
+            return False, f"expected model='sonnet', got {event.get('model')!r}"
+        if event.get("mode") != "local":
+            return False, f"expected mode='local', got {event.get('mode')!r}"
+        if event.get("reviewer_count") != 8:
+            return False, f"expected reviewer_count=8, got {event.get('reviewer_count')!r}"
+
+        return True, ""
+
+
+def test_command_begin_without_new_flags():
+    """command-begin without the new flags omits them from the event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "command-begin",
+                "--command", "expert-review",
+            ],
+            env={**os.environ, "CLAUDE_CODE_SESSION_ID": "s123"},
+        )
+        if code != 0:
+            return False, f"exit code {code}, stderr: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if "effort" in event or "mode" in event or "reviewer_count" in event:
+            return False, f"effort/mode/reviewer_count should be omitted when not provided: {event}"
+
+        return True, ""
+
+
+def test_command_begin_rejects_invalid_effort():
+    """command-begin rejects invalid --effort value via argparse."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "command-begin",
+                "--command", "test",
+                "--effort", "6",
+            ],
+        )
+        if code == 0:
+            return False, "should reject --effort 6"
+        return True, ""
+
+
+def test_command_begin_rejects_invalid_mode():
+    """command-begin rejects invalid --mode value via argparse."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "command-begin",
+                "--command", "test",
+                "--mode", "bogus",
+            ],
+        )
+        if code == 0:
+            return False, "should reject --mode bogus"
+        return True, ""
+
+
+def test_stage_end_with_new_flags():
+    """stage-end with --effort, --model, --mode, --reviewer-count emits them in the event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "stage-end",
+                "--stage-id", "st1",
+                "--command-id", "c1",
+                "--stage", "resolve-scope",
+                "--outcome", "success",
+                "--effort", "4",
+                "--model", "opus",
+                "--mode", "pr",
+                "--reviewer-count", "12",
+            ],
+        )
+        if code != 0:
+            return False, f"exit code {code}, stderr: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if event.get("effort") != "4":
+            return False, f"expected effort='4', got {event.get('effort')!r}"
+        if event.get("model") != "opus":
+            return False, f"expected model='opus', got {event.get('model')!r}"
+        if event.get("mode") != "pr":
+            return False, f"expected mode='pr', got {event.get('mode')!r}"
+        if event.get("reviewer_count") != 12:
+            return False, f"expected reviewer_count=12, got {event.get('reviewer_count')!r}"
+
+        return True, ""
+
+
+def test_stage_end_without_new_flags():
+    """stage-end without the new flags omits them from the event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        code, stdout, stderr = run_script(
+            [
+                "--log", str(log_path),
+                "stage-end",
+                "--stage-id", "st1",
+                "--command-id", "c1",
+                "--stage", "resolve-scope",
+                "--outcome", "success",
+            ],
+        )
+        if code != 0:
+            return False, f"exit code {code}, stderr: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        if "effort" in event or "mode" in event or "reviewer_count" in event:
+            return False, f"effort/mode/reviewer_count should be omitted: {event}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -2967,6 +3127,28 @@ if __name__ == "__main__":
 
     passed, msg = test_stage_end_with_retries_non_numeric()
     test_result("stage-end rejects --retries with non-numeric value", passed, msg)
+
+    print()
+
+    # Effort/mode/reviewer-count field tests
+    print("[Section 13] Effort, mode, and reviewer-count fields (command-begin and stage-end)")
+    passed, msg = test_command_begin_with_new_flags()
+    test_result("command-begin with effort/model/mode/reviewer-count writes them", passed, msg)
+
+    passed, msg = test_command_begin_without_new_flags()
+    test_result("command-begin without new flags omits them", passed, msg)
+
+    passed, msg = test_command_begin_rejects_invalid_effort()
+    test_result("command-begin rejects invalid --effort value", passed, msg)
+
+    passed, msg = test_command_begin_rejects_invalid_mode()
+    test_result("command-begin rejects invalid --mode value", passed, msg)
+
+    passed, msg = test_stage_end_with_new_flags()
+    test_result("stage-end with effort/model/mode/reviewer-count writes them", passed, msg)
+
+    passed, msg = test_stage_end_without_new_flags()
+    test_result("stage-end without new flags omits them", passed, msg)
 
     print()
 

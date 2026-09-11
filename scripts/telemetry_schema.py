@@ -151,6 +151,8 @@ EVENT_TYPES = frozenset({
 
 OUTCOME_STATUSES = frozenset({"success", "failure", "interrupted"})
 FAILURE_CLASSES = frozenset({"timeout", "api_error", "test_failure", "guard_block", "other"})
+EFFORT_LEVELS = frozenset({"1", "2", "3", "4", "5"})
+RUN_MODES = frozenset({"local", "pr", "coworker"})
 FINDINGS_KEYS = frozenset(FindingsCounts.__annotations__.keys())
 CHECKS_KEYS = frozenset(ChecksCounts.__annotations__.keys())
 
@@ -207,6 +209,9 @@ def build_event(
     checks=None,
     token_confidence=None,
     state_mismatch=None,
+    effort=None,
+    mode=None,
+    reviewer_count=None,
 ) -> dict:
     """Build a well-formed telemetry event.
 
@@ -223,6 +228,16 @@ def build_event(
 
     state_mismatch is Optional[Literal[True]] — either True or None, never False.
     It is included in the output only if not None.
+
+    effort, if provided, must be a string in EFFORT_LEVELS ({"1", "2", "3", "4", "5"}).
+
+    mode, if provided, must be a string in RUN_MODES ({"local", "pr", "coworker"}).
+
+    reviewer_count, if provided, must be a non-negative integer.
+
+    model, if provided, is an open-ended string tier (matches the project's
+    --model haiku|sonnet|opus|fable convention elsewhere; other values may be added
+    without schema changes).
 
     All other parameters are included in the output only if not None.
     """
@@ -287,6 +302,12 @@ def build_event(
         event["token_confidence"] = token_confidence
     if state_mismatch is not None:
         event["state_mismatch"] = state_mismatch
+    if effort is not None:
+        event["effort"] = effort
+    if mode is not None:
+        event["mode"] = mode
+    if reviewer_count is not None:
+        event["reviewer_count"] = reviewer_count
 
     return event
 
@@ -381,6 +402,24 @@ def validate_event(event: dict) -> list:
                     errors.append(f"checks key not in {CHECKS_KEYS}, got {key}")
                 elif not isinstance(value, int) or isinstance(value, bool) or value < 0:
                     errors.append(f"checks.{key} must be a non-negative int, got {value!r}")
+
+    # Check effort if present
+    if "effort" in event:
+        effort = event.get("effort")
+        if effort not in EFFORT_LEVELS:
+            errors.append(f"effort not in {EFFORT_LEVELS}, got {effort}")
+
+    # Check mode if present
+    if "mode" in event:
+        mode = event.get("mode")
+        if mode not in RUN_MODES:
+            errors.append(f"mode not in {RUN_MODES}, got {mode}")
+
+    # Check reviewer_count if present: must be non-negative int
+    if "reviewer_count" in event:
+        reviewer_count = event.get("reviewer_count")
+        if not isinstance(reviewer_count, int) or isinstance(reviewer_count, bool) or reviewer_count < 0:
+            errors.append(f"reviewer_count must be a non-negative int, got {reviewer_count!r}")
 
     return errors
 
