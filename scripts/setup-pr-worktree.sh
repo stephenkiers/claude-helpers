@@ -230,6 +230,13 @@ mkdir -p "${WORKTREE_PATH}/.claude/reviewers" >&2 || {
   echo "WARNING: Failed to create ${WORKTREE_PATH}/.claude/reviewers" >&2
 }
 
+# Clear stale .from-pr quarantine files from a prior run against this same worktree (re-review
+# after the author pushed new commits). `git reset --hard` above does not remove untracked files,
+# so a .from-pr left by a prior run would otherwise survive even if the PR's new commit removed
+# the file it was quarantined from — leaving a human reading it with stale, no-longer-current content.
+rm -f "${WORKTREE_PATH}/.claude/project.yaml.from-pr"
+rm -f "${WORKTREE_PATH}/.claude/reviewers/"*-local.yaml.from-pr 2>/dev/null || true
+
 # Copy project.yaml from reviewer's main worktree if it exists
 if [ -f "${MAIN_WORKTREE}/.claude/project.yaml" ]; then
   cp "${MAIN_WORKTREE}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml" >&2 || {
