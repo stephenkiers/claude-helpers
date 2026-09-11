@@ -361,6 +361,19 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
         real_branch = build_branch_name(plan.issue_type, issue_info.number, plan.slug)
         real_worktree_path = Path(plan.worktree_parent) / f"{issue_info.number}-{plan.slug}"
 
+        # Fail closed: the worktree directory must be a flat sibling under worktree_parent,
+        # never nested under a type prefix, even though the branch name legitimately is
+        # (e.g. "feature/166-foo"). A mismatch here means worktree_parent itself is poisoned.
+        if real_worktree_path.parent != Path(plan.worktree_parent):
+            msg = (
+                f"computed worktree path {real_worktree_path} is not a direct child of "
+                f"worktree_parent ({plan.worktree_parent}) — refusing to create a nested worktree "
+                f"(issue #{result.issue_number} already created)"
+            )
+            result.error = Unknown(msg)
+            result.steps_failed.append(STEP_CREATE_WORKTREE)
+            return result, result.error
+
         # 4. Check collisions now (real names)
         try:
             if real_worktree_path.exists():

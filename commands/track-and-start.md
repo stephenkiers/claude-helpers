@@ -669,6 +669,10 @@ fi
 ```
 
 ```bash
+if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
+  echo "ERROR: computed worktree path '$WORKTREE_PATH' is not a direct child of WORKTREE_PARENT ('$WORKTREE_PARENT') — refusing to create a nested worktree." >&2
+  exit 1
+fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
 ```
 
@@ -983,6 +987,14 @@ Format: `{type}/{issue#}-{slug}`
 - **Slug**: Kebab-case from issue title, max 50 chars, lowercase
 - **Example**: `feature/42-add-transcript-export`
 
+**The `/` in the branch name must never leak into the worktree directory path.** The worktree
+directory is always a flat sibling built from `{issue#}-{slug}` alone (e.g. `42-add-transcript-export`),
+never `feature/42-add-transcript-export`. `WORKTREE_PARENT` detection
+(`~/.claude/prompts/worktree-reference.md` Project Detection, step 3) and the fail-closed check right
+before each `git worktree add` exist specifically to catch this — the failure mode is self-reinforcing
+once a single worktree lands nested under a type-prefixed folder, so it's worth guarding explicitly
+rather than trusting each call site.
+
 The CLI's `track plan` command handles all branch naming automatically via `infer_type()` and `slugify()` functions — these tables document what the CLI does under the hood.
 
 ### Type Inference
@@ -1136,6 +1148,10 @@ For **Tracker Ticket mode**, which does NOT use the CLI, a plain-git worktree cr
 # ONLY for Tracker Ticket mode (step 248 in that section):
 cd "$MAIN_WORKTREE"
 WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
+if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
+  echo "ERROR: computed worktree path '$WORKTREE_PATH' is not a direct child of WORKTREE_PARENT ('$WORKTREE_PARENT') — refusing to create a nested worktree." >&2
+  exit 1
+fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
 ```
 

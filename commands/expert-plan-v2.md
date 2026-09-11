@@ -16,8 +16,10 @@ A checkpoint-based, parallel planning pipeline:
 5. **Digest** — spawn one subagent (sonnet, mechanical merge, pinned) with role prompt `~/.claude/prompts/plan-digest.md`, given the contribution file paths (including Carl's). Writes `open-questions.md`.
 6. **Checkpoint (hard stop)** — read `open-questions.md` AND all individual `{expert}-contribution.md` files, and present BOTH to the user: every expert's full Domain/Requirements/Risks/Recommended-Approach/Open-Questions block plus the organized/deduped open questions from the digest for the actual decision UI. Use `AskUserQuestion` for 2-4-option questions, markdown + conversation for open-ended ones or themes with >4 questions — same as v1 Step 4. Wait for answers.
 7. **Synthesis (Opus, hard-pinned)** — spawn ONE subagent (opus) that merges ticket + all contribution files (paths, not pasted content) + Carl's contribution + the user's Step-6 decisions into one plan, using v1's synthesis template (`## Goal`, `## Decisions Made`, `## Approach`, `## Implementation Steps`, `## Risks and Mitigations`, `## Testing Strategy`, `## Out of Scope`). The subagent writes to `{PLAN_SESSION_DIR}/plan.md` (staying within its checkpoint dir, same file-scope discipline as every other role); the orchestrator then copies that file to `~/.claude/plans/{slug}.md` as the final deliverable — the ONE path that ends up outside `plan-sessions/`, because it's the final deliverable, not a checkpoint.
-8. **Alignment pass** (new, Opus-pinned — only if effort > 3 per the ladder below) — spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`~/.claude/plans/{slug}.md`) and flag anything misaligned with their domain. Short receipts; any flagged issues get appended to the plan under a NEW `## Alignment Notes` section — visible, not silently folded in. If no expert flags anything, still note "No alignment issues flagged" rather than omitting the section silently.
-9. **Present** — print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of any alignment notes as the handoff. Suggest `/expert-review-plan` (validation) and `/track-and-start ~/.claude/plans/{slug}.md` (execution) as next steps, matching v1's closing message style.
+8. **Alignment pass** (Opus-pinned — only if effort > 3 per the ladder below) — spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`{PLAN_SESSION_DIR}/plan.md`) and flag anything misaligned with their domain. Short receipts; each expert writes `{expert}-alignment.md` (or notes "no issues" — this is a checkpoint file, not yet folded into the plan).
+9. **Reconciliation** (Opus-pinned — only if Step 8 ran) — spawn ONE subagent that reads `plan.md` plus all `{expert}-alignment.md` files and produces a REVISED plan: every flagged issue is either (a) resolved by editing the relevant Implementation Steps/Risks/Approach section directly, noted under a `## Resolved Alignment Fixes` section, or (b) — only for genuine judgment calls a plan author can't unilaterally decide — listed under `## Alignment Notes — Needs Decision`. Writes `{PLAN_SESSION_DIR}/plan-reconciled.md`. If Step 8 was skipped (effort ≤ 3) or flagged nothing, this step is a no-op passthrough.
+10. **Post-alignment checkpoint** (only if `## Alignment Notes — Needs Decision` is non-empty) — present those items to the user the same way as Step 6 (`AskUserQuestion` for bounded choices, markdown for open-ended ones), wait for answers, then append them verbatim under `## Decisions Made (Post-Alignment)` in `plan-reconciled.md`. This is the gate that keeps unresolved defects from silently reaching `/implement-with-haiku`.
+11. **Present** — copy the final plan (`plan-reconciled.md` if Step 9 ran, else `plan.md`) to `~/.claude/plans/{slug}.md`, then print its path and a summary of what the alignment pass resolved vs. what needed a decision. Suggest `/expert-review-plan` (validation) and `/track-and-start ~/.claude/plans/{slug}.md` (execution) as next steps, matching v1's closing message style.
 
 **Why subagents (not main thread)?** Two reasons. *Isolation*: a contributor running in the main thread can see every prior contributor's output sitting in context — a fresh subagent cannot. Each contributor stays blind to the others, preserving independent, uninfluenced perspective. *Scale*: sequential main-thread experts accumulate enormous context by the sixth reviewer; subagents start clean. Parallelism is the bonus, not the reason. The orchestrator's context stays small by reading only one file per subagent — the checkpoint file — never pasting content into prompts.
 
@@ -61,8 +63,9 @@ All artifacts live in `{PLAN_SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}
 | `contrarian-carl-contribution.md` | Contrarian Carl | Step 4 — (only if Carl not already selected by router) |
 | `open-questions.md` | Digest | Step 5 — deduped/organized open questions from all contributors |
 | `{expert}-alignment.md` | Each expert (alignment pass) | Step 8 — one per selected expert, short alignment notes or empty |
+| `plan-reconciled.md` | Reconciliation subagent | Step 9 — plan.md with alignment issues resolved or surfaced as decisions |
 
-Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat convention used by `/fork-planning` and `/expert-review-plan`; written by Synthesis subagent in Step 7).
+Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat convention used by `/fork-planning` and `/expert-review-plan`; written by Synthesis subagent in Step 7, then copied from `plan-reconciled.md` if the alignment/reconciliation pass ran — see Step 11).
 
 ## Plan Mode (guard and reconciliation)
 
@@ -70,7 +73,7 @@ Unlike v1, this command does **not** call `EnterPlanMode`. Plan Mode restricts t
 tool to a single designated plan file — a fine fit for v1, which does everything in the main thread
 and produces exactly one artifact. v2's whole mechanism is the opposite: many subagents, each writing
 its own checkpoint file (`selected-experts.md`, `{expert}-contribution.md`, `open-questions.md`,
-`plan.md`, `{expert}-alignment.md`) under `~/.claude/plan-sessions/`. If Plan Mode were left active
+`plan.md`, `{expert}-alignment.md`, `plan-reconciled.md`) under `~/.claude/plan-sessions/`. If Plan Mode were left active
 when v2 runs, the first subagent that tries to write its checkpoint file would hit the single-file
 restriction and fail.
 
@@ -111,7 +114,7 @@ e.g.:
 "This session is already in Plan Mode. `/expert-plan-v2` is a multi-agent planning pipeline that writes
 working artifacts (routing decision, per-expert contributions, digest, synthesized plan) to
 `~/.claude/plan-sessions/` and its final deliverable to `~/.claude/plans/{slug}.md`. The `ExitPlanMode`
-dialog will appear — approve to exit Plan Mode and proceed with the pipeline (Steps 1–9 below). When the
+dialog will appear — approve to exit Plan Mode and proceed with the pipeline (Steps 1–11 below). When the
 dialog appears, pick an option that does **not** clear context (e.g., 'Manual Edit Approval' or 'No', not
 'Clear Context'). The pipeline's own Step 6 checkpoint is the real decision gate before synthesis."
 
@@ -549,20 +552,11 @@ This creates an audit trail of what was decided and by whom.]
 - Implementation steps are ordered by dependency, not by expert
 - Risks only include things that weren't fully mitigated by the approach
 
-**Output file:** The subagent writes the plan to `{PLAN_SESSION_DIR}/plan.md` (not to `~/.claude/plans/{slug}.md` directly). The orchestrator reads this file and copies it to `~/.claude/plans/{slug}.md` as the final deliverable. This preserves the checkpoint-dir isolation: the subagent writes within its session directory, and the orchestrator handles the final placement. Referencing `agents/expert-reviewer.md`'s guidance on file-scope discipline.
+**Output file:** The subagent writes the plan to `{PLAN_SESSION_DIR}/plan.md`. Unlike synthesis in a pipeline with no alignment pass, this is NOT yet the final deliverable — for effort > 3 it still has to pass through Steps 8–10 (alignment, reconciliation, post-alignment checkpoint) before being copied to `~/.claude/plans/{slug}.md` in Step 11. For effort ≤ 3 (no alignment pass), `plan.md` IS the final content and gets copied directly in Step 11.
 
 On failure: `stage-end --stage synthesize-plan --outcome failure --failure-class synthesis-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class synthesis-failed 2>/dev/null || true`, then stop.
 
-After the subagent's receipt confirms `{PLAN_SESSION_DIR}/plan.md` was written, copy it to its final deliverable location:
-
 ```bash
-mkdir -p "$HOME/.claude/plans"
-if ! cp "$PLAN_SESSION_DIR/plan.md" "$HOME/.claude/plans/${SLUG}.md"; then
-  echo "ERROR: Failed to copy plan.md to ~/.claude/plans/${SLUG}.md" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome failure --failure-class copy-failed 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --outcome failure --failure-class copy-failed 2>/dev/null || true
-  exit 1
-fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome success 2>/dev/null || true
 # Note: Telemetry flags (--turns, --retries, --output-artifact-size) are not wired for
 # synthesis stage yet — subagent metrics are planned as future telemetry work.
@@ -570,9 +564,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan
 
 ## Step 8: Alignment Pass (Opus-Pinned — Only if Effort > 3)
 
-**Skip guard:** If `EFFORT` is 1, 2, or 3, skip this entire step and proceed to Step 9. Do not emit telemetry calls for a skipped stage.
+**Skip guard:** If `EFFORT` is 1, 2, or 3, skip Steps 8–10 entirely and go straight to Step 11's plain-copy path. Do not emit telemetry calls for a skipped stage.
 
-Spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`~/.claude/plans/{slug}.md`) and flag anything misaligned with their domain.
+Spawn the SAME selected experts again (their persona YAMLs, isolated, parallel, one message, join-barrier pattern again) to read the synthesized plan file (`{PLAN_SESSION_DIR}/plan.md`) and flag anything misaligned with their domain.
 
 Model: `opus` (explicitly pinned, same tier as synthesis).
 
@@ -586,47 +580,70 @@ Each expert writes `{PLAN_SESSION_DIR}/{expert}-alignment.md` with short alignme
 
 See `~/.claude/prompts/join-barrier-pattern.md` for the full protocol. Apply with `{type}` = `alignment`, `{suffix}` = `{expert}-alignment.md`.
 
-After the join barrier returns, read all `{PLAN_SESSION_DIR}/{expert}-alignment.md` files. If any contain flagged issues, **append them to the plan** under a NEW `## Alignment Notes` section — visible, not silently folded in. If no expert flags anything, still append:
-
-```markdown
-## Alignment Notes
-
-No alignment issues flagged by the expert panel.
-```
-
-This preserves transparency — a human reading the plan knows the alignment pass ran (or didn't).
+This step only produces the raw `{expert}-alignment.md` files. It does NOT touch `plan.md` — folding the flagged issues into the plan is Step 9's job, not this step's. Leaving alignment output as a stack of un-integrated notes is the bug this pipeline used to have: findings that never got resolved or even decided on, just appended, and then blocked `/implement-with-haiku` downstream.
 
 On failure (if join barrier times out or experts fail): emit failure telemetry, then stop.
 
 ```bash
-if [ "$EFFORT" -le 3 ]; then
-  # Alignment pass skipped for efforts 1-3
-  true
-else
-  # Alignment pass runs for efforts 4-5
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage alignment-pass >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage alignment-pass >/dev/null 2>&1 || true
+# [Spawn alignment-pass subagents: same experts, parallel, one message, join-barrier pattern]
+# [Each reads {PLAN_SESSION_DIR}/plan.md and writes {expert}-alignment.md]
+# [Join barrier: receipt + file exists + <!-- alignment-end --> sentinel; retry once; stand-in on second failure]
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage alignment-pass --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage reconcile-alignment >/dev/null 2>&1 || true
+```
 
-  # Spawn alignment-pass subagents (same experts, parallel, join-barrier pattern)
-  # Each reads ~/.claude/plans/{slug}.md and flags misalignments
-  # Expected receipt: {expert} | alignment-check | flagged: {count} | wrote: {path}
-  
-  # [Join barrier: wait for all experts to return, validate receipts and files]
-  # [For each expert: receipt + file exists + file ends with <!-- alignment-end --> sentinel]
-  # [Retry once on failure; stand-in on second failure]
-  
-  # On barrier success: read all alignment files and append to plan
-  # If any issues flagged: append to plan under ## Alignment Notes section
-  # If no issues: append "No alignment issues flagged by the expert panel."
-  
-  # On failure: stage-end and command-end with failure, then stop
-  
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage alignment-pass --outcome success 2>/dev/null || true
+## Step 9: Reconciliation (Opus-Pinned — Only if Step 8 Ran)
+
+Spawn ONE `expert-reviewer` subagent (`model: opus`, pinned) that reads `{PLAN_SESSION_DIR}/plan.md` and every `{PLAN_SESSION_DIR}/{expert}-alignment.md` file (paths, not pasted content), and produces a revised plan at `{PLAN_SESSION_DIR}/plan-reconciled.md`.
+
+**Its job for each flagged issue:**
+- **Resolvable without new user input** (the fix is a clarification, a missing edge case, a mismatched contract, an ordering fix — anything the plan author could reasonably decide) — edit the relevant `## Implementation Steps` / `## Risks and Mitigations` / `## Approach` section directly to close the gap, and log the change tersely under a NEW `## Resolved Alignment Fixes` section (one line per fix: what changed, which expert flagged it).
+- **Genuinely ambiguous** (a real tradeoff with more than one defensible answer, or something only the human can authorize — e.g. "should X be eventually-consistent or should we pay for a lock?") — do NOT resolve it. List it under a NEW `## Alignment Notes — Needs Decision` section, phrased as a concrete question with the options the plan is choosing between.
+
+The bar for "Needs Decision" is deliberately narrow — mirroring `/expert-review`'s triage "needs you" bucket (see this repo's `CLAUDE.md`, "Triage" section): most flagged issues should resolve into the plan directly, not pile up as another list nobody reads.
+
+If Step 8 flagged nothing at all (every `{expert}-alignment.md` says "no issues"), `plan-reconciled.md` is just `plan.md` plus `## Alignment Notes\n\nNo alignment issues flagged by the expert panel.` appended — no `## Alignment Notes — Needs Decision` section in that case.
+
+On failure: `stage-end --stage reconcile-alignment --outcome failure --failure-class reconciliation-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class reconciliation-failed 2>/dev/null || true`, then stop.
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage reconcile-alignment --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage post-alignment-checkpoint >/dev/null 2>&1 || true
+```
+
+## Step 10: Post-Alignment Checkpoint (Only if Step 9 Produced "Needs Decision" Items)
+
+Read `{PLAN_SESSION_DIR}/plan-reconciled.md`. If its `## Alignment Notes — Needs Decision` section is empty or absent, skip this step (no telemetry needed beyond the stage-end below).
+
+Otherwise, present those items to the user the same way as Step 6: `AskUserQuestion` for 2-4-option questions, markdown + conversation for open-ended ones. Wait for answers.
+
+Once answered, append the decisions to `{PLAN_SESSION_DIR}/plan-reconciled.md` under a NEW `## Decisions Made (Post-Alignment)` section (question + chosen answer, one entry per resolved item) — this is a plain orchestrator text append, not another subagent call. Remove the now-resolved items from `## Alignment Notes — Needs Decision`; if the user declines to decide on an item, leave it in that section as a known open gap rather than guessing.
+
+If the user declines to continue at this checkpoint entirely: `stage-end --stage post-alignment-checkpoint --outcome interrupted`, then `command-end --outcome interrupted`, then exit cleanly (the plan as reconciled so far is still usable — tell the user its path before stopping).
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage post-alignment-checkpoint --outcome success 2>/dev/null || true
+```
+
+## Step 11: Present
+
+Copy the final plan content to its deliverable path: `plan-reconciled.md` if Steps 8–10 ran (effort > 3), otherwise `plan.md` directly (effort ≤ 3, no alignment pass).
+
+```bash
+mkdir -p "$HOME/.claude/plans"
+SOURCE_PLAN="$PLAN_SESSION_DIR/plan.md"
+if [ -f "$PLAN_SESSION_DIR/plan-reconciled.md" ]; then
+  SOURCE_PLAN="$PLAN_SESSION_DIR/plan-reconciled.md"
+fi
+if ! cp "$SOURCE_PLAN" "$HOME/.claude/plans/${SLUG}.md"; then
+  echo "ERROR: Failed to copy $SOURCE_PLAN to ~/.claude/plans/${SLUG}.md" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --outcome failure --failure-class copy-failed 2>/dev/null || true
+  exit 1
 fi
 ```
 
-## Step 9: Present
-
-Print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of any alignment notes as the handoff.
+Print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of what the alignment pass found and how it was resolved.
 
 Example closing message:
 
@@ -635,14 +652,16 @@ Example closing message:
 
 📄 Plan: ~/.claude/plans/{slug}.md
 
-Alignment pass: [Yes — 3 experts flagged issues (see "## Alignment Notes" in plan)] or [Yes — no issues flagged] or [Skipped (effort < 4)]
+Alignment pass: [Yes — 3 issues flagged, all resolved into the plan (see "## Resolved Alignment Fixes")] or
+                [Yes — 2 issues flagged, 1 resolved, 1 required your decision (see "## Decisions Made (Post-Alignment)")] or
+                [Yes — no issues flagged] or [Skipped (effort < 4)]
 
 Next steps:
   - `/expert-review-plan {slug}` — validation pass (optional)
   - `/track-and-start ~/.claude/plans/{slug}.md` — create issue branch and worktree for implementation
 ```
 
-Always include the alignment pass status line, even if it says "skipped", so the user knows what ran.
+Always include the alignment pass status line, even if it says "skipped", so the user knows what ran. Unlike the old behavior, the plan handed to `/track-and-start` → `/implement-with-haiku` should never contain unresolved defects the alignment pass already found — they're either fixed in-place or explicitly decided in Step 10.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v2 --outcome success 2>/dev/null || true
@@ -662,6 +681,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan
 | Digest | sonnet | never — pinned | Mechanical merge, not `PANEL_MODEL` |
 | Synthesis | opus | never — pinned | Judgment-heavy, final deliverable |
 | Alignment pass | opus | never — pinned | Alignment is a judgment task; same tier as synthesis |
+| Reconciliation | opus | never — pinned | Folds alignment findings back into the plan; same tier as synthesis |
 
 ---
 
@@ -690,11 +710,11 @@ telemetry is emitted and when execution stops. Use this pattern consistently:
 On failure: `stage-end --stage <name> --outcome failure --failure-class <class> 2>/dev/null || true`, then `command-end --outcome failure --failure-class <class> 2>/dev/null || true`, then stop.
 ```
 
-Replace `<name>` with the current stage name and `<class>` with a descriptive failure class. Examples (non-exhaustive): `context-load-failed`, `router-failed`, `contribution-barrier-failed`, `swarm-scout-failed`, `swarm-merge-failed`, `pod-write-failed`, `pod-barrier-failed`, `carl-failed`, `digest-failed`, `synthesis-failed`.
+Replace `<name>` with the current stage name and `<class>` with a descriptive failure class. Examples (non-exhaustive): `context-load-failed`, `router-failed`, `contribution-barrier-failed`, `swarm-scout-failed`, `swarm-merge-failed`, `pod-write-failed`, `pod-barrier-failed`, `carl-failed`, `digest-failed`, `synthesis-failed`, `reconciliation-failed`.
 
 ## Telemetry Call Sites
 
-Stages, in order: `gather-context`, `route-experts`, `expert-contributions`, `contrarian`, `digest-questions`, `checkpoint`, `synthesize-plan`, `alignment-pass`.
+Stages, in order: `gather-context`, `route-experts`, `expert-contributions`, `contrarian`, `digest-questions`, `checkpoint`, `synthesize-plan`, `alignment-pass`, `reconcile-alignment`, `post-alignment-checkpoint`.
 
 Use the exact `run-metrics.py` call-site convention (matching `commands/expert-plan.md`):
 - `stage-begin` calls are non-fatal with `|| true`

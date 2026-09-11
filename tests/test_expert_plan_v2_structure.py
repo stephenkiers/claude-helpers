@@ -100,6 +100,8 @@ def main():
             "checkpoint",
             "synthesize-plan",
             "alignment-pass",
+            "reconcile-alignment",
+            "post-alignment-checkpoint",
         }
 
         stages_match = stage_begins == expected_stages
@@ -111,7 +113,7 @@ def main():
         if extra:
             detail += f"extra: {', '.join(sorted(extra))}"
         h.test_result(
-            "commands/expert-plan-v2.md contains all 8 required stage names",
+            "commands/expert-plan-v2.md contains all 10 required stage names",
             stages_match,
             detail.rstrip("; ") if detail else "",
         )
@@ -122,7 +124,7 @@ def main():
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v2.md contains all 8 required stage names",
+            "commands/expert-plan-v2.md contains all 10 required stage names",
             False,
             "file does not exist",
         )

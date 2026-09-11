@@ -63,18 +63,26 @@ def detect_second_worktree(cwd: Optional[Path] = None) -> Optional[str]:
     return None
 
 
+_TYPE_PREFIXES = {"feature", "fix", "chore"}
+
+
 def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     """
     Detect the worktree parent directory.
 
     Logic from ADR-0010 Project Detection, step 3:
-    1. If a second worktree exists, use its parent directory.
+    1. If a second worktree exists, use its parent directory — unless that
+       parent is itself a type-prefixed folder (feature/fix/chore), which
+       means the second worktree is nested and this candidate is poisoned;
+       fall through to steps 2/3 instead of trusting it.
     2. Else if main worktree is already under 'worktrees/', use that directory.
     3. Else create 'worktrees' as a sibling directory to main worktree.
     """
     second = detect_second_worktree(cwd=cwd)
     if second:
-        return str(Path(second).parent)
+        candidate = Path(second).parent
+        if candidate.name not in _TYPE_PREFIXES:
+            return str(candidate)
 
     main = detect_main_worktree(cwd=cwd)
     if main:

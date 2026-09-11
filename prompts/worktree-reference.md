@@ -20,7 +20,10 @@ MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cu
 
 # 3. Detect worktree parent from existing worktrees
 SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
-if [ -n "$SECOND_WORKTREE" ]; then
+SECOND_PARENT_BASENAME=$(basename "$(dirname "$SECOND_WORKTREE")" 2>/dev/null)
+# A second-worktree parent whose basename is a branch-type prefix (feature/fix/chore) means that
+# worktree is itself nested — trusting it would perpetuate the nesting. Fall through instead.
+if [ -n "$SECOND_WORKTREE" ] && ! printf '%s\n' "feature fix chore" | grep -qw "$SECOND_PARENT_BASENAME"; then
   WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
 elif [ "$(basename "$(dirname "$MAIN_WORKTREE")")" = "worktrees" ]; then
   # Fresh /setup-repo clone: main worktree already sits under a worktrees/ dir, so siblings go there.
@@ -49,6 +52,13 @@ fi
 **If `REPO` is empty** (no GitHub remote): GitHub-mode commands error with a message about needing a
 GitHub remote. Local plan mode does not — it runs on git alone, so steps 2–3 and 6 must not depend
 on `REPO` or `ASSIGNEE`.
+
+**`WORKTREE_PARENT` and worktree directory names must never contain `/`**, even though branch names
+do (`feature/166-foo`, `fix/...`, `chore/...` — see `commands/track-and-start.md` "Branch Naming").
+Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone. Step 3 above
+guards against adopting a `WORKTREE_PARENT` nested under a type-prefixed folder, which otherwise
+self-reinforces: once one worktree lands there and is second in `git worktree list` order, every
+future worktree would be created under it too.
 
 ## Stack Detection
 
