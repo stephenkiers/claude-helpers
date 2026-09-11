@@ -229,6 +229,16 @@ def build_event(
     state_mismatch is Optional[Literal[True]] — either True or None, never False.
     It is included in the output only if not None.
 
+    effort, if provided, must be a string in EFFORT_LEVELS ({"1", "2", "3", "4", "5"}).
+
+    mode, if provided, must be a string in RUN_MODES ({"local", "pr", "coworker"}).
+
+    reviewer_count, if provided, must be a non-negative integer.
+
+    model, if provided, is an open-ended string tier (matches the project's
+    --model haiku|sonnet|opus|fable convention elsewhere; other values may be added
+    without schema changes).
+
     All other parameters are included in the output only if not None.
     """
     if event_type not in EVENT_TYPES:

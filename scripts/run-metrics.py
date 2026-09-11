@@ -322,7 +322,11 @@ def cmd_command_begin(args):
         mode=args.mode,
         reviewer_count=args.reviewer_count,
     )
-    telemetry_schema.append_event(args.log, event)
+    try:
+        telemetry_schema.append_event(args.log, event)
+    except ValueError as e:
+        print(f"Error: invalid telemetry event: {e}", file=sys.stderr)
+        sys.exit(1)
     # Print bare command_id to stdout so callers can capture it
     print(command_id)
 
@@ -999,9 +1003,9 @@ def main():
     # command-begin
     sp_command_begin = subparsers.add_parser("command-begin", help="Record a command.begin event")
     sp_command_begin.add_argument("--command", required=True, help="Command name")
-    sp_command_begin.add_argument("--effort", required=False, default=None, choices=["1", "2", "3", "4", "5"], help="Effort level (optional)")
+    sp_command_begin.add_argument("--effort", required=False, default=None, choices=sorted(telemetry_schema.EFFORT_LEVELS), help="Effort level (optional)")
     sp_command_begin.add_argument("--model", required=False, default=None, help="Model tier (optional)")
-    sp_command_begin.add_argument("--mode", required=False, default=None, choices=["local", "pr", "coworker"], help="Run mode (optional)")
+    sp_command_begin.add_argument("--mode", required=False, default=None, choices=sorted(telemetry_schema.RUN_MODES), help="Run mode (optional)")
     sp_command_begin.add_argument("--reviewer-count", required=False, default=None, type=int, help="Number of reviewers selected (optional)")
     sp_command_begin.set_defaults(func=cmd_command_begin)
 
@@ -1044,9 +1048,9 @@ def main():
         "--failure-class",
         help="Failure class (required if outcome=failure)",
     )
-    sp_stage_end.add_argument("--effort", required=False, default=None, choices=["1", "2", "3", "4", "5"], help="Effort level (optional)")
+    sp_stage_end.add_argument("--effort", required=False, default=None, choices=sorted(telemetry_schema.EFFORT_LEVELS), help="Effort level (optional)")
     sp_stage_end.add_argument("--model", required=False, default=None, help="Model tier (optional)")
-    sp_stage_end.add_argument("--mode", required=False, default=None, choices=["local", "pr", "coworker"], help="Run mode (optional)")
+    sp_stage_end.add_argument("--mode", required=False, default=None, choices=sorted(telemetry_schema.RUN_MODES), help="Run mode (optional)")
     sp_stage_end.add_argument("--reviewer-count", required=False, default=None, type=int, help="Number of reviewers selected (optional)")
     _add_findings_and_checks_args(sp_stage_end)
     _add_metric_args(sp_stage_end)
