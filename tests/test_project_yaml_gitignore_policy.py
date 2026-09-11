@@ -251,7 +251,7 @@ if __name__ == "__main__":
 
     test_result(
         "Installed ~/.claude/reviewers/README.md path used, not repo-relative",
-        "~/.claude/reviewers/README.md" in reviewers_readme_content or "~/.claude/prompts/" in reviewers_readme_content,
+        "~/.claude/reviewers/README.md" in reviewers_readme_content,
         "Cross-references should use installed ~/.claude/ paths, not repo-relative paths"
     )
 
@@ -316,7 +316,7 @@ if __name__ == "__main__":
     # ============================================================================
     # SECTION 9: prompts/project.yaml.template header mentions gitignore
     # ============================================================================
-    print("[Section 9] prompts/project.yaml.template header guidance")
+    print("[Section 9] prompts/project.yaml.template and *-local-example-*.yaml headers")
 
     template_file = PROMPTS_DIR / "project.yaml.template"
     template_content = template_file.read_text() if template_file.exists() else ""
@@ -338,6 +338,27 @@ if __name__ == "__main__":
         "reviewers/README.md" in template_content or "README" in template_content,
         "Template should reference retrofit guidance"
     )
+
+    # Check *-local-example-*.yaml files for consistent headers
+    local_example_files = sorted(PROMPTS_DIR.glob("*-local-example-*.yaml"))
+    test_result(
+        "At least one *-local-example-*.yaml file exists",
+        len(local_example_files) > 0,
+        "Expected prompts/*-local-example-*.yaml files"
+    )
+
+    for example_file in local_example_files:
+        example_content = example_file.read_text()
+        test_result(
+            f"{example_file.name} header mentions gitignore",
+            "gitignore" in example_content.lower() or "gitignored" in example_content.lower(),
+            f"{example_file.name} header should warn about gitignore"
+        )
+        test_result(
+            f"{example_file.name} header mentions reviewers/README.md",
+            "reviewers/README.md" in example_content,
+            f"{example_file.name} should reference retrofit guidance"
+        )
 
     print()
 
@@ -364,7 +385,7 @@ if __name__ == "__main__":
     test_result(
         ".claude/project.yaml copy is present",
         '[ -f "${MAIN_WORKTREE}/.claude/project.yaml" ]' in worktree_content
-        or 'project.yaml' in worktree_content and 'cp' in worktree_content,
+        or ('project.yaml' in worktree_content and 'cp' in worktree_content),
         "Should copy reviewer's project.yaml into the PR worktree"
     )
 
@@ -382,14 +403,15 @@ if __name__ == "__main__":
 
     test_result(
         "Copy failure warning is present",
-        "WARNING:" in worktree_content and ("Failed to copy" in worktree_content or "copy" in worktree_content),
+        "WARNING:" in worktree_content and "Failed to copy" in worktree_content,
         "Should warn on copy failure (stderr)"
     )
 
+    step_e5_section = worktree_content.split("Step E.5", 1)[1].split("# --- Step", 1)[0] if "Step E.5" in worktree_content else None
     test_result(
         "No copy-once guard was reintroduced",
-        "[ ! -f" not in worktree_content.split("Step E.5")[1] if "Step E.5" in worktree_content else "[ ! -f" not in worktree_content[-1000:],
-        "Should not have a conditional copy guard (always materialize reviewer's local context)"
+        step_e5_section is not None and "[ ! -f" not in step_e5_section,
+        "Should not have a conditional copy guard (always materialize reviewer's local context)" if step_e5_section is not None else "Step E.5 anchor not found in worktree_content — cannot verify"
     )
 
     print()
@@ -401,7 +423,7 @@ if __name__ == "__main__":
 
     # Check that the policy is consistently referenced
     docs_mentioning_policy = 0
-    if ".gitignore" in gitignore_content and "north-star-nick-local.yaml" in gitignore_content:
+    if "north-star-nick-local.yaml" in gitignore_content:
         docs_mentioning_policy += 1
     if "north-star-nick-local.yaml" in adr_0005_content:
         docs_mentioning_policy += 1
