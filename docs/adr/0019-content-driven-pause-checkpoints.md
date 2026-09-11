@@ -8,8 +8,9 @@
 Integration Gate, Round 2–3 (tests and adversary review), and Round 4 (test cleanup). Users wanted
 the ability to pause at specific named steps — not after every step, but only at points where work
 is stable and committed. The [`/expert-plan-v2` checkpoint](../commands/expert-plan-v2.md#step-6-checkpoint-hard-stop)
-already demonstrated the UI pattern (a modal `AskUserQuestion` with a "proceed and don't ask again"
-option); this ADR generalizes the concept and scopes it to `/implement-with-haiku`'s four named stages.
+already demonstrated a single hard-stop pattern with user confirmation (a modal `AskUserQuestion`
+with a decline option); this ADR generalizes that single-checkpoint pattern by adding multiple
+checkpoints and a "proceed and don't pause again" dismissal, needed only for multi-checkpoint runs.
 
 The mechanism differs from [ADR-0016](0016-usage-yield-telemetry.md)'s usage gate: the usage gate is
 **data-driven** (token totals trigger a threshold-crossing ask), whereas this is **content-driven**
@@ -30,9 +31,8 @@ command gains a second, clearly-separate check at each point without adding new 
 | `gate` | After Round 1 join (Step 4d), before Integration Gate | All units merged and committed; gate hasn't run |
 | `fanout` | After Integration Gate passes, before Round 2/3 fan-out | Gate is clean and committed; tests haven't run |
 | `round4` | After Rounds 2–3 complete, before Round 4 (test cleanup) | All fixes committed; cleanup hasn't run |
-| `summary` | After Round 4 completes, before final summary report | All work committed; only reporting remains |
 
-An `all` value expands to `gate,fanout,round4,summary`.
+An `all` value expands to `gate,fanout,round4`.
 
 **Decline = clean stop, no rollback.** When a user chooses "Stop here" at any checkpoint, the
 command exits with status 0 immediately, printing the current `git status` and a one-line note that
@@ -58,7 +58,10 @@ making this safe for non-interactive callers like `/track-and-start`.
 
 - Pause checkpoints are **independent of the usage gate** — the two mechanisms can both be active
   without interfering. An `AskUserQuestion` prompt at a checkpoint is unrelated to ADR-0016's
-  token-threshold ask.
+  token-threshold ask. Both mechanisms share the `run-metrics.py` telemetry script and may be
+  active at the same seam (usage-gate `AskUserQuestion` + pause `AskUserQuestion`); stacked prompts
+  at a shared seam are accepted as-is without merging — the orchestrator may encounter both, or the
+  user's decision at one gate may make the other moot (e.g., "stop here" exits before the next prompt).
 - The pause mechanism is **off by default**, so existing non-interactive use (e.g. in
   `/track-and-start`) is unaffected.
 - **Clean stops preserve work** — a user who chooses "Stop here" gets committed code/tests they can
