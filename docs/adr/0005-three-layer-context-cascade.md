@@ -104,8 +104,8 @@ copy; it is the sole exception and specific to this repo's use case.
 
 **Consequence for PR mode:** Because `.claude/project.yaml` lives in the working tree but is never in
 git history, an isolated PR-review worktree created by `scripts/setup-pr-worktree.sh` cannot inherit
-it from the PR author's repo. Instead, the script materializes the *reviewer's own* `~/.claude/project.yaml`
-and their own `.claude/reviewers/*-local.yaml` overrides into the throwaway checkout — bringing their
+it from the PR author's repo. Instead, the setup script materializes the *reviewer's own* local context files
+(`.claude/project.yaml` and `.claude/reviewers/*-local.yaml` from their main worktree) into the throwaway checkout — bringing their
 local context, not the author's. This is [ADR-0009](0009-peer-review-and-shared-panel.md)-compatible:
 the reviewer is working in an isolated, throwaway worktree with their own local files; nothing is
 written to the coworker's tracked history, and nothing is committed or pushed.
