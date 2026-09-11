@@ -250,8 +250,8 @@ if __name__ == "__main__":
     )
 
     test_result(
-        "Installed ~/.claude/reviewers/README.md path used, not repo-relative",
-        "~/.claude/reviewers/README.md" in reviewers_readme_content,
+        "Installed ~/.claude/ paths used for cross-references, not repo-relative",
+        "~/.claude/reviewers/" in reviewers_readme_content and "~/.claude/prompts/" in reviewers_readme_content,
         "Cross-references should use installed ~/.claude/ paths, not repo-relative paths"
     )
 
