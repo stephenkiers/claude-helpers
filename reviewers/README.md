@@ -57,8 +57,10 @@ rather than re-listing the generic files.
 |----------|--------|---------|
 | `~/.claude/reviewers/` | `{expert}.yaml` | Global expert definition |
 | `~/.claude/reviewers/` | `index.yaml` | Lightweight meta index (router reads this only) |
-| `project/.claude/` | `project.yaml` | Project-wide context — all experts + /shipit |
-| `project/.claude/reviewers/` | `{expert}-local.yaml` | Expert-specific project overrides |
+| `project/.claude/` | `project.yaml` | Project-wide context — all experts + /shipit (local, gitignored) |
+| `project/.claude/reviewers/` | `{expert}-local.yaml` | Expert-specific project overrides (local, gitignored) |
+
+**Note:** `project.yaml` and `{expert}-local.yaml` are local, project-specific state. Like `.claude/*.json` cache files (`.claude/github-cache.json`, `.claude/repo-cache.json`, `.claude/effort-heuristic.yaml`), these files should be added to `.gitignore` and never committed to the shared repository.
 
 Templates for `project.yaml` and `{expert}-local.yaml` are in `~/.claude/prompts/`:
 - `project.yaml.template` — canonical schema with all fields documented
@@ -151,6 +153,29 @@ When setting up a new project, create `.claude/project.yaml`.
 Copy `~/.claude/prompts/project.yaml.template` and fill in what's relevant.
 See `~/.claude/prompts/project-example-{python,rust,typescript}.yaml` for full examples.
 
+**Before committing, add it to `.gitignore` so it never gets tracked in the shared repository:**
+
+```bash
+# 1. Ignore it (do this FIRST — an interruption here leaves the harmless status quo:
+#    ignored-but-still-tracked, rather than untracked-and-unignored).
+printf '%s\n' '.claude/project.yaml' >> .gitignore
+
+# 2. Only if it is already tracked: .gitignore does nothing for a file git already knows about.
+git rm --cached .claude/project.yaml     # keeps your local copy on disk
+
+# 3. One commit carrying BOTH changes, so the two never ship apart.
+git add .gitignore
+git commit -m "Untrack .claude/project.yaml (local-only reviewer context)"
+
+# 4. Verify (--no-index is required; a bare check-ignore is silent for tracked paths):
+git check-ignore -v --no-index .claude/project.yaml   # expect your .gitignore line, exit 0
+```
+
+**Important notes:**
+- `.gitignore` alone does not affect files already tracked by git; that's why step 2 (git rm --cached) is necessary. Any teammate who pulls this commit will see `.claude/project.yaml` deleted from their checkout and should save their own local copy first — this is a tracking change against the shared repository, not a purely additive documentation edit.
+- Untracking does not remove the file from existing git history; old commits will still have it.
+- The cascade loads the literal path `.claude/project.yaml` and nothing else. If your project file has a different name, you must rename it to `.claude/project.yaml` exactly; adding a differently-named file to `.gitignore` will not enable it to be loaded.
+
 Minimal example:
 
 ```yaml
@@ -200,7 +225,32 @@ terminology:
 
 ## Creating Expert-Local Overrides
 
-Only create `{expert}-local.yaml` when you need expert-specific project knowledge beyond `project.yaml`:
+Only create `{expert}-local.yaml` when you need expert-specific project knowledge beyond `project.yaml`. Like `project.yaml`, these files should be added to `.gitignore` and never committed to the shared repository (this repo's own `north-star-nick-local.yaml` is a deliberate, documented exception for dogfooding):
+
+**Before committing, add it to `.gitignore` so it never gets tracked in the shared repository:**
+
+```bash
+# 1. Ignore it (do this FIRST — an interruption here leaves the harmless status quo:
+#    ignored-but-still-tracked, rather than untracked-and-unignored).
+printf '%s\n' '.claude/reviewers/*-local.yaml' >> .gitignore
+
+# 2. Only if it is already tracked: .gitignore does nothing for a file git already knows about.
+git rm --cached .claude/reviewers/{expert-name}-local.yaml     # keeps your local copy on disk
+
+# 3. One commit carrying BOTH changes, so the two never ship apart.
+git add .gitignore
+git commit -m "Untrack .claude/reviewers/{expert-name}-local.yaml (local-only expert overrides)"
+
+# 4. Verify (--no-index is required; a bare check-ignore is silent for tracked paths):
+git check-ignore -v --no-index .claude/reviewers/{expert-name}-local.yaml   # expect your .gitignore line, exit 0
+```
+
+**Important notes:**
+- `.gitignore` alone does not affect files already tracked by git; that's why step 2 (git rm --cached) is necessary. Any teammate who pulls this commit will see the file deleted from their checkout and should save their own local copy first — this is a tracking change against the shared repository, not a purely additive documentation edit.
+- Untracking does not remove the file from existing git history; old commits will still have it.
+- The cascade loads `{expert}-local.yaml` from `.claude/reviewers/` only. If your file has a different name or location, the cascade will not find it.
+
+Example structure:
 
 ```yaml
 extends: {expert-name}
