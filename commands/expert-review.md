@@ -155,7 +155,10 @@ detection). When the user declines a re-run, nothing else has executed — savin
 **PR mode:** if `PR_MODE=true` (Step 3 parses arguments, but a PR URL is recognizable at a glance —
 check before anything else here), skip the entire prior-review fast-path check (sub-step 1 below): the
 setup script (Step 1) creates `REVIEW_DIR` itself, and ADR-0009 forbids reading/writing prior-review
-cache in a repo you don't own. Emit the prior-review-shortcircuit stage markers back-to-back (begin then end):
+cache in a repo you don't own. The setup script also copies the reviewer's own local `.claude/project.yaml`
+and `reviewers/*-local.yaml` files into the worktree, ensuring only the reviewer's personal context is
+read (any project files the PR branch itself tracks are quarantined to `.from-pr` suffixes). Emit the
+prior-review-shortcircuit stage markers back-to-back (begin then end):
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage prior-review-shortcircuit >/dev/null 2>&1 || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
@@ -513,7 +516,9 @@ running something and reading a result back — not a judgment call, so it never
 `claude-action-plan.md` template live in **`~/.claude/prompts/triage.md`** — pass the path. Tell it
 to read:
 - `{REVIEW_DIR}/final-report.md` (its primary input)
-- `{PROJECT_ROOT}/.claude/project.yaml` (skip if absent)
+- `{PROJECT_ROOT}/.claude/project.yaml` (skip if absent; in PR mode, the setup script copies the
+  reviewer's own local project context and quarantines any project files the PR branch tracks, so
+  "absent" means the reviewer has no local project-context override)
 
 It writes `{REVIEW_DIR}/claude-action-plan.md`. It returns:
 

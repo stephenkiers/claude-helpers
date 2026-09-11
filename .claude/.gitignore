@@ -1,2 +1,11 @@
 settings.local.json
 repo-cache.json
+# Local, per-checkout reviewer state (ADR-0005 amendment). Lives here rather than in the root
+# .gitignore so the rules sit next to the files they govern; the root file keeps only
+# .claude/github-cache.json* for historical reasons — don't split a file class across the two.
+project.yaml
+reviewers/*-local.yaml
+# Deliberate, sole exception (ADR-0005 dogfooding): this repo tracks its own North Star Nick
+# override so Nick reviews changes here against these very ADRs. Not a license for consuming
+# projects to commit their own local overrides.
+!reviewers/north-star-nick-local.yaml
