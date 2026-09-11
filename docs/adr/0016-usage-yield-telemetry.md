@@ -133,3 +133,23 @@ default, overridable via `--threshold` flag). This threshold is never fed back i
 selection, or any optimization loop — it surfaces as a stop-and-ask to the human, with options to
 proceed, stop, or defer the interrupt until the next increment. The threshold is a gate control surface,
 not an optimizer input.
+
+## Amendment — expert-review command/stage shape fields (effort, mode, reviewer_count)
+
+These three fields exist specifically to make `/expert-review`'s subagent spawns (`expert-reviewer` and
+`expert-scout` agent types) joinable to their run's shape — effort level, model tier, run mode, reviewer
+count — via `command_id`. Before this amendment, 14% of Claude Code usage (the full span of subagent
+spawns) was previously unattributable to any run shape, preventing any analysis that answered questions
+like "how does cost-per-finding vary across effort levels?" or "which mode (local/PR/coworker) produces
+the best ROI?" This amendment closes that gap.
+
+This does NOT change the "observational only" rule established elsewhere in this ADR — these fields record
+already-resolved values (`EFFORT`, `PANEL_MODEL`, resolved mode, resolved reviewer count) from the
+command's own resolution logic. They are never read back by `/expert-review` itself and never feed into
+routing or model selection. Telemetry remains a read-only observation layer.
+
+One known, accepted consequence: the deprecated-but-functional `/expert-review-coworker` and
+`/expert-review-coworker-beta` commands share the underlying panel logic but never call `command-begin`
+themselves, so their runs will emit `stage.*` events with `command_id` resolving to `"unknown"`. This is
+accepted, not a defect — future readers of `diagnose` output shouldn't be confused by a nonzero count of
+unexplained `expert-reviewer`/`expert-scout` stages without a parent `command_id` for `expert-review`.
