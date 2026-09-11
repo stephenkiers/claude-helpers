@@ -61,32 +61,34 @@ def test_cmd_command_begin_and_stage_end_have_error_handling():
     This is a structural test that verifies both functions have matching error handling
     (command-end already has it, and command-begin was fixed to match).
     """
-    # Read the run-metrics.py source to verify both functions have try/except ValueError
+    # Read the run-metrics.py source and isolate each function's own body (up to the next
+    # top-level "def "), so this test checks that specific function's error handling rather
+    # than counting "except ValueError" occurrences anywhere in the file — a file-wide count
+    # stays >= 2 even if one function's own try/except is reverted, as long as some other
+    # function elsewhere still has its own ValueError handler.
     script_source = (SCRIPTS_DIR / "run-metrics.py").read_text()
 
-    # Check that cmd_command_begin has try/except ValueError for append_event
-    if "def cmd_command_begin" not in script_source:
+    def function_body(name):
+        marker = f"def {name}("
+        start = script_source.find(marker)
+        if start == -1:
+            return None
+        next_def = script_source.find("\ndef ", start + 1)
+        return script_source[start: next_def if next_def != -1 else len(script_source)]
+
+    begin_body = function_body("cmd_command_begin")
+    if begin_body is None:
         return False, "cmd_command_begin function not found"
 
-    # Find the function and check for error handling pattern
-    # Look for: except ValueError as e: ... sys.exit(1)
-    has_cmd_begin_try_except = (
-        "def cmd_command_begin" in script_source and
-        "except ValueError" in script_source and
-        "sys.exit(1)" in script_source
-    )
-
-    if not has_cmd_begin_try_except:
+    if "except ValueError" not in begin_body or "sys.exit(1)" not in begin_body:
         return False, "cmd_command_begin should have try/except ValueError handling with sys.exit(1)"
 
-    # Also verify cmd_stage_end has the same pattern
-    has_cmd_stage_end_try_except = (
-        "def cmd_stage_end" in script_source and
-        script_source.count("except ValueError") >= 2  # At least one for command_begin and one for stage_end
-    )
+    stage_end_body = function_body("cmd_stage_end")
+    if stage_end_body is None:
+        return False, "cmd_stage_end function not found"
 
-    if not has_cmd_stage_end_try_except:
-        return False, "both cmd_command_begin and cmd_stage_end should have try/except ValueError"
+    if "except ValueError" not in stage_end_body or "sys.exit(1)" not in stage_end_body:
+        return False, "cmd_stage_end should have try/except ValueError handling with sys.exit(1)"
 
     return True, ""
 
