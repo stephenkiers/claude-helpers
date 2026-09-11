@@ -247,6 +247,7 @@ if [ -f "${MAIN_WORKTREE}/.claude/project.yaml" ]; then
   # Reviewer has a local project.yaml. Quarantine any existing PR-branch version first.
   [ -L "${WORKTREE_PATH}/.claude/project.yaml" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml"
   if [ -f "${WORKTREE_PATH}/.claude/project.yaml" ]; then
+    [ -L "${WORKTREE_PATH}/.claude/project.yaml.from-pr" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml.from-pr"
     if ! mv "${WORKTREE_PATH}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml.from-pr" >&2; then
       echo "ERROR: Failed to quarantine ${WORKTREE_PATH}/.claude/project.yaml to .from-pr" >&2
       exit 1
@@ -263,6 +264,7 @@ else
   # Move it aside so it is never read by the panel.
   [ -L "${WORKTREE_PATH}/.claude/project.yaml" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml"
   if [ -f "${WORKTREE_PATH}/.claude/project.yaml" ]; then
+    [ -L "${WORKTREE_PATH}/.claude/project.yaml.from-pr" ] && rm -f "${WORKTREE_PATH}/.claude/project.yaml.from-pr"
     if ! mv "${WORKTREE_PATH}/.claude/project.yaml" "${WORKTREE_PATH}/.claude/project.yaml.from-pr" >&2; then
       echo "ERROR: Failed to move ${WORKTREE_PATH}/.claude/project.yaml to .from-pr" >&2
       exit 1
