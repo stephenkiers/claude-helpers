@@ -514,15 +514,19 @@ Max **K = 3** iterations. On each iteration:
 3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the main worktree, tear down worktree after).
 4. Re-run Gate steps 1–3 on the updated tree.
-5. **Checkpoint 2/5 — Gate fix-loop.** Run:
+5. **Seam log only — no stop here.** Run:
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam gate-fix-loop
    ```
-   Print the `USAGE-GATE:` line verbatim, then say: "Step 2/5 checkpoint: gate fix-loop (iteration
-   <i>/<K>). The gate is still failing; the outstanding failures (already surfaced) remain unresolved
-   if you stop here. If that token count looks large, run `/compact` first. Reply 'continue' when
-   ready." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
-   compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
+   Print the `USAGE-GATE:` line verbatim (for the seam log in the final summary), then continue
+   straight to the next gate iteration — do not stop and wait, do not call `AskUserQuestion`, and
+   ignore the printed line's `DECISION:` field (it's unreliable — see below). This seam was a
+   mandatory stop-and-wait checkpoint (2/5) until measured data across 8 real runs showed it never
+   once needed a `/compact` break — round1-join (checkpoint 1/5) had already absorbed round 1's
+   context cost, and a single fix-Haiku's contribution here is small. See
+   [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174). (The `DECISION:` field
+   itself is not a usable per-run signal regardless — most subagent transcripts in this pipeline
+   don't get counted at all, so it defaults to a degraded floor estimate, not an actual token count.)
 6. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide.
