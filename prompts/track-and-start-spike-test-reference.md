@@ -3,10 +3,10 @@
 <!-- Lives in prompts/, not commands/: every .md file in ~/.claude/commands/ is registered as an
      invocable slash command regardless of frontmatter, and this is a reference doc, not a command. -->
 
-This file contains the conditional-path sections of `track-and-start-v2.md` — each only runs under a
+This file contains the conditional-path sections of `track-and-start-spike-test.md` — each only runs under a
 specific entry mode, never on every invocation. The common path (argument parsing, plan file
 resolution, project detection, branch naming, issue/worktree creation, final output, error handling)
-stays inline in `track-and-start-v2.md`. Read this when:
+stays inline in `track-and-start-spike-test.md`. Read this when:
 - Invoked with a Linear/Jira tracker ticket ID (see Tracker Ticket Mode)
 - Running inside a worktree already linked to an open issue (see Pivot Detection)
 - The project root has both a `plans/` directory and an array-format `issues.json` (see Local Plan Mode)

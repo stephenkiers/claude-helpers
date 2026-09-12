@@ -1,11 +1,11 @@
 ---
-name: track-and-start-v2
-description: Progressive-disclosure test variant of /track-and-start (Epic #170 Phase 0) — same behavior, with conditional-path sections extracted to prompts/track-and-start-reference.md.
+name: track-and-start-spike-test
+description: Progressive-disclosure test variant of /track-and-start (Epic #170 Phase 0) — same behavior, with conditional-path sections extracted to prompts/track-and-start-spike-test-reference.md.
 ---
 
 # Track and Start - Combined Issue, Branch, and Worktree Workflow
 
-Creates a GitHub issue (or local plan file) from the plan, generates a branch name, and sets up a worktree in one step. When the project root has a `plans/` directory and an array-format `issues.json`, uses local plan tracking instead of GitHub issues. Advanced/conditional modes (tracker tickets, pivot detection, local plan mode, duplicate detection) are documented in `~/.claude/prompts/track-and-start-reference.md`.
+Creates a GitHub issue (or local plan file) from the plan, generates a branch name, and sets up a worktree in one step. When the project root has a `plans/` directory and an array-format `issues.json`, uses local plan tracking instead of GitHub issues. Advanced/conditional modes (tracker tickets, pivot detection, local plan mode, duplicate detection) are documented in `~/.claude/prompts/track-and-start-spike-test-reference.md`.
 
 ## Requirements
 
@@ -402,7 +402,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage detect-project 
 
 ## Local Plan Mode
 
-Run the **Local Plan Mode** block from `~/.claude/prompts/track-and-start-reference.md` (read that
+Run the **Local Plan Mode** block from `~/.claude/prompts/track-and-start-spike-test-reference.md` (read that
 file for the bash) when the project root has both a `plans/` directory and an array-format
 `issues.json` — this replaces steps 5-7 (pivot detection, duplicate detection, issue creation) with
 a local workflow.
@@ -411,14 +411,14 @@ a local workflow.
 
 ## Tracker Ticket Mode
 
-Run the **Tracker Ticket Mode** block from `~/.claude/prompts/track-and-start-reference.md` (read
+Run the **Tracker Ticket Mode** block from `~/.claude/prompts/track-and-start-spike-test-reference.md` (read
 that file for the bash) when `/track-and-start` is called with a ticket ID argument matching
 `[A-Z]+-\d+` (e.g., `PPS-166`).
 
 ---
 ## Pivot Detection
 
-Run the **Pivot Detection** block from `~/.claude/prompts/track-and-start-reference.md` (read that
+Run the **Pivot Detection** block from `~/.claude/prompts/track-and-start-spike-test-reference.md` (read that
 file for the bash) when `/track-and-start` is called from a worktree that's already linked to an
 open issue and the new plan overlaps with that issue.
 
@@ -429,7 +429,7 @@ open issue and the new plan overlaps with that issue.
 
 ## Duplicate Detection
 
-Run the **Duplicate Detection** block from `~/.claude/prompts/track-and-start-reference.md` (read
+Run the **Duplicate Detection** block from `~/.claude/prompts/track-and-start-spike-test-reference.md` (read
 that file for the bash) on the GitHub-mode issue-creation path, non-tracker, to check for
 overlapping open issues before creating a new one.
 ## Branch Naming
