@@ -5,8 +5,7 @@ Test suite for usage-gate seam structure in implement-with-haiku.md.
 Covers:
   - All 5 required seam IDs appear in the command doc
   - Each seam is near a section heading (expected to be a decision point)
-  - No seam ever routes through an AskUserQuestion decision; checkpoint 1/5 always stops
-    unconditionally, checkpoints 2/5-5/5 gate the stop on the usage-check DECISION field
+  - Each seam is an unconditional stop-and-wait checkpoint, not an AskUserQuestion decision
   - The Final summary mentions usage gate seams
   - No literal $0 or problematic echo patterns in usage-check snippets
 
@@ -72,16 +71,12 @@ def test_seams_are_unique():
 
 
 def test_seams_are_unconditional_checkpoints():
-    """None of the 5 seams ever route through AskUserQuestion; checkpoint 1/5 is always
-    unconditional; checkpoints 2/5-5/5 are conditional on the script's DECISION field.
+    """Each seam is an unconditional stop-and-wait checkpoint, not a gated AskUserQuestion ask.
 
-    Per issue #174 (2026-09-12): 8 real /implement-with-haiku runs showed checkpoint 1/5
-    (round1-join) is reliably over threshold every time, so it always stops unconditionally.
-    Checkpoint 2/5 (gate-fix-loop) never once crossed threshold in that sample, and 3/5-5/5 are
-    volatile — so those four now gate the stop-and-wait on the usage-check script's own
-    DECISION field (proceed = keep going, ask = stop) instead of stopping unconditionally every
-    time. This is still never an AskUserQuestion judgment call — the doc hard-codes what to do
-    for each DECISION value; the orchestrator does not compute a proceed/stop decision itself.
+    Per the (2026-09-11) simplification: the usage-gate no longer computes a proceed/stop
+    decision or calls AskUserQuestion. Every seam always stops and waits for the user's plain
+    'continue' reply, and the doc explicitly instructs the orchestrator not to call
+    AskUserQuestion or act on the usage-check script's DECISION field.
     """
     doc_path = REPO_ROOT / "commands" / "implement-with-haiku.md"
 
@@ -99,13 +94,7 @@ def test_seams_are_unconditional_checkpoints():
     for i in range(1, 6):
         marker = f"Checkpoint {i}/5"
         if marker not in doc_content:
-            return False, f"missing checkpoint marker: {marker}"
-
-    if "always stops unconditionally" not in doc_content:
-        return False, "checkpoint 1/5 no longer documented as always stopping unconditionally"
-
-    if doc_content.count("If its `DECISION:` field is `ask`") != 4:
-        return False, "expected exactly 4 conditional-on-DECISION checkpoints (2/5-5/5)"
+            return False, f"missing unconditional checkpoint marker: {marker}"
 
     return True, ""
 
