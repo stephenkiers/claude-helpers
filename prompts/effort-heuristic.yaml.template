@@ -55,8 +55,8 @@
 #   Default list includes: auth, payment, migration, schema, security, secret, token, crypto,
 #   permission, password
 
-default_effort: 4
-bias: over-review
+default_effort: 3
+bias: lean
 
 loc_thresholds:
   tier_2_max: 30

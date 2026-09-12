@@ -66,6 +66,8 @@ never auto-escalates, since that would silently reintroduce the cost problem thi
 `prompts/router.md`'s new `## Escalation Recommendation` output section and `prompts/expert-review-panel.md`'s
 new `Step 5.5: Opus Escalation Check (human-confirmed)` for the mechanics.
 
+### Amendment: Haiku Effort Scout exception (2026-09-12)
+
 **Narrow, bounded exception:** the Effort Scout ([ADR-0012 amendment](0012-effort-ladder-and-pr-mode.md#amendment-haiku-effort-scout-2026-09-12))
 runs on Haiku despite making a judgment call (which effort tier a diff deserves), not a mechanical
 lookup. It stays inside this ADR's spirit by being bounded: one sentence, evidence-grounded, and only

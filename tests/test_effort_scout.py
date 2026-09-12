@@ -9,6 +9,7 @@ both ADRs record the exception.
 Run with: python3 tests/test_effort_scout.py
 """
 
+import re
 from _test_harness import REPO_ROOT, Harness
 
 PROMPTS_DIR = REPO_ROOT / "prompts"
@@ -143,6 +144,78 @@ test_result(
     "ADR-0004 cross-references the ADR-0012 amendment as a narrow exception",
     "Effort Scout" in adr_0004 and "0012-effort-ladder-and-pr-mode.md" in adr_0004,
     "ADR-0004 does not record the exception"
+)
+
+# ============================================================================
+# INVARIANT 5: prompts/effort-heuristic.yaml.template has correct config defaults
+# ============================================================================
+print()
+print("[Invariant 5] prompts/effort-heuristic.yaml.template has default_effort: 3 and bias: lean")
+
+heuristic_file = PROMPTS_DIR / "effort-heuristic.yaml.template"
+heuristic_text = read(heuristic_file) if heuristic_file.exists() else ""
+
+# Extract default_effort value using a simple regex
+default_effort_match = re.search(r'^\s*default_effort:\s*(\d+)', heuristic_text, re.MULTILINE)
+default_effort_value = int(default_effort_match.group(1)) if default_effort_match else None
+test_result(
+    "default_effort is set to 3 (not 4)",
+    default_effort_value == 3,
+    f"default_effort is {default_effort_value}, expected 3"
+)
+
+# Extract bias value using a simple regex
+bias_match = re.search(r'^\s*bias:\s*(\w+)', heuristic_text, re.MULTILINE)
+bias_value = bias_match.group(1) if bias_match else None
+test_result(
+    "bias is set to lean (not over-review)",
+    bias_value == "lean",
+    f"bias is {bias_value}, expected lean"
+)
+
+# ============================================================================
+# INVARIANT 6: ADR-0004 cross-reference anchor matches ADR-0012 heading
+# ============================================================================
+print()
+print("[Invariant 6] ADR-0004→ADR-0012 cross-reference anchor matches the actual heading")
+
+# Extract the anchor fragment from ADR-0004's link
+anchor_match = re.search(
+    r'0012-effort-ladder-and-pr-mode\.md#([a-z0-9-]+)',
+    adr_0004
+)
+anchor_fragment = anchor_match.group(1) if anchor_match else None
+
+# Extract the heading from ADR-0012 that should correspond to this anchor
+# Look for "## Amendment: Haiku Effort Scout" or similar pattern
+heading_match = re.search(
+    r'^#+\s+Amendment:\s*Haiku Effort Scout.*?\(2026-09-12\)',
+    adr_0012,
+    re.MULTILINE
+)
+heading_text = heading_match.group(0) if heading_match else None
+
+# Convert heading to GitHub-style anchor slug: lowercase, keep alphanumerics/spaces/hyphens, spaces→hyphens
+def heading_to_slug(heading):
+    if not heading:
+        return None
+    # Remove leading #'s and whitespace
+    text = re.sub(r'^#+\s*', '', heading)
+    # Lowercase
+    text = text.lower()
+    # Keep only alphanumerics, spaces, hyphens, parentheses
+    text = re.sub(r'[^\w\s\-\(\)]', '', text)
+    # Replace spaces/parens/colons with hyphens, collapse multiples
+    text = re.sub(r'[\s\-\(\):]+', '-', text)
+    # Strip leading/trailing hyphens
+    text = text.strip('-')
+    return text
+
+expected_slug = heading_to_slug(heading_text)
+test_result(
+    "anchor fragment matches the heading slug",
+    anchor_fragment == expected_slug,
+    f"anchor is '{anchor_fragment}', heading slug is '{expected_slug}'"
 )
 
 h.summarize_and_exit()
