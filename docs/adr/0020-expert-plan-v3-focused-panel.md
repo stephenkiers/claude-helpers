@@ -23,9 +23,8 @@ A third planning command, `/expert-plan-v3`, implements a leaner alternative:
 
 - **Main thread**: Sonnet-pinned (at frontmatter level). The main thread does only orchestration work — gathering context, directly selecting a panel of 3 experts (no router subagent), building a decision index by reading contribution files once, copying the final plan. None of this benefits from Opus.
 - **Judgment steps**: Each dispatched as a separate one-shot Opus subagent:
-  - **Step 6 — Synthesize** (`plan-synthesize.md`): reads all contributions + decisions, writes the plan template
-  - **Step 7 — Consistency check** (`plan-consistency-check.md`): reads plan + all context, fixes requirement/decision tracking and error-handling agreement. This is a **self-check**, not independent audit — the receipt explicitly says so.
-  - **Step 8 — Audit** (`plan-audit.md`): effort 3 only (or effort-2 escalation), independently checks requirement fidelity, assumption validity, contradictions, verification adequacy. This is the independent second opinion.
+  - **Step 6 — Synthesize & Consistency check** (`plan-synthesize-and-check.md`): reads all contributions + decisions, writes the plan template, then verifies requirement/decision tracking and error-handling agreement in the same dispatch. The self-check explicitly documents itself as such — the receipt notes this is not independent audit.
+  - **Step 7 — Audit** (`plan-audit.md`): effort 3 only (or effort-2 escalation), independently checks requirement fidelity, assumption validity, contradictions, verification adequacy. This is the independent second opinion.
 
 This mirrors v2's existing precedent: v2 pins Router and Digest to Sonnet for dispatch/bookkeeping, reserving Opus specifically for Synthesis and Alignment. v3 extends this split — Sonnet for orchestration (the main thread itself, which the command's frontmatter fixes), Opus for judgment (Synthesize, Consistency-check, and optionally Audit).
 
@@ -100,4 +99,4 @@ v3 uses `agents/expert-reviewer.md`'s existing hybrid dispatch mode (persona + c
 - ADR-0004: Model cost routing (the Opus-for-judgment principle that v3 extends)
 - `/expert-plan-v2`: The comprehensive reference implementation that v3 adapts (not replaces)
 - `commands/expert-plan-v3.md`: The command specification
-- `prompts/plan-synthesize.md`, `plan-consistency-check.md`, `plan-audit.md`: Role prompts
+- `prompts/plan-synthesize-and-check.md`, `plan-audit.md`: Role prompts

@@ -433,8 +433,6 @@ def main():
         "plan-synthesize-and-check.md": REPO_ROOT / "prompts" / "plan-synthesize-and-check.md",
         "plan-audit.md": REPO_ROOT / "prompts" / "plan-audit.md",
         "plan-contribution-contract.md": REPO_ROOT / "prompts" / "plan-contribution-contract.md",
-        "plan-synthesize.md": REPO_ROOT / "prompts" / "plan-synthesize.md",
-        "plan-consistency-check.md": REPO_ROOT / "prompts" / "plan-consistency-check.md",
     }
 
     for name, path in prompt_files.items():

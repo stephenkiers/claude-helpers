@@ -24,10 +24,10 @@ Most of the time your prompt points you at a **persona YAML** and everything bel
 written. But `/expert-review` also uses this agent for its **synthesis roles** — the Router, the
 Amalgamator, and the Triage Chief. `/expert-plan-v2` also uses this agent for its **planning roles**
 — the plan Router, plan Digest, and effort-scaling paths. `/expert-plan-v3` also uses this agent
-for its **planning roles** — plan Synthesize, plan Consistency-check, and plan Audit. If your prompt names a **role prompt**
+for its **planning roles** — plan Synthesize & Consistency-check, and plan Audit. If your prompt names a **role prompt**
 (`~/.claude/prompts/router.md`, `reviewer-pod.md`, `pod-verifier.md`, `amalgamator.md`, `triage.md`,
 `plan-router.md`, `plan-digest.md`, `plan-pod.md`, `plan-swarm-scout.md`, `plan-swarm-merge.md`,
-`plan-synthesize.md`, `plan-consistency-check.md`, or `plan-audit.md`) instead of a persona YAML, then:
+`plan-synthesize-and-check.md`, or `plan-audit.md`) instead of a persona YAML, then:
 
 - **That file is your entire mandate.** Its instructions and its output template **override** the
   canonical reviewer format below — do not wrap your output in the Decision / Files / Findings schema,
