@@ -38,6 +38,8 @@ Create `/expert-plan-v2` as a parallel-only architecture with checkpoint-based c
   "the file is the contract" discipline (documented in `agents/expert-reviewer.md`).
 - **Effort ladder** (per ADR-0012) applies to both v1 and v2; v2's implementation covers efforts 1-5
   fully today, including swarm/pod modes for efforts 1-3.
+- **Known limitation (issue #122):** v2's final plan path can collide across concurrent runs; fixed
+  in v3 — see ADR-0020's "Collision-Resistant Session Paths" section for the mechanism and fix.
 
 ## Amendment — Plan Mode guard and multi-checkpoint write restriction (2026-09-10)
 

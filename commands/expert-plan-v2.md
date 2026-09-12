@@ -67,6 +67,8 @@ All artifacts live in `{PLAN_SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}
 
 Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat convention used by `/fork-planning` and `/expert-review-plan`; written by Synthesis subagent in Step 7, then copied from `plan-reconciled.md` if the alignment/reconciliation pass ran — see Step 11).
 
+**Known Issue #122:** Two concurrent effort-4 (or higher) runs on the same ticket can silently overwrite each other's final plan at this path, because v2 uses an unsuffixed slug-based name; fixed in v3 — see [ADR-0020's "Collision-Resistant Session Paths"](../docs/adr/0020-expert-plan-v3-focused-panel.md) section for the mechanism and fix. If you run v2 multiple times on the same ticket and want to preserve all plans, manually copy or rename the results immediately after each run.
+
 ## Plan Mode (guard and reconciliation)
 
 Unlike v1, this command does **not** call `EnterPlanMode`. Plan Mode restricts the session's `Write`

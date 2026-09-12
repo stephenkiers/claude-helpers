@@ -67,6 +67,10 @@ to North Star Nick).
   named step boundaries (gate, fanout, round4, summary); independent of ADR-0016's usage gate
   (data-driven vs. content-driven); off by default (backward-compatible with non-interactive
   callers); clean-stop with no rollback when declined
+- [ADR-0020: Expert Plan v3 — focused panel with two-level effort ladder](0020-expert-plan-v3-focused-panel.md) —
+  a leaner planning alternative alongside v2, combining v1's cheap main-thread orchestration with v2's genuine per-expert isolation
+  and a mandatory consistency check; two effort levels (2 = baseline + consistency check, 3 = + independent auditor);
+  Sonnet main-thread shell + per-step Opus dispatches for judgment work; invocation-ID-suffixed paths fix v2's collision bug
 
 ## Format
 
