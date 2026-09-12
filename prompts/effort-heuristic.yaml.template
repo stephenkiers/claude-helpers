@@ -21,17 +21,18 @@
 # "Haiku Effort Scout" amendment.
 #
 # When diff signal is ambiguous (e.g., at a boundary), bias controls whether to round up or down.
-# Start with bias: over-review and tighten once you have evidence.
+# Default is bias: lean, backstopped by the Haiku Effort Scout; switch to over-review if you'd
+# rather round up at boundaries instead.
 #
 # ─── Configuration ─────────────────────────────────────────────────────────
 #
-# default_effort: fallback when signal is ambiguous (default 4, the conservative baseline)
+# default_effort: fallback when signal is ambiguous (default 3)
 #
 # bias: over-review | balanced | lean
 #   - over-review: when diff lands at a tier boundary, round UP (favor reviewing more)
 #   - balanced:    apply no rounding; compute effort strictly from thresholds
 #   - lean:        when diff lands at a boundary, round DOWN (favor cheaper review)
-#   Default: over-review (start with a somewhat over-reviewed baseline)
+#   Default: lean (favor cheaper review; the Haiku Effort Scout backstops the risk of under-reviewing)
 #
 # loc_thresholds:
 #   tier_2_max: Lines of code above which the diff is too large for effort 2 (default 30)
