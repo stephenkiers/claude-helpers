@@ -101,3 +101,31 @@ need its own mechanism (e.g. a flag to skip checkpoints) at the time it's introd
 
 **Status:** the `all`/named-checkpoint table, the three-option UI, and the "declined" language above
 are historical — read them as describing the pre-2026-09-11 design.
+
+## Amendment (2026-09-12): down to one mandatory checkpoint; the other four removed outright
+
+Of the five unconditional checkpoints from the amendment above, only `round1-join` remains. The
+other four (`gate-fix-loop`, `pre-fanout`, `post-fanout`, `pre-round4`) were removed — not made
+conditional, deleted — along with their `usage-check` calls.
+
+**Why:** [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174) collected token
+counts from 8 real runs. `round1-join` was over threshold in every single one — round 1's parallel
+implementer fanout is reliably the biggest context cost in the whole pipeline. The other four seams
+never once needed a `/compact` break in that sample. A first attempt tried to keep all five seams
+but gate the stop on `usage-check`'s `DECISION:` field; that was reverted (see the issue) because
+`DECISION:` measures subagent-only token accounting since the last `round1-join` reset — a different
+quantity than the orchestrator's own context size — and that accounting is itself broken today (most
+`SubagentStop` hook payloads lack a usable `agent_transcript_path`, so ~80% of recorded agents in
+`~/.claude/telemetry/state/*.session.json` are `status: "unparseable"`, degrading `DECISION:` to a
+floor guess). Given that, keeping four inert `usage-check` Bash calls (tokens and time spent for a
+line nobody could act on) had no upside — so they were deleted outright, not just skipped.
+
+**Telemetry impact: none.** `/implement-with-haiku` was never instrumented with the real ADR-0016
+`command-begin`/`stage-begin` events — the five `usage-check --seam ...` calls were always a
+separate, ephemeral, per-session mechanism (round1-join baseline + floor logic), not the append-only
+`events.jsonl` log. Subagent `agent.begin`/`agent.end` telemetry is captured by hooks independently
+of anything in this command doc and is unaffected by removing these four seams.
+
+**Consequence:** the final summary's "Usage gate log" now has two rows — `round1-join` and `final`
+— instead of five. Re-adding a dropped seam later should come with fresh measured-run data showing
+it's actually needed, not a default restoration.

@@ -415,11 +415,15 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
 
-**Checkpoint 1/5 — Round 1 join.** Run:
+**Checkpoint — Round 1 join.** This is the run's only mandatory pause (per
+[issue #174](https://github.com/stephenkiers/claude-helpers/issues/174): round 1's parallel fanout
+is reliably the single biggest context cost in the whole flow, over threshold in every one of 8
+measured real runs — the other four checkpoints this run used to have were dropped because they
+never once needed a break). Run:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
-Print the `USAGE-GATE:` line verbatim, then say: "Step 1/5 done: round 1 join. All merged units are
+Print the `USAGE-GATE:` line verbatim, then say: "Round 1 join done. All merged units are
 already committed; nothing is pending if you stop here. If that token count looks large, run
 `/compact` first. Reply 'continue' when ready for the integration gate." Then stop and wait for the
 user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself,
@@ -513,21 +517,14 @@ Max **K = 3** iterations. On each iteration:
    `COMMITTED:`).
 3. Apply its diff back (same apply-and-commit pattern as Step 4c — `git diff --staged` from the
    fix worktree, `git apply --index` + commit in the main worktree, tear down worktree after).
-4. Re-run Gate steps 1–3 on the updated tree.
-5. **Seam log only — no stop here.** Run:
-   ```bash
-   python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam gate-fix-loop
-   ```
-   Print the `USAGE-GATE:` line verbatim (for the seam log in the final summary), then continue
-   straight to the next gate iteration — do not stop and wait, do not call `AskUserQuestion`, and
-   ignore the printed line's `DECISION:` field (it's unreliable — see below). This seam was a
-   mandatory stop-and-wait checkpoint (2/5) until measured data across 8 real runs showed it never
-   once needed a `/compact` break — round1-join (checkpoint 1/5) had already absorbed round 1's
-   context cost, and a single fix-Haiku's contribution here is small. See
-   [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174). (The `DECISION:` field
-   itself is not a usable per-run signal regardless — most subagent transcripts in this pipeline
-   don't get counted at all, so it defaults to a degraded floor estimate, not an actual token count.)
-6. If gate passes → exit loop. If still failing and iterations < K → repeat.
+4. Re-run Gate steps 1–3 on the updated tree. No usage-check seam here — dropped per
+   [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174): it never once needed a
+   `/compact` break across 8 measured real runs (round1-join already absorbed round 1's context
+   cost, and a single fix-Haiku's contribution here is small), and the per-seam Bash call + printed
+   line cost tokens/time for a `DECISION:` field that's unreliable anyway (most subagent transcripts
+   in this pipeline never get counted, so it degrades to a floor guess). This has no effect on real
+   telemetry — see the Usage gate log note in the Final summary.
+5. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide.
 
@@ -570,15 +567,9 @@ git rev-parse HEAD  # store as ROUND2_START_SHA
 IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation files
 ```
 
-**Checkpoint 3/5 — Pre-fanout.** Run:
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-fanout
-```
-Print the `USAGE-GATE:` line verbatim, then say: "Step 3/5 done: gate passed (round sizing:
-<classification>). Round 1 is committed and gate-clean; no tests or reviews exist yet. If that token
-count looks large, run `/compact` first. Reply 'continue' to launch round 2, round 3 pass 1, and the
-sweeps." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
-compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
+Gate passed (round sizing: <classification>). No usage-check seam or stop here — dropped per
+[issue #174](https://github.com/stephenkiers/claude-helpers/issues/174). Proceed straight to
+launching round 2, round 3 pass 1, and the sweeps.
 
 ### Round 2: Spec-blind test author (own worktree)
 
@@ -827,15 +818,10 @@ backstop for an unattended run).
 These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
 final summary.
 
-**Checkpoint 4/5 — Post-fanout.** Run:
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam post-fanout
-```
-Print the `USAGE-GATE:` line verbatim, then say: "Step 4/5 done: post-fanout. Round 2's tests are
-committed; Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the
-session closes here. If that token count looks large, run `/compact` first. Reply 'continue' to apply
-round 3's fixes." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do
-not compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
+Post-fanout: Round 2's tests are committed; Round 3 pass 1's findings and the sweep findings are
+UNAPPLIED until the next step. No usage-check seam or stop here — dropped per
+[issue #174](https://github.com/stephenkiers/claude-helpers/issues/174). Proceed straight to applying
+round 3's fixes.
 
 ### Round 3 follow-up (short)
 
@@ -929,15 +915,9 @@ re-running the tests yourself.**
 
 ### 4.0 Applicability
 
-**Checkpoint 5/5 — Pre-round 4.** Run:
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-round4
-```
-Print the `USAGE-GATE:` line verbatim, then say: "Step 5/5 done: pre-round 4. Round 4 itself has no
-subagent cost; this is the last checkpoint for the run. If that token count looks large, run
-`/compact` first. Reply 'continue' to run test cleanup." Then stop and wait for the user's next
-message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself, and ignore
-the printed line's `DECISION:` field.
+Pre-round 4: no usage-check seam or stop here — dropped per
+[issue #174](https://github.com/stephenkiers/claude-helpers/issues/174). Proceed straight to test
+cleanup.
 
 - **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
 - **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
@@ -1126,12 +1106,17 @@ orchestrator's own verification — never trust round self-reports.
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
 wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
 
-**Usage gate log.** Accumulate each seam's `USAGE-GATE:` output line as the run progresses (the
-orchestrator displays these to the user at each seam). In the final summary, render each seam's line
-verbatim — a skipped seam must show as a visibly MISSING row in this enumerated list (a gap, not
-merely an absence from the transcript). At the end, run `usage-check --seam final` one more time and
-include both its `USAGE-GATE:` line and its `USAGE-GATE-SEAMS:` line verbatim. The `USAGE-GATE-SEAMS:` line
-is the authoritative record of which seams were actually reached during this run (generated from on-disk state, not narrated by the orchestrator). Extract the per-agent accounted/unaccounted tally
+**Usage gate log.** Only two seams run `usage-check` now: `round1-join` (the sole mandatory pause,
+below) and `final`. Per [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174), the
+other four seams were removed outright — not just skipped — because they never once needed a
+`/compact` break across 8 measured real runs, and the per-seam Bash call + printed line cost tokens
+and time for a `DECISION:` field that's unreliable anyway (most subagent transcripts in this pipeline
+never get counted, so it degrades to a floor guess rather than a real count). This has no effect on
+real telemetry: `/implement-with-haiku` was never instrumented with `command-begin`/`stage-begin`,
+and subagent `agent.begin`/`agent.end` events are captured by hooks regardless of anything in this
+doc. Render `round1-join`'s line verbatim in the final summary. At the end, run
+`usage-check --seam final` one more time and include both its `USAGE-GATE:` line and its
+`USAGE-GATE-SEAMS:` line verbatim. Extract the per-agent accounted/unaccounted tally
 (the `agents=N/M` field) from the final seam output and include it here; note once that upstream
 `token_confidence` is always hardcoded as `"low"` (a blanket disclaimer on the mechanism, not a
 signal about any specific transcript's trustworthiness).
@@ -1168,12 +1153,8 @@ ROUND 4 — Test cleanup (orchestrator-run)
 SWEEPS
   Duplication findings: <count>
   Doc-drift findings: <count>
-USAGE GATE LOG (subagent token accounting — accumulate seam lines as printed, then render final summary)
+USAGE GATE LOG (subagent token accounting — round1-join and final only; see issue #174)
   Round 1 join:       <USAGE-GATE: line verbatim from seam>
-  Gate fix-loop:      <USAGE-GATE: line verbatim from seam or SKIPPED>
-  Post-gate fanout:   <USAGE-GATE: line verbatim from seam>
-  After fanout:       <USAGE-GATE: line verbatim from seam>
-  Pre-round 4:        <USAGE-GATE: line verbatim from seam>
   Final:              <USAGE-GATE: line verbatim from seam final, then USAGE-GATE-SEAMS: line from seam final>
   Agents accounted:   <N>/<M>  (from agents=N/M field in final seam output)
   Token confidence:   low (upstream `token_confidence` is always reported as "low" per ADR-0016)
