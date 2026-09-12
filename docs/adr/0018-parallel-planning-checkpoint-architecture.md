@@ -38,6 +38,11 @@ Create `/expert-plan-v2` as a parallel-only architecture with checkpoint-based c
   "the file is the contract" discipline (documented in `agents/expert-reviewer.md`).
 - **Effort ladder** (per ADR-0012) applies to both v1 and v2; v2's implementation covers efforts 1-5
   fully today, including swarm/pod modes for efforts 1-3.
+- **Known limitation (issue #122):** v2's final plan is written to `~/.claude/plans/{slug}.md` without an
+  invocation ID. Concurrent effort-4 (or higher) runs on the same ticket can silently overwrite each
+  other's plan. Checkpoint directories are individually collision-resistant via timestamp
+  (`~/.claude/plan-sessions/{slug}-{timestamp}/`), but the final deliverable is not. This limitation
+  is fixed in v3 by adding an invocation ID to both paths; see ADR-0020 "Collision-Resistant Session Paths".
 
 ## Amendment — Plan Mode guard and multi-checkpoint write restriction (2026-09-10)
 
