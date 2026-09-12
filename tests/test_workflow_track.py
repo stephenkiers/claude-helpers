@@ -575,4 +575,122 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
+    print("[Section 10] apply_track plan staleness checks (worktree_parent/slug/issue_type hash)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+
+        tmpdir = Path(tempfile.mkdtemp())
+        tracker_path = tmpdir / "issues.json"
+        plans_dir = tmpdir / "plans"
+
+        provider = LocalProvider(tracker_path=tracker_path, plans_dir=plans_dir)
+
+        # Create a fresh plan
+        plan, err = plan_track(
+            provider=provider,
+            plan_content="Implementation plan",
+            title="Test staleness",
+            mode="local",
+            cwd=fixture.repo_root
+        )
+
+        test_result(
+            "plan_track: returns a plan with required fields",
+            plan is not None and hasattr(plan, 'worktree_parent') and hasattr(plan, 'slug') and hasattr(plan, 'issue_type')
+        )
+
+        # Test staleness detection: tamper with worktree_parent BEFORE applying
+        plan_dict = plan.to_dict()
+        plan_dict["worktree_parent"] = "/different/path"
+        tampered_json = json.dumps(plan_dict)
+
+        result1, err1 = apply_track(provider, tampered_json, cwd=fixture.repo_root)
+        test_result(
+            "apply_track: rejects plan when worktree_parent is tampered",
+            result1.success is False and result1.error is not None,
+            f"Expected rejection, got success={result1.success}, error={result1.error}"
+        )
+
+        # Test staleness detection: tamper with slug (fresh plan)
+        plan2, _ = plan_track(
+            provider=provider,
+            plan_content="Implementation plan 2",
+            title="Test staleness 2",
+            mode="local",
+            cwd=fixture.repo_root
+        )
+        plan_dict = plan2.to_dict()
+        plan_dict["slug"] = "different-slug"
+        tampered_json = json.dumps(plan_dict)
+
+        result2, err2 = apply_track(provider, tampered_json, cwd=fixture.repo_root)
+        test_result(
+            "apply_track: rejects plan when slug is tampered",
+            result2.success is False and result2.error is not None,
+            f"Expected rejection, got success={result2.success}, error={result2.error}"
+        )
+
+        # Test staleness detection: tamper with issue_type (fresh plan)
+        plan3, _ = plan_track(
+            provider=provider,
+            plan_content="Implementation plan 3",
+            title="Test staleness 3",
+            mode="local",
+            cwd=fixture.repo_root
+        )
+        plan_dict = plan3.to_dict()
+        original_type = plan_dict.get("issue_type", "")
+        # Change to a different type if possible
+        if original_type == "feature":
+            plan_dict["issue_type"] = "fix"
+        else:
+            plan_dict["issue_type"] = "feature"
+        tampered_json = json.dumps(plan_dict)
+
+        result3, err3 = apply_track(provider, tampered_json, cwd=fixture.repo_root)
+        test_result(
+            "apply_track: rejects plan when issue_type is tampered",
+            result3.success is False and result3.error is not None,
+            f"Expected rejection, got success={result3.success}, error={result3.error}"
+        )
+
+        # Test happy path: apply an unmodified plan
+        # Ensure worktree parent directory exists first
+        fixture.worktree_parent.mkdir(parents=True, exist_ok=True)
+
+        plan4, _ = plan_track(
+            provider=provider,
+            plan_content="Implementation plan 4",
+            title="Test staleness 4",
+            mode="local",
+            cwd=fixture.repo_root
+        )
+        plan_json = json.dumps(plan4.to_dict())
+        result4, _ = apply_track(provider, plan_json, cwd=fixture.repo_root)
+        # The staleness checks should pass for an unmodified plan. Verify by checking that
+        # if apply_track fails, it's NOT due to a staleness/hash check failure.
+        # Staleness errors contain specific keywords like "hash mismatch", "tampered", "diverged"
+        error_lower = str(result4.error).lower() if result4.error else ""
+        is_staleness_error = any(
+            keyword in error_lower
+            for keyword in ["hash mismatch", "tampered", "diverged", "plan hash"]
+        )
+        test_result(
+            "apply_track: staleness checks pass for unmodified plan (not rejected due to hash/tampering)",
+            not is_staleness_error,
+            f"error={result4.error}"
+        )
+
+        import shutil
+        shutil.rmtree(tmpdir)
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
     h.summarize_and_exit()
