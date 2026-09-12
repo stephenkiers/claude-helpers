@@ -575,7 +575,7 @@ if __name__ == "__main__":
         fixture.cleanup()
 
     print()
-    print("[Section 10] apply_track plan staleness checks (worktree_parent/slug/issue_type hash)")
+    print("[Section 10] apply_track plan staleness checks (worktree_parent/slug/issue_type direct comparison)")
 
     fixture = GitFixture()
     old_cwd = os.getcwd()
@@ -603,9 +603,13 @@ if __name__ == "__main__":
             plan is not None and hasattr(plan, 'worktree_parent') and hasattr(plan, 'slug') and hasattr(plan, 'issue_type')
         )
 
-        # Test staleness detection: tamper with worktree_parent BEFORE applying
+        # Test staleness detection: create an alternate valid worktree parent directory
+        # and tamper the plan to point to it (so rejection is NOT due to filesystem error)
+        alternate_worktree_parent = fixture.tmpdir / "alternate-worktrees"
+        alternate_worktree_parent.mkdir(parents=True, exist_ok=True)
+
         plan_dict = plan.to_dict()
-        plan_dict["worktree_parent"] = "/different/path"
+        plan_dict["worktree_parent"] = str(alternate_worktree_parent)
         tampered_json = json.dumps(plan_dict)
 
         result1, err1 = apply_track(provider, tampered_json, cwd=fixture.repo_root)
@@ -613,6 +617,14 @@ if __name__ == "__main__":
             "apply_track: rejects plan when worktree_parent is tampered",
             result1.success is False and result1.error is not None,
             f"Expected rejection, got success={result1.success}, error={result1.error}"
+        )
+
+        # Verify the rejection is due to the field comparison, not a side effect
+        error_str = str(result1.error).lower() if result1.error else ""
+        test_result(
+            "apply_track: worktree_parent tamper rejection mentions staleness",
+            "stale" in error_str and "worktree_parent" in error_str,
+            f"error={result1.error}"
         )
 
         # Test staleness detection: tamper with slug (fresh plan)
@@ -632,6 +644,14 @@ if __name__ == "__main__":
             "apply_track: rejects plan when slug is tampered",
             result2.success is False and result2.error is not None,
             f"Expected rejection, got success={result2.success}, error={result2.error}"
+        )
+
+        # Verify the rejection is due to the slug comparison
+        error_str = str(result2.error).lower() if result2.error else ""
+        test_result(
+            "apply_track: slug tamper rejection mentions staleness",
+            "stale" in error_str and "slug" in error_str,
+            f"error={result2.error}"
         )
 
         # Test staleness detection: tamper with issue_type (fresh plan)
@@ -658,6 +678,14 @@ if __name__ == "__main__":
             f"Expected rejection, got success={result3.success}, error={result3.error}"
         )
 
+        # Verify the rejection is due to the issue_type comparison
+        error_str = str(result3.error).lower() if result3.error else ""
+        test_result(
+            "apply_track: issue_type tamper rejection mentions staleness",
+            "stale" in error_str and "issue_type" in error_str,
+            f"error={result3.error}"
+        )
+
         # Test happy path: apply an unmodified plan
         # Ensure worktree parent directory exists first
         fixture.worktree_parent.mkdir(parents=True, exist_ok=True)
@@ -672,15 +700,12 @@ if __name__ == "__main__":
         plan_json = json.dumps(plan4.to_dict())
         result4, _ = apply_track(provider, plan_json, cwd=fixture.repo_root)
         # The staleness checks should pass for an unmodified plan. Verify by checking that
-        # if apply_track fails, it's NOT due to a staleness/hash check failure.
-        # Staleness errors contain specific keywords like "hash mismatch", "tampered", "diverged"
+        # if apply_track fails, it's NOT due to a staleness/identity check failure.
+        # Staleness errors contain "plan went stale" prefix
         error_lower = str(result4.error).lower() if result4.error else ""
-        is_staleness_error = any(
-            keyword in error_lower
-            for keyword in ["hash mismatch", "tampered", "diverged", "plan hash"]
-        )
+        is_staleness_error = "plan went stale" in error_lower
         test_result(
-            "apply_track: staleness checks pass for unmodified plan (not rejected due to hash/tampering)",
+            "apply_track: staleness checks pass for unmodified plan (not rejected due to staleness)",
             not is_staleness_error,
             f"error={result4.error}"
         )
