@@ -605,7 +605,16 @@ The bar for "Needs Decision" is deliberately narrow — mirroring `/expert-revie
 
 If Step 8 flagged nothing at all (every `{expert}-alignment.md` says "no issues"), `plan-reconciled.md` is just `plan.md` plus `## Alignment Notes\n\nNo alignment issues flagged by the expert panel.` appended — no `## Alignment Notes — Needs Decision` section in that case.
 
-On failure: `stage-end --stage reconcile-alignment --outcome failure --failure-class reconciliation-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class reconciliation-failed 2>/dev/null || true`, then stop.
+**Sentinel and receipt:** The subagent MUST append the line `<!-- reconciliation-end -->` as the final line of `plan-reconciled.md` on successful completion. It MUST return a one-line receipt in its final message, using the format from `~/.claude/prompts/join-barrier-pattern.md` (Receipt Format, single-agent case): `plan-reconciled.md written — {n} resolved fixes, {n} needs-decision items`. Example: `plan-reconciled.md written — 3 resolved fixes, 1 needs-decision item`.
+
+**Join barrier** (single-agent, hard failure on repeated timeout): After the subagent returns, verify:
+1. Receipt was returned by the subagent in its final message
+2. File `{PLAN_SESSION_DIR}/plan-reconciled.md` exists on disk
+3. The file ends with the line `<!-- reconciliation-end -->`
+
+If any check fails, retry the subagent once with the same inputs. If the retry also fails, this is a **hard command failure** — emit telemetry and stop without writing a stand-in file (unlike per-expert alignment notes where a stand-in is harmless diagnostic input, `plan-reconciled.md` IS the actual plan deliverable, so a truncated or absent file cannot be hand-waved). Failure telemetry: `stage-end --stage reconcile-alignment --outcome failure --failure-class reconciliation-barrier-failed 2>/dev/null || true`, then `command-end --outcome failure --failure-class reconciliation-barrier-failed 2>/dev/null || true`, then stop.
+
+On success (all three join-barrier checks pass):
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage reconcile-alignment --outcome success 2>/dev/null || true
@@ -635,6 +644,13 @@ mkdir -p "$HOME/.claude/plans"
 SOURCE_PLAN="$PLAN_SESSION_DIR/plan.md"
 if [ -f "$PLAN_SESSION_DIR/plan-reconciled.md" ]; then
   SOURCE_PLAN="$PLAN_SESSION_DIR/plan-reconciled.md"
+  # Verify the reconciliation file is complete (ends with sentinel)
+  if ! tail -1 "$SOURCE_PLAN" | grep -q "<!-- reconciliation-end -->"; then
+    echo "ERROR: $SOURCE_PLAN exists but is incomplete (missing <!-- reconciliation-end --> sentinel)" >&2
+    echo "This indicates Step 9's join-barrier check failed to catch a truncated write." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --outcome failure --failure-class reconciliation-sentinel-check-failed 2>/dev/null || true
+    exit 1
+  fi
 fi
 if ! cp "$SOURCE_PLAN" "$HOME/.claude/plans/${SLUG}.md"; then
   echo "ERROR: Failed to copy $SOURCE_PLAN to ~/.claude/plans/${SLUG}.md" >&2
@@ -643,7 +659,25 @@ if ! cp "$SOURCE_PLAN" "$HOME/.claude/plans/${SLUG}.md"; then
 fi
 ```
 
-Print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of what the alignment pass found and how it was resolved.
+Print the plan's file path (`~/.claude/plans/{slug}.md`) and a summary of what the alignment pass found and how it was resolved. Before printing the closing message, check whether the plan has open gaps by looking for a non-empty `## Alignment Notes — Needs Decision` section:
+
+```bash
+# Check for open gaps in the plan
+OPEN_GAPS=0
+OPEN_GAPS_MSG=""
+if [ -f "$HOME/.claude/plans/${SLUG}.md" ] && [ "$EFFORT" -gt 3 ]; then
+  # Look for "## Alignment Notes — Needs Decision" section with content following it
+  # (not just the header, but actual items after it)
+  if grep -q "## Alignment Notes — Needs Decision" "$HOME/.claude/plans/${SLUG}.md"; then
+    # Extract content after the header and count non-empty, non-header lines
+    NEEDS_DECISION_SECTION=$(sed -n '/^## Alignment Notes — Needs Decision$/,/^##/p' "$HOME/.claude/plans/${SLUG}.md" | grep -v "^## " | grep -v "^$" | wc -l)
+    if [ "$NEEDS_DECISION_SECTION" -gt 0 ]; then
+      OPEN_GAPS=1
+      OPEN_GAPS_MSG="⚠️  ${NEEDS_DECISION_SECTION} item(s) remain as open gaps — see \`## Alignment Notes — Needs Decision\` in the plan."
+    fi
+  fi
+fi
+```
 
 Example closing message:
 
@@ -656,12 +690,14 @@ Alignment pass: [Yes — 3 issues flagged, all resolved into the plan (see "## R
                 [Yes — 2 issues flagged, 1 resolved, 1 required your decision (see "## Decisions Made (Post-Alignment)")] or
                 [Yes — no issues flagged] or [Skipped (effort < 4)]
 
+[If OPEN_GAPS=1: ⚠️  {count} item(s) remain as open gaps — see "## Alignment Notes — Needs Decision" in the plan.]
+
 Next steps:
   - `/expert-review-plan {slug}` — validation pass (optional)
   - `/track-and-start ~/.claude/plans/{slug}.md` — create issue branch and worktree for implementation
 ```
 
-Always include the alignment pass status line, even if it says "skipped", so the user knows what ran. Unlike the old behavior, the plan handed to `/track-and-start` → `/implement-with-haiku` should never contain unresolved defects the alignment pass already found — they're either fixed in-place or explicitly decided in Step 10.
+Always include the alignment pass status line, even if it says "skipped", so the user knows what ran. The plan handed to `/track-and-start` → `/implement-with-haiku` contains no unresolved defects the alignment pass found, except any the user explicitly declined to decide on in Step 10 (left as known open gaps in `## Alignment Notes — Needs Decision`).
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v2 --outcome success 2>/dev/null || true
