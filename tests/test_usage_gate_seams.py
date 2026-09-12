@@ -5,7 +5,8 @@ Test suite for usage-gate seam structure in implement-with-haiku.md.
 Covers:
   - All 5 required seam IDs appear in the command doc
   - Each seam is near a section heading (expected to be a decision point)
-  - Each seam is an unconditional stop-and-wait checkpoint, not an AskUserQuestion decision
+  - 4 of 5 seams are unconditional stop-and-wait checkpoints, never an AskUserQuestion decision;
+    gate-fix-loop is log-only (never stops) per issue #174's measured-run data
   - The Final summary mentions usage gate seams
   - No literal $0 or problematic echo patterns in usage-check snippets
 
@@ -71,12 +72,14 @@ def test_seams_are_unique():
 
 
 def test_seams_are_unconditional_checkpoints():
-    """Each seam is an unconditional stop-and-wait checkpoint, not a gated AskUserQuestion ask.
+    """4 of 5 seams are unconditional stop-and-wait checkpoints; gate-fix-loop is log-only.
 
-    Per the (2026-09-11) simplification: the usage-gate no longer computes a proceed/stop
-    decision or calls AskUserQuestion. Every seam always stops and waits for the user's plain
-    'continue' reply, and the doc explicitly instructs the orchestrator not to call
-    AskUserQuestion or act on the usage-check script's DECISION field.
+    Per issue #174 (2026-09-12): checkpoint 2/5 (gate-fix-loop) never once needed a stop across
+    8 measured real runs, so it no longer blocks — it still runs usage-check for the seam log,
+    but continues straight through instead of stopping. This is a plain structural change based
+    on the measured data, not a live gate on the usage-check script's DECISION field: that field
+    was found to be unreliable (most subagent transcripts in this pipeline never get counted, so
+    it defaults to a degraded floor estimate). No seam ever routes through AskUserQuestion.
     """
     doc_path = REPO_ROOT / "commands" / "implement-with-haiku.md"
 
@@ -91,10 +94,13 @@ def test_seams_are_unconditional_checkpoints():
     if "usage-check" not in doc_content:
         return False, "usage-check command not mentioned in implement-with-haiku.md"
 
-    for i in range(1, 6):
+    for i in (1, 3, 4, 5):
         marker = f"Checkpoint {i}/5"
         if marker not in doc_content:
             return False, f"missing unconditional checkpoint marker: {marker}"
+
+    if "do not stop and wait" not in doc_content:
+        return False, "gate-fix-loop no longer documented as a non-stopping, log-only seam"
 
     return True, ""
 
