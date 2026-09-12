@@ -21,19 +21,18 @@ v3 is an alternative approach pending evaluation; v2 remains the comprehensive r
 
 The command itself runs at `model: sonnet` (fixed in the frontmatter — this is orchestration work only: gathering context, picking experts, building the decision index, copying the final plan). The main thread does **no judgment work** — it routes, organizes, and coordinates. Every genuinely judgment-heavy step is dispatched to its own one-shot Opus subagent:
 
-- **Step 6 — Synthesize**: reads all contributions + decisions, writes the plan template. Dispatched Opus subagent.
-- **Step 7 — Consistency check**: reads plan + all context, fixes requirement/decision tracking and error handling agreement. Dispatched Opus subagent. This is a self-check, not an independent audit; the receipt explicitly says so.
-- **Step 8 — Audit** (effort 3, or effort-2 escalation): independently checks requirement fidelity, assumption validity, contradictions, verification adequacy. Dispatched Opus subagent.
+- **Step 6 — Synthesize and Consistency Check** (single dispatch): reads all contributions + decisions, writes the plan template, then self-checks it for requirement/decision tracking and error-handling agreement in the same dispatch. Dispatched Opus subagent. The self-check is not an independent audit; the receipt explicitly says so.
+- **Step 7 — Audit** (effort 3, or effort-2 escalation): independently checks requirement fidelity, assumption validity, contradictions, verification adequacy. Dispatched Opus subagent.
 
 Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
-- `--models balanced` (default): contributors run Sonnet unless marked as needing Opus (Step 2 assessment). Carl, Synthesize, Consistency-check, and auditor (if applicable) are Opus.
-- `--models opus`: escalates every dispatched subagent (contributors, Carl, Synthesize, Consistency-check, auditor) to Opus. Note: this flag does NOT and mechanically CANNOT escalate the main-thread orchestration shell itself (the command's frontmatter `model: sonnet` is fixed before the command body runs). If the user wants the main shell on Opus too, they switch their own session's model before invoking the command.
+- `--models balanced` (default): contributors run Sonnet unless marked as needing Opus (Step 2 assessment). Carl, Synthesize-and-check, and auditor (if applicable) are Opus.
+- `--models opus`: escalates every dispatched subagent (contributors, Carl, Synthesize-and-check, auditor) to Opus. Note: this flag does NOT and mechanically CANNOT escalate the main-thread orchestration shell itself (the command's frontmatter `model: sonnet` is fixed before the command body runs). If the user wants the main shell on Opus too, they switch their own session's model before invoking the command.
 
 ## Arguments
 
 - `--effort <2|3>`: effort level. Effort 2 (default): 3 focused experts + consistency check, no independent auditor. Effort 3: baseline + independent auditor. Effort 1, 4, and 5 are not supported — v3 does not implement them. If `--effort` is omitted, defaults to 2.
 
-- `--models <balanced|opus>`: model tier for dispatched contributors and roles. Balanced (default): contributors Sonnet-by-default-unless-marked-difficult, Carl/Synthesize/Consistency/Auditor always Opus. Opus: all subagents escalated to Opus. The main-thread orchestration shell remains Sonnet (fixed by frontmatter).
+- `--models <balanced|opus>`: model tier for dispatched contributors and roles. Balanced (default): contributors Sonnet-by-default-unless-marked-difficult, Carl/Synthesize-and-check/Auditor always Opus. Opus: all subagents escalated to Opus. The main-thread orchestration shell remains Sonnet (fixed by frontmatter).
 
 Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels.
 
@@ -53,8 +52,8 @@ All artifacts live in `{SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}/{SLU
 | `{expert}-contribution.md` | Each contributor (Step 3) | One per selected expert, requirements/risks/approach/open-questions |
 | `contrarian-carl-contribution.md` | Carl (Step 4) | After seeing all Step 3 contributions, checks cost and unverified premises |
 | `decisions.md` | Orchestrator (Step 5) | Decision index and checkpoint results |
-| `plan.md` | Synthesize (Step 6), refined by Consistency-check (Step 7) | Final synthesized plan in template form |
-| `audit.md` | Audit (Step 8, optional) | Findings on requirement fidelity, assumptions, contradictions, adequacy — or "No findings." |
+| `plan.md` | Synthesize and Consistency Check (Step 6, single dispatch) | Final synthesized plan in template form |
+| `audit.md` | Audit (Step 7, optional) | Findings on requirement fidelity, assumptions, contradictions, adequacy — or "No findings." |
 
 Final deliverable: `~/.claude/plans/{SLUG}-{INVOCATION_ID}.md` — the plan copied by the orchestrator to its final path (outside `plan-sessions/`), with the invocation ID included to prevent collisions.
 
