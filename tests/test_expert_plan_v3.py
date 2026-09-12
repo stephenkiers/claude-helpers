@@ -356,6 +356,20 @@ def main():
             bool(has_audit_conditional),
             "" if has_audit_conditional else "no documentation of audit being conditional on effort 3",
         )
+
+        # Check the specific bash gate immediately preceding the audit-plan
+        # stage-begin call uses -eq 3, not some other boundary. Scoped tightly
+        # (gate must directly precede the stage-begin call) so this doesn't
+        # accidentally match the unrelated "-eq 3" check gating repair-plan.
+        has_effort_eq_3_gate = re.search(
+            r'if\s+\[\s*"\$EFFORT"\s+-eq\s+3\s*\][^\n]*\n\s*[^\n]*stage-begin\s+--stage\s+audit-plan',
+            command_content,
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md's audit-plan stage gate uses -eq 3",
+            bool(has_effort_eq_3_gate),
+            "" if has_effort_eq_3_gate else "no bash conditional gating audit-plan's stage-begin on EFFORT -eq 3",
+        )
     else:
         h.test_result(
             "commands/expert-plan-v3.md references plan-audit.md",
@@ -364,6 +378,11 @@ def main():
         )
         h.test_result(
             "commands/expert-plan-v3.md documents audit as conditional (effort 3)",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md's audit-plan stage gate uses -eq 3",
             False,
             "file does not exist",
         )
