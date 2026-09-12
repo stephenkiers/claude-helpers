@@ -64,7 +64,7 @@ All artifacts live in `{PLAN_SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}
 
 Final synthesized plan: `~/.claude/plans/{slug}.md` (separate, pre-existing flat convention used by `/fork-planning` and `/expert-review-plan`; written by Synthesis subagent in Step 7).
 
-**Known Issue #122:** Two concurrent effort-4 (or higher) runs on the same ticket can silently overwrite each other's final plan at this path, because v2 uses an unsuffixed slug-based name. v3 fixes this by appending an invocation ID to both the session directory and final plan path; see [ADR-0020 "Collision-Resistant Session Paths"](../docs/adr/0020-expert-plan-v3-focused-panel.md) for the v3 design. v2's checkpoint-directory paths (in `~/.claude/plan-sessions/{REPO_KEY}/{slug}-{ts}/`) are individually collision-resistant via the timestamp, but the final deliverable at `~/.claude/plans/{slug}.md` is not. If you run v2 multiple times on the same ticket and want to preserve all plans, manually copy or rename the results immediately after each run.
+**Known Issue #122:** Two concurrent effort-4 (or higher) runs on the same ticket can silently overwrite each other's final plan at this path, because v2 uses an unsuffixed slug-based name; fixed in v3 — see [ADR-0020's "Collision-Resistant Session Paths"](../docs/adr/0020-expert-plan-v3-focused-panel.md) section for the mechanism and fix. If you run v2 multiple times on the same ticket and want to preserve all plans, manually copy or rename the results immediately after each run.
 
 ## Plan Mode (guard and reconciliation)
 
