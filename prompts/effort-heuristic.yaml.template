@@ -14,6 +14,12 @@
 # The heuristic picks effort 2, 3, or 4. Efforts 1 (swarm) and 5 (everyone) remain explicit-only
 # to avoid trading accuracy for cost in either direction.
 #
+# A Haiku "Effort Scout" (prompts/effort-scout.md) runs between the risk-keyword floor and the
+# mechanical LOC/file-count math below, and may recommend a lower tier than the math would if it can
+# point to something concrete (generated files, lockfiles, pure renames) — never a higher one. If it
+# fails or returns something unparseable, the mechanical math is the fallback. See ADR-0012's
+# "Haiku Effort Scout" amendment.
+#
 # When diff signal is ambiguous (e.g., at a boundary), bias controls whether to round up or down.
 # Start with bias: over-review and tighten once you have evidence.
 #
