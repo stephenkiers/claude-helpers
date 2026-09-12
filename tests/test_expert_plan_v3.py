@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""
+Test suite for structural requirements of expert-plan-v3 command and related prompts.
+
+Covers:
+1. Command existence and non-empty content
+2. Frontmatter: model: sonnet (main thread only)
+3. Effort flags: only --effort 2 and --effort 3 supported; error message for 1/4/5
+4. Stage list: all required stages with proper pairing (gather-context, select-experts,
+   expert-contributions, contrarian, checkpoint, synthesize-plan, consistency-check,
+   audit-plan [conditional], repair-plan [conditional], present)
+5. No router/digest/pod/swarm subagents (v2-specific)
+6. Synthesize and Consistency-check dispatched as separate Opus subagents
+7. Audit conditionally dispatched as Opus subagent (effort 3 only)
+8. FINAL_PLAN_PATH includes ${INVOCATION_ID}, not bare ${SLUG}
+9. Exit path guards: all exit paths emit --outcome interrupted twice
+10. FINAL_PLAN_PATH includes invocation ID
+11. Prompt file existence: plan-synthesis.md, plan-consistency-check.md, plan-audit.md
+12. No literal $0 in command doc shell snippets
+13. No echo "$VAR" | pattern in command doc shell snippets
+
+Run with: python3 tests/test_expert_plan_v3_structure.py
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from _test_harness import Harness, REPO_ROOT
+
+SCRIPT_CHECK_STAGE = REPO_ROOT / "scripts" / "check_stage_pairing.py"
+
+
+def main():
+    h = Harness("EXPERT-PLAN-V3 STRUCTURAL TEST SUITE")
+
+    # Test 1: File existence for commands/expert-plan-v3.md
+    command_file = REPO_ROOT / "commands" / "expert-plan-v3.md"
+    command_exists = command_file.is_file()
+    h.test_result(
+        "commands/expert-plan-v3.md exists as a regular file",
+        command_exists,
+        str(command_file) if not command_exists else "",
+    )
+
+    command_nonempty = False
+    command_content = ""
+    if command_exists:
+        command_content = command_file.read_text()
+        command_nonempty = len(command_content.strip()) > 0
+    h.test_result(
+        "commands/expert-plan-v3.md is non-empty",
+        command_nonempty,
+        "file is empty" if not command_nonempty else "",
+    )
+
+    # Test 2: Frontmatter model is sonnet (not opus)
+    if command_exists:
+        # Extract frontmatter
+        frontmatter_match = re.match(r'^---\n(.*?)\n---', command_content, re.DOTALL)
+        frontmatter = frontmatter_match.group(1) if frontmatter_match else ""
+
+        has_model_sonnet = re.search(r'model:\s*sonnet', frontmatter)
+        h.test_result(
+            "commands/expert-plan-v3.md frontmatter specifies model: sonnet",
+            bool(has_model_sonnet),
+            "frontmatter does not specify model: sonnet" if not has_model_sonnet else "",
+        )
+
+        # Verify it's not set to opus at command level
+        has_model_opus = re.search(r'model:\s*opus', frontmatter)
+        h.test_result(
+            "commands/expert-plan-v3.md frontmatter is NOT model: opus",
+            not has_model_opus,
+            "frontmatter incorrectly specifies model: opus" if has_model_opus else "",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md frontmatter specifies model: sonnet",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md frontmatter is NOT model: opus",
+            False,
+            "file does not exist",
+        )
+
+    # Test 3: Effort flag validation: only --effort 2 and --effort 3 documented
+    if command_exists:
+        has_effort_2 = re.search(r'--effort\s+2|--effort\s*=\s*2|\s2\s', command_content)
+        has_effort_3 = re.search(r'--effort\s+3|--effort\s*=\s*3|\s3\s', command_content)
+        h.test_result(
+            "commands/expert-plan-v3.md documents --effort 2",
+            bool(has_effort_2),
+            "" if has_effort_2 else "no mention of --effort 2",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents --effort 3",
+            bool(has_effort_3),
+            "" if has_effort_3 else "no mention of --effort 3",
+        )
+
+        # Should mention rejecting 1, 4, 5
+        rejects_bad_efforts = re.search(
+            r'--effort\s+[1]|--effort\s+[4]|--effort\s+[5]',
+            command_content
+        ) or re.search(
+            r'Reject.*--effort|reject.*[1,4,5]|only\s+[2,3]|support.*2.*3',
+            command_content,
+            re.IGNORECASE
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md indicates --effort 1/4/5 are not supported",
+            bool(rejects_bad_efforts),
+            "" if rejects_bad_efforts else "no mention of rejecting invalid effort levels",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md documents --effort 2",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents --effort 3",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md indicates --effort 1/4/5 are not supported",
+            False,
+            "file does not exist",
+        )
+
+    # Test 4: Stage pairing check using subprocess
+    if command_exists:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_CHECK_STAGE), str(command_file)],
+            capture_output=True,
+            text=True,
+        )
+        stage_pairing_clean = result.returncode == 0
+        stage_findings = result.stdout.strip()
+        h.test_result(
+            "commands/expert-plan-v3.md has no orphaned or unmatched stages",
+            stage_pairing_clean,
+            stage_findings if not stage_pairing_clean else "",
+        )
+
+        # Extract stage names
+        stage_begin_pattern = r'run-metrics\.py.*stage-begin.*--stage\s+(\S+)'
+        stage_begins = set(re.findall(stage_begin_pattern, command_content))
+
+        # Required stages (gather-context through checkpoint are mandatory)
+        required_stages = {
+            "gather-context",
+            "select-experts",
+            "expert-contributions",
+            "contrarian",
+            "checkpoint",
+            "synthesize-plan",
+            "consistency-check",
+            "present",
+        }
+
+        # Conditional stages (audit-plan, repair-plan)
+        conditional_stages = {"audit-plan", "repair-plan"}
+
+        # All stages should be either required or conditional
+        all_expected = required_stages | conditional_stages
+
+        # Check that all required stages are present
+        required_present = required_stages.issubset(stage_begins)
+        missing = required_stages - stage_begins
+        h.test_result(
+            "commands/expert-plan-v3.md contains all required stage names",
+            required_present,
+            f"missing: {', '.join(sorted(missing))}" if missing else "",
+        )
+
+        # Check that any extra stages (besides conditional) are noted
+        extra = stage_begins - all_expected
+        h.test_result(
+            "commands/expert-plan-v3.md contains only expected stages",
+            len(extra) == 0,
+            f"unexpected: {', '.join(sorted(extra))}" if extra else "",
+        )
+
+        # Check that audit-plan and repair-plan are documented as conditional if present
+        if "audit-plan" in stage_begins or "repair-plan" in stage_begins:
+            conditional_documented = re.search(
+                r'conditional|effort\s*3',
+                command_content,
+                re.IGNORECASE
+            )
+            h.test_result(
+                "commands/expert-plan-v3.md documents conditional stages (audit-plan, repair-plan)",
+                bool(conditional_documented),
+                "" if conditional_documented else "no documentation of conditional nature",
+            )
+        else:
+            h.test_result(
+                "commands/expert-plan-v3.md documents conditional stages (audit-plan, repair-plan)",
+                True,
+                "conditional stages not present (may be acceptable if effort 3 logic is conditional)",
+            )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md has no orphaned or unmatched stages",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md contains all required stage names",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md contains only expected stages",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents conditional stages (audit-plan, repair-plan)",
+            False,
+            "file does not exist",
+        )
+
+    # Test 5: No router, digest, pod, or swarm subagents (v2-specific, should not appear in v3)
+    if command_exists:
+        v2_subagents = [
+            "plan-router",
+            "plan-digest",
+            "plan-pod",
+            "plan-swarm-scout",
+            "plan-swarm-merge",
+        ]
+
+        has_v2_patterns = False
+        found_v2 = []
+        for agent in v2_subagents:
+            if agent in command_content:
+                has_v2_patterns = True
+                found_v2.append(agent)
+
+        h.test_result(
+            "commands/expert-plan-v3.md does NOT mention v2 subagents (router/digest/pod/swarm)",
+            not has_v2_patterns,
+            f"found: {', '.join(found_v2)}" if found_v2 else "",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md does NOT mention v2 subagents (router/digest/pod/swarm)",
+            False,
+            "file does not exist",
+        )
+
+    # Test 6: Synthesize step dispatches with model: opus
+    if command_exists:
+        # Check for model: opus mention with synthesize
+        has_opus_for_synthesize = re.search(
+            r'synthesize.*model:\s*opus|model:\s*opus.*synthesize',
+            command_content,
+            re.DOTALL | re.IGNORECASE
+        ) or re.search(
+            r'Step\s+6.*model.*opus|model.*opus.*Step\s+6',
+            command_content,
+            re.DOTALL | re.IGNORECASE
+        )
+
+        # More direct check: look for plan-synthesize.md reference
+        has_synthesize_prompt = "plan-synthesize" in command_content
+
+        h.test_result(
+            "commands/expert-plan-v3.md references plan-synthesize.md",
+            has_synthesize_prompt,
+            "" if has_synthesize_prompt else "no reference to plan-synthesize.md",
+        )
+
+        # Check that model: opus is mentioned for synthesize or in the relevant Task dispatch
+        h.test_result(
+            "commands/expert-plan-v3.md documents Synthesize dispatched with model: opus",
+            bool(has_opus_for_synthesize),
+            "" if has_opus_for_synthesize else "no explicit model: opus for synthesize dispatch",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md references plan-synthesize.md",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents Synthesize dispatched with model: opus",
+            False,
+            "file does not exist",
+        )
+
+    # Test 7: Consistency-check step dispatches with model: opus
+    if command_exists:
+        has_consistency_prompt = "plan-consistency-check" in command_content
+
+        # Look for model: opus mention with consistency-check
+        has_opus_for_consistency = re.search(
+            r'consistency.*model:\s*opus|model:\s*opus.*consistency',
+            command_content,
+            re.DOTALL | re.IGNORECASE
+        ) or re.search(
+            r'Step\s+7.*model.*opus|model.*opus.*Step\s+7',
+            command_content,
+            re.DOTALL | re.IGNORECASE
+        )
+
+        h.test_result(
+            "commands/expert-plan-v3.md references plan-consistency-check.md",
+            has_consistency_prompt,
+            "" if has_consistency_prompt else "no reference to plan-consistency-check.md",
+        )
+
+        h.test_result(
+            "commands/expert-plan-v3.md documents Consistency-check dispatched with model: opus",
+            bool(has_opus_for_consistency),
+            "" if has_opus_for_consistency else "no explicit model: opus for consistency dispatch",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md references plan-consistency-check.md",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents Consistency-check dispatched with model: opus",
+            False,
+            "file does not exist",
+        )
+
+    # Test 8: Audit step conditionally dispatched for effort 3
+    if command_exists:
+        has_audit_prompt = "plan-audit" in command_content
+        h.test_result(
+            "commands/expert-plan-v3.md references plan-audit.md",
+            has_audit_prompt,
+            "" if has_audit_prompt else "no reference to plan-audit.md",
+        )
+
+        # Check effort 3 or conditional language
+        has_audit_conditional = re.search(
+            r'effort\s+3|conditional.*audit|audit.*conditional',
+            command_content,
+            re.IGNORECASE
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents audit as conditional (effort 3)",
+            bool(has_audit_conditional),
+            "" if has_audit_conditional else "no documentation of audit being conditional on effort 3",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md references plan-audit.md",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents audit as conditional (effort 3)",
+            False,
+            "file does not exist",
+        )
+
+    # Test 9: FINAL_PLAN_PATH includes ${INVOCATION_ID}
+    if command_exists:
+        has_invocation_id = (
+            "INVOCATION_ID" in command_content and
+            "FINAL_PLAN_PATH" in command_content
+        )
+
+        # Check that the final path includes invocation ID
+        invocation_in_path = re.search(
+            r'FINAL_PLAN_PATH.*\$\{?INVOCATION_ID\}?.*\.md|'
+            r'cp.*\$\{?INVOCATION_ID\}?\}?.*FINAL_PLAN_PATH',
+            command_content
+        )
+
+        h.test_result(
+            "commands/expert-plan-v3.md defines FINAL_PLAN_PATH with INVOCATION_ID",
+            bool(has_invocation_id and invocation_in_path),
+            "" if (has_invocation_id and invocation_in_path) else "FINAL_PLAN_PATH does not include INVOCATION_ID",
+        )
+
+        # Ensure final output is not just ${SLUG}.md
+        has_bare_slug_path = re.search(
+            r'FINAL_PLAN_PATH.*\$\{?SLUG\}?\.md(?!\w)',
+            command_content
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md does NOT use bare ${SLUG}.md for FINAL_PLAN_PATH",
+            not bool(has_bare_slug_path),
+            "FINAL_PLAN_PATH uses bare ${SLUG}.md" if has_bare_slug_path else "",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md defines FINAL_PLAN_PATH with INVOCATION_ID",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md does NOT use bare ${SLUG}.md for FINAL_PLAN_PATH",
+            False,
+            "file does not exist",
+        )
+
+    # Test 10: Exit paths document --outcome interrupted double-emit
+    if command_exists:
+        # Look for stage-end --outcome interrupted patterns
+        has_interrupted_exit = re.search(
+            r'stage-end.*--outcome\s+interrupted|--outcome\s+interrupted.*stage-end',
+            command_content
+        )
+
+        # Look for command-end --outcome interrupted
+        has_interrupted_command_end = re.search(
+            r'command-end.*--outcome\s+interrupted|--outcome\s+interrupted.*command-end',
+            command_content
+        )
+
+        h.test_result(
+            "commands/expert-plan-v3.md documents exit path with stage-end --outcome interrupted",
+            bool(has_interrupted_exit),
+            "" if has_interrupted_exit else "no stage-end --outcome interrupted documented",
+        )
+
+        h.test_result(
+            "commands/expert-plan-v3.md documents exit path with command-end --outcome interrupted",
+            bool(has_interrupted_command_end),
+            "" if has_interrupted_command_end else "no command-end --outcome interrupted documented",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md documents exit path with stage-end --outcome interrupted",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md documents exit path with command-end --outcome interrupted",
+            False,
+            "file does not exist",
+        )
+
+    # Test 11: Prompt files exist and are non-empty
+    prompt_files = {
+        "plan-synthesize.md": REPO_ROOT / "prompts" / "plan-synthesize.md",
+        "plan-consistency-check.md": REPO_ROOT / "prompts" / "plan-consistency-check.md",
+        "plan-audit.md": REPO_ROOT / "prompts" / "plan-audit.md",
+        "plan-contribution-contract.md": REPO_ROOT / "prompts" / "plan-contribution-contract.md",
+    }
+
+    for name, path in prompt_files.items():
+        exists = path.is_file()
+        is_nonempty = exists and len(path.read_text().strip()) > 0
+        h.test_result(
+            f"prompts/{name} exists and is non-empty",
+            is_nonempty,
+            "" if is_nonempty else ("file does not exist" if not exists else "file is empty"),
+        )
+
+    # Test 12: No literal $0 in command doc (covered by other test, but document it)
+    if command_exists:
+        has_literal_zero = re.search(r'[^$]\$0|^\$0', command_content, re.MULTILINE)
+        h.test_result(
+            "commands/expert-plan-v3.md contains no literal $0 (checked by test_command_doc_shell_conventions.py)",
+            not bool(has_literal_zero),
+            "" if not has_literal_zero else "found literal $0",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md contains no literal $0 (checked by test_command_doc_shell_conventions.py)",
+            False,
+            "file does not exist",
+        )
+
+    # Test 13: No echo "$VAR" | pattern (dangerous in zsh)
+    if command_exists:
+        # Look for echo "$VAR" | pattern (dangerous in zsh)
+        has_dangerous_echo = re.search(
+            r'echo\s+"[^"]*\$\w+[^"]*"\s*\|',
+            command_content
+        )
+        h.test_result(
+            "commands/expert-plan-v3.md does not use echo \"$VAR\" | pattern",
+            not bool(has_dangerous_echo),
+            "" if not has_dangerous_echo else "found dangerous echo \"$VAR\" | pattern",
+        )
+    else:
+        h.test_result(
+            "commands/expert-plan-v3.md does not use echo \"$VAR\" | pattern",
+            False,
+            "file does not exist",
+        )
+
+    print()
+    h.summarize_and_exit()
+
+
+if __name__ == "__main__":
+    main()

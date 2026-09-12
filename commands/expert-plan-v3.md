@@ -140,7 +140,9 @@ if [ $# -gt 0 ]; then
     esac
   done
 
-  # More careful parsing for space-separated flags
+  # More careful parsing for space-separated flags, and reject any
+  # unrecognized flag (a bare GitHub issue URL or ticket description is not
+  # flag-like and is left alone here for Step 1 to consume)
   i=1
   while [ $i -le $# ]; do
     eval "arg=\${$i}"
@@ -157,6 +159,14 @@ if [ $# -gt 0 ]; then
           eval "MODELS=\${$i}"
         fi
         ;;
+      --effort=*|--models=*)
+        # Already consumed by the first loop
+        ;;
+      --*)
+        echo "ERROR: unknown flag '$arg' — supported flags are --effort 2|3 and --models balanced|opus" >&2
+        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v3 --outcome interrupted 2>/dev/null || true
+        exit 1
+        ;;
     esac
     i=$((i + 1))
   done
@@ -169,7 +179,6 @@ case "$EFFORT" in
     ;;
   *)
     echo "ERROR: --effort must be 2 or 3, got '$EFFORT'" >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome interrupted 2>/dev/null || true
     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v3 --outcome interrupted 2>/dev/null || true
     exit 1
     ;;
@@ -182,7 +191,6 @@ case "$MODELS" in
     ;;
   *)
     echo "ERROR: --models must be 'balanced' or 'opus', got '$MODELS'" >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome interrupted 2>/dev/null || true
     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v3 --outcome interrupted 2>/dev/null || true
     exit 1
     ;;
@@ -190,7 +198,13 @@ esac
 
 # Export for use in subsequent steps
 export SESSION_DIR REPO_KEY SLUG PROJECT_ROOT EFFORT MODELS FINAL_PLAN_PATH INVOCATION_ID
+```
 
+Argument parsing and validation are complete — every remaining exit path in this command runs after
+the `gather-context` stage has opened, so it is always paired with a `stage-end` call. Now open the
+`gather-context` stage in its own block:
+
+```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-context >/dev/null 2>&1 || true
 ```
 
