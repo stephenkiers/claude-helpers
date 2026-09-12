@@ -122,7 +122,7 @@ already-reviewed commit never overwrites the prior run):
 |------|-----------|------|
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
-| `effort-scout.json` | Effort Scout (Haiku) | Step 1 — `{effort, reason}`; only written when the heuristic runs and no risk keyword floored effort at 4 |
+| `effort-scout.json` | Effort Scout (Haiku) | Step 3 — `{effort, reason}`; only written when the heuristic runs and no risk keyword floored effort at 4 |
 | `pr-context.md` | `setup-pr-worktree.sh` (PR mode); main thread (effort 1, local mode) | Step 1 / swarm path — PR title, description, metadata; synthesized from branch/plan context in local-mode swarm |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
@@ -422,11 +422,15 @@ and reviewer count.
    and any issue/plan text and commit messages gathered in step 2 — pointing it at an output path in
    `REVIEW_DIR` (e.g. `effort-scout.json`; never give it `full-diff.patch`). Parse its
    `{"effort": N, "reason": "..."}` output:
-   - Valid response with `effort` in `{2,3,4}` → `EFFORT=N`, `EFFORT_REASON` = the Scout's `reason`,
-     `EFFORT_SOURCE=haiku-scout`.
-   - Missing file, invalid JSON, non-fatal agent error, or `effort` outside `{2,3,4}` → fall back to
-     the mechanical calculation: `EFFORT=MECHANICAL_EFFORT`, `EFFORT_REASON=MECHANICAL_REASON`,
-     `EFFORT_SOURCE=heuristic`. Never let a Scout failure block the run.
+   - Valid response with `effort` in `{2,3,4}` **and `effort` ≤ `MECHANICAL_EFFORT`** → `EFFORT=N`,
+     `EFFORT_REASON` = the Scout's `reason`, `EFFORT_SOURCE=haiku-scout`. (Scout recommendations are
+     downward-only; if Scout's `effort` exceeds the mechanical tier, treat as invalid and fall back.)
+   - Missing file, invalid JSON, non-fatal agent error, `effort` outside `{2,3,4}`, or Scout's `effort` >
+     `MECHANICAL_EFFORT` → fall back to the mechanical calculation: `EFFORT=MECHANICAL_EFFORT`,
+     `EFFORT_REASON=MECHANICAL_REASON`, `EFFORT_SOURCE=heuristic`. On any fallback, overwrite
+     `effort-scout.json` with `{"error": "<reason>"}` — e.g. `"missing file"`, `"invalid JSON"`,
+     `"effort outside {2,3,4}"`, or `"effort N exceeds mechanical tier M"` — so the failure reason is
+     inspectable. Never let a Scout failure block the run.
 5. Print effort resolution at run start: `Effort: {EFFORT} ({EFFORT_SOURCE}: {EFFORT_REASON})`.
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
