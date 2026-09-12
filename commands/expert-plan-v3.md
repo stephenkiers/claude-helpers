@@ -93,7 +93,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-pl
 
 # REPO_KEY identifies the repository
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true | tr '/' '-')
+REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')
 [ -z "$REPO_KEY" ] && REPO_KEY=$(basename "$PROJECT_ROOT")
 
 # Generate collision-resistant invocation ID (do this early)
@@ -106,7 +106,12 @@ SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0
 
 # Create session directory
 SESSION_DIR="$HOME/.claude/plan-sessions/${REPO_KEY}/${SLUG}-${INVOCATION_ID}"
-mkdir -p "$SESSION_DIR" || true
+if ! mkdir -p "$SESSION_DIR"; then
+  echo "ERROR: Failed to create session directory $SESSION_DIR" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome failure --failure-class session-dir-create-failed 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v3 --outcome failure --failure-class session-dir-create-failed 2>/dev/null || true
+  exit 1
+fi
 
 # Parse --effort and --models flags using single while loop
 EFFORT=2

@@ -478,6 +478,423 @@ def main():
             "file does not exist",
         )
 
+    # ============================================================================
+    # SPEC-BLIND TESTS: Round 2 (derived from triage action plan spec items)
+    # ============================================================================
+
+    # SPEC ITEM 1: Exit-path telemetry
+    # Every exit path must emit appropriate telemetry before returning (no silent
+    # early-return that skips the telemetry pattern)
+    if command_exists:
+        # Count command-end occurrences — each exit path should have one
+        command_end_count = len(re.findall(r'command-end.*--command\s+expert-plan-v3', command_content))
+
+        # Also verify that interrupted paths have both stage-end and command-end
+        has_interrupted_stage_end = re.search(
+            r'stage-end.*--outcome\s+interrupted',
+            command_content
+        )
+        has_interrupted_command_end = re.search(
+            r'command-end.*--outcome\s+interrupted',
+            command_content
+        )
+
+        h.test_result(
+            "Spec 1a: Exit-path telemetry — command-end appears multiple times (all exit paths)",
+            command_end_count >= 2,
+            f"found {command_end_count} command-end calls (expected >= 2)" if command_end_count < 2 else "",
+        )
+
+        h.test_result(
+            "Spec 1b: Exit-path telemetry — interrupted paths emit stage-end --outcome interrupted",
+            bool(has_interrupted_stage_end),
+            "" if has_interrupted_stage_end else "no stage-end --outcome interrupted",
+        )
+
+        h.test_result(
+            "Spec 1c: Exit-path telemetry — interrupted paths emit command-end --outcome interrupted",
+            bool(has_interrupted_command_end),
+            "" if has_interrupted_command_end else "no command-end --outcome interrupted",
+        )
+    else:
+        h.test_result(
+            "Spec 1a: Exit-path telemetry — command-end appears multiple times (all exit paths)",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 1b: Exit-path telemetry — interrupted paths emit stage-end --outcome interrupted",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 1c: Exit-path telemetry — interrupted paths emit command-end --outcome interrupted",
+            False,
+            "file does not exist",
+        )
+
+    # SPEC ITEM 2: Effort-2 audit gate must not be hardcoded
+    # The decision of whether Step 7 runs must be driven by EFFORT flag value or escalation state,
+    # not hardcoded to always-skip or always-run
+    if command_exists:
+        # Check that audit-plan stage-begin is inside an if statement checking EFFORT or escalation
+        has_conditional_audit_begin = re.search(
+            r'if\s+\[\s*"\$EFFORT"\s+-eq\s+3\s*\]|'
+            r'if\s+\[\s*-f\s+".*audit-escalation',
+            command_content
+        )
+
+        # Verify both branches are present: effort 3 runs audit, effort 2 may escalate
+        has_effort_3_branch = re.search(
+            r'\[\s*"\$EFFORT"\s+-eq\s+3\s*\]',
+            command_content
+        )
+        has_escalation_branch = re.search(
+            r'elif\s+\[\s*-f\s+".*audit-escalation',
+            command_content
+        )
+
+        h.test_result(
+            "Spec 2a: Effort-2 audit gate — audit-plan stage-begin is conditional on EFFORT or escalation",
+            bool(has_conditional_audit_begin),
+            "" if has_conditional_audit_begin else "audit-plan not gated by EFFORT or escalation check",
+        )
+
+        h.test_result(
+            "Spec 2b: Effort-2 audit gate — branch for EFFORT -eq 3 exists",
+            bool(has_effort_3_branch),
+            "" if has_effort_3_branch else "no EFFORT -eq 3 branch",
+        )
+
+        h.test_result(
+            "Spec 2c: Effort-2 audit gate — elif branch for escalation exists",
+            bool(has_escalation_branch),
+            "" if has_escalation_branch else "no elif escalation branch",
+        )
+    else:
+        h.test_result(
+            "Spec 2a: Effort-2 audit gate — audit-plan stage-begin is conditional on EFFORT or escalation",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2b: Effort-2 audit gate — branch for EFFORT -eq 3 exists",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2c: Effort-2 audit gate — elif branch for escalation exists",
+            False,
+            "file does not exist",
+        )
+
+    # SPEC ITEM 3: Slug and FINAL_PLAN_PATH ordering
+    # SLUG must be computed BEFORE FINAL_PLAN_PATH is constructed from it
+    if command_exists:
+        # Find line numbers where SLUG is set and where FINAL_PLAN_PATH is set
+        slug_assignments = [(i, line) for i, line in enumerate(command_content.split('\n'), 1)
+                           if re.search(r'SLUG\s*=', line) and 'FINAL_PLAN_PATH' not in line]
+        final_path_assignments = [(i, line) for i, line in enumerate(command_content.split('\n'), 1)
+                                 if re.search(r'FINAL_PLAN_PATH\s*=', line)]
+
+        # Check that SLUG is assigned before FINAL_PLAN_PATH (using line numbers)
+        slug_before_final = False
+        if slug_assignments and final_path_assignments:
+            last_slug_line = max([i for i, _ in slug_assignments])
+            first_final_line = min([i for i, _ in final_path_assignments])
+            slug_before_final = last_slug_line < first_final_line
+
+        # Also verify FINAL_PLAN_PATH uses ${SLUG} in its definition
+        uses_slug_in_path = re.search(
+            r'FINAL_PLAN_PATH\s*=.*\$\{?SLUG\}?',
+            command_content
+        )
+
+        h.test_result(
+            "Spec 3a: Slug ordering — SLUG is assigned before FINAL_PLAN_PATH is constructed",
+            slug_before_final or (not slug_assignments or not final_path_assignments),
+            "" if (slug_before_final or not slug_assignments or not final_path_assignments) else "SLUG assigned after FINAL_PLAN_PATH",
+        )
+
+        h.test_result(
+            "Spec 3b: Slug ordering — FINAL_PLAN_PATH uses ${SLUG} in its definition",
+            bool(uses_slug_in_path),
+            "" if uses_slug_in_path else "FINAL_PLAN_PATH does not reference SLUG",
+        )
+    else:
+        h.test_result(
+            "Spec 3a: Slug ordering — SLUG is assigned before FINAL_PLAN_PATH is constructed",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 3b: Slug ordering — FINAL_PLAN_PATH uses ${SLUG} in its definition",
+            False,
+            "file does not exist",
+        )
+
+    # SPEC ITEM 4: Flag parsing correctness
+    # --effort and --models must use single while-loop with explicit error branches for no-value case
+    if command_exists:
+        # Check for single while loop for flag parsing
+        has_single_while_loop = len(re.findall(r'while\s+\[\s*\$#\s*-gt\s+0\s*\]', command_content)) == 1
+
+        # Check for explicit error handling for --effort with no value
+        has_effort_no_value_error = re.search(
+            r'--effort\)\s*shift.*if\s+\[\s*\$#.*\].*ERROR.*--effort.*value',
+            command_content,
+            re.DOTALL
+        )
+
+        # Check for explicit error handling for --models with no value
+        has_models_no_value_error = re.search(
+            r'--models\)\s*shift.*if\s+\[\s*\$#.*\].*ERROR.*--models.*value',
+            command_content,
+            re.DOTALL
+        )
+
+        # Verify case-style (using case statement, not if-chains)
+        has_case_statement = re.search(r'case\s+"\$1"\s+in', command_content)
+
+        h.test_result(
+            "Spec 4a: Flag parsing — single while loop for argument processing",
+            has_single_while_loop,
+            "incorrect number of while loops" if not has_single_while_loop else "",
+        )
+
+        h.test_result(
+            "Spec 4b: Flag parsing — explicit error for --effort with no value",
+            bool(has_effort_no_value_error),
+            "" if has_effort_no_value_error else "no explicit error check for --effort without value",
+        )
+
+        h.test_result(
+            "Spec 4c: Flag parsing — explicit error for --models with no value",
+            bool(has_models_no_value_error),
+            "" if has_models_no_value_error else "no explicit error check for --models without value",
+        )
+
+        h.test_result(
+            "Spec 4d: Flag parsing — uses case statement (not if-chain)",
+            bool(has_case_statement),
+            "" if has_case_statement else "flag parsing uses if-chain instead of case",
+        )
+    else:
+        h.test_result(
+            "Spec 4a: Flag parsing — single while loop for argument processing",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 4b: Flag parsing — explicit error for --effort with no value",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 4c: Flag parsing — explicit error for --models with no value",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 4d: Flag parsing — uses case statement (not if-chain)",
+            False,
+            "file does not exist",
+        )
+
+    # SPEC ITEM 5: Steps 6&7 merged structure
+    # Step 6 = Synthesize + self-check (single dispatch), Step 7 = Audit (separate)
+    # Verify: plan-synthesize-and-check.md exists, old files don't exist, not referenced
+    if command_exists:
+        # Check old files do NOT exist
+        plan_synthesize_path = REPO_ROOT / "prompts" / "plan-synthesize.md"
+        plan_consistency_check_path = REPO_ROOT / "prompts" / "plan-consistency-check.md"
+
+        plan_synthesize_exists = plan_synthesize_path.is_file()
+        plan_consistency_check_exists = plan_consistency_check_path.is_file()
+
+        # Check old files are NOT referenced in command, ADR, or agents
+        has_old_reference = (
+            "plan-synthesize.md" in command_content or
+            "plan-consistency-check.md" in command_content
+        )
+
+        # Check that Step 6 dispatch mentions both Synthesize and Consistency Check
+        step6_section = re.search(
+            r'###\s+Step\s+6.*?###\s+Step',
+            command_content,
+            re.DOTALL
+        )
+        step6_merged = False
+        if step6_section:
+            step6_text = step6_section.group(0)
+            step6_merged = (
+                re.search(r'Synthesize.*Consistency|Consistency.*Synthesize', step6_text, re.IGNORECASE) and
+                'single' in step6_text.lower()
+            )
+
+        # Check references to plan-audit.md
+        has_plan_audit = "plan-audit" in command_content
+
+        h.test_result(
+            "Spec 5a: Step 6&7 structure — plan-synthesize.md does NOT exist",
+            not plan_synthesize_exists,
+            "file exists (should be removed)" if plan_synthesize_exists else "",
+        )
+
+        h.test_result(
+            "Spec 5b: Step 6&7 structure — plan-consistency-check.md does NOT exist",
+            not plan_consistency_check_exists,
+            "file exists (should be removed)" if plan_consistency_check_exists else "",
+        )
+
+        h.test_result(
+            "Spec 5c: Step 6&7 structure — no references to old plan-*.md files in command/ADR/agents",
+            not has_old_reference,
+            "old files referenced" if has_old_reference else "",
+        )
+
+        h.test_result(
+            "Spec 5d: Step 6&7 structure — Step 6 section describes merged Synthesize+Consistency dispatch",
+            step6_merged,
+            "" if step6_merged else "Step 6 not described as merged single dispatch",
+        )
+
+        h.test_result(
+            "Spec 5e: Step 6&7 structure — plan-audit.md is referenced for Step 7",
+            has_plan_audit,
+            "" if has_plan_audit else "no reference to plan-audit.md",
+        )
+    else:
+        h.test_result(
+            "Spec 5a: Step 6&7 structure — plan-synthesize.md does NOT exist",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 5b: Step 6&7 structure — plan-consistency-check.md does NOT exist",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 5c: Step 6&7 structure — no references to old plan-*.md files in command/ADR/agents",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 5d: Step 6&7 structure — Step 6 section describes merged Synthesize+Consistency dispatch",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 5e: Step 6&7 structure — plan-audit.md is referenced for Step 7",
+            False,
+            "file does not exist",
+        )
+
+    # SPEC ITEM 6: Overview/model-policy/checkpoint-files table matching merged step numbering
+    # Step 6 should be "Synthesize & Consistency Check", Step 7 should be "Audit"
+    if command_exists:
+        # Check model-policy section
+        model_policy_section = re.search(
+            r'##\s+Model Policy.*?(?=##\s+|\Z)',
+            command_content,
+            re.DOTALL
+        )
+        model_policy_text = model_policy_section.group(0) if model_policy_section else ""
+
+        has_step6_in_model_policy = re.search(
+            r'Step\s+6.*Synthesize.*Consistency|Step\s+6.*Consistency.*Synthesis',
+            model_policy_text,
+            re.IGNORECASE
+        )
+        has_step7_in_model_policy = re.search(
+            r'Step\s+7.*Audit|Step\s+7.*independent',
+            model_policy_text,
+            re.IGNORECASE
+        )
+
+        # Check checkpoint-files table
+        checkpoint_section = re.search(
+            r'##\s+Checkpoint Files.*?\n\|',
+            command_content,
+            re.DOTALL
+        )
+        checkpoint_text = checkpoint_section.group(0) if checkpoint_section else ""
+
+        # Extract table lines about Step 6 and Step 7
+        has_step6_in_checkpoint = re.search(
+            r'\|\s*`plan\.md`.*?Step 6|Step 6.*`plan\.md`',
+            command_content,
+            re.IGNORECASE
+        )
+        has_step7_in_checkpoint = re.search(
+            r'\|\s*`audit\.md`.*?Step 7|Step 7.*`audit\.md`',
+            command_content,
+            re.IGNORECASE
+        )
+
+        # Check "All Stage Names" section mentions correct numbering
+        stages_section = re.search(
+            r'##\s+All Stage Names.*?(?=---|\Z)',
+            command_content,
+            re.DOTALL
+        )
+        stages_text = stages_section.group(0) if stages_section else ""
+
+        has_synthesize_plan_stage = re.search(
+            r'synthesize-plan.*Step 6|Step 6.*synthesize-plan',
+            stages_text,
+            re.IGNORECASE
+        )
+        has_audit_plan_stage = re.search(
+            r'audit-plan.*Step 7|Step 7.*audit-plan',
+            stages_text,
+            re.IGNORECASE
+        )
+
+        h.test_result(
+            "Spec 6a: Overview/numbering — Model Policy section documents Step 6 as Synthesize & Consistency",
+            bool(has_step6_in_model_policy),
+            "" if has_step6_in_model_policy else "Step 6 not documented in Model Policy",
+        )
+
+        h.test_result(
+            "Spec 6b: Overview/numbering — Model Policy section documents Step 7 as Audit",
+            bool(has_step7_in_model_policy),
+            "" if has_step7_in_model_policy else "Step 7 not documented in Model Policy",
+        )
+
+        h.test_result(
+            "Spec 6c: Overview/numbering — Checkpoint Files table documents plan.md in Step 6",
+            bool(has_step6_in_checkpoint),
+            "" if has_step6_in_checkpoint else "Step 6 plan.md not in checkpoint table",
+        )
+
+        h.test_result(
+            "Spec 6d: Overview/numbering — Checkpoint Files table documents audit.md in Step 7",
+            bool(has_step7_in_checkpoint),
+            "" if has_step7_in_checkpoint else "Step 7 audit.md not in checkpoint table",
+        )
+
+        h.test_result(
+            "Spec 6e: Overview/numbering — All Stage Names section documents synthesize-plan as Step 6",
+            bool(has_synthesize_plan_stage),
+            "" if has_synthesize_plan_stage else "synthesize-plan not in stage names for Step 6",
+        )
+
+        h.test_result(
+            "Spec 6f: Overview/numbering — All Stage Names section documents audit-plan as Step 7",
+            bool(has_audit_plan_stage),
+            "" if has_audit_plan_stage else "audit-plan not in stage names for Step 7",
+        )
+    else:
+        for i in range(6):
+            h.test_result(
+                f"Spec 6{chr(97+i)}: Overview/numbering — (checked)",
+                False,
+                "file does not exist",
+            )
+
     print()
     h.summarize_and_exit()
 
