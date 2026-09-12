@@ -419,11 +419,6 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
-This checkpoint always stops unconditionally, regardless of `DECISION:` — round 1's parallel
-fanout is the single biggest context cost in the whole flow, and it was over threshold in every one
-of 8 measured real runs (see [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174)),
-so a conditional stop here would never actually save a pause.
-
 Print the `USAGE-GATE:` line verbatim, then say: "Step 1/5 done: round 1 join. All merged units are
 already committed; nothing is pending if you stop here. If that token count looks large, run
 `/compact` first. Reply 'continue' when ready for the integration gate." Then stop and wait for the
@@ -523,13 +518,11 @@ Max **K = 3** iterations. On each iteration:
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam gate-fix-loop
    ```
-   Print the `USAGE-GATE:` line verbatim. If its `DECISION:` field is `ask`, say: "Step 2/5
-   checkpoint: gate fix-loop (iteration <i>/<K>). The gate is still failing; the outstanding failures
-   (already surfaced) remain unresolved if you stop here. Token usage is over threshold — run
-   `/compact` first. Reply 'continue' when ready." Then stop and wait for the user's next message —
-   do not call `AskUserQuestion`. If `DECISION:` is `proceed`, do not stop — continue straight to the
-   next gate iteration (measured across 8 real runs, this seam never once crossed the threshold; see
-   [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174)).
+   Print the `USAGE-GATE:` line verbatim, then say: "Step 2/5 checkpoint: gate fix-loop (iteration
+   <i>/<K>). The gate is still failing; the outstanding failures (already surfaced) remain unresolved
+   if you stop here. If that token count looks large, run `/compact` first. Reply 'continue' when
+   ready." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
+   compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 6. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
    failures. Do not proceed to Round 2. Let the human decide.
@@ -577,11 +570,11 @@ IMPL_FILES=$(git diff --name-only "$START_SHA"..HEAD)  # round-1 implementation 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-fanout
 ```
-Print the `USAGE-GATE:` line verbatim. If its `DECISION:` field is `ask`, say: "Step 3/5 done: gate
-passed (round sizing: <classification>). Round 1 is committed and gate-clean; no tests or reviews
-exist yet. Token usage is over threshold — run `/compact` first. Reply 'continue' to launch round 2,
-round 3 pass 1, and the sweeps." Then stop and wait for the user's next message — do not call
-`AskUserQuestion`. If `DECISION:` is `proceed`, do not stop — continue straight into round 2.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 3/5 done: gate passed (round sizing:
+<classification>). Round 1 is committed and gate-clean; no tests or reviews exist yet. If that token
+count looks large, run `/compact` first. Reply 'continue' to launch round 2, round 3 pass 1, and the
+sweeps." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not
+compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 
 ### Round 2: Spec-blind test author (own worktree)
 
@@ -834,12 +827,11 @@ final summary.
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam post-fanout
 ```
-Print the `USAGE-GATE:` line verbatim. If its `DECISION:` field is `ask`, say: "Step 4/5 done:
-post-fanout. Round 2's tests are committed; Round 3 pass 1's findings and the sweep findings are
-UNAPPLIED and will be lost if the session closes here. Token usage is over threshold — run `/compact`
-first. Reply 'continue' to apply round 3's fixes." Then stop and wait for the user's next message —
-do not call `AskUserQuestion`. If `DECISION:` is `proceed`, do not stop — continue straight into
-applying round 3's fixes.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 4/5 done: post-fanout. Round 2's tests are
+committed; Round 3 pass 1's findings and the sweep findings are UNAPPLIED and will be lost if the
+session closes here. If that token count looks large, run `/compact` first. Reply 'continue' to apply
+round 3's fixes." Then stop and wait for the user's next message — do not call `AskUserQuestion`, do
+not compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field.
 
 ### Round 3 follow-up (short)
 
@@ -937,11 +929,11 @@ re-running the tests yourself.**
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam pre-round4
 ```
-Print the `USAGE-GATE:` line verbatim. If its `DECISION:` field is `ask`, say: "Step 5/5 done:
-pre-round 4. Round 4 itself has no subagent cost; this is the last checkpoint for the run. Token
-usage is over threshold — run `/compact` first. Reply 'continue' to run test cleanup." Then stop and
-wait for the user's next message — do not call `AskUserQuestion`. If `DECISION:` is `proceed`, do not
-stop — continue straight into round 4/test cleanup.
+Print the `USAGE-GATE:` line verbatim, then say: "Step 5/5 done: pre-round 4. Round 4 itself has no
+subagent cost; this is the last checkpoint for the run. If that token count looks large, run
+`/compact` first. Reply 'continue' to run test cleanup." Then stop and wait for the user's next
+message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself, and ignore
+the printed line's `DECISION:` field.
 
 - **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
 - **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
