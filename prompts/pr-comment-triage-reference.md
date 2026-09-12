@@ -118,7 +118,7 @@ For each comment, consider:
 
 ## Categorize and Present (Format)
 
-Group comments by reviewer type, then present each comment in one of three sub-categories.
+Group comments by reviewer type, then present each comment in one of three sub-categories:
 
 ### By reviewer group
 

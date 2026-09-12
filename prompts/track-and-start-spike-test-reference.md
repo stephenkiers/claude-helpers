@@ -21,7 +21,7 @@ When the project root has both a `plans/` directory and an array-format `issues.
 ### Detection
 
 Run the **Local Plan Mode Detection** block from `~/.claude/prompts/worktree-reference.md`.
-If `LOCAL_MODE` is false, fall through to the normal GitHub flow ([Pivot Detection](#pivot-detection) → [Duplicate Detection](#duplicate-detection) → [Creating the Issue](#creating-the-issue)).
+If `LOCAL_MODE` is false, fall through to the normal GitHub flow ([Pivot Detection](#pivot-detection) → [Duplicate Detection](#duplicate-detection) → [Creating the Issue](../commands/track-and-start-spike-test.md#creating-the-issue-github-mode)).
 
 ### Local Duplicate Detection
 
