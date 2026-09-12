@@ -275,7 +275,8 @@ def plan_track(
 
         # Compute identity hash from worktree_parent, slug, issue_type
         # This binds apply_track to the plan state at plan time
-        identity_content = f"{worktree_parent}|{slug}|{issue_type}"
+        # Use JSON serialization to avoid collision vulnerabilities from delimiter-based concat
+        identity_content = json.dumps([worktree_parent, slug, issue_type], sort_keys=False)
         identity_hash = hash_file_content(identity_content)
 
         # Build plan
@@ -345,16 +346,29 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
                 return result, result.error
 
             # 2. Identity hash validation: independently re-derive worktree_parent, slug, issue_type
-            # and verify they match the plan's stored values
+            # and verify they match the plan's stored values directly
             fresh_worktree_parent = worktrees.detect_worktree_parent(cwd=main_wt)
             fresh_slug = slugify(plan.issue_title, max_len=50)
             fresh_issue_type = infer_type(plan.issue_title, plan.plan_content)
 
-            identity_content = f"{fresh_worktree_parent}|{fresh_slug}|{fresh_issue_type}"
+            # Direct field comparisons: reject if any field was tampered with
+            if fresh_worktree_parent != plan.worktree_parent:
+                result.error = Unknown("plan went stale (worktree_parent changed)")
+                return result, result.error
+            if fresh_slug != plan.slug:
+                result.error = Unknown("plan went stale (slug changed)")
+                return result, result.error
+            if fresh_issue_type != plan.issue_type:
+                result.error = Unknown("plan went stale (issue_type changed)")
+                return result, result.error
+
+            # Also verify identity_hash for environment/title drift between plan and apply time
+            # Use same JSON serialization as plan_track for consistency
+            identity_content = json.dumps([fresh_worktree_parent, fresh_slug, fresh_issue_type], sort_keys=False)
             fresh_identity_hash = hash_file_content(identity_content)
 
             if fresh_identity_hash != plan.identity_hash:
-                result.error = Unknown("plan went stale (worktree_parent/slug/issue_type changed)")
+                result.error = Unknown("plan went stale (environment changed since planning)")
                 return result, result.error
 
         except Exception as e:
