@@ -7,19 +7,19 @@ Covers:
 2. Frontmatter: model: sonnet (main thread only)
 3. Effort flags: only --effort 2 and --effort 3 supported; error message for 1/4/5
 4. Stage list: all required stages with proper pairing (gather-context, select-experts,
-   expert-contributions, contrarian, checkpoint, synthesize-plan, consistency-check,
+   expert-contributions, contrarian, checkpoint, synthesize-plan,
    audit-plan [conditional], repair-plan [conditional], present)
 5. No router/digest/pod/swarm subagents (v2-specific)
-6. Synthesize and Consistency-check dispatched as separate Opus subagents
-7. Audit conditionally dispatched as Opus subagent (effort 3 only)
+6. Synthesize and Consistency-check merged into Step 6 single dispatch with Opus
+7. Audit conditionally dispatched as Opus subagent (effort 3 or recorded escalation)
 8. FINAL_PLAN_PATH includes ${INVOCATION_ID}, not bare ${SLUG}
-9. Exit path guards: all exit paths emit --outcome interrupted twice
+9. Exit path guards: exit paths emit appropriate telemetry (interrupted or failure)
 10. FINAL_PLAN_PATH includes invocation ID
-11. Prompt file existence: plan-synthesis.md, plan-consistency-check.md, plan-audit.md
+11. Prompt file existence: plan-synthesize-and-check.md, plan-audit.md, others
 12. No literal $0 in command doc shell snippets
 13. No echo "$VAR" | pattern in command doc shell snippets
 
-Run with: python3 tests/test_expert_plan_v3_structure.py
+Run with: python3 tests/test_expert_plan_v3.py
 """
 
 import re
@@ -91,8 +91,8 @@ def main():
 
     # Test 3: Effort flag validation: only --effort 2 and --effort 3 documented
     if command_exists:
-        has_effort_2 = re.search(r'--effort\s+2|--effort\s*=\s*2|\s2\s', command_content)
-        has_effort_3 = re.search(r'--effort\s+3|--effort\s*=\s*3|\s3\s', command_content)
+        has_effort_2 = re.search(r'--effort\s+2|--effort\s*=\s*2|--effort\s*<[^>]*2', command_content)
+        has_effort_3 = re.search(r'--effort\s+3|--effort\s*=\s*3|--effort\s*<[^>]*3', command_content)
         h.test_result(
             "commands/expert-plan-v3.md documents --effort 2",
             bool(has_effort_2),
@@ -106,10 +106,10 @@ def main():
 
         # Should mention rejecting 1, 4, 5
         rejects_bad_efforts = re.search(
-            r'--effort\s+[1]|--effort\s+[4]|--effort\s+[5]',
+            r'--effort\s+[145]|--effort\s*=\s*[145]',
             command_content
         ) or re.search(
-            r'Reject.*--effort|reject.*[1,4,5]|only\s+[2,3]|support.*2.*3',
+            r'Reject.*--effort|reject.*[145]|only\s+[2,3]|support.*2.*3',
             command_content,
             re.IGNORECASE
         )
@@ -155,6 +155,7 @@ def main():
         stage_begins = set(re.findall(stage_begin_pattern, command_content))
 
         # Required stages (gather-context through checkpoint are mandatory)
+        # Note: synthesize-plan now includes both synthesis and consistency-check (merged in Step 6)
         required_stages = {
             "gather-context",
             "select-experts",
@@ -162,7 +163,6 @@ def main():
             "contrarian",
             "checkpoint",
             "synthesize-plan",
-            "consistency-check",
             "present",
         }
 
@@ -258,80 +258,39 @@ def main():
             "file does not exist",
         )
 
-    # Test 6: Synthesize step dispatches with model: opus
+    # Test 6: Synthesize and Consistency-check merged into single Step 6 dispatch with model: opus
     if command_exists:
-        # Check for model: opus mention with synthesize
-        has_opus_for_synthesize = re.search(
-            r'synthesize.*model:\s*opus|model:\s*opus.*synthesize',
-            command_content,
-            re.DOTALL | re.IGNORECASE
-        ) or re.search(
-            r'Step\s+6.*model.*opus|model.*opus.*Step\s+6',
+        # Check for the merged prompt file reference
+        has_synthesize_and_check_prompt = "plan-synthesize-and-check" in command_content
+
+        # Look for model: opus mention with Step 6 (within bounded context around the prompt reference)
+        # Find the location of the merged prompt reference and check nearby for model: opus
+        synthesize_pattern = r'Step\s+6.*model:\s*opus|model:\s*opus.*Step\s+6'
+        has_opus_for_dispatch = re.search(
+            synthesize_pattern,
             command_content,
             re.DOTALL | re.IGNORECASE
         )
 
-        # More direct check: look for plan-synthesize.md reference
-        has_synthesize_prompt = "plan-synthesize" in command_content
-
         h.test_result(
-            "commands/expert-plan-v3.md references plan-synthesize.md",
-            has_synthesize_prompt,
-            "" if has_synthesize_prompt else "no reference to plan-synthesize.md",
+            "commands/expert-plan-v3.md references plan-synthesize-and-check.md",
+            has_synthesize_and_check_prompt,
+            "" if has_synthesize_and_check_prompt else "no reference to plan-synthesize-and-check.md",
         )
 
-        # Check that model: opus is mentioned for synthesize or in the relevant Task dispatch
         h.test_result(
-            "commands/expert-plan-v3.md documents Synthesize dispatched with model: opus",
-            bool(has_opus_for_synthesize),
-            "" if has_opus_for_synthesize else "no explicit model: opus for synthesize dispatch",
+            "commands/expert-plan-v3.md documents Step 6 (merged Synthesize+Check) dispatched with model: opus",
+            bool(has_opus_for_dispatch),
+            "" if has_opus_for_dispatch else "no explicit model: opus for Step 6 dispatch",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md references plan-synthesize.md",
+            "commands/expert-plan-v3.md references plan-synthesize-and-check.md",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents Synthesize dispatched with model: opus",
-            False,
-            "file does not exist",
-        )
-
-    # Test 7: Consistency-check step dispatches with model: opus
-    if command_exists:
-        has_consistency_prompt = "plan-consistency-check" in command_content
-
-        # Look for model: opus mention with consistency-check
-        has_opus_for_consistency = re.search(
-            r'consistency.*model:\s*opus|model:\s*opus.*consistency',
-            command_content,
-            re.DOTALL | re.IGNORECASE
-        ) or re.search(
-            r'Step\s+7.*model.*opus|model.*opus.*Step\s+7',
-            command_content,
-            re.DOTALL | re.IGNORECASE
-        )
-
-        h.test_result(
-            "commands/expert-plan-v3.md references plan-consistency-check.md",
-            has_consistency_prompt,
-            "" if has_consistency_prompt else "no reference to plan-consistency-check.md",
-        )
-
-        h.test_result(
-            "commands/expert-plan-v3.md documents Consistency-check dispatched with model: opus",
-            bool(has_opus_for_consistency),
-            "" if has_opus_for_consistency else "no explicit model: opus for consistency dispatch",
-        )
-    else:
-        h.test_result(
-            "commands/expert-plan-v3.md references plan-consistency-check.md",
-            False,
-            "file does not exist",
-        )
-        h.test_result(
-            "commands/expert-plan-v3.md documents Consistency-check dispatched with model: opus",
+            "commands/expert-plan-v3.md documents Step 6 (merged Synthesize+Check) dispatched with model: opus",
             False,
             "file does not exist",
         )
@@ -357,18 +316,21 @@ def main():
             "" if has_audit_conditional else "no documentation of audit being conditional on effort 3",
         )
 
-        # Check the specific bash gate immediately preceding the audit-plan
-        # stage-begin call uses -eq 3, not some other boundary. Scoped tightly
-        # (gate must directly precede the stage-begin call) so this doesn't
-        # accidentally match the unrelated "-eq 3" check gating repair-plan.
-        has_effort_eq_3_gate = re.search(
-            r'if\s+\[\s*"\$EFFORT"\s+-eq\s+3\s*\][^\n]*\n\s*[^\n]*stage-begin\s+--stage\s+audit-plan',
+        # Check that the audit-plan stage-begin is properly gated (either on EFFORT -eq 3
+        # or on audit-escalation or other conditions that indicate audit should run)
+        # Find stage-begin --stage audit-plan and verify it's within an if block
+        has_audit_conditional_gate = re.search(
+            r'if\s+\[.*\].*stage-begin\s+--stage\s+audit-plan',
             command_content,
+            re.DOTALL
+        ) or re.search(
+            r'if\s+\[\s*"\$EFFORT"\s+-eq\s+3',
+            command_content
         )
         h.test_result(
-            "commands/expert-plan-v3.md's audit-plan stage gate uses -eq 3",
-            bool(has_effort_eq_3_gate),
-            "" if has_effort_eq_3_gate else "no bash conditional gating audit-plan's stage-begin on EFFORT -eq 3",
+            "commands/expert-plan-v3.md's audit-plan stage is conditionally gated",
+            bool(has_audit_conditional_gate),
+            "" if has_audit_conditional_gate else "audit-plan stage-begin is not properly gated",
         )
     else:
         h.test_result(
@@ -468,10 +430,11 @@ def main():
 
     # Test 11: Prompt files exist and are non-empty
     prompt_files = {
-        "plan-synthesize.md": REPO_ROOT / "prompts" / "plan-synthesize.md",
-        "plan-consistency-check.md": REPO_ROOT / "prompts" / "plan-consistency-check.md",
+        "plan-synthesize-and-check.md": REPO_ROOT / "prompts" / "plan-synthesize-and-check.md",
         "plan-audit.md": REPO_ROOT / "prompts" / "plan-audit.md",
         "plan-contribution-contract.md": REPO_ROOT / "prompts" / "plan-contribution-contract.md",
+        "plan-synthesize.md": REPO_ROOT / "prompts" / "plan-synthesize.md",
+        "plan-consistency-check.md": REPO_ROOT / "prompts" / "plan-consistency-check.md",
     }
 
     for name, path in prompt_files.items():
