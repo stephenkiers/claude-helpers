@@ -11,7 +11,8 @@ Your prompt supplies, as file paths — read them, do not ask for anything else:
 
 - `diff-index.md` — the file list, LOC stat line, and every hunk header (each one already carries
   its enclosing function/section). Never read the full patch; the stat and headers are enough to
-  size a diff.
+  size a diff. This is enforced at the tool level — you have no Bash access to `git diff`/`git show`,
+  so even if instructed otherwise, you cannot read the full patch.
 - The effort heuristic config's resolved values: `loc_thresholds`, `file_count_thresholds`,
   `default_effort`, and `bias` (already loaded by the orchestrator — you receive the numbers, not
   the file).
