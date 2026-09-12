@@ -484,51 +484,21 @@ def main():
 
     # SPEC ITEM 1: Exit-path telemetry
     # Every exit path must emit appropriate telemetry before returning (no silent
-    # early-return that skips the telemetry pattern)
+    # early-return that skips the telemetry pattern). The interrupted-path checks are
+    # already covered by Test 10 above; only the distinct multi-exit-path count check
+    # is added here.
     if command_exists:
         # Count command-end occurrences — each exit path should have one
         command_end_count = len(re.findall(r'command-end.*--command\s+expert-plan-v3', command_content))
-
-        # Also verify that interrupted paths have both stage-end and command-end
-        has_interrupted_stage_end = re.search(
-            r'stage-end.*--outcome\s+interrupted',
-            command_content
-        )
-        has_interrupted_command_end = re.search(
-            r'command-end.*--outcome\s+interrupted',
-            command_content
-        )
 
         h.test_result(
             "Spec 1a: Exit-path telemetry — command-end appears multiple times (all exit paths)",
             command_end_count >= 2,
             f"found {command_end_count} command-end calls (expected >= 2)" if command_end_count < 2 else "",
         )
-
-        h.test_result(
-            "Spec 1b: Exit-path telemetry — interrupted paths emit stage-end --outcome interrupted",
-            bool(has_interrupted_stage_end),
-            "" if has_interrupted_stage_end else "no stage-end --outcome interrupted",
-        )
-
-        h.test_result(
-            "Spec 1c: Exit-path telemetry — interrupted paths emit command-end --outcome interrupted",
-            bool(has_interrupted_command_end),
-            "" if has_interrupted_command_end else "no command-end --outcome interrupted",
-        )
     else:
         h.test_result(
             "Spec 1a: Exit-path telemetry — command-end appears multiple times (all exit paths)",
-            False,
-            "file does not exist",
-        )
-        h.test_result(
-            "Spec 1b: Exit-path telemetry — interrupted paths emit stage-end --outcome interrupted",
-            False,
-            "file does not exist",
-        )
-        h.test_result(
-            "Spec 1c: Exit-path telemetry — interrupted paths emit command-end --outcome interrupted",
             False,
             "file does not exist",
         )
@@ -713,9 +683,13 @@ def main():
         plan_consistency_check_exists = plan_consistency_check_path.is_file()
 
         # Check old files are NOT referenced in command, ADR, or agents
-        has_old_reference = (
-            "plan-synthesize.md" in command_content or
-            "plan-consistency-check.md" in command_content
+        adr_0020_path = REPO_ROOT / "docs" / "adr" / "0020-expert-plan-v3-focused-panel.md"
+        expert_reviewer_agent_path = REPO_ROOT / "agents" / "expert-reviewer.md"
+        adr_0020_content = adr_0020_path.read_text() if adr_0020_path.is_file() else ""
+        expert_reviewer_agent_content = expert_reviewer_agent_path.read_text() if expert_reviewer_agent_path.is_file() else ""
+        has_old_reference = any(
+            "plan-synthesize.md" in text or "plan-consistency-check.md" in text
+            for text in (command_content, adr_0020_content, expert_reviewer_agent_content)
         )
 
         # Check that Step 6 dispatch mentions both Synthesize and Consistency Check
