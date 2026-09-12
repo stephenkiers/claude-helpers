@@ -119,6 +119,9 @@ separate from the reviewer-context cascade.
 - `/expert-plan-v2` — parallel isolated expert contributions; A/B baseline alongside v1 for personal
   preference, `--effort 1-5` scaling (see
   [ADR-0018](docs/adr/0018-parallel-planning-checkpoint-architecture.md) for why it exists alongside v1)
+- `/expert-plan-v3` — focused-panel planning with two effort levels (2 = 3 experts + consistency check, 3 = + independent auditor);
+  leaner alternative to v2 with Sonnet main-thread orchestration + per-step Opus judgment work (see
+  [ADR-0020](docs/adr/0020-expert-plan-v3-focused-panel.md))
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
 - `/pr-comments` — review PR comments and decide how to respond
