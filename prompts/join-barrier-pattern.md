@@ -17,10 +17,16 @@ file so downstream glob patterns find something (the barrier never hangs).
 
 ## Receipt Format
 
-The subagent's one-line receipt must be **parseable and unambiguous**. Expected format:
+The subagent's one-line receipt must be **parseable and unambiguous**. Expected format varies by context:
 
+**Multi-expert contexts (Steps 3, 4, 8):**
 ```
 {expert}-*.md written — {n} requirements, {n} risks, {n} open questions
+```
+
+**Single-agent contexts (Step 9):**
+```
+{filename} written — {n} resolved fixes, {n} needs-decision items
 ```
 
 The filename in the receipt must match the actual file written, and counts must be accurate.
@@ -36,6 +42,7 @@ The subagent writes to a file path and sentinel pattern determined by its contex
 | Step 3 (pod contributions, effort 2) | `{PLAN_SESSION_DIR}/{pod-id}-pod.md` | `<!-- pod-end -->` | Effort 2 pod path — separate sentinel |
 | Step 4 (Carl) | `{PLAN_SESSION_DIR}/contrarian-carl-contribution.md` | `<!-- contribution-end -->` | After per-expert barrier |
 | Step 8 (alignment) | `{PLAN_SESSION_DIR}/{expert}-alignment.md` | `<!-- alignment-end -->` | Per-expert alignment pass |
+| Step 9 (reconciliation, single agent) | `{PLAN_SESSION_DIR}/plan-reconciled.md` | `<!-- reconciliation-end -->` | Single-agent step — N=1; on join-barrier failure after retry, this is a hard command failure (no stand-in — plan-reconciled.md IS the deliverable, unlike per-expert alignment notes where a FAILED stand-in is harmless input signal) |
 
 The file **must end with its designated sentinel on a new line**.
 

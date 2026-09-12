@@ -91,4 +91,81 @@ branch refs/heads/feature
         )
 
     print()
+    print("[Section 5] detect_worktree_parent guards against a poisoned second worktree")
+
+    if hasattr(worktrees_module, "detect_worktree_parent"):
+        import workflow.git as git_module
+
+        original_get_porcelain = git_module.get_worktree_list_porcelain
+
+        def _fake_porcelain(porcelain_text):
+            def _impl(cwd=None):
+                return porcelain_text
+            return _impl
+
+        # Poisoned: second worktree nested under a type-prefixed folder.
+        poisoned_porcelain = """\
+worktree /repo/main
+branch refs/heads/main
+worktree /repo/worktrees/feature/166-foo
+branch refs/heads/feature/166-foo
+"""
+        git_module.get_worktree_list_porcelain = _fake_porcelain(poisoned_porcelain)
+        try:
+            result = worktrees_module.detect_worktree_parent()
+        finally:
+            git_module.get_worktree_list_porcelain = original_get_porcelain
+        test_result(
+            "detect_worktree_parent falls back to flat 'worktrees/' when second worktree is nested under a type prefix",
+            result == "/repo/worktrees"
+        )
+
+        # Legacy flat layout: second worktree's parent basename is not a type prefix — trust it as-is.
+        legacy_flat_porcelain = """\
+worktree /repo/main
+branch refs/heads/main
+worktree /repo/siblings/42-bar
+branch refs/heads/feature/42-bar
+"""
+        git_module.get_worktree_list_porcelain = _fake_porcelain(legacy_flat_porcelain)
+        try:
+            result = worktrees_module.detect_worktree_parent()
+        finally:
+            git_module.get_worktree_list_porcelain = original_get_porcelain
+        test_result(
+            "detect_worktree_parent still trusts a legacy flat (non-poisoned) second-worktree parent",
+            result == "/repo/siblings"
+        )
+
+        # Main worktree already under worktrees/, no second worktree: step 2.
+        single_under_worktrees_porcelain = """\
+worktree /repo/worktrees/main
+branch refs/heads/main
+"""
+        git_module.get_worktree_list_porcelain = _fake_porcelain(single_under_worktrees_porcelain)
+        try:
+            result = worktrees_module.detect_worktree_parent()
+        finally:
+            git_module.get_worktree_list_porcelain = original_get_porcelain
+        test_result(
+            "detect_worktree_parent returns existing worktrees/ dir when main already lives there (step 2)",
+            result == "/repo/worktrees"
+        )
+
+        # Single worktree, not under worktrees/: step 3, create worktrees/ as sibling.
+        single_bare_porcelain = """\
+worktree /repo/main
+branch refs/heads/main
+"""
+        git_module.get_worktree_list_porcelain = _fake_porcelain(single_bare_porcelain)
+        try:
+            result = worktrees_module.detect_worktree_parent()
+        finally:
+            git_module.get_worktree_list_porcelain = original_get_porcelain
+        test_result(
+            "detect_worktree_parent creates worktrees/ as a sibling of main when none exists (step 3)",
+            result == "/repo/worktrees"
+        )
+
+    print()
     h.summarize_and_exit()
