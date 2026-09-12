@@ -401,7 +401,7 @@ and reviewer count.
    - File paths themselves
 3. Search this signal **case-insensitively** for any risk keywords. If any keyword is found in paths, hunk
    headers, issue/plan text, or commit messages: `EFFORT=4` (floor), `EFFORT_REASON="risk keyword: {keyword}"`,
-   `EFFORT_SOURCE=risk-floor`, skip to the output step below — the Effort Scout (step 4) is not spawned
+   `EFFORT_SOURCE=risk-floor`, skip to the output step below — the Effort Scout (step 3) is not spawned
    for a diff that already floored to 4; there is nothing left for it to decide.
 4. Otherwise, compute the **mechanical tier** from `diff-index.md`'s LOC and file count (call them `LOC`
    and `FILES`) exactly as before, as the fallback and the baseline the Scout reasons from:
@@ -420,12 +420,12 @@ and reviewer count.
    Then spawn one **Effort Scout** (`expert-scout` agent, `prompts/effort-scout.md`) with
    `diff-index.md`'s path, the resolved `loc_thresholds`/`file_count_thresholds`/`default_effort`/`bias`,
    and any issue/plan text and commit messages gathered in step 2 — pointing it at an output path in
-   `REVIEW_DIR` (e.g. `effort-scout.json`; never give it `full-diff.patch`). Parse its
+   `REVIEW_DIR` (e.g. `effort-scout.json`; never give it `full-diff.patch`). Read the `effort-scout.json` file and extract the `effort` and `reason` JSON fields. Both must be present; if either is missing or malformed, treat as invalid JSON. Parse its
    `{"effort": N, "reason": "..."}` output:
-   - Valid response with `effort` in `{2,3,4}` **and `effort` ≤ `MECHANICAL_EFFORT`** → `EFFORT=N`,
+   - Valid response with `effort` in `{2,3,4}` **and effort ≤ MECHANICAL_EFFORT** → `EFFORT=N`,
      `EFFORT_REASON` = the Scout's `reason`, `EFFORT_SOURCE=haiku-scout`. (Scout recommendations are
      downward-only; if Scout's `effort` exceeds the mechanical tier, treat as invalid and fall back.)
-   - Missing file, invalid JSON, non-fatal agent error, `effort` outside `{2,3,4}`, or Scout's `effort` >
+   - Missing file, invalid JSON or incomplete output (e.g., missing `effort` key or non-integer value), non-fatal agent error, `effort` outside `{2,3,4}`, or Scout's `effort` >
      `MECHANICAL_EFFORT` → fall back to the mechanical calculation: `EFFORT=MECHANICAL_EFFORT`,
      `EFFORT_REASON=MECHANICAL_REASON`, `EFFORT_SOURCE=heuristic`. On any fallback, overwrite
      `effort-scout.json` with `{"error": "<reason>"}` — e.g. `"missing file"`, `"invalid JSON"`,

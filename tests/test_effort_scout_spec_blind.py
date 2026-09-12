@@ -50,19 +50,15 @@ has_effort_exceeds_check = False
 if expert_review_exists:
     content = expert_review_file.read_text()
 
-    # Check for prose about clamping/rejecting effort above MECHANICAL_EFFORT
+    # Require the literal ≤/<= comparison against MECHANICAL_EFFORT — no alternate
+    # branches, since any alternative matching only surrounding prose (e.g. "exceeds
+    # the mechanical tier") stays true even if the actual operator is flipped to ≥/>=,
+    # which is exactly the regression this check exists to catch.
     has_mechanical_effort_clamp = bool(re.search(
-        r"MECHANICAL_EFFORT|clamp|reject|effort.*above|effort.*exceeds",
-        content,
-        re.IGNORECASE
+        r"effort\s*(?:≤|<=)\s*MECHANICAL_EFFORT",
+        content
     ))
-
-    # Check for conditional logic that only accepts Scout response when effort ≤ some bound
-    has_effort_exceeds_check = bool(re.search(
-        r"effort.*MECHANICAL_EFFORT|effort.*<=|effort.*bounded|exceeds.*effort",
-        content,
-        re.IGNORECASE
-    ))
+    has_effort_exceeds_check = has_mechanical_effort_clamp
 
 t("Parse logic mentions MECHANICAL_EFFORT or effort clamping",
   has_mechanical_effort_clamp,
@@ -292,16 +288,6 @@ if adr_0012_exists and anchor_text:
 t("ADR-0012 has heading matching the linked anchor from ADR-0004",
   adr_0012_has_matching_heading,
   f"No heading found matching anchor '{anchor_text}'" if adr_0012_exists and anchor_text and not adr_0012_has_matching_heading else "")
-
-print()
-print("[Finding 8] Needs-you cluster ruling decision recorded")
-print("=" * 70)
-
-# This is a human decision recorded in the plan, not testable in code
-# (would need to check triage output or decision log, which doesn't exist as a code artifact)
-t("Needs-you ruling is a human decision (not code-testable)",
-  True,  # Always pass - this is documentation of a recorded decision
-  "")
 
 print()
 h.summarize_and_exit()
