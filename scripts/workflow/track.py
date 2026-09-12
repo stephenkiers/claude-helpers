@@ -147,6 +147,7 @@ class TrackPlan:
     branch_exists: bool = False
     expected_head_sha: Optional[str] = None
     cache_hash: Optional[str] = None
+    identity_hash: Optional[str] = None
     plan_hash: Optional[str] = None
     needs_confirmation: List[str] = field(default_factory=list)
 
@@ -272,6 +273,12 @@ def plan_track(
         # We compute the hash to detect stale plans; None is a valid state (file doesn't exist yet).
         cache_hash = hash_cache_file(Path(main_worktree) / ".claude" / "repo-cache.json")
 
+        # Compute identity hash from worktree_parent, slug, issue_type
+        # This binds apply_track to the plan state at plan time
+        # Use JSON serialization to avoid collision vulnerabilities from delimiter-based concat
+        identity_content = json.dumps([worktree_parent, slug, issue_type], sort_keys=False)
+        identity_hash = hash_file_content(identity_content)
+
         # Build plan
         plan = TrackPlan(
             mode=mode,
@@ -289,6 +296,7 @@ def plan_track(
             assignee=assignee,
             expected_head_sha=expected_head_sha,
             cache_hash=cache_hash,
+            identity_hash=identity_hash,
             needs_confirmation=needs_confirmation,
         )
 
@@ -337,6 +345,32 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
                 result.error = Unknown("plan went stale (cache changed)")
                 return result, result.error
 
+            # 2. Identity hash validation: independently re-derive worktree_parent, slug, issue_type
+            # and verify they match the plan's stored values directly
+            fresh_worktree_parent = worktrees.detect_worktree_parent(cwd=main_wt)
+            fresh_slug = slugify(plan.issue_title, max_len=50)
+            fresh_issue_type = infer_type(plan.issue_title, plan.plan_content)
+
+            # Direct field comparisons: reject if any field was tampered with
+            if fresh_worktree_parent != plan.worktree_parent:
+                result.error = Unknown("plan went stale (worktree_parent changed)")
+                return result, result.error
+            if fresh_slug != plan.slug:
+                result.error = Unknown("plan went stale (slug changed)")
+                return result, result.error
+            if fresh_issue_type != plan.issue_type:
+                result.error = Unknown("plan went stale (issue_type changed)")
+                return result, result.error
+
+            # Also verify identity_hash for environment/title drift between plan and apply time
+            # Use same JSON serialization as plan_track for consistency
+            identity_content = json.dumps([fresh_worktree_parent, fresh_slug, fresh_issue_type], sort_keys=False)
+            fresh_identity_hash = hash_file_content(identity_content)
+
+            if fresh_identity_hash != plan.identity_hash:
+                result.error = Unknown("plan went stale (environment changed since planning)")
+                return result, result.error
+
         except Exception as e:
             result.error = Unknown(f"freshness validation failed: {e}")
             return result, result.error
@@ -360,6 +394,37 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
         # 3. Resolve real branch/worktree names now that issue number exists
         real_branch = build_branch_name(plan.issue_type, issue_info.number, plan.slug)
         real_worktree_path = Path(plan.worktree_parent) / f"{issue_info.number}-{plan.slug}"
+
+        # Fail closed: validate plan.worktree_parent directly before using it.
+        # plan.worktree_parent must be a non-empty absolute path, and must not itself
+        # be a type-prefixed folder (which would indicate a nested/poisoned worktree parent).
+        worktree_parent_path = Path(plan.worktree_parent)
+        if not plan.worktree_parent or not worktree_parent_path.is_absolute():
+            msg = f"plan.worktree_parent ({plan.worktree_parent}) is not a non-empty absolute path"
+            result.error = Unknown(msg)
+            result.steps_failed.append(STEP_CREATE_WORKTREE)
+            return result, result.error
+
+        if worktree_parent_path.name in worktrees._TYPE_PREFIXES:
+            msg = (
+                f"plan.worktree_parent ({plan.worktree_parent}) is itself a type-prefixed folder "
+                f"({worktree_parent_path.name}), indicating a poisoned/nested worktree parent"
+            )
+            result.error = Unknown(msg)
+            result.steps_failed.append(STEP_CREATE_WORKTREE)
+            return result, result.error
+
+        # Additionally, verify that the computed worktree path's parent matches plan.worktree_parent.
+        # This defends against slug-based corruption where an embedded slash could cause nesting.
+        if real_worktree_path.parent != worktree_parent_path:
+            msg = (
+                f"computed worktree path {real_worktree_path} is not a direct child of "
+                f"worktree_parent ({plan.worktree_parent}) — refusing to create a nested worktree "
+                f"(issue #{result.issue_number} already created)"
+            )
+            result.error = Unknown(msg)
+            result.steps_failed.append(STEP_CREATE_WORKTREE)
+            return result, result.error
 
         # 4. Check collisions now (real names)
         try:
