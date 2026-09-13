@@ -105,3 +105,33 @@ default scale without the user remembering to dial it down, and captures the sig
 a diff scores high on risk despite being small. Closing message prints the run summary (code recap, effort
 and source, reviewer names and reason) plus an explicit `/implement-with-haiku` handoff, so the execution
 path is copy-pasteable and doesn't require re-reading the action plan.
+
+## Amendment: Haiku Effort Scout (2026-09-12)
+
+Even with the heuristic (previous amendment), a follow-up telemetry read (`~/.claude/telemetry/events.jsonl`)
+showed `resolve-scope` landing on effort 4 in 6 of 7 sampled runs — because no `effort-heuristic.yaml`
+existed yet on that machine, so every run fell back to the documented no-config default of flat effort 4,
+spawning 15–18 `expert-reviewer` subagents per run. Once a config exists, the mechanical LOC/file-count
+math (Decision above) still has a blind spot: it can't tell a 200-line diff of new branching logic from a
+200-line diff that's mostly a regenerated lockfile or a vendored snapshot — both hit the same thresholds.
+
+**Decision:** insert one Haiku agent call — the **Effort Scout** (`prompts/effort-scout.md`, run via the
+`expert-scout` agent) — between the risk-keyword floor and the mechanical calculation. It reads only
+`diff-index.md` (never the full patch) plus the resolved thresholds, and recommends an effort tier with a
+one-sentence, evidence-grounded reason. It may deviate from the mechanical tier, but only downward and
+only when it can name something concrete (generated files, lockfiles, pure renames) — deviating upward
+is never needed because the mechanical calculation is already the safe-expensive direction. A risk-keyword
+hit still floors at 4 unconditionally and skips the Scout entirely (nothing left for it to decide); a
+missing/invalid Scout response falls back to the mechanical calculation, never blocking the run.
+
+This is a deliberate, narrow exception to [ADR-0004](0004-model-cost-routing.md)'s Haiku-is-mechanical-only
+rule: sizing a diff's effort tier is a judgment call, not a lookup, but it is bounded judgment — one
+sentence, grounded in `diff-index.md`, downward-only relative to the deterministic fallback, with a
+deterministic risk floor upstream of it and the existing Critical-finding calibration flag downstream of
+it as a backstop if it under-sizes anyway. Accept the residual risk of an occasional wrong call because the
+two guardrails around it (risk floor before, calibration flag after) both stay deterministic.
+
+Alongside this, the default config shipped for personal use set `default_effort: 3` (was 4) and `bias: lean`
+(was `over-review`) — deliberately biasing the ceiling and the boundary-tie behavior toward smaller reviews,
+on the stated premise that most day-to-day diffs in this workflow don't need the full panel, and that PRs
+should generally be small enough that effort 2–3 is the right size, not the exception.

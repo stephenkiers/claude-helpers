@@ -122,6 +122,7 @@ already-reviewed commit never overwrites the prior run):
 |------|-----------|------|
 | `full-diff.patch` | Main thread | Step 1 — the full delta, ~1 char/token; large on purpose |
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
+| `effort-scout.json` | Effort Scout (Haiku) | Step 3 — `{effort, reason}`; only written when the heuristic runs and no risk keyword floored effort at 4 |
 | `pr-context.md` | `setup-pr-worktree.sh` (PR mode); main thread (effort 1, local mode) | Step 1 / swarm path — PR title, description, metadata; synthesized from branch/plan context in local-mode swarm |
 | `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
@@ -390,8 +391,8 @@ and reviewer count.
    (project-level, takes precedence). **If neither file exists, skip this heuristic entirely:**
    `EFFORT=4`, `EFFORT_SOURCE=default`, do not compute any signal below. If at least one file
    exists, load it (fall back to the template's defaults for any field it omits — `default_effort:
-   4`, `bias: over-review`, the risk-keyword list, and the LOC/file-count thresholds) and set
-   `EFFORT_SOURCE=heuristic`.
+   4`, `bias: over-review`, the risk-keyword list, and the LOC/file-count thresholds). `EFFORT_SOURCE`
+   is set definitively in steps 3–4 below (`risk-floor`, `haiku-scout`, or `heuristic`), not here.
 2. Gather signal **without reading the full diff** (per this command's existing context-discipline rules):
    - `diff-index.md` — reuse the file count and LOC total it already recorded at Step 1; do not
      re-run `git diff --numstat`/`--name-only` yourself, hunk headers with function names
@@ -400,9 +401,10 @@ and reviewer count.
    - File paths themselves
 3. Search this signal **case-insensitively** for any risk keywords. If any keyword is found in paths, hunk
    headers, issue/plan text, or commit messages: `EFFORT=4` (floor), `EFFORT_REASON="risk keyword: {keyword}"`,
-   skip to the output step below.
-4. Otherwise, compute effort from size using the LOC and file count already read from `diff-index.md` in
-   step 2 above (call them `LOC` and `FILES`):
+   `EFFORT_SOURCE=risk-floor`, skip to the output step below — the Effort Scout (step 3) is not spawned
+   for a diff that already floored to 4; there is nothing left for it to decide.
+4. Otherwise, compute the **mechanical tier** from `diff-index.md`'s LOC and file count (call them `LOC`
+   and `FILES`) exactly as before, as the fallback and the baseline the Scout reasons from:
    - Both LOC and file count must independently pass the same tier test: if either fails a tier, that tier
      is skipped. For each of `file_count_thresholds` and `loc_thresholds`, map to effort 2, 3, or 4:
      * If both LOC and file count are ≤ tier_2_max → effort 2
@@ -412,9 +414,23 @@ and reviewer count.
      only qualifies for tier 3, or vice versa): `over-review` takes the higher of the two tiers,
      `balanced` takes the tier implied by LOC, `lean` takes the lower of the two tiers. When LOC and
      FILES agree on the same tier, bias has no effect — use that tier directly.
-   - Clamp result to `[2,4]` — heuristic never emits 1 or 5.
-   - Set `EFFORT_REASON` to a one-line summary: e.g. `"18 LOC across 2 files, no risk keywords"` or
-     `"42 LOC across 5 files, tier 3"`.
+   - Clamp result to `[2,4]` — the mechanical calculation never emits 1 or 5.
+   - Call this `MECHANICAL_EFFORT`, with `MECHANICAL_REASON` set to a one-line summary: e.g.
+     `"18 LOC across 2 files, no risk keywords"` or `"42 LOC across 5 files, tier 3"`.
+   Then spawn one **Effort Scout** (`expert-scout` agent, `prompts/effort-scout.md`) with
+   `diff-index.md`'s path, the resolved `loc_thresholds`/`file_count_thresholds`/`default_effort`/`bias`,
+   and any issue/plan text and commit messages gathered in step 2 — pointing it at an output path in
+   `REVIEW_DIR` (e.g. `effort-scout.json`; never give it `full-diff.patch`). Read the `effort-scout.json` file and extract the `effort` and `reason` JSON fields. Both must be present; if either is missing or malformed, treat as invalid JSON. Parse its
+   `{"effort": N, "reason": "..."}` output:
+   - Valid response with `effort` in `{2,3,4}` **and effort ≤ MECHANICAL_EFFORT** → `EFFORT=N`,
+     `EFFORT_REASON` = the Scout's `reason`, `EFFORT_SOURCE=haiku-scout`. (Scout recommendations are
+     downward-only; if Scout's `effort` exceeds the mechanical tier, treat as invalid and fall back.)
+   - Missing file, invalid JSON or incomplete output (e.g., missing `effort` key or non-integer value), non-fatal agent error, `effort` outside `{2,3,4}`, or Scout's `effort` >
+     `MECHANICAL_EFFORT` → fall back to the mechanical calculation: `EFFORT=MECHANICAL_EFFORT`,
+     `EFFORT_REASON=MECHANICAL_REASON`, `EFFORT_SOURCE=heuristic`. On any fallback, overwrite
+     `effort-scout.json` with `{"error": "<reason>"}` — e.g. `"missing file"`, `"invalid JSON"`,
+     `"effort outside {2,3,4}"`, or `"effort N exceeds mechanical tier M"` — so the failure reason is
+     inspectable. Never let a Scout failure block the run.
 5. Print effort resolution at run start: `Effort: {EFFORT} ({EFFORT_SOURCE}: {EFFORT_REASON})`.
 
 **Reviewers.** Specific reviewers requested → match names case-insensitively against the index;
@@ -684,7 +700,7 @@ on; a decision is the reason they are reading at all.
 
 **Run summary**
 - Code recap: {1–2 sentences from `summary.md`'s Technical Summary; if effort 1, use `diff-index.md`'s stat line instead}
-- Effort: {N} ({"you specified it" if EFFORT_EXPLICIT, else "heuristic: " + EFFORT_REASON})
+- Effort: {N} ({"you specified it" if EFFORT_EXPLICIT, else EFFORT_SOURCE + ": " + EFFORT_REASON})
 - Reviewers: {names} ({reasoning from tagged-sections.md's Panel Decision, one clause} | "fixed 6-lens swarm screen" at effort 1 | "full index, effort 5" at effort 5)
 
 **Decisions for you**: N
@@ -717,15 +733,18 @@ When `needs-you: 0`, drop the Decisions header entirely and lead with the verdic
 empty section, and do not invent a question to look diligent. Same for `measure: 0` and the Needs
 measurement block.
 
-**Calibration flag** (when `EFFORT_SOURCE == heuristic`): after computing `findings.critical` for the
-metadata cache (Step 13), if any CRITICAL findings came back, append one line to the closing message:
+**Calibration flag** (when `EFFORT_SOURCE` is `heuristic` or `haiku-scout` — i.e. not explicit and not
+already floored at 4 by a risk keyword): after computing `findings.critical` for the metadata cache
+(Step 13), if any CRITICAL findings came back, append one line to the closing message:
 
 ```
-⚠️  Heuristic picked effort {EFFORT} for this diff; {findings.critical} Critical finding(s) came back.
-    Consider raising effort-heuristic.yaml's thresholds or bias for diffs like this.
+⚠️  {"Heuristic" if EFFORT_SOURCE == heuristic else "Effort Scout"} picked effort {EFFORT} for this
+    diff; {findings.critical} Critical finding(s) came back. Consider raising effort-heuristic.yaml's
+    thresholds or bias for diffs like this.
 ```
 
-Silent otherwise — no line printed for explicit `--effort` runs or when no Critical findings came back.
+Silent otherwise — no line printed for explicit `--effort` runs, `risk-floor` runs (already at the
+ceiling), or when no Critical findings came back.
 
 ---
 
