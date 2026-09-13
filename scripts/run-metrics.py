@@ -146,7 +146,11 @@ def cmd_session_begin(args):
 
 
 def cmd_session_end(args):
-    """Record a session.end event from a SessionEnd hook payload on stdin."""
+    """Record a session.end event from a SessionEnd hook payload on stdin.
+
+    Before emitting session.end, sweeps any open command/stage entries and emits
+    interrupted end events for them.
+    """
     payload = read_stdin_json()
     if payload is None:
         sys.exit(1)
@@ -158,6 +162,38 @@ def cmd_session_end(args):
 
     elapsed_seconds = telemetry_schema.UNKNOWN
     if session_id != telemetry_schema.UNKNOWN:
+        # Sweep open command/stage state and emit interrupted end events
+        sweep_events = _guarded_state_op(
+            telemetry_schema.sweep_open_command_state,
+            telemetry_schema.state_path(session_id, args.state_dir),
+            session_id,
+        )
+        if sweep_events:
+            for event_info in sweep_events:
+                if event_info["event_type"] == "stage.end":
+                    event = telemetry_schema.build_event(
+                        "stage.end",
+                        session_id=session_id,
+                        timestamp=timestamp,
+                        command_id=event_info["command_id"],
+                        stage_id=event_info["stage_id"],
+                        stage=event_info["stage"],
+                        outcome=telemetry_schema.outcome_interrupted(),
+                        elapsed_seconds=event_info["elapsed_seconds"],
+                    )
+                    telemetry_schema.append_event(args.log, event)
+                elif event_info["event_type"] == "command.end":
+                    event = telemetry_schema.build_event(
+                        "command.end",
+                        session_id=session_id,
+                        timestamp=timestamp,
+                        command_id=event_info["command_id"],
+                        command=event_info["command"],
+                        outcome=telemetry_schema.outcome_interrupted(),
+                        elapsed_seconds=event_info["elapsed_seconds"],
+                    )
+                    telemetry_schema.append_event(args.log, event)
+
         began_at = _guarded_state_op(
             telemetry_schema.resolve_and_clear_session_began_at,
             telemetry_schema.session_meta_path(session_id, args.state_dir),
@@ -222,6 +258,11 @@ def cmd_agent_end(args):
 
     Parses agent_transcript_path if present, extracts token usage, and records it
     in the usage state via record_agent_usage.
+
+    Parse failures are logged to stderr with the exception class and message, but
+    never written to events.jsonl. Status values distinguish: no_transcript_path
+    (not provided), path_not_a_file (path doesn't exist), parse_raised (exception),
+    parsed_empty (well-formed but zero tokens), counted (success).
     """
     payload = read_stdin_json()
     if payload is None:
@@ -245,17 +286,24 @@ def cmd_agent_end(args):
     usage_status = "unparseable"
 
     agent_transcript_path = payload.get("agent_transcript_path")
-    if agent_transcript_path:
+    if not agent_transcript_path:
+        usage_status = "no_transcript_path"
+    else:
         transcript_path = Path(agent_transcript_path)
-        if transcript_path.is_file():
+        if not transcript_path.is_file():
+            usage_status = "path_not_a_file"
+        else:
             try:
                 parse_result = telemetry_schema.parse_transcript_tokens(transcript_path)
                 tokens_dict = parse_result.get("tokens", tokens_dict)
                 token_confidence = "low"
                 if telemetry_schema.counted_tokens(tokens_dict) is not None:
                     usage_status = "counted"
-            except Exception:
-                usage_status = "unparseable"
+                else:
+                    usage_status = "parsed_empty"
+            except Exception as e:
+                usage_status = "parse_raised"
+                print(f"telemetry: agent.end transcript parse failed for agent_id={agent_id}: {type(e).__name__}: {e}", file=sys.stderr)
 
     if session_id != telemetry_schema.UNKNOWN and agent_id != telemetry_schema.UNKNOWN:
         began_at = _guarded_state_op(
@@ -297,7 +345,7 @@ def cmd_command_begin(args):
     timestamp = datetime.now(timezone.utc).isoformat()
 
     # Opportunistic cleanup of stale state files (24h cutoff)
-    _guarded_state_op(telemetry_schema.prune_stale_state, args.state_dir)
+    _guarded_state_op(telemetry_schema.prune_stale_state, args.state_dir, session_id)
 
     # Write state file if session_id is known
     if session_id != telemetry_schema.UNKNOWN:
@@ -307,6 +355,7 @@ def cmd_command_begin(args):
             command_id,
             args.command,
             timestamp,
+            session_id,
         )
 
     event = telemetry_schema.build_event(
@@ -455,6 +504,7 @@ def cmd_command_end(args):
         resolution = _guarded_state_op(
             telemetry_schema.resolve_and_clear_command_state,
             telemetry_schema.state_path(session_id, args.state_dir),
+            session_id,
             args.command_id,
             args.command,
         )
@@ -507,6 +557,7 @@ def cmd_stage_begin(args):
         resolved_cmd_id = _guarded_state_op(
             telemetry_schema.resolve_and_set_stage_state,
             telemetry_schema.state_path(session_id, args.state_dir),
+            session_id,
             args.command_id,
             stage_id,
             args.stage,
@@ -560,6 +611,7 @@ def cmd_stage_end(args):
         resolution = _guarded_state_op(
             telemetry_schema.resolve_and_clear_stage_state,
             telemetry_schema.state_path(session_id, args.state_dir),
+            session_id,
             args.command_id,
             args.stage_id,
             args.stage,

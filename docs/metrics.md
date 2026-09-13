@@ -209,23 +209,74 @@ When a `CLAUDE_CODE_SESSION_ID` environment variable is set (always true in Clau
 
 ### State File Schema
 
+The file is a dict of command-lifecycle entries keyed by `command_id`, so nested/sibling commands
+within the same session each get their own entry instead of clobbering a single flat slot. A
+reserved `"unknown"` key holds stage activity that has no owning command (a `stage-begin` with no
+prior `command-begin` — legal, and must stay legal):
+
 ```json
 {
-  "command_id": "hex-uuid or null",
-  "command": "command-name or null",
-  "command_began_at": "ISO timestamp or null",
-  "stage_id": "hex-uuid or null",
-  "stage": "stage-name or null",
-  "stage_began_at": "ISO timestamp or null"
+  "commands": {
+    "<command_id>": {
+      "session_id": "session-id",
+      "command": "command-name or null",
+      "command_began_at": "ISO timestamp or null",
+      "stage_id": "hex-uuid or null",
+      "stage": "stage-name or null",
+      "stage_began_at": "ISO timestamp or null"
+    },
+    "unknown": {
+      "session_id": "session-id",
+      "command": null,
+      "stage_id": "hex-uuid",
+      "stage": "stage-name",
+      "stage_began_at": "ISO timestamp"
+    }
+  }
 }
 ```
 
+Each entry also stores `session_id` (not just a top-level field) so a mismatch guard can verify the
+entry belongs to the current session before it's read, cleared, or resolved.
+
 ### Behavior
 
-- **`command-begin`:** Writes `{"command_id": ..., "command": ..., "command_began_at": ..., "stage_id": null, "stage": null, "stage_began_at": null}`, replacing any prior state. Opportunistically prunes state files older than 24 hours as a side effect (best-effort; failures are silently ignored).
-- **`stage-begin`:** Updates `stage_id`, `stage`, and `stage_began_at`, leaving `command_id`/`command`/`command_began_at` intact. Reads `command_id` from state file if no explicit `--command-id` flag is given.
-- **`stage-end`:** Clears the `stage_id`/`stage`/`stage_began_at` fields back to null (command may still be in flight). Reads `stage_id` and `command_id` from state if not explicitly provided, and — only when the stage-id resolution is a genuine match (not a mismatched explicit override) — uses `stage_began_at` to compute `elapsed_seconds`.
-- **`command-end`:** Deletes the session's state file entirely (command lifecycle is complete). Reads `command_id` from state if not explicitly provided, and — only on a genuine match — uses `command_began_at` to compute `elapsed_seconds`.
+- **`command-begin`:** Adds (or replaces) only the entry under its own `command_id` — a new
+  `command-begin` never touches sibling entries; last-write-wins applies only within the same
+  `command_id`. Opportunistically prunes stale state files as a side effect (best-effort; failures
+  are silently ignored; the current session's own files are skipped — see "Per-Entry Eviction and
+  Pruner Self-Skip" below).
+- **`stage-begin`:** Resolves the target entry (LIFO innermost-open by session_id if no explicit
+  `--command-id`, else falling back to the reserved `"unknown"` entry) and updates that entry's
+  `stage_id`, `stage`, and `stage_began_at`, leaving its `command_id`/`command`/`command_began_at`
+  intact.
+- **`stage-end`:** Clears the resolved entry's `stage_id`/`stage`/`stage_began_at` fields back to
+  null (its command may still be in flight; sibling entries are never touched). Reads `stage_id` and
+  `command_id` via the resolution rule below if not explicitly provided, and — only when the
+  resolution is a genuine name match (not a mismatch) — uses `stage_began_at` to compute
+  `elapsed_seconds`.
+- **`command-end`:** Pops only the resolved entry from the dict (the state file itself survives with
+  any sibling entries intact — command lifecycle is complete only for that one entry). Reads
+  `command_id` via the resolution rule below if not explicitly provided, and — only on a genuine
+  match — uses `command_began_at` to compute `elapsed_seconds`.
+
+### Per-Entry Eviction and Pruner Self-Skip
+
+The dict shape has no self-healing the way the old single-slot file did (a stray leftover entry
+just sits there instead of being clobbered by the next `command-begin`), so it needs its own bound:
+
+- **Per-entry eviction:** every mutation (`command-begin`, `command-end`, `stage-begin`, `stage-end`)
+  resolves its own target entry first, then calls an internal `_evict_expired(entries, keep_id, now)`
+  helper that drops any *other* entry whose `command_began_at` is older than 12h (matching
+  `diagnose`'s stale/recent split, so both agree on what "abandoned" means), then enforces a hard cap
+  of 16 entries by evicting the oldest-begun entries first. `keep_id` is always the entry the call
+  just resolved, so a call can never evict the entry it is about to read, set, or clear.
+- **Pruner self-skip:** `prune_stale_state` (called opportunistically from `command-begin`, before
+  its own write) now skips the current session's own files — both `{safe_id}.json` and
+  `{safe_id}.session.json` — so an active session's file is never reaped mid-run purely because
+  every write bumps its mtime past whatever staleness window the pruner uses; that mtime-based file
+  prune is a coarser, cross-session mechanism than the per-entry eviction above and does not
+  substitute for it.
 
 ### Session-Meta File (separate from the state file above)
 
@@ -239,24 +290,47 @@ When a `CLAUDE_CODE_SESSION_ID` environment variable is set (always true in Clau
 }
 ```
 
-This is deliberately not the same file: `command-end` deletes the state file wholesale on every command, and doing the same to session/agent timing would wipe an in-flight agent's `began_at` the moment its parent command finished (agents can outlive the command that spawned them). `agents` is a dict keyed by `agent_id` — unlike the single-slot `stage_id`/`command_id` fields, multiple agents can be in flight concurrently within one session without clobbering each other. Each stored value (both the top-level `session_id` and each `agents` entry's `session_id`) exists to back a genuine-match CAS guard, mirroring the command/stage path below: `session-end` only returns `session_began_at` and deletes this file when the file's recorded `session_id` equals the session_id it was called with, and `agent-end` only returns an agent's `began_at` when that agent's stored `session_id` matches — otherwise the read is refused (returns nothing usable) and a warning is logged to stderr, and the file/entry is left as-is (session) or popped without being trusted (agent). This guards against session IDs containing characters outside `session_meta_path`'s filename-safe set, which all collide onto the same `unknown.session.json` file. `session-end`'s file deletion on a genuine match also sweeps any orphaned `agents` entries left behind by an agent whose `agent-end` never fired — a session ending is that file's natural end of life.
+This is deliberately not the same file: state entries and session/agent timing have **different
+lifetimes**. A command-state entry is popped when its own `command-end` resolves, but the session and
+its agents must survive that — an agent can outlive the command that spawned it, so wiping session/
+agent timing alongside a command entry would lose an in-flight agent's `began_at` the moment its
+parent command finished. `agents` is a dict keyed by `agent_id`, mirroring the state file's own
+`commands` dict keyed by `command_id` — both let concurrent, same-session lifecycles coexist without
+clobbering each other. Each stored value (both the top-level `session_id` and each `agents` entry's `session_id`) exists to back a genuine-match CAS guard, mirroring the command/stage path below: `session-end` only returns `session_began_at` and deletes this file when the file's recorded `session_id` equals the session_id it was called with, and `agent-end` only returns an agent's `began_at` when that agent's stored `session_id` matches — otherwise the read is refused (returns nothing usable) and a warning is logged to stderr, and the file/entry is left as-is (session) or popped without being trusted (agent). This guards against session IDs containing characters outside `session_meta_path`'s filename-safe set, which all collide onto the same `unknown.session.json` file. `session-end`'s file deletion on a genuine match also sweeps any orphaned `agents` entries left behind by an agent whose `agent-end` never fired — a session ending is that file's natural end of life.
 
 ### ID Resolution (Precedence)
 
-When an ID-bearing call site (e.g., `stage-end`) omits an explicit `--command-id` flag:
+No call site passes an explicit `--command-id`/`--stage-id` today — every resolution is ambient,
+against the `commands` dict, under the one lock held for the whole read-modify-write:
 
-1. **Explicit flag wins:** If `--command-id` is passed, use it.
-2. **State file fallback:** If session_id is known (not "unknown"), read the state file and use the recorded command_id.
-3. **Graceful degradation:** If both (1) and (2) fail, use the literal string `"unknown"`.
+| Call | Candidate set | Resolution |
+|---|---|---|
+| `--command-id` given | entry under that id, session_id matching | that entry; `state_mismatch = None` (explicit ID is trusted); absent → `cleared = False`, `began_at = None` |
+| `command-end`, no id, exactly 1 entry with `command == name` | — | that entry; `state_mismatch = None` |
+| `command-end`, no id, 2+ entries with `command == name` | — | LIFO: the most recently begun (innermost open); `state_mismatch = None` |
+| `command-end`, no id, 0 name matches but ≥1 entry exists for this session | — | falls back to those entries (LIFO if 2+); `state_mismatch = True`; the resolved `command_id`/`elapsed_seconds` behave as described under State Mismatch Detection below |
+| `command-end`, no id, no entries for this session | — | `command_id = UNKNOWN`, `state_mismatch = None` |
+| `stage-begin`, no id | — | LIFO innermost-open entry; if none, the reserved `"unknown"` entry |
+| `stage-end`, `--stage-id` given | all entries | scan for that `stage_id` (uuid4 — globally unique, so positional ambiguity does not arise) |
+| `stage-end`, no id | entries with an open stage whose `stage == name` | 1 → it; 2+ → LIFO by `stage_began_at`; 0 name matches but some stage open → falls back to those entries (LIFO if 2+), `state_mismatch = True`; 0 with none open → `UNKNOWN`, `state_mismatch = None` |
 
-This ensures that calls with an explicit ID always override the state file (preserving intra-block failure-exit branches in `cleanup.md` that set and read IDs within the same Bash call).
+A resolution never adopts an entry whose `session_id` doesn't match the caller's — that guard exists
+so session IDs colliding onto the same filename-safe slot can't cross-contaminate each other's state.
 
 ### State Mismatch Detection
 
-If `stage-end` or `command-end` is called with a stage/command name that does not match what the state file says is currently active, the emitted event includes a `state_mismatch: true` field. This is a data-quality signal (currently not specially surfaced by `diagnose`, but available for future analysis). Examples:
+If `stage-end` or `command-end` is called with a stage/command name that does not match the resolved
+entry's recorded name, the emitted event includes a `state_mismatch: true` field. This is a
+data-quality signal (currently not specially surfaced by `diagnose`, but available for future
+analysis). `state_mismatch` keeps a narrow meaning: it fires only when the call genuinely fails to
+resolve by name (name matches nothing while other entries exist, or an open stage disagrees by name)
+— the mere *presence* of other entries never sets it, so a correctly-paired outer `command-end`
+sharing a session with unrelated sibling entries is not penalized. Examples:
 
-- `stage-begin --stage foo` followed by `stage-end --stage bar` (without explicit `--stage-id`) → `state_mismatch: true`
-- `command-begin --command shipit` followed by `command-end --command expert-review` (without explicit `--command-id`) → `state_mismatch: true`
+- `stage-begin --stage foo` followed by `stage-end --stage bar` (without explicit `--stage-id`, and
+  no other stage open) → `state_mismatch: true`
+- `command-begin --command shipit` followed by `command-end --command expert-review` (without
+  explicit `--command-id`, and no other `shipit` entry open) → `state_mismatch: true`
 
 Whenever `state_mismatch` is set to `true`, `elapsed_seconds` is also forced to `"unknown"` even though the underlying command_id/stage_id still resolved via a genuine match — a name mismatch signals that the caller and the state file disagree about what lifecycle is actually running, so the state's timestamp is no longer trusted enough to report as this event's duration.
 
@@ -266,7 +340,14 @@ When `CLAUDE_CODE_SESSION_ID` is unset or empty (session_id resolves to `"unknow
 
 ### Graceful Degradation on Concurrent Lifecycles
 
-Session-scoped state assumes only one command and one stage can be active per session at a time, and this assumption is backed by Compare-And-Swap (CAS) guards. When concurrent same-session lifecycles do occur, the state file is protected from corruption: a `*-end` call whose resolved ID no longer matches the state's current ID will silently skip its destructive clear/delete operation and log a stderr warning. This ensures that the concurrent lifecycle's state survives untouched, though the skipped `*-end` call will have emitted an event with resolved (often `"unknown"`) correlation IDs rather than the mismatched state's IDs.
+Nested and sibling commands within one session are a supported, first-class case: each gets its own
+entry in the `commands` dict, keyed by `command_id`, so they don't clobber each other. Only one stage
+is assumed active *per command entry* at a time, and that narrower assumption is backed by
+Compare-And-Swap (CAS) guards: a `*-end` call whose resolved id no longer matches the target entry's
+recorded id (a concurrent write already changed it) will silently skip its destructive clear/pop
+operation and log a stderr warning. This ensures that a genuinely concurrent write's state survives
+untouched, though the skipped `*-end` call will have emitted an event with resolved (often
+`"unknown"`) correlation IDs rather than the entry's actual IDs.
 
 The CLI subcommands are:
 
@@ -373,8 +454,14 @@ This split exists because a low match rate has two very different causes with di
 1. **A correlation bug** — an `*.end` call site not firing on some code path (e.g. an early-exit
    or error branch), or IDs failing to resolve across process boundaries.
 2. **Genuine session interruption** — a user closes the terminal, denies a permission and abandons
-   the flow, or `/clear`s mid-command. No `*.end` event is possible for these, and no amount of
-   code fixing raises the match rate further.
+   the flow, or `/clear`s mid-command. Historically no `*.end` event was possible for these, and no
+   amount of code fixing raised the match rate further. This is now **partly** addressed: `session-end`
+   sweeps every still-open command/stage entry for the session and closes each with an `--outcome
+   interrupted` `*.end` event before it clears the session-meta file, innermost-first. This only
+   fires when `session-end` itself runs (e.g. a hook-driven `SessionEnd`) — a hard process kill or a
+   dropped terminal with no `SessionEnd` hook still leaves the gap this section describes. The 12h
+   per-entry eviction TTL (see "Per-Entry Eviction and Pruner Self-Skip" above) is deliberately
+   aligned with this section's 12h stale threshold, so both agree on what "abandoned" means.
 
 Investigating the pre-existing gap (repo history before the session-scoped state-file fix,
 PR #107) found no evidence of case 2's sibling failure mode — an `*.end` arriving with the
@@ -536,7 +623,17 @@ Stored at `~/.claude/telemetry/state/<session_id>.json` (same session state file
 - `last_reported_floor_count` — the unparseable/mismatched/leftover agent count last acknowledged via `--mark-reported`; the floor-agent latch described above
 - `seams_checked` — list of seam IDs checked during the *current run* (reset at each `round1-join`)
 - `active_run` — the current run's baseline, minted at `round1-join`; `counted=`/`DECISION:` at every seam are `counted_tokens - active_run.baseline_counted_tokens`
-- `agents` — map of per-agent data (keyed by `agent_id`); `status` is one of `counted` (transcript parsed successfully), `unparseable` (missing/corrupt transcript), or `session-mismatch`
+- `agents` — map of per-agent data (keyed by `agent_id`); `status` is one of `counted` (transcript
+  parsed successfully), `session-mismatch`, or one of four values that distinguish *why* a transcript
+  wasn't counted (all four, plus the legacy `unparseable` below, are members of
+  `telemetry_schema.UNPARSEABLE_STATUSES` for the purpose of the usage-gate's floor count):
+  - `no_transcript_path` — the `SubagentStop` payload had no `agent_transcript_path` at all
+  - `path_not_a_file` — a path was given but nothing exists there
+  - `parse_raised` — the transcript file exists but parsing it raised an exception (the exception
+    class and message are logged to stderr, never written to `events.jsonl`)
+  - `parsed_empty` — the transcript parsed without error but yielded zero countable tokens
+  - `unparseable` — a legacy value: state files written before this four-way split still carry this
+    single catch-all bucket; new writes never use it
 
 ### Query Pattern: Token Totals by Session
 

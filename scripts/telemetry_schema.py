@@ -16,27 +16,46 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, NamedTuple, Optional, TypedDict, Union
+from typing import Dict, Literal, NamedTuple, Optional, TypedDict, Union
 
 
-class SessionState(TypedDict, total=False):
-    """Typed representation of session-scoped state dict.
+class CommandStateEntry(TypedDict, total=False):
+    """One entry in SessionState.commands: command/stage state for a single command lifecycle.
 
-    Fields command_id, command, stage_id, stage are optional; either present or absent.
-    `command_began_at`/`stage_began_at` hold ISO timestamps used to compute
-    elapsed_seconds when the matching end event resolves via this state file.
+    All fields are optional. session_id is stored on every entry (not just top-level) so
+    a mismatch guard can verify that the entry belongs to the current session before
+    reading, clearing, or resolving it — mirrors AgentBeganAtEntry's session_id guard.
 
-    Note: session_began_at and the per-agent began_at map live in a SEPARATE file
-    (see session_meta_path) rather than here, because command-end unconditionally
-    deletes this file on completion (test_command_end_deletes_state_file) — sharing
-    a file would wipe session/agent timing whenever a command finished.
+    command and command_began_at are set by command-begin. stage_id, stage, and
+    stage_began_at are set by stage-begin and cleared by stage-end.
     """
-    command_id: Optional[str]
+    session_id: Optional[str]
     command: Optional[str]
     command_began_at: Optional[str]
     stage_id: Optional[str]
     stage: Optional[str]
     stage_began_at: Optional[str]
+
+
+class SessionState(TypedDict, total=False):
+    """Typed representation of session-scoped state dict.
+
+    Stores a dict of command lifecycle entries keyed by command_id. The reserved
+    "unknown" entry key holds stage activity (an open stage) that has no owning command
+    (a stage-begin with no prior command-begin — legal today and must stay legal).
+    The "unknown" entry's command field is None; a name-matching command-end can never
+    adopt it.
+
+    Each entry is a CommandStateEntry, storing session_id on every entry (not just
+    top-level) so mutation and resolution can verify session_id matches before
+    reading/clearing.
+
+    Note: session_began_at and the per-agent began_at map live in a SEPARATE file
+    (see session_meta_path) rather than here, because command state entries have
+    different lifetimes from session/agent timing — the session and agents must survive
+    a command-end, but a command state entry is popped when its command ends.
+    """
+    commands: Dict[str, CommandStateEntry]
 
 
 class AgentBeganAtEntry(TypedDict):
@@ -67,7 +86,7 @@ class StageEndResolution(NamedTuple):
 class AgentUsageEntry(TypedDict, total=False):
     """One entry in UsageState.agents: usage tokens and metadata for a single agent."""
     session_id: str
-    status: Literal["counted", "unparseable", "session-mismatch"]
+    status: Literal["counted", "unparseable", "no_transcript_path", "path_not_a_file", "parse_raised", "parsed_empty", "session-mismatch"]
     counted_tokens: Optional[int]
     tokens: dict
     token_confidence: Optional[str]
@@ -156,10 +175,90 @@ RUN_MODES = frozenset({"local", "pr", "coworker"})
 FINDINGS_KEYS = frozenset(FindingsCounts.__annotations__.keys())
 CHECKS_KEYS = frozenset(ChecksCounts.__annotations__.keys())
 
+COMMAND_STATE_MAX_AGE_SECONDS = 12 * 60 * 60  # 12h — matches diagnose's stale/recent split
+COMMAND_STATE_MAX_ENTRIES = 16
+
 COUNTED_TOKEN_KEYS = ("input", "output", "cache_creation")
 THRESHOLD_STATES = frozenset({"under-threshold", "over-threshold-unreported", "over-threshold-reported", "unavailable", "session-mismatch"})
 ThresholdState = Literal["under-threshold", "over-threshold-unreported", "over-threshold-reported", "unavailable", "session-mismatch"]
 USAGE_GATE_DEFAULT_THRESHOLD = 130_000
+UNPARSEABLE_STATUSES = frozenset({"unparseable", "no_transcript_path", "path_not_a_file", "parse_raised", "parsed_empty"})
+
+
+def _load_command_entries(state: dict) -> Dict[str, CommandStateEntry]:
+    """Load command entries from state, migrating legacy flat format to new keyed dict.
+
+    If state already has a "commands" key with a dict value, return it as-is.
+
+    Otherwise, convert a legacy flat state (top-level command_id/command/etc.) into
+    a single entry keyed by command_id, or return an empty dict if neither format is found.
+
+    This is called on every state read to ensure smooth migration from old code to new.
+    """
+    if "commands" in state and isinstance(state.get("commands"), dict):
+        return state["commands"]
+
+    # Legacy flat format: migrate to new dict format
+    if state.get("command_id"):
+        command_id = state["command_id"]
+        entry: CommandStateEntry = {
+            "session_id": state.get("session_id"),
+            "command": state.get("command"),
+            "command_began_at": state.get("command_began_at"),
+            "stage_id": state.get("stage_id"),
+            "stage": state.get("stage"),
+            "stage_began_at": state.get("stage_began_at"),
+        }
+        return {command_id: entry}
+
+    return {}
+
+
+def _evict_expired(entries: Dict[str, "CommandStateEntry"], keep_id: Optional[str], now: datetime) -> None:
+    """Mutate entries in place, dropping expired/excess entries — never keep_id.
+
+    Called after a mutate_fn has already resolved its own target entry, passing that
+    entry's id as keep_id, so a call can never evict the entry it is about to read,
+    set, or clear.
+
+    Drops any entry (other than keep_id) whose command_began_at is older than
+    COMMAND_STATE_MAX_AGE_SECONDS (12h, matching diagnose's stale/recent split), then
+    enforces a hard cap of COMMAND_STATE_MAX_ENTRIES by evicting the oldest-begun
+    entries first. An entry with no parseable command_began_at (including the
+    reserved "unknown" entry, whose command field is None) is treated as never-expiring
+    by age but still counts toward the hard cap, sorting as oldest.
+    """
+    def began_at_epoch(entry: "CommandStateEntry") -> float:
+        raw = entry.get("command_began_at")
+        if not raw:
+            return float("-inf")
+        try:
+            normalized = raw.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (ValueError, TypeError, AttributeError):
+            return float("-inf")
+
+    for cid in list(entries.keys()):
+        if cid == keep_id:
+            continue
+        raw = entries[cid].get("command_began_at")
+        if not raw:
+            continue
+        age_seconds = now.timestamp() - began_at_epoch(entries[cid])
+        if age_seconds > COMMAND_STATE_MAX_AGE_SECONDS:
+            del entries[cid]
+
+    if len(entries) > COMMAND_STATE_MAX_ENTRIES:
+        evictable = sorted(
+            (cid for cid in entries if cid != keep_id),
+            key=lambda cid: began_at_epoch(entries[cid]),
+        )
+        overflow = len(entries) - COMMAND_STATE_MAX_ENTRIES
+        for cid in evictable[:overflow]:
+            del entries[cid]
 
 
 def outcome_success() -> dict:
@@ -453,10 +552,10 @@ def state_path(session_id: str, state_dir: Path = None) -> Path:
 def session_meta_path(session_id: str, state_dir: Path = None) -> Path:
     """Return the session-meta state file path for a given session_id.
 
-    Deliberately a different file from state_path(): that file is deleted wholesale
-    by resolve_and_clear_command_state on every command-end, so session_began_at and
-    per-agent began_at timestamps (which must outlive individual command lifecycles)
-    are tracked here instead.
+    Deliberately a different file from state_path(): session_began_at and per-agent
+    began_at timestamps (which must outlive individual command lifecycles) are tracked
+    here, while command state entries (popped when their command ends) live in state_path.
+    Different lifetimes justify the two-file split.
     """
     if state_dir is None:
         state_dir = default_state_dir()
@@ -470,6 +569,12 @@ def load_and_update_state(path: Path, mutate_fn) -> dict:
     Uses fcntl.flock to ensure atomic read-modify-write across concurrent callers.
     If the file doesn't exist or contains corrupt/empty JSON, treats it as an empty dict {}.
     If the state_dir doesn't exist, creates it with mode 0700.
+
+    IMPORTANT: This function must NOT be converted to write-temp-then-os.replace.
+    os.replace swaps the inode; every other process holds flock on the old inode,
+    so mutual exclusion evaporates silently. Mutual exclusion depends on one
+    flock-protected whole-file read-modify-write per operation with the existing
+    in-place ftruncate + write.
 
     Args:
         path: path to the state file
@@ -526,73 +631,134 @@ def load_and_update_state(path: Path, mutate_fn) -> dict:
         os.close(fd)
 
 
-def init_command_state(path: Path, command_id: str, command: str, began_at: Optional[str] = None) -> None:
-    """Atomically initialize session state for a new command lifecycle.
+def init_command_state(path: Path, command_id: str, command: str, began_at: Optional[str] = None, session_id: Optional[str] = None) -> None:
+    """Atomically initialize session state for a command lifecycle.
 
-    Replaces any prior state unconditionally (a new command-begin always wins —
-    this matches command-begin's existing behavior of starting a fresh lifecycle).
+    A new command-begin adds an entry under its own command_id; last-write-wins applies
+    only within the same command_id, and no other entry is replaced or dropped.
 
     began_at (an ISO timestamp) is stashed so a later command-end resolving via this
-    same state file can compute elapsed_seconds.
+    command_id can compute elapsed_seconds.
+
+    session_id is stored on the entry (not just top-level) so mutation and resolution
+    can verify session_id matches before reading/clearing — mirrors the agent path.
     """
     def mutate(state: dict) -> dict:
-        return {
-            "command_id": command_id,
+        entries = _load_command_entries(state)
+        entries[command_id] = {
+            "session_id": session_id,
             "command": command,
             "command_began_at": began_at,
             "stage_id": None,
             "stage": None,
             "stage_began_at": None,
         }
+        _evict_expired(entries, keep_id=command_id, now=datetime.now(timezone.utc))
+        return {"commands": entries}
     load_and_update_state(path, mutate)
 
 
-def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], command_name: str) -> CommandEndResolution:
-    """Atomically resolve command_id/state_mismatch and clear state for command-end.
+def resolve_and_clear_command_state(path: Path, session_id: Optional[str], command_id_arg: Optional[str], command_name: str) -> CommandEndResolution:
+    """Atomically resolve command_id/state_mismatch and clear the command entry.
 
-    Single critical section combining what were previously 2-3 separate locked calls
-    plus an unguarded unlink:
-    - Resolves command_id: explicit command_id_arg wins; else the state's command_id;
-      else telemetry_schema.UNKNOWN.
-    - Computes state_mismatch: only when command_id_arg was NOT given (i.e. explicit ID
-      always trusted, no mismatch check needed) — True if state has a recorded 'command'
-      that differs from command_name, else None.
-    - CAS-clears state: state is reset to {} ONLY if the state's own command_id equals the
-      resolved command_id (i.e. this call is finishing the lifecycle that state currently
-      describes). If the state's command_id differs (a concurrent command-begin already
-      replaced it, or --command-id was passed for a different lifecycle), the state is left
-      UNTOUCHED (do not clear it) and a warning is printed to stderr.
-    - began_at is only surfaced when the state actually cleared (i.e. this call is
-      genuinely closing the lifecycle the state describes) — otherwise there's no
-      trustworthy correlation between the resolved command_id and any stored timestamp.
+    Single critical section implementing the resolution truth table:
+    - If --command-id is given: use that entry if session_id matches; state_mismatch = None.
+    - If no --command-id: prefer entries whose command name matches, so sibling
+      commands with distinct names never collide. Only when no entry has this name
+      does resolution fall back, ambiently, to all entries for this session_id — that
+      fallback is what lets a name mismatch still resolve to (and report on) the
+      right entry instead of corrupting it to UNKNOWN:
+      - Exactly 1 name match: use it, state_mismatch = None.
+      - 2+ name matches: use LIFO (innermost open, latest begun), state_mismatch = None.
+      - 0 name matches but ≥1 entry for this session_id: fall back to those entries
+        (LIFO if 2+), state_mismatch = True.
+      - No entries for this session_id: resolve to UNKNOWN, state_mismatch = None.
+
+    CAS-clears: removes the entry under the resolved command_id ONLY if its recorded
+    command_id matches. If the entry doesn't exist or command_id differs, the state
+    is left UNTOUCHED.
+
+    The entry's session_id must match the given session_id (or both be None) — a
+    mismatch guard against session ID collisions.
+
+    began_at is only surfaced when the entry actually cleared (i.e. this call is
+    genuinely closing the entry's lifecycle) — otherwise there's no trustworthy
+    correlation between the resolved command_id and any stored timestamp.
 
     Returns a CommandEndResolution with (command_id, state_mismatch, cleared, began_at).
     """
     result = {}
 
     def mutate(state: dict) -> dict:
-        recorded_command_id = state.get("command_id")
-        recorded_began_at = state.get("command_began_at")
+        entries = _load_command_entries(state)
+
+        command_id = UNKNOWN
+        state_mismatch = None
+        resolved_entry = None
+
         if command_id_arg:
-            command_id = command_id_arg
-            state_mismatch = None
+            # Explicit --command-id: look it up
+            if command_id_arg in entries:
+                entry = entries[command_id_arg]
+                if entry.get("session_id") == session_id:
+                    command_id = command_id_arg
+                    resolved_entry = entry
+                    state_mismatch = None
+            else:
+                command_id = command_id_arg
+                state_mismatch = None
+                resolved_entry = None
         else:
-            command_id = recorded_command_id or UNKNOWN
-            recorded_command = state.get("command")
-            state_mismatch = True if (recorded_command and recorded_command != command_name) else None
+            # No --command-id: prefer an exact name match first (so sibling commands
+            # with distinct names never collide); only fall back to an ambient,
+            # name-agnostic match when no entry has this name, so a mismatch never
+            # corrupts the resolved ID.
+            name_matches = [
+                (cid, entry) for cid, entry in entries.items()
+                if entry.get("command") == command_name and entry.get("session_id") == session_id
+            ]
+            session_matches = [
+                (cid, entry) for cid, entry in entries.items()
+                if entry.get("session_id") == session_id
+            ]
+
+            if name_matches:
+                candidates = name_matches
+                mismatch_on_resolve = False
+            elif session_matches:
+                candidates = session_matches
+                mismatch_on_resolve = True
+            else:
+                candidates = []
+                mismatch_on_resolve = False
+
+            if not candidates:
+                command_id = UNKNOWN
+                state_mismatch = None
+                resolved_entry = None
+            elif len(candidates) == 1:
+                command_id, resolved_entry = candidates[0]
+                state_mismatch = True if mismatch_on_resolve else None
+            else:
+                # 2+ matches: LIFO by command_began_at (innermost open = latest begun)
+                candidates.sort(key=lambda x: x[1].get("command_began_at", ""), reverse=True)
+                command_id, resolved_entry = candidates[0]
+                state_mismatch = True if mismatch_on_resolve else None
+
         result["command_id"] = command_id
         result["state_mismatch"] = state_mismatch
-        if recorded_command_id and recorded_command_id == command_id:
+
+        # CAS-clear: only pop the entry if it exists and matches
+        if resolved_entry and command_id in entries and entries[command_id] is resolved_entry:
             result["cleared"] = True
-            result["began_at"] = recorded_began_at
-            try:
-                os.unlink(str(path))
-            except (OSError, FileNotFoundError):
-                pass
-            return {}
-        result["cleared"] = False
-        result["began_at"] = None
-        return state
+            result["began_at"] = resolved_entry.get("command_began_at")
+            del entries[command_id]
+        else:
+            result["cleared"] = False
+            result["began_at"] = None
+
+        _evict_expired(entries, keep_id=command_id, now=datetime.now(timezone.utc))
+        return {"commands": entries}
 
     load_and_update_state(path, mutate)
     if not result.get("cleared") and result.get("command_id") not in (None, UNKNOWN):
@@ -605,80 +771,183 @@ def resolve_and_clear_command_state(path: Path, command_id_arg: Optional[str], c
 
 
 def resolve_and_set_stage_state(
-    path: Path, command_id_arg: Optional[str], stage_id: str, stage_name: str, began_at: Optional[str] = None
+    path: Path, session_id: Optional[str], command_id_arg: Optional[str], stage_id: str, stage_name: str, began_at: Optional[str] = None
 ) -> str:
-    """Atomically resolve command_id and write stage fields into state for stage-begin.
+    """Atomically resolve command_id and write stage fields into the state entry.
 
-    Single critical section: resolves command_id (explicit command_id_arg wins; else the
-    state's existing command_id; else telemetry_schema.UNKNOWN), then sets stage_id/stage
-    on the same state dict, preserving whatever command_id/command was already present.
+    Single critical section implementing the stage-begin resolution:
+    - If --command-id is given and entry exists with matching session_id: use it.
+    - If no --command-id:
+      - If exactly 1 open entry with matching session_id: use it (innermost/LIFO).
+      - If 0 entries or all have wrong session_id: use "unknown" entry (or create it).
 
-    began_at (an ISO timestamp) is stashed so a later stage-end resolving via this same
-    state file can compute elapsed_seconds.
+    Sets stage_id/stage/stage_began_at on the resolved entry, preserving its
+    command/command_began_at unchanged.
+
+    began_at (an ISO timestamp) is stashed so a later stage-end can compute elapsed_seconds.
 
     Returns the resolved command_id.
     """
     result = {}
 
     def mutate(state: dict) -> dict:
-        recorded_command_id = state.get("command_id")
-        command_id = command_id_arg or recorded_command_id or UNKNOWN
+        entries = _load_command_entries(state)
+
+        if command_id_arg:
+            # Explicit command_id: use it if present and session_id matches
+            if command_id_arg in entries and entries[command_id_arg].get("session_id") == session_id:
+                command_id = command_id_arg
+            else:
+                # Explicit ID but not found or session mismatch: still use it
+                # (we'll write to it, creating if necessary)
+                command_id = command_id_arg
+                if command_id not in entries:
+                    entries[command_id] = {"session_id": session_id}
+        else:
+            # No explicit command_id: find LIFO innermost-open entry with matching session_id
+            matching_entries = [
+                (cid, entry) for cid, entry in entries.items()
+                if cid != UNKNOWN and entry.get("session_id") == session_id
+            ]
+            if matching_entries:
+                # LIFO by command_began_at (innermost = latest begun)
+                matching_entries.sort(key=lambda x: x[1].get("command_began_at", ""), reverse=True)
+                command_id, _ = matching_entries[0]
+            else:
+                # No matching entries: use reserved "unknown" entry
+                command_id = UNKNOWN
+                if command_id not in entries:
+                    entries[command_id] = {"session_id": session_id, "command": None}
+
         result["command_id"] = command_id
-        state["stage_id"] = stage_id
-        state["stage"] = stage_name
-        state["stage_began_at"] = began_at
-        return state
+
+        # Set stage fields on the resolved entry
+        if command_id not in entries:
+            entries[command_id] = {"session_id": session_id}
+        entries[command_id]["stage_id"] = stage_id
+        entries[command_id]["stage"] = stage_name
+        entries[command_id]["stage_began_at"] = began_at
+
+        _evict_expired(entries, keep_id=command_id, now=datetime.now(timezone.utc))
+        return {"commands": entries}
 
     load_and_update_state(path, mutate)
     return result["command_id"]
 
 
 def resolve_and_clear_stage_state(
-    path: Path, command_id_arg: Optional[str], stage_id_arg: Optional[str], stage_name: str
+    path: Path, session_id: Optional[str], command_id_arg: Optional[str], stage_id_arg: Optional[str], stage_name: str
 ) -> StageEndResolution:
-    """Atomically resolve command_id/stage_id/state_mismatch and clear stage fields for stage-end.
+    """Atomically resolve command_id/stage_id/state_mismatch and clear stage fields.
 
-    Single critical section combining what were previously 3-4 separate locked calls:
-    - Resolves stage_id: explicit stage_id_arg wins; else the state's stage_id; else UNKNOWN.
-    - Resolves command_id: explicit command_id_arg wins; else the state's command_id; else UNKNOWN.
-    - Computes state_mismatch: only when stage_id_arg was NOT given — True if state has a
-      recorded 'stage' that differs from stage_name, else None.
-    - CAS-clears ONLY the stage_id/stage fields (never command_id/command — the command
-      lifecycle is still in flight) ONLY if the state's own stage_id equals the resolved
-      stage_id. If it differs (a concurrent stage-begin already replaced it), the stage
-      fields are left UNTOUCHED and a warning is printed to stderr.
-    - began_at is only surfaced when the stage fields actually cleared — otherwise there's
-      no trustworthy correlation between the resolved stage_id and any stored timestamp.
+    Single critical section implementing the stage-end resolution:
+    - If --stage-id is given: scan all entries for that stage_id (uuid4, globally unique).
+    - If no --stage-id: prefer entries with an open stage whose name matches, so
+      sibling open stages with distinct names never collide. Only when no open stage
+      has this name does resolution fall back, ambiently, to any entry with an open
+      stage for this session_id — that fallback is what lets a name mismatch still
+      resolve to (and report on) the right stage/command instead of corrupting it to
+      UNKNOWN:
+      - Exactly 1 open stage matching the name: use it, state_mismatch = None.
+      - 2+ matching: use LIFO by stage_began_at, state_mismatch = None.
+      - 0 name matches but ≥1 entry has an open stage for this session_id: fall back
+        to those entries (LIFO if 2+), state_mismatch = True.
+      - No entry has an open stage for this session_id: resolve to UNKNOWN,
+        state_mismatch = None.
+
+    CAS-clears: removes stage_id/stage/stage_began_at ONLY if the entry's own
+    stage_id matches the resolved stage_id. Command fields (command/command_began_at)
+    are never touched — the command lifecycle survives a stage end.
+
+    The entry's session_id must match the given session_id — a mismatch guard.
+
+    began_at is only surfaced when the stage fields actually cleared.
 
     Returns a StageEndResolution with (command_id, stage_id, state_mismatch, began_at).
     """
     result = {}
 
     def mutate(state: dict) -> dict:
-        recorded_stage_id = state.get("stage_id")
-        recorded_command_id = state.get("command_id")
-        recorded_began_at = state.get("stage_began_at")
+        entries = _load_command_entries(state)
+
+        stage_id = UNKNOWN
+        command_id = UNKNOWN
+        state_mismatch = None
+        resolved_entry = None
+        resolved_cid = None
+
         if stage_id_arg:
-            stage_id = stage_id_arg
-            state_mismatch = None
+            # Explicit --stage-id: scan all entries for matching stage_id (uuid4, globally unique)
+            for cid, entry in entries.items():
+                if entry.get("stage_id") == stage_id_arg and entry.get("session_id") == session_id:
+                    stage_id = stage_id_arg
+                    command_id = cid
+                    resolved_entry = entry
+                    resolved_cid = cid
+                    break
+            else:
+                # Not found: use explicit stage_id_arg, and command_id_arg if given, else UNKNOWN
+                stage_id = stage_id_arg
+                command_id = command_id_arg or UNKNOWN
         else:
-            stage_id = recorded_stage_id or UNKNOWN
-            recorded_stage = state.get("stage")
-            state_mismatch = True if (recorded_stage and recorded_stage != stage_name) else None
-        command_id = command_id_arg or recorded_command_id or UNKNOWN
+            # No --stage-id: prefer an exact stage-name match among entries with an
+            # open stage first (so sibling open stages with distinct names never
+            # collide); only fall back to an ambient, name-agnostic match among open
+            # stages when none has this name, so a mismatch never corrupts the
+            # resolved stage_id/command_id.
+            name_matches = [
+                (cid, entry) for cid, entry in entries.items()
+                if entry.get("stage") == stage_name and entry.get("stage_id") and entry.get("session_id") == session_id
+            ]
+            open_stage_matches = [
+                (cid, entry) for cid, entry in entries.items()
+                if entry.get("stage_id") and entry.get("session_id") == session_id
+            ]
+
+            if name_matches:
+                candidates = name_matches
+                mismatch_on_resolve = False
+            elif open_stage_matches:
+                candidates = open_stage_matches
+                mismatch_on_resolve = True
+            else:
+                candidates = []
+                mismatch_on_resolve = False
+
+            if not candidates:
+                stage_id = UNKNOWN
+                command_id = UNKNOWN
+                state_mismatch = None
+            elif len(candidates) == 1:
+                command_id, resolved_entry = candidates[0]
+                resolved_cid = command_id
+                stage_id = resolved_entry.get("stage_id", UNKNOWN)
+                state_mismatch = True if mismatch_on_resolve else None
+            else:
+                # 2+ matches: LIFO by stage_began_at
+                candidates.sort(key=lambda x: x[1].get("stage_began_at", ""), reverse=True)
+                command_id, resolved_entry = candidates[0]
+                resolved_cid = command_id
+                stage_id = resolved_entry.get("stage_id", UNKNOWN)
+                state_mismatch = True if mismatch_on_resolve else None
+
         result["command_id"] = command_id
         result["stage_id"] = stage_id
         result["state_mismatch"] = state_mismatch
-        if recorded_stage_id and recorded_stage_id == stage_id:
+
+        # CAS-clear: only remove stage fields if entry exists and stage_id matches
+        if resolved_entry and resolved_cid and resolved_cid in entries and entries[resolved_cid].get("stage_id") == stage_id:
             result["cleared"] = True
-            result["began_at"] = recorded_began_at
-            state["stage_id"] = None
-            state["stage"] = None
-            state["stage_began_at"] = None
-            return state
-        result["cleared"] = False
-        result["began_at"] = None
-        return state
+            result["began_at"] = resolved_entry.get("stage_began_at")
+            entries[resolved_cid]["stage_id"] = None
+            entries[resolved_cid]["stage"] = None
+            entries[resolved_cid]["stage_began_at"] = None
+        else:
+            result["cleared"] = False
+            result["began_at"] = None
+
+        _evict_expired(entries, keep_id=resolved_cid, now=datetime.now(timezone.utc))
+        return {"commands": entries}
 
     load_and_update_state(path, mutate)
     if not result.get("cleared") and result.get("stage_id") not in (None, UNKNOWN):
@@ -813,18 +1082,125 @@ def resolve_and_clear_session_began_at(path: Path, session_id: str) -> Optional[
     return result["began_at"]
 
 
-def prune_stale_state(state_dir: Path = None, max_age_seconds: int = 86400) -> None:
+def _compute_elapsed_for_sweep(began_at: Optional[str], end_timestamp: str) -> Union[int, str]:
+    """Compute whole-second elapsed duration between an ISO began_at and end timestamp.
+
+    Local to sweep_open_command_state — mirrors run-metrics.py's _compute_elapsed (that
+    module imports this one, not the reverse, so the logic is duplicated here rather than
+    imported). Returns UNKNOWN (never a fabricated number) if began_at is missing/unparseable,
+    if end_timestamp is unparseable, or if the delta is negative.
+    """
+    if not began_at:
+        return UNKNOWN
+    try:
+        begin_dt = datetime.fromisoformat(began_at.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_timestamp.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return UNKNOWN
+    if begin_dt.tzinfo is None or end_dt.tzinfo is None:
+        return UNKNOWN
+    delta = (end_dt - begin_dt).total_seconds()
+    if delta < 0:
+        return UNKNOWN
+    return int(delta)
+
+
+def sweep_open_command_state(path: Path, session_id: str) -> list:
+    """Sweep open command/stage entries at session end, returning event info for closed lifecycle.
+
+    Loads state_path(session_id), selects entries with matching session_id, and processes
+    them innermost-first (reverse command_began_at order). For each open entry:
+    - If a stage is open, emit event info for stage.end with outcome=interrupted
+    - Then emit event info for command.end with outcome=interrupted (unless it's "unknown")
+    - The reserved "unknown" entry emits stage.end only, never command.end
+
+    Pops all swept entries; returns remaining (foreign-session) entries back to state file.
+    Never raises; wraps all errors internally.
+
+    Returns a list of dicts, each with keys: event_type, command_id, stage_id, stage, command, elapsed_seconds.
+    These can be used by cmd_session_end to build and emit the events.
+    """
+    events_to_emit = []
+
+    try:
+        result = {}
+
+        def mutate(state: dict) -> dict:
+            entries = _load_command_entries(state)
+
+            # Filter to entries with matching session_id, sort innermost-first
+            matching_cids = [
+                cid for cid in entries.keys()
+                if entries[cid].get("session_id") == session_id
+            ]
+            # Sort by command_began_at, reverse (innermost = latest = last in iteration)
+            matching_cids.sort(key=lambda cid: entries[cid].get("command_began_at", ""), reverse=True)
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            for cid in matching_cids:
+                entry = entries[cid]
+
+                # Emit stage.end if stage is open
+                if entry.get("stage_id") and entry.get("stage"):
+                    stage_elapsed = _compute_elapsed_for_sweep(entry.get("stage_began_at"), now)
+                    events_to_emit.append({
+                        "event_type": "stage.end",
+                        "command_id": cid,
+                        "stage_id": entry.get("stage_id"),
+                        "stage": entry.get("stage"),
+                        "elapsed_seconds": stage_elapsed,
+                    })
+
+                # Emit command.end only if not the reserved "unknown" entry
+                if cid != UNKNOWN and entry.get("command"):
+                    cmd_elapsed = _compute_elapsed_for_sweep(entry.get("command_began_at"), now)
+                    events_to_emit.append({
+                        "event_type": "command.end",
+                        "command_id": cid,
+                        "command": entry.get("command"),
+                        "elapsed_seconds": cmd_elapsed,
+                    })
+
+                # Pop the swept entry
+                del entries[cid]
+
+            return {"commands": entries}
+
+        load_and_update_state(path, mutate)
+    except Exception as e:
+        # Wrap all errors so this can never raise (runs in a hook)
+        print(f"telemetry: sweep_open_command_state failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+    return events_to_emit
+
+
+def prune_stale_state(state_dir: Path = None, current_session_id: Optional[str] = None, max_age_seconds: int = 86400) -> None:
     """Best-effort prune of state files older than max_age_seconds.
 
     Never raises; failures are silently ignored. If state_dir doesn't exist, returns
     quietly without error.
 
+    Skips the current session's files (both {safe_id}.json and {safe_id}.session.json)
+    to avoid reaping the live session's state while command-begin is running.
+
     Args:
         state_dir: directory containing state files (default: default_state_dir())
+        current_session_id: session ID to skip during pruning (default: None, no skipping)
         max_age_seconds: files older than this (in seconds) are deleted (default: 86400 = 24h)
     """
     if state_dir is None:
         state_dir = default_state_dir()
+
+    # Compute safe IDs to skip
+    skip_files = set()
+    if current_session_id and re.match(r"^[A-Za-z0-9_-]+$", current_session_id):
+        skip_files.add(f"{current_session_id}.json")
+        skip_files.add(f"{current_session_id}.session.json")
+    elif current_session_id:
+        # Collides onto "unknown"
+        skip_files.add("unknown.json")
+        skip_files.add("unknown.session.json")
 
     try:
         if not state_dir.exists():
@@ -832,6 +1208,9 @@ def prune_stale_state(state_dir: Path = None, max_age_seconds: int = 86400) -> N
 
         cutoff_time = time.time() - max_age_seconds
         for file_path in state_dir.iterdir():
+            if file_path.name in skip_files:
+                # Skip current session files
+                continue
             if file_path.is_file() and file_path.suffix == ".json":
                 try:
                     mtime = file_path.stat().st_mtime
@@ -854,6 +1233,10 @@ def parse_transcript_tokens(path: Path) -> dict:
 
     Raises OSError or FileNotFoundError if the file cannot be read.
     For parse errors, the exception is raised (caller decides how to handle).
+
+    Distinguishes between *malformed* (raises an exception) and *well-formed but empty*
+    (returns cleanly with zero countable tokens). The caller's cmd_agent_end uses these
+    to set different status values: parse_raised vs parsed_empty.
     """
     path = Path(path)
     lines_parsed = 0
@@ -1074,7 +1457,7 @@ def read_usage_state(path: Path, session_id: str) -> dict:
                 status = agent_entry.get("status")
                 if status == "counted":
                     accounted_count += 1
-                elif status in ("unparseable", "session-mismatch"):
+                elif status in UNPARSEABLE_STATUSES or status == "session-mismatch":
                     unparseable_mismatched_count += 1
 
     unaccounted_no_agent_id = usage.get("unaccounted_no_agent_id_tokens", 0)
@@ -1221,7 +1604,7 @@ def record_agent_usage(
                 if status == "counted" and counted is not None:
                     current_counted = usage.get("counted_tokens", 0)
                     usage["counted_tokens"] = current_counted + counted
-                elif status in ("unparseable", "session-mismatch") or counted is None:
+                elif status in UNPARSEABLE_STATUSES or status == "session-mismatch" or counted is None:
                     pass
 
         state["agents"] = agents_begin_map

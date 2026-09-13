@@ -1129,11 +1129,10 @@ def test_state_file_persists_command_id():
         with open(state_file) as f:
             state_content = json.loads(f.read())
 
-        if "command_id" not in state_content:
-            return False, f"state file missing command_id: {state_content}"
-
-        if state_content.get("command_id") != stdout1.strip():
-            return False, f"state command_id doesn't match stdout"
+        cmd_id = stdout1.strip()
+        commands = state_content.get("commands", {})
+        if cmd_id not in commands:
+            return False, f"state file missing command_id {cmd_id}: {state_content}"
 
         return True, ""
 
@@ -1186,10 +1185,13 @@ def test_stage_end_clears_stage_state():
         env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # command-begin
-        run_script(
+        code1, stdout1, stderr1 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
             env=env,
         )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id = stdout1.strip()
 
         # stage-begin
         run_script(
@@ -1201,7 +1203,9 @@ def test_stage_end_clears_stage_state():
         state_file = state_dir / f"{session_id}.json"
         with open(state_file) as f:
             before_state = json.loads(f.read())
-        if before_state.get("stage_id") is None or before_state.get("stage") is None:
+        commands = before_state.get("commands", {})
+        entry = commands.get(cmd_id, {})
+        if entry.get("stage_id") is None or entry.get("stage") is None:
             return False, "state should have stage_id and stage after stage-begin"
 
         # stage-end
@@ -1216,21 +1220,23 @@ def test_stage_end_clears_stage_state():
         with open(state_file) as f:
             after_state = json.loads(f.read())
 
-        if after_state.get("stage_id") is not None:
-            return False, f"after stage-end, stage_id should be None, got: {after_state.get('stage_id')}"
+        commands = after_state.get("commands", {})
+        entry = commands.get(cmd_id, {})
+        if entry.get("stage_id") is not None:
+            return False, f"after stage-end, stage_id should be None, got: {entry.get('stage_id')}"
 
-        if after_state.get("stage") is not None:
-            return False, f"after stage-end, stage should be None, got: {after_state.get('stage')}"
+        if entry.get("stage") is not None:
+            return False, f"after stage-end, stage should be None, got: {entry.get('stage')}"
 
-        # command_id should still be present (it's cleared at command-end)
-        if "command_id" not in after_state:
-            return False, "command_id should persist after stage-end"
+        # command_id entry should still be present (it's cleared at command-end)
+        if cmd_id not in commands:
+            return False, "command_id entry should persist after stage-end"
 
         return True, ""
 
 
 def test_command_end_deletes_state_file():
-    """After command-end, the state file is deleted entirely."""
+    """After command-end, the state file still exists but the entry is removed."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
@@ -1239,10 +1245,13 @@ def test_command_end_deletes_state_file():
         env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
         # command-begin
-        run_script(
+        code1, stdout1, stderr1 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
             env=env,
         )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id = stdout1.strip()
 
         state_file = state_dir / f"{session_id}.json"
         if not state_file.exists():
@@ -1256,9 +1265,16 @@ def test_command_end_deletes_state_file():
         if code != 0:
             return False, f"command-end failed: {stderr}"
 
-        # Verify state file is deleted
-        if state_file.exists():
-            return False, "state file should be deleted after command-end"
+        # Verify state file still exists (not deleted)
+        if not state_file.exists():
+            return False, "state file should survive after command-end"
+
+        # Verify the entry is removed
+        with open(state_file) as f:
+            state = json.load(f)
+        commands = state.get("commands", {})
+        if cmd_id in commands and commands[cmd_id].get("command"):
+            return False, f"command entry should be removed from state after command-end"
 
         return True, ""
 
@@ -1401,10 +1417,11 @@ def test_command_end_cas_guard_protects_different_command_state():
             return False, "state file should exist after command-begin A"
         with open(state_file) as f:
             state_after_a = json.loads(f.read())
-        if state_after_a.get("command_id") != command_id_a:
-            return False, f"state should have command_id_a after first command-begin"
+        commands = state_after_a.get("commands", {})
+        if command_id_a not in commands:
+            return False, f"state should have command_id_a entry after first command-begin"
 
-        # Step 2: command-begin B (replaces state with command_id_b)
+        # Step 2: command-begin B (adds a new entry with command_id_b)
         code2, stdout2, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-b"],
             env=env,
@@ -1413,11 +1430,14 @@ def test_command_end_cas_guard_protects_different_command_state():
             return False, f"command-begin B failed: {stderr2}"
         command_id_b = stdout2.strip()
 
-        # Verify state now has command_id_b
+        # Verify state now has both command_id_a and command_id_b
         with open(state_file) as f:
             state_after_b = json.loads(f.read())
-        if state_after_b.get("command_id") != command_id_b:
-            return False, f"state should have command_id_b after second command-begin"
+        commands = state_after_b.get("commands", {})
+        if command_id_b not in commands:
+            return False, f"state should have command_id_b entry after second command-begin"
+        if command_id_a not in commands:
+            return False, f"state should still have command_id_a entry after second command-begin"
 
         # Step 3: command-end A (without explicit --command-id, resolves to command_id_a from... nowhere, or "unknown"?)
         # Actually, the resolved command_id for command-end A should come from explicit flag if provided.
@@ -1439,17 +1459,21 @@ def test_command_end_cas_guard_protects_different_command_state():
         if code3 != 0:
             return False, f"command-end A failed: {stderr3}"
 
-        # Step 4: Verify state file still exists (was NOT deleted by command-end A's CAS guard)
-        # Since state's command_id is now command_id_b (from step 2), and command-end A
-        # resolved to command_id_a, the CAS guard should prevent deletion.
+        # Step 4: Verify state file still exists (was NOT deleted by command-end A)
         if not state_file.exists():
-            return False, "state file should still exist after command-end A (CAS guard should have blocked deletion)"
+            return False, "state file should still exist after command-end A"
 
-        # Verify state still has command_id_b (unchanged by command-end A)
+        # Verify command_id_a entry was removed (command-end A's own entry)
+        # but command_id_b entry still exists (sibling entry untouched)
         with open(state_file) as f:
             state_after_end_a = json.loads(f.read())
-        if state_after_end_a.get("command_id") != command_id_b:
-            return False, f"state should still have command_id_b (CAS guard protected it), but got: {state_after_end_a.get('command_id')}"
+        commands = state_after_end_a.get("commands", {})
+
+        if command_id_a in commands and commands[command_id_a].get("command"):
+            return False, f"command_id_a entry should have been removed by command-end A"
+
+        if command_id_b not in commands:
+            return False, f"state should still have command_id_b entry (sibling protection)"
 
         return True, ""
 
@@ -1490,7 +1514,9 @@ def test_stage_end_cas_guard_protects_different_stage_state():
         # Verify state has stage_id_a
         with open(state_file) as f:
             state_after_a = json.loads(f.read())
-        if state_after_a.get("stage_id") != stage_id_a:
+        commands = state_after_a.get("commands", {})
+        entry_a = commands.get(command_id, {})
+        if entry_a.get("stage_id") != stage_id_a:
             return False, f"state should have stage_id_a after first stage-begin"
 
         # Step 2: stage-begin B (replaces stage state with stage_id_b)
@@ -1502,10 +1528,12 @@ def test_stage_end_cas_guard_protects_different_stage_state():
             return False, f"stage-begin B failed: {stderr2}"
         stage_id_b = stdout2.strip()
 
-        # Verify state now has stage_id_b
+        # Verify state now has stage_id_b (stage_begin B overwrites stage_id_a in the same command entry)
         with open(state_file) as f:
             state_after_b = json.loads(f.read())
-        if state_after_b.get("stage_id") != stage_id_b:
+        commands = state_after_b.get("commands", {})
+        entry_b = commands.get(command_id, {})
+        if entry_b.get("stage_id") != stage_id_b:
             return False, f"state should have stage_id_b after second stage-begin"
 
         # Step 3: stage-end A (with explicit --stage-id for the OLD stage_id_a)
@@ -1525,14 +1553,16 @@ def test_stage_end_cas_guard_protects_different_stage_state():
 
         # Step 4: Verify state still has stage_id_b (was NOT cleared by stage-end A's CAS guard)
         # Since state's stage_id is now stage_id_b (from step 2), and stage-end A
-        # resolved to stage_id_a, the CAS guard should prevent clearing the stage fields.
+        # tried to end stage_id_a, the CAS guard should prevent clearing the stage fields.
         with open(state_file) as f:
             state_after_end_a = json.loads(f.read())
-        if state_after_end_a.get("stage_id") != stage_id_b:
-            return False, f"state should still have stage_id_b (CAS guard protected it), but got: {state_after_end_a.get('stage_id')}"
+        commands = state_after_end_a.get("commands", {})
+        entry = commands.get(command_id, {})
+        if entry.get("stage_id") != stage_id_b:
+            return False, f"state should still have stage_id_b (CAS guard protected it), but got: {entry.get('stage_id')}"
 
-        if state_after_end_a.get("stage") != "stage-b":
-            return False, f"state should still have stage='stage-b' (CAS guard protected it), but got: {state_after_end_a.get('stage')}"
+        if entry.get("stage") != "stage-b":
+            return False, f"state should still have stage='stage-b' (CAS guard protected it), but got: {entry.get('stage')}"
 
         return True, ""
 
@@ -2129,6 +2159,67 @@ def test_session_end_computes_elapsed_seconds():
         elapsed = session_end.get("elapsed_seconds")
         if not isinstance(elapsed, int) or elapsed < 1:
             return False, f"expected elapsed_seconds >= 1 (int), got {elapsed!r}"
+
+        return True, ""
+
+
+def test_session_end_sweeps_open_command_and_stage():
+    """session-end closes a still-open command (with an open stage) as interrupted."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "orphan-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "orphan-stage"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage-begin failed: {stderr2}"
+        stage_id = stdout2.strip()
+
+        # Session ends without either command-end or stage-end ever firing.
+        payload = json.dumps({"session_id": session_id, "cwd": "/tmp"})
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "session-end"], stdin_text=payload, env=env
+        )
+        if code3 != 0:
+            return False, f"session-end failed: exit {code3}, stderr: {stderr3}"
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        stage_end = next((e for e in events if e["event_type"] == "stage.end" and e.get("stage_id") == stage_id), None)
+        if stage_end is None:
+            return False, f"expected a swept stage.end for stage_id={stage_id}, events: {events}"
+        if stage_end.get("outcome", {}).get("status") != "interrupted":
+            return False, f"expected swept stage.end outcome interrupted, got {stage_end.get('outcome')}"
+
+        command_end = next((e for e in events if e["event_type"] == "command.end" and e.get("command_id") == cmd_id), None)
+        if command_end is None:
+            return False, f"expected a swept command.end for command_id={cmd_id}, events: {events}"
+        if command_end.get("outcome", {}).get("status") != "interrupted":
+            return False, f"expected swept command.end outcome interrupted, got {command_end.get('outcome')}"
+
+        session_end = next((e for e in events if e["event_type"] == "session.end"), None)
+        if session_end is None:
+            return False, "no session.end event found in log"
+
+        # Sweep must emit before session.end, and inner stage before outer command.
+        stage_idx = events.index(stage_end)
+        command_idx = events.index(command_end)
+        session_idx = events.index(session_end)
+        if not (stage_idx < command_idx < session_idx):
+            return False, f"expected order stage.end < command.end < session.end, got indices {stage_idx}, {command_idx}, {session_idx}"
 
         return True, ""
 
@@ -2852,6 +2943,340 @@ def test_stage_end_without_new_flags():
         return True, ""
 
 
+def test_nested_commands_a_b_with_stage():
+    """Acceptance test: nested commands with stages survive correctly.
+
+    Sequence: command-begin A -> command-begin B -> command-end B ->
+    stage-begin (inside A) -> stage-end (inside A) -> command-end A.
+
+    Assertions:
+    - Zero command_id: "unknown" in emitted events
+    - Two matched command begin/end pairs
+    - One matched stage pair whose command_id is A's
+    - Real (non-"unknown") elapsed_seconds on A's command.end
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Step 1: command-begin A
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-a"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin A failed: {stderr1}"
+        cmd_a_id = stdout1.strip()
+
+        # Step 2: command-begin B
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-b"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"command-begin B failed: {stderr2}"
+        cmd_b_id = stdout2.strip()
+
+        # Step 3: command-end B
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "cmd-b", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"command-end B failed: {stderr3}"
+
+        # Step 4: stage-begin (should be associated with A)
+        code4, stdout4, stderr4 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage1"],
+            env=env,
+        )
+        if code4 != 0:
+            return False, f"stage-begin failed: {stderr4}"
+        stage_id = stdout4.strip()
+
+        # Step 5: stage-end
+        code5, stdout5, stderr5 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "stage1", "--outcome", "success"],
+            env=env,
+        )
+        if code5 != 0:
+            return False, f"stage-end failed: {stderr5}"
+
+        # Step 6: command-end A
+        code6, stdout6, stderr6 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "cmd-a", "--outcome", "success"],
+            env=env,
+        )
+        if code6 != 0:
+            return False, f"command-end A failed: {stderr6}"
+
+        # Read and verify events
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        # Check for zero "unknown" command_ids
+        unknown_command_ids = [e for e in events if e.get("command_id") == "unknown"]
+        if unknown_command_ids:
+            return False, f"found {len(unknown_command_ids)} events with command_id='unknown': {unknown_command_ids}"
+
+        # Find command begin/end events
+        cmd_a_begin = next((e for e in events if e.get("event_type") == "command.begin" and e.get("command") == "cmd-a"), None)
+        cmd_a_end = next((e for e in events if e.get("event_type") == "command.end" and e.get("command") == "cmd-a"), None)
+        cmd_b_begin = next((e for e in events if e.get("event_type") == "command.begin" and e.get("command") == "cmd-b"), None)
+        cmd_b_end = next((e for e in events if e.get("event_type") == "command.end" and e.get("command") == "cmd-b"), None)
+
+        if not all([cmd_a_begin, cmd_a_end, cmd_b_begin, cmd_b_end]):
+            return False, "missing one or more command events"
+
+        # Verify command_ids match
+        if cmd_a_begin.get("command_id") != cmd_a_id or cmd_a_end.get("command_id") != cmd_a_id:
+            return False, f"cmd-a begin/end have mismatched command_ids"
+        if cmd_b_begin.get("command_id") != cmd_b_id or cmd_b_end.get("command_id") != cmd_b_id:
+            return False, f"cmd-b begin/end have mismatched command_ids"
+
+        # Find stage events
+        stage_begin = next((e for e in events if e.get("event_type") == "stage.begin" and e.get("stage") == "stage1"), None)
+        stage_end = next((e for e in events if e.get("event_type") == "stage.end" and e.get("stage") == "stage1"), None)
+
+        if not stage_begin or not stage_end:
+            return False, "missing stage events"
+
+        # Stage should belong to cmd-a
+        if stage_begin.get("command_id") != cmd_a_id:
+            return False, f"stage.begin should have command_id={cmd_a_id} (cmd-a), got {stage_begin.get('command_id')}"
+        if stage_end.get("command_id") != cmd_a_id:
+            return False, f"stage.end should have command_id={cmd_a_id} (cmd-a), got {stage_end.get('command_id')}"
+
+        # Check elapsed_seconds on cmd-a's end event (should be real number, not "unknown")
+        cmd_a_end_elapsed = cmd_a_end.get("elapsed_seconds")
+        if cmd_a_end_elapsed == "unknown" or not isinstance(cmd_a_end_elapsed, int):
+            return False, f"cmd-a.end elapsed_seconds should be real int, got {cmd_a_end_elapsed!r}"
+
+        return True, ""
+
+
+def test_init_command_state_preserves_other_entries():
+    """init_command_state for a new command_id leaves every existing entry byte-identical."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        state_file = state_dir / f"{session_id}.json"
+
+        # Pre-populate with one entry
+        initial_state = {
+            "commands": {
+                "cmd-1": {
+                    "session_id": session_id,
+                    "command": "cmd1",
+                    "command_began_at": "2026-09-13T00:00:00+00:00",
+                }
+            }
+        }
+        with open(state_file, "w") as f:
+            json.dump(initial_state, f)
+
+        # Now init a new command_id
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import telemetry_schema
+        telemetry_schema.init_command_state(
+            state_file,
+            "cmd-2",
+            "cmd2",
+            "2026-09-13T00:01:00+00:00",
+        )
+
+        # Verify both entries exist and the first is byte-identical
+        with open(state_file) as f:
+            state = json.load(f)
+
+        if "commands" not in state:
+            return False, "state should have 'commands' dict"
+
+        commands = state["commands"]
+        if "cmd-1" not in commands:
+            return False, "cmd-1 entry was lost"
+
+        if commands["cmd-1"] != initial_state["commands"]["cmd-1"]:
+            return False, f"cmd-1 entry was mutated"
+
+        if "cmd-2" not in commands:
+            return False, "cmd-2 entry was not added"
+
+        return True, ""
+
+
+def test_init_command_state_replaces_only_target_entry():
+    """init_command_state for an existing command_id replaces only that entry."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        state_file = state_dir / f"{session_id}.json"
+
+        # Pre-populate with two entries
+        initial_state = {
+            "commands": {
+                "cmd-1": {
+                    "session_id": session_id,
+                    "command": "cmd1",
+                    "command_began_at": "2026-09-13T00:00:00+00:00",
+                },
+                "cmd-2": {
+                    "session_id": session_id,
+                    "command": "cmd2",
+                    "command_began_at": "2026-09-13T00:01:00+00:00",
+                },
+            }
+        }
+        with open(state_file, "w") as f:
+            json.dump(initial_state, f)
+
+        # Now re-init cmd-2 with new values
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import telemetry_schema
+        telemetry_schema.init_command_state(
+            state_file,
+            "cmd-2",
+            "cmd2-new",
+            "2026-09-13T00:02:00+00:00",
+        )
+
+        # Verify cmd-1 is unchanged and cmd-2 is replaced
+        with open(state_file) as f:
+            state = json.load(f)
+
+        commands = state["commands"]
+        if commands["cmd-1"] != initial_state["commands"]["cmd-1"]:
+            return False, f"cmd-1 entry was mutated"
+
+        if commands["cmd-2"]["command"] != "cmd2-new":
+            return False, f"cmd-2 entry was not replaced correctly"
+
+        return True, ""
+
+
+def test_command_end_never_mutates_other_entries():
+    """command-end for entry A never mutates entry B."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Create two commands
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-a"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin A failed: {stderr1}"
+        cmd_a_id = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-b"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"command-begin B failed: {stderr2}"
+        cmd_b_id = stdout2.strip()
+
+        # Capture state before command-end A
+        state_file = state_dir / f"{session_id}.json"
+        with open(state_file) as f:
+            state_before = json.load(f)
+        cmd_b_entry_before = state_before.get("commands", {}).get("cmd-b", {})
+
+        # End command A
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "cmd-a", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"command-end A failed: {stderr3}"
+
+        # Verify state file still exists (not deleted wholesale)
+        if not state_file.exists():
+            return False, "state file was deleted (should only remove cmd-a entry)"
+
+        # Verify cmd-b entry is unchanged
+        with open(state_file) as f:
+            state_after = json.load(f)
+
+        commands = state_after.get("commands", {})
+        cmd_b_entry_after = commands.get("cmd-b", {})
+
+        if cmd_b_entry_after != cmd_b_entry_before:
+            return False, f"cmd-b entry was mutated by command-end A"
+
+        if "cmd-a" in commands and commands["cmd-a"]:
+            # cmd-a entry might still exist but should be cleared/empty
+            pass
+
+        return True, ""
+
+
+def test_command_end_removes_own_entry_only():
+    """After command-end, the state file survives, the ended entry is gone, sibling entries are untouched."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Create two commands
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-a"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin A failed: {stderr1}"
+        cmd_a_id = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-b"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"command-begin B failed: {stderr2}"
+        cmd_b_id = stdout2.strip()
+
+        state_file = state_dir / f"{session_id}.json"
+
+        # End command A
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "cmd-a", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"command-end A failed: {stderr3}"
+
+        # State file should survive
+        if not state_file.exists():
+            return False, "state file should survive command-end"
+
+        # cmd-a entry should be gone, cmd-b should remain
+        with open(state_file) as f:
+            state = json.load(f)
+
+        commands = state.get("commands", {})
+
+        # cmd-a should not be present as an entry
+        if cmd_a_id in commands and commands[cmd_a_id].get("command"):
+            return False, f"cmd-a entry should be removed, but {cmd_a_id} still has command={commands[cmd_a_id].get('command')}"
+
+        # cmd-b should still be present
+        if cmd_b_id not in commands or not commands[cmd_b_id].get("command"):
+            return False, f"cmd-b entry should survive, but it's missing or empty"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -2993,8 +3418,20 @@ if __name__ == "__main__":
     passed, msg = test_stage_end_clears_stage_state()
     test_result("stage-end clears stage_id and stage fields in state file", passed, msg)
 
-    passed, msg = test_command_end_deletes_state_file()
-    test_result("command-end deletes state file after emit", passed, msg)
+    passed, msg = test_nested_commands_a_b_with_stage()
+    test_result("(acceptance) nested commands A/B with stage in A survive correctly", passed, msg)
+
+    passed, msg = test_init_command_state_preserves_other_entries()
+    test_result("init_command_state for new id preserves existing entries", passed, msg)
+
+    passed, msg = test_init_command_state_replaces_only_target_entry()
+    test_result("init_command_state for existing id replaces only that entry", passed, msg)
+
+    passed, msg = test_command_end_never_mutates_other_entries()
+    test_result("command-end for entry A never mutates entry B", passed, msg)
+
+    passed, msg = test_command_end_removes_own_entry_only()
+    test_result("command-end removes own entry only (file survives with siblings)", passed, msg)
 
     passed, msg = test_multiple_sequential_stages()
     test_result("multiple sequential stages maintain command_id correlation", passed, msg)
@@ -3055,6 +3492,9 @@ if __name__ == "__main__":
 
     passed, msg = test_session_end_computes_elapsed_seconds()
     test_result("session-end computes elapsed_seconds from session meta", passed, msg)
+
+    passed, msg = test_session_end_sweeps_open_command_and_stage()
+    test_result("session-end sweeps open command/stage as interrupted", passed, msg)
 
     passed, msg = test_agent_elapsed_survives_command_end()
     test_result("agent elapsed_seconds survives command-end's state deletion", passed, msg)

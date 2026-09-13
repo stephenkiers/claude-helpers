@@ -21,6 +21,21 @@ The flow:
 6. **Round 4 — Test cleanup** (orchestrator-run) — delete clearly-junk tests, relocate + rename the
    survivors to the repo's own test layout/naming convention
 
+### Telemetry vocabulary
+
+This command records telemetry via fixed kebab-case terminal paths:
+- `plan-not-found` — Step 1 found no plan
+- `all-units-failed` — Step 4d, all units failed  
+- `gate-not-converged` — Integration gate step 4.6, failed after K=3 iterations
+- `success` — Final summary reached
+
+These are wired into the shell commands throughout this doc at each terminal path.
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement-with-haiku >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage round1-join >/dev/null 2>&1 || true
+```
+
 ## Step 1: Find the plan
 
 In priority order:
@@ -32,7 +47,11 @@ In priority order:
 2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan
 3. **A plan is visible in the current conversation** → use it directly
 
-If none yield a plan, tell the user and stop.
+If none yield a plan, emit the failure telemetry and stop:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class plan-not-found 2>/dev/null || true
+```
+Then tell the user and stop.
 
 ### Parse claude-action-plan.md into directives
 
@@ -419,8 +438,11 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174): round 1's parallel fanout
 is reliably the single biggest context cost in the whole flow, over threshold in every one of 8
 measured real runs — the other four checkpoints this run used to have were dropped because they
-never once needed a break). Run:
+never once needed a break). 
+
+Close the round1-join stage before the human pause (the pause is wall-clock, not join time):
 ```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage round1-join --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
 Print the `USAGE-GATE:` line verbatim, then say: "Round 1 join done. All merged units are
@@ -429,13 +451,29 @@ already committed; nothing is pending if you stop here. If that token count look
 user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself,
 and ignore the printed line's `DECISION:` field (it's informational only).
 
+If the user declines to continue, emit interrupted telemetry (no stage-end needed — round1-join already closed):
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome interrupted 2>/dev/null || true
+```
+Then stop. Otherwise, continue to Step 4d's conditional below.
+
 If any units are `failed` (worktree genuinely empty), surface a summary and ask the human whether to:
 - Abort the run
 - Proceed to the gate with the successfully-merged units only
 
+On "Abort", emit failure telemetry:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class all-units-failed 2>/dev/null || true
+```
+Then stop. Otherwise, proceed to the gate.
+
 ---
 
 ## Integration Gate (Part B — runs after all units merge, before round 2)
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage integration-gate >/dev/null 2>&1 || true
+```
 
 The orchestrator (you, Sonnet) now runs the checks — not a Haiku. The implementer's self-reported
 `VERIFIED:` is noted but not trusted; the gate is authoritative.
@@ -493,7 +531,10 @@ that were built but never connected to anything).
 
 ### Gate step 3: Determine outcome
 
-- **No build errors AND no tamper flags** → Gate **passes**. Proceed to Round 2.
+- **No build errors AND no tamper flags** → Gate **passes**. Close the integration-gate stage and proceed to Round 2:
+  ```bash
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome success 2>/dev/null || true
+  ```
   Emit: `GATE: pass — build clean, no tamper flags`
 
 - **Any failure** → Gate **fails**. Emit a summary of failures. Dispatch a fix-Haiku (next section).
@@ -526,7 +567,11 @@ Max **K = 3** iterations. On each iteration:
    telemetry — see the Usage gate log note in the Final summary.
 5. If gate passes → exit loop. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
-   failures. Do not proceed to Round 2. Let the human decide.
+   failures. Do not proceed to Round 2. Let the human decide. Close the integration-gate stage with gate-not-converged:
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class gate-not-converged 2>/dev/null || true
+   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class gate-not-converged 2>/dev/null || true
+   ```
 
 Emit a line each time a fix-Haiku is dispatched: `GATE attempt <i>/<K>: dispatching fix-Haiku`
 
@@ -1052,7 +1097,12 @@ Surface the truncated report and offer a menu:
 - **Re-run** — re-launch with the same prompt (unit retains its worktree / state)
 - **Inspect** — let the human review the worktree diff and decide next steps
 - **Skip** — mark this unit failed, continue with the rest (only for round-1 units)
-- **Abort** — stop the flow entirely
+- **Abort** — stop the flow entirely. Emit interrupted telemetry (including stage-end if one of the two stages happens to be open):
+  ```bash
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage round1-join --outcome interrupted 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome interrupted 2>/dev/null || true
+  ```
+  Then stop.
 
 ---
 
@@ -1111,10 +1161,13 @@ below) and `final`. Per [issue #174](https://github.com/stephenkiers/claude-help
 other four seams were removed outright — not just skipped — because they never once needed a
 `/compact` break across 8 measured real runs, and the per-seam Bash call + printed line cost tokens
 and time for a `DECISION:` field that's unreliable anyway (most subagent transcripts in this pipeline
-never get counted, so it degrades to a floor guess rather than a real count). This has no effect on
-real telemetry: `/implement-with-haiku` was never instrumented with `command-begin`/`stage-begin`,
-and subagent `agent.begin`/`agent.end` events are captured by hooks regardless of anything in this
-doc. Render `round1-join`'s line verbatim in the final summary. At the end, run
+never get counted, so it degrades to a floor guess rather than a real count). This `usage-check`
+mechanism is unrelated to real telemetry: this command now is instrumented with real ADR-0016
+`command-begin`/`command-end` around the whole run and `stage-begin`/`stage-end` around the
+`round1-join` and `integration-gate` stages (see [#160](https://github.com/stephenkiers/claude-helpers/issues/160);
+the fanout and round4 phases were deliberately left uninstrumented), and subagent
+`agent.begin`/`agent.end` events are captured by hooks regardless of anything in this doc. Render
+`round1-join`'s line verbatim in the final summary. At the end, run
 `usage-check --seam final` one more time and include both its `USAGE-GATE:` line and its
 `USAGE-GATE-SEAMS:` line verbatim. Extract the per-agent accounted/unaccounted tally
 (the `agents=N/M` field) from the final seam output and include it here; note once that upstream
@@ -1200,3 +1253,8 @@ Suggested next steps:
 - If Round 4's `Junk-detection evidence` shows the **mutation smoke was skipped**, its junk detection
   ran on the reference-check alone — eyeball the delivered tests' coverage by hand before trusting it
 - Review sweep findings (duplication, doc-drift) — they're informational, not auto-fixed
+
+After emitting the summary, record the successful completion:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome success 2>/dev/null || true
+```
