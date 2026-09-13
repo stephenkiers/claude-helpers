@@ -695,6 +695,10 @@ The old `## Sign-off Checklist` table is gone. Its `Decision` column was never f
 Lead with **what the user has to decide**, not with counts. A count is not something anyone can act
 on; a decision is the reason they are reading at all.
 
+Every `{PLACEHOLDER}` below — `{REVIEW_DIR}` included — is a substitution point, not literal text to
+print. Resolve `{REVIEW_DIR}` to the actual absolute path from Step 1 before printing this message;
+never emit the literal string `{REVIEW_DIR}` to the user.
+
 ```
 {One sentence: does anything here need you, and is this ship-blocking or polish?}
 
