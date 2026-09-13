@@ -339,21 +339,23 @@ Write `{SESSION_DIR}/decisions.md` with the decision index and checkpoint result
 
 **Effort-2 escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains):
 
-When the decision index reveals an unresolved disagreement among experts or a scope decision the user's checkpoint answers did not fully settle, ask one question:
+If the decision index reveals an unresolved disagreement among experts or a scope decision the user's checkpoint answers did not fully settle, include this option in the checkpoint `AskUserQuestion` batch (do not ask as a separate prompt — fold it into the same question flow):
 
 ```
-AskUserQuestion: "Run an independent audit on this?"
-Option 1 (default): "No — consistency check only"
-Option 2: "Yes — audit this one question: \"<the concrete question>\""
+Option: "No — consistency check only" (default)
+Option: "Yes — escalate: audit this one question: \"<the concrete question>\""
 ```
 
-On "Yes": call the `Write` tool (not shell redirect) to create `{SESSION_DIR}/audit-escalation.txt` with the question in the format defined at line 60-75, using `RAISED-AT: step-5-checkpoint`. Record the question and the user's "Yes" answer in `decisions.md`.
+When the user selects "Yes" (within the checkpoint batch):
+- Call the `Write` tool (not shell redirect) to create `{SESSION_DIR}/audit-escalation.txt` with the question in the format defined at line 60-75, using `RAISED-AT: step-5-checkpoint`. Record the question and the user's "Yes" answer in `decisions.md`.
 
-On "No": write nothing. Proceed to synthesis.
+When the user selects "No" or the default:
+- Write nothing. Proceed to synthesis.
 
-On Write failure: do not retry. Print one line: "audit-escalation.txt write failed; skipping escalation question." Record the failure in `decisions.md`. No file means Step 7's `elif` does not fire, degrading to consistency check only.
+On Write failure:
+- Do not retry. Print one line: "audit-escalation.txt write failed; skipping escalation question." Record the failure in `decisions.md`. No file means Step 7's `elif` does not fire, degrading to consistency check only.
 
-If the decision index contains no material disagreement, do not ask — ask only when something genuinely unresolved exists.
+If the decision index contains no material disagreement, do not include these options — ask only when something genuinely unresolved exists.
 
 If the user declines to continue at this checkpoint, emit:
 ```bash
