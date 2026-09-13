@@ -585,6 +585,10 @@ Infer labels from plan content (matched whole-word, case-insensitive; title scan
 
 ## Creating the Worktree (GitHub Mode)
 
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
+```
+
 **Note:** The CLI's `track apply` step already creates the worktree and writes the cache. This section documents the behavior; **GitHub mode does not manually call `git worktree add` — it's done by the CLI.**
 
 For **Tracker Ticket mode**, which does NOT use the CLI, a plain-git worktree creation path is available:
