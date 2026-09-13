@@ -887,6 +887,8 @@ def resolve_and_clear_stage_state(
                     break
             else:
                 # Not found: use explicit stage_id_arg, and command_id_arg if given, else UNKNOWN
+                # resolved_cid remains None here; safe because resolved_entry is also None,
+                # so the CAS check below will refuse any eviction (no entry to protect anyway).
                 stage_id = stage_id_arg
                 command_id = command_id_arg or UNKNOWN
         else:
@@ -1268,6 +1270,10 @@ def parse_transcript_tokens(path: Path) -> dict:
                             seen_message_ids[msg_id] = event
             except (json.JSONDecodeError, ValueError):
                 lines_skipped += 1
+
+    # If file had content but all lines failed to parse, raise an exception
+    if lines_skipped > 0 and lines_parsed == 0:
+        raise ValueError(f"Transcript file had {lines_skipped} lines, none of which parsed as valid JSON")
 
     total_input = UNKNOWN
     total_output = UNKNOWN

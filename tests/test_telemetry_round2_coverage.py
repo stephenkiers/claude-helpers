@@ -476,19 +476,26 @@ if __name__ == "__main__":
             stdin_text=payload
         )
 
-        if log_path.exists():
-            with open(log_path, 'r') as f:
-                events = [json.loads(line) for line in f if line.strip()]
+        t(
+            "agent-end without transcript_path succeeds",
+            exit_code == 0,
+            f"exit {exit_code}"
+        )
 
-            # Find the agent.end event
-            agent_end = next((e for e in events if e.get("event_type") == "agent.end"), None)
-            # The actual status is stored in usage state file, not the event
-            # But we can check that command succeeded
+        # Verify the actual status value recorded in session state
+        state_files = list(state_dir.glob("*.session.json"))
+        if state_files:
+            with open(state_files[0]) as f:
+                state = json.load(f)
+            agent_entry = state.get("usage", {}).get("agents", {}).get("agent-1", {})
+            recorded_status = agent_entry.get("status")
             t(
-                "agent-end without transcript_path succeeds",
-                exit_code == 0,
-                f"exit {exit_code}"
+                "agent-end without transcript_path records no_transcript_path status",
+                recorded_status == "no_transcript_path",
+                f"Expected 'no_transcript_path', got '{recorded_status}'"
             )
+        else:
+            t("session state file created", False, "No state file found")
 
     # Test 2: path_not_a_file (transcript_path points to directory or doesn't exist as file)
     print("  Test 2: path_not_a_file status")
@@ -522,6 +529,21 @@ if __name__ == "__main__":
             exit_code == 0,
             f"exit {exit_code}"
         )
+
+        # Verify the actual status value recorded in session state
+        state_files = list(state_dir.glob("*.session.json"))
+        if state_files:
+            with open(state_files[0]) as f:
+                state = json.load(f)
+            agent_entry = state.get("usage", {}).get("agents", {}).get("agent-2", {})
+            recorded_status = agent_entry.get("status")
+            t(
+                "agent-end with directory path records path_not_a_file status",
+                recorded_status == "path_not_a_file",
+                f"Expected 'path_not_a_file', got '{recorded_status}'"
+            )
+        else:
+            t("session state file created", False, "No state file found")
 
     # Test 3: parse_raised (transcript read raises exception)
     print("  Test 3: parse_raised status")
@@ -557,14 +579,20 @@ if __name__ == "__main__":
             f"exit {exit_code}"
         )
 
-        # Check that either: (a) exception is logged, or (b) command still processes
-        # The plan says errors are logged to stderr, but the key requirement is that
-        # the command succeeds and the status is recorded (in usage state, not event log)
-        t(
-            "agent-end with parse error is non-fatal",
-            exit_code == 0,
-            f"exit {exit_code}"
-        )
+        # Verify the actual status value recorded in session state
+        state_files = list(state_dir.glob("*.session.json"))
+        if state_files:
+            with open(state_files[0]) as f:
+                state = json.load(f)
+            agent_entry = state.get("usage", {}).get("agents", {}).get("agent-3", {})
+            recorded_status = agent_entry.get("status")
+            t(
+                "agent-end with parse error records parse_raised status",
+                recorded_status == "parse_raised",
+                f"Expected 'parse_raised', got '{recorded_status}'"
+            )
+        else:
+            t("session state file created", False, "No state file found")
 
     # Test 4: parsed_empty (transcript parses but has zero assistant messages)
     print("  Test 4: parsed_empty status")
@@ -601,6 +629,21 @@ if __name__ == "__main__":
             exit_code == 0,
             f"exit {exit_code}"
         )
+
+        # Verify the actual status value recorded in session state
+        state_files = list(state_dir.glob("*.session.json"))
+        if state_files:
+            with open(state_files[0]) as f:
+                state = json.load(f)
+            agent_entry = state.get("usage", {}).get("agents", {}).get("agent-4", {})
+            recorded_status = agent_entry.get("status")
+            t(
+                "agent-end with empty transcript records parsed_empty status",
+                recorded_status == "parsed_empty",
+                f"Expected 'parsed_empty', got '{recorded_status}'"
+            )
+        else:
+            t("session state file created", False, "No state file found")
 
     print()
 
@@ -658,6 +701,21 @@ if __name__ == "__main__":
                 exit_code == 0,
                 f"exit {exit_code}"
             )
+
+            # Verify the actual status value recorded in session state
+            state_files = list(state_dir.glob("*.session.json"))
+            if state_files:
+                with open(state_files[0]) as f:
+                    state = json.load(f)
+                agent_entry = state.get("usage", {}).get("agents", {}).get(f"agent-{i}", {})
+                recorded_status = agent_entry.get("status")
+                t(
+                    f"agent-end with {status_description} records {status_description} status",
+                    recorded_status == status_description,
+                    f"Expected '{status_description}', got '{recorded_status}'"
+                )
+            else:
+                t(f"session state file created for agent-{i}", False, "No state file found")
 
     print()
 
