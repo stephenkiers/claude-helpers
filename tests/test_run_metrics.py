@@ -3277,6 +3277,384 @@ def test_command_end_removes_own_entry_only():
         return True, ""
 
 
+def test_command_end_resolves_innermost_of_duplicate_names():
+    """command-end with 2+ open entries sharing a command name resolves to the innermost (LIFO)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "shipit"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"first command-begin failed: {stderr1}"
+        cmd_id_1 = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "shipit"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"second command-begin failed: {stderr2}"
+        cmd_id_2 = stdout2.strip()
+
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "shipit", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"command-end failed: {stderr3}"
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        cmd_end = next((e for e in reversed(events) if e.get("event_type") == "command.end" and e.get("command") == "shipit"), None)
+        if cmd_end is None:
+            return False, "no command.end event found"
+
+        matched_id = cmd_end.get("command_id")
+        if matched_id != cmd_id_2:
+            return False, f"expected innermost {cmd_id_2}, got {matched_id}"
+
+        return True, ""
+
+
+def test_command_end_outer_resolves_without_mismatch_despite_open_inner():
+    """Ending an outer command by explicit id succeeds cleanly while an inner command is still open."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "outer-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"outer command-begin failed: {stderr1}"
+        outer_id = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "inner-cmd"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"inner command-begin failed: {stderr2}"
+
+        code3, stdout3, stderr3 = run_script(
+            [
+                "--log", str(log_path), "--state-dir", str(state_dir), "command-end",
+                "--command-id", outer_id, "--command", "outer-cmd", "--outcome", "success",
+            ],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"outer command-end failed: {stderr3}"
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        cmd_end = next((e for e in reversed(events) if e.get("event_type") == "command.end" and e.get("command") == "outer-cmd"), None)
+        if cmd_end is None:
+            return False, "no command.end event found for outer-cmd"
+
+        if cmd_end.get("state_mismatch") is not None:
+            return False, f"expected no state_mismatch, got {cmd_end.get('state_mismatch')}"
+        if cmd_end.get("elapsed_seconds") in ("unknown", None):
+            return False, f"expected real elapsed_seconds, got {cmd_end.get('elapsed_seconds')!r}"
+
+        return True, ""
+
+
+def test_command_end_session_id_guard_blocks_cross_session_match():
+    """command-end by name never matches an entry recorded under a different session_id."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        state_dir = tmpdir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = tmpdir / "events.jsonl"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "first-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+
+        state_file = state_dir / f"{session_id}.json"
+        if not state_file.exists():
+            return False, "expected state file to exist after command-begin"
+
+        state = json.loads(state_file.read_text())
+        state["commands"]["old-session-entry"] = {
+            "session_id": "a-different-session-id",
+            "command": "old-cmd",
+            "command_began_at": "2025-01-01T08:00:00Z",
+        }
+        state_file.write_text(json.dumps(state))
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "old-cmd", "--outcome", "success"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"command-end for old-cmd failed: {stderr2}"
+
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        cmd_end = next((e for e in events if e.get("event_type") == "command.end" and e.get("command") == "old-cmd"), None)
+        if cmd_end is None:
+            return False, "no command.end event found for old-cmd"
+
+        guarded = cmd_end.get("state_mismatch") is True or cmd_end.get("command_id") == "unknown"
+        if not guarded:
+            return False, (
+                f"expected state_mismatch=true or command_id=unknown, got "
+                f"state_mismatch={cmd_end.get('state_mismatch')}, command_id={cmd_end.get('command_id')}"
+            )
+
+        return True, ""
+
+
+def test_prune_self_skips_current_session_even_when_stale():
+    """The pruner never deletes the current session's own state files, even past the TTL."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = Path(tmpdir) / "events.jsonl"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code != 0:
+            return False, f"command-begin failed: {stderr}"
+
+        state_files = list(state_dir.glob("*.json"))
+        if not state_files:
+            return False, f"no state files created in {state_dir}"
+        state_file = state_files[0]
+
+        old_time = time.time() - (25 * 3600)
+        os.utime(state_file, (old_time, old_time))
+        for sf in state_dir.glob("*.session.json"):
+            os.utime(sf, (old_time, old_time))
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd-2"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"second command-begin failed: {stderr2}"
+
+        files_after = set(state_dir.glob("*"))
+        if state_file not in files_after:
+            return False, f"expected {state_file.name} to survive prune, remaining files: {[f.name for f in files_after]}"
+
+        return True, ""
+
+
+def test_command_end_legacy_flat_state_format_readable():
+    """command-end still resolves and clears an old single-slot (pre-dict) state file shape."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = Path(tmpdir) / "events.jsonl"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "first-cmd"],
+            env=env,
+        )
+        if code != 0:
+            return False, f"command-begin failed: {stderr}"
+
+        state_file = state_dir / f"{session_id}.json"
+        if not state_file.exists():
+            return False, "expected state file to exist after command-begin"
+
+        legacy_state = {
+            "session_id": session_id,
+            "command_id": "legacy-cmd-id",
+            "command": "legacy-cmd",
+            "command_began_at": "2025-01-01T10:00:00Z",
+        }
+        state_file.write_text(json.dumps(legacy_state))
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "legacy-cmd", "--outcome", "success"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"command-end on legacy state failed: exit {code2}, stderr={stderr2}"
+
+        if state_file.exists():
+            state_after = json.loads(state_file.read_text())
+            if "legacy-cmd-id" in state_after.get("commands", {}) or "legacy-cmd-id" in state_after:
+                return False, f"legacy entry should be cleared, got: {state_after}"
+
+        return True, ""
+
+
+def _agent_end_status_for(state_dir, agent_id):
+    """Read back the recorded status for agent_id from the session's usage state file."""
+    for sf in Path(state_dir).glob("*.session.json"):
+        state = json.loads(sf.read_text())
+        agent_entry = state.get("usage", {}).get("agents", {}).get(agent_id, {})
+        if agent_entry:
+            return agent_entry.get("status")
+    return None
+
+
+def test_agent_end_no_transcript_path_status():
+    """agent-end with no agent_transcript_path in the payload records status no_transcript_path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        payload = json.dumps({
+            "agent_id": "agent-1",
+            "agent_type": "test-agent",
+            "session_id": session_id,
+            "started_at": "2025-01-01T10:00:00Z",
+            "last_assistant_message": "test",
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
+            env=env,
+        )
+        if code != 0:
+            return False, f"agent-end failed: {stderr}"
+
+        status = _agent_end_status_for(state_dir, "agent-1")
+        if status != "no_transcript_path":
+            return False, f"expected status 'no_transcript_path', got {status!r}"
+
+        return True, ""
+
+
+def test_agent_end_path_not_a_file_status():
+    """agent-end whose agent_transcript_path points at a directory records status path_not_a_file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        log_path = tmpdir / "events.jsonl"
+        state_dir = tmpdir / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        dir_path = tmpdir / "a_directory"
+        dir_path.mkdir()
+
+        payload = json.dumps({
+            "agent_id": "agent-2",
+            "agent_type": "test-agent",
+            "session_id": session_id,
+            "started_at": "2025-01-01T10:00:00Z",
+            "last_assistant_message": "test",
+            "agent_transcript_path": str(dir_path),
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
+            env=env,
+        )
+        if code != 0:
+            return False, f"agent-end failed: {stderr}"
+
+        status = _agent_end_status_for(state_dir, "agent-2")
+        if status != "path_not_a_file":
+            return False, f"expected status 'path_not_a_file', got {status!r}"
+
+        return True, ""
+
+
+def test_agent_end_parse_raised_status():
+    """agent-end whose transcript file has content that fails to parse as JSON records status parse_raised."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        log_path = tmpdir / "events.jsonl"
+        state_dir = tmpdir / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        bad_transcript = tmpdir / "bad.jsonl"
+        bad_transcript.write_text("{ this is not valid json }\n")
+
+        payload = json.dumps({
+            "agent_id": "agent-3",
+            "agent_type": "test-agent",
+            "session_id": session_id,
+            "started_at": "2025-01-01T10:00:00Z",
+            "last_assistant_message": "test",
+            "agent_transcript_path": str(bad_transcript),
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
+            env=env,
+        )
+        if code != 0:
+            return False, f"agent-end failed: {stderr}"
+
+        status = _agent_end_status_for(state_dir, "agent-3")
+        if status != "parse_raised":
+            return False, f"expected status 'parse_raised', got {status!r}"
+
+        return True, ""
+
+
+def test_agent_end_parsed_empty_status():
+    """agent-end whose transcript parses cleanly but has zero assistant messages records status parsed_empty."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        log_path = tmpdir / "events.jsonl"
+        state_dir = tmpdir / "state"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        empty_transcript = tmpdir / "empty.jsonl"
+        empty_transcript.write_text(json.dumps({"type": "cost-state", "metadata": {}}) + "\n")
+
+        payload = json.dumps({
+            "agent_id": "agent-4",
+            "agent_type": "test-agent",
+            "session_id": session_id,
+            "started_at": "2025-01-01T10:00:00Z",
+            "last_assistant_message": "test",
+            "agent_transcript_path": str(empty_transcript),
+        })
+
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
+            env=env,
+        )
+        if code != 0:
+            return False, f"agent-end failed: {stderr}"
+
+        status = _agent_end_status_for(state_dir, "agent-4")
+        if status != "parsed_empty":
+            return False, f"expected status 'parsed_empty', got {status!r}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -3589,6 +3967,36 @@ if __name__ == "__main__":
 
     passed, msg = test_stage_end_without_new_flags()
     test_result("stage-end without new flags omits them", passed, msg)
+
+    print()
+
+    print("[Section 14] Command/stage resolution, session guard, and agent-end status coverage (#160)")
+    passed, msg = test_command_end_resolves_innermost_of_duplicate_names()
+    test_result("command-end with 2+ same-name entries resolves innermost (LIFO)", passed, msg)
+
+    passed, msg = test_command_end_outer_resolves_without_mismatch_despite_open_inner()
+    test_result("command-end for outer id succeeds cleanly despite open inner", passed, msg)
+
+    passed, msg = test_command_end_session_id_guard_blocks_cross_session_match()
+    test_result("command-end by name never matches an entry from a different session_id", passed, msg)
+
+    passed, msg = test_prune_self_skips_current_session_even_when_stale()
+    test_result("prune never deletes the current session's own state files, even past TTL", passed, msg)
+
+    passed, msg = test_command_end_legacy_flat_state_format_readable()
+    test_result("command-end resolves and clears a legacy flat-state file", passed, msg)
+
+    passed, msg = test_agent_end_no_transcript_path_status()
+    test_result("agent-end with no transcript path records status no_transcript_path", passed, msg)
+
+    passed, msg = test_agent_end_path_not_a_file_status()
+    test_result("agent-end with a directory as transcript path records status path_not_a_file", passed, msg)
+
+    passed, msg = test_agent_end_parse_raised_status()
+    test_result("agent-end with unparseable transcript content records status parse_raised", passed, msg)
+
+    passed, msg = test_agent_end_parsed_empty_status()
+    test_result("agent-end with a parseable but token-empty transcript records status parsed_empty", passed, msg)
 
     print()
 
