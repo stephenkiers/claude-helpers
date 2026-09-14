@@ -241,6 +241,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-expert
 
 Read `~/.claude/reviewers/index.yaml` directly. Using a coverage checklist as a mental rubric — user-visible behavior, domain/data assumptions, contracts/types, trust/side effects, integration, failure behavior — pick 3 experts for effort 2. Carl is always added, always last, never counted as a domain specialist.
 
+**Pinned experts:** if `.claude/project.yaml` sets `pinnedExperts`, add every listed expert to the panel regardless of effort level or coverage rubric — same treatment as Carl (always present, never counted against the 3-expert budget, never bumped for a domain specialist). This is a per-project opt-in, not a global default: a project without `pinnedExperts` behaves exactly as before. If a pinned name duplicates one the rubric already picked, list it once. Note each pinned expert's `Reason` column as "Pinned via project.yaml".
+
 For any contributor whose task looks like novel architecture, concurrency, security-sensitive trust, or an irreversible migration, record `model: opus` for that one contributor with a one-line reason; everyone else gets the `--models` default (sonnet unless `--models opus`).
 
 Write `{SESSION_DIR}/selected-experts.md` (expert, concern, model, reason). Example structure:
@@ -255,6 +257,7 @@ Write `{SESSION_DIR}/selected-experts.md` (expert, concern, model, reason). Exam
 | North Star Nick | Architectural alignment and ADR fit | sonnet | Scope clarification |
 | Tara TypeSafe | Contract and boundary design | sonnet | State invariant tracking |
 | Security Sage | Trust boundaries and failure modes | sonnet | Input validation surfaces |
+| Uncle Bob | Clean code, SOLID, resource management | sonnet | Pinned via project.yaml |
 | Contrarian Carl | Cost, premises, and smaller-is-better | opus | Always present, fresh pass over all input |
 ```
 
