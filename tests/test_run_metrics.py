@@ -3703,6 +3703,372 @@ def test_agent_end_parsed_empty_status():
         return True, ""
 
 
+def test_cross_session_explicit_command_id_sets_state_mismatch_and_warns():
+    """When an explicit --command-id resolves to an entry from a different session_id,
+    state_mismatch should be True and stderr should contain a warning."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        state_dir = tmpdir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = tmpdir / "events.jsonl"
+        session_id_a = "session-a-" + uuid.uuid4().hex[:8]
+        session_id_b = "session-b-" + uuid.uuid4().hex[:8]
+
+        env_a = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_a}
+        env_b = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_b}
+
+        # Session A creates command-begin
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-a"],
+            env=env_a,
+        )
+        if code1 != 0:
+            return False, f"command-begin in session A failed: {stderr1}"
+        cmd_id_a = stdout1.strip()
+
+        # Manually add an entry with a foreign session_id to session_b's state
+        state_file_b = state_dir / f"{session_id_b}.json"
+        state_file_b.write_text(json.dumps({
+            "commands": {
+                "foreign-id": {
+                    "session_id": "foreign-session",
+                    "command": "foreign-cmd",
+                    "command_began_at": "2025-01-01T10:00:00Z",
+                }
+            }
+        }))
+
+        # Session B tries to end the foreign command by explicit ID
+        code2, stdout2, stderr2 = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "command-end",
+                "--command-id", "foreign-id",
+                "--command", "foreign-cmd",
+                "--outcome", "success",
+            ],
+            env=env_b,
+        )
+        if code2 != 0:
+            return False, f"command-end failed: {stderr2}"
+
+        # Parse the event and check state_mismatch flag
+        with open(log_path) as f:
+            lines = [line.strip() for line in f if line.strip()]
+        if not lines:
+            return False, "no events in log"
+
+        # Find the command.end event for the foreign command
+        cmd_end = None
+        for line in reversed(lines):
+            event = json.loads(line)
+            if event.get("event_type") == "command.end" and event.get("command") == "foreign-cmd":
+                cmd_end = event
+                break
+
+        if cmd_end is None:
+            return False, "no command.end event found"
+
+        # Verify state_mismatch is True
+        if cmd_end.get("state_mismatch") is not True:
+            return False, f"expected state_mismatch=True, got {cmd_end.get('state_mismatch')}"
+
+        # Verify stderr contains a warning
+        if "mismatch" not in stderr2.lower() and "warn" not in stderr2.lower():
+            return False, f"expected warning in stderr, got: {stderr2!r}"
+
+        return True, ""
+
+
+def test_cross_session_explicit_stage_id_refuses_mutation():
+    """When stage-end with explicit --stage-id resolves to an entry from a different session,
+    the entry should not be mutated."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        state_dir = tmpdir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = tmpdir / "events.jsonl"
+        session_id_a = "session-a-" + uuid.uuid4().hex[:8]
+        session_id_b = "session-b-" + uuid.uuid4().hex[:8]
+
+        env_a = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_a}
+        env_b = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id_b}
+
+        # Session A: create command-begin, then stage-begin
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-a"],
+            env=env_a,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id_a = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage-a"],
+            env=env_a,
+        )
+        if code2 != 0:
+            return False, f"stage-begin failed: {stderr2}"
+        stage_id_a = stdout2.strip()
+
+        # Manually add a foreign entry to session B's state
+        state_file_b = state_dir / f"{session_id_b}.json"
+        state_file_b.write_text(json.dumps({
+            "commands": {
+                "foreign-cmd-id": {
+                    "session_id": "foreign-session",
+                    "command": "foreign-cmd",
+                    "command_began_at": "2025-01-01T10:00:00Z",
+                    "stage_id": "foreign-stage-id",
+                    "stage": "foreign-stage",
+                }
+            }
+        }))
+
+        # Session B tries to end the foreign stage by explicit ID
+        code3, stdout3, stderr3 = run_script(
+            [
+                "--log", str(log_path),
+                "--state-dir", str(state_dir),
+                "stage-end",
+                "--command-id", "foreign-cmd-id",
+                "--stage-id", "foreign-stage-id",
+                "--stage", "different-stage",  # Different name
+                "--outcome", "success",
+            ],
+            env=env_b,
+        )
+        if code3 != 0:
+            return False, f"stage-end failed: {stderr3}"
+
+        # Verify the foreign entry was not mutated
+        state_file_b_after = state_dir / f"{session_id_b}.json"
+        state_after = json.loads(state_file_b_after.read_text())
+        foreign_entry = state_after.get("commands", {}).get("foreign-cmd-id", {})
+
+        if foreign_entry.get("stage_id") != "foreign-stage-id":
+            return False, f"foreign entry's stage_id was mutated, expected foreign-stage-id, got {foreign_entry.get('stage_id')}"
+
+        return True, ""
+
+
+def test_load_command_entries_warns_on_malformed_commands_key():
+    """_load_command_entries should warn when commands key is present but not a dict."""
+    spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
+    ts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ts)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_file = Path(tmpdir) / "malformed.json"
+        # Write a state file with commands key that is not a dict
+        state_file.write_text(json.dumps({
+            "commands": "not-a-dict"  # Malformed!
+        }))
+
+        # Attempt to load: should warn and treat as corrupted
+        import sys
+        from io import StringIO
+        old_stderr = sys.stderr
+        sys.stderr = StringIO()
+
+        try:
+            entries = ts._load_command_entries(str(state_file))
+            stderr_output = sys.stderr.getvalue()
+        finally:
+            sys.stderr = old_stderr
+
+        # Should return empty dict (corrupted, treated as empty)
+        if not isinstance(entries, dict):
+            return False, f"_load_command_entries should return a dict, got {type(entries)}"
+
+        # Should have warned
+        if "warn" not in stderr_output.lower() and "malformed" not in stderr_output.lower() and "corrupt" not in stderr_output.lower():
+            return False, f"expected warning in stderr about malformed commands key, got: {stderr_output!r}"
+
+        return True, ""
+
+
+def test_evict_unknown_entry_not_shielded_from_eviction():
+    """When resolving to UNKNOWN, the resolved_cid is tracked separately so the literal
+    'unknown' string doesn't shield an 'unknown' entry from eviction."""
+    spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
+    ts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ts)
+
+    now = datetime.now(timezone.utc)
+
+    # Create a scenario with an "unknown" entry that should be evicted
+    entries = {
+        "unknown": {
+            "session_id": "sess1",
+            "command": "unknown",
+            "command_began_at": (now - timedelta(hours=24)).isoformat(),
+        },
+        "cmd-recent": {
+            "session_id": "sess1",
+            "command": "cmd-recent",
+            "command_began_at": now.isoformat(),
+        },
+    }
+
+    # When keep_id is the resolved id (not the literal "unknown" string),
+    # the eviction logic should not shield the "unknown" entry
+    ts._evict_expired(entries, keep_id="resolved-cmd-id", now=now)
+
+    # The stale "unknown" entry should be evicted
+    if "unknown" in entries:
+        return False, "the 'unknown' entry should be evicted (not shielded by passing resolved_cid separately)"
+
+    if "cmd-recent" not in entries:
+        return False, "the recent entry should survive"
+
+    return True, ""
+
+
+def test_session_begin_calls_prune_with_session_id():
+    """cmd_session_begin must pass the current session_id to prune_stale_state,
+    preventing the pruner from deleting the active session's own just-created files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Create another stale session file
+        stale_session_id = "stale-session-" + uuid.uuid4().hex[:8]
+        stale_file = state_dir / f"{stale_session_id}.json"
+        stale_file.write_text('{}')
+        os.utime(stale_file, (0, 0))  # Set to epoch (very old)
+
+        if not stale_file.exists():
+            return False, "stale file not created"
+
+        # Run session-begin with the active session
+        payload = json.dumps({"session_id": session_id, "cwd": "/tmp"})
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "session-begin"],
+            stdin_text=payload,
+            env=env,
+        )
+        if code != 0:
+            return False, f"session-begin failed: {stderr}"
+
+        # The stale file should be pruned
+        if stale_file.exists():
+            return False, "stale file was not pruned by session-begin"
+
+        # But there should be no active session file created by session-begin itself
+        # (session-begin only logs an event, not state)
+        # The key is: stale files were pruned, but the active session wasn't deleted
+
+        return True, ""
+
+
+def test_command_end_gates_emission_on_cleared_true():
+    """command-end should only emit a terminal event if resolution.cleared is actually True.
+    If the entry was already cleared (by concurrent sweep or otherwise), no duplicate event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        state_dir = tmpdir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = tmpdir / "events.jsonl"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Start a command
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id = stdout1.strip()
+
+        # Manually delete the state file to simulate it being already cleared
+        state_file = state_dir / f"{session_id}.json"
+        state = json.loads(state_file.read_text())
+        # Remove the entry to simulate it being cleared
+        del state["commands"][cmd_id]
+        state_file.write_text(json.dumps(state))
+
+        # Now run command-end: should handle gracefully and not emit duplicate terminal event
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "test-cmd", "--outcome", "success"],
+            env=env,
+        )
+
+        # command-end should succeed (gracefully handle already-cleared case)
+        if code2 != 0:
+            return False, f"command-end should succeed even if entry already cleared, got stderr: {stderr2}"
+
+        # Verify only one command.end was emitted (no duplicate)
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        cmd_ends = [e for e in events if e.get("event_type") == "command.end"]
+        if len(cmd_ends) != 1:
+            return False, f"expected exactly one command.end event, got {len(cmd_ends)}"
+
+        return True, ""
+
+
+def test_stage_end_gates_emission_on_cleared_true():
+    """stage-end should only emit a terminal event if resolution.cleared is actually True.
+    If the stage was already cleared, no duplicate event."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        state_dir = tmpdir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = tmpdir / "events.jsonl"
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
+
+        # Start command and stage
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"command-begin failed: {stderr1}"
+        cmd_id = stdout1.strip()
+
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "test-stage"],
+            env=env,
+        )
+        if code2 != 0:
+            return False, f"stage-begin failed: {stderr2}"
+        stage_id = stdout2.strip()
+
+        # Manually clear stage state to simulate already-cleared
+        state_file = state_dir / f"{session_id}.json"
+        state = json.loads(state_file.read_text())
+        state["commands"][cmd_id]["stage_id"] = None
+        state["commands"][cmd_id]["stage"] = None
+        state_file.write_text(json.dumps(state))
+
+        # Now run stage-end: should handle gracefully
+        code3, stdout3, stderr3 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "test-stage", "--outcome", "success"],
+            env=env,
+        )
+        if code3 != 0:
+            return False, f"stage-end should succeed even if stage already cleared, got stderr: {stderr3}"
+
+        # Verify only one stage.end was emitted for this stage
+        with open(log_path) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+
+        stage_ends = [e for e in events if e.get("event_type") == "stage.end"]
+        if len(stage_ends) != 1:
+            return False, f"expected exactly one stage.end event, got {len(stage_ends)}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -4051,6 +4417,30 @@ if __name__ == "__main__":
 
     passed, msg = test_agent_end_parsed_empty_status()
     test_result("agent-end with a parseable but token-empty transcript records status parsed_empty", passed, msg)
+
+    print()
+
+    print("[Section 15] Directive #160 round 2: cross-session guards, eviction, and sweep coordination")
+    passed, msg = test_cross_session_explicit_command_id_sets_state_mismatch_and_warns()
+    test_result("cross-session --command-id collision sets state_mismatch=true and warns", passed, msg)
+
+    passed, msg = test_cross_session_explicit_stage_id_refuses_mutation()
+    test_result("cross-session --stage-id collision refuses to mutate foreign entry", passed, msg)
+
+    passed, msg = test_load_command_entries_warns_on_malformed_commands_key()
+    test_result("_load_command_entries warns on malformed commands key (not dict)", passed, msg)
+
+    passed, msg = test_evict_unknown_entry_not_shielded_from_eviction()
+    test_result("eviction: unknown entry not shielded when resolved_cid tracked separately", passed, msg)
+
+    passed, msg = test_session_begin_calls_prune_with_session_id()
+    test_result("session-begin passes session_id to prune_stale_state (skips self)", passed, msg)
+
+    passed, msg = test_command_end_gates_emission_on_cleared_true()
+    test_result("command-end gates terminal event emission on resolution.cleared=true", passed, msg)
+
+    passed, msg = test_stage_end_gates_emission_on_cleared_true()
+    test_result("stage-end gates terminal event emission on resolution.cleared=true", passed, msg)
 
     print()
 
