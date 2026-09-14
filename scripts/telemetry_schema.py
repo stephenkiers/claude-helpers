@@ -802,7 +802,7 @@ def resolve_and_clear_command_state(path: Path, session_id: Optional[str], comma
         return {"commands": entries}
 
     load_and_update_state(path, mutate)
-    if not result.get("cleared") and result.get("command_id") not in (None, UNKNOWN):
+    if not result.get("cleared") and result.get("command_id") not in (None, UNKNOWN) and not result.get("state_mismatch"):
         print(
             f"telemetry: skipped clearing state for command_id={result['command_id']} "
             "(state belongs to a different, concurrently in-flight command)",

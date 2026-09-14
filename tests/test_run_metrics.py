@@ -3037,13 +3037,14 @@ def test_init_command_state_preserves_other_entries():
         session_id = "test-session-" + uuid.uuid4().hex[:8]
         state_file = state_dir / f"{session_id}.json"
 
-        # Pre-populate with one entry
+        # Pre-populate with one entry (recent timestamp, so it survives age-based eviction)
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
         initial_state = {
             "commands": {
                 "cmd-1": {
                     "session_id": session_id,
                     "command": "cmd1",
-                    "command_began_at": "2026-09-13T00:00:00+00:00",
+                    "command_began_at": recent,
                 }
             }
         }
@@ -3057,7 +3058,7 @@ def test_init_command_state_preserves_other_entries():
             state_file,
             "cmd-2",
             "cmd2",
-            "2026-09-13T00:01:00+00:00",
+            datetime.now(timezone.utc).isoformat(),
         )
 
         # Verify both entries exist and the first is byte-identical
@@ -3088,18 +3089,20 @@ def test_init_command_state_replaces_only_target_entry():
         session_id = "test-session-" + uuid.uuid4().hex[:8]
         state_file = state_dir / f"{session_id}.json"
 
-        # Pre-populate with two entries
+        # Pre-populate with two entries (recent timestamps, so they survive age-based eviction)
+        recent1 = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        recent2 = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
         initial_state = {
             "commands": {
                 "cmd-1": {
                     "session_id": session_id,
                     "command": "cmd1",
-                    "command_began_at": "2026-09-13T00:00:00+00:00",
+                    "command_began_at": recent1,
                 },
                 "cmd-2": {
                     "session_id": session_id,
                     "command": "cmd2",
-                    "command_began_at": "2026-09-13T00:01:00+00:00",
+                    "command_began_at": recent2,
                 },
             }
         }
@@ -3113,7 +3116,7 @@ def test_init_command_state_replaces_only_target_entry():
             state_file,
             "cmd-2",
             "cmd2-new",
-            "2026-09-13T00:02:00+00:00",
+            datetime.now(timezone.utc).isoformat(),
         )
 
         # Verify cmd-1 is unchanged and cmd-2 is replaced
@@ -3774,8 +3777,9 @@ def test_cross_session_explicit_command_id_sets_state_mismatch_and_warns():
         if cmd_end.get("state_mismatch") is not True:
             return False, f"expected state_mismatch=True, got {cmd_end.get('state_mismatch')}"
 
-        # Verify stderr contains a warning
-        if "mismatch" not in stderr2.lower() and "warn" not in stderr2.lower():
+        # Verify stderr contains a warning (this file's convention is "skipped ... in-flight",
+        # not the literal words "mismatch"/"warn" — see resolve_and_clear_command_state)
+        if "skipped" not in stderr2.lower() and "in-flight" not in stderr2.lower():
             return False, f"expected warning in stderr, got: {stderr2!r}"
 
         return True, ""
@@ -3812,14 +3816,16 @@ def test_cross_session_explicit_stage_id_refuses_mutation():
             return False, f"stage-begin failed: {stderr2}"
         stage_id_a = stdout2.strip()
 
-        # Manually add a foreign entry to session B's state
+        # Manually add a foreign entry to session B's state (recent timestamp, so it
+        # survives age-based eviction and the test isolates the mutation-refusal behavior)
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         state_file_b = state_dir / f"{session_id_b}.json"
         state_file_b.write_text(json.dumps({
             "commands": {
                 "foreign-cmd-id": {
                     "session_id": "foreign-session",
                     "command": "foreign-cmd",
-                    "command_began_at": "2025-01-01T10:00:00Z",
+                    "command_began_at": recent,
                     "stage_id": "foreign-stage-id",
                     "stage": "foreign-stage",
                 }
@@ -3859,34 +3865,32 @@ def test_load_command_entries_warns_on_malformed_commands_key():
     ts = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ts)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        state_file = Path(tmpdir) / "malformed.json"
-        # Write a state file with commands key that is not a dict
-        state_file.write_text(json.dumps({
-            "commands": "not-a-dict"  # Malformed!
-        }))
+    # _load_command_entries takes the already-parsed state dict, not a file path.
+    state = {"commands": "not-a-dict"}  # Malformed!
 
-        # Attempt to load: should warn and treat as corrupted
-        import sys
-        from io import StringIO
-        old_stderr = sys.stderr
-        sys.stderr = StringIO()
+    # Attempt to load: should warn and treat as corrupted
+    import sys
+    from io import StringIO
+    old_stderr = sys.stderr
+    sys.stderr = StringIO()
 
-        try:
-            entries = ts._load_command_entries(str(state_file))
-            stderr_output = sys.stderr.getvalue()
-        finally:
-            sys.stderr = old_stderr
+    try:
+        entries = ts._load_command_entries(state)
+        stderr_output = sys.stderr.getvalue()
+    finally:
+        sys.stderr = old_stderr
 
-        # Should return empty dict (corrupted, treated as empty)
-        if not isinstance(entries, dict):
-            return False, f"_load_command_entries should return a dict, got {type(entries)}"
+    # Should return empty dict (corrupted, treated as empty)
+    if not isinstance(entries, dict):
+        return False, f"_load_command_entries should return a dict, got {type(entries)}"
+    if entries:
+        return False, f"_load_command_entries should treat a malformed commands key as empty, got {entries!r}"
 
-        # Should have warned
-        if "warn" not in stderr_output.lower() and "malformed" not in stderr_output.lower() and "corrupt" not in stderr_output.lower():
-            return False, f"expected warning in stderr about malformed commands key, got: {stderr_output!r}"
+    # Should have warned
+    if "warn" not in stderr_output.lower() and "malformed" not in stderr_output.lower() and "corrupt" not in stderr_output.lower():
+        return False, f"expected warning in stderr about malformed commands key, got: {stderr_output!r}"
 
-        return True, ""
+    return True, ""
 
 
 def test_evict_unknown_entry_not_shielded_from_eviction():
