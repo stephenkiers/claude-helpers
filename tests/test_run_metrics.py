@@ -879,8 +879,10 @@ def test_missing_state_file_degrades_to_unknown():
         return True, ""
 
 
-def test_stage_name_mismatch_sets_flag():
-    """stage-end with mismatched stage name sets state_mismatch: true."""
+def test_stage_name_mismatch_resolves_unknown_and_leaves_entry_open():
+    """stage-end with a name matching no open stage resolves to UNKNOWN, state_mismatch: None,
+    and leaves the actually-open stage untouched (per the issue's Step 3 truth table — no
+    ambient fallback to unrelated open stages for this session)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
@@ -895,7 +897,6 @@ def test_stage_name_mismatch_sets_flag():
         )
         if code1 != 0:
             return False, f"command-begin failed: {stderr1}"
-        cmd_id_from_begin = stdout1.strip()
 
         code2, stdout2, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "original-stage"],
@@ -920,30 +921,37 @@ def test_stage_name_mismatch_sets_flag():
         if code != 0:
             return False, f"stage-end failed: {stderr}"
 
-        # Parse and verify state_mismatch flag
+        # Parse and verify the mismatched stage-end event resolved to UNKNOWN, untouched
         with open(log_path) as f:
             lines = [line for line in f if line.strip()]
 
         stage_end_event = json.loads(lines[-1])
 
-        if stage_end_event.get("state_mismatch") != True:
-            return False, f"state_mismatch should be True, got: {stage_end_event.get('state_mismatch')}"
+        if stage_end_event.get("state_mismatch") is not None:
+            return False, f"state_mismatch should be None (no ambient fallback), got: {stage_end_event.get('state_mismatch')}"
 
-        # Verify that stage_id and command_id still match the begin events
-        if stage_end_event.get("stage_id") != stage_id_from_begin:
-            return False, f"stage_id mismatch should not corrupt stage ID: {stage_end_event.get('stage_id')} vs {stage_id_from_begin}"
-
-        if stage_end_event.get("command_id") != cmd_id_from_begin:
-            return False, f"stage_id mismatch should not corrupt command ID: {stage_end_event.get('command_id')} vs {cmd_id_from_begin}"
+        if stage_end_event.get("stage_id") != "unknown":
+            return False, f"stage_id should resolve to unknown, got: {stage_end_event.get('stage_id')}"
 
         if stage_end_event.get("elapsed_seconds") != "unknown":
-            return False, f"elapsed_seconds should be 'unknown' when stage name mismatches, got: {stage_end_event.get('elapsed_seconds')}"
+            return False, f"elapsed_seconds should be 'unknown' when nothing resolved, got: {stage_end_event.get('elapsed_seconds')}"
+
+        # The original open stage must be left untouched in state
+        state_file = state_dir / f"{session_id}.json"
+        with open(state_file) as f:
+            state = json.load(f)
+        commands = state.get("commands", {})
+        open_stage_ids = [e.get("stage_id") for e in commands.values() if e.get("stage_id")]
+        if stage_id_from_begin not in open_stage_ids:
+            return False, "original open stage should have been left untouched, but is gone"
 
         return True, ""
 
 
-def test_command_name_mismatch_sets_flag():
-    """command-end with mismatched command name sets state_mismatch: true."""
+def test_command_name_mismatch_resolves_unknown_and_leaves_entry_open():
+    """command-end with a name matching no entry resolves to UNKNOWN, state_mismatch: None,
+    and leaves the actually-open entry untouched (per the issue's Step 3 truth table — no
+    ambient fallback to unrelated entries for this session)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "test.jsonl"
         state_dir = Path(tmpdir) / "state"
@@ -975,21 +983,28 @@ def test_command_name_mismatch_sets_flag():
         if code != 0:
             return False, f"command-end failed: {stderr}"
 
-        # Parse and verify state_mismatch flag
+        # Parse and verify the mismatched command-end event resolved to UNKNOWN, untouched
         with open(log_path) as f:
             lines = [line for line in f if line.strip()]
 
         cmd_end_event = json.loads(lines[-1])
 
-        if cmd_end_event.get("state_mismatch") != True:
-            return False, f"state_mismatch should be True, got: {cmd_end_event.get('state_mismatch')}"
+        if cmd_end_event.get("state_mismatch") is not None:
+            return False, f"state_mismatch should be None (no ambient fallback), got: {cmd_end_event.get('state_mismatch')}"
 
-        # Verify that command_id still matches the begin event
-        if cmd_end_event.get("command_id") != cmd_id_from_begin:
-            return False, f"command name mismatch should not corrupt command ID: {cmd_end_event.get('command_id')} vs {cmd_id_from_begin}"
+        if cmd_end_event.get("command_id") != "unknown":
+            return False, f"command_id should resolve to unknown, got: {cmd_end_event.get('command_id')}"
 
         if cmd_end_event.get("elapsed_seconds") != "unknown":
-            return False, f"elapsed_seconds should be 'unknown' when command name mismatches, got: {cmd_end_event.get('elapsed_seconds')}"
+            return False, f"elapsed_seconds should be 'unknown' when nothing resolved, got: {cmd_end_event.get('elapsed_seconds')}"
+
+        # The original open command entry must be left untouched in state
+        state_file = state_dir / f"{session_id}.json"
+        with open(state_file) as f:
+            state = json.load(f)
+        commands = state.get("commands", {})
+        if cmd_id_from_begin not in commands:
+            return False, "original open command entry should have been left untouched, but is gone"
 
         return True, ""
 
@@ -1231,50 +1246,6 @@ def test_stage_end_clears_stage_state():
         # command_id entry should still be present (it's cleared at command-end)
         if cmd_id not in commands:
             return False, "command_id entry should persist after stage-end"
-
-        return True, ""
-
-
-def test_command_end_deletes_state_file():
-    """After command-end, the state file still exists but the entry is removed."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log_path = Path(tmpdir) / "test.jsonl"
-        state_dir = Path(tmpdir) / "state"
-        session_id = "test-session-" + uuid.uuid4().hex[:8]
-
-        env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
-
-        # command-begin
-        code1, stdout1, stderr1 = run_script(
-            ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "test-cmd"],
-            env=env,
-        )
-        if code1 != 0:
-            return False, f"command-begin failed: {stderr1}"
-        cmd_id = stdout1.strip()
-
-        state_file = state_dir / f"{session_id}.json"
-        if not state_file.exists():
-            return False, "state file should exist after command-begin"
-
-        # command-end
-        code, stdout, stderr = run_script(
-            ["--log", str(log_path), "--state-dir", str(state_dir), "command-end", "--command", "test-cmd", "--outcome", "success"],
-            env=env,
-        )
-        if code != 0:
-            return False, f"command-end failed: {stderr}"
-
-        # Verify state file still exists (not deleted)
-        if not state_file.exists():
-            return False, "state file should survive after command-end"
-
-        # Verify the entry is removed
-        with open(state_file) as f:
-            state = json.load(f)
-        commands = state.get("commands", {})
-        if cmd_id in commands and commands[cmd_id].get("command"):
-            return False, f"command entry should be removed from state after command-end"
 
         return True, ""
 
@@ -2229,7 +2200,7 @@ def test_agent_elapsed_survives_command_end():
 
     Regression test: session/agent timing lives in a separate file (session_meta_path)
     from the command/stage state file, because command-end unconditionally deletes the
-    latter (test_command_end_deletes_state_file). An agent spawned before a command ends
+    latter (test_command_end_removes_own_entry_only). An agent spawned before a command ends
     but that finishes after must still get a real elapsed_seconds, not 'unknown'.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -3159,6 +3130,94 @@ def test_init_command_state_replaces_only_target_entry():
         return True, ""
 
 
+def test_evict_expired_with_missing_timestamp():
+    """_evict_expired handles entries with missing command_began_at (treats as oldest)."""
+    # Import telemetry_schema to test its internal function
+    spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
+    ts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ts)
+
+    # Create entries: one with missing timestamp, one with a timestamp
+    now = datetime.now(timezone.utc)
+    entries = {
+        "cmd-1": {
+            "session_id": "sess1",
+            "command": "cmd1",
+            "command_began_at": now.isoformat(),  # Has timestamp
+        },
+        "cmd-2": {
+            "session_id": "sess1",
+            "command": "cmd2",
+            "command_began_at": None,  # Missing timestamp
+        },
+    }
+
+    # Call _evict_expired with a very low max age (forces eviction)
+    # The entry with missing timestamp should sort as oldest and be evicted first
+    # But since we keep max of 2 entries and we have 2, neither should evict yet
+    ts._evict_expired(entries, keep_id=None, now=now + datetime.timedelta(hours=24))
+
+    # Verify both entries are still there (max is 2, we have 2)
+    if len(entries) != 2:
+        return False, "Expected 2 entries, but got " + str(len(entries))
+
+    # Now try with a very old timestamp on cmd-1 and missing on cmd-2
+    entries["cmd-1"]["command_began_at"] = (now - datetime.timedelta(hours=24)).isoformat()
+    entries["cmd-3"] = {"session_id": "sess1", "command": "cmd3"}
+
+    # This should trigger age-based eviction on cmd-1 (older than 12h)
+    ts._evict_expired(entries, keep_id=None, now=now)
+
+    if "cmd-1" in entries:
+        return False, "Expected cmd-1 to be evicted (older than 12h)"
+
+    return True, ""
+
+
+def test_evict_expired_with_malformed_timestamp():
+    """_evict_expired handles entries with malformed command_began_at (treats as oldest)."""
+    spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
+    ts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ts)
+
+    now = datetime.now(timezone.utc)
+    entries = {
+        "cmd-1": {
+            "session_id": "sess1",
+            "command": "cmd1",
+            "command_began_at": "not-a-valid-timestamp",  # Malformed
+        },
+        "cmd-2": {
+            "session_id": "sess1",
+            "command": "cmd2",
+            "command_began_at": now.isoformat(),
+        },
+    }
+
+    # With hard cap of 2, both should stay
+    ts._evict_expired(entries, keep_id=None, now=now)
+    if len(entries) != 2:
+        return False, f"Expected 2 entries with hard cap, got {len(entries)}"
+
+    # Add a third entry; malformed should be evicted first as oldest
+    entries["cmd-3"] = {
+        "session_id": "sess1",
+        "command": "cmd3",
+        "command_began_at": now.isoformat(),
+    }
+
+    # This should evict cmd-1 (malformed, treated as oldest)
+    ts._evict_expired(entries, keep_id=None, now=now)
+
+    if "cmd-1" in entries:
+        return False, "Expected cmd-1 (malformed timestamp) to be evicted as oldest"
+
+    if len(entries) != 2:
+        return False, f"Expected 2 entries after cap enforcement, got {len(entries)}"
+
+    return True, ""
+
+
 def test_command_end_never_mutates_other_entries():
     """command-end for entry A never mutates entry B."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -3213,9 +3272,8 @@ def test_command_end_never_mutates_other_entries():
         if cmd_b_entry_after != cmd_b_entry_before:
             return False, f"cmd-b entry was mutated by command-end A"
 
-        if "cmd-a" in commands and commands["cmd-a"]:
-            # cmd-a entry might still exist but should be cleared/empty
-            pass
+        if "cmd-a" in commands:
+            return False, f"cmd-a entry should be fully removed, not left in state"
 
         return True, ""
 
@@ -3267,8 +3325,8 @@ def test_command_end_removes_own_entry_only():
         commands = state.get("commands", {})
 
         # cmd-a should not be present as an entry
-        if cmd_a_id in commands and commands[cmd_a_id].get("command"):
-            return False, f"cmd-a entry should be removed, but {cmd_a_id} still has command={commands[cmd_a_id].get('command')}"
+        if cmd_a_id in commands:
+            return False, f"cmd-a entry should be removed"
 
         # cmd-b should still be present
         if cmd_b_id not in commands or not commands[cmd_b_id].get("command"):
@@ -3769,11 +3827,11 @@ if __name__ == "__main__":
     passed, msg = test_missing_state_file_degrades_to_unknown()
     test_result("missing state degrades to 'unknown' IDs gracefully", passed, msg)
 
-    passed, msg = test_stage_name_mismatch_sets_flag()
-    test_result("stage-end with mismatched name sets state_mismatch: true", passed, msg)
+    passed, msg = test_stage_name_mismatch_resolves_unknown_and_leaves_entry_open()
+    test_result("stage-end with mismatched name resolves to unknown, leaves entry open", passed, msg)
 
-    passed, msg = test_command_name_mismatch_sets_flag()
-    test_result("command-end with mismatched name sets state_mismatch: true", passed, msg)
+    passed, msg = test_command_name_mismatch_resolves_unknown_and_leaves_entry_open()
+    test_result("command-end with mismatched name resolves to unknown, leaves entry open", passed, msg)
 
     passed, msg = test_prune_on_command_begin()
     test_result("command-begin prunes stale state files", passed, msg)
@@ -3804,6 +3862,12 @@ if __name__ == "__main__":
 
     passed, msg = test_init_command_state_replaces_only_target_entry()
     test_result("init_command_state for existing id replaces only that entry", passed, msg)
+
+    passed, msg = test_evict_expired_with_missing_timestamp()
+    test_result("_evict_expired handles missing command_began_at (treats as oldest)", passed, msg)
+
+    passed, msg = test_evict_expired_with_malformed_timestamp()
+    test_result("_evict_expired handles malformed command_began_at (treats as oldest)", passed, msg)
 
     passed, msg = test_command_end_never_mutates_other_entries()
     test_result("command-end for entry A never mutates entry B", passed, msg)

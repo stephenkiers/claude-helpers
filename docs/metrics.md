@@ -308,31 +308,32 @@ against the `commands` dict, under the one lock held for the whole read-modify-w
 | `--command-id` given | entry under that id, session_id matching | that entry; `state_mismatch = None` (explicit ID is trusted); absent → `cleared = False`, `began_at = None` |
 | `command-end`, no id, exactly 1 entry with `command == name` | — | that entry; `state_mismatch = None` |
 | `command-end`, no id, 2+ entries with `command == name` | — | LIFO: the most recently begun (innermost open); `state_mismatch = None` |
-| `command-end`, no id, 0 name matches but ≥1 entry exists for this session | — | falls back to those entries (LIFO if 2+); `state_mismatch = True`; the resolved `command_id`/`elapsed_seconds` behave as described under State Mismatch Detection below |
-| `command-end`, no id, no entries for this session | — | `command_id = UNKNOWN`, `state_mismatch = None` |
+| `command-end`, no id, 0 name matches (whether or not ≥1 entry exists for this session) | — | `command_id = UNKNOWN`, `cleared = False`, `state_mismatch = None` |
 | `stage-begin`, no id | — | LIFO innermost-open entry; if none, the reserved `"unknown"` entry |
 | `stage-end`, `--stage-id` given | all entries | scan for that `stage_id` (uuid4 — globally unique, so positional ambiguity does not arise) |
-| `stage-end`, no id | entries with an open stage whose `stage == name` | 1 → it; 2+ → LIFO by `stage_began_at`; 0 name matches but some stage open → falls back to those entries (LIFO if 2+), `state_mismatch = True`; 0 with none open → `UNKNOWN`, `state_mismatch = None` |
+| `stage-end`, no id | entries with an open stage whose `stage == name` | 1 → it; 2+ → LIFO by `stage_began_at`; 0 name matches → `UNKNOWN`, `state_mismatch = None` |
 
 A resolution never adopts an entry whose `session_id` doesn't match the caller's — that guard exists
 so session IDs colliding onto the same filename-safe slot can't cross-contaminate each other's state.
 
 ### State Mismatch Detection
 
-If `stage-end` or `command-end` is called with a stage/command name that does not match the resolved
-entry's recorded name, the emitted event includes a `state_mismatch: true` field. This is a
-data-quality signal (currently not specially surfaced by `diagnose`, but available for future
-analysis). `state_mismatch` keeps a narrow meaning: it fires only when the call genuinely fails to
-resolve by name (name matches nothing while other entries exist, or an open stage disagrees by name)
-— the mere *presence* of other entries never sets it, so a correctly-paired outer `command-end`
-sharing a session with unrelated sibling entries is not penalized. Examples:
+`state_mismatch: true` fires only for an explicit `--command-id`/`--stage-id` collision: the id
+resolves to an entry that exists but belongs to a different `session_id`. That entry is a
+different, concurrently in-flight session's data, so it is left untouched (`cleared = False`) and
+a warning is logged to stderr — this is a cross-session collision signal, not a name-mismatch
+signal. No caller passes an explicit `--command-id`/`--stage-id` today, so this path is currently
+unreachable in production; it exists for when a caller starts doing so.
 
-- `stage-begin --stage foo` followed by `stage-end --stage bar` (without explicit `--stage-id`, and
-  no other stage open) → `state_mismatch: true`
-- `command-begin --command shipit` followed by `command-end --command expert-review` (without
-  explicit `--command-id`, and no other `shipit` entry open) → `state_mismatch: true`
+The ambient, no-id resolution path (every call today) never sets `state_mismatch` — per the ID
+Resolution table above, 0 name matches resolves to `UNKNOWN` with `state_mismatch = None` and the
+existing entries left untouched, regardless of whether other entries exist for this session. A
+name/id mismatch under the ambient path is silent by design: it preserves the pre-this-PR behavior
+of leaving unrelated sibling entries alone rather than adopting one ambiently.
 
-Whenever `state_mismatch` is set to `true`, `elapsed_seconds` is also forced to `"unknown"` even though the underlying command_id/stage_id still resolved via a genuine match — a name mismatch signals that the caller and the state file disagree about what lifecycle is actually running, so the state's timestamp is no longer trusted enough to report as this event's duration.
+Example: `stage-begin --stage foo` followed by `stage-end --stage bar` (without explicit
+`--stage-id`) resolves `bar` to `UNKNOWN`, `state_mismatch = None`, `cleared = False` — the `foo`
+entry is left open and unaffected.
 
 ### Degradation When Session Unknown
 

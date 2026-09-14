@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Literal, NamedTuple, Optional, TypedDict, Union
+from typing import Literal, NamedTuple, Optional, TypedDict, Union, get_args
 
 
 class CommandStateEntry(TypedDict, total=False):
@@ -28,6 +28,10 @@ class CommandStateEntry(TypedDict, total=False):
 
     command and command_began_at are set by command-begin. stage_id, stage, and
     stage_began_at are set by stage-begin and cleared by stage-end.
+
+    _monotonic_ns is a strictly monotonic nanosecond timestamp used as a tiebreaker
+    when command_began_at or stage_began_at timestamps are equal (ensuring stable
+    LIFO ordering even under timestamp ties).
     """
     session_id: Optional[str]
     command: Optional[str]
@@ -35,6 +39,7 @@ class CommandStateEntry(TypedDict, total=False):
     stage_id: Optional[str]
     stage: Optional[str]
     stage_began_at: Optional[str]
+    _monotonic_ns: Optional[int]
 
 
 class SessionState(TypedDict, total=False):
@@ -55,7 +60,7 @@ class SessionState(TypedDict, total=False):
     different lifetimes from session/agent timing — the session and agents must survive
     a command-end, but a command state entry is popped when its command ends.
     """
-    commands: Dict[str, CommandStateEntry]
+    commands: dict[str, CommandStateEntry]
 
 
 class AgentBeganAtEntry(TypedDict):
@@ -80,6 +85,7 @@ class StageEndResolution(NamedTuple):
     command_id: str
     stage_id: str
     state_mismatch: Optional[bool]
+    cleared: bool
     began_at: Optional[str]
 
 
@@ -182,21 +188,57 @@ COUNTED_TOKEN_KEYS = ("input", "output", "cache_creation")
 THRESHOLD_STATES = frozenset({"under-threshold", "over-threshold-unreported", "over-threshold-reported", "unavailable", "session-mismatch"})
 ThresholdState = Literal["under-threshold", "over-threshold-unreported", "over-threshold-reported", "unavailable", "session-mismatch"]
 USAGE_GATE_DEFAULT_THRESHOLD = 130_000
-UNPARSEABLE_STATUSES = frozenset({"unparseable", "no_transcript_path", "path_not_a_file", "parse_raised", "parsed_empty"})
+UNPARSEABLE_STATUSES = frozenset(
+    s for s in get_args(AgentUsageEntry.__annotations__["status"])
+    if s != "counted" and s != "session-mismatch"
+)
 
 
-def _load_command_entries(state: dict) -> Dict[str, CommandStateEntry]:
+def _parse_iso_or_none(timestamp_str: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO 8601 timestamp string to a timezone-aware datetime, or None on parse error.
+
+    Treats naive (timezone-unaware) datetimes as errors and returns None, since all
+    telemetry timestamps must be timezone-aware for safe comparison.
+
+    Args:
+        timestamp_str: ISO 8601 timestamp string, or None
+
+    Returns:
+        A timezone-aware datetime object, or None if the string is falsy, unparseable, or naive.
+    """
+    if not timestamp_str:
+        return None
+    try:
+        normalized = timestamp_str.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return None
+        return parsed
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _load_command_entries(state: dict) -> dict[str, CommandStateEntry]:
     """Load command entries from state, migrating legacy flat format to new keyed dict.
 
     If state already has a "commands" key with a dict value, return it as-is.
+
+    If "commands" key is present but not a dict (malformed), log a warning and treat
+    as corrupted (return empty dict).
 
     Otherwise, convert a legacy flat state (top-level command_id/command/etc.) into
     a single entry keyed by command_id, or return an empty dict if neither format is found.
 
     This is called on every state read to ensure smooth migration from old code to new.
     """
-    if "commands" in state and isinstance(state.get("commands"), dict):
-        return state["commands"]
+    if "commands" in state:
+        commands = state.get("commands")
+        if isinstance(commands, dict):
+            return commands
+        else:
+            # Malformed: "commands" key present but not a dict
+            print(f"telemetry: state has malformed 'commands' field (not a dict): {type(commands).__name__}", file=sys.stderr)
+            return {}
 
     # Legacy flat format: migrate to new dict format
     if state.get("command_id"):
@@ -214,7 +256,7 @@ def _load_command_entries(state: dict) -> Dict[str, CommandStateEntry]:
     return {}
 
 
-def _evict_expired(entries: Dict[str, "CommandStateEntry"], keep_id: Optional[str], now: datetime) -> None:
+def _evict_expired(entries: dict[str, CommandStateEntry], keep_id: Optional[str], now: datetime) -> None:
     """Mutate entries in place, dropping expired/excess entries — never keep_id.
 
     Called after a mutate_fn has already resolved its own target entry, passing that
@@ -224,22 +266,15 @@ def _evict_expired(entries: Dict[str, "CommandStateEntry"], keep_id: Optional[st
     Drops any entry (other than keep_id) whose command_began_at is older than
     COMMAND_STATE_MAX_AGE_SECONDS (12h, matching diagnose's stale/recent split), then
     enforces a hard cap of COMMAND_STATE_MAX_ENTRIES by evicting the oldest-begun
-    entries first. An entry with no parseable command_began_at (including the
+    entries first. An entry with a missing command_began_at (including the
     reserved "unknown" entry, whose command field is None) is treated as never-expiring
     by age but still counts toward the hard cap, sorting as oldest.
     """
-    def began_at_epoch(entry: "CommandStateEntry") -> float:
-        raw = entry.get("command_began_at")
-        if not raw:
+    def began_at_epoch(entry: CommandStateEntry) -> float:
+        parsed = _parse_iso_or_none(entry.get("command_began_at"))
+        if parsed is None:
             return float("-inf")
-        try:
-            normalized = raw.replace("Z", "+00:00")
-            parsed = datetime.fromisoformat(normalized)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-        except (ValueError, TypeError, AttributeError):
-            return float("-inf")
+        return parsed.timestamp()
 
     for cid in list(entries.keys()):
         if cid == keep_id:
@@ -250,6 +285,7 @@ def _evict_expired(entries: Dict[str, "CommandStateEntry"], keep_id: Optional[st
         age_seconds = now.timestamp() - began_at_epoch(entries[cid])
         if age_seconds > COMMAND_STATE_MAX_AGE_SECONDS:
             del entries[cid]
+            print(f"telemetry: evicted expired state entry for command_id={cid}", file=sys.stderr)
 
     if len(entries) > COMMAND_STATE_MAX_ENTRIES:
         evictable = sorted(
@@ -259,6 +295,7 @@ def _evict_expired(entries: Dict[str, "CommandStateEntry"], keep_id: Optional[st
         overflow = len(entries) - COMMAND_STATE_MAX_ENTRIES
         for cid in evictable[:overflow]:
             del entries[cid]
+            print(f"telemetry: evicted excess state entry for command_id={cid}", file=sys.stderr)
 
 
 def outcome_success() -> dict:
@@ -652,6 +689,7 @@ def init_command_state(path: Path, command_id: str, command: str, began_at: Opti
             "stage_id": None,
             "stage": None,
             "stage_began_at": None,
+            "_monotonic_ns": time.monotonic_ns(),
         }
         _evict_expired(entries, keep_id=command_id, now=datetime.now(timezone.utc))
         return {"commands": entries}
@@ -663,16 +701,15 @@ def resolve_and_clear_command_state(path: Path, session_id: Optional[str], comma
 
     Single critical section implementing the resolution truth table:
     - If --command-id is given: use that entry if session_id matches; state_mismatch = None.
+      If the entry exists but belongs to a different session, state_mismatch = True and
+      the entry is left untouched (a cross-session collision, not a data corruption).
     - If no --command-id: prefer entries whose command name matches, so sibling
-      commands with distinct names never collide. Only when no entry has this name
-      does resolution fall back, ambiently, to all entries for this session_id — that
-      fallback is what lets a name mismatch still resolve to (and report on) the
-      right entry instead of corrupting it to UNKNOWN:
+      commands with distinct names never collide:
       - Exactly 1 name match: use it, state_mismatch = None.
       - 2+ name matches: use LIFO (innermost open, latest begun), state_mismatch = None.
-      - 0 name matches but ≥1 entry for this session_id: fall back to those entries
-        (LIFO if 2+), state_mismatch = True.
-      - No entries for this session_id: resolve to UNKNOWN, state_mismatch = None.
+      - 0 name matches: resolve to UNKNOWN, state_mismatch = None, entries left
+        untouched — preserves today's documented behavior even if entries exist for
+        this session_id (per the issue's Step 3 truth table; no ambient fallback).
 
     CAS-clears: removes the entry under the resolved command_id ONLY if its recorded
     command_id matches. If the entry doesn't exist or command_id differs, the state
@@ -695,6 +732,7 @@ def resolve_and_clear_command_state(path: Path, session_id: Optional[str], comma
         command_id = UNKNOWN
         state_mismatch = None
         resolved_entry = None
+        resolved_cid = None
 
         if command_id_arg:
             # Explicit --command-id: look it up
@@ -703,61 +741,64 @@ def resolve_and_clear_command_state(path: Path, session_id: Optional[str], comma
                 if entry.get("session_id") == session_id:
                     command_id = command_id_arg
                     resolved_entry = entry
+                    resolved_cid = command_id_arg
                     state_mismatch = None
+                else:
+                    # Entry exists but session_id doesn't match — collision
+                    command_id = command_id_arg
+                    state_mismatch = True
+                    resolved_entry = None
+                    resolved_cid = None
+                    print(
+                        f"telemetry: skipped resolving command_id={command_id_arg} "
+                        "(state belongs to a different, concurrently in-flight session)",
+                        file=sys.stderr,
+                    )
             else:
                 command_id = command_id_arg
                 state_mismatch = None
                 resolved_entry = None
+                resolved_cid = None
         else:
             # No --command-id: prefer an exact name match first (so sibling commands
-            # with distinct names never collide); only fall back to an ambient,
-            # name-agnostic match when no entry has this name, so a mismatch never
-            # corrupts the resolved ID.
+            # with distinct names never collide); preserve today's documented behavior
+            # by resolving to UNKNOWN when no name matches are found, even if entries
+            # exist for this session (per the issue's Step 3 truth table).
             name_matches = [
                 (cid, entry) for cid, entry in entries.items()
                 if entry.get("command") == command_name and entry.get("session_id") == session_id
             ]
-            session_matches = [
-                (cid, entry) for cid, entry in entries.items()
-                if entry.get("session_id") == session_id
-            ]
 
-            if name_matches:
-                candidates = name_matches
-                mismatch_on_resolve = False
-            elif session_matches:
-                candidates = session_matches
-                mismatch_on_resolve = True
-            else:
-                candidates = []
-                mismatch_on_resolve = False
-
-            if not candidates:
+            if not name_matches:
+                # No name match: resolve to UNKNOWN, leave entries untouched
                 command_id = UNKNOWN
                 state_mismatch = None
                 resolved_entry = None
-            elif len(candidates) == 1:
-                command_id, resolved_entry = candidates[0]
-                state_mismatch = True if mismatch_on_resolve else None
+                resolved_cid = None
+            elif len(name_matches) == 1:
+                command_id, resolved_entry = name_matches[0]
+                resolved_cid = command_id
+                state_mismatch = None
             else:
-                # 2+ matches: LIFO by command_began_at (innermost open = latest begun)
-                candidates.sort(key=lambda x: x[1].get("command_began_at", ""), reverse=True)
-                command_id, resolved_entry = candidates[0]
-                state_mismatch = True if mismatch_on_resolve else None
+                # 2+ matches: LIFO by command_began_at (innermost open = latest begun), with monotonic tiebreaker
+                name_matches.sort(key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                command_id, resolved_entry = name_matches[0]
+                resolved_cid = command_id
+                state_mismatch = None
 
         result["command_id"] = command_id
         result["state_mismatch"] = state_mismatch
 
         # CAS-clear: only pop the entry if it exists and matches
-        if resolved_entry and command_id in entries and entries[command_id] is resolved_entry:
+        if resolved_entry and resolved_cid and resolved_cid in entries and entries[resolved_cid] is resolved_entry:
             result["cleared"] = True
             result["began_at"] = resolved_entry.get("command_began_at")
-            del entries[command_id]
+            del entries[resolved_cid]
         else:
             result["cleared"] = False
             result["began_at"] = None
 
-        _evict_expired(entries, keep_id=command_id, now=datetime.now(timezone.utc))
+        _evict_expired(entries, keep_id=resolved_cid, now=datetime.now(timezone.utc))
         return {"commands": entries}
 
     load_and_update_state(path, mutate)
@@ -795,14 +836,17 @@ def resolve_and_set_stage_state(
 
         if command_id_arg:
             # Explicit command_id: use it if present and session_id matches
-            if command_id_arg in entries and entries[command_id_arg].get("session_id") == session_id:
-                command_id = command_id_arg
+            if command_id_arg in entries:
+                entry = entries[command_id_arg]
+                if entry.get("session_id") == session_id:
+                    command_id = command_id_arg
+                else:
+                    # Session mismatch: refuse to adopt/mutate; fall back to unknown
+                    command_id = UNKNOWN
             else:
-                # Explicit ID but not found or session mismatch: still use it
-                # (we'll write to it, creating if necessary)
+                # Explicit ID not found: create it with the provided session_id
                 command_id = command_id_arg
-                if command_id not in entries:
-                    entries[command_id] = {"session_id": session_id}
+                entries[command_id] = {"session_id": session_id, "_monotonic_ns": time.monotonic_ns()}
         else:
             # No explicit command_id: find LIFO innermost-open entry with matching session_id
             matching_entries = [
@@ -810,20 +854,20 @@ def resolve_and_set_stage_state(
                 if cid != UNKNOWN and entry.get("session_id") == session_id
             ]
             if matching_entries:
-                # LIFO by command_began_at (innermost = latest begun)
-                matching_entries.sort(key=lambda x: x[1].get("command_began_at", ""), reverse=True)
+                # LIFO by command_began_at (innermost = latest begun), with monotonic tiebreaker
+                matching_entries.sort(key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
                 command_id, _ = matching_entries[0]
             else:
                 # No matching entries: use reserved "unknown" entry
                 command_id = UNKNOWN
                 if command_id not in entries:
-                    entries[command_id] = {"session_id": session_id, "command": None}
+                    entries[command_id] = {"session_id": session_id, "command": None, "_monotonic_ns": time.monotonic_ns()}
 
         result["command_id"] = command_id
 
         # Set stage fields on the resolved entry
         if command_id not in entries:
-            entries[command_id] = {"session_id": session_id}
+            entries[command_id] = {"session_id": session_id, "_monotonic_ns": time.monotonic_ns()}
         entries[command_id]["stage_id"] = stage_id
         entries[command_id]["stage"] = stage_name
         entries[command_id]["stage_began_at"] = began_at
@@ -843,17 +887,13 @@ def resolve_and_clear_stage_state(
     Single critical section implementing the stage-end resolution:
     - If --stage-id is given: scan all entries for that stage_id (uuid4, globally unique).
     - If no --stage-id: prefer entries with an open stage whose name matches, so
-      sibling open stages with distinct names never collide. Only when no open stage
-      has this name does resolution fall back, ambiently, to any entry with an open
-      stage for this session_id — that fallback is what lets a name mismatch still
-      resolve to (and report on) the right stage/command instead of corrupting it to
-      UNKNOWN:
+      sibling open stages with distinct names never collide:
       - Exactly 1 open stage matching the name: use it, state_mismatch = None.
       - 2+ matching: use LIFO by stage_began_at, state_mismatch = None.
-      - 0 name matches but ≥1 entry has an open stage for this session_id: fall back
-        to those entries (LIFO if 2+), state_mismatch = True.
-      - No entry has an open stage for this session_id: resolve to UNKNOWN,
-        state_mismatch = None.
+      - 0 name matches: resolve to UNKNOWN, state_mismatch = None, entries left
+        untouched — preserves today's documented behavior even if entries have an
+        open stage for this session_id (per the issue's Step 3 truth table; no
+        ambient fallback).
 
     CAS-clears: removes stage_id/stage/stage_began_at ONLY if the entry's own
     stage_id matches the resolved stage_id. Command fields (command/command_began_at)
@@ -894,44 +934,31 @@ def resolve_and_clear_stage_state(
         else:
             # No --stage-id: prefer an exact stage-name match among entries with an
             # open stage first (so sibling open stages with distinct names never
-            # collide); only fall back to an ambient, name-agnostic match among open
-            # stages when none has this name, so a mismatch never corrupts the
-            # resolved stage_id/command_id.
+            # collide); preserve today's documented behavior by resolving to UNKNOWN
+            # when no name matches are found, even if entries with open stages exist
+            # for this session (per the issue's Step 3 truth table).
             name_matches = [
                 (cid, entry) for cid, entry in entries.items()
                 if entry.get("stage") == stage_name and entry.get("stage_id") and entry.get("session_id") == session_id
             ]
-            open_stage_matches = [
-                (cid, entry) for cid, entry in entries.items()
-                if entry.get("stage_id") and entry.get("session_id") == session_id
-            ]
 
-            if name_matches:
-                candidates = name_matches
-                mismatch_on_resolve = False
-            elif open_stage_matches:
-                candidates = open_stage_matches
-                mismatch_on_resolve = True
-            else:
-                candidates = []
-                mismatch_on_resolve = False
-
-            if not candidates:
+            if not name_matches:
+                # No name match: resolve to UNKNOWN, leave entries untouched
                 stage_id = UNKNOWN
                 command_id = UNKNOWN
                 state_mismatch = None
-            elif len(candidates) == 1:
-                command_id, resolved_entry = candidates[0]
+            elif len(name_matches) == 1:
+                command_id, resolved_entry = name_matches[0]
                 resolved_cid = command_id
                 stage_id = resolved_entry.get("stage_id", UNKNOWN)
-                state_mismatch = True if mismatch_on_resolve else None
+                state_mismatch = None
             else:
-                # 2+ matches: LIFO by stage_began_at
-                candidates.sort(key=lambda x: x[1].get("stage_began_at", ""), reverse=True)
-                command_id, resolved_entry = candidates[0]
+                # 2+ matches: LIFO by stage_began_at, with monotonic tiebreaker
+                name_matches.sort(key=lambda x: (x[1].get("stage_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                command_id, resolved_entry = name_matches[0]
                 resolved_cid = command_id
                 stage_id = resolved_entry.get("stage_id", UNKNOWN)
-                state_mismatch = True if mismatch_on_resolve else None
+                state_mismatch = None
 
         result["command_id"] = command_id
         result["stage_id"] = stage_id
@@ -958,7 +985,7 @@ def resolve_and_clear_stage_state(
             "(state belongs to a different, concurrently in-flight stage)",
             file=sys.stderr,
         )
-    return StageEndResolution(result["command_id"], result["stage_id"], result["state_mismatch"], result.get("began_at"))
+    return StageEndResolution(result["command_id"], result["stage_id"], result["state_mismatch"], result.get("cleared", False), result.get("began_at"))
 
 
 def record_agent_began_at(path: Path, session_id: str, agent_id: str, began_at: str) -> None:
@@ -1092,14 +1119,9 @@ def _compute_elapsed_for_sweep(began_at: Optional[str], end_timestamp: str) -> U
     imported). Returns UNKNOWN (never a fabricated number) if began_at is missing/unparseable,
     if end_timestamp is unparseable, or if the delta is negative.
     """
-    if not began_at:
-        return UNKNOWN
-    try:
-        begin_dt = datetime.fromisoformat(began_at.replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(end_timestamp.replace("Z", "+00:00"))
-    except (ValueError, TypeError, AttributeError):
-        return UNKNOWN
-    if begin_dt.tzinfo is None or end_dt.tzinfo is None:
+    begin_dt = _parse_iso_or_none(began_at)
+    end_dt = _parse_iso_or_none(end_timestamp)
+    if begin_dt is None or end_dt is None:
         return UNKNOWN
     delta = (end_dt - begin_dt).total_seconds()
     if delta < 0:
@@ -1107,8 +1129,8 @@ def _compute_elapsed_for_sweep(began_at: Optional[str], end_timestamp: str) -> U
     return int(delta)
 
 
-def sweep_open_command_state(path: Path, session_id: str) -> list:
-    """Sweep open command/stage entries at session end, returning event info for closed lifecycle.
+def sweep_open_command_state(path: Path, session_meta_path: Path, session_id: str) -> tuple[list, Optional[str]]:
+    """Sweep open command/stage entries at session end, clearing session_began_at atomically.
 
     Loads state_path(session_id), selects entries with matching session_id, and processes
     them innermost-first (reverse command_began_at order). For each open entry:
@@ -1117,16 +1139,22 @@ def sweep_open_command_state(path: Path, session_id: str) -> list:
     - The reserved "unknown" entry emits stage.end only, never command.end
 
     Pops all swept entries; returns remaining (foreign-session) entries back to state file.
-    Never raises; wraps all errors internally.
 
-    Returns a list of dicts, each with keys: event_type, command_id, stage_id, stage, command, elapsed_seconds.
-    These can be used by cmd_session_end to build and emit the events.
+    Also clears session_began_at from the session meta file within the same coordination boundary
+    (two separate file locks, but in a coordinated sequence).
+
+    Never raises; wraps all errors internally. Returns a tuple (events_list, session_began_at).
+    On any write failure, returns ([], None) so no events are emitted if state wasn't actually updated.
+
+    Returns a tuple:
+    - events_to_emit: list of dicts, each with keys: event_type, command_id, stage_id, stage, command, elapsed_seconds
+    - session_began_at: the session's begin timestamp (str) if session_began_at was successfully
+      cleared, else None (mirrors resolve_and_clear_session_began_at's own return contract)
     """
     events_to_emit = []
+    session_began_at = None
 
     try:
-        result = {}
-
         def mutate(state: dict) -> dict:
             entries = _load_command_entries(state)
 
@@ -1170,11 +1198,15 @@ def sweep_open_command_state(path: Path, session_id: str) -> list:
             return {"commands": entries}
 
         load_and_update_state(path, mutate)
+        # Sweep succeeded; now clear session_began_at
+        session_began_at = resolve_and_clear_session_began_at(session_meta_path, session_id)
     except Exception as e:
         # Wrap all errors so this can never raise (runs in a hook)
         print(f"telemetry: sweep_open_command_state failed: {type(e).__name__}: {e}", file=sys.stderr)
+        # On write failure, return empty events so nothing is emitted
+        return ([], None)
 
-    return events_to_emit
+    return (events_to_emit, session_began_at)
 
 
 def prune_stale_state(state_dir: Path = None, current_session_id: Optional[str] = None, max_age_seconds: int = 86400) -> None:
@@ -1273,7 +1305,7 @@ def parse_transcript_tokens(path: Path) -> dict:
 
     # If file had content but all lines failed to parse, raise an exception
     if lines_skipped > 0 and lines_parsed == 0:
-        raise ValueError(f"Transcript file had {lines_skipped} lines, none of which parsed as valid JSON")
+        raise ValueError(f"Transcript file {path} had {lines_skipped} lines, none of which parsed as valid JSON")
 
     total_input = UNKNOWN
     total_output = UNKNOWN
