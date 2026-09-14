@@ -33,7 +33,6 @@ These are wired into the shell commands throughout this doc at each terminal pat
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement-with-haiku >/dev/null 2>&1 || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage round1-join >/dev/null 2>&1 || true
 ```
 
 ## Step 1: Find the plan
@@ -239,6 +238,12 @@ yourself in the main worktree once `STAGED: yes` is confirmed via `git status --
 the Integration Gate when it completes.
 
 ## Step 4a: Create one worktree per unit (multi-unit only)
+
+**Mark the start of the round1-join stage** right before beginning the fanout dispatch:
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage round1-join >/dev/null 2>&1 || true
+```
 
 For each unit, create a branch off `START_SHA` and a worktree:
 
@@ -1097,12 +1102,11 @@ Surface the truncated report and offer a menu:
 - **Re-run** — re-launch with the same prompt (unit retains its worktree / state)
 - **Inspect** — let the human review the worktree diff and decide next steps
 - **Skip** — mark this unit failed, continue with the rest (only for round-1 units)
-- **Abort** — stop the flow entirely. Emit interrupted telemetry (including stage-end if one of the two stages happens to be open):
+- **Abort** — stop the flow entirely. Emit interrupted telemetry:
   ```bash
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage round1-join --outcome interrupted 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome interrupted 2>/dev/null || true
   ```
-  Then stop.
+  Then stop. (Individual abort paths with specific open stages handle their own `stage-end` calls; see Step 4d's user-decline path for reference.)
 
 ---
 
