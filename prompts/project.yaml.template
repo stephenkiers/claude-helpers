@@ -13,6 +13,7 @@
 #   /expert-harden-types    — typeChecker, commands.typecheck
 #   /expert-harden-contracts — docStyle, commands.test
 #   /expert-harden-tests    — propertyTestingLib, techStack.testing, commands.test
+#   /expert-plan-v3         — pinnedExperts
 #   Contract Chris          — docStyle
 #   Tara TypeSafe           — typeChecker
 #   Fragile Feynman        — fragility
@@ -115,6 +116,14 @@ terminology:
   tenant: "An organization account (not 'customer', 'client', or 'org')"
   workspace: "A sub-unit within a tenant (not 'project' or 'team')"
   event: "An internal domain event, not a webhook or external notification"
+
+# ─── Pinned Experts ───────────────────────────────────────────────────────────
+# Used by /expert-plan-v3 Step 2. Experts listed here are always added to the panel,
+# regardless of effort level or coverage rubric — same treatment as Contrarian Carl
+# (always present, never counted against the effort-2 3-expert budget). Match names
+# exactly as they appear in reviewers/index.yaml.
+pinnedExperts:
+  - Uncle Bob
 
 # ─── Is It Done ────────────────────────────────────────────────────────────────
 # Used by /expert-is-it-done for its post-merge definition-of-done audit.
