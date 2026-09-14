@@ -14,7 +14,7 @@ import stat
 import sys
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Add parent/scripts to path so we can import telemetry_schema
@@ -2132,6 +2132,72 @@ def test_validate_event_accepts_valid_effort_mode_reviewer_count():
     return len(errors) == 0, f"got errors: {errors}"
 
 
+def test_evict_expired_drops_entries_older_than_12h():
+    """_evict_expired drops an entry whose command_began_at is more than 12h old."""
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    old_began_at = (now - timedelta(hours=13)).isoformat()
+    entries = {
+        "old-id": {"session_id": "s1", "command": "old-cmd", "command_began_at": old_began_at},
+    }
+    telemetry_schema._evict_expired(entries, keep_id=None, now=now)
+    return "old-id" not in entries, f"expected old-id evicted, got entries={entries}"
+
+
+def test_evict_expired_keeps_entries_within_12h():
+    """_evict_expired keeps an entry whose command_began_at is within 12h."""
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent_began_at = (now - timedelta(hours=1)).isoformat()
+    entries = {
+        "recent-id": {"session_id": "s1", "command": "recent-cmd", "command_began_at": recent_began_at},
+    }
+    telemetry_schema._evict_expired(entries, keep_id=None, now=now)
+    return "recent-id" in entries, f"expected recent-id kept, got entries={entries}"
+
+
+def test_evict_expired_never_evicts_keep_id():
+    """_evict_expired never drops the keep_id entry, even if it's older than 12h."""
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    old_began_at = (now - timedelta(hours=48)).isoformat()
+    entries = {
+        "protected-id": {"session_id": "s1", "command": "cmd", "command_began_at": old_began_at},
+    }
+    telemetry_schema._evict_expired(entries, keep_id="protected-id", now=now)
+    return "protected-id" in entries, f"expected protected-id kept (it's keep_id), got entries={entries}"
+
+
+def test_evict_expired_enforces_hard_cap():
+    """_evict_expired caps entries at COMMAND_STATE_MAX_ENTRIES, evicting oldest-begun first."""
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    max_entries = telemetry_schema.COMMAND_STATE_MAX_ENTRIES
+    entries = {}
+    for i in range(max_entries + 3):
+        began_at = (now - timedelta(minutes=i)).isoformat()
+        entries[f"id-{i}"] = {"session_id": "s1", "command": f"cmd-{i}", "command_began_at": began_at}
+    telemetry_schema._evict_expired(entries, keep_id=None, now=now)
+    if len(entries) != max_entries:
+        return False, f"expected {max_entries} entries after cap, got {len(entries)}"
+    # The 3 oldest (highest minute offset) should be the ones evicted.
+    for i in range(max_entries, max_entries + 3):
+        if f"id-{i}" in entries:
+            return False, f"expected id-{i} (oldest) evicted under hard cap, but it survived"
+    return True, ""
+
+
+def test_evict_expired_hard_cap_never_evicts_keep_id():
+    """_evict_expired's hard cap never evicts keep_id, even if it's the oldest entry."""
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    max_entries = telemetry_schema.COMMAND_STATE_MAX_ENTRIES
+    entries = {}
+    # keep_id is the oldest (largest minute offset) of the bunch.
+    oldest_began_at = (now - timedelta(minutes=max_entries + 10)).isoformat()
+    entries["keep-me"] = {"session_id": "s1", "command": "keep-cmd", "command_began_at": oldest_began_at}
+    for i in range(max_entries + 2):
+        began_at = (now - timedelta(minutes=i)).isoformat()
+        entries[f"id-{i}"] = {"session_id": "s1", "command": f"cmd-{i}", "command_began_at": began_at}
+    telemetry_schema._evict_expired(entries, keep_id="keep-me", now=now)
+    return "keep-me" in entries, f"expected keep-me kept despite being oldest, got entries={entries}"
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -2546,6 +2612,25 @@ if __name__ == "__main__":
 
     passed, msg = test_validate_event_accepts_valid_effort_mode_reviewer_count()
     test_result("validate_event accepts valid effort, mode, reviewer_count", passed, msg)
+
+    print()
+
+    # Per-entry eviction tests
+    print("[Section 16] Per-entry eviction (_evict_expired)")
+    passed, msg = test_evict_expired_drops_entries_older_than_12h()
+    test_result("_evict_expired drops entries older than 12h", passed, msg)
+
+    passed, msg = test_evict_expired_keeps_entries_within_12h()
+    test_result("_evict_expired keeps entries within 12h", passed, msg)
+
+    passed, msg = test_evict_expired_never_evicts_keep_id()
+    test_result("_evict_expired never evicts keep_id", passed, msg)
+
+    passed, msg = test_evict_expired_enforces_hard_cap()
+    test_result("_evict_expired enforces hard cap, oldest-first", passed, msg)
+
+    passed, msg = test_evict_expired_hard_cap_never_evicts_keep_id()
+    test_result("_evict_expired hard cap never evicts keep_id", passed, msg)
 
     print()
 
