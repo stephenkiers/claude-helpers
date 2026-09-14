@@ -45,22 +45,10 @@ def _bounded(value, max_len=MAX_FIELD_LEN):
     return value
 
 
-def _parse_event_timestamp(ts_str):
-    """Parse an event timestamp string to a timezone-aware datetime, or None on parse error.
-
-    Handles ISO 8601 timestamps with 'Z' suffix (converts to '+00:00') and returns None
-    for any ValueError or TypeError during parsing, or if the parsed result is timezone-naive.
-    This tool always compares against timezone-aware values, so a naive result can't be used
-    safely and is treated the same as unparseable.
-    """
-    try:
-        ts_normalized = ts_str.replace("Z", "+00:00") if isinstance(ts_str, str) else ts_str
-        parsed = datetime.fromisoformat(ts_normalized)
-    except (ValueError, TypeError):
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed
+# Alias: this tool always compares against timezone-aware values, so a naive
+# result can't be used safely — telemetry_schema._parse_iso_or_none already
+# treats a naive parse the same as unparseable (returns None).
+_parse_event_timestamp = telemetry_schema._parse_iso_or_none
 
 
 def _guarded_state_op(fn, *args, **kwargs):
@@ -77,26 +65,13 @@ def _guarded_state_op(fn, *args, **kwargs):
         return None
 
 
-def _compute_elapsed(began_at, end_timestamp):
-    """Compute whole-second elapsed duration between an ISO began_at and end timestamp.
-
-    Returns telemetry_schema.UNKNOWN (never a fabricated number) if began_at is
-    missing/unparseable, if end_timestamp is unparseable, or if the delta is negative
-    (clock skew or corrupt state) — matching the schema's "never a fabricated zero" rule.
-    Note this does not cap an unusually large forward delta from a mid-lifecycle clock jump
-    (laptop sleep, NTP step) — such a delta is surfaced as a large-but-plausible elapsed_seconds
-    rather than "unknown", since capping risks masking a genuinely long-running lifecycle.
-    """
-    if not began_at:
-        return telemetry_schema.UNKNOWN
-    begin_dt = _parse_event_timestamp(began_at)
-    end_dt = _parse_event_timestamp(end_timestamp)
-    if begin_dt is None or end_dt is None:
-        return telemetry_schema.UNKNOWN
-    delta = (end_dt - begin_dt).total_seconds()
-    if delta < 0:
-        return telemetry_schema.UNKNOWN
-    return int(delta)
+# Alias: identical logic to telemetry_schema._compute_elapsed_for_sweep (never a
+# fabricated number on missing/unparseable timestamps or a negative delta — clock
+# skew or corrupt state). Does not cap an unusually large forward delta from a
+# mid-lifecycle clock jump (laptop sleep, NTP step) — such a delta is surfaced as
+# a large-but-plausible elapsed_seconds rather than "unknown", since capping risks
+# masking a genuinely long-running lifecycle.
+_compute_elapsed = telemetry_schema._compute_elapsed_for_sweep
 
 
 def read_stdin_json():

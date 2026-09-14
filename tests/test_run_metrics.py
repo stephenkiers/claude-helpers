@@ -3160,21 +3160,28 @@ def test_evict_expired_with_missing_timestamp():
     if "cmd-missing" not in entries:
         return False, "Expected cmd-missing (no timestamp) to survive age-based eviction"
 
-    # Missing-timestamp entries still count toward the hard cap and sort as oldest.
+    # Missing-timestamp entries still count toward the hard cap and sort as oldest —
+    # use one more dated entry than the cap allows, with distinct increasing timestamps,
+    # so which entries survive is unambiguous (not just a count check).
     entries = {
         "cmd-missing": {"session_id": "sess1", "command": "cmd-missing", "command_began_at": None},
     }
-    for i in range(ts.COMMAND_STATE_MAX_ENTRIES):
+    for i in range(ts.COMMAND_STATE_MAX_ENTRIES + 1):
         entries[f"cmd-{i}"] = {
             "session_id": "sess1",
             "command": f"cmd{i}",
-            "command_began_at": now.isoformat(),
+            "command_began_at": (now - timedelta(minutes=ts.COMMAND_STATE_MAX_ENTRIES + 1 - i)).isoformat(),
         }
     ts._evict_expired(entries, keep_id=None, now=now)
     if "cmd-missing" in entries:
         return False, "Expected cmd-missing to be evicted first as oldest under the hard cap"
     if len(entries) != ts.COMMAND_STATE_MAX_ENTRIES:
         return False, f"Expected {ts.COMMAND_STATE_MAX_ENTRIES} entries after cap enforcement, got {len(entries)}"
+    if "cmd-0" in entries:
+        return False, "Expected cmd-0 (oldest dated entry) to be evicted next under the hard cap"
+    for i in range(1, ts.COMMAND_STATE_MAX_ENTRIES + 1):
+        if f"cmd-{i}" not in entries:
+            return False, f"Expected cmd-{i} (a newer entry) to survive the hard cap, but it was evicted"
 
     return True, ""
 

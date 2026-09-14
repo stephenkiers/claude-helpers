@@ -270,7 +270,11 @@ just sits there instead of being clobbered by the next `command-begin`), so it n
   helper that drops any *other* entry whose `command_began_at` is older than 12h (matching
   `diagnose`'s stale/recent split, so both agree on what "abandoned" means), then enforces a hard cap
   of 16 entries by evicting the oldest-begun entries first. `keep_id` is always the entry the call
-  just resolved, so a call can never evict the entry it is about to read, set, or clear.
+  just resolved, so a call can never evict the entry it is about to read, set, or clear. A **missing**
+  `command_began_at` is exempt from the 12h age check (there's no timestamp to compare), but still
+  counts toward the 16-entry cap and sorts as the oldest entry when the cap is enforced. A
+  **malformed/unparseable** `command_began_at` (present but not valid ISO) is treated as infinitely
+  old and evicted immediately by the age check, not merely deprioritized under the cap.
 - **Pruner self-skip:** `prune_stale_state` (called opportunistically from `command-begin`, before
   its own write) now skips the current session's own files — both `{safe_id}.json` and
   `{safe_id}.session.json` — so an active session's file is never reaped mid-run purely because
@@ -305,7 +309,7 @@ against the `commands` dict, under the one lock held for the whole read-modify-w
 
 | Call | Candidate set | Resolution |
 |---|---|---|
-| `--command-id` given | entry under that id, session_id matching | that entry; `state_mismatch = None` (explicit ID is trusted); absent → `cleared = False`, `began_at = None` |
+| `--command-id` given | entry under that id | session_id matches → that entry, `state_mismatch = None`; entry absent → `cleared = False`, `began_at = None`, `state_mismatch = None`; entry present but foreign `session_id` → `cleared = False`, `state_mismatch = True`, entry left untouched, stderr warning logged |
 | `command-end`, no id, exactly 1 entry with `command == name` | — | that entry; `state_mismatch = None` |
 | `command-end`, no id, 2+ entries with `command == name` | — | LIFO: the most recently begun (innermost open); `state_mismatch = None` |
 | `command-end`, no id, 0 name matches (whether or not ≥1 entry exists for this session) | — | `command_id = UNKNOWN`, `cleared = False`, `state_mismatch = None` |
@@ -458,7 +462,12 @@ This split exists because a low match rate has two very different causes with di
    the flow, or `/clear`s mid-command. Historically no `*.end` event was possible for these, and no
    amount of code fixing raised the match rate further. This is now **partly** addressed: `session-end`
    sweeps every still-open command/stage entry for the session and closes each with an `--outcome
-   interrupted` `*.end` event before it clears the session-meta file, innermost-first. This only
+   interrupted` `*.end` event before it clears the session-meta file, innermost-first. The sweep, the
+   resolution of each swept entry, and the `session_began_at` clear are one coordinated critical
+   section: if persisting the sweep's changes fails partway through, the sweep emits no events at
+   all rather than emitting events for a state change that was never actually saved, and a later
+   `command-end`/`stage-end` call treats an entry the sweep *did* successfully clear as a no-op
+   (it does not re-emit a second terminal event for it). This only
    fires when `session-end` itself runs (e.g. a hook-driven `SessionEnd`) — a hard process kill or a
    dropped terminal with no `SessionEnd` hook still leaves the gap this section describes. The 12h
    per-entry eviction TTL (see "Per-Entry Eviction and Pruner Self-Skip" above) is deliberately

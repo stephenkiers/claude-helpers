@@ -1114,10 +1114,10 @@ def resolve_and_clear_session_began_at(path: Path, session_id: str) -> Optional[
 def _compute_elapsed_for_sweep(began_at: Optional[str], end_timestamp: str) -> Union[int, str]:
     """Compute whole-second elapsed duration between an ISO began_at and end timestamp.
 
-    Local to sweep_open_command_state — mirrors run-metrics.py's _compute_elapsed (that
-    module imports this one, not the reverse, so the logic is duplicated here rather than
-    imported). Returns UNKNOWN (never a fabricated number) if began_at is missing/unparseable,
-    if end_timestamp is unparseable, or if the delta is negative.
+    Used by sweep_open_command_state; run-metrics.py's _compute_elapsed is an alias
+    for this function (that module imports this one, not the reverse). Returns UNKNOWN
+    (never a fabricated number) if began_at is missing/unparseable, if end_timestamp is
+    unparseable, or if the delta is negative.
     """
     begin_dt = _parse_iso_or_none(began_at)
     end_dt = _parse_iso_or_none(end_timestamp)
