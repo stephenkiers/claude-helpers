@@ -3131,89 +3131,79 @@ def test_init_command_state_replaces_only_target_entry():
 
 
 def test_evict_expired_with_missing_timestamp():
-    """_evict_expired handles entries with missing command_began_at (treats as oldest)."""
-    # Import telemetry_schema to test its internal function
+    """_evict_expired exempts a missing command_began_at from age eviction but sorts it oldest under the hard cap."""
     spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
     ts = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ts)
 
-    # Create entries: one with missing timestamp, one with a timestamp
     now = datetime.now(timezone.utc)
+
+    # A stale timestamped entry is evicted by age; a missing one is exempt from the age check.
     entries = {
-        "cmd-1": {
+        "cmd-old": {
             "session_id": "sess1",
-            "command": "cmd1",
-            "command_began_at": now.isoformat(),  # Has timestamp
+            "command": "cmd-old",
+            "command_began_at": (now - timedelta(hours=24)).isoformat(),
         },
-        "cmd-2": {
+        "cmd-missing": {
             "session_id": "sess1",
-            "command": "cmd2",
-            "command_began_at": None,  # Missing timestamp
+            "command": "cmd-missing",
+            "command_began_at": None,
         },
     }
-
-    # Call _evict_expired with a very low max age (forces eviction)
-    # The entry with missing timestamp should sort as oldest and be evicted first
-    # But since we keep max of 2 entries and we have 2, neither should evict yet
-    ts._evict_expired(entries, keep_id=None, now=now + datetime.timedelta(hours=24))
-
-    # Verify both entries are still there (max is 2, we have 2)
-    if len(entries) != 2:
-        return False, "Expected 2 entries, but got " + str(len(entries))
-
-    # Now try with a very old timestamp on cmd-1 and missing on cmd-2
-    entries["cmd-1"]["command_began_at"] = (now - datetime.timedelta(hours=24)).isoformat()
-    entries["cmd-3"] = {"session_id": "sess1", "command": "cmd3"}
-
-    # This should trigger age-based eviction on cmd-1 (older than 12h)
     ts._evict_expired(entries, keep_id=None, now=now)
+    if "cmd-old" in entries:
+        return False, "Expected cmd-old (24h stale) to be evicted by age"
+    if "cmd-missing" not in entries:
+        return False, "Expected cmd-missing (no timestamp) to survive age-based eviction"
 
-    if "cmd-1" in entries:
-        return False, "Expected cmd-1 to be evicted (older than 12h)"
+    # Missing-timestamp entries still count toward the hard cap and sort as oldest.
+    entries = {
+        "cmd-missing": {"session_id": "sess1", "command": "cmd-missing", "command_began_at": None},
+    }
+    for i in range(ts.COMMAND_STATE_MAX_ENTRIES):
+        entries[f"cmd-{i}"] = {
+            "session_id": "sess1",
+            "command": f"cmd{i}",
+            "command_began_at": now.isoformat(),
+        }
+    ts._evict_expired(entries, keep_id=None, now=now)
+    if "cmd-missing" in entries:
+        return False, "Expected cmd-missing to be evicted first as oldest under the hard cap"
+    if len(entries) != ts.COMMAND_STATE_MAX_ENTRIES:
+        return False, f"Expected {ts.COMMAND_STATE_MAX_ENTRIES} entries after cap enforcement, got {len(entries)}"
 
     return True, ""
 
 
 def test_evict_expired_with_malformed_timestamp():
-    """_evict_expired handles entries with malformed command_began_at (treats as oldest)."""
+    """_evict_expired treats an unparseable command_began_at as infinitely old and evicts it immediately."""
     spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
     ts = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ts)
 
     now = datetime.now(timezone.utc)
     entries = {
-        "cmd-1": {
+        "cmd-malformed": {
             "session_id": "sess1",
             "command": "cmd1",
-            "command_began_at": "not-a-valid-timestamp",  # Malformed
+            "command_began_at": "not-a-valid-timestamp",
         },
-        "cmd-2": {
+        "cmd-fresh": {
             "session_id": "sess1",
             "command": "cmd2",
             "command_began_at": now.isoformat(),
         },
     }
 
-    # With hard cap of 2, both should stay
-    ts._evict_expired(entries, keep_id=None, now=now)
-    if len(entries) != 2:
-        return False, f"Expected 2 entries with hard cap, got {len(entries)}"
-
-    # Add a third entry; malformed should be evicted first as oldest
-    entries["cmd-3"] = {
-        "session_id": "sess1",
-        "command": "cmd3",
-        "command_began_at": now.isoformat(),
-    }
-
-    # This should evict cmd-1 (malformed, treated as oldest)
+    # A malformed (but present) timestamp fails parsing and is treated as infinitely old,
+    # so it is evicted by the age check immediately rather than merely sorting as oldest.
     ts._evict_expired(entries, keep_id=None, now=now)
 
-    if "cmd-1" in entries:
-        return False, "Expected cmd-1 (malformed timestamp) to be evicted as oldest"
-
-    if len(entries) != 2:
-        return False, f"Expected 2 entries after cap enforcement, got {len(entries)}"
+    if "cmd-malformed" in entries:
+        return False, "Expected cmd-malformed (unparseable timestamp) to be evicted as infinitely old"
+    if "cmd-fresh" not in entries:
+        return False, "Expected cmd-fresh to survive"
 
     return True, ""
 
