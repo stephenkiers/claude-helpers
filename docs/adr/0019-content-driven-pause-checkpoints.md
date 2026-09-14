@@ -115,16 +115,24 @@ never once needed a `/compact` break in that sample. A first attempt tried to ke
 but gate the stop on `usage-check`'s `DECISION:` field; that was reverted (see the issue) because
 `DECISION:` measures subagent-only token accounting since the last `round1-join` reset — a different
 quantity than the orchestrator's own context size — and that accounting is itself broken today (most
-`SubagentStop` hook payloads lack a usable `agent_transcript_path`, so ~80% of recorded agents in
-`~/.claude/telemetry/state/*.session.json` are `status: "unparseable"`, degrading `DECISION:` to a
-floor guess). Given that, keeping four inert `usage-check` Bash calls (tokens and time spent for a
-line nobody could act on) had no upside — so they were deleted outright, not just skipped.
+`SubagentStop` hook payloads lack a usable `agent_transcript_path`, degrading `DECISION:` to a
+floor guess for the affected agent types — measured post-`97642e1` at 2/1,438 for named agent types
+and 0/319 for `plan-implementer` specifically; see #142/#143 for the blank- and `unknown`-`agent_type`
+populations this excludes). Given that, keeping four inert `usage-check` Bash calls (tokens and time
+spent for a line nobody could act on) had no upside — so they were deleted outright, not just
+skipped.
 
-**Telemetry impact: none.** `/implement-with-haiku` was never instrumented with the real ADR-0016
-`command-begin`/`stage-begin` events — the five `usage-check --seam ...` calls were always a
-separate, ephemeral, per-session mechanism (round1-join baseline + floor logic), not the append-only
-`events.jsonl` log. Subagent `agent.begin`/`agent.end` telemetry is captured by hooks independently
-of anything in this command doc and is unaffected by removing these four seams.
+**Telemetry impact:** at the time of this amendment (2026-09-12), `/implement-with-haiku` was not yet
+instrumented with the real ADR-0016 `command-begin`/`stage-begin` events — the five `usage-check
+--seam ...` calls were always a separate, ephemeral, per-session mechanism (round1-join baseline +
+floor logic), not the append-only `events.jsonl` log. That gap was closed by
+[#160](https://github.com/stephenkiers/claude-helpers/issues/160), which added real `command-begin`/
+`command-end` around the whole command and `stage-begin`/`stage-end` around two named stages,
+`round1-join` and `integration-gate` (the fanout and round4 phases were deliberately left
+uninstrumented — see #160 for why). The `usage-check --seam` mechanism described above remains a
+distinct, unaffected mechanism regardless: it was never reading from `events.jsonl` and still isn't.
+Subagent `agent.begin`/`agent.end` telemetry is captured by hooks independently of anything in this
+command doc and is unaffected by any of this.
 
 **Consequence:** the final summary's "Usage gate log" now has two rows — `round1-join` and `final`
 — instead of five. Re-adding a dropped seam later should come with fresh measured-run data showing
