@@ -93,18 +93,18 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
    can use them for bounded reads.
 
 **Always-run set (never routed, pre-seated):**
-- Sam System, Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
+- Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
 - Contrarian Carl (runs last, always).
 
-**Effort 3 exception:** Sam System is not pre-seated — he runs only if the router's top-2 includes
-him. Cody and the Consistency Checker stay always-run, and Carl still runs last. The stage structure
-remains unchanged (summarize → route → pass1 → contrarian → qa → pass2 → amalgamate); effort 3 differs
-only in which reviewers are selected, not in the stages themselves.
+**Sam System** is not pre-seated at any effort level — he runs only if the router selects him (or,
+at effort 3's independent routed-pair path, only if the router's top-2 includes him). The stage
+structure remains unchanged (summarize → route → pass1 → contrarian → qa → pass2 → amalgamate)
+regardless of whether he runs.
 
-The router is told these four are pre-seated and to treat them as included for the decision table.
+The router is told these three are pre-seated and to treat them as included for the decision table.
 
 **Named reviewers:** If the user named specific reviewers (Step 3, `NAMED_SELECTION=true`), skip the
-router entirely — the user's selection *is* the decision, and all four always-run reviewers still
+router entirely — the user's selection *is* the decision, and all three always-run reviewers still
 participate. Step 6 branches on `NAMED_SELECTION`: named/always-run reviewers all read
 `{REVIEW_DIR}/full-diff.patch` directly instead of line ranges into it (there is no router output to
 offset into). This costs each named reviewer a full-patch read instead of a bounded one — acceptable,
@@ -126,7 +126,7 @@ input:
   for r in $NAMED_REVIEWERS; do
     echo "| $r | Yes | Named by user |"
   done
-  for r in sam-system code-rot-cody consistency-checker contrarian-carl; do
+  for r in code-rot-cody consistency-checker contrarian-carl; do
     if ! echo "$NAMED_REVIEWERS" | grep -qw "$r"; then
       echo "| $r | Yes | Always-run |"
     fi

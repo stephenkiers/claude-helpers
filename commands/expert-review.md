@@ -85,8 +85,8 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   (redundant); `--all` + `--effort 1|2|3` is accepted — effort wins. `--model` stays orthogonal; at
   effort 1 the merge agent is `PANEL_MODEL` if `--model` was explicit, else pinned sonnet; scouts are
   always haiku. Triage runs at every level (output contract identical). Level 2 uses its pod path.
-  On the independent level-3 path, Sam System runs only if the router's top-2 includes him; Cody and
-  the Consistency Checker stay always-run.
+  Sam System is never pre-seated at any effort level — see the general always-run rule in
+  `prompts/expert-review-panel.md`.
 - `<github-pr-url>`: a positional argument matching `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$`
   (checked before reviewer-name matching) switches to **PR mode** — review a coworker's PR in an
   isolated worktree. Step 1 is replaced by `eval "$(bash ~/.claude/scripts/setup-pr-worktree.sh "$PR_URL")"`,
@@ -448,14 +448,13 @@ STAGE_END_ARGS=(--stage resolve-scope --outcome success --effort "$EFFORT")
 [ -n "${PANEL_MODEL:-}" ] && STAGE_END_ARGS+=(--model "$PANEL_MODEL")
 STAGE_END_ARGS+=(--mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)")
 if [ "${NAMED_SELECTION:-false}" = true ]; then
-  # Count explicitly-named reviewers plus whichever of the four always-run reviewers
-  # (sam-system, code-rot-cody, consistency-checker, contrarian-carl) are NOT already
-  # named — a named reviewer that happens to be one of the always-run four must not be
-  # counted twice (mirrors the dedup in prompts/expert-review-panel.md's panel-decision
-  # table builder).
+  # Count explicitly-named reviewers plus whichever of the three always-run reviewers
+  # (code-rot-cody, consistency-checker, contrarian-carl) are NOT already named — a named
+  # reviewer that happens to be one of the always-run three must not be counted twice
+  # (mirrors the dedup in prompts/expert-review-panel.md's panel-decision table builder).
   NAMED_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
   EXTRA_ALWAYS_RUN_COUNT=0
-  for r in sam-system code-rot-cody consistency-checker contrarian-carl; do
+  for r in code-rot-cody consistency-checker contrarian-carl; do
     echo "$NAMED_REVIEWERS" | grep -qw "$r" || EXTRA_ALWAYS_RUN_COUNT=$((EXTRA_ALWAYS_RUN_COUNT + 1))
   done
   REVIEWER_COUNT=$((NAMED_COUNT + EXTRA_ALWAYS_RUN_COUNT))
