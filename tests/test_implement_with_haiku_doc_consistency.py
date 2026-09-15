@@ -12,7 +12,9 @@ Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 """
 
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -29,6 +31,34 @@ def read(path):
         return path.read_text()
     except OSError:
         return ""
+
+
+def extract_bash_blocks(text):
+    """
+    Extract all fenced bash code blocks from markdown text.
+    Returns a list of (block_content, line_number) tuples.
+    """
+    blocks = []
+    lines = text.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Match opening fence: ```bash
+        if re.match(r'^```bash\s*$', line):
+            # Calculate approximate line number (1-indexed)
+            start_line = i + 1
+            # Collect content until closing fence
+            block_lines = []
+            i += 1
+            while i < len(lines):
+                if re.match(r'^```\s*$', lines[i]):
+                    # Found closing fence
+                    blocks.append(('\n'.join(block_lines), start_line))
+                    break
+                block_lines.append(lines[i])
+                i += 1
+        i += 1
+    return blocks
 
 
 IMPLEMENT_WITH_HAIKU = read(COMMANDS / "implement-with-haiku.md")
@@ -540,7 +570,7 @@ if ADR_0019:
             amendment_section = ADR_0019[amendment_pos:]
 
             has_deleted = "deleted" in amendment_section.lower()
-            has_eight = "8" in amendment_section
+            has_eight = "8 real" in amendment_section
             has_thirty_days = "30 days" in amendment_section or "30-day" in amendment_section.lower()
 
             t("Amendment section contains 'deleted'",
@@ -554,6 +584,58 @@ if ADR_0019:
             t("Amendment section contains '30 days' or '30-day'",
               has_thirty_days,
               "Amendment (2026-09-15) should mention '30 days' or '30-day'")
+
+print()
+
+# ============================================================================
+# NEW TEST: Bash syntax validation for all code blocks
+# ============================================================================
+print("[New] Bash syntax check: all fenced bash blocks in implement-with-haiku.md")
+
+bash_blocks = extract_bash_blocks(IMPLEMENT_WITH_HAIKU)
+t(f"Found bash code blocks in implement-with-haiku.md",
+  len(bash_blocks) > 0,
+  "No ```bash blocks found in the document")
+
+if bash_blocks:
+    syntax_errors = []
+    for block_content, line_number in bash_blocks:
+        # Write block to a temporary file and check syntax with bash -n
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as tmpfile:
+            tmpfile.write(block_content)
+            tmpfile.flush()
+            tmppath = tmpfile.name
+
+        try:
+            result = subprocess.run(
+                ["bash", "-n", tmppath],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                stderr_output = result.stderr.decode('utf-8', errors='replace').strip()
+                syntax_errors.append(
+                    f"Line ~{line_number}: {stderr_output}"
+                )
+        except subprocess.TimeoutExpired:
+            syntax_errors.append(f"Line ~{line_number}: bash -n timed out")
+        except Exception as e:
+            syntax_errors.append(f"Line ~{line_number}: {str(e)}")
+        finally:
+            # Clean up temp file
+            try:
+                Path(tmppath).unlink()
+            except:
+                pass
+
+    if syntax_errors:
+        error_message = "Bash syntax errors found:\n  " + "\n  ".join(syntax_errors)
+        t(f"All {len(bash_blocks)} bash blocks pass syntax check (bash -n)",
+          False,
+          error_message)
+    else:
+        t(f"All {len(bash_blocks)} bash blocks pass syntax check (bash -n)",
+          True)
 
 print()
 
