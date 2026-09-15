@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Add parent/scripts to path so we can import telemetry_schema
@@ -501,6 +502,209 @@ def test_peek_command_id_recency_tie_break():
         return True, ""
 
 
+def test_peek_command_id_handles_non_dict_entries():
+    """peek_command_id() gracefully skips non-dict entries in the commands dict."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "command-state.json"
+
+        corrupted_state = {
+            "commands": {
+                "cmd-123": "not a dict",  # Non-dict entry - should be skipped
+                "cmd-456": {
+                    "command": "test-cmd",
+                    "command_began_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": "sess-456",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 3000,
+                },
+            }
+        }
+        state_path.write_text(json.dumps(corrupted_state))
+
+        try:
+            result = telemetry_schema.peek_command_id(state_path, "test-cmd")
+            if result != "cmd-456":
+                return False, f"expected cmd-456, got {result}"
+            return True, ""
+        except Exception as e:
+            return False, f"peek_command_id crashed on non-dict entry: {e}"
+
+
+def test_peek_command_id_handles_missing_dict_fields():
+    """peek_command_id() handles entries with missing required fields."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "command-state.json"
+
+        state = {
+            "commands": {
+                "cmd-123": {
+                    # missing "command" field
+                    "command_began_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": "sess-456",
+                },
+                "cmd-456": {
+                    "command": "test-cmd",
+                    "command_began_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": "sess-789",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 1000,
+                },
+            }
+        }
+        state_path.write_text(json.dumps(state))
+
+        try:
+            result = telemetry_schema.peek_command_id(state_path, "test-cmd")
+            if result != "cmd-456":
+                return False, f"expected cmd-456, got {result}"
+            return True, ""
+        except Exception as e:
+            return False, f"peek_command_id crashed on incomplete entry: {e}"
+
+
+def test_peek_command_id_tie_break_uses_monotonic_ns():
+    """peek_command_id() uses _monotonic_ns as tiebreaker when timestamps are equal."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "command-state.json"
+
+        shared_timestamp = datetime.now(timezone.utc).isoformat()
+
+        state = {
+            "commands": {
+                "cmd-first": {
+                    "command": "tie-cmd",
+                    "command_began_at": shared_timestamp,
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 1000,
+                },
+                "cmd-second": {
+                    "command": "tie-cmd",
+                    "command_began_at": shared_timestamp,
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 2000,  # Higher monotonic_ns = more recent
+                },
+            }
+        }
+        state_path.write_text(json.dumps(state))
+
+        try:
+            result = telemetry_schema.peek_command_id(state_path, "tie-cmd")
+            if result != "cmd-second":
+                return False, f"tie-break failed: expected cmd-second, got {result}"
+            return True, ""
+        except Exception as e:
+            return False, f"peek_command_id failed on tie-break scenario: {e}"
+
+
+def test_sort_behavior_consistency_in_peek_command_id():
+    """peek_command_id() uses a consistent sort order across timestamp and monotonic ties."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "command-state.json"
+
+        now = datetime.now(timezone.utc)
+
+        state = {
+            "commands": {
+                "cmd-1": {
+                    "command": "multi-cmd",
+                    "command_began_at": (now - timedelta(minutes=2)).isoformat(),
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 3000,
+                },
+                "cmd-2": {
+                    "command": "multi-cmd",
+                    "command_began_at": (now - timedelta(minutes=1)).isoformat(),
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 1000,
+                },
+                "cmd-3": {
+                    "command": "multi-cmd",
+                    "command_began_at": (now - timedelta(minutes=1)).isoformat(),
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 2000,  # Same timestamp as cmd-2 but higher monotonic
+                },
+                "cmd-4": {
+                    "command": "multi-cmd",
+                    "command_began_at": now.isoformat(),
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 1000,
+                },
+            }
+        }
+        state_path.write_text(json.dumps(state))
+
+        try:
+            result = telemetry_schema.peek_command_id(state_path, "multi-cmd")
+            if result != "cmd-4":
+                return False, f"expected cmd-4 (latest), got {result}"
+            return True, ""
+        except Exception as e:
+            return False, f"sort consistency test failed: {e}"
+
+
+def test_peek_command_id_with_null_monotonic_ns():
+    """peek_command_id() handles entries with null or missing _monotonic_ns."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "command-state.json"
+
+        now = datetime.now(timezone.utc)
+
+        state = {
+            "commands": {
+                "cmd-1": {
+                    "command": "test-cmd",
+                    "command_began_at": (now - timedelta(seconds=1)).isoformat(),
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": None,  # null monotonic
+                },
+                "cmd-2": {
+                    "command": "test-cmd",
+                    "command_began_at": now.isoformat(),
+                    "session_id": "sess-123",
+                    "stage_id": None,
+                    "stage": None,
+                    "stage_began_at": None,
+                    "_monotonic_ns": 1000,
+                },
+            }
+        }
+        state_path.write_text(json.dumps(state))
+
+        try:
+            result = telemetry_schema.peek_command_id(state_path, "test-cmd")
+            # Should return cmd-2 (latest timestamp, regardless of null monotonic)
+            if result != "cmd-2":
+                return False, f"expected cmd-2, got {result}"
+            return True, ""
+        except Exception as e:
+            return False, f"peek_command_id failed with null monotonic: {e}"
+
+
 if __name__ == "__main__":
     h = Harness("RESUMED_FROM SCHEMA AND PEEK_COMMAND_ID EDGE CASES TEST SUITE")
     t = h.test_result
@@ -543,6 +747,14 @@ if __name__ == "__main__":
     t("resumed_from round trip", test_resumed_from_round_trip()[0], test_resumed_from_round_trip()[1])
     t("validate_event accepts whitespace in resumed_from", test_validate_event_accepts_whitespace_in_resumed_from()[0], test_validate_event_accepts_whitespace_in_resumed_from()[1])
     t("build_event with multiple optional fields and resumed_from", test_build_event_with_multiple_optional_fields_and_resumed_from()[0], test_build_event_with_multiple_optional_fields_and_resumed_from()[1])
+    print()
+
+    print("[Section 7] peek_command_id() malformed-entry filtering and tie-break")
+    t("peek_command_id handles non-dict entries", test_peek_command_id_handles_non_dict_entries()[0], test_peek_command_id_handles_non_dict_entries()[1])
+    t("peek_command_id handles missing dict fields", test_peek_command_id_handles_missing_dict_fields()[0], test_peek_command_id_handles_missing_dict_fields()[1])
+    t("peek_command_id tie-break uses _monotonic_ns", test_peek_command_id_tie_break_uses_monotonic_ns()[0], test_peek_command_id_tie_break_uses_monotonic_ns()[1])
+    t("peek_command_id sort consistency across timestamp/monotonic ties", test_sort_behavior_consistency_in_peek_command_id()[0], test_sort_behavior_consistency_in_peek_command_id()[1])
+    t("peek_command_id handles null/missing _monotonic_ns", test_peek_command_id_with_null_monotonic_ns()[0], test_peek_command_id_with_null_monotonic_ns()[1])
     print()
 
     h.summarize_and_exit()
