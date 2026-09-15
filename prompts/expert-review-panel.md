@@ -178,7 +178,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pass1 >/dev/n
 
 **If `NAMED_SELECTION=true`:** the router did not run; Step 5 synthesized a minimal
 `tagged-sections.md` as a routing record (see above). The selected reviewers are exactly the user's
-named reviewers plus the always-run four; every one of them reads `{REVIEW_DIR}/full-diff.patch`
+named reviewers plus the always-run three; every one of them reads `{REVIEW_DIR}/full-diff.patch`
 in full rather than a line-range offset into it.
 
 **Otherwise:** read `tagged-sections.md` and parse which reviewers were selected by the router.
@@ -273,20 +273,12 @@ Do NOT report pre-existing issues in unchanged code. If the PR makes an existing
 issue worse, report it; if it doesn't touch it, skip it.
 ```
 
-Three reviewers **always run and are never gated** (the router does not route them; their domain is
-the whole diff by definition). They get special inputs but run in the same parallel batch — and they
-follow the same rules as everyone else: they read their own YAML by path, and they return a receipt,
-not a report. (Their output *formats* differ — those formats are defined in their own YAMLs, which
-they read themselves; you do not need to know them here.)
-
-- **Sam System** (integration): gets `{REVIEW_DIR}/full-diff.patch` (not tagged sections — his
-  domain is the whole diff, so he reads the whole file), the Technical Summary, and any plan context
-  as "Known Integration Concerns". He must trace data flow across files — read both ends of every
-  factory/event-bus/config connection and flag parameters passed but never used. Output: canonical
-  format (he is NOT an ADR-0006 carve-out); each finding's **Issue** field starts with the data-flow
-  trace, e.g.
-  `Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
-  Decision is always DEEP-DIVE.
+Two reviewers **always run in Step 6 and are never gated** (the router does not route them; their
+domain is the whole diff by definition) — Contrarian Carl runs separately, last, in his own step.
+They get special inputs but run in the same parallel batch — and they follow the same rules as
+everyone else: they read their own YAML by path, and they return a receipt, not a report. (Their
+output *formats* differ — those formats are defined in their own YAMLs, which they read
+themselves; you do not need to know them here.)
 
 - **Code Rot Cody** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
   `{REVIEW_DIR}/full-diff.patch` + changed-file list. He greps the ENTIRE repo to verify every
