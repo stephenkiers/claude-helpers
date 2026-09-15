@@ -345,4 +345,208 @@ if context_note:
 
 print()
 
+# ============================================================================
+# ITEM 8: New Bash block ordering in Step 4d (resume mechanism)
+# ============================================================================
+print("[Item 8] Step 4d: New Bash block ordering for resume mechanism")
+
+# Extract Step 4d
+step_4d_match = re.search(
+    r"## Step 4d:.*?\n(.*?)(?=\n## |\n### Salvage|\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+t("Step 4d section exists",
+  step_4d_match is not None,
+  "Could not find ## Step 4d: section")
+
+if step_4d_match:
+    step_4d = step_4d_match.group(1)
+
+    # Verify ordering: stage-end < command-id < --outcome interrupted < RESUME-AFTER-CLEAR:
+    stage_end_pos = IMPLEMENT_WITH_HAIKU.find("stage-end --stage round1-join")
+    command_id_pos = IMPLEMENT_WITH_HAIKU.find("command-id --command implement-with-haiku")
+    outcome_interrupted_pos = IMPLEMENT_WITH_HAIKU.find("--outcome interrupted")
+    resume_after_clear_pos = IMPLEMENT_WITH_HAIKU.find("RESUME-AFTER-CLEAR:")
+
+    has_all_markers = (
+        stage_end_pos >= 0 and command_id_pos >= 0 and
+        outcome_interrupted_pos >= 0 and resume_after_clear_pos >= 0
+    )
+    t("Step 4d has all required markers",
+      has_all_markers,
+      "Missing one or more of: stage-end, command-id, --outcome interrupted, RESUME-AFTER-CLEAR:")
+
+    if has_all_markers:
+        has_correct_order = (
+            stage_end_pos < command_id_pos < outcome_interrupted_pos < resume_after_clear_pos
+        )
+        t("Step 4d ordering correct (stage-end < command-id < --outcome interrupted < RESUME-AFTER-CLEAR:)",
+          has_correct_order,
+          f"Ordering violation: stage-end@{stage_end_pos}, command-id@{command_id_pos}, "
+          f"--outcome interrupted@{outcome_interrupted_pos}, RESUME-AFTER-CLEAR:@{resume_after_clear_pos}")
+
+    # Check that RESUME-AFTER-CLEAR: is followed by --resume-after-round1 and --resumed-from
+    if resume_after_clear_pos >= 0:
+        # Search within a reasonable window after RESUME-AFTER-CLEAR:
+        search_window_end = min(resume_after_clear_pos + 500, len(IMPLEMENT_WITH_HAIKU))
+        window_text = IMPLEMENT_WITH_HAIKU[resume_after_clear_pos:search_window_end]
+
+        has_resume_flag = "--resume-after-round1" in window_text
+        has_resumed_from_flag = "--resumed-from" in window_text
+
+        t("RESUME-AFTER-CLEAR: followed by --resume-after-round1 flag",
+          has_resume_flag,
+          "Expected --resume-after-round1 within 500 chars of RESUME-AFTER-CLEAR:")
+
+        t("RESUME-AFTER-CLEAR: followed by --resumed-from flag",
+          has_resumed_from_flag,
+          "Expected --resumed-from within 500 chars of RESUME-AFTER-CLEAR:")
+
+print()
+
+# ============================================================================
+# ITEM 9: Deleted duplicate decline-path close
+# ============================================================================
+print("[Item 9] Deleted duplicate decline-path close")
+
+# Count occurrences of "--outcome interrupted" — should appear exactly once
+outcome_count = IMPLEMENT_WITH_HAIKU.count("--outcome interrupted")
+t("Only one 'command-end ... --outcome interrupted' in doc",
+  outcome_count == 1,
+  f"Expected exactly 1 occurrence of '--outcome interrupted', found {outcome_count}")
+
+print()
+
+# ============================================================================
+# ITEM 10: Literal-not-variable id-paste instruction
+# ============================================================================
+print("[Item 10] Literal-not-variable id-paste instruction")
+
+# Find nearby text around RESUME-AFTER-CLEAR: and check for "literal" phrasing
+if resume_after_clear_pos >= 0:
+    search_start = max(0, resume_after_clear_pos - 400)
+    search_end = min(resume_after_clear_pos + 800, len(IMPLEMENT_WITH_HAIKU))
+    nearby_text = IMPLEMENT_WITH_HAIKU[search_start:search_end]
+
+    has_literal_mention = "literal" in nearby_text.lower()
+    has_resumed_from_mention = "--resumed-from" in nearby_text or "resumed-from" in nearby_text
+
+    t("Resume/continue prose mentions 'literal'",
+      has_literal_mention,
+      "Expected 'literal' mention in text around RESUME-AFTER-CLEAR:")
+
+    t("'literal' appears near '--resumed-from' in continue instructions",
+      has_literal_mention and has_resumed_from_mention,
+      "Expected 'literal' and '--resumed-from' to appear near each other in continue path")
+
+print()
+
+# ============================================================================
+# ITEM 11: Resume section ordering relative to orphan sweep
+# ============================================================================
+print("[Item 11] Resume section ordering relative to orphan sweep")
+
+# Assert "## Step 0: Resume check" exists and comes before "## Step 2.5"
+resume_check_pos = IMPLEMENT_WITH_HAIKU.find("## Step 0: Resume check")
+step_2_5_pos = IMPLEMENT_WITH_HAIKU.find("## Step 2.5")
+
+t("Step 0: Resume check section exists",
+  resume_check_pos >= 0,
+  "Could not find '## Step 0: Resume check' section")
+
+t("Step 0: Resume check comes before Step 2.5",
+  resume_check_pos >= 0 and step_2_5_pos >= 0 and resume_check_pos < step_2_5_pos,
+  f"Step 0 should come before Step 2.5 (positions: resume@{resume_check_pos}, 2.5@{step_2_5_pos})")
+
+# Extract Step 2.5 section and verify RESUME_MODE=yes is mentioned in it
+if step_2_5_pos >= 0:
+    # Find the next heading after Step 2.5
+    next_heading_pos = IMPLEMENT_WITH_HAIKU.find("\n## ", step_2_5_pos + 1)
+    if next_heading_pos < 0:
+        next_heading_pos = len(IMPLEMENT_WITH_HAIKU)
+
+    step_2_5_section = IMPLEMENT_WITH_HAIKU[step_2_5_pos:next_heading_pos]
+
+    has_resume_mode = "RESUME_MODE=yes" in step_2_5_section or "RESUME_MODE = yes" in step_2_5_section
+    t("Step 2.5 documents RESUME_MODE=yes skip in resume mode",
+      has_resume_mode,
+      "Step 2.5 (orphan sweep) should mention RESUME_MODE=yes to show section is skipped in resume mode")
+
+print()
+
+# ============================================================================
+# ITEM 12: Gate-always-re-runs statement
+# ============================================================================
+print("[Item 12] Integration Gate section: never trusted / always re-run")
+
+# Find Integration Gate section
+integration_gate_match = re.search(
+    r"###? +Integration Gate.*?\n(.*?)(?=\n###? |\n## |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.I | re.S
+)
+t("Integration Gate section exists",
+  integration_gate_match is not None,
+  "Could not find Integration Gate section")
+
+if integration_gate_match:
+    gate_text = integration_gate_match.group(1)
+
+    # Check for candidate phrases indicating gate is never trusted / always re-run
+    has_gate_phrase = (
+        "never trusted" in gate_text.lower() or
+        "always re-run" in gate_text.lower() or
+        "always re-runs" in gate_text.lower() or
+        "never trust" in gate_text.lower()
+    )
+    t("Integration Gate mentions it is never trusted or always re-run",
+      has_gate_phrase,
+      "Gate section should mention phrases like 'never trusted', 'always re-run', or 'never trust'")
+
+print()
+
+# ============================================================================
+# ITEM 13: ADR-0019 amendments and kill-criterion keywords
+# ============================================================================
+print("[Item 13] ADR-0019: amendments, deleted, 8, 30 days keywords")
+
+ADR_0019 = read(ADRS / "0019-content-driven-pause-checkpoints.md")
+t("ADR-0019 exists", ADR_0019 != "",
+  "docs/adr/0019-content-driven-pause-checkpoints.md not found or empty")
+
+if ADR_0019:
+    # Check for the 2026-09-15 amendment heading
+    has_amendment_date = "Amendment (2026-09-15)" in ADR_0019 or "amendment (2026-09-15)" in ADR_0019.lower()
+    t("ADR-0019 has Amendment (2026-09-15) heading",
+      has_amendment_date,
+      "Could not find 'Amendment (2026-09-15)' in ADR-0019")
+
+    # Find the amendment section and verify required keywords appear within it
+    if has_amendment_date:
+        amendment_pos = ADR_0019.find("Amendment (2026-09-15)")
+        if amendment_pos < 0:
+            amendment_pos = ADR_0019.lower().find("amendment (2026-09-15)")
+
+        if amendment_pos >= 0:
+            # Search within the amendment section (next 3000 chars)
+            amendment_section_end = min(amendment_pos + 3000, len(ADR_0019))
+            amendment_section = ADR_0019[amendment_pos:amendment_section_end]
+
+            has_deleted = "deleted" in amendment_section.lower()
+            has_eight = "8" in amendment_section
+            has_thirty_days = "30 days" in amendment_section or "30-day" in amendment_section.lower()
+
+            t("Amendment section contains 'deleted'",
+              has_deleted,
+              "Amendment (2026-09-15) should mention 'deleted'")
+
+            t("Amendment section contains '8'",
+              has_eight,
+              "Amendment (2026-09-15) should contain the number '8'")
+
+            t("Amendment section contains '30 days' or '30-day'",
+              has_thirty_days,
+              "Amendment (2026-09-15) should mention '30 days' or '30-day'")
+
+print()
+
 h.summarize_and_exit()
