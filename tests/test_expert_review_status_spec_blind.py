@@ -5,7 +5,7 @@ Comprehensive test suite for scripts/expert-review-status.py.
 Tests the standalone "has this commit already been reviewed" check.
 Based on the plan spec, not the implementation.
 
-Run with: python3 tests/test_expert_review_status_comprehensive.py
+Run with: python3 tests/test_expert_review_status_spec_blind.py
 """
 
 import sys
