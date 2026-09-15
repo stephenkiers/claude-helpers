@@ -13,6 +13,8 @@ Exception handling policy: Read and parse failures in I/O or JSON operations war
 and continue with safe defaults (empty results, zero counts), never raising. Write failures
 in append_yield_data are surfaced to the caller for explicit error handling. This preserves
 idempotency on read-after-read failures while ensuring the caller can distinguish write errors.
+JSON parse failures (ValueError/JSONDecodeError) trigger warnings; JSON structure errors
+(missing/unexpected keys) are silently skipped, allowing partial results from valid syntax.
 """
 
 import argparse
@@ -83,6 +85,7 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str], 
 
     subagents_dir = project_dir / "subagents"
     if not subagents_dir.exists():
+        print(f"Warning: subagent directory not found: {subagents_dir}", file=sys.stderr)
         return result
 
     for subagent_file in subagents_dir.glob("*.jsonl"):
@@ -229,10 +232,21 @@ def get_review_run_id(review_dir: Path) -> str:
 
 
 def get_repo_key(review_dir: Path) -> str:
-    """Extract repo key from the reviews directory structure."""
-    # Review dirs are typically ~/.claude/reviews/{owner-repo}/{review-dir-name}/
+    """
+    Extract repo key from the reviews directory structure.
+
+    Review dirs are typically ~/.claude/reviews/{owner-repo}/{review-dir-name}/.
+    Validates that repo_key is non-empty and looks reasonable (not ".." or special chars).
+    Returns "unknown" only if extraction fails validation.
+    """
     parent = review_dir.parent
-    return parent.name if parent else "unknown"
+    repo_key = parent.name if parent else ""
+
+    # Validate repo_key format: must not be empty and should look like a slug
+    if not repo_key or repo_key in (".", "..", "reviews") or repo_key.startswith("-"):
+        return "unknown"
+
+    return repo_key
 
 
 def load_existing_yield_data(yield_file: Path) -> dict:
