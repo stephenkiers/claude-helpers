@@ -115,6 +115,13 @@ def compute_status(
     reviewed = review.get("branch") == branch and "lastRun" in review
     current = reviewed and review.get("commit") == hash_short
 
+    # Handle explicit null values in cache: dict.get(key, default) only applies the default
+    # when the key is absent, not when its value is explicitly None. Normalize None to defaults.
+    reviewers = review.get("reviewers")
+    reviewers = reviewers if reviewers is not None else []
+    findings = review.get("findings")
+    findings = findings if findings is not None else {}
+
     return {
         "reviewed": reviewed,
         "current": current,
@@ -123,8 +130,8 @@ def compute_status(
         "commit": review.get("commit"),
         "branch": review.get("branch"),
         "reviewDir": review.get("reviewDir"),
-        "reviewers": review.get("reviewers", []),
-        "findings": review.get("findings", {}),
+        "reviewers": reviewers,
+        "findings": findings,
     }
 
 

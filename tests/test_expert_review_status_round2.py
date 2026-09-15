@@ -203,6 +203,50 @@ if __name__ == "__main__":
 
         fixture2.cleanup()
 
+        print()
+        print("[Section 4] Branch mismatch handling (coverage gap fix)")
+        print()
+
+        # Test: Cache entry for a different branch should result in reviewed=False
+        # This test catches the branch-mismatch case that the weak-assertion mutation found
+        fixture3 = GitFixture()
+        fixture3.create_initial_commit("Initial commit")
+        fixture3.create_branch("cached-branch")
+        fixture3.create_branch("current-branch")
+        wt3 = fixture3.create_worktree("current-branch")
+
+        # Write a cache entry that claims to have reviewed "cached-branch"
+        branch_mismatch_cache = {
+            "branch": "cached-branch",  # Different from current branch "current-branch"
+            "lastRun": {
+                "timestamp": "2026-09-15T12:00:00Z",
+                "status": "reviewed"
+            },
+            "commit": "abc1234",
+            "reviewers": ["Uncle Bob"],
+            "findings": {"confirmed": 2}
+        }
+        fixture3.write_cache_file(wt3, branch_mismatch_cache)
+
+        # Run with --json to get structured output
+        returncode, stdout, stderr = run_expert_review_status("--json", cwd=str(wt3))
+
+        try:
+            output = json.loads(stdout)
+            test_result(
+                "Branch mismatch: reviewed is False when cache branch != current branch",
+                output.get("reviewed") is False,
+                f"Expected reviewed=False, got: {output.get('reviewed')}"
+            )
+        except json.JSONDecodeError as e:
+            test_result(
+                "Branch mismatch: --json output is valid JSON",
+                False,
+                f"JSON decode error: {e}"
+            )
+
+        fixture3.cleanup()
+
     finally:
         fixture.cleanup()
 
