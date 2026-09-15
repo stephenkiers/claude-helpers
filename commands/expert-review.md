@@ -11,8 +11,8 @@ A checkpoint-based, parallel code review pipeline:
 
 1. **Summarizer** analyzes the diff (subagent)
 2. **Router** (sonnet) judges which reviewers meet the threshold for this diff
-3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (incl. Sam System, Code
-   Rot Cody, Consistency Checker), each writing its own checkpoint file
+3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (Code Rot Cody and
+   Consistency Checker always run; others routed by the Router, incl. Sam System when selected), each writing its own checkpoint file
 4. **Contrarian Carl** — after all Pass 1 files exist, sees everything, finds what was missed
 5. **Haiku Q&A** — parallel haiku subagents answer each reviewer's open questions
 6. **Pass 2 re-evaluations** — parallel subagents, **fresh skeptic-verifier framing**, business context

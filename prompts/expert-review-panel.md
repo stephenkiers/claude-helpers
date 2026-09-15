@@ -293,6 +293,15 @@ themselves; you do not need to know them here.)
   pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
   contradicted by the code. Its output format is defined in its own YAML.
 
+**If the router selects Sam System:** he receives the **full diff** (not line-range offsets — his
+domain is cross-file data-flow tracing, so he needs to see both ends of every connection), the
+Technical Summary from `summary.md`, and any plan context as "Known Integration Concerns". He must
+trace data flow across files — read both ends of every factory/event-bus/config connection and flag
+parameters passed but never used. His findings use the canonical format (not an ADR-0006 carve-out);
+each finding's **Issue** field starts with the data-flow trace, e.g.
+`Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
+His decision is always DEEP-DIVE.
+
 **Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
 they have all returned by the time you continue. For every selected reviewer, the join condition is
 **all three** simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists
