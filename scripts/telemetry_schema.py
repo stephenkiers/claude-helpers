@@ -256,6 +256,19 @@ def _load_command_entries(state: dict) -> dict[str, CommandStateEntry]:
     return {}
 
 
+def _sort_by_began_at_desc(entries: list, ts_key: str) -> list:
+    """Sort entries by timestamp field in descending order, with monotonic tiebreaker.
+
+    Args:
+        entries: list of (cid, entry) tuples to sort
+        ts_key: timestamp field name (e.g., "command_began_at" or "stage_began_at")
+
+    Returns:
+        A new sorted list, ordered descending by timestamp, with _monotonic_ns as tiebreaker.
+    """
+    return sorted(entries, key=lambda x: (x[1].get(ts_key, ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+
+
 def _evict_expired(entries: dict[str, CommandStateEntry], keep_id: Optional[str], now: datetime) -> None:
     """Mutate entries in place, dropping expired/excess entries — never keep_id.
 
@@ -796,7 +809,7 @@ def resolve_and_clear_command_state(path: Path, session_id: Optional[str], comma
                 state_mismatch = None
             else:
                 # 2+ matches: LIFO by command_began_at (innermost open = latest begun), with monotonic tiebreaker
-                name_matches.sort(key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                name_matches = _sort_by_began_at_desc(name_matches, "command_began_at")
                 command_id, resolved_entry = name_matches[0]
                 resolved_cid = command_id
                 state_mismatch = None
@@ -870,7 +883,7 @@ def resolve_and_set_stage_state(
             ]
             if matching_entries:
                 # LIFO by command_began_at (innermost = latest begun), with monotonic tiebreaker
-                matching_entries.sort(key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                matching_entries = _sort_by_began_at_desc(matching_entries, "command_began_at")
                 command_id, _ = matching_entries[0]
             else:
                 # No matching entries: use reserved "unknown" entry
@@ -969,7 +982,7 @@ def resolve_and_clear_stage_state(
                 state_mismatch = None
             else:
                 # 2+ matches: LIFO by stage_began_at, with monotonic tiebreaker
-                name_matches.sort(key=lambda x: (x[1].get("stage_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                name_matches = _sort_by_began_at_desc(name_matches, "stage_began_at")
                 command_id, resolved_entry = name_matches[0]
                 resolved_cid = command_id
                 stage_id = resolved_entry.get("stage_id", UNKNOWN)
@@ -1445,20 +1458,17 @@ def peek_command_id(path: Path, command_name: str) -> Optional[str]:
     if not entries:
         return None
 
-    # Filter to entries whose command field matches command_name
+    # Filter to entries whose command field matches command_name, skipping non-dict entries
     matching_entries = [
         (cid, entry) for cid, entry in entries.items()
-        if entry.get("command") == command_name
+        if isinstance(entry, dict) and entry.get("command") == command_name
     ]
 
     if not matching_entries:
         return None
 
     # Sort by command_began_at (most recent first), with monotonic tiebreaker
-    matching_entries.sort(
-        key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)),
-        reverse=True
-    )
+    matching_entries = _sort_by_began_at_desc(matching_entries, "command_began_at")
 
     # Return the most recently begun command_id
     return matching_entries[0][0]
