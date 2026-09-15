@@ -391,5 +391,107 @@ if __name__ == "__main__":
             shutil.rmtree(repo, ignore_errors=True)
 
     print()
+    print("[Section 7] Partial cache entry (missing reviewers/findings) → defaults to [] and {}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = create_temp_git_repo()
+        try:
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            current_branch = branch_result.stdout.strip()
+
+            # Cache entry with only branch + lastRun — no reviewers/findings keys at all
+            claude_dir = repo / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            cache_file = claude_dir / "github-cache.json"
+            cache_data = {
+                "schema_version": "1.0",
+                "branch": "main",
+                "review": {
+                    "branch": current_branch,
+                    "lastRun": "2026-01-01T12:00:00",
+                },
+            }
+            cache_file.write_text(json.dumps(cache_data))
+
+            result = run_status_script(repo, ["--json"])
+            test_result(
+                "Partial cache entry does not crash the script",
+                result.returncode in (0, 1)
+            )
+
+            data = json.loads(result.stdout)
+            test_result(
+                "Partial cache entry → reviewers defaults to []",
+                data.get("reviewers") == []
+            )
+            test_result(
+                "Partial cache entry → findings defaults to {}",
+                data.get("findings") == {}
+            )
+
+            # Same, but with reviewers/findings explicitly present as JSON null
+            cache_data["review"]["reviewers"] = None
+            cache_data["review"]["findings"] = None
+            cache_file.write_text(json.dumps(cache_data))
+
+            result = run_status_script(repo, ["--json"])
+            data = json.loads(result.stdout)
+            test_result(
+                "Explicit null reviewers → defaults to [] (not None)",
+                data.get("reviewers") == []
+            )
+            test_result(
+                "Explicit null findings → defaults to {} (not None)",
+                data.get("findings") == {}
+            )
+        finally:
+            import shutil
+            shutil.rmtree(repo, ignore_errors=True)
+
+    print()
+    print("[Section 8] get_git_info() failure emits a JSON error object when --json is set")
+
+    with tempfile.TemporaryDirectory() as non_git_dir:
+        non_git_path = Path(non_git_dir)
+        result = run_status_script(non_git_path, ["--json"])
+        test_result(
+            "Non-git directory with --json returns exit code 1",
+            result.returncode == 1
+        )
+        try:
+            data = json.loads(result.stdout)
+            test_result(
+                "Non-git directory --json output is valid JSON",
+                isinstance(data, dict)
+            )
+            test_result(
+                "Non-git directory --json output includes an 'error' key",
+                "error" in data
+            )
+        except json.JSONDecodeError as e:
+            test_result(
+                "Non-git directory --json output is valid JSON",
+                False,
+                f"JSON decode error: {e}, stdout: {result.stdout[:200]}"
+            )
+
+        # --quiet should suppress the JSON error body but still set exit code 1
+        result_quiet = run_status_script(non_git_path, ["--json", "--quiet"])
+        test_result(
+            "Non-git directory with --json --quiet suppresses stdout",
+            result_quiet.stdout == ""
+        )
+        test_result(
+            "Non-git directory with --json --quiet still returns exit code 1",
+            result_quiet.returncode == 1
+        )
+
+    print()
 
     h.summarize_and_exit()
