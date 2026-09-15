@@ -40,9 +40,13 @@ second-guess that floor; it is not your job and you were not given the keyword l
    have no concrete reason to deviate, use the mechanical tier as-is.
 4. Recommending a tier **lower** than the mechanical calculation is only appropriate when the extra
    LOC/files are mechanical noise you can name (lockfiles, generated code, vendored snapshots,
-   pure whitespace/rename). If you're not sure, don't lower it — the mechanical tier is the safe
-   default and being wrong in the cheap direction (running a bigger panel than strictly needed)
-   costs less than being wrong in the expensive direction (missing something real).
+   pure whitespace/rename, or large test-file additions). Test files are those matching `*.test.*`,
+   `*.spec.*`, `*spec-blind.test.*`, `*_test.rs`, or files under `__tests__/` directories.
+   For example: "812 LOC across 9 files, but 652 lines are new `*.test.ts`/`*.spec-blind.test.tsx` —
+   real surface is 3 files, recommend 3 instead of 4."
+   If you're not sure, don't lower it — the mechanical tier is the safe default and being wrong
+   in the cheap direction (running a bigger panel than strictly needed) costs less than being wrong
+   in the expensive direction (missing something real).
 
 ## Output
 

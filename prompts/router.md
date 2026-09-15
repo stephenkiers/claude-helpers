@@ -92,12 +92,11 @@ Default to No — escalation should be rare. A borderline diff is fine at Sonnet
 one warrants asking the human whether to upgrade.
 
 **Always-run set (never excluded):**
-- **Sam System** — data-flow tracing across files; full diff by role definition
 - **Code Rot Cody** — dead-symbol detection; full repo by role definition
 - **Consistency Checker** — mechanical pattern pass; full diff by role definition
 - **Contrarian Carl** — runs last, always, seeing all other findings
 
-These four are pre-seated. List them as "Yes" in the Panel Decision table with reason "Always-run".
+These three are pre-seated. List them as "Yes" in the Panel Decision table with reason "Always-run".
 
 ## Tagging Within Selected Reviewers
 
@@ -131,7 +130,6 @@ For each selected reviewer, map the sections of the diff that triggered them:
 | concurrency | No | No async, locks, or thread-spawning changes in the diff |
 | contracts | Yes | Public API surface expanded (new methods on exported struct) |
 | code-rot-cody | Yes | Always-run |
-| sam-system | Yes | Always-run |
 | consistency-checker | Yes | Always-run |
 | contrarian-carl | Yes | Always-run |
 
@@ -153,7 +151,7 @@ For each selected reviewer, map the sections of the diff that triggered them:
 **Lines**: 1-50
 **Context**: New exported struct and methods
 
-## (Sam System, Code Rot Cody, Consistency Checker, and Carl receive the full diff by role definition)
+## (Code Rot Cody, Consistency Checker, and Carl receive the full diff by role definition)
 
 ## Escalation Recommendation
 
@@ -178,10 +176,10 @@ Write `{REVIEW_DIR}/tagged-sections.md`, then return **only** this line — neve
 itself:
 
 ```
-router | selected: {n}/{total} | always-run: 4 | escalate: {yes|no} | wrote: {path}
+router | selected: {n}/{total} | always-run: 3 | escalate: {yes|no} | wrote: {path}
 ```
 
-`{n}` is the count of routed reviewers selected (excluding the four always-run); `{total}` is the
+`{n}` is the count of routed reviewers selected (excluding the three always-run); `{total}` is the
 count of reviewers evaluated (all entries in the index); `escalate` is the escalation recommendation
 (yes if the Router judged this diff warrants Opus-tier review, no otherwise). Return only this line — never the table.
 
