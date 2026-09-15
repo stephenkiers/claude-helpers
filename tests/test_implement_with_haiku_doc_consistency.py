@@ -61,6 +61,23 @@ def extract_bash_blocks(text):
     return blocks
 
 
+def replace_angle_bracket_placeholders(text):
+    """
+    Replace angle-bracket placeholders like <owned-files>, <file>, <path>, etc.
+    with quoted stand-ins so bash -n can parse the block without treating < as redirection.
+
+    Pattern: <[a-zA-Z][a-zA-Z0-9_-]*> matches placeholders like:
+    - <owned-files>
+    - <file>
+    - <path>
+    - <symbol_name>
+    - <placeholder-name>
+
+    Replaces each with "PLACEHOLDER" to make the block syntactically parseable.
+    """
+    return re.sub(r'<[a-zA-Z][a-zA-Z0-9_-]*>', '"PLACEHOLDER"', text)
+
+
 IMPLEMENT_WITH_HAIKU = read(COMMANDS / "implement-with-haiku.md")
 PLAN_IMPLEMENTER = read(AGENTS / "plan-implementer.md")
 ADR_0008 = read(ADRS / "0008-machine-enforced-agent-guardrails.md")
@@ -600,9 +617,13 @@ t(f"Found bash code blocks in implement-with-haiku.md",
 if bash_blocks:
     syntax_errors = []
     for block_content, line_number in bash_blocks:
+        # Replace angle-bracket placeholders (e.g., <owned-files>, <file>) with quoted stand-ins
+        # so bash -n can parse the block without treating < as redirection
+        processed_content = replace_angle_bracket_placeholders(block_content)
+
         # Write block to a temporary file and check syntax with bash -n
         with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as tmpfile:
-            tmpfile.write(block_content)
+            tmpfile.write(processed_content)
             tmpfile.flush()
             tmppath = tmpfile.name
 
