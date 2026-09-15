@@ -12,7 +12,9 @@ Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 """
 
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -29,6 +31,51 @@ def read(path):
         return path.read_text()
     except OSError:
         return ""
+
+
+def extract_bash_blocks(text):
+    """
+    Extract all fenced bash code blocks from markdown text.
+    Returns a list of (block_content, line_number) tuples.
+    """
+    blocks = []
+    lines = text.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Match opening fence: ```bash
+        if re.match(r'^```bash\s*$', line):
+            # Calculate approximate line number (1-indexed)
+            start_line = i + 1
+            # Collect content until closing fence
+            block_lines = []
+            i += 1
+            while i < len(lines):
+                if re.match(r'^```\s*$', lines[i]):
+                    # Found closing fence
+                    blocks.append(('\n'.join(block_lines), start_line))
+                    break
+                block_lines.append(lines[i])
+                i += 1
+        i += 1
+    return blocks
+
+
+def replace_angle_bracket_placeholders(text):
+    """
+    Replace angle-bracket placeholders like <owned-files>, <file>, <path>, etc.
+    with quoted stand-ins so bash -n can parse the block without treating < as redirection.
+
+    Pattern: <[a-zA-Z][a-zA-Z0-9_-]*> matches placeholders like:
+    - <owned-files>
+    - <file>
+    - <path>
+    - <symbol_name>
+    - <placeholder-name>
+
+    Replaces each with "PLACEHOLDER" to make the block syntactically parseable.
+    """
+    return re.sub(r'<[a-zA-Z][a-zA-Z0-9_-]*>', '"PLACEHOLDER"', text)
 
 
 IMPLEMENT_WITH_HAIKU = read(COMMANDS / "implement-with-haiku.md")
@@ -342,6 +389,311 @@ if context_note:
         t("expert-review.md description mentions complementary pattern or central distribution",
           re.search(r"complementary|central|distribute", note_text, re.I) is not None,
           "If mentioning expert-review.md, should describe its different/complementary approach")
+
+print()
+
+# ============================================================================
+# ITEM 8: New Bash block ordering in Step 4d (resume mechanism)
+# ============================================================================
+print("[Item 8] Step 4d: New Bash block ordering for resume mechanism")
+
+# Extract Step 4d
+step_4d_match = re.search(
+    r"## Step 4d:.*?\n(.*?)(?=\n## |\n### Salvage|\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+t("Step 4d section exists",
+  step_4d_match is not None,
+  "Could not find ## Step 4d: section")
+
+if step_4d_match:
+    step_4d = step_4d_match.group(1)
+
+    # Verify ordering: stage-end < command-id < --outcome interrupted < RESUME-AFTER-CLEAR:
+    stage_end_pos = IMPLEMENT_WITH_HAIKU.find("stage-end --stage round1-join")
+    command_id_pos = IMPLEMENT_WITH_HAIKU.find("command-id --command implement-with-haiku")
+    outcome_interrupted_pos = IMPLEMENT_WITH_HAIKU.find("--outcome interrupted")
+    resume_after_clear_pos = IMPLEMENT_WITH_HAIKU.find("RESUME-AFTER-CLEAR:")
+
+    has_all_markers = (
+        stage_end_pos >= 0 and command_id_pos >= 0 and
+        outcome_interrupted_pos >= 0 and resume_after_clear_pos >= 0
+    )
+    t("Step 4d has all required markers",
+      has_all_markers,
+      "Missing one or more of: stage-end, command-id, --outcome interrupted, RESUME-AFTER-CLEAR:")
+
+    if has_all_markers:
+        has_correct_order = (
+            stage_end_pos < command_id_pos < outcome_interrupted_pos < resume_after_clear_pos
+        )
+        t("Step 4d ordering correct (stage-end < command-id < --outcome interrupted < RESUME-AFTER-CLEAR:)",
+          has_correct_order,
+          f"Ordering violation: stage-end@{stage_end_pos}, command-id@{command_id_pos}, "
+          f"--outcome interrupted@{outcome_interrupted_pos}, RESUME-AFTER-CLEAR:@{resume_after_clear_pos}")
+
+    # Check that RESUME-AFTER-CLEAR: is followed by --resume-after-round1 and --resumed-from
+    if resume_after_clear_pos >= 0:
+        # Search within a reasonable window after RESUME-AFTER-CLEAR:
+        search_window_end = min(resume_after_clear_pos + 500, len(IMPLEMENT_WITH_HAIKU))
+        window_text = IMPLEMENT_WITH_HAIKU[resume_after_clear_pos:search_window_end]
+
+        has_resume_flag = "--resume-after-round1" in window_text
+        has_resumed_from_flag = "--resumed-from" in window_text
+
+        t("RESUME-AFTER-CLEAR: followed by --resume-after-round1 flag",
+          has_resume_flag,
+          "Expected --resume-after-round1 within 500 chars of RESUME-AFTER-CLEAR:")
+
+        t("RESUME-AFTER-CLEAR: followed by --resumed-from flag",
+          has_resumed_from_flag,
+          "Expected --resumed-from within 500 chars of RESUME-AFTER-CLEAR:")
+
+print()
+
+# ============================================================================
+# ITEM 9: Deleted duplicate decline-path close
+# ============================================================================
+print("[Item 9] Deleted duplicate decline-path close")
+
+# Count occurrences of "--outcome interrupted" within Step 4d only — the doc has a second,
+# unrelated occurrence in "Incomplete report handling" (a generic abort path for every round)
+# that predates this plan and is out of scope here.
+if step_4d_match:
+    outcome_count = step_4d.count("--outcome interrupted")
+    t("Only one 'command-end ... --outcome interrupted' in Step 4d",
+      outcome_count == 1,
+      f"Expected exactly 1 occurrence of '--outcome interrupted' in Step 4d, found {outcome_count}")
+else:
+    t("Only one 'command-end ... --outcome interrupted' in Step 4d",
+      False,
+      "Could not find ## Step 4d: section to check")
+
+print()
+
+# ============================================================================
+# ITEM 10: Literal-not-variable id-paste instruction
+# ============================================================================
+print("[Item 10] Literal-not-variable id-paste instruction")
+
+# Find nearby text around RESUME-AFTER-CLEAR: and check for "literal" phrasing
+if resume_after_clear_pos >= 0:
+    search_start = max(0, resume_after_clear_pos - 400)
+    search_end = min(resume_after_clear_pos + 800, len(IMPLEMENT_WITH_HAIKU))
+    nearby_text = IMPLEMENT_WITH_HAIKU[search_start:search_end]
+
+    has_literal_mention = "literal" in nearby_text.lower()
+    has_resumed_from_mention = "--resumed-from" in nearby_text or "resumed-from" in nearby_text
+
+    t("Resume/continue prose mentions 'literal'",
+      has_literal_mention,
+      "Expected 'literal' mention in text around RESUME-AFTER-CLEAR:")
+
+    t("'literal' appears near '--resumed-from' in continue instructions",
+      has_literal_mention and has_resumed_from_mention,
+      "Expected 'literal' and '--resumed-from' to appear near each other in continue path")
+
+print()
+
+# ============================================================================
+# ITEM 11: Resume section ordering relative to orphan sweep
+# ============================================================================
+print("[Item 11] Resume section ordering relative to orphan sweep")
+
+# Assert "## Step 0: Resume check" exists and comes before "## Step 2.5"
+resume_check_pos = IMPLEMENT_WITH_HAIKU.find("## Step 0: Resume check")
+step_2_5_pos = IMPLEMENT_WITH_HAIKU.find("## Step 2.5")
+
+t("Step 0: Resume check section exists",
+  resume_check_pos >= 0,
+  "Could not find '## Step 0: Resume check' section")
+
+t("Step 0: Resume check comes before Step 2.5",
+  resume_check_pos >= 0 and step_2_5_pos >= 0 and resume_check_pos < step_2_5_pos,
+  f"Step 0 should come before Step 2.5 (positions: resume@{resume_check_pos}, 2.5@{step_2_5_pos})")
+
+# Extract Step 2.5 section and verify RESUME_MODE=yes is mentioned in it
+if step_2_5_pos >= 0:
+    # Find the next heading after Step 2.5
+    next_heading_pos = IMPLEMENT_WITH_HAIKU.find("\n## ", step_2_5_pos + 1)
+    if next_heading_pos < 0:
+        next_heading_pos = len(IMPLEMENT_WITH_HAIKU)
+
+    step_2_5_section = IMPLEMENT_WITH_HAIKU[step_2_5_pos:next_heading_pos]
+
+    has_resume_mode = "RESUME_MODE=yes" in step_2_5_section or "RESUME_MODE = yes" in step_2_5_section
+    t("Step 2.5 documents RESUME_MODE=yes skip in resume mode",
+      has_resume_mode,
+      "Step 2.5 (orphan sweep) should mention RESUME_MODE=yes to show section is skipped in resume mode")
+
+print()
+
+# ============================================================================
+# ITEM 12: Gate-always-re-runs statement
+# ============================================================================
+print("[Item 12] Integration Gate section: never trusted / always re-run")
+
+# Find Integration Gate section
+integration_gate_match = re.search(
+    r"###? +Integration Gate.*?\n(.*?)(?=\n###? |\n## |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.I | re.S
+)
+t("Integration Gate section exists",
+  integration_gate_match is not None,
+  "Could not find Integration Gate section")
+
+if integration_gate_match:
+    gate_text = integration_gate_match.group(1)
+
+    # Check for candidate phrases indicating gate is never trusted / always re-run
+    has_gate_phrase = (
+        "never trusted" in gate_text.lower() or
+        "always re-run" in gate_text.lower() or
+        "always re-runs" in gate_text.lower() or
+        "never trust" in gate_text.lower()
+    )
+    t("Integration Gate mentions it is never trusted or always re-run",
+      has_gate_phrase,
+      "Gate section should mention phrases like 'never trusted', 'always re-run', or 'never trust'")
+
+print()
+
+# ============================================================================
+# ITEM 13: ADR-0019 amendments and kill-criterion keywords
+# ============================================================================
+print("[Item 13] ADR-0019: amendments, deleted, 8, 30 days keywords")
+
+ADR_0019 = read(ADRS / "0019-content-driven-pause-checkpoints.md")
+t("ADR-0019 exists", ADR_0019 != "",
+  "docs/adr/0019-content-driven-pause-checkpoints.md not found or empty")
+
+if ADR_0019:
+    # Check for the 2026-09-15 amendment heading
+    has_amendment_date = "Amendment (2026-09-15)" in ADR_0019 or "amendment (2026-09-15)" in ADR_0019.lower()
+    t("ADR-0019 has Amendment (2026-09-15) heading",
+      has_amendment_date,
+      "Could not find 'Amendment (2026-09-15)' in ADR-0019")
+
+    # Find the amendment section and verify required keywords appear within it
+    if has_amendment_date:
+        amendment_pos = ADR_0019.find("Amendment (2026-09-15)")
+        if amendment_pos < 0:
+            amendment_pos = ADR_0019.lower().find("amendment (2026-09-15)")
+
+        if amendment_pos >= 0:
+            # This amendment is the last one in the file, so its section runs to EOF —
+            # the pre-registered kill-criterion prose (required keywords live here) is long
+            # enough that a fixed-size window undercounts it.
+            amendment_section = ADR_0019[amendment_pos:]
+
+            has_deleted = "deleted" in amendment_section.lower()
+            has_eight = "8 real" in amendment_section
+            has_thirty_days = "30 days" in amendment_section or "30-day" in amendment_section.lower()
+
+            t("Amendment section contains 'deleted'",
+              has_deleted,
+              "Amendment (2026-09-15) should mention 'deleted'")
+
+            t("Amendment section contains '8'",
+              has_eight,
+              "Amendment (2026-09-15) should contain the number '8'")
+
+            t("Amendment section contains '30 days' or '30-day'",
+              has_thirty_days,
+              "Amendment (2026-09-15) should mention '30 days' or '30-day'")
+
+print()
+
+# ============================================================================
+# NEW TEST: Bash syntax validation for all code blocks
+# ============================================================================
+print("[New] Bash syntax check: all fenced bash blocks in implement-with-haiku.md")
+
+bash_blocks = extract_bash_blocks(IMPLEMENT_WITH_HAIKU)
+t(f"Found bash code blocks in implement-with-haiku.md",
+  len(bash_blocks) > 0,
+  "No ```bash blocks found in the document")
+
+if bash_blocks:
+    syntax_errors = []
+    for block_content, line_number in bash_blocks:
+        # Replace angle-bracket placeholders (e.g., <owned-files>, <file>) with quoted stand-ins
+        # so bash -n can parse the block without treating < as redirection
+        processed_content = replace_angle_bracket_placeholders(block_content)
+
+        # Write block to a temporary file and check syntax with bash -n
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as tmpfile:
+            tmpfile.write(processed_content)
+            tmpfile.flush()
+            tmppath = tmpfile.name
+
+        try:
+            result = subprocess.run(
+                ["bash", "-n", tmppath],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                stderr_output = result.stderr.decode('utf-8', errors='replace').strip()
+                syntax_errors.append(
+                    f"Line ~{line_number}: {stderr_output}"
+                )
+        except subprocess.TimeoutExpired:
+            syntax_errors.append(f"Line ~{line_number}: bash -n timed out")
+        except Exception as e:
+            syntax_errors.append(f"Line ~{line_number}: {str(e)}")
+        finally:
+            # Clean up temp file
+            try:
+                Path(tmppath).unlink()
+            except:
+                pass
+
+    if syntax_errors:
+        error_message = "Bash syntax errors found:\n  " + "\n  ".join(syntax_errors)
+        t(f"All {len(bash_blocks)} bash blocks pass syntax check (bash -n)",
+          False,
+          error_message)
+    else:
+        t(f"All {len(bash_blocks)} bash blocks pass syntax check (bash -n)",
+          True)
+
+print()
+
+# ============================================================================
+# REGRESSION TEST: PLAN_REF == "none" suppression check in Step 4d
+# ============================================================================
+print("[Regression] PLAN_REF == \"none\" check in SUPPRESS_RESUME logic")
+
+# Extract Step 4d's SUPPRESS_RESUME bash block
+if step_4d_match:
+    step_4d_section = step_4d_match.group(1)
+
+    # Look for the PLAN_REF == "none" check pattern
+    has_plan_ref_none_check = (
+        'PLAN_REF' in step_4d_section and
+        '"none"' in step_4d_section and
+        'SUPPRESS_RESUME' in step_4d_section and
+        re.search(r'if.*PLAN_REF.*==.*["\']none["\'].*SUPPRESS_RESUME', step_4d_section, re.S) is not None
+    )
+
+    t("SUPPRESS_RESUME logic includes PLAN_REF == \"none\" check",
+      has_plan_ref_none_check,
+      "Step 4d should check for PLAN_REF == \"none\" in the SUPPRESS_RESUME logic before the whitespace check")
+
+    # Also verify the diagnostic message includes the reason
+    has_none_in_diagnostic = "PLAN_REF is 'none'" in step_4d_section
+    t("Diagnostic message includes PLAN_REF 'none' as a suppression reason",
+      has_none_in_diagnostic,
+      "Resume suppression message should list PLAN_REF being 'none' as a reason")
+else:
+    t("SUPPRESS_RESUME logic includes PLAN_REF == \"none\" check",
+      False,
+      "Could not find ## Step 4d: section")
+
+    t("Diagnostic message includes PLAN_REF 'none' as a suppression reason",
+      False,
+      "Could not find ## Step 4d: section to verify diagnostic message")
 
 print()
 

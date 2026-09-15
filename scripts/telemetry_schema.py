@@ -256,6 +256,19 @@ def _load_command_entries(state: dict) -> dict[str, CommandStateEntry]:
     return {}
 
 
+def _sort_by_began_at_desc(entries: list, ts_key: str) -> list:
+    """Sort entries by timestamp field in descending order, with monotonic tiebreaker.
+
+    Args:
+        entries: list of (cid, entry) tuples to sort
+        ts_key: timestamp field name (e.g., "command_began_at" or "stage_began_at")
+
+    Returns:
+        A new sorted list, ordered descending by timestamp, with _monotonic_ns as tiebreaker.
+    """
+    return sorted(entries, key=lambda x: (x[1].get(ts_key, ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+
+
 def _evict_expired(entries: dict[str, CommandStateEntry], keep_id: Optional[str], now: datetime) -> None:
     """Mutate entries in place, dropping expired/excess entries — never keep_id.
 
@@ -324,6 +337,7 @@ def build_event(
     session_id,
     timestamp,
     command_id=None,
+    resumed_from=None,
     stage_id=None,
     agent_id=None,
     repo=None,
@@ -371,6 +385,10 @@ def build_event(
 
     reviewer_count, if provided, must be a non-negative integer.
 
+    resumed_from, if provided, must be a non-empty string (a command_id from a prior
+    /implement-with-haiku run that was interrupted and is being resumed after /clear).
+    It is included in the output only if not None.
+
     model, if provided, is an open-ended string tier (matches the project's
     --model haiku|sonnet|opus|fable convention elsewhere; other values may be added
     without schema changes).
@@ -408,6 +426,8 @@ def build_event(
     # Add optional correlation IDs and descriptive fields
     if command_id is not None:
         event["command_id"] = command_id
+    if resumed_from is not None:
+        event["resumed_from"] = resumed_from
     if stage_id is not None:
         event["stage_id"] = stage_id
     if agent_id is not None:
@@ -491,6 +511,14 @@ def validate_event(event: dict) -> list:
             errors.append("command_id must not be an empty string; use 'unknown' instead")
         elif not isinstance(command_id, str):
             errors.append(f"command_id must be a string, got {type(command_id).__name__}")
+
+    # Check resumed_from if present (must be non-empty string, not empty string)
+    if "resumed_from" in event:
+        resumed_from = event.get("resumed_from")
+        if resumed_from == "":
+            errors.append("resumed_from must not be an empty string")
+        elif not isinstance(resumed_from, str):
+            errors.append(f"resumed_from must be a string, got {type(resumed_from).__name__}")
 
     # Check stage_id if present (must be non-empty string, not empty string)
     if "stage_id" in event:
@@ -781,7 +809,7 @@ def resolve_and_clear_command_state(path: Path, session_id: Optional[str], comma
                 state_mismatch = None
             else:
                 # 2+ matches: LIFO by command_began_at (innermost open = latest begun), with monotonic tiebreaker
-                name_matches.sort(key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                name_matches = _sort_by_began_at_desc(name_matches, "command_began_at")
                 command_id, resolved_entry = name_matches[0]
                 resolved_cid = command_id
                 state_mismatch = None
@@ -855,7 +883,7 @@ def resolve_and_set_stage_state(
             ]
             if matching_entries:
                 # LIFO by command_began_at (innermost = latest begun), with monotonic tiebreaker
-                matching_entries.sort(key=lambda x: (x[1].get("command_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                matching_entries = _sort_by_began_at_desc(matching_entries, "command_began_at")
                 command_id, _ = matching_entries[0]
             else:
                 # No matching entries: use reserved "unknown" entry
@@ -954,7 +982,7 @@ def resolve_and_clear_stage_state(
                 state_mismatch = None
             else:
                 # 2+ matches: LIFO by stage_began_at, with monotonic tiebreaker
-                name_matches.sort(key=lambda x: (x[1].get("stage_began_at", ""), x[1].get("_monotonic_ns", 0)), reverse=True)
+                name_matches = _sort_by_began_at_desc(name_matches, "stage_began_at")
                 command_id, resolved_entry = name_matches[0]
                 resolved_cid = command_id
                 stage_id = resolved_entry.get("stage_id", UNKNOWN)
@@ -1410,6 +1438,40 @@ def _read_only_state(path: Path) -> Optional[dict]:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+def peek_command_id(path: Path, command_name: str) -> Optional[str]:
+    """Read-only lookup of the most recently begun command_id for a given command name.
+
+    Returns the command_id of the entry whose command field equals command_name and
+    whose command_began_at is the most recent (latest begun wins in a tie; uses
+    _monotonic_ns as a tiebreaker for identical timestamps). Returns None if the file
+    doesn't exist, is empty/unparseable, or no entry matches the command name.
+
+    Unlike resolve_and_clear_command_state, this function never mutates the state file.
+    """
+    state = _read_only_state(path)
+    if state is None:
+        return None
+
+    entries = _load_command_entries(state)
+    if not entries:
+        return None
+
+    # Filter to entries whose command field matches command_name, skipping non-dict entries
+    matching_entries = [
+        (cid, entry) for cid, entry in entries.items()
+        if isinstance(entry, dict) and entry.get("command") == command_name
+    ]
+
+    if not matching_entries:
+        return None
+
+    # Sort by command_began_at (most recent first), with monotonic tiebreaker
+    matching_entries = _sort_by_began_at_desc(matching_entries, "command_began_at")
+
+    # Return the most recently begun command_id
+    return matching_entries[0][0]
 
 
 def read_usage_state(path: Path, session_id: str) -> dict:
