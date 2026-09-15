@@ -15,7 +15,7 @@ Covers:
 9. peek_command_id() never mutates state
 10. SCHEMA_VERSION stays at 1 (unaffected by this change)
 
-Run with: python3 tests/test_resumed_from_schema_edge_cases.py
+Run with: python3 tests/test_telemetry_schema_resumed_from.py
 """
 
 import json
