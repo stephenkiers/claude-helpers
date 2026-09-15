@@ -330,9 +330,9 @@ def test_stage_end_reviewer_count_with_named_selection():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
 
-        # The fix is: named_count + 4 (sam-system, code-rot-cody, consistency-checker, contrarian-carl)
-        # So if we pass reviewer-count that represents e.g., 3 named + 4 always-run = 7
-        test_count = 7
+        # The fix is: named_count + 3 (code-rot-cody, consistency-checker, contrarian-carl)
+        # So if we pass reviewer-count that represents e.g., 3 named + 3 always-run = 6
+        test_count = 6
 
         code, stdout, stderr = run_script(
             [
@@ -386,9 +386,9 @@ def test_command_begin_stores_reviewer_count():
 
 
 def test_reviewer_count_always_run_reviewers_arithmetic():
-    """Verify that reviewer_count reflects named + 4 always-run reviewers.
+    """Verify that reviewer_count reflects named + 3 always-run reviewers.
 
-    The four always-run reviewers are: sam-system, code-rot-cody,
+    The three always-run reviewers are: code-rot-cody,
     consistency-checker, contrarian-carl.
 
     This test validates the telemetry event structure accepts the calculated value.
@@ -396,9 +396,9 @@ def test_reviewer_count_always_run_reviewers_arithmetic():
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
 
-        # Simulate: 3 named reviewers + 4 always-run = 7 total
+        # Simulate: 3 named reviewers + 3 always-run = 6 total
         named_reviewers = 3
-        always_run_reviewers = 4
+        always_run_reviewers = 3
         expected_total = named_reviewers + always_run_reviewers
 
         code, stdout, stderr = run_script(
