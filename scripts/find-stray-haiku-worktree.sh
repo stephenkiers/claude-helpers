@@ -16,7 +16,7 @@ fi
 
 git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2}' | while read -r wt; do
   bn=$(git -C "$wt" branch --show-current 2>/dev/null || true)
-  case "$bn" in
-    "${BRANCH}-haiku-"*) echo "$wt" ;;
-  esac
+  if [[ "$bn" == "${BRANCH}-haiku-"* ]]; then
+    echo "$wt"
+  fi
 done

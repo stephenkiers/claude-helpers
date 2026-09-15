@@ -660,4 +660,41 @@ if bash_blocks:
 
 print()
 
+# ============================================================================
+# REGRESSION TEST: PLAN_REF == "none" suppression check in Step 4d
+# ============================================================================
+print("[Regression] PLAN_REF == \"none\" check in SUPPRESS_RESUME logic")
+
+# Extract Step 4d's SUPPRESS_RESUME bash block
+if step_4d_match:
+    step_4d_section = step_4d_match.group(1)
+
+    # Look for the PLAN_REF == "none" check pattern
+    has_plan_ref_none_check = (
+        'PLAN_REF' in step_4d_section and
+        '"none"' in step_4d_section and
+        'SUPPRESS_RESUME' in step_4d_section and
+        re.search(r'if.*PLAN_REF.*==.*["\']none["\'].*SUPPRESS_RESUME', step_4d_section, re.S) is not None
+    )
+
+    t("SUPPRESS_RESUME logic includes PLAN_REF == \"none\" check",
+      has_plan_ref_none_check,
+      "Step 4d should check for PLAN_REF == \"none\" in the SUPPRESS_RESUME logic before the whitespace check")
+
+    # Also verify the diagnostic message includes the reason
+    has_none_in_diagnostic = "PLAN_REF is 'none'" in step_4d_section
+    t("Diagnostic message includes PLAN_REF 'none' as a suppression reason",
+      has_none_in_diagnostic,
+      "Resume suppression message should list PLAN_REF being 'none' as a reason")
+else:
+    t("SUPPRESS_RESUME logic includes PLAN_REF == \"none\" check",
+      False,
+      "Could not find ## Step 4d: section")
+
+    t("Diagnostic message includes PLAN_REF 'none' as a suppression reason",
+      False,
+      "Could not find ## Step 4d: section to verify diagnostic message")
+
+print()
+
 h.summarize_and_exit()

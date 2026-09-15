@@ -642,6 +642,11 @@ if [[ -z "$CMD_ID" ]]; then
   SUPPRESS_RESUME="yes"
 fi
 
+# Check if PLAN_REF is "none" (conversational plan, not resumable)
+if [[ -z "$SUPPRESS_RESUME" ]] && [[ "$PLAN_REF" == "none" ]]; then
+  SUPPRESS_RESUME="yes"
+fi
+
 # Check if PLAN_REF contains whitespace
 if [[ -z "$SUPPRESS_RESUME" ]] && [[ "$PLAN_REF" == *[[:space:]]* ]]; then
   SUPPRESS_RESUME="yes"
@@ -652,7 +657,7 @@ if [[ -z "$SUPPRESS_RESUME" ]]; then
   printf '%s\n' "RESUME-AFTER-CLEAR: /implement-with-haiku $PLAN_REF --resume-after-round1 $START_SHA..$(git rev-parse HEAD) --resumed-from $CMD_ID"
   printf '%s\n' "INTERRUPTED-COMMAND-ID: $CMD_ID"
 else
-  printf '%s\n' "(Resume line suppressed — unit(s) failed, stray worktree detected, command ID unavailable, or PLAN_REF contains whitespace)" >&2
+  printf '%s\n' "(Resume line suppressed — unit(s) failed, stray worktree detected, command ID unavailable, PLAN_REF is 'none', or PLAN_REF contains whitespace)" >&2
 fi
 ```
 
