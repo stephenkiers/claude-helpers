@@ -79,6 +79,7 @@ Every event emitted by `run-metrics.py` carries these fields:
   on `command-begin`/`stage-end`.
 - `reviewer_count` (integer) — number of reviewers selected for the panel. Set via
   `--reviewer-count` on `command-begin`/`stage-end`.
+- `resumed_from` (string) — the `command_id` of the run this run continues after a `/clear`-based resume. Present only when a `--resumed-from` flag was passed to `command-begin`.
 - `tokens` (object) — token counts with keys:
   - `input` (integer or `"unknown"`)
   - `output` (integer or `"unknown"`)
@@ -302,6 +303,15 @@ parent command finished. `agents` is a dict keyed by `agent_id`, mirroring the s
 `commands` dict keyed by `command_id` — both let concurrent, same-session lifecycles coexist without
 clobbering each other. Each stored value (both the top-level `session_id` and each `agents` entry's `session_id`) exists to back a genuine-match CAS guard, mirroring the command/stage path below: `session-end` only returns `session_began_at` and deletes this file when the file's recorded `session_id` equals the session_id it was called with, and `agent-end` only returns an agent's `began_at` when that agent's stored `session_id` matches — otherwise the read is refused (returns nothing usable) and a warning is logged to stderr, and the file/entry is left as-is (session) or popped without being trusted (agent). This guards against session IDs containing characters outside `session_meta_path`'s filename-safe set, which all collide onto the same `unknown.session.json` file. `session-end`'s file deletion on a genuine match also sweeps any orphaned `agents` entries left behind by an agent whose `agent-end` never fired — a session ending is that file's natural end of life.
 
+### Resumed Runs: Split Lifecycles Linked via `resumed_from`
+
+When a run pauses at a round1-join checkpoint, gets `/clear`ed, and is resumed later, it appears in
+`events.jsonl` as **two** separate `command.begin`/`command.end` pairs — not one. The first pair
+represents the initial run (which was interrupted), and the second pair represents the resumed run.
+These two pairs are linked together via the second pair's `resumed_from` field, which points to the
+first pair's `command_id`. Analysis tools can use this field to reconstruct the full logical run by
+following the chain from the resumed pair back to its predecessor.
+
 ### ID Resolution (Precedence)
 
 No call site passes an explicit `--command-id`/`--stage-id` today — every resolution is ambient,
@@ -363,6 +373,9 @@ python3 scripts/run-metrics.py [--log PATH] command-begin --command NAME
 python3 scripts/run-metrics.py [--log PATH] command-end \
   --command-id ID --command NAME --outcome success|failure|interrupted \
   [--failure-class timeout|api_error|test_failure|guard_block|other]
+
+python3 scripts/run-metrics.py [--log PATH] command-id --command NAME
+  # prints the most recently begun command_id for the given command name, or empty output if none found (read-only)
 
 python3 scripts/run-metrics.py [--log PATH] stage-begin --command-id ID --stage NAME
   # prints a bare stage_id (hex uuid) to stdout

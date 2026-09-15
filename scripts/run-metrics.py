@@ -340,6 +340,7 @@ def cmd_command_begin(args):
         session_id=session_id,
         timestamp=timestamp,
         command_id=command_id,
+        resumed_from=args.resumed_from,
         command=args.command,
         cwd=cwd,
         repo=repo,
@@ -988,6 +989,30 @@ def cmd_usage_check(args):
     sys.exit(0 if decision == "proceed" else 10)
 
 
+def cmd_command_id(args):
+    """Look up and print the most recently begun command_id for a given command name.
+
+    Returns the command_id on stdout if found, or empty output if not found (not an error).
+    This is a read-only operation — it never mutates the state file.
+    """
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", telemetry_schema.UNKNOWN)
+
+    if session_id == telemetry_schema.UNKNOWN:
+        # No session_id, so no state file to read — exit silently with empty output
+        sys.exit(0)
+
+    command_id = _guarded_state_op(
+        telemetry_schema.peek_command_id,
+        telemetry_schema.state_path(session_id, args.state_dir),
+        args.command,
+    )
+
+    if command_id is not None:
+        print(command_id)
+
+    sys.exit(0)
+
+
 def _add_findings_and_checks_args(subparser):
     """Add the shared --findings-*/--checks-* optional int flags to a command-end/stage-end subparser."""
     subparser.add_argument("--findings-produced", type=int, default=None, help="Findings produced (optional, where applicable)")
@@ -1048,6 +1073,7 @@ def main():
     sp_command_begin.add_argument("--model", required=False, default=None, help="Model tier (optional)")
     sp_command_begin.add_argument("--mode", required=False, default=None, choices=sorted(telemetry_schema.RUN_MODES), help="Run mode (optional)")
     sp_command_begin.add_argument("--reviewer-count", required=False, default=None, type=int, help="Number of reviewers selected (optional)")
+    sp_command_begin.add_argument("--resumed-from", required=False, default=None, help="Command ID of the run this run continues (optional)")
     sp_command_begin.set_defaults(func=cmd_command_begin)
 
     # command-end
@@ -1067,6 +1093,11 @@ def main():
     _add_findings_and_checks_args(sp_command_end)
     _add_metric_args(sp_command_end)
     sp_command_end.set_defaults(func=cmd_command_end)
+
+    # command-id
+    sp_command_id = subparsers.add_parser("command-id", help="Look up the most recently begun command_id for a given command name (read-only)")
+    sp_command_id.add_argument("--command", required=True, help="Command name")
+    sp_command_id.set_defaults(func=cmd_command_id)
 
     # stage-begin
     sp_stage_begin = subparsers.add_parser("stage-begin", help="Record a stage.begin event")
