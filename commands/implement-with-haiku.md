@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
 ---
 
 # Implement with Haiku
@@ -32,25 +32,177 @@ This command records telemetry via fixed kebab-case terminal paths:
 These are wired into the shell commands throughout this doc at each terminal path.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement-with-haiku >/dev/null 2>&1 || true
+RESUMED_FROM=""
+for arg in "$@"; do
+  if [[ "$prev_arg" == "--resumed-from" ]]; then
+    RESUMED_FROM="$arg"
+  fi
+  prev_arg="$arg"
+done
+
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement-with-haiku ${RESUMED_FROM:+--resumed-from "$RESUMED_FROM"} >/dev/null 2>&1 || true
 ```
+
+## Step 0: Resume check
+
+Parse optional resume flags:
+
+```bash
+RESUME_MODE=""
+START_SHA=""
+ROUND1_HEAD=""
+
+# Parse --resume-after-round1 <A>..<B>
+for ((i=1; i<=$#; i++)); do
+  arg="${!i}"
+  if [[ "$arg" == "--resume-after-round1" ]]; then
+    next_i=$((i + 1))
+    if [[ $next_i -le $# ]]; then
+      resume_arg="${!next_i}"
+      # Validate format: must contain '..'
+      if [[ ! "$resume_arg" =~ ^[^.]+\.\.[^.]+$ ]]; then
+        printf '%s\n' "Error: --resume-after-round1 requires format <SHA>..<SHA>, got: $resume_arg" >&2
+        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-format-invalid 2>/dev/null || true
+        exit 1
+      fi
+      # Split on '..'
+      START_SHA="${resume_arg%..*}"
+      ROUND1_HEAD="${resume_arg#*..}"
+      if [[ -z "$START_SHA" ]] || [[ -z "$ROUND1_HEAD" ]]; then
+        printf '%s\n' "Error: --resume-after-round1 format <SHA>..<SHA>: both sides must be non-empty" >&2
+        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-format-invalid 2>/dev/null || true
+        exit 1
+      fi
+      RESUME_MODE="yes"
+    fi
+  fi
+done
+
+if [[ "$RESUME_MODE" == "yes" ]]; then
+  # Validate SHAs exist
+  if ! git cat-file -e -- "$START_SHA" 2>/dev/null; then
+    printf '%s\n' "Error: START_SHA '$START_SHA' does not exist in this repo" >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-sha-not-found 2>/dev/null || true
+    exit 1
+  fi
+  if ! git cat-file -e -- "$ROUND1_HEAD" 2>/dev/null; then
+    printf '%s\n' "Error: ROUND1_HEAD '$ROUND1_HEAD' does not exist in this repo" >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-sha-not-found 2>/dev/null || true
+    exit 1
+  fi
+
+  # Verify START_SHA is ancestor of ROUND1_HEAD
+  if ! git merge-base --is-ancestor -- "$START_SHA" "$ROUND1_HEAD"; then
+    printf '%s\n' "Error: $START_SHA is not an ancestor of $ROUND1_HEAD — this does not look like a round-1 commit range" >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class ancestry-invalid 2>/dev/null || true
+    exit 1
+  fi
+
+  # Check working tree is clean
+  if [[ -n "$(git status --porcelain)" ]]; then
+    printf '%s\n' "Error: Working tree is dirty. Commit or stash changes before resuming." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class working-tree-dirty 2>/dev/null || true
+    exit 1
+  fi
+
+  # Check for outstanding haiku worktrees
+  BRANCH=$(git branch --show-current)
+  if [[ -z "$BRANCH" ]]; then
+    printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before resuming." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class detached-head 2>/dev/null || true
+    exit 1
+  fi
+  OUTSTANDING_WT=$("$HOME/.claude/scripts/find-stray-haiku-worktree.sh" "$BRANCH" 2>/dev/null | head -1)
+  
+  if [[ -n "$OUTSTANDING_WT" ]]; then
+    printf '%s\n' "Error: Outstanding worktree found: $OUTSTANDING_WT. Resolve it manually (apply/discard/inspect) before resuming." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class outstanding-worktree 2>/dev/null || true
+    exit 1
+  fi
+
+  # Check if HEAD differs from ROUND1_HEAD
+  CURRENT_HEAD=$(git rev-parse HEAD)
+  if [[ "$CURRENT_HEAD" != "$ROUND1_HEAD" ]]; then
+    printf '%s\n' "Note: HEAD has moved since checkpoint. Intervening commits:" >&2
+    git log --oneline "$ROUND1_HEAD"..HEAD >&2
+    printf '%s\n' "Reply 'yes' to continue resuming despite the drift, or anything else to cancel." >&2
+  fi
+fi
+```
+
+When `RESUME_MODE=yes` and HEAD has drifted from the checkpoint, stop and wait for the user's next message. The agent should set `DRIFT_RESPONSE="yes"` if the user replies affirmatively, or any other value to cancel the resume.
+
+```bash
+# Re-validate ancestry after HEAD drift (if it occurred)
+if [[ "$RESUME_MODE" == "yes" && "$CURRENT_HEAD" != "$ROUND1_HEAD" ]]; then
+  if [[ "$DRIFT_RESPONSE" != "yes" ]]; then
+    printf '%s\n' "Resume cancelled." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-cancelled 2>/dev/null || true
+    exit 1
+  fi
+  
+  # Re-validate that START_SHA is still an ancestor after HEAD has moved
+  if ! git merge-base --is-ancestor -- "$START_SHA" HEAD; then
+    printf '%s\n' "Error: After intervening commits, START_SHA '$START_SHA' is no longer an ancestor of HEAD. The commit range is invalid." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class ancestry-invalid-after-drift 2>/dev/null || true
+    exit 1
+  fi
+fi
+```
+
+When `RESUME_MODE=yes`, the run **skips Steps 3, 4a, 4b, 4c, and 4d entirely** and proceeds directly to the Integration Gate section.
 
 ## Step 1: Find the plan
 
 In priority order:
 
 0. **Args contain a path to an existing `claude-action-plan.md` file** → read it directly, set
-   `PLAN_SOURCE=claude-action-plan`. If the path doesn't exist, fall through to priority 1–3 below
+   `PLAN_SOURCE=claude-action-plan`. Record `PLAN_REF=<path>`. If the path doesn't exist, fall through to priority 1–3 below
    with a one-line warning.
-1. **Args contain an issue number or URL** → fetch with `gh issue view <number>`
-2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan
-3. **A plan is visible in the current conversation** → use it directly
+1. **Args contain an issue number or URL** → fetch with `gh issue view <number>`. Record `PLAN_REF=<number or URL>`.
+2. **`.claude/github-cache.json` exists** → read it, use `issue.body` as the plan. Record `PLAN_REF=<issue number from cache>`.
+3. **A plan is visible in the current conversation** → use it directly. Record `PLAN_REF=none`.
 
 If none yield a plan, emit the failure telemetry and stop:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class plan-not-found 2>/dev/null || true
 ```
 Then tell the user and stop.
+
+Implement plan detection and PLAN_REF assignment:
+```bash
+PLAN_REF=""
+PLAN_SOURCE=""
+
+# Priority 0: Args contain a path to an existing claude-action-plan.md file
+for arg in "$@"; do
+  if [[ -f "$arg" && "$arg" == *"claude-action-plan.md"* ]]; then
+    PLAN_SOURCE="claude-action-plan"
+    PLAN_REF="$arg"
+    break
+  fi
+done
+
+# Priority 1: Args contain an issue number or URL
+if [[ -z "$PLAN_REF" ]]; then
+  for arg in "$@"; do
+    if [[ "$arg" =~ ^[0-9]+$ ]] || [[ "$arg" == *"github.com"* ]] && [[ "$arg" == *"/issues/"* ]]; then
+      PLAN_REF="$arg"
+      break
+    fi
+  done
+fi
+
+# Priority 2: .claude/github-cache.json exists
+if [[ -z "$PLAN_REF" && -f ".claude/github-cache.json" ]]; then
+  PLAN_REF=$(jq -r '.issue.number // empty' .claude/github-cache.json 2>/dev/null || true)
+fi
+
+# Priority 3: A plan is visible in the current conversation
+if [[ -z "$PLAN_REF" ]]; then
+  PLAN_REF="none"
+fi
+```
 
 ### Parse claude-action-plan.md into directives
 
@@ -126,7 +278,7 @@ git rev-parse HEAD
 find . -maxdepth 2 -name "tsconfig*.json" -o -name ".eslintrc*" -o -name "eslint.config.*" -o -name "prettier.config.*" -o -name ".prettierrc*" -o -name "pyproject.toml" -o -name ".editorconfig" -o -name "biome.json" 2>/dev/null | head -20
 ```
 
-Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You will use it throughout.
+Remember the SHA from `git rev-parse HEAD` — call it `START_SHA`. You will use it throughout. **In resume mode** (`RESUME_MODE=yes`), `START_SHA` is carried forward from the `--resume-after-round1` flag's `<A>` value instead — do not re-derive it here.
 
 Create one scratch directory for patch files, used by every apply-diff step below regardless of
 whether the run ends up single- or multi-unit:
@@ -189,26 +341,28 @@ For read-only passes:
 
 ## Step 2.5: Pre-flight orphan sweep
 
+**Skipped when `RESUME_MODE=yes`** — an outstanding `${BRANCH}-haiku-*` worktree in resume mode was already checked above and treated as pending human work, not garbage; do not run the sweep in this mode.
+
 Before creating anything, clean up worktrees from any prior aborted run. Run from the main worktree
 using `git -C` — never `cd` into a worktree you intend to delete.
 
 ```bash
 BRANCH=$(git branch --show-current)
+if [[ -z "$BRANCH" ]]; then
+  printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before proceeding." >&2
+  exit 1
+fi
 MAIN_WT=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
 # Prune stale entries first
 git worktree prune
 
 # Find leftover haiku worktrees from a prior run
-git worktree list --porcelain | awk '/^worktree / {print $2}' | while read -r wt; do
+"$HOME/.claude/scripts/find-stray-haiku-worktree.sh" "$BRANCH" | while read -r wt; do
   bn=$(git -C "$wt" branch --show-current 2>/dev/null || true)
-  case "$bn" in
-    "${BRANCH}-haiku-"*)
-      echo "Removing orphan worktree: $wt (branch: $bn)"
-      git worktree remove --force "$wt" 2>/dev/null || true
-      git branch -D "$bn" 2>/dev/null || true
-      ;;
-  esac
+  echo "Removing orphan worktree: $wt (branch: $bn)"
+  git worktree remove --force "$wt" 2>/dev/null || true
+  git branch -D "$bn" 2>/dev/null || true
 done
 git worktree prune
 ```
@@ -450,17 +604,101 @@ Close the round1-join stage before the human pause (the pause is wall-clock, not
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage round1-join --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
-Print the `USAGE-GATE:` line verbatim, then say: "Round 1 join done. All merged units are
-already committed; nothing is pending if you stop here. If that token count looks large, run
-`/compact` first. Reply 'continue' when ready for the integration gate." Then stop and wait for the
-user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself,
-and ignore the printed line's `DECISION:` field (it's informational only).
 
-If the user declines to continue, emit interrupted telemetry (no stage-end needed — round1-join already closed):
+Now capture the current run's command ID and emit the pause options:
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome interrupted 2>/dev/null || true
+# Read current command ID before telemetry clears it
+CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-id --command implement-with-haiku 2>/dev/null || true)
+
+# Emit interrupted telemetry
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome interrupted >/dev/null 2>&1 || true
+
+# Determine whether to print resume line
+SUPPRESS_RESUME=""
+
+# Check if any unit failed
+for unit_status in "${UNIT_STATUSES[@]:-}"; do
+  if [[ "$unit_status" == "failed" ]]; then
+    SUPPRESS_RESUME="yes"
+    break
+  fi
+done
+
+# Check for stray haiku worktrees
+if [[ -z "$SUPPRESS_RESUME" ]]; then
+  BRANCH=$(git branch --show-current)
+  if [[ -z "$BRANCH" ]]; then
+    SUPPRESS_RESUME="yes"
+  else
+    STRAY_WT=$("$HOME/.claude/scripts/find-stray-haiku-worktree.sh" "$BRANCH" 2>/dev/null | head -1)
+    if [[ -n "$STRAY_WT" ]]; then
+      SUPPRESS_RESUME="yes"
+    fi
+  fi
+fi
+
+# Check if command_id is empty (command-id returned nothing)
+if [[ -z "$CMD_ID" ]]; then
+  SUPPRESS_RESUME="yes"
+fi
+
+# Check if PLAN_REF is "none" (conversational plan, not resumable)
+if [[ -z "$SUPPRESS_RESUME" ]] && [[ "$PLAN_REF" == "none" ]]; then
+  SUPPRESS_RESUME="yes"
+fi
+
+# Check if PLAN_REF contains whitespace
+if [[ -z "$SUPPRESS_RESUME" ]] && [[ "$PLAN_REF" == *[[:space:]]* ]]; then
+  SUPPRESS_RESUME="yes"
+fi
+
+# Print resume line or suppress reason
+if [[ -z "$SUPPRESS_RESUME" ]]; then
+  printf '%s\n' "RESUME-AFTER-CLEAR: /implement-with-haiku $PLAN_REF --resume-after-round1 $START_SHA..$(git rev-parse HEAD) --resumed-from $CMD_ID"
+  printf '%s\n' "INTERRUPTED-COMMAND-ID: $CMD_ID"
+else
+  printf '%s\n' "(Resume line suppressed — unit(s) failed, stray worktree detected, command ID unavailable, PLAN_REF is 'none', or PLAN_REF contains whitespace)" >&2
+fi
 ```
-Then stop. Otherwise, continue to Step 4d's conditional below.
+
+Print the `USAGE-GATE:` line verbatim, then present the pause options:
+
+**Option 1: Reply "continue" in this conversation** — this re-opens telemetry via:
+```
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement-with-haiku --resumed-from <CMD_ID_from_the_interrupted_run>
+```
+(substitute the literal printed `INTERRUPTED-COMMAND-ID` value), then proceed directly to the Integration Gate below. Do not re-run Steps 3/4a–4d; they already completed in this same context.
+
+**Option 2: Run `/clear` and paste the printed `RESUME-AFTER-CLEAR:` command** in a fresh context — this starts an entirely new `/implement-with-haiku` invocation, which Step 0 handles by validating and entering resume mode.
+
+**Before choosing, record on [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174) as a comment which arm you took** — this is being measured per a kill criterion recorded in `docs/adr/0019-content-driven-pause-checkpoints.md`'s third amendment.
+
+Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field (it's informational only).
+
+If the user declines to continue, stop. Otherwise, **re-verify HEAD hasn't drifted** before proceeding to the gate.
+
+**For Option 1 (continue in this conversation):** Before proceeding to the Integration Gate, re-verify that HEAD still matches the checkpoint by calling this re-validation bash block:
+
+```bash
+# Re-check HEAD hasn't drifted since the checkpoint
+CURRENT_HEAD_CHECK=$(git rev-parse HEAD)
+if [[ "$CURRENT_HEAD_CHECK" != "$ROUND1_HEAD" ]]; then
+  printf '%s\n' "Warning: HEAD has changed since the pause checkpoint. Re-checking drift conditions..." >&2
+  git log --oneline "$ROUND1_HEAD"..HEAD >&2
+  printf '%s\n' "Reply 'yes' to continue to the gate despite the new drift, or anything else to cancel." >&2
+  
+  if [[ "$CONTINUE_RESPONSE" != "yes" ]]; then
+    printf '%s\n' "Proceeding to gate cancelled." >&2
+    exit 1
+  fi
+  
+  # Re-validate ancestry
+  if ! git merge-base --is-ancestor -- "$START_SHA" HEAD; then
+    printf '%s\n' "Error: START_SHA is no longer an ancestor of HEAD after additional changes." >&2
+    exit 1
+  fi
+fi
+```
 
 If any units are `failed` (worktree genuinely empty), surface a summary and ask the human whether to:
 - Abort the run
@@ -482,6 +720,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage integration-g
 
 The orchestrator (you, Sonnet) now runs the checks — not a Haiku. The implementer's self-reported
 `VERIFIED:` is noted but not trusted; the gate is authoritative.
+
+**Resume-mode note:** Gate steps 1–3 always re-run fully on live git state — no stored verdict from a prior interrupted run is ever trusted, resumed or not. Round-sizing classification is recomputed from `git diff --name-only "$START_SHA"..HEAD` using whichever `START_SHA` is in scope (carried forward from `--resume-after-round1` in resume mode, or freshly derived otherwise per Step 2). `IMPL_FILES` uses the same carried-or-fresh `START_SHA`, while `ROUND2_START_SHA` is always a **fresh** `git rev-parse HEAD` taken at this point, never carried from a prior run. No round-1 "judgment" (intent, rationale, what was decided) is carried across a resume — read `git log --stat "$START_SHA"..HEAD` plus the plan itself to reconstruct diff intent before matching it against the plan's requirements, and treat any ambiguity in that reconstruction as a reason to stop and inspect rather than assume.
 
 ### Gate step 1: Build / type-check
 
