@@ -409,11 +409,18 @@ print()
 # ============================================================================
 print("[Item 9] Deleted duplicate decline-path close")
 
-# Count occurrences of "--outcome interrupted" — should appear exactly once
-outcome_count = IMPLEMENT_WITH_HAIKU.count("--outcome interrupted")
-t("Only one 'command-end ... --outcome interrupted' in doc",
-  outcome_count == 1,
-  f"Expected exactly 1 occurrence of '--outcome interrupted', found {outcome_count}")
+# Count occurrences of "--outcome interrupted" within Step 4d only — the doc has a second,
+# unrelated occurrence in "Incomplete report handling" (a generic abort path for every round)
+# that predates this plan and is out of scope here.
+if step_4d_match:
+    outcome_count = step_4d.count("--outcome interrupted")
+    t("Only one 'command-end ... --outcome interrupted' in Step 4d",
+      outcome_count == 1,
+      f"Expected exactly 1 occurrence of '--outcome interrupted' in Step 4d, found {outcome_count}")
+else:
+    t("Only one 'command-end ... --outcome interrupted' in Step 4d",
+      False,
+      "Could not find ## Step 4d: section to check")
 
 print()
 
@@ -527,9 +534,10 @@ if ADR_0019:
             amendment_pos = ADR_0019.lower().find("amendment (2026-09-15)")
 
         if amendment_pos >= 0:
-            # Search within the amendment section (next 3000 chars)
-            amendment_section_end = min(amendment_pos + 3000, len(ADR_0019))
-            amendment_section = ADR_0019[amendment_pos:amendment_section_end]
+            # This amendment is the last one in the file, so its section runs to EOF —
+            # the pre-registered kill-criterion prose (required keywords live here) is long
+            # enough that a fixed-size window undercounts it.
+            amendment_section = ADR_0019[amendment_pos:]
 
             has_deleted = "deleted" in amendment_section.lower()
             has_eight = "8" in amendment_section
