@@ -137,3 +137,65 @@ command doc and is unaffected by any of this.
 **Consequence:** the final summary's "Usage gate log" now has two rows — `round1-join` and `final`
 — instead of five. Re-adding a dropped seam later should come with fresh measured-run data showing
 it's actually needed, not a default restoration.
+
+## Amendment (2026-09-15): round1-join now prints a resume command
+
+The `round1-join` checkpoint still stops unconditionally with no flag and no `AskUserQuestion` (this
+is unchanged from the prior amendment). The checkpoint is no longer output-free, however. It now:
+
+(a) closes the run's telemetry as `interrupted` (i.e., runs `command-end --outcome interrupted`) before
+stopping;
+
+(b) prints a literal `RESUME-AFTER-CLEAR:` invocation when the run's plan reference is durable (i.e.,
+a resume command a human can copy, paste after running `/clear`, and use to skip round 1 and re-enter
+directly at the Integration Gate);
+
+(c) re-opens telemetry with a `resumed_from` field (a new optional field being added to `command-begin`'s
+event, linking a resumed run back to the interrupted one it continues) if the human replies "continue"
+in the same context instead of clearing.
+
+This is a continuation of [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174), not
+new tracked work.
+
+**Why:** the uninterruptible design of earlier rounds meant large runs frequently hit the `round1-join`
+checkpoint with context exhaustion unavoidable. Forcing a full clear-and-restart loses work committing
+to triage and decision-making. The resume command provides a path for users to keep their decisions
+while recycling context, and telemetry links resumptions back to the originating run so they can be
+measured as continuations rather than separate sessions. Measuring the effect of this path against
+`/compact`'s token-dropping strategy (captured in issue #174 over 8 real runs) determines whether
+resumption is genuinely useful enough to keep.
+
+**What's now stale:** the second amendment's (2026-09-12) claim that the `round1-join` checkpoint is
+"output-free" (no emissions besides the usage-gate line) no longer holds — it now emits a command for
+the human to paste. The "no flag, no `AskUserQuestion`" and "stops unconditionally" properties remain
+unchanged.
+
+**Status:** this amendment's material is now current, not historical.
+
+**Kill criterion (pre-registered, verbatim):**
+
+- *Sample*: the next **8 real `/implement-with-haiku` runs that reach round1-join** (matching #174's
+  own sample size so the numbers are comparable), each recorded as a comment on #174 with: arm
+  (`clear-resume` | `compact` | `neither`), round-sizing classification, gate-fix-Haiku iteration
+  count, and the run's final `command.end` outcome.
+- *Metric, readable off existing telemetry* (`~/.claude/telemetry/events.jsonl`): (a) fix-Haiku
+  iterations = count of `agent.end` events with `agent_type=plan-implementer` whose timestamp falls
+  inside the run's `integration-gate` `stage.begin`/`stage.end` window; (b) terminal outcome = the
+  run's `command.end` `outcome.status` plus `failure_class` (`gate-not-converged` is the failure that
+  matters here).
+- *Refutation*: if the `clear-resume` arm does **not** show both a strictly lower mean fix-Haiku
+  iteration count **and** no more failure outcomes than the `compact` arm, the resume branch is
+  **deleted** — the `--resume-after-round1` branch and the `RESUME-AFTER-CLEAR:` print come out of
+  `commands/implement-with-haiku.md`, and ADR-0019 gets a fourth amendment recording the negative
+  result. Deleted, not tuned.
+- *Default is removal*: if fewer than 3 runs land in either arm by the 8th recorded run, or if 8
+  qualifying runs have not accumulated within **30 days of this amendment's date**, the result is "no
+  usable signal" and the branch is deleted on the same terms. Absence of evidence kills it; it does
+  not get to ship by default.
+- *Who*: the maintainer who ran the runs, at the 8th recorded run or the 30-day mark, whichever comes
+  first.
+- *Stated honestly in the amendment*: N=8 across heterogeneous runs supports no statistical claim;
+  this is a pre-registered decision rule, not an inference. Resumed runs are likely self-selected for
+  being large, which biases the comparison against the resume arm, and arm membership is human
+  self-reported because nothing in a resumed invocation can detect whether the human actually
+  cleared.
