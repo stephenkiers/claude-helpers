@@ -15,7 +15,7 @@ implementation files. It verifies the behaviors described in the plan:
 8. ADR amendments are clearly worded
 9. Telemetry calls are wrapped in error handling
 
-Run with: python3 tests/test_plan_implementation_spec_blind.py
+Run with: python3 tests/test_cut_expert_review_token_cost_spec_blind.py
 """
 
 import importlib.util
