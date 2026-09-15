@@ -171,42 +171,61 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    ```bash
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage prior-review-shortcircuit >/dev/null 2>&1 || true
    set -euo pipefail
-   # Collect only what's needed for the short-circuit check — no REVIEW_DIR, mkdir, gh call, etc.
-   BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
-   HASH=$(git rev-parse --short HEAD)
-   # Tracked-file changes only — untracked clutter (editor swap files, build artifacts) isn't
-   # relevant to "does the committed state match what was reviewed" and would cause alarm fatigue.
-   DIRTY=$(git status --porcelain --untracked-files=no)
+   # Query prior-review cache for this branch/commit; outputs JSON with reviewed/current/dirty/findings/etc.
+   STATUS_JSON=$(python3 "$HOME/.claude/scripts/expert-review-status.py" --json)
+   REVIEWED=$(printf '%s' "$STATUS_JSON" | jq -r '.reviewed')
    ```
 
-   Then read `.claude/github-cache.json` and check if `review.lastRun` exists AND `review.branch` == `BRANCH`:
-   - **Skip this entire sub-step** if either condition is false; nothing to short-circuit — fall through to sub-step 2.
+   Then check if a prior review exists (`$REVIEWED == true`):
+   - **Skip this entire sub-step** if `$REVIEWED` is false; nothing to short-circuit — fall through to sub-step 2.
    - **On a match, always print the banner below** (this happens regardless of `--force`/`-y`):
+     ```bash
+     CURRENT=$(printf '%s' "$STATUS_JSON" | jq -r '.current')
+     COMMIT=$(printf '%s' "$STATUS_JSON" | jq -r '.commit')
+     LASTRUN=$(printf '%s' "$STATUS_JSON" | jq -r '.lastRun')
+     BRANCH=$(printf '%s' "$STATUS_JSON" | jq -r '.branch')
+     REVIEWERS=$(printf '%s' "$STATUS_JSON" | jq -r '.reviewers | join(", ")')
+     FINDINGS=$(printf '%s' "$STATUS_JSON" | jq -r '.findings')
+     REVIEWDIR=$(printf '%s' "$STATUS_JSON" | jq -r '.reviewDir')
+     HASH=$(git rev-parse --short HEAD)
+     FINDINGS_STR=$(printf '%s' "$FINDINGS" | jq -r 'to_entries | map("\(.value)\(.key|.[0:1]|ascii_upcase)") | join(" / ")')
+     CURRENT_STR=$([ "$CURRENT" = "true" ] && echo " (current)" || echo " — HEAD is now $HASH")
+     echo "ℹ️  Already reviewed at commit $COMMIT$CURRENT_STR."
+     echo "  Last run: $LASTRUN  ·  Reviewers: $REVIEWERS"
+     echo "  Findings: $FINDINGS_STR"
+     echo "  Checkpoint: $REVIEWDIR"
      ```
-     ℹ️  Already reviewed at commit {review.commit}{" (current)" if review.commit == HASH else f" — HEAD is now {HASH}"}.
-       Last run: {review.lastRun}  ·  Reviewers: {review.reviewers joined}
-       Findings: {critical}C / {high}H / {medium}M / {low}L
-       Checkpoint: {review.reviewDir}
-     ```
-     Then, only if `DIRTY` is non-empty, print this additional caveat line — omit it entirely when the
+     Then, only if there are uncommitted tracked changes, print this additional caveat line — omit it entirely when the
      tree is clean, rather than leaving a blank line:
-     ```
-     ⚠️  Working tree has uncommitted changes not reflected in that review.
+     ```bash
+     DIRTY=$(printf '%s' "$STATUS_JSON" | jq -r '.dirty')
+     [ "$DIRTY" = "true" ] && echo "⚠️  Working tree has uncommitted changes not reflected in that review."
      ```
    - **Unless `--force`/`-y` is present in the raw arguments**, also print the confirmation prompt and
-     wait for the user's answer:
+     wait for the user's answer.
+
+     Check if `--force` or `-y` is present in the arguments:
+     ```bash
+     if echo "$@" | grep -qE -- '(--force|-y)'; then
+       true  # --force present; skip confirmation and continue to sub-step 2 below
+     fi
      ```
-     Re-run anyway? (prior results are preserved — this run writes to a new timestamped dir, never
-     overwriting {review.reviewDir})
+
+     If `--force`/`-y` was NOT present, print the confirmation prompt and present it to the user via
+     `AskUserQuestion`:
+
      ```
-     If the user declines (or `AskUserQuestion` returns no), emit the stage-end and command-end, then exit cleanly:
+     Re-run anyway? (prior results are preserved — this run writes to a new timestamped dir, never overwriting $REVIEWDIR)
+     ```
+
+     If the user chooses "no", emit the telemetry markers and stop:
      ```bash
      python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage prior-review-shortcircuit --outcome success 2>/dev/null || true
      python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome success 2>/dev/null || true
+     exit 0
      ```
-     Nothing else has run.
-   - If `--force`/`-y` is present in raw arguments, skip the confirmation prompt (the banner above still
-     printed) and continue to sub-step 2. Same if the user confirms.
+
+     If the user chooses "yes" or if `--force`/`-y` was present, continue to sub-step 2.
 
    On confirm (or `--force`) or when sub-step skipped (no match):
    ```bash
