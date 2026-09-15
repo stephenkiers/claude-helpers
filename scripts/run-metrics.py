@@ -321,6 +321,11 @@ def cmd_command_begin(args):
     repo = os.path.basename(cwd.rstrip("/"))
     timestamp = datetime.now(timezone.utc).isoformat()
 
+    # Validate resumed_from before any state-writing operations
+    if args.resumed_from == "":
+        print("Error: resumed_from must not be an empty string", file=sys.stderr)
+        sys.exit(1)
+
     # Opportunistic cleanup of stale state files (24h cutoff)
     _guarded_state_op(telemetry_schema.prune_stale_state, args.state_dir, session_id)
 

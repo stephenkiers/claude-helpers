@@ -223,7 +223,7 @@ def test_peek_command_id_returns_matching_command():
                 state["commands"] = {}
             state["commands"][cmd_id_target] = {
                 "command": "build",
-                "began_at": "2026-08-26T12:00:00Z",
+                "command_began_at": "2026-08-26T12:00:00Z",
                 "stage_id": None,
                 "stage": None,
             }
@@ -249,7 +249,7 @@ def test_peek_command_id_never_mutates_state():
             state["commands"] = {
                 "cmd-id-1": {
                     "command": "test-cmd",
-                    "began_at": "2026-08-26T12:00:00Z",
+                    "command_began_at": "2026-08-26T12:00:00Z",
                     "stage_id": None,
                 }
             }
@@ -297,25 +297,25 @@ def test_peek_command_id_with_complex_state():
                 state["commands"] = {}
             state["commands"]["cmd-id-1"] = {
                 "command": "setup",
-                "began_at": "2026-08-26T12:00:00Z",
+                "command_began_at": "2026-08-26T12:00:00Z",
                 "stage_id": "st1",
                 "stage": "verify",
             }
             state["commands"]["cmd-id-2"] = {
                 "command": "build",
-                "began_at": "2026-08-26T12:00:10Z",
+                "command_began_at": "2026-08-26T12:00:10Z",
                 "stage_id": None,
                 "stage": None,
             }
             state["commands"][target_cmd_id] = {
                 "command": "test",
-                "began_at": "2026-08-26T12:00:20Z",
+                "command_began_at": "2026-08-26T12:00:20Z",
                 "stage_id": None,
                 "stage": None,
             }
             state["commands"]["cmd-id-4"] = {
                 "command": "deploy",
-                "began_at": "2026-08-26T12:00:30Z",
+                "command_began_at": "2026-08-26T12:00:30Z",
                 "stage_id": "st2",
                 "stage": "prep",
             }
@@ -430,7 +430,7 @@ def test_peek_command_id_ignores_entries_without_command_field():
                 },
                 "cmd-id-2": {
                     "command": "test-cmd",
-                    "began_at": "2026-08-26T12:00:00Z",
+                    "command_began_at": "2026-08-26T12:00:00Z",
                     "stage_id": None,
                 },
             }
@@ -464,6 +464,41 @@ def test_build_event_with_multiple_optional_fields_and_resumed_from():
         return False, f"repo not in event"
 
     return True, ""
+
+
+def test_peek_command_id_recency_tie_break():
+    """peek_command_id() returns the most recent command when multiple exist with same name."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "state.json"
+
+        # Create state with 3 entries for the same command at different timestamps
+        def create_state_with_duplicates(state):
+            state["commands"] = {
+                "cmd-id-1": {
+                    "command": "implement-with-haiku",
+                    "command_began_at": "2026-08-26T12:00:00Z",
+                    "stage_id": None,
+                },
+                "cmd-id-2": {
+                    "command": "implement-with-haiku",
+                    "command_began_at": "2026-08-26T12:00:10Z",
+                    "stage_id": None,
+                },
+                "cmd-id-3": {
+                    "command": "implement-with-haiku",
+                    "command_began_at": "2026-08-26T12:00:05Z",
+                    "stage_id": None,
+                },
+            }
+            return state
+
+        telemetry_schema.load_and_update_state(state_path, create_state_with_duplicates)
+
+        # Peek should return cmd-id-2 (the one with the latest timestamp)
+        result = telemetry_schema.peek_command_id(state_path, "implement-with-haiku")
+        if result != "cmd-id-2":
+            return False, f"expected cmd-id-2 (most recent), got {result}"
+        return True, ""
 
 
 if __name__ == "__main__":
@@ -501,6 +536,7 @@ if __name__ == "__main__":
     t("peek_command_id handles empty commands dict", test_peek_command_id_handles_empty_commands_dict()[0], test_peek_command_id_handles_empty_commands_dict()[1])
     t("peek_command_id handles no commands dict", test_peek_command_id_handles_no_commands_dict()[0], test_peek_command_id_handles_no_commands_dict()[1])
     t("peek_command_id ignores entries without command field", test_peek_command_id_ignores_entries_without_command_field()[0], test_peek_command_id_ignores_entries_without_command_field()[1])
+    t("peek_command_id recency tie-break: returns most recent", test_peek_command_id_recency_tie_break()[0], test_peek_command_id_recency_tie_break()[1])
     print()
 
     print("[Section 6] Round-trip and integration tests")

@@ -126,12 +126,13 @@ def test_2_resumed_from_absence():
 
 
 def test_3_empty_string_resumed_from_rejected():
-    """Empty-string --resumed-from must be rejected."""
+    """Empty-string --resumed-from must be rejected, with no orphaned state entry."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
         state_dir = Path(tmpdir) / "state"
+        session_id = "test-3-empty-string-rejected"
         env = dict(os.environ)
-        env["CLAUDE_CODE_SESSION_ID"] = "test-3-empty-string-rejected"
+        env["CLAUDE_CODE_SESSION_ID"] = session_id
 
         code, stdout, stderr = run_script(
             [
@@ -146,6 +147,15 @@ def test_3_empty_string_resumed_from_rejected():
         # Should fail (non-zero exit)
         if code == 0:
             return False, "Empty --resumed-from should be rejected but succeeded"
+
+        # Check that no orphaned state entry exists
+        state_file = Path(state_dir) / f"{session_id}.json"
+        if state_file.exists():
+            with open(state_file) as f:
+                state = json.load(f)
+            commands = state.get("commands", {})
+            if commands:
+                return False, f"Orphaned state entry found after rejection: {commands}"
 
         return True, ""
 
