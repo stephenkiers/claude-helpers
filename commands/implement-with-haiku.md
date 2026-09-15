@@ -101,6 +101,10 @@ if [[ "$RESUME_MODE" == "yes" ]]; then
 
   # Check for outstanding haiku worktrees
   BRANCH=$(git branch --show-current)
+  if [[ -z "$BRANCH" ]]; then
+    printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before resuming." >&2
+    exit 1
+  fi
   OUTSTANDING_WT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2}' | while read -r wt; do
     bn=$(git -C "$wt" branch --show-current 2>/dev/null || true)
     case "$bn" in
@@ -122,6 +126,12 @@ if [[ "$RESUME_MODE" == "yes" ]]; then
     read -r reply
     if [[ "$reply" != "yes" ]]; then
       printf '%s\n' "Resume cancelled." >&2
+      exit 1
+    fi
+    
+    # Re-validate that START_SHA is still an ancestor after HEAD has moved
+    if ! git merge-base --is-ancestor "$START_SHA" HEAD; then
+      printf '%s\n' "Error: After intervening commits, START_SHA '$START_SHA' is no longer an ancestor of HEAD. The commit range is invalid." >&2
       exit 1
     fi
   fi
@@ -558,12 +568,6 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-w
 
 # Determine whether to print resume line
 SUPPRESS_RESUME=""
-if [[ "$PLAN_REF" == "none" ]]; then
-  SUPPRESS_RESUME="yes"
-fi
-if [[ -n "$SUPPRESS_RESUME" ]]; then
-  SUPPRESS_RESUME=""
-fi
 
 # Check if any unit failed
 for unit_status in "${UNIT_STATUSES[@]:-}"; do
@@ -585,6 +589,11 @@ if [[ -z "$SUPPRESS_RESUME" ]]; then
   if [[ -n "$STRAY_WT" ]]; then
     SUPPRESS_RESUME="yes"
   fi
+fi
+
+# Check if command_id is empty (command-id returned nothing)
+if [[ -z "$CMD_ID" ]]; then
+  SUPPRESS_RESUME="yes"
 fi
 
 # Print resume line or suppress reason
