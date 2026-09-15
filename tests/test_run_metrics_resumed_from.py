@@ -57,15 +57,20 @@ def test_1_resumed_from_presence():
     """--resumed-from flag results in resumed_from field in event."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
         test_id = "round1-xyz-123"
+        env = dict(os.environ)
+        env["CLAUDE_CODE_SESSION_ID"] = "test-1-resumed-from-presence"
 
         code, stdout, stderr = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-begin",
                 "--command", "implement-with-haiku",
                 "--resumed-from", test_id,
-            ]
+            ],
+            env=env,
         )
         if code != 0:
             return False, f"Failed with --resumed-from: {stderr}"
@@ -89,13 +94,18 @@ def test_2_resumed_from_absence():
     """Without --resumed-from, resumed_from key must not exist in event."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        env = dict(os.environ)
+        env["CLAUDE_CODE_SESSION_ID"] = "test-2-resumed-from-absence"
 
         code, stdout, stderr = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-begin",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
         if code != 0:
             return False, f"Failed: {stderr}"
@@ -119,14 +129,19 @@ def test_3_empty_string_resumed_from_rejected():
     """Empty-string --resumed-from must be rejected."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        env = dict(os.environ)
+        env["CLAUDE_CODE_SESSION_ID"] = "test-3-empty-string-rejected"
 
         code, stdout, stderr = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-begin",
                 "--command", "implement-with-haiku",
                 "--resumed-from", "",
-            ]
+            ],
+            env=env,
         )
         # Should fail (non-zero exit)
         if code == 0:
@@ -157,14 +172,19 @@ def test_5_command_id_correctness():
     """command-id subcommand returns the same ID as command-begin printed."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        env = dict(os.environ)
+        env["CLAUDE_CODE_SESSION_ID"] = "test-5-command-id-correctness"
 
         # First: run command-begin and capture the printed command_id
         code, stdout, stderr = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-begin",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
         if code != 0:
             return False, f"command-begin failed: {stderr}"
@@ -178,9 +198,11 @@ def test_5_command_id_correctness():
         code2, stdout2, stderr2 = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-id",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
         if code2 != 0:
             return False, f"command-id failed: {stderr2}"
@@ -201,14 +223,19 @@ def test_6_command_id_non_destructive():
     """Calling command-id twice returns same ID (never clears state)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        env = dict(os.environ)
+        env["CLAUDE_CODE_SESSION_ID"] = "test-6-command-id-non-destructive"
 
         # First: run command-begin
         code, stdout, stderr = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-begin",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
         if code != 0:
             return False, f"command-begin failed: {stderr}"
@@ -219,9 +246,11 @@ def test_6_command_id_non_destructive():
         code2, stdout2, stderr2 = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-id",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
         if code2 != 0:
             return False, f"command-id (first call) failed: {stderr2}"
@@ -232,9 +261,11 @@ def test_6_command_id_non_destructive():
         code3, stdout3, stderr3 = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-id",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
         if code3 != 0:
             return False, f"command-id (second call) failed: {stderr3}"
@@ -259,14 +290,19 @@ def test_7_command_id_empty_state():
     """command-id on fresh empty state returns 0 exit with empty stdout."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "events.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        env = dict(os.environ)
+        env["CLAUDE_CODE_SESSION_ID"] = "test-7-command-id-empty-state"
 
         # Call command-id without any prior command-begin
         code, stdout, stderr = run_script(
             [
                 "--log", str(log_path),
+                "--state-dir", str(state_dir),
                 "command-id",
                 "--command", "implement-with-haiku",
-            ]
+            ],
+            env=env,
         )
 
         if code != 0:
