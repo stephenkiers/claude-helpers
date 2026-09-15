@@ -9,7 +9,7 @@ Plan: Remove decisions.yaml / ledger machinery from expert-review
 - Removes decisions/ledger references from prompts/expert-framework.md
 - Removes "Already settled" bucket from prompts/triage.md
 - Removes decisions/ledger mentions from prompts/amalgamator.md
-- Stubs out commands/review-stats.md
+- Stubs out commands/review-stats.md (later revived in issue #182 as a scoped, read-only tracker)
 - Updates CLAUDE.md Triage section
 
 Run with: python3 tests/test_remove_decisions_ledger.py
@@ -305,19 +305,19 @@ if __name__ == "__main__":
         "File not found"
     )
 
-    # 5.1: Command body should be a stub paragraph
+    # 5.1: review-stats.md was revived (issue #182) as a scoped, read-only yield tracker —
+    # it is no longer the chore/29 stub, and must not claim to be non-functional.
     test_result(
-        "review-stats.md is now a stub",
-        "ledger machinery was removed" in review_stats_content or "non-functional" in review_stats_content,
-        "review-stats.md should be stubbed with note that ledger machinery was removed"
+        "review-stats.md is functional, not the chore/29 stub",
+        "non-functional" not in review_stats_content and "ledger machinery was removed" not in review_stats_content,
+        "review-stats.md should no longer describe itself as a non-functional stub (revived in issue #182)"
     )
 
-    # 5.2: The command should NOT have old ledger processing logic
-    # review-stats.md is intentionally stubbed (non-functional); check for processing logic absent, not filename
+    # 5.2: The command should NOT have old (suppressing) ledger processing logic
     test_result(
-        "review-stats.md does not contain ledger processing logic",
+        "review-stats.md does not contain old ledger processing logic",
         "ls -d ~/.claude/reviews" not in review_stats_content and "Collect per-reviewer data" not in review_stats_content,
-        "Found ledger processing logic in review-stats.md (should be removed)"
+        "Found old ledger processing logic in review-stats.md (should be removed)"
     )
 
     print()
@@ -364,11 +364,12 @@ if __name__ == "__main__":
         "Found ledger.jsonl references in CLAUDE.md (should be removed)"
     )
 
-    # 6.5: /review-stats should be noted as non-functional
+    # 6.5: /review-stats should be mentioned in CLAUDE.md and not claim to be non-functional
+    # (revived in issue #182 as a scoped, read-only yield tracker)
     test_result(
-        "/review-stats marked as non-functional",
-        "/review-stats" in claude_md_content and ("non-functional" in claude_md_content or "currently" in claude_md_content),
-        "/review-stats should be noted as non-functional in Commands section"
+        "/review-stats mentioned in CLAUDE.md and not marked non-functional",
+        "/review-stats" in claude_md_content and "non-functional" not in claude_md_content,
+        "/review-stats should be documented in CLAUDE.md without claiming to be non-functional"
     )
 
     # 6.6: decisions.yaml.template should NOT be deleted (it's still on disk for reference)

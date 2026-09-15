@@ -32,7 +32,7 @@ reviewers:
     priority: critical
     useWhen: Cross-file composition, factory wiring, event bus connections, data flow tracing
     triggers: [createSession, createService, factory, bus, eventBus, config, options, inject, provider, compose]
-    note: "Special reviewer - receives FULL diff, not just tagged sections. Traces data flow across files."
+    note: "Special reviewer - when selected, receives FULL diff (not just tagged sections). Traces data flow across files."
 
   - name: North Star Nick
     file: north-star-nick.yaml

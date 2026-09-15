@@ -31,11 +31,13 @@ this default; otherwise this section governs.
 
 ## Reviewer-Specific Input Scope
 
-Most reviewers receive only the diff sections the router selected for them. Four exceptions receive
-the full diff by domain definition (ADR-0003.2):
+Most reviewers receive only the diff sections the router selected for them. Three always-run
+exceptions (Code Rot Cody, Consistency Checker, Contrarian Carl) receive the full diff by domain
+definition (ADR-0003.2). Additionally, when routed in, Sam System receives the full diff by the
+same domain principle:
 
-- **Sam System** receives the **full diff** because his job is to trace data flow across files — he
-  needs to see both ends of every cross-file connection.
+- **Sam System** (when routed in) receives the **full diff** because his job is to trace data flow
+  across files — he needs to see both ends of every cross-file connection.
 - **Code Rot Cody** receives the **full diff** because he greps the entire repo for orphaned symbols.
 - **Consistency Checker** receives the **full diff** to check patterns across the whole diff.
 - **Contrarian Carl** receives the **full diff** because his contrastive role requires reading past

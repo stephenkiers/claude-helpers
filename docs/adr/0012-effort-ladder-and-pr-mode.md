@@ -135,3 +135,35 @@ Alongside this, the default config shipped for personal use set `default_effort:
 (was `over-review`) — deliberately biasing the ceiling and the boundary-tie behavior toward smaller reviews,
 on the stated premise that most day-to-day diffs in this workflow don't need the full panel, and that PRs
 should generally be small enough that effort 2–3 is the right size, not the exception.
+
+## Amendment — Generalize Sam System's non-pre-seated rule to all effort levels
+
+The "not a cheap seat" rationale originally scoped to level 3 (Decision, Monotonic-cost subsection) now
+applies at every effort level: **Sam System is never hardcoded as always-run; he runs only when the router
+selects him.** This generalizes the cost-control principle uniformly across the effort ladder.
+
+**Motivation:** a real full-panel run (`feature-1288-widget-handshake-liveness`) showed Sam System as the
+single most expensive seat — 6.4% of total review cost across a 20-of-28-reviewer run — with no uniquely
+escalated finding that run. His full-diff read (unbounded by line ranges) is valuable for cross-file
+data-flow tracing on complex compositions, but that value is not uniform. Effort levels 1 and 2 use
+entirely different reviewer structures (scouts and pods, respectively) and never pre-seat him anyway. Effort
+level 4 (the normal/default) and level 5 (everyone) both route the full index and thus already allow the
+router to exclude him; only effort 3 had a special case that forced him in.
+
+**Code change:** remove Sam System from the three always-run sets (effort-independent):
+- `prompts/router.md`: "always-run" changes from four reviewers to three (Code Rot Cody, Consistency
+  Checker, Contrarian Carl).
+- `prompts/expert-review-panel.md`: the "always-run set (never routed, pre-seated)" becomes three reviewers,
+  and the "Effort 3 exception" callout is removed (he is now never pre-seated at any level).
+- `commands/expert-review.md`: the NAMED_SELECTION dedup loop and effort-3-specific documentation updated.
+
+**Remaining always-run (every effort level, effort-independent):**
+- **Code Rot Cody** — pinned haiku mechanical check on full diff.
+- **Consistency Checker** — pinned haiku mechanical pattern pass on full diff.
+- **Contrarian Carl** — runs last, seeing all other findings; the only reviewer whose seating overrides
+  heuristics and routing.
+
+This refinement maintains the cost-monotonicity principle: you pay for what you get, not for expensive seats
+that add no incremental finding on a given diff.
+
+**Note on basis and revisit trigger:** This generalization to all effort levels is based on a single observed run's data (n=1). The metric "zero uniquely-escalated findings" measures whether Sam System's cross-file findings disagreed sharply enough with other reviewers to require adjudication — not whether he independently caught an integration bug nobody else was positioned to notice. The policy will be revisited once more runs' data accumulates, or when a metric is defined that captures "caught a bug nobody else could see" in addition to escalation count. Cost (6.4% of one run) motivates testing the change; escalation count (zero in one run) provides initial evidence it is safe; the revisit trigger ensures the policy adapts if either premise changes.

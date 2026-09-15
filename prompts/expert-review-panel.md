@@ -93,18 +93,18 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
    can use them for bounded reads.
 
 **Always-run set (never routed, pre-seated):**
-- Sam System, Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
+- Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
 - Contrarian Carl (runs last, always).
 
-**Effort 3 exception:** Sam System is not pre-seated — he runs only if the router's top-2 includes
-him. Cody and the Consistency Checker stay always-run, and Carl still runs last. The stage structure
-remains unchanged (summarize → route → pass1 → contrarian → qa → pass2 → amalgamate); effort 3 differs
-only in which reviewers are selected, not in the stages themselves.
+**Sam System** is not pre-seated at any effort level — he runs only if the router selects him (or,
+at effort 3's independent routed-pair path, only if the router's top-2 includes him). The stage
+structure remains unchanged (summarize → route → pass1 → contrarian → qa → pass2 → amalgamate)
+regardless of whether he runs.
 
-The router is told these four are pre-seated and to treat them as included for the decision table.
+The router is told these three are pre-seated and to treat them as included for the decision table.
 
 **Named reviewers:** If the user named specific reviewers (Step 3, `NAMED_SELECTION=true`), skip the
-router entirely — the user's selection *is* the decision, and all four always-run reviewers still
+router entirely — the user's selection *is* the decision, and all three always-run reviewers still
 participate. Step 6 branches on `NAMED_SELECTION`: named/always-run reviewers all read
 `{REVIEW_DIR}/full-diff.patch` directly instead of line ranges into it (there is no router output to
 offset into). This costs each named reviewer a full-patch read instead of a bounded one — acceptable,
@@ -126,7 +126,7 @@ input:
   for r in $NAMED_REVIEWERS; do
     echo "| $r | Yes | Named by user |"
   done
-  for r in sam-system code-rot-cody consistency-checker contrarian-carl; do
+  for r in code-rot-cody consistency-checker contrarian-carl; do
     if ! echo "$NAMED_REVIEWERS" | grep -qw "$r"; then
       echo "| $r | Yes | Always-run |"
     fi
@@ -178,7 +178,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pass1 >/dev/n
 
 **If `NAMED_SELECTION=true`:** the router did not run; Step 5 synthesized a minimal
 `tagged-sections.md` as a routing record (see above). The selected reviewers are exactly the user's
-named reviewers plus the always-run four; every one of them reads `{REVIEW_DIR}/full-diff.patch`
+named reviewers plus the always-run three; every one of them reads `{REVIEW_DIR}/full-diff.patch`
 in full rather than a line-range offset into it.
 
 **Otherwise:** read `tagged-sections.md` and parse which reviewers were selected by the router.
@@ -273,20 +273,12 @@ Do NOT report pre-existing issues in unchanged code. If the PR makes an existing
 issue worse, report it; if it doesn't touch it, skip it.
 ```
 
-Three reviewers **always run and are never gated** (the router does not route them; their domain is
-the whole diff by definition). They get special inputs but run in the same parallel batch — and they
-follow the same rules as everyone else: they read their own YAML by path, and they return a receipt,
-not a report. (Their output *formats* differ — those formats are defined in their own YAMLs, which
-they read themselves; you do not need to know them here.)
-
-- **Sam System** (integration): gets `{REVIEW_DIR}/full-diff.patch` (not tagged sections — his
-  domain is the whole diff, so he reads the whole file), the Technical Summary, and any plan context
-  as "Known Integration Concerns". He must trace data flow across files — read both ends of every
-  factory/event-bus/config connection and flag parameters passed but never used. Output: canonical
-  format (he is NOT an ADR-0006 carve-out); each finding's **Issue** field starts with the data-flow
-  trace, e.g.
-  `Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
-  Decision is always DEEP-DIVE.
+Two reviewers **always run in Step 6 and are never gated** (the router does not route them; their
+domain is the whole diff by definition) — Contrarian Carl runs separately, last, in his own step.
+They get special inputs but run in the same parallel batch — and they follow the same rules as
+everyone else: they read their own YAML by path, and they return a receipt, not a report. (Their
+output *formats* differ — those formats are defined in their own YAMLs, which they read
+themselves; you do not need to know them here.)
 
 - **Code Rot Cody** (`subagent_type: "expert-scout"`, ADR-0006 carve-out): gets
   `{REVIEW_DIR}/full-diff.patch` + changed-file list. He greps the ENTIRE repo to verify every
@@ -300,6 +292,15 @@ they read themselves; you do not need to know them here.)
   reads its own persona file for the review lens, like every other subagent. Mechanical pattern
   pass: mixed error types for the same purpose, inconsistent cleanup patterns, PR-description claims
   contradicted by the code. Its output format is defined in its own YAML.
+
+**If the router selects Sam System:** he receives the **full diff** (not line-range offsets — his
+domain is cross-file data-flow tracing, so he needs to see both ends of every connection), the
+Technical Summary from `summary.md`, and any plan context as "Known Integration Concerns". He must
+trace data flow across files — read both ends of every factory/event-bus/config connection and flag
+parameters passed but never used. His findings use the canonical format (not an ADR-0006 carve-out);
+each finding's **Issue** field starts with the data-flow trace, e.g.
+`Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
+His decision is always DEEP-DIVE.
 
 **Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
 they have all returned by the time you continue. For every selected reviewer, the join condition is

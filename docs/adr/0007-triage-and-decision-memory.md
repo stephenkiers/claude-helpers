@@ -203,7 +203,7 @@ section above.
 - Step 13 ("Record the rulings") from `/expert-review`
 - The "Already settled" bucket in Triage's escalation sort
 - The "Suppressed by decision" reviewer output field
-- `/review-stats` (now non-functional — listed in CLAUDE.md with a non-functional note)
+- `/review-stats` (removed in chore/29, then revived in issue #182 — now functional)
 
 **What remains live:**
 - The Triage Chief and the full triage flow (doing it / needs you / needs measurement / deferred)
