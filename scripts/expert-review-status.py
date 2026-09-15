@@ -69,7 +69,12 @@ def read_review_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
     try:
         with open(cache_path, "r") as f:
             data = json.load(f)
-        return data.get("review")
+        review = data.get("review")
+        # Type-check: review must be a dict if not None
+        if review is not None and not isinstance(review, dict):
+            print(f"Warning: cache 'review' field is not a dict (got {type(review).__name__}), treating as not reviewed", file=sys.stderr)
+            return None
+        return review
     except (OSError, json.JSONDecodeError) as e:
         print(f"Warning: failed to read cache {cache_path}: {e}", file=sys.stderr)
         return None
@@ -119,7 +124,7 @@ def compute_status(
     }
 
 
-def format_human_readable(status: Dict[str, Any]) -> str:
+def format_human_readable(status: Dict[str, Any], hash_short: str) -> str:
     """Format status as a single human-readable line."""
     if not status["reviewed"]:
         return "Not reviewed"
@@ -127,7 +132,7 @@ def format_human_readable(status: Dict[str, Any]) -> str:
     commit_line = (
         f"Already reviewed at commit {status['commit']}"
         if status["current"]
-        else f"Already reviewed at commit {status['commit']} — HEAD is now {status.get('hash_current', '?')}"
+        else f"Already reviewed at commit {status['commit']} — HEAD is now {hash_short}"
     )
     return f"{commit_line}  ·  Last run: {status['lastRun']}"
 
@@ -160,9 +165,6 @@ def main():
     review = read_review_cache(cache_path)
     status = compute_status(branch, hash_short, dirty, review)
 
-    # Add current hash to status
-    status["hash_current"] = hash_short
-
     # Determine exit code: 0 only if reviewed, current, and not dirty
     exit_code = (
         0
@@ -174,7 +176,7 @@ def main():
         if args.json:
             print(json.dumps(status))
         else:
-            print(format_human_readable(status))
+            print(format_human_readable(status, hash_short))
 
     sys.exit(exit_code)
 

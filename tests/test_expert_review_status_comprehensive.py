@@ -383,7 +383,90 @@ if __name__ == "__main__":
             test_result("JSON parsing works", False)
 
         print()
-        print("[Section 10] Human-readable output format")
+        print("[Section 10] Cache with 'review' field that is not a dict")
+
+        # Test with review as an integer
+        bad_cache_path = fixture.repo_root / ".claude" / "github-cache.json"
+        bad_cache_path.write_text(json.dumps({"review": 123}))
+
+        stdout, stderr, exit_code = run_expert_review_status(fixture.repo_root)
+        test_result(
+            "expert-review-status with non-dict review exits 1",
+            exit_code == 1,
+            f"got {exit_code}"
+        )
+        test_result(
+            "expert-review-status warns on non-dict review (stderr)",
+            "not a dict" in stderr.lower() or "non-dict" in stderr.lower() or len(stderr) > 0,
+            f"got {stderr!r}"
+        )
+
+        # Test --json with non-dict review
+        stdout, stderr, exit_code = run_expert_review_status(fixture.repo_root, ["--json"])
+        test_result(
+            "expert-review-status --json with non-dict review exits 1",
+            exit_code == 1,
+            f"got {exit_code}"
+        )
+        try:
+            data = json.loads(stdout)
+            test_result(
+                "expert-review-status --json with non-dict review shows reviewed=false",
+                data.get("reviewed") is False,
+                f"got {data.get('reviewed')}"
+            )
+            test_result(
+                "expert-review-status --json output does not contain hash_current",
+                "hash_current" not in data,
+                f"fields: {list(data.keys())}"
+            )
+        except json.JSONDecodeError as e:
+            test_result(
+                "expert-review-status --json with non-dict review outputs valid JSON",
+                False,
+                f"JSON error: {e}"
+            )
+
+        # Test with review as a string
+        bad_cache_path.write_text(json.dumps({"review": "not a dict"}))
+
+        stdout, stderr, exit_code = run_expert_review_status(fixture.repo_root, ["--json"])
+        test_result(
+            "expert-review-status with string review exits 1",
+            exit_code == 1,
+            f"got {exit_code}"
+        )
+        try:
+            data = json.loads(stdout)
+            test_result(
+                "expert-review-status --json with string review shows reviewed=false",
+                data.get("reviewed") is False,
+                f"got {data.get('reviewed')}"
+            )
+        except json.JSONDecodeError:
+            test_result("JSON parsing works", False)
+
+        # Test with review as a list
+        bad_cache_path.write_text(json.dumps({"review": ["not", "a", "dict"]}))
+
+        stdout, stderr, exit_code = run_expert_review_status(fixture.repo_root, ["--json"])
+        test_result(
+            "expert-review-status with list review exits 1",
+            exit_code == 1,
+            f"got {exit_code}"
+        )
+        try:
+            data = json.loads(stdout)
+            test_result(
+                "expert-review-status --json with list review shows reviewed=false",
+                data.get("reviewed") is False,
+                f"got {data.get('reviewed')}"
+            )
+        except json.JSONDecodeError:
+            test_result("JSON parsing works", False)
+
+        print()
+        print("[Section 11] Human-readable output format")
 
         cache_data = {
             "review": {
@@ -411,7 +494,7 @@ if __name__ == "__main__":
         )
 
         print()
-        print("[Section 11] Exit code is 0 only for reviewed + current + clean tree")
+        print("[Section 12] Exit code is 0 only for reviewed + current + clean tree")
 
         # Set up clean state: reviewed=true, current=true, dirty=false
         cache_data = {
