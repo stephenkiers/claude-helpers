@@ -8,6 +8,11 @@ final-report.md and claude-action-plan.md, and logs reviewer-level yield metrics
 
 Designed to be run manually after expert-review to track reviewer ROI (cost vs. output).
 Never wired into expert-review's own steps — running it is opt-in and human-initiated.
+
+Exception handling policy: Read and parse failures in I/O or JSON operations warn to stderr
+and continue with safe defaults (empty results, zero counts), never raising. Write failures
+in append_yield_data are surfaced to the caller for explicit error handling. This preserves
+idempotency on read-after-read failures while ensuring the caller can distinguish write errors.
 """
 
 import argparse
@@ -16,30 +21,71 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, TypedDict
 
 
-def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) -> Dict[str, List[Path]]:
+class TokenRecord(TypedDict):
+    """Token usage breakdown from a single subagent."""
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+
+
+class YieldRow(TypedDict):
+    """Per-reviewer yield metrics for a single review run."""
+    run_id: str
+    reviewer: str
+    timestamp: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+    mention_count: int
+    escalation_count: int
+
+
+class ReviewerStats(TypedDict):
+    """Aggregated stats for a reviewer across all runs."""
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read: int
+    total_cache_creation: int
+    total_mentions: int
+    total_escalations: int
+    run_count: int
+
+
+def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str], repo_key: str) -> Dict[str, List[Path]]:
     """
     Find, for each reviewer, the subagent .jsonl file(s) that wrote that reviewer's own
     checkpoint file into the given review_dir.
 
-    Searches ~/.claude/projects/*/subagents/*.jsonl for a Write tool_use whose
-    input.file_path both contains review_dir as a substring AND matches one specific
-    reviewer's own filename pattern (e.g. "{reviewer}-pass1.md") — this is what actually
-    anchors a transcript to a reviewer, since a review directory holds many subagents'
-    files and sort-order pairing between subagent files and reviewer slugs is not
-    guaranteed to line up (subagents launch and finish in nondeterministic order).
+    Scopes the search to ~/.claude/projects/{repo_key}/subagents/*.jsonl to avoid unbounded
+    read-scope on a shared machine. Searches for a Write tool_use whose input.file_path
+    both contains review_dir as a substring AND matches one specific reviewer's own filename
+    pattern (e.g. "{reviewer}-pass1.md") — this anchors a transcript to a reviewer, since
+    a review directory holds many subagents' files and sort-order pairing between subagent
+    files and reviewer slugs is not guaranteed to line up (subagents launch and finish in
+    nondeterministic order).
+
+    Assumes review directories use $RANDOM-suffixed naming per commands/expert-review.md,
+    which allows substring matching on review_dir_name to disambiguate among subagent
+    transcripts (one $RANDOM suffix is unlikely to collide with another run's suffix).
     """
     review_dir_name = Path(review_dir).name
-    projects_dir = Path.home() / ".claude" / "projects"
+    project_dir = Path.home() / ".claude" / "projects" / repo_key
 
     result: Dict[str, List[Path]] = {slug: [] for slug in reviewer_slugs}
 
-    if not projects_dir.exists():
+    if not project_dir.exists():
         return result
 
-    for subagent_file in projects_dir.glob("**/subagents/*.jsonl"):
+    subagents_dir = project_dir / "subagents"
+    if not subagents_dir.exists():
+        return result
+
+    for subagent_file in subagents_dir.glob("*.jsonl"):
         matched_reviewer = _subagent_reviewer_for_review_dir(subagent_file, review_dir_name, reviewer_slugs)
         if matched_reviewer:
             result[matched_reviewer].append(subagent_file)
@@ -53,6 +99,8 @@ def _subagent_reviewer_for_review_dir(
     """
     Return the reviewer slug this subagent transcript belongs to, if it wrote that
     reviewer's own checkpoint file into the given review directory; None otherwise.
+
+    Returns None on read or parse error (warns to stderr per file-wide exception policy).
     """
     try:
         with open(jsonl_file, "r") as f:
@@ -75,24 +123,24 @@ def _subagent_reviewer_for_review_dir(
                                         for slug in reviewer_slugs:
                                             if written_name.startswith(f"{slug}-"):
                                                 return slug
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
-    except (OSError, IOError):
-        pass
+    except OSError as e:
+        print(f"Warning: failed to read subagent transcript {jsonl_file}: {e}", file=sys.stderr)
 
     return None
 
 
-def parse_tokens_from_subagent(jsonl_file: Path) -> Dict[str, int]:
+def parse_tokens_from_subagent(jsonl_file: Path) -> TokenRecord:
     """
     Parse token usage from a subagent transcript.
 
     Sums input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
     from all assistant messages that carry an iterations key (complete turns).
 
-    Returns a dict with keys: input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
+    Returns zero-filled TokenRecord on read or parse error (warns to stderr per file-wide policy).
     """
-    tokens = {
+    tokens: TokenRecord = {
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_input_tokens": 0,
@@ -114,10 +162,10 @@ def parse_tokens_from_subagent(jsonl_file: Path) -> Dict[str, int]:
                             tokens["output_tokens"] += usage.get("output_tokens", 0)
                             tokens["cache_read_input_tokens"] += usage.get("cache_read_input_tokens", 0)
                             tokens["cache_creation_input_tokens"] += usage.get("cache_creation_input_tokens", 0)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
-    except (OSError, IOError):
-        pass
+    except OSError as e:
+        print(f"Warning: failed to read subagent transcript {jsonl_file}: {e}", file=sys.stderr)
 
     return tokens
 
@@ -131,7 +179,11 @@ def extract_reviewer_name(filename: str) -> Optional[str]:
 
 
 def count_reviewer_mentions(final_report_path: Path, reviewer: str) -> int:
-    """Count mentions of a reviewer by name or slug in final-report.md."""
+    """
+    Count mentions of a reviewer by name or slug in final-report.md.
+
+    Returns 0 on read error (warns to stderr per file-wide exception policy).
+    """
     if not final_report_path.exists():
         return 0
 
@@ -143,7 +195,8 @@ def count_reviewer_mentions(final_report_path: Path, reviewer: str) -> int:
         # Match the reviewer name as a whole word (preceded/followed by word boundary or special chars)
         matches = re.findall(rf"\b{pattern}\b", content, re.IGNORECASE)
         return len(matches)
-    except (OSError, IOError):
+    except OSError as e:
+        print(f"Warning: failed to read {final_report_path}: {e}", file=sys.stderr)
         return 0
 
 
@@ -152,6 +205,8 @@ def count_reviewer_escalations(action_plan_path: Path, reviewer: str) -> int:
     Count findings escalated by a reviewer in claude-action-plan.md.
 
     Looks for lines with '**Raised by**: <reviewer>' format.
+
+    Returns 0 on read error (warns to stderr per file-wide exception policy).
     """
     if not action_plan_path.exists():
         return 0
@@ -163,7 +218,8 @@ def count_reviewer_escalations(action_plan_path: Path, reviewer: str) -> int:
         pattern = rf"\*\*Raised by\*\*:.*\b{re.escape(reviewer)}\b"
         matches = re.findall(pattern, content, re.IGNORECASE)
         return len(matches)
-    except (OSError, IOError):
+    except OSError as e:
+        print(f"Warning: failed to read {action_plan_path}: {e}", file=sys.stderr)
         return 0
 
 
@@ -180,7 +236,13 @@ def get_repo_key(review_dir: Path) -> str:
 
 
 def load_existing_yield_data(yield_file: Path) -> dict:
-    """Load existing yield data, keyed by run_id."""
+    """
+    Load existing yield data, keyed by run_id.
+
+    Returns empty dict on read error (warns to stderr per file-wide exception policy).
+    Warns allow idempotency tracking to distinguish between "file doesn't exist" (normal)
+    and "file exists but read failed" (potential race, advisory to retry).
+    """
     data = {}
     if yield_file.exists():
         try:
@@ -192,14 +254,14 @@ def load_existing_yield_data(yield_file: Path) -> dict:
                             run_id = entry.get("run_id")
                             if run_id:
                                 data[run_id] = entry
-                        except json.JSONDecodeError:
+                        except ValueError:
                             continue
-        except (OSError, IOError):
-            pass
+        except OSError as e:
+            print(f"Warning: failed to read yield file {yield_file}: {e}", file=sys.stderr)
     return data
 
 
-def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[dict]]:
+def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldRow]]:
     """
     Process a review directory and extract per-reviewer yield data.
 
@@ -231,9 +293,9 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[dict]]
     # reviewer's own checkpoint file into this review dir (not sort-order pairing —
     # subagents finish in nondeterministic order, so positional pairing with
     # sorted(reviewer_slugs) would silently misattribute token costs).
-    subagent_files_by_reviewer = find_subagent_files_by_reviewer(review_dir_path, sorted(reviewer_slugs))
+    subagent_files_by_reviewer = find_subagent_files_by_reviewer(review_dir_path, sorted(reviewer_slugs), repo_key)
 
-    reviewer_tokens = {}
+    reviewer_tokens: Dict[str, TokenRecord] = {}
     for reviewer in sorted(reviewer_slugs):
         reviewer_tokens[reviewer] = {
             "input_tokens": 0,
@@ -251,14 +313,14 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[dict]]
 
     # Build output rows
     timestamp = datetime.now(timezone.utc).isoformat()
-    rows = []
+    rows: List[YieldRow] = []
 
     for reviewer in sorted(reviewer_slugs):
         tokens = reviewer_tokens[reviewer]
         mention_count = count_reviewer_mentions(final_report, reviewer)
         escalation_count = count_reviewer_escalations(action_plan, reviewer)
 
-        row = {
+        row: YieldRow = {
             "run_id": run_id,
             "reviewer": reviewer,
             "timestamp": timestamp,
@@ -274,12 +336,12 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[dict]]
     return repo_key, rows
 
 
-def append_yield_data(repo_key: str, rows: List[dict]) -> Path:
+def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
     """
     Append per-reviewer yield data to the leaderboard file, idempotently.
 
     Checks if run_id already exists and skips if found.
-    Returns the path to the yield file.
+    Returns the path to the yield file on success, None on write failure (caller must handle).
     """
     yield_dir = Path.home() / ".claude" / "reviews" / repo_key
     yield_file = yield_dir / "reviewer-yield.jsonl"
@@ -300,14 +362,14 @@ def append_yield_data(repo_key: str, rows: List[dict]) -> Path:
         with open(yield_file, "a") as f:
             for row in rows:
                 f.write(json.dumps(row) + "\n")
-    except (OSError, IOError) as e:
+    except OSError as e:
         print(f"Error writing yield file: {e}", file=sys.stderr)
-        return yield_file
+        return None
 
     return yield_file
 
 
-def print_review_table(rows: List[dict]) -> None:
+def print_review_table(rows: List[YieldRow]) -> None:
     """Print a per-reviewer table to stdout for a single review run."""
     if not rows:
         print("No reviewer data found.")
@@ -344,8 +406,7 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
         return
 
     # Aggregate across all runs
-    reviewer_stats = {}
-    total_runs = 0
+    reviewer_stats: Dict[str, ReviewerStats] = {}
 
     try:
         with open(yield_file, "r") as f:
@@ -372,10 +433,9 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
                     reviewer_stats[reviewer]["total_mentions"] += row["mention_count"]
                     reviewer_stats[reviewer]["total_escalations"] += row["escalation_count"]
                     reviewer_stats[reviewer]["run_count"] += 1
-                    total_runs = max(total_runs, row.get("run_count", 0))
-                except json.JSONDecodeError:
+                except ValueError:
                     continue
-    except (OSError, IOError) as e:
+    except OSError as e:
         print(f"Error reading yield file: {e}", file=sys.stderr)
         return
 
@@ -418,26 +478,31 @@ def main():
         "review_dir",
         nargs="?",
         default=None,
-        help="Review directory path or name (e.g., ~/.claude/reviews/{repo}/feature-x-123/)",
+        help="Review directory path for single-run mode (e.g., ~/.claude/reviews/{repo}/feature-x-123/). "
+             "In --aggregate mode, pass the repo key instead (e.g., owner-repo).",
     )
     parser.add_argument(
         "--aggregate",
         action="store_true",
-        help="Print leaderboard across all runs for the current repo",
+        help="Print leaderboard across all runs. Requires repo key as positional argument.",
     )
 
     args = parser.parse_args()
 
-    if args.aggregate or not args.review_dir:
-        # Aggregate mode: read from ~/.claude/reviews/{current-repo}/reviewer-yield.jsonl
-        # For now, we can't auto-detect the repo, so require explicit repo key
+    if args.aggregate:
+        # Aggregate mode: read from ~/.claude/reviews/{repo_key}/reviewer-yield.jsonl
         if not args.review_dir:
-            print("Error: --aggregate requires running from a git repository or providing a repo key", file=sys.stderr)
+            print("Error: --aggregate requires repo key as positional argument (e.g., owner-repo)", file=sys.stderr)
             sys.exit(1)
-
-        # Treat review_dir as repo key in aggregate mode
+        # In aggregate mode, review_dir is actually the repo key
         print_aggregate_leaderboard(args.review_dir)
         return
+
+    if not args.review_dir:
+        # No positional and no --aggregate: this is for direct/manual invocation only,
+        # such as testing or querying a specific repo directly (not part of normal flow)
+        print("Error: provide review directory path or use --aggregate with repo key", file=sys.stderr)
+        sys.exit(1)
 
     # Single review run mode
     repo_key, rows = process_review_dir(args.review_dir)
@@ -446,7 +511,10 @@ def main():
         sys.exit(1)
 
     # Append to leaderboard (idempotent)
-    append_yield_data(repo_key, rows)
+    yield_file = append_yield_data(repo_key, rows)
+    if yield_file is None:
+        # Write failure
+        sys.exit(1)
 
     # Print table
     print_review_table(rows)
