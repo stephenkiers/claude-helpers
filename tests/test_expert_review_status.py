@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness
 

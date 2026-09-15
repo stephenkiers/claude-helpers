@@ -35,7 +35,13 @@ class StackInfo:
 
 @dataclass
 class GitHubCacheData:
-    """Schema for .claude/github-cache.json."""
+    """Schema for .claude/github-cache.json.
+
+    NOTE: This cache also contains a 'review' key (a dict with branch, commit, lastRun, etc.)
+    that is read by scripts/expert-review-status.py. That script has its own hand-rolled parser
+    (avoiding a scripts/workflow/ dependency). Future schema changes to the 'review' key must
+    be applied to scripts/expert-review-status.py as well.
+    """
     schema_version: str = GITHUB_CACHE_SCHEMA_VERSION
     branch: str = ""
     issue: Optional[IssueInfo] = None

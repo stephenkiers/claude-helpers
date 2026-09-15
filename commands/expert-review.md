@@ -206,7 +206,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
 
      Check if `--force` or `-y` is present in the arguments:
      ```bash
-     if echo "$@" | grep -qE -- '(--force|-y)'; then
+     if printf '%s' "$@" | grep -qE -- '(--force|-y)'; then
        true  # --force present; skip confirmation and continue to sub-step 2 below
      fi
      ```

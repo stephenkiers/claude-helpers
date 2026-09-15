@@ -62,6 +62,10 @@ def read_review_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
 
     Returns the review object (dict) if present and valid, or None if missing/malformed.
     Warns to stderr on read/parse errors, never raises (idempotent safe-default policy).
+
+    NOTE: This duplicates scripts/workflow/models.py's GitHubCacheData parsing of the same
+    cache file. This duplication is deliberate (avoiding a scripts/workflow/ dependency for a
+    fast standalone script). Future schema changes to the 'review' key must be applied to both readers.
     """
     if not cache_path.exists():
         return None
@@ -93,7 +97,7 @@ def compute_status(
       - reviewed: bool — review.branch == branch and review.lastRun is present
       - current: bool — review.commit == hash_short (only meaningful if reviewed=true)
       - dirty: bool — has uncommitted tracked changes
-      - lastRun, commit, branch, reviewDir, reviewers, findings — from cache (or null)
+      - lastRun, commit, branch, reviewDir, reviewers, findings — from cache (or default empty collections)
     """
     if review is None:
         return {
@@ -104,8 +108,8 @@ def compute_status(
             "commit": None,
             "branch": None,
             "reviewDir": None,
-            "reviewers": None,
-            "findings": None,
+            "reviewers": [],
+            "findings": {},
         }
 
     reviewed = review.get("branch") == branch and "lastRun" in review
@@ -119,8 +123,8 @@ def compute_status(
         "commit": review.get("commit"),
         "branch": review.get("branch"),
         "reviewDir": review.get("reviewDir"),
-        "reviewers": review.get("reviewers"),
-        "findings": review.get("findings"),
+        "reviewers": review.get("reviewers", []),
+        "findings": review.get("findings", {}),
     }
 
 
@@ -158,7 +162,12 @@ def main():
     try:
         project_root, branch, hash_short, dirty = get_git_info()
     except subprocess.CalledProcessError as e:
-        print(f"Error: failed to resolve git state: {e}", file=sys.stderr)
+        error_msg = f"failed to resolve git state: {e}"
+        if args.json:
+            if not args.quiet:
+                print(json.dumps({"error": error_msg}))
+        else:
+            print(f"Error: {error_msg}", file=sys.stderr)
         sys.exit(1)
 
     cache_path = Path(project_root) / ".claude" / "github-cache.json"

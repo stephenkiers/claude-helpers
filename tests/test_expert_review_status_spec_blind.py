@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness
 from _git_fixture import GitFixture
@@ -516,6 +516,124 @@ if __name__ == "__main__":
             exit_code == 0,
             f"got {exit_code} (stdout={stdout!r})"
         )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 13] jq pipeline from commands/expert-review.md handles empty reviewers/findings")
+
+    fixture = GitFixture()
+    try:
+        old_cwd = os.getcwd()
+        os.chdir(fixture.repo_root)
+
+        fixture.create_initial_commit("Initial commit")
+
+        # Create cache with branch and lastRun, but missing reviewers/findings keys
+        # (simulating a partial or minimal cache entry)
+        current_branch = fixture.get_current_branch()
+        current_hash = fixture.get_head_sha()[:7]
+
+        cache_data = {
+            "review": {
+                "branch": current_branch,
+                "lastRun": "2025-09-15T12:00:00Z",
+                # Missing: reviewers, findings, commit, reviewDir
+            }
+        }
+
+        fixture.write_cache_file(fixture.repo_root, cache_data)
+
+        # Run the expert-review-status.py script with --json
+        script = Path(__file__).parent.parent / "scripts" / "expert-review-status.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--json"],
+            cwd=fixture.repo_root,
+            capture_output=True,
+            text=True
+        )
+
+        # Parse the JSON output
+        try:
+            status_json = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            test_result(
+                "expert-review-status outputs valid JSON for partial cache",
+                False,
+                f"JSON decode error: {e}"
+            )
+            os.chdir(old_cwd)
+            fixture.cleanup()
+            h.summarize_and_exit()
+
+        # Now test the actual jq pipeline from commands/expert-review.md
+        # These are the exact lines from the command that would fail if reviewers/findings were null
+
+        # Line 187: REVIEWERS=$(printf '%s' "$STATUS_JSON" | jq -r '.reviewers | join(", ")')
+        try:
+            reviewers_output = subprocess.run(
+                ["jq", "-r", ".reviewers | join(\", \")"],
+                input=result.stdout,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            test_result(
+                "jq '.reviewers | join' with empty array does not crash",
+                reviewers_output.returncode == 0,
+                f"jq returned {reviewers_output.returncode}, stderr: {reviewers_output.stderr}"
+            )
+        except Exception as e:
+            test_result(
+                "jq '.reviewers | join' command runs successfully",
+                False,
+                f"Exception: {e}"
+            )
+
+        # Line 188: FINDINGS=$(printf '%s' "$STATUS_JSON" | jq -r '.findings')
+        try:
+            findings_output = subprocess.run(
+                ["jq", "-r", ".findings"],
+                input=result.stdout,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            test_result(
+                "jq '.findings' with empty object does not crash",
+                findings_output.returncode == 0,
+                f"jq returned {findings_output.returncode}, stderr: {findings_output.stderr}"
+            )
+        except Exception as e:
+            test_result(
+                "jq '.findings' command runs successfully",
+                False,
+                f"Exception: {e}"
+            )
+
+        # Line 191: jq -r 'to_entries | map(...) | join(" / ")'
+        # This is the most complex pipeline; ensure it handles empty findings dict
+        try:
+            findings_str_output = subprocess.run(
+                ["jq", "-r", "to_entries | map(\"\\(.value)\\(.key|.[0:1]|ascii_upcase)\") | join(\" / \")"],
+                input=findings_output.stdout,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            test_result(
+                "jq findings processing pipeline does not crash on empty findings",
+                findings_str_output.returncode == 0,
+                f"jq returned {findings_str_output.returncode}, stderr: {findings_str_output.stderr}"
+            )
+        except Exception as e:
+            test_result(
+                "jq findings processing pipeline runs successfully",
+                False,
+                f"Exception: {e}"
+            )
 
     finally:
         os.chdir(old_cwd)
