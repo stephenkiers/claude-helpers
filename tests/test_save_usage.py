@@ -20,7 +20,6 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from _test_harness import REPO_ROOT, Harness
@@ -401,7 +400,7 @@ Usage by model:
         env = os.environ.copy()
         env["HOME"] = tmpdir
 
-        code = subprocess.run(
+        subprocess.run(
             [sys.executable, str(SCRIPT)],
             input=usage_panel,
             capture_output=True,
@@ -481,7 +480,7 @@ Usage by model:
         env["HOME"] = tmpdir
         env["CLAUDE_CODE_SESSION_ID"] = session_id
 
-        code = subprocess.run(
+        subprocess.run(
             [sys.executable, str(SCRIPT)],
             input=usage_panel,
             capture_output=True,
@@ -555,7 +554,7 @@ Usage by model:
         env["HOME"] = tmpdir
         env["CLAUDE_CODE_SESSION_ID"] = session_id
 
-        code = subprocess.run(
+        subprocess.run(
             [sys.executable, str(SCRIPT)],
             input=input_text,
             capture_output=True,
@@ -615,7 +614,7 @@ Usage by model:
         env = os.environ.copy()
         env["HOME"] = tmpdir
 
-        code = subprocess.run(
+        subprocess.run(
             [sys.executable, str(SCRIPT)],
             input=usage_panel,
             capture_output=True,
