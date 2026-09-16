@@ -11,8 +11,8 @@ computes, estimates, or reformats numbers itself; all parsing and arithmetic hap
 
 ## Usage
 
-Run `/usage` (or `/cost`) yourself, copy its output, then invoke this command with a label as the
-first line and the pasted panel text after it:
+Run `/usage` (or `/cost`) yourself, copy its output, then invoke this command with optional
+label as the first line and the pasted panel text after it:
 
 ```
 /save-usage expert-plan-v3-effort2-issue184
@@ -27,14 +27,17 @@ Usage by model:
     claude-haiku-4-5:  925 input, 18 output, 0 cache read, 0 cache write (0.10¢)
 ```
 
-The label should identify what this session's usage was for (command, effort level, ticket) —
-it's the only thing that makes the log queryable later. If you omit it, the script generates a
-timestamp-based label instead, but that loses the ability to compare by command/effort.
+The label is optional and should identify what this session's usage was for (command, effort
+level, ticket) — it makes the log queryable later. If you omit it, the script generates a label
+automatically by combining the last slash command run in the session (when detectable via
+telemetry) with the branch and timestamp, falling back to repo/branch/timestamp if no command
+was detected, or just timestamp if neither is available.
 
 **Caveat, always worth restating to the user once:** the `/usage` panel is scoped to the whole
 session, not to a single command. If other work happened in the same session before you paste,
 the saved numbers include that too. For clean per-command data, run the command to measure in a
-fresh session, then paste immediately.
+fresh session, then paste immediately. Every record also captures the worktree name (the
+repository's directory basename) as structured metadata, independent of the label.
 
 ## Steps
 

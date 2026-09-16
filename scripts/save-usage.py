@@ -12,19 +12,34 @@ Input format (stdin): an optional first line is treated as a label for this run 
 "expert-plan-v3-effort2-issue184"); everything after is the pasted usage-panel text.
 If the first line doesn't look like a label (contains no letters, matches a usage-panel
 field, or is bare panel UI chrome like "Session" or the tab bar), no label is used and
-a repo/branch/timestamp-based one is generated instead.
+a repo/branch/timestamp-based one is generated instead. When no explicit label is provided,
+an auto-generated fallback label incorporates the last slash command run in the session
+(when detectable via telemetry events.jsonl) plus branch and timestamp.
 
 Each record also auto-detects and stores `repo_key` (from `gh repo view`, falling back to
-the git toplevel dir name) and `branch` (from `git branch --show-current`) as separate
-structured fields, regardless of whether an explicit label was given.
+the git toplevel dir name), `branch` (from `git branch --show-current`), and `worktree`
+(the current worktree's directory basename) as separate structured fields, regardless of
+whether an explicit label was given.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Add scripts/ to sys.path so we can import telemetry_schema and workflow.git
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    import telemetry_schema
+    from workflow.git import rev_parse
+except ImportError:
+    # If imports fail, functions that depend on them will return None gracefully
+    telemetry_schema = None
+    rev_parse = None
 
 USAGE_LOG_PATH = Path.home() / ".claude" / "telemetry" / "usage-log.jsonl"
 
@@ -122,6 +137,69 @@ def parse_usage_block(text: str) -> dict:
     return record
 
 
+def detect_last_command() -> str:
+    """Return the last slash command run in the current session, or None.
+
+    Reads CLAUDE_CODE_SESSION_ID from the environment and looks it up in
+    ~/.claude/telemetry/events.jsonl (the append-only event log). Finds the
+    most recent command.begin or command.end event with a non-empty command
+    field and returns its command name.
+
+    Returns None if:
+    - CLAUDE_CODE_SESSION_ID is not set
+    - the events log doesn't exist or is unreadable
+    - no matching command event is found
+    - any error occurs during read/parse (telemetry is opt-in)
+
+    Never raises; failures return None so the caller falls back gracefully.
+    """
+    try:
+        if telemetry_schema is None:
+            return None
+
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        if not session_id:
+            return None
+
+        log_path = telemetry_schema.default_log_path()
+        if not log_path.exists():
+            return None
+
+        last_command = None
+        last_timestamp = None
+
+        try:
+            with log_path.open("r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        # Malformed line — skip it
+                        continue
+
+                    # Filter to events matching this session with command.begin or command.end
+                    if (
+                        event.get("session_id") == session_id
+                        and event.get("event_type") in ("command.begin", "command.end")
+                        and event.get("command")
+                    ):
+                        timestamp = event.get("timestamp")
+                        # String comparison is safe for ISO 8601 timestamps (consistent format)
+                        if timestamp and (last_timestamp is None or timestamp > last_timestamp):
+                            last_timestamp = timestamp
+                            last_command = event.get("command")
+        except Exception:
+            # File may be unreadable, or concurrent append — fail gracefully
+            pass
+
+        return last_command
+    except Exception:
+        return None
+
+
 def detect_repo_key() -> str:
     try:
         out = subprocess.run(
@@ -155,6 +233,27 @@ def detect_branch() -> str:
     return "unknown"
 
 
+def detect_worktree() -> str:
+    """Return the current worktree's directory basename, or None.
+
+    Uses git rev-parse --show-toplevel to find the repository root, then
+    returns its basename. Wraps in try/except and returns None on any failure
+    (e.g., not in a git repo, git unavailable, etc.).
+
+    Never raises; failures return None so the caller falls back gracefully.
+    """
+    try:
+        if rev_parse is None:
+            return None
+
+        toplevel = rev_parse(["--show-toplevel"])
+        if toplevel:
+            return Path(toplevel).name
+    except Exception:
+        pass
+    return None
+
+
 def main() -> int:
     raw = sys.stdin.read()
     if not raw.strip():
@@ -176,19 +275,30 @@ def main() -> int:
 
     repo_key = detect_repo_key()
     branch = detect_branch()
+    worktree = detect_worktree()
+    last_command = detect_last_command()
 
     if not label:
-        # No usable label was pasted — fall back to repo/branch/timestamp instead of a
-        # bare timestamp, so the entry is still identifiable without a manual label.
+        # No usable label was pasted — fall back to auto-generation.
+        # Prefer the last command run in the session (if detectable) + branch + timestamp.
+        # Otherwise fall back to repo/branch/timestamp, or just timestamp if neither available.
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        parts = [p for p in (repo_key, branch) if p and p != "unknown"]
-        label = "-".join([*parts, stamp]) if parts else f"unlabeled-{stamp}"
+
+        # Try to build from last command first
+        if last_command and last_command != "unknown":
+            parts = [p for p in (last_command, branch) if p and p != "unknown"]
+            label = "-".join([*parts, stamp]) if parts else f"unlabeled-{stamp}"
+        else:
+            # Fall back to existing repo/branch/timestamp logic
+            parts = [p for p in (repo_key, branch) if p and p != "unknown"]
+            label = "-".join([*parts, stamp]) if parts else f"unlabeled-{stamp}"
 
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "label": label,
         "repo_key": repo_key,
         "branch": branch,
+        "worktree": worktree,
         **parsed,
     }
 
