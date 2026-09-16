@@ -10,8 +10,13 @@ by any command's own logic.
 
 Input format (stdin): an optional first line is treated as a label for this run (e.g.
 "expert-plan-v3-effort2-issue184"); everything after is the pasted usage-panel text.
-If the first line doesn't look like a label (contains no letters, or matches a usage-panel
-field), no label is used and a timestamp-based one is generated instead.
+If the first line doesn't look like a label (contains no letters, matches a usage-panel
+field, or is bare panel UI chrome like "Session" or the tab bar), no label is used and
+a repo/branch/timestamp-based one is generated instead.
+
+Each record also auto-detects and stores `repo_key` (from `gh repo view`, falling back to
+the git toplevel dir name) and `branch` (from `git branch --show-current`) as separate
+structured fields, regardless of whether an explicit label was given.
 """
 
 import json
@@ -25,6 +30,10 @@ USAGE_LOG_PATH = Path.home() / ".claude" / "telemetry" / "usage-log.jsonl"
 
 # Lines that mark this as real usage-panel content, not a label
 PANEL_MARKERS = ("total cost", "total duration", "usage by model", "total code changes")
+
+# Bare UI chrome from the /usage panel itself — never a real label, even though it
+# contains no PANEL_MARKERS substring (e.g. the tab bar or the "Session" section header).
+UI_CHROME_LINES = {"session", "settings", "status", "config", "usage", "stats"}
 
 
 def parse_count(raw: str) -> float:
@@ -54,6 +63,11 @@ def parse_duration(raw: str) -> int:
 def looks_like_label(first_line: str) -> bool:
     stripped = first_line.strip().lower()
     if not stripped:
+        return False
+    # Reject bare UI chrome word-for-word or as a whitespace-separated run of chrome
+    # words (e.g. "Settings  Status   Config   Usage   Stats"), not just an exact match.
+    words = stripped.split()
+    if words and all(w in UI_CHROME_LINES for w in words):
         return False
     return not any(marker in stripped for marker in PANEL_MARKERS)
 
@@ -129,6 +143,18 @@ def detect_repo_key() -> str:
     return "unknown"
 
 
+def detect_branch() -> str:
+    try:
+        out = subprocess.run(
+            ["git", "branch", "--show-current"], capture_output=True, text=True, timeout=5
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
 def main() -> int:
     raw = sys.stdin.read()
     if not raw.strip():
@@ -148,13 +174,21 @@ def main() -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
+    repo_key = detect_repo_key()
+    branch = detect_branch()
+
     if not label:
-        label = f"unlabeled-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+        # No usable label was pasted — fall back to repo/branch/timestamp instead of a
+        # bare timestamp, so the entry is still identifiable without a manual label.
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        parts = [p for p in (repo_key, branch) if p and p != "unknown"]
+        label = "-".join([*parts, stamp]) if parts else f"unlabeled-{stamp}"
 
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "label": label,
-        "repo_key": detect_repo_key(),
+        "repo_key": repo_key,
+        "branch": branch,
         **parsed,
     }
 
