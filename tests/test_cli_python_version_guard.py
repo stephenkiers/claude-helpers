@@ -11,10 +11,8 @@ This test suite verifies that:
 Run with: python3 tests/test_cli_python_version_guard.py
 """
 
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))

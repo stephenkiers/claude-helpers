@@ -510,7 +510,7 @@ def push_upstream(remote: str, branch: str, cwd: Optional[Path] = None) -> Tuple
         # Inspect stderr for non-fast-forward rejection
         stderr = getattr(e, 'stderr', '')
         if stderr and any(phrase in stderr.lower() for phrase in ['rejected', 'non-fast-forward', 'diverged']):
-            return False, Unknown(f"push rejected — remote has diverged; a rebase or stacked-push flow is needed")
+            return False, Unknown("push rejected — remote has diverged; a rebase or stacked-push flow is needed")
         return False, Unknown(f"Failed to push {remote} {branch}: {e}")
     except RuntimeError as e:
         return False, Unknown(f"Failed to push {remote} {branch}: {e}")

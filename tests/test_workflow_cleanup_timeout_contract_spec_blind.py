@@ -23,7 +23,6 @@ Run with: python3 tests/test_workflow_cleanup_timeout_contract_spec_blind.py
 
 import sys
 import json
-import tempfile
 import os
 from pathlib import Path
 from unittest import mock
@@ -274,8 +273,6 @@ if __name__ == "__main__":
     print("=" * 70)
 
     # Verify the timeout prefix is accessible from both checks and cleanup modules
-    from workflow import checks
-    from workflow import cleanup
 
     checks_module = __import__("workflow.checks", fromlist=["TIMEOUT_ERROR_PREFIX"])
 

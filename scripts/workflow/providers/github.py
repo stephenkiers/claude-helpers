@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from ..models import IssueInfo
-from ..safety import Unknown
 from .. import git, project
 
 

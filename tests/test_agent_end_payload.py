@@ -83,7 +83,7 @@ def test_agent_end_missing_transcript_path():
         # Should have at least an agent.end event
         agent_end_events = [e for e in events if e.get("event_type") == "agent.end"]
         if not agent_end_events:
-            return False, f"no agent.end event found in log"
+            return False, "no agent.end event found in log"
 
         return True, ""
 
@@ -124,7 +124,7 @@ def test_agent_end_with_invalid_transcript_path():
         # Should still have an agent.end event
         agent_end_events = [e for e in events if e.get("event_type") == "agent.end"]
         if not agent_end_events:
-            return False, f"no agent.end event found in log"
+            return False, "no agent.end event found in log"
 
         return True, ""
 
@@ -183,7 +183,7 @@ def test_agent_end_with_valid_transcript():
         # Should have an agent.end event
         agent_end_events = [e for e in events if e.get("event_type") == "agent.end"]
         if not agent_end_events:
-            return False, f"no agent.end event found in log"
+            return False, "no agent.end event found in log"
 
         # The event should have tokens field (with usage data)
         agent_end = agent_end_events[0]
@@ -228,10 +228,10 @@ def test_agent_end_transcript_path_not_logged():
         if log_file.exists():
             log_text = log_file.read_text()
             if "agent_transcript_path" in log_text or transcript_path.name in log_text:
-                return False, f"transcript path should not be in event log"
+                return False, "transcript path should not be in event log"
             # Also check for the full path
             if str(transcript_path) in log_text:
-                return False, f"full transcript path should not be in event log"
+                return False, "full transcript path should not be in event log"
 
         # Check state files (if any)
         for state_file in state_dir.glob("*"):

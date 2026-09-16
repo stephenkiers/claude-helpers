@@ -250,7 +250,7 @@ def plan_track(
         candidate_issues = []
         try:
             candidate_issues = provider.list_open_issues()
-        except Exception as e:
+        except Exception:
             # list_open_issues() does not raise under normal conditions (returns []
             # for no issues / no remote / not authenticated). An exception here is
             # genuinely exceptional and defeats duplicate detection, which is

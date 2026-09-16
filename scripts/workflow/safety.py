@@ -15,7 +15,6 @@ checks), and the caller must fail closed rather than proceed as if nothing happe
 
 import functools
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

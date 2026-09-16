@@ -6,7 +6,6 @@ Run with: python3 tests/test_workflow_models.py
 """
 
 import sys
-import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
@@ -14,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from workflow.models import (
     IssueInfo, StackInfo, GitHubCacheData, LocalIssueEntry, IssuesCacheData,
     RepoCacheData, validate_github_cache, validate_issues_cache, validate_repo_cache,
-    GITHUB_CACHE_SCHEMA_VERSION, ISSUES_CACHE_SCHEMA_VERSION, REPO_CACHE_SCHEMA_VERSION,
+    GITHUB_CACHE_SCHEMA_VERSION, REPO_CACHE_SCHEMA_VERSION,
     LocalTrackerEntry, LocalTrackerData, validate_local_tracker_data
 )
 from _test_harness import Harness

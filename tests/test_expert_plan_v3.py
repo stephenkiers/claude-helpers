@@ -880,14 +880,6 @@ def main():
             re.IGNORECASE
         )
 
-        # Check checkpoint-files table
-        checkpoint_section = re.search(
-            r'##\s+Checkpoint Files.*?\n\|',
-            command_content,
-            re.DOTALL
-        )
-        checkpoint_text = checkpoint_section.group(0) if checkpoint_section else ""
-
         # Extract table lines about Step 6 and Step 7
         has_step6_in_checkpoint = re.search(
             r'\|\s*`plan\.md`.*?Step 6|Step 6.*`plan\.md`',

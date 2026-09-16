@@ -176,7 +176,7 @@ def main():
 
         found_count = sum(found_conditions)
         h.test_result(
-            f"Error Handling section covers all 8 required conditions (with per-condition reporting)",
+            "Error Handling section covers all 8 required conditions (with per-condition reporting)",
             found_count == 8,  # Must be exactly 8/8
             f"Found {found_count}/8 conditions. Missing: {', '.join(missing_conditions) if missing_conditions else 'none'}",
         )
@@ -190,7 +190,7 @@ def main():
     h.test_result(
         "Frontmatter description does NOT claim unconditional plan-mode requirement",
         not unconditional_plan_requirement,
-        f"Phrase 'Requires plan mode' found in frontmatter" if unconditional_plan_requirement else "",
+        "Phrase 'Requires plan mode' found in frontmatter" if unconditional_plan_requirement else "",
     )
 
     # Check Requirements section mentions path as alternative

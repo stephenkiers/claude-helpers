@@ -19,7 +19,6 @@ Run with: python3 tests/test_telemetry_schema_resumed_from.py
 """
 
 import json
-import os
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -29,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import telemetry_schema
 
-from _test_harness import REPO_ROOT, Harness
+from _test_harness import Harness
 
 
 def test_build_event_includes_resumed_from():
@@ -458,11 +457,11 @@ def test_build_event_with_multiple_optional_fields_and_resumed_from():
     )
 
     if event.get("resumed_from") != "prev-id-123":
-        return False, f"resumed_from not in event"
+        return False, "resumed_from not in event"
     if event.get("command_id") != "cmd-id-abc":
-        return False, f"command_id not in event"
+        return False, "command_id not in event"
     if event.get("repo") != "my-repo":
-        return False, f"repo not in event"
+        return False, "repo not in event"
 
     return True, ""
 

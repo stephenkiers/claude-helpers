@@ -610,7 +610,7 @@ print()
 print("[New] Bash syntax check: all fenced bash blocks in implement-with-haiku.md")
 
 bash_blocks = extract_bash_blocks(IMPLEMENT_WITH_HAIKU)
-t(f"Found bash code blocks in implement-with-haiku.md",
+t("Found bash code blocks in implement-with-haiku.md",
   len(bash_blocks) > 0,
   "No ```bash blocks found in the document")
 
@@ -646,7 +646,7 @@ if bash_blocks:
             # Clean up temp file
             try:
                 Path(tmppath).unlink()
-            except:
+            except Exception:
                 pass
 
     if syntax_errors:

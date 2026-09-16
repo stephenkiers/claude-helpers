@@ -14,7 +14,6 @@ prompts/plan-pod.md).
 Run with: python3 tests/test_expert_plan_v2_swarm_pod.py
 """
 
-import re
 import sys
 from pathlib import Path
 

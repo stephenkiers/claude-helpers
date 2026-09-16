@@ -7,7 +7,6 @@ executing something (unless explicitly configured to skip all checks,
 which is a hard error rather than a silent pass).
 """
 
-import json
 import os
 import signal
 import subprocess

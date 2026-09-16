@@ -10,7 +10,6 @@ from typing import List, Optional, Union
 
 from ..models import IssueInfo, LocalTrackerData
 from ..cache import read_local_tracker, write_local_tracker
-from ..safety import Unknown
 
 
 class LocalProvider:

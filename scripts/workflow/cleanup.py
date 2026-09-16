@@ -226,12 +226,12 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
 
             current_head_sha = git.get_head_sha(cwd=target_worktree)
             if current_head_sha != plan.expected_head_sha:
-                result.error = Unknown(f"HEAD SHA changed (plan is stale)")
+                result.error = Unknown("HEAD SHA changed (plan is stale)")
                 return result, result.error
 
             cache_hash = hash_cache_file(Path(plan.target_worktree) / ".claude" / "repo-cache.json")
             if cache_hash != plan.cache_hash:
-                result.error = Unknown(f"Cache has changed (plan is stale)")
+                result.error = Unknown("Cache has changed (plan is stale)")
                 return result, result.error
 
         except Exception as e:

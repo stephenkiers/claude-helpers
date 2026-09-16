@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import telemetry_schema
 
-from _test_harness import REPO_ROOT, Harness
+from _test_harness import Harness
 
 
 def test_build_event_accepts_valid_effort_values():

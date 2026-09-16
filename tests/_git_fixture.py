@@ -4,12 +4,11 @@ Shared git fixture helper for integration tests.
 Provides real git init setup with worktrees for testing mutation operations.
 """
 
-import os
 import json
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 
 class GitFixture:
