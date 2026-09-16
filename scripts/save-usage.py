@@ -29,16 +29,19 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 # Add scripts/ to sys.path so we can import telemetry_schema and workflow.git
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import telemetry_schema
+except ImportError:
+    telemetry_schema = None
+
+try:
     from workflow.git import rev_parse
 except ImportError:
-    # If imports fail, functions that depend on them will return None gracefully
-    telemetry_schema = None
     rev_parse = None
 
 USAGE_LOG_PATH = Path.home() / ".claude" / "telemetry" / "usage-log.jsonl"
@@ -137,7 +140,7 @@ def parse_usage_block(text: str) -> dict:
     return record
 
 
-def detect_last_command() -> str:
+def detect_last_command() -> Optional[str]:
     """Return the last slash command run in the current session, or None.
 
     Reads CLAUDE_CODE_SESSION_ID from the environment and looks it up in
@@ -187,10 +190,13 @@ def detect_last_command() -> str:
                         and event.get("command")
                     ):
                         timestamp = event.get("timestamp")
-                        # String comparison is safe for ISO 8601 timestamps (consistent format)
-                        if timestamp and (last_timestamp is None or timestamp > last_timestamp):
-                            last_timestamp = timestamp
-                            last_command = event.get("command")
+                        # Normalize timezone format (Z -> +00:00) for safe string comparison
+                        if timestamp:
+                            normalized_ts = timestamp.replace("Z", "+00:00")
+                            normalized_last_ts = last_timestamp.replace("Z", "+00:00") if last_timestamp else None
+                            if last_timestamp is None or normalized_ts > normalized_last_ts:
+                                last_timestamp = timestamp
+                                last_command = event.get("command")
         except Exception:
             # File may be unreadable, or concurrent append — fail gracefully
             pass
@@ -233,7 +239,7 @@ def detect_branch() -> str:
     return "unknown"
 
 
-def detect_worktree() -> str:
+def detect_worktree() -> Optional[str]:
     """Return the current worktree's directory basename, or None.
 
     Uses git rev-parse --show-toplevel to find the repository root, then
@@ -285,7 +291,7 @@ def main() -> int:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
         # Try to build from last command first
-        if last_command and last_command != "unknown":
+        if last_command:
             parts = [p for p in (last_command, branch) if p and p != "unknown"]
             label = "-".join([*parts, stamp]) if parts else f"unlabeled-{stamp}"
         else:

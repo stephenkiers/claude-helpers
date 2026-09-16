@@ -61,8 +61,9 @@ panel), show its stderr message as-is and stop; do not retry or guess at the mis
 - **Opt-in and manual only** — never invoked automatically by another command.
 - **Read-only with respect to everything except its own log file** — appends one JSON line to
   `~/.claude/telemetry/usage-log.jsonl`, touches nothing else.
-- **Not wired into `run-metrics.py`'s `events.jsonl`** — this is a separate, human-curated log of
-  ground-truth `$` cost, distinct from the automated stage/command telemetry. Query it directly
-  with `jq`/`python` (e.g. `jq -s 'group_by(.label)' ~/.claude/telemetry/usage-log.jsonl`) the same
-  way `usage-report.md` documents querying `events.jsonl` — no built-in aggregation command exists
-  yet, and one shouldn't be built speculatively before there's enough logged data to need it.
+- **Reads but never writes `run-metrics.py`'s `events.jsonl`** — save-usage reads it only to detect
+  the last slash command for the auto-generated fallback label; it still maintains its own separate,
+  human-curated log (`usage-log.jsonl`) and never writes to `events.jsonl`. Query `usage-log.jsonl`
+  directly with `jq`/`python` (e.g. `jq -s 'group_by(.label)' ~/.claude/telemetry/usage-log.jsonl`)
+  the same way `usage-report.md` documents querying `events.jsonl` — no built-in aggregation command
+  exists yet, and one shouldn't be built speculatively before there's enough logged data to need it.
