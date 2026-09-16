@@ -685,4 +685,92 @@ if __name__ == "__main__":
     _with_env("12.5", 300, "Returns default (300) when env var is a float string")
 
     print()
+    print("[Section 13] Constant value pinning for timeout-vs-failure distinction")
+
+    # Import constants from both modules
+    from workflow.checks import TIMEOUT_ERROR_PREFIX
+    from workflow.cleanup import CHECK_TIMEOUT_MESSAGE_PREFIX
+
+    # Test 13a: TIMEOUT_ERROR_PREFIX constant value
+    test_result(
+        "TIMEOUT_ERROR_PREFIX equals 'timed out after'",
+        TIMEOUT_ERROR_PREFIX == "timed out after",
+        f"got '{TIMEOUT_ERROR_PREFIX}'"
+    )
+
+    # Test 13b: CHECK_TIMEOUT_MESSAGE_PREFIX constant value
+    test_result(
+        "CHECK_TIMEOUT_MESSAGE_PREFIX equals 'Check command timed out'",
+        CHECK_TIMEOUT_MESSAGE_PREFIX == "Check command timed out",
+        f"got '{CHECK_TIMEOUT_MESSAGE_PREFIX}'"
+    )
+
+    # Test 13c: commands/cleanup.md jq filter contains the literal substring
+    cleanup_md_path = Path(__file__).parent.parent / "commands" / "cleanup.md"
+    cleanup_md_content = cleanup_md_path.read_text()
+    has_literal_in_jq = 'select(startswith("Check command timed out"))' in cleanup_md_content
+    test_result(
+        "commands/cleanup.md jq filter contains literal matching CHECK_TIMEOUT_MESSAGE_PREFIX",
+        has_literal_in_jq,
+        "did not find expected select(startswith(...)) expression in cleanup.md"
+    )
+
+    print()
+    print("[Section 14] Mixed timeout+non-timeout failure case")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+
+        plan = CleanupPlan(
+            target_worktree=str(wt_dir),
+            current_branch="feature",
+            pr_state="MERGED",
+            expected_head_sha="abc123",
+            cache_hash=None,
+            check_commands=["timeout_check", "fail_check"]
+        )
+        plan_json = json.dumps(plan.to_dict())
+
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            with mock.patch("workflow.checks.execute_check") as mock_check:
+                                from workflow.checks import CheckResult
+                                mock_branch.return_value = "feature"
+                                mock_sha.return_value = "abc123"
+                                mock_pull.return_value = (True, None)
+                                mock_delete.return_value = (True, None)
+                                mock_remove.return_value = (True, None)
+                                # First check times out, second check fails (non-timeout)
+                                mock_check.side_effect = [
+                                    CheckResult(success=False, error="timed out after 900s"),
+                                    CheckResult(success=False, returncode=1, stdout="", stderr="boom"),
+                                ]
+
+                                result, err = apply_cleanup(plan_json)
+
+                                test_result(
+                                    "Mixed failures: result.validation_passed is False",
+                                    result.validation_passed is False
+                                )
+
+                                # Both failure types should be present
+                                has_timeout_msg = any(
+                                    f.startswith("Check command timed out") for f in result.validation_failures
+                                )
+                                has_failed_msg = any(
+                                    f.startswith("Check command failed:") for f in result.validation_failures
+                                )
+
+                                test_result(
+                                    "Mixed failures: contains both timeout and non-timeout messages",
+                                    has_timeout_msg and has_failed_msg,
+                                    f"timeout={has_timeout_msg} failed={has_failed_msg}, failures={result.validation_failures}"
+                                )
+
+    print()
     h.summarize_and_exit()

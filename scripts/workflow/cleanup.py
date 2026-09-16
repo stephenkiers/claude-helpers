@@ -17,8 +17,10 @@ from .cache import hash_cache_file, hash_file_content, read_github_cache
 from .safety import Unknown, fail_closed
 from .models import RepoCacheData
 from .merge import merge_lock_path
+from .checks import TIMEOUT_ERROR_PREFIX
 
 DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS = 300
+CHECK_TIMEOUT_MESSAGE_PREFIX = "Check command timed out"
 
 
 def _get_cleanup_check_timeout() -> int:
@@ -253,9 +255,9 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
             check_result = execute_check(cmd, cwd=main_worktree_path, timeout=check_timeout)
             if not check_result.success:
                 result.validation_passed = False
-                if check_result.error and check_result.error.startswith("timed out after"):
+                if check_result.error and check_result.error.startswith(TIMEOUT_ERROR_PREFIX):
                     result.validation_failures.append(
-                        f"Check command timed out after {check_timeout}s (inconclusive, not a pass/fail): {cmd}"
+                        f"{CHECK_TIMEOUT_MESSAGE_PREFIX} after {check_timeout}s (inconclusive, not a pass/fail): {cmd}"
                     )
                 else:
                     detail = check_result.error or check_result.stderr or f"exit code {check_result.returncode}"

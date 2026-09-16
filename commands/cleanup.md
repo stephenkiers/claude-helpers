@@ -585,8 +585,13 @@ if [ "$VALIDATION_STATUS" = "true" ]; then
 else
   # A timed-out check is inconclusive, not a confirmed regression — distinguish the two
   # so a SIGKILLed check command doesn't read as "main is broken".
+  # Only report "inconclusive" when *every* failure is a timeout. If any non-timeout
+  # failure is present, escalate to the "REGRESSION on main" headline.
+  HAS_NON_TIMEOUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command failed:"))] | length > 0')
   TIMED_OUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out"))] | length > 0')
-  if [ "$TIMED_OUT" = "true" ]; then
+  if [ "$HAS_NON_TIMEOUT" = "true" ]; then
+    echo "VALIDATION=fail — REGRESSION on main; investigate separately."
+  elif [ "$TIMED_OUT" = "true" ]; then
     echo "VALIDATION=fail — inconclusive: check command timed out (not a confirmed regression)."
   else
     echo "VALIDATION=fail — REGRESSION on main; investigate separately."
