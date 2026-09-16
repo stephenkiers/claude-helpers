@@ -7,13 +7,21 @@ Run with: python3 tests/test_workflow_cleanup.py
 
 import sys
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.cleanup import plan_cleanup, apply_cleanup, CleanupPlan, CleanupResult
+from workflow.cleanup import (
+    plan_cleanup,
+    apply_cleanup,
+    CleanupPlan,
+    CleanupResult,
+    DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS,
+    _get_cleanup_check_timeout,
+)
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -568,6 +576,113 @@ if __name__ == "__main__":
                                 "verbatim git refusal text reaches the dirty-tree retry",
                                 mock_remove.call_count == 2 and result.worktree_removed is True
                             )
+
+        # 11h: CLEANUP_CHECK_TIMEOUT_SECS is passed through to execute_check, and a timeout
+        # is reported as inconclusive rather than a confirmed regression.
+        plan_json = json.dumps(_base_plan(check_commands=["just check"]).to_dict())
+        original_timeout_env = os.environ.get("CLEANUP_CHECK_TIMEOUT_SECS")
+        try:
+            os.environ["CLEANUP_CHECK_TIMEOUT_SECS"] = "900"
+            with mock.patch("workflow.git.get_current_branch") as mock_branch:
+                with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                    with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                        with mock.patch("workflow.git.delete_branch") as mock_delete:
+                            with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                                with mock.patch("workflow.checks.execute_check") as mock_check:
+                                    from workflow.checks import CheckResult
+                                    mock_branch.return_value = "feature"
+                                    mock_sha.return_value = "abc123"
+                                    mock_pull.return_value = (True, None)
+                                    mock_delete.return_value = (True, None)
+                                    mock_remove.return_value = (True, None)
+                                    mock_check.return_value = CheckResult(
+                                        success=False, error="timed out after 900s"
+                                    )
+
+                                    result, err = apply_cleanup(plan_json)
+
+                                    test_result(
+                                        "CLEANUP_CHECK_TIMEOUT_SECS is passed through to execute_check",
+                                        mock_check.call_args.kwargs.get("timeout") == 900,
+                                        f"call_args={mock_check.call_args}"
+                                    )
+                                    test_result(
+                                        "a timed-out check is reported as inconclusive, not a generic failure",
+                                        result.validation_passed is False
+                                        and any(
+                                            "timed out after 900s" in f and "inconclusive" in f
+                                            for f in result.validation_failures
+                                        ),
+                                        f"failures={result.validation_failures}"
+                                    )
+        finally:
+            if original_timeout_env is not None:
+                os.environ["CLEANUP_CHECK_TIMEOUT_SECS"] = original_timeout_env
+            elif "CLEANUP_CHECK_TIMEOUT_SECS" in os.environ:
+                del os.environ["CLEANUP_CHECK_TIMEOUT_SECS"]
+
+        # 11i: a genuine (non-timeout) check failure keeps the original message shape.
+        plan_json = json.dumps(_base_plan(check_commands=["just check"]).to_dict())
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            with mock.patch("workflow.checks.execute_check") as mock_check:
+                                from workflow.checks import CheckResult
+                                mock_branch.return_value = "feature"
+                                mock_sha.return_value = "abc123"
+                                mock_pull.return_value = (True, None)
+                                mock_delete.return_value = (True, None)
+                                mock_remove.return_value = (True, None)
+                                mock_check.return_value = CheckResult(
+                                    success=False, returncode=1, stdout="", stderr="boom"
+                                )
+
+                                result, err = apply_cleanup(plan_json)
+
+                                test_result(
+                                    "a real check failure is still reported as 'Check command failed'",
+                                    result.validation_passed is False
+                                    and any(
+                                        f.startswith("Check command failed:") and "boom" in f
+                                        for f in result.validation_failures
+                                    ),
+                                    f"failures={result.validation_failures}"
+                                )
+
+    print()
+    print("[Section 12] _get_cleanup_check_timeout() env var resolution")
+
+    test_result(
+        "DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS equals 300",
+        DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS == 300,
+        f"got {DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS}"
+    )
+
+    def _with_env(value, expected, label):
+        original_env = os.environ.get("CLEANUP_CHECK_TIMEOUT_SECS")
+        try:
+            if value is None:
+                if "CLEANUP_CHECK_TIMEOUT_SECS" in os.environ:
+                    del os.environ["CLEANUP_CHECK_TIMEOUT_SECS"]
+            else:
+                os.environ["CLEANUP_CHECK_TIMEOUT_SECS"] = value
+            result = _get_cleanup_check_timeout()
+            test_result(label, result == expected, f"Expected {expected}, got {result}")
+        finally:
+            if original_env is not None:
+                os.environ["CLEANUP_CHECK_TIMEOUT_SECS"] = original_env
+            elif "CLEANUP_CHECK_TIMEOUT_SECS" in os.environ:
+                del os.environ["CLEANUP_CHECK_TIMEOUT_SECS"]
+
+    _with_env(None, 300, "Returns default (300) when env var is unset")
+    _with_env("", 300, "Returns default (300) when env var is empty")
+    _with_env("900", 900, "Returns override value when env var is a valid positive integer")
+    _with_env("0", 300, "Returns default (300) when env var is '0'")
+    _with_env("-5", 300, "Returns default (300) when env var is negative")
+    _with_env("abc", 300, "Returns default (300) when env var is non-numeric")
+    _with_env("12.5", 300, "Returns default (300) when env var is a float string")
 
     print()
     h.summarize_and_exit()
