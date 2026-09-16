@@ -21,6 +21,7 @@ from .safety import Unknown, fail_closed
 CHECK_ORDER = ("format", "check", "lint", "typecheck", "vet", "test", "build")
 NON_CHECK_COMMANDS = frozenset({"install"})
 SUPERSEDED_BY_CHECK = ("lint", "typecheck")
+TIMEOUT_ERROR_PREFIX = "timed out after"
 
 
 @dataclass
@@ -153,7 +154,7 @@ def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300) -> CheckRes
             except ProcessLookupError:
                 pass
             proc.communicate()
-            return CheckResult(success=False, error=f"timed out after {timeout}s")
+            return CheckResult(success=False, error=f"{TIMEOUT_ERROR_PREFIX} {timeout}s")
         return CheckResult(success=proc.returncode == 0, returncode=proc.returncode, stdout=stdout, stderr=stderr)
     except Exception as e:
         return CheckResult(success=False, error=str(e))

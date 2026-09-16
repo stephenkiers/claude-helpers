@@ -7,6 +7,7 @@ Ports the deterministic cleanup logic from /cleanup into a plan/apply pattern:
 """
 
 import json
+import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -16,6 +17,33 @@ from .cache import hash_cache_file, hash_file_content, read_github_cache
 from .safety import Unknown, fail_closed
 from .models import RepoCacheData
 from .merge import merge_lock_path
+from .checks import TIMEOUT_ERROR_PREFIX
+
+DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS = 300
+CHECK_TIMEOUT_MESSAGE_PREFIX = "Check command timed out"
+
+
+def _get_cleanup_check_timeout() -> int:
+    """
+    Resolve the timeout for the post-merge regression check commands from the environment.
+
+    Reads CLEANUP_CHECK_TIMEOUT_SECS; returns the value if it's a valid positive
+    integer, otherwise returns DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS.
+
+    Never raises; invalid values silently fall back to the default.
+    """
+    env_value = os.environ.get("CLEANUP_CHECK_TIMEOUT_SECS", "").strip()
+    if not env_value:
+        return DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS
+
+    try:
+        timeout_secs = int(env_value)
+        if timeout_secs > 0:
+            return timeout_secs
+    except (ValueError, TypeError):
+        pass
+
+    return DEFAULT_CLEANUP_CHECK_TIMEOUT_SECS
 
 
 @dataclass
@@ -222,12 +250,18 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
 
         from .checks import execute_check
 
+        check_timeout = _get_cleanup_check_timeout()
         for cmd in plan.check_commands:
-            check_result = execute_check(cmd, cwd=main_worktree_path)
+            check_result = execute_check(cmd, cwd=main_worktree_path, timeout=check_timeout)
             if not check_result.success:
                 result.validation_passed = False
-                detail = check_result.error or check_result.stderr or f"exit code {check_result.returncode}"
-                result.validation_failures.append(f"Check command failed: {cmd}: {detail}")
+                if check_result.error and check_result.error.startswith(TIMEOUT_ERROR_PREFIX):
+                    result.validation_failures.append(
+                        f"{CHECK_TIMEOUT_MESSAGE_PREFIX} after {check_timeout}s (inconclusive, not a pass/fail): {cmd}"
+                    )
+                else:
+                    detail = check_result.error or check_result.stderr or f"exit code {check_result.returncode}"
+                    result.validation_failures.append(f"Check command failed: {cmd}: {detail}")
 
         # Re-validate HEAD SHA immediately before mutation
         try:
