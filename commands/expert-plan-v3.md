@@ -329,13 +329,29 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/
 
 Main thread reads all contribution files once, builds a compact decision index directly. When experts propose materially different scopes, present them side by side with concrete differences (extra behavior, added components, affected repos, testing burden) rather than picking a default silently.
 
-Present to the user:
-1. **Decision index** — a summary of expert recommendations, disagreements, and scope options
-2. **Every original expert block** — one passage per expert, including Carl, showing their full input
+Present to the user, **as chat message text in this step** (not summarized away, not deferred to
+the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book:
+
+1. **Expert round-up** — for each selected expert (Step 2's order, Carl last), a short block, condensed from their `{expert}-contribution.md`, capped at roughly 5-8 lines:
+   ```markdown
+   ### [Name] — [one-line domain]
+   **Take**: [Recommended Approach, compressed to 1-2 sentences]
+   **Flagged**: [the single most important requirement or risk, 1 line — skip the rest]
+   **Questions**: [each open question as one line: "Question — recommends X, but Y"; drop the
+   Why-it-matters/Source prose, keep only the question + the expert's recommendation + the one-line
+   confounder if it changes the answer]
+   ```
+   This is a condensation, not a re-summary in your own words — keep the expert's actual
+   recommendations and question wording, just drop the surrounding prose.
+2. **Decision index** — *after* the round-up, a compact synthesis of recommendations,
+   disagreements, and scope options across experts.
 
 Use `AskUserQuestion` for 2-4-option questions; markdown + conversation for open-ended ones or themes with >4 questions. Wait for answers.
 
-Write `{SESSION_DIR}/decisions.md` with the decision index and checkpoint results.
+Write `{SESSION_DIR}/decisions.md` with the same condensed round-up plus the decision index and
+checkpoint results, so a user re-reading the session later gets the same report shown in chat — not
+the full unabridged contribution files, which remain on disk in `{expert}-contribution.md` for
+anyone who wants the full source.
 
 **Effort-2 escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains):
 
