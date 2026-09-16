@@ -583,7 +583,20 @@ VALIDATION_STATUS=$(printf '%s' "$APPLY_RESULT" | jq -r '.validation_passed // t
 if [ "$VALIDATION_STATUS" = "true" ]; then
   echo "VALIDATION=pass — merged main is green"
 else
-  echo "VALIDATION=fail — REGRESSION on main; investigate separately."
+  # A timed-out check is inconclusive, not a confirmed regression — distinguish the two
+  # so a SIGKILLed check command doesn't read as "main is broken".
+  # Only report "inconclusive" when *every* failure is a timeout. If any non-timeout
+  # failure is present, escalate to the "REGRESSION on main" headline.
+  HAS_NON_TIMEOUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out") | not)] | length > 0')
+  TIMED_OUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out"))] | length > 0')
+  if [ "$HAS_NON_TIMEOUT" = "true" ]; then
+    echo "VALIDATION=fail — REGRESSION on main; investigate separately."
+  elif [ "$TIMED_OUT" = "true" ]; then
+    echo "VALIDATION=fail — inconclusive: check command timed out (not a confirmed regression)."
+  else
+    echo "VALIDATION=fail — REGRESSION on main; investigate separately."
+  fi
+  printf '%s' "$APPLY_RESULT" | jq -r '.validation_failures[]? | "  " + .'
   echo "Cleanup will continue (PR already merged, worktree removed)."
 fi
 
@@ -907,8 +920,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --o
 | Review left pending `Ruling:` lines | Synced into the per-repo verify-queue by 2b-iii; drain later with `/verify-queue` |
 | Issue/PR text unavailable (`gh` fails, no issue) | Note it and continue — don't block on a read failure |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
-| PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands |
+| PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands (300s default timeout, override via `CLEANUP_CHECK_TIMEOUT_SECS`) |
 | Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
+| Validation check times out | Report as inconclusive (not a confirmed regression), continue cleanup anyway |
 | Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
 | Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
 | Stacked children detected | Auto-execute restack via /stack-sync when the Skill harness is available and `STACK_SYNC_MANUAL` is unset; the fully-substituted restack runbook is always emitted (abort = deferral, not a dead end); on the emit-only path the user runs it manually |
@@ -962,6 +976,10 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
   integrated `main`. If that cache doesn't exist, validation is skipped with a note
   (run `/shipit` once to write it). Failures are reported but never block cleanup.
+  The check commands default to a 300s timeout; set `CLEANUP_CHECK_TIMEOUT_SECS` (per-repo)
+  to override for a check command that legitimately takes longer. A timeout is reported as
+  inconclusive rather than a confirmed regression, since the check was killed mid-run and
+  never produced a real pass/fail verdict.
 - **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
   child branches and restacks them via `/stack-sync` when the Skill harness is available
   (`claude` on PATH) and `STACK_SYNC_MANUAL` is not `1`. The fully-substituted restack

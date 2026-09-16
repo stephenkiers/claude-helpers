@@ -24,7 +24,7 @@ Total duration (wall): 1h 19m 46s
 Total code changes:    0 lines added, 0 lines removed
 Usage by model:
     claude-sonnet-5:  4.2k input, 14.1k output, 2.8m cache read, 102.3k cache write ($1.05)
-    claude-haiku-4-5:  925 input, 18 output, 0 cache read, 0 cache write ($0.0010)
+    claude-haiku-4-5:  925 input, 18 output, 0 cache read, 0 cache write (0.10¢)
 ```
 
 The label should identify what this session's usage was for (command, effort level, ticket) —
