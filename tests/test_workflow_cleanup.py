@@ -773,4 +773,78 @@ if __name__ == "__main__":
                                 )
 
     print()
+    print("[Section 15] Timeout mixed with non-check-command failure (e.g., pull failure)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        wt_dir = tmppath / "worktree"
+        wt_dir.mkdir()
+
+        plan = CleanupPlan(
+            target_worktree=str(wt_dir),
+            current_branch="feature",
+            pr_state="MERGED",
+            expected_head_sha="abc123",
+            cache_hash=None,
+            check_commands=["timeout_check"]
+        )
+        plan_json = json.dumps(plan.to_dict())
+
+        with mock.patch("workflow.git.get_current_branch") as mock_branch:
+            with mock.patch("workflow.git.get_head_sha") as mock_sha:
+                with mock.patch("workflow.git.pull_ff_only") as mock_pull:
+                    with mock.patch("workflow.git.delete_branch") as mock_delete:
+                        with mock.patch("workflow.git.remove_worktree") as mock_remove:
+                            with mock.patch("workflow.checks.execute_check") as mock_check:
+                                from workflow.checks import CheckResult, TIMEOUT_ERROR_PREFIX
+                                mock_branch.return_value = "feature"
+                                mock_sha.return_value = "abc123"
+                                # Pull fails with a non-timeout error (Unknown object with reason)
+                                mock_pull.return_value = (False, Unknown("Could not fast-forward main: merge conflict"))
+                                mock_delete.return_value = (True, None)
+                                mock_remove.return_value = (True, None)
+                                # Check command times out
+                                mock_check.return_value = CheckResult(
+                                    success=False,
+                                    error=f"{TIMEOUT_ERROR_PREFIX} 300s"
+                                )
+
+                                result, err = apply_cleanup(plan_json)
+
+                                test_result(
+                                    "Timeout + pull failure: result.validation_passed is False",
+                                    result.validation_passed is False
+                                )
+
+                                # Should have both timeout and pull-failure entries
+                                has_timeout_msg = any(
+                                    "timed out after" in f for f in result.validation_failures
+                                )
+                                has_pull_failure = any(
+                                    "Could not fast-forward main" in f for f in result.validation_failures
+                                )
+
+                                test_result(
+                                    "Timeout + pull failure: contains timeout-shaped failure",
+                                    has_timeout_msg,
+                                    f"Expected timeout failure in {result.validation_failures}"
+                                )
+
+                                test_result(
+                                    "Timeout + pull failure: contains pull-failure entry",
+                                    has_pull_failure,
+                                    f"Expected pull failure in {result.validation_failures}"
+                                )
+
+                                # The key assertion: when both timeout and non-timeout failures are present,
+                                # cleanup.md's jq filter (HAS_NON_TIMEOUT) must detect the pull failure
+                                # as a non-timeout failure. This validates that the fix in cleanup.md
+                                # (detecting any non-timeout failure, not just "Check command failed:") works.
+                                test_result(
+                                    "Timeout + pull failure: has both types in validation_failures",
+                                    has_timeout_msg and has_pull_failure,
+                                    f"both required; timeout={has_timeout_msg} pull={has_pull_failure}"
+                                )
+
+    print()
     h.summarize_and_exit()

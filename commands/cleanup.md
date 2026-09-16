@@ -587,7 +587,7 @@ else
   # so a SIGKILLed check command doesn't read as "main is broken".
   # Only report "inconclusive" when *every* failure is a timeout. If any non-timeout
   # failure is present, escalate to the "REGRESSION on main" headline.
-  HAS_NON_TIMEOUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command failed:"))] | length > 0')
+  HAS_NON_TIMEOUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out") | not)] | length > 0')
   TIMED_OUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out"))] | length > 0')
   if [ "$HAS_NON_TIMEOUT" = "true" ]; then
     echo "VALIDATION=fail — REGRESSION on main; investigate separately."
