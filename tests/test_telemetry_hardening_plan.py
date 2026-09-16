@@ -77,7 +77,7 @@ def test_append_event_raises_valueerror_for_bad_timestamp():
         try:
             telemetry_schema.append_event(log_path, invalid_event)
             return False, "should have raised ValueError for bad timestamp"
-        except ValueError as e:
+        except ValueError:
             return True, ""
 
 

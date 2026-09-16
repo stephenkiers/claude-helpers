@@ -6,7 +6,6 @@ Tests invariants 1-7 from the plan without using the yaml module.
 Run with: python3 tests/test_invariants.py
 """
 
-import os
 import re
 
 from _test_harness import REPO_ROOT, Harness

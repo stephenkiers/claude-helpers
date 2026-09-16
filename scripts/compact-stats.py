@@ -38,7 +38,7 @@ import statistics as st
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Iterator, Optional, TypedDict
+from typing import Optional, TypedDict
 
 
 class CompactEvent(TypedDict):
@@ -126,7 +126,6 @@ def summarize(events: list, label: str) -> None:
         print(f"{label}: no events")
         return
     pres = [e["pre_tokens"] for e in events]
-    posts = [e["post_tokens"] for e in events]
     dropped = [e["pre_tokens"] - e["post_tokens"] for e in events]
     durs = [e["duration_ms"] for e in events]
     total_wallclock_s = sum(durs) / 1000

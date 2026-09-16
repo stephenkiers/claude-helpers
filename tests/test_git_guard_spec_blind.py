@@ -12,7 +12,6 @@ Run with: python3 tests/test_git_guard_spec_blind.py
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 from _test_harness import REPO_ROOT, Harness
 

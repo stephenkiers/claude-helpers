@@ -72,6 +72,53 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage route >/dev/n
   the synthesized portion of `tagged-sections.md` with a line `| uncle-bob | Yes | Pre-seated at
   effort 3 |` (append to the router's `## Panel Decision` table after it returns).
 
+**Sam System diff-shape precondition (deterministic, computed before the Router runs — issue #148).**
+Sam System's `useWhen` in `index.yaml` ("cross-file composition, factory wiring, event bus
+connections, data flow tracing") describes a diff *shape*, not "every diff" — but leaving that
+judgment entirely to the Router has not worked: corpus data shows the Router still selects him on
+~94% of runs regardless of diff shape, likely because his `useWhen` reads as generically plausible
+on almost any diff. This check runs only when `NAMED_SELECTION=false` and `EFFORT=4` (effort 3
+already gates him via the routed top-2; effort 5 is an explicit full-panel request and is left
+alone; effort 2's pod path assigns him a fixed pod slot, out of scope here):
+
+```bash
+SAM_SYSTEM_GATE_REASON=""
+if [ "$NAMED_SELECTION" != "true" ] && [ "$EFFORT" = "4" ]; then
+  SAM_FILE_COUNT=$(grep -c '^+++ b/' "$REVIEW_DIR/diff-index.md" 2>/dev/null || echo 0)
+  SAM_TOP_DIRS=$(grep '^+++ b/' "$REVIEW_DIR/diff-index.md" 2>/dev/null | sed 's#^+++ b/##; s#/.*##' | sort -u | wc -l | tr -d ' ')
+  SAM_TRIGGER_HIT=false
+  if grep -qE 'createSession|createService|\bfactory\b|\bbus\b|eventBus|\bconfig\b|\boptions\b|\binject\b|\bprovider\b|\bcompose\b' "$REVIEW_DIR/diff-index.md" 2>/dev/null; then
+    SAM_TRIGGER_HIT=true
+  fi
+  if [ "${SAM_FILE_COUNT:-0}" -lt 3 ] && [ "${SAM_TOP_DIRS:-0}" -lt 2 ] && [ "$SAM_TRIGGER_HIT" = "false" ]; then
+    SAM_SYSTEM_GATE_REASON="diff-shape precondition not met: ${SAM_FILE_COUNT} file(s) touched, ${SAM_TOP_DIRS} top-level dir(s), no cross-file-composition trigger (createSession/factory/bus/eventBus/config/options/inject/provider/compose) matched in diff-index.md"
+  fi
+fi
+export SAM_SYSTEM_GATE_REASON
+```
+
+If `SAM_SYSTEM_GATE_REASON` is non-empty, Sam System is excluded before the Router call, not by the
+Router's own judgment: tell the Router prompt explicitly that Sam System is structurally excluded
+this run and must not be evaluated or selected (do not present him as a live candidate), quoting
+`SAM_SYSTEM_GATE_REASON` as the reason. After the Router returns, ensure `tagged-sections.md`'s
+`## Panel Decision` table carries his row as `| sam-system | No | {SAM_SYSTEM_GATE_REASON} (structural precondition, not routed) |`
+regardless of what the Router wrote for him — append/overwrite that one row directly from the main
+thread rather than trusting the Router's compliance, the same way effort 3's `uncle-bob` pre-seat is
+appended directly rather than left to Router judgment. If `SAM_SYSTEM_GATE_REASON` is empty (the
+precondition passed, or the check didn't apply), Sam System is a normal Router candidate exactly as
+before — this gate can only turn a "Yes" into a structural "No," never the reverse, and it costs no
+extra model call since `diff-index.md` is already on disk from Step 1.
+
+**Why not just tighten `useWhen`/`triggers` in `index.yaml` instead?** That was tried implicitly —
+his current `useWhen`/`triggers` already describe this exact shape, and the Router still selects him
+94% of the time anyway, because free-text `useWhen` matching is judgment, and judgment leans
+inclusive under ADR-0003.2's "missing a reviewer costs more than including one" bias. A deterministic
+precondition computed from `diff-index.md` (not the Router's discretion) is the only version of this
+fix that reliably changes the outcome. This does not extend to other reviewers without the same kind
+of analysis — Sam System is singled out here because he is the only reviewer that reads the *full*
+diff regardless of relevance (`commands/expert-review.md:283`–`291`), which is what makes his
+over-selection specifically costly rather than merely common.
+
 Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
 model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
 - `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into

@@ -7,7 +7,6 @@ its own schema_version and content structure.
 
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any, List
-import json
 
 
 GITHUB_CACHE_SCHEMA_VERSION = "1.0"

@@ -14,7 +14,6 @@ legitimate additions.
 """
 
 import subprocess
-from pathlib import Path
 from _test_harness import REPO_ROOT, Harness
 
 COMMANDS_DIR = REPO_ROOT / "commands"

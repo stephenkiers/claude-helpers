@@ -262,7 +262,7 @@ if __name__ == "__main__":
     test_result(
         "check_mutation_allowed: rejects push with --force-with-lease",
         not allowed and reason is not None,
-        f"--force-with-lease should NOT be allowed"
+        "--force-with-lease should NOT be allowed"
     )
 
     allowed, reason = check_mutation_allowed(["push", "-f", "origin", "feature"])

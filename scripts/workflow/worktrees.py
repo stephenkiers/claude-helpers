@@ -7,7 +7,6 @@ Ports ADR-0010's worktree-parent detection logic verbatim.
 from pathlib import Path
 from typing import Optional, Tuple
 from . import git
-from .safety import Unknown
 
 
 def parse_worktree_list(porcelain_output: str) -> Tuple[list, list]:

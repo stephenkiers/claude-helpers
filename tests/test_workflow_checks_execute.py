@@ -9,14 +9,13 @@ Run with: python3 tests/test_workflow_checks_execute.py
 """
 
 import sys
-import json
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.checks import run_checks, CheckResult, CheckResults, CheckStepResult
+from workflow.checks import run_checks, CheckResult, CheckResults
 from workflow.safety import Unknown
 from _test_harness import Harness
 

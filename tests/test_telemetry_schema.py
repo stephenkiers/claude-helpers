@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import telemetry_schema
 
-from _test_harness import REPO_ROOT, Harness
+from _test_harness import Harness
 
 
 def test_invalid_event_type():
@@ -410,7 +410,7 @@ def test_append_event_creates_file():
         try:
             parsed = json.loads(lines[0].strip())
             if parsed.get("session_id") != "123":
-                return False, f"session_id not found in line"
+                return False, "session_id not found in line"
             return True, ""
         except json.JSONDecodeError as e:
             return False, f"line is not valid JSON: {e}"

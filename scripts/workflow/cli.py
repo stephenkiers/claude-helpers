@@ -17,7 +17,6 @@ import sys
 import argparse
 import json
 import os
-import dataclasses
 from pathlib import Path
 
 from . import cleanup, merge, shipit, checks, track

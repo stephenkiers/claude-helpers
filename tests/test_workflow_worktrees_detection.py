@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import workflow.worktrees as worktrees_module
-from workflow.safety import Unknown
 from _test_harness import Harness
 
 

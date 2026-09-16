@@ -17,18 +17,16 @@ Run with: python3 tests/test_telemetry_command_begin_hardening.py
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from unittest import mock
 
 # Add parent/scripts to path so we can import telemetry_schema
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import telemetry_schema
 
-from _test_harness import REPO_ROOT, Harness
+from _test_harness import REPO_ROOT
 
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 RUN_METRICS = SCRIPTS_DIR / "run-metrics.py"
@@ -287,9 +285,6 @@ def test_stage_end_mode_choices_from_schema():
 
 def test_effort_and_mode_choices_match_schema_exactly():
     """Verify that the choices sets exactly match the schema constants."""
-    import argparse
-    import io
-    from contextlib import redirect_stderr
 
     # Test command-begin parser
     try:
@@ -304,7 +299,7 @@ def test_effort_and_mode_choices_match_schema_exactly():
         # Should fail with invalid choice
         if result[0] == 0:
             return False, "should reject invalid effort value"
-    except Exception as e:
+    except Exception:
         pass
 
     # Verify sorted() is used (from the code inspection)

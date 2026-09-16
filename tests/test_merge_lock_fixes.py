@@ -22,7 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.merge import apply_merge, merge_lock_path, MergePlan
-from workflow.cleanup import apply_cleanup, CleanupPlan, CleanupResult
+from workflow.cleanup import apply_cleanup, CleanupPlan
 from workflow.safety import Unknown
 from _test_harness import Harness
 

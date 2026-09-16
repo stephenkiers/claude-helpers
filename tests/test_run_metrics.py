@@ -128,7 +128,7 @@ def test_command_begin_prints_id():
             event = json.loads(f.readline())
 
         if event.get("command_id") != cmd_id:
-            return False, f"event command_id doesn't match stdout"
+            return False, "event command_id doesn't match stdout"
 
         return True, ""
 
@@ -1078,7 +1078,7 @@ def test_prune_boundary_just_past_cutoff():
 
         # Verify old file was pruned
         if old_state_file.exists():
-            return False, f"file at (now - 24h - 1) should be pruned"
+            return False, "file at (now - 24h - 1) should be pruned"
 
         return True, ""
 
@@ -1114,7 +1114,7 @@ def test_prune_boundary_before_cutoff():
 
         # Verify old file was NOT pruned
         if not ok_state_file.exists():
-            return False, f"file at (now - 24h + 60) should survive prune"
+            return False, "file at (now - 24h + 60) should survive prune"
 
         return True, ""
 
@@ -1390,7 +1390,7 @@ def test_command_end_cas_guard_protects_different_command_state():
             state_after_a = json.loads(f.read())
         commands = state_after_a.get("commands", {})
         if command_id_a not in commands:
-            return False, f"state should have command_id_a entry after first command-begin"
+            return False, "state should have command_id_a entry after first command-begin"
 
         # Step 2: command-begin B (adds a new entry with command_id_b)
         code2, stdout2, stderr2 = run_script(
@@ -1406,9 +1406,9 @@ def test_command_end_cas_guard_protects_different_command_state():
             state_after_b = json.loads(f.read())
         commands = state_after_b.get("commands", {})
         if command_id_b not in commands:
-            return False, f"state should have command_id_b entry after second command-begin"
+            return False, "state should have command_id_b entry after second command-begin"
         if command_id_a not in commands:
-            return False, f"state should still have command_id_a entry after second command-begin"
+            return False, "state should still have command_id_a entry after second command-begin"
 
         # Step 3: command-end A (without explicit --command-id, resolves to command_id_a from... nowhere, or "unknown"?)
         # Actually, the resolved command_id for command-end A should come from explicit flag if provided.
@@ -1441,10 +1441,10 @@ def test_command_end_cas_guard_protects_different_command_state():
         commands = state_after_end_a.get("commands", {})
 
         if command_id_a in commands and commands[command_id_a].get("command"):
-            return False, f"command_id_a entry should have been removed by command-end A"
+            return False, "command_id_a entry should have been removed by command-end A"
 
         if command_id_b not in commands:
-            return False, f"state should still have command_id_b entry (sibling protection)"
+            return False, "state should still have command_id_b entry (sibling protection)"
 
         return True, ""
 
@@ -1488,7 +1488,7 @@ def test_stage_end_cas_guard_protects_different_stage_state():
         commands = state_after_a.get("commands", {})
         entry_a = commands.get(command_id, {})
         if entry_a.get("stage_id") != stage_id_a:
-            return False, f"state should have stage_id_a after first stage-begin"
+            return False, "state should have stage_id_a after first stage-begin"
 
         # Step 2: stage-begin B (replaces stage state with stage_id_b)
         code2, stdout2, stderr2 = run_script(
@@ -1505,7 +1505,7 @@ def test_stage_end_cas_guard_protects_different_stage_state():
         commands = state_after_b.get("commands", {})
         entry_b = commands.get(command_id, {})
         if entry_b.get("stage_id") != stage_id_b:
-            return False, f"state should have stage_id_b after second stage-begin"
+            return False, "state should have stage_id_b after second stage-begin"
 
         # Step 3: stage-end A (with explicit --stage-id for the OLD stage_id_a)
         code3, stdout3, stderr3 = run_script(
@@ -3004,9 +3004,9 @@ def test_nested_commands_a_b_with_stage():
 
         # Verify command_ids match
         if cmd_a_begin.get("command_id") != cmd_a_id or cmd_a_end.get("command_id") != cmd_a_id:
-            return False, f"cmd-a begin/end have mismatched command_ids"
+            return False, "cmd-a begin/end have mismatched command_ids"
         if cmd_b_begin.get("command_id") != cmd_b_id or cmd_b_end.get("command_id") != cmd_b_id:
-            return False, f"cmd-b begin/end have mismatched command_ids"
+            return False, "cmd-b begin/end have mismatched command_ids"
 
         # Find stage events
         stage_begin = next((e for e in events if e.get("event_type") == "stage.begin" and e.get("stage") == "stage1"), None)
@@ -3073,7 +3073,7 @@ def test_init_command_state_preserves_other_entries():
             return False, "cmd-1 entry was lost"
 
         if commands["cmd-1"] != initial_state["commands"]["cmd-1"]:
-            return False, f"cmd-1 entry was mutated"
+            return False, "cmd-1 entry was mutated"
 
         if "cmd-2" not in commands:
             return False, "cmd-2 entry was not added"
@@ -3125,10 +3125,10 @@ def test_init_command_state_replaces_only_target_entry():
 
         commands = state["commands"]
         if commands["cmd-1"] != initial_state["commands"]["cmd-1"]:
-            return False, f"cmd-1 entry was mutated"
+            return False, "cmd-1 entry was mutated"
 
         if commands["cmd-2"]["command"] != "cmd2-new":
-            return False, f"cmd-2 entry was not replaced correctly"
+            return False, "cmd-2 entry was not replaced correctly"
 
         return True, ""
 
@@ -3270,10 +3270,10 @@ def test_command_end_never_mutates_other_entries():
         cmd_b_entry_after = commands.get("cmd-b", {})
 
         if cmd_b_entry_after != cmd_b_entry_before:
-            return False, f"cmd-b entry was mutated by command-end A"
+            return False, "cmd-b entry was mutated by command-end A"
 
         if "cmd-a" in commands:
-            return False, f"cmd-a entry should be fully removed, not left in state"
+            return False, "cmd-a entry should be fully removed, not left in state"
 
         return True, ""
 
@@ -3326,11 +3326,11 @@ def test_command_end_removes_own_entry_only():
 
         # cmd-a should not be present as an entry
         if cmd_a_id in commands:
-            return False, f"cmd-a entry should be removed"
+            return False, "cmd-a entry should be removed"
 
         # cmd-b should still be present
         if cmd_b_id not in commands or not commands[cmd_b_id].get("command"):
-            return False, f"cmd-b entry should survive, but it's missing or empty"
+            return False, "cmd-b entry should survive, but it's missing or empty"
 
         return True, ""
 

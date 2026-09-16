@@ -19,7 +19,6 @@ Run with: python3 tests/test_run_metrics_effort_mode_reviewer_count.py
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -27,7 +26,6 @@ from pathlib import Path
 
 # Add parent/scripts to path so we can import telemetry_schema
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-import telemetry_schema
 
 from _test_harness import REPO_ROOT, Harness
 
@@ -466,11 +464,11 @@ def test_stage_end_omits_flags_when_not_provided():
 
         event = json.loads(log_path.read_text().strip())
         if "effort" in event:
-            return False, f"effort should not be in event when not provided"
+            return False, "effort should not be in event when not provided"
         if "mode" in event:
-            return False, f"mode should not be in event when not provided"
+            return False, "mode should not be in event when not provided"
         if "reviewer_count" in event:
-            return False, f"reviewer_count should not be in event when not provided"
+            return False, "reviewer_count should not be in event when not provided"
 
         return True, ""
 

@@ -7,14 +7,14 @@ Ports the deterministic shipit logic into a plan/apply pattern:
 """
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 from . import git
 from .cache import hash_cache_file, hash_file_content, read_github_cache, write_cache
 from .safety import Unknown, fail_closed
-from .models import GitHubCacheData, StackInfo
+from .models import StackInfo
 
 
 @dataclass
@@ -179,13 +179,13 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
 
             current_head_sha = git.get_head_sha(cwd=repo_root)
             if current_head_sha != plan.expected_head_sha:
-                result.error = Unknown(f"HEAD SHA changed (plan is stale)")
+                result.error = Unknown("HEAD SHA changed (plan is stale)")
                 return result, result.error
 
             cache_path = repo_root / ".claude" / "repo-cache.json"
             cache_hash = hash_cache_file(cache_path)
             if cache_hash != plan.cache_hash:
-                result.error = Unknown(f"Cache has changed (plan is stale)")
+                result.error = Unknown("Cache has changed (plan is stale)")
                 return result, result.error
 
         except Exception as e:
@@ -312,7 +312,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                 # Cache write failure is non-fatal; log but don't fail the operation
                 pass
 
-        except Exception as e:
+        except Exception:
             # Non-fatal; cache write failures don't fail the whole operation
             pass
 

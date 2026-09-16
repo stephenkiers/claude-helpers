@@ -408,7 +408,7 @@ def _run_just_merge(target_worktree: str) -> Tuple[bool, Optional[str]]:
         # a full build + E2E boot real headroom instead of cutting it close at 600s.
         # Override with MERGE_APPLY_TIMEOUT_SECS environment variable (default: 1800s).
         timeout_secs = _get_merge_apply_timeout()
-        result = subprocess.run(
+        subprocess.run(
             ["just", "merge"],
             cwd=target_worktree,
             timeout=timeout_secs,

@@ -24,13 +24,10 @@ Run with: python3 tests/test_search_claude.py
 """
 
 import atexit
-import json
 import os
 import re
 import shutil
-import stat
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -383,7 +380,7 @@ try:
         t(
             f"{interpreter}: --days filtering excludes old files",
             "old-session" not in out,
-            f"old-session appeared in results",
+            "old-session appeared in results",
         )
 
         # Test 7b: --all leaves FIND_EXTRA_ARGS empty. Under bash 3.2 + set -u,
@@ -404,7 +401,7 @@ try:
         t(
             f"{interpreter}: --all surfaces files older than the default window",
             "old-session" in out,
-            f"old-session missing from --all results",
+            "old-session missing from --all results",
         )
 
         # Test 8: --days with no value exits non-zero
@@ -433,7 +430,7 @@ try:
         t(
             f"{interpreter}: self-session excluded when CLAUDE_CODE_SESSION_ID set",
             "self-session-id" not in out,
-            f"self-session-id appeared in results",
+            "self-session-id appeared in results",
         )
 
         # Test 9b: Self-session present when CLAUDE_CODE_SESSION_ID is unset
@@ -445,7 +442,7 @@ try:
         t(
             f"{interpreter}: self-session included when CLAUDE_CODE_SESSION_ID is empty",
             "self-session-id" in out,
-            f"self-session-id missing from results",
+            "self-session-id missing from results",
         )
 
         # Test 10: Limit truncation (30 bulk files, limit 10)
@@ -470,7 +467,7 @@ try:
         t(
             f"{interpreter}: tool-use-only session appears in results",
             "tool-use-only" in out,
-            f"tool-use-only not found in output",
+            "tool-use-only not found in output",
         )
         if "tool-use-only" in out:
             # Extract the line with tool-use-only
@@ -495,7 +492,7 @@ try:
         t(
             f"{interpreter}: thinking-only session appears in results",
             "thinking-only" in out,
-            f"thinking-only not found in output",
+            "thinking-only not found in output",
         )
         if "thinking-only" in out:
             # Extract the line with thinking-only
@@ -521,12 +518,12 @@ try:
         t(
             f"{interpreter}: ranking-test-old-timestamp appears in results",
             "ranking-test-old-timestamp" in out,
-            f"ranking-test-old-timestamp not found",
+            "ranking-test-old-timestamp not found",
         )
         t(
             f"{interpreter}: ranking-test-new-timestamp appears in results",
             "ranking-test-new-timestamp" in out,
-            f"ranking-test-new-timestamp not found",
+            "ranking-test-new-timestamp not found",
         )
         if code == 0 and "ranking-test-new-timestamp" in out and "ranking-test-old-timestamp" in out:
             lines = [l for l in out.strip().split('\n') if l and ('ranking-test-new-timestamp' in l or 'ranking-test-old-timestamp' in l)]
@@ -562,12 +559,12 @@ try:
         t(
             f"{interpreter}: literal 'a.b' query matches literal 'a.b' text",
             "literal-dot-match" in out,
-            f"literal-dot-match not found in output",
+            "literal-dot-match not found in output",
         )
         t(
             f"{interpreter}: literal 'a.b' query does not regex-match 'aXb'",
             "regex-wildcard-decoy" not in out,
-            f"regex-wildcard-decoy appeared in output (dot matched as wildcard)",
+            "regex-wildcard-decoy appeared in output (dot matched as wildcard)",
         )
 
         # Test 14: Unicode handling
@@ -628,7 +625,7 @@ try:
         timeout=5,
     )
     t("Script passes shellcheck", result.returncode == 0,
-      f"shellcheck found issues")
+      "shellcheck found issues")
 except FileNotFoundError:
     t("shellcheck is installed", False,
       "shellcheck not found — install with: brew install shellcheck")
@@ -643,7 +640,7 @@ try:
         timeout=5,
     )
     t("Worker script passes shellcheck", result.returncode == 0,
-      f"shellcheck found issues in worker script")
+      "shellcheck found issues in worker script")
 except FileNotFoundError:
     t("shellcheck is installed for worker", False,
       "shellcheck not found — install with: brew install shellcheck")
@@ -667,7 +664,7 @@ has_bare_printf = "| printf" in xargs_section and ">> \"$outfile\"" not in xargs
 has_bare_echo = "| echo" in xargs_section and ">> \"$outfile\"" not in xargs_section
 t("Parallel section writes to worker temp files, not shared stdout",
   not (has_bare_printf or has_bare_echo),
-  f"bare printf/echo detected in xargs section (would corrupt concurrent output)")
+  "bare printf/echo detected in xargs section (would corrupt concurrent output)")
 
 # --- Single-worker path verification ---
 # Verify that SEARCH_CLAUDE_WORKERS=1 produces identical results to default (multi-worker)

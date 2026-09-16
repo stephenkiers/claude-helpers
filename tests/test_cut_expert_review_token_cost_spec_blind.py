@@ -22,11 +22,8 @@ import importlib.util
 import json
 import os
 import re
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
-from typing import Optional, Any
 
 from _test_harness import REPO_ROOT, Harness
 
@@ -529,7 +526,7 @@ for cmd_file in command_files:
             if has_error_handling:
                 has_telemetry_checks = True
                 break
-    except:
+    except Exception:
         pass
 
 t(

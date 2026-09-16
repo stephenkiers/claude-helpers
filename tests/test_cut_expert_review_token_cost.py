@@ -243,7 +243,6 @@ print("[Part 6] Behavioral test for process_review_dir / append_yield_data")
 # Test 6.1: process_review_dir handles minimal review directory structure
 if reviewer_yield_module and hasattr(reviewer_yield_module, 'process_review_dir'):
     import tempfile
-    import json as json_module
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:

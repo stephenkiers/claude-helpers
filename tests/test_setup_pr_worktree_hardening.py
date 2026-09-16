@@ -14,9 +14,7 @@ Plan items tested:
 Run with: python3 tests/test_setup_pr_worktree_hardening.py
 """
 
-import os
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path

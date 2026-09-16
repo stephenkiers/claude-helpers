@@ -2,7 +2,6 @@
 """Contract tests for the effort-2 reviewer-pod path (GH #79)."""
 
 import re
-from pathlib import Path
 
 from _test_harness import Harness, REPO_ROOT
 

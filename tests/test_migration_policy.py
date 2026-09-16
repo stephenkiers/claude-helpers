@@ -162,7 +162,7 @@ if output_section:
     for status_val in status_values:
         t(f"Output section mentions STATUS: {status_val}",
           status_val in output,
-          f"All 5 STATUS values must be enumerated in ## Output section")
+          "All 5 STATUS values must be enumerated in ## Output section")
 
     # Should describe the closed set explicitly
     t("Output section indicates these are the complete set of STATUS values",

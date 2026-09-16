@@ -12,7 +12,6 @@ import sys
 import json
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
