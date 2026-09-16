@@ -541,6 +541,74 @@ def main():
             bool(has_escalation_branch),
             "" if has_escalation_branch else "no elif escalation branch",
         )
+
+        # Spec 2d: audit-escalation.txt must appear in Step 5 doc text
+        # Extract text between ### Step 5 and ### Step 6
+        step5_section = re.search(
+            r'###\s+Step\s+5.*?(?=###\s+Step)',
+            command_content,
+            re.DOTALL
+        )
+        step5_text = step5_section.group(0) if step5_section else ""
+        has_audit_escalation_in_step5 = "audit-escalation.txt" in step5_text
+        h.test_result(
+            "Spec 2d: audit-escalation.txt writer exists — text appears in Step 5 doc",
+            has_audit_escalation_in_step5,
+            "" if has_audit_escalation_in_step5 else "audit-escalation.txt not mentioned in Step 5 section",
+        )
+
+        # Spec 2e: audit-escalation.txt must appear in Checkpoint Files table
+        checkpoint_table_section = re.search(
+            r'##\s+Checkpoint Files.*?(?=##\s+|\Z)',
+            command_content,
+            re.DOTALL
+        )
+        checkpoint_table_text = checkpoint_table_section.group(0) if checkpoint_table_section else ""
+        has_audit_escalation_in_checkpoint_table = "audit-escalation.txt" in checkpoint_table_text
+        h.test_result(
+            "Spec 2e: audit-escalation.txt in Checkpoint Files table",
+            has_audit_escalation_in_checkpoint_table,
+            "" if has_audit_escalation_in_checkpoint_table else "audit-escalation.txt not in checkpoint table",
+        )
+
+        # Spec 2f: stage-end --stage audit-plan must carry --effort flag
+        has_stage_end_with_effort = re.search(
+            r'stage-end\s+--stage\s+audit-plan.*--effort\s+"\$EFFORT"',
+            command_content
+        )
+        h.test_result(
+            "Spec 2f-i: stage-end --stage audit-plan carries --effort",
+            bool(has_stage_end_with_effort),
+            "" if has_stage_end_with_effort else "no --effort flag on stage-end audit-plan",
+        )
+
+        # Spec 2f-ii: stage-begin --stage audit-plan must occur exactly 2 times
+        # (once in if [ "$EFFORT" -eq 3 ] block, once in elif [ -f ... ] block)
+        stage_begin_audit_count = len(re.findall(
+            r'stage-begin\s+--stage\s+audit-plan',
+            command_content
+        ))
+        h.test_result(
+            "Spec 2f-ii: stage-begin --stage audit-plan occurs exactly 2 times (if + elif branches)",
+            stage_begin_audit_count == 2,
+            "" if stage_begin_audit_count == 2 else f"found {stage_begin_audit_count} occurrences (expected 2)",
+        )
+
+        # Spec 2f-iii: Verify stage-begin appears only inside conditional blocks (not at Step 6 end)
+        # The unconditional stage-begin at end of Step 6 should not exist
+        step6_section = re.search(
+            r'###\s+Step\s+6.*?###\s+Step\s+7',
+            command_content,
+            re.DOTALL
+        )
+        step6_text = step6_section.group(0) if step6_section else ""
+        stage_begin_in_step6_end = "stage-begin --stage audit-plan" in step6_text
+        h.test_result(
+            "Spec 2f-iii: stage-begin audit-plan NOT at end of Step 6 (only in Step 7 conditional)",
+            not stage_begin_in_step6_end,
+            "" if not stage_begin_in_step6_end else "found unconditional stage-begin in Step 6 section",
+        )
+
     else:
         h.test_result(
             "Spec 2a: Effort-2 audit gate — audit-plan stage-begin is conditional on EFFORT or escalation",
@@ -554,6 +622,31 @@ def main():
         )
         h.test_result(
             "Spec 2c: Effort-2 audit gate — elif branch for escalation exists",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2d: audit-escalation.txt writer exists — text appears in Step 5 doc",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2e: audit-escalation.txt in Checkpoint Files table",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2f-i: stage-end --stage audit-plan carries --effort",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2f-ii: stage-begin --stage audit-plan occurs exactly 2 times (if + elif branches)",
+            False,
+            "file does not exist",
+        )
+        h.test_result(
+            "Spec 2f-iii: stage-begin audit-plan NOT at end of Step 6 (only in Step 7 conditional)",
             False,
             "file does not exist",
         )

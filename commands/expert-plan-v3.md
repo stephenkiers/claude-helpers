@@ -52,10 +52,26 @@ All artifacts live in `{SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}/{SLU
 | `{expert}-contribution.md` | Each contributor (Step 3) | One per selected expert, requirements/risks/approach/open-questions |
 | `contrarian-carl-contribution.md` | Carl (Step 4) | After seeing all Step 3 contributions, checks cost and unverified premises |
 | `decisions.md` | Orchestrator (Step 5) | Decision index and checkpoint results |
+| `audit-escalation.txt` | Orchestrator (Step 5, or main thread after Step 6) | Only when an effort-2 escalation is recorded — the one concrete question and why existing work can't settle it |
 | `plan.md` | Synthesize and Consistency Check (Step 6, single dispatch) | Final synthesized plan in template form |
 | `audit.md` | Audit (Step 7, optional) | Findings on requirement fidelity, assumptions, contradictions, adequacy — or "No findings." |
 
 Final deliverable: `~/.claude/plans/{SLUG}-{INVOCATION_ID}.md` — the plan copied by the orchestrator to its final path (outside `plan-sessions/`), with the invocation ID included to prevent collisions.
+
+### `audit-escalation.txt` Format
+
+When an effort-2 escalation is recorded (Step 5 or after Step 6), `audit-escalation.txt` holds:
+
+```
+QUESTION: <one concrete question the auditor must settle>
+WHY-EXISTING-WORK-CANNOT-SETTLE-IT: <1-2 sentences naming which contributions were checked>
+RAISED-AT: step-5-checkpoint | post-step-6-synthesis
+RAISED-BY: user
+```
+
+**Hard rules:**
+- **Never write this file unless an escalation was actually chosen.** The Step 7 gate is existence-only (`-f`), so an empty or placeholder file silently triggers an audit on every run. Step 3's stand-in-file-on-failure convention (`commands/expert-plan-v3.md:282`) explicitly does **not** apply to this file.
+- **Write it with the `Write` tool, never a shell redirect.** The command's `allowed-tools` (line 4) grants `Write` but no write-capable Bash, and the question text can derive from untrusted ticket content (Step 1's untrusted-input rule, line 209) — keeping it out of a shell string entirely also satisfies CLAUDE.md's `printf`-not-`echo` convention by construction.
 
 ## Plan Mode (guard and reconciliation)
 
@@ -258,7 +274,15 @@ Write `{SESSION_DIR}/selected-experts.md` (expert, concern, model, reason). Exam
 | Contrarian Carl | Cost, premises, and smaller-is-better | opus | Always present, fresh pass over all input |
 ```
 
-Tell the user who's participating — no approval gate for ordinary selection.
+Tell the user who's participating — no approval gate for ordinary selection. Announce the tier split by contributor model assignment:
+
+```
+Models: <n> contributors sonnet, <n> opus (<names> — <one-line reasons>); Carl + synthesis opus.
+Escalating one contributor to opus multiplies that one contributor's token cost ~5x
+(Opus vs Sonnet per-token list price) — not the whole run.
+```
+
+State the ratio, never an absolute dollar figure. v3 has no measured per-run cost; do not reuse v2's `$4.20` measured cost or fabricate a new one.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage select-experts --outcome success 2>/dev/null || true
@@ -313,6 +337,26 @@ Use `AskUserQuestion` for 2-4-option questions; markdown + conversation for open
 
 Write `{SESSION_DIR}/decisions.md` with the decision index and checkpoint results.
 
+**Effort-2 escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains):
+
+If the decision index reveals an unresolved disagreement among experts or a scope decision the user's checkpoint answers did not fully settle, include this option in the checkpoint `AskUserQuestion` batch (do not ask as a separate prompt — fold it into the same question flow):
+
+```
+Option: "No — consistency check only" (default)
+Option: "Yes — escalate: audit this one question: \"<the concrete question>\""
+```
+
+When the user selects "Yes" (within the checkpoint batch):
+- Call the `Write` tool (not shell redirect) to create `{SESSION_DIR}/audit-escalation.txt` with the question in the format defined at line 60-75, using `RAISED-AT: step-5-checkpoint`. Record the question and the user's "Yes" answer in `decisions.md`.
+
+When the user selects "No" or the default:
+- Write nothing. Proceed to synthesis.
+
+On Write failure:
+- Do not retry. Print one line: "audit-escalation.txt write failed; skipping escalation question." Record the failure in `decisions.md`. No file means Step 7's `elif` does not fire, degrading to consistency check only.
+
+If the decision index contains no material disagreement, do not include these options — ask only when something genuinely unresolved exists.
+
 If the user declines to continue at this checkpoint, emit:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome interrupted 2>/dev/null || true
@@ -364,7 +408,6 @@ Main thread copies nothing here; subagent writes within its checkpoint dir.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan --outcome success 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage audit-plan >/dev/null 2>&1 || true
 ```
 
 ### Step 7: Independent Audit (Conditional)
@@ -381,6 +424,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage audit-plan >/
 
 - **Effort 2**: No automatic auditor. Escalate the same role prompt, scoped to one concrete question, only if a material disagreement remains unresolved after checking sources, or synthesis introduced a mechanism no expert reviewed. State the question and why existing work can't settle it before spawning it — this is a recorded exception, not silent scope creep. One retry on join-barrier failure, same as contributors.
 
+  After Step 6 returns, if the synthesized plan introduced a mechanism no contribution reviewed, the main thread may also write `audit-escalation.txt` (same format, `RAISED-AT: post-step-6-synthesis`) before the Step 7 gate. One question only.
+
 Stage `audit-plan` is only emitted when Step 7 actually runs (telemetry rule: never emit a stage nobody entered). Document this conditionality explicitly: "effort 3, or a recorded effort-2 escalation." Gate on whether the audit actually runs, not on hardcoded effort level.
 
 ```bash
@@ -393,7 +438,7 @@ if [ "$EFFORT" -eq 3 ]; then
   # [Receipt format: plan-audit.md written — {n} findings]
   # [One retry on failure; stand-in on second failure]
   
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage audit-plan --outcome success 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage audit-plan --outcome success --effort "$EFFORT" 2>/dev/null || true
 elif [ -f "$SESSION_DIR/audit-escalation.txt" ]; then
   # Effort-2 escalation: a user question or unresolved disagreement remains; audit that specific question
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage audit-plan >/dev/null 2>&1 || true
@@ -402,7 +447,7 @@ elif [ -f "$SESSION_DIR/audit-escalation.txt" ]; then
   # [Task: role prompt plan-audit.md, reads context + escalation question, writes audit.md]
   # [Receipt format: plan-audit.md written — {n} findings]
   
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage audit-plan --outcome success 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage audit-plan --outcome success --effort "$EFFORT" 2>/dev/null || true
 fi
 ```
 
