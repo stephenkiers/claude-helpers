@@ -303,6 +303,8 @@ def _resolve_pr_from_number(arguments: str, cwd: Optional[Path]) -> Tuple[Option
             return None, None, None
 
         head_ref = pr_data.get("headRefName")
+        if not isinstance(head_ref, str):
+            return None, None, None
         porcelain = git.get_worktree_list_porcelain(cwd=cwd)
         target_worktree = _find_worktree_by_branch(porcelain, head_ref)
 

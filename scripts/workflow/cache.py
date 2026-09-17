@@ -155,7 +155,7 @@ def write_cache(path: Path, data: Union[Dict[str, Any], List[Dict[str, Any]]]) -
     """
     lock_path = path.with_suffix(path.suffix + ".lock")
 
-    def acquire_lock():
+    def acquire_lock() -> Tuple[bool, Optional[Unknown]]:
         """Try to acquire the lock, with staleness check."""
         try:
             lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

@@ -12,7 +12,7 @@ import signal
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 
 from .safety import Unknown, fail_closed
 
@@ -118,7 +118,7 @@ class CheckResults:
     skipped: List[SkippedCheckReason] = field(default_factory=list)
     status: str = "passed"  # "passed", "failed", "no_checks_ran"
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
         return {
             "results": [asdict(r) for r in self.results],
@@ -193,6 +193,7 @@ def run_checks(
 
     for cmd_type in planned_order:
         cmd = commands[cmd_type]
+        assert cmd is not None  # planned_order only includes non-null commands
         check_result = execute_check(cmd, cwd=repo_root, timeout=timeout)
 
         results.executed.append(cmd_type)

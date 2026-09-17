@@ -182,7 +182,8 @@ def validate_issues_cache(data: Dict[str, Any]) -> bool:
     version = data.get("schema_version")
     if version != ISSUES_CACHE_SCHEMA_VERSION:
         return False
-    if not isinstance(data.get("next_id"), int) or data.get("next_id") < 1:
+    next_id = data.get("next_id")
+    if not isinstance(next_id, int) or next_id < 1:
         return False
     if not isinstance(data.get("issues"), dict):
         return False
