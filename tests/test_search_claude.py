@@ -321,7 +321,7 @@ try:
         )
         if code == 0 and "parent-session-uuid" in out:
             # Extract the session_id column (4th field in pipe-delimited output)
-            lines = [l for l in out.strip().split('\n') if l]
+            lines = [line for line in out.strip().split('\n') if line]
             if lines:
                 fields = lines[0].split('|')
                 if len(fields) >= 4:
@@ -352,7 +352,7 @@ try:
         )
         if "newline-snippet-test" in out:
             # Count pipe-delimited records for this session
-            session_lines = [l for l in out.strip().split('\n') if 'newline-snippet-test' in l]
+            session_lines = [line for line in out.strip().split('\n') if 'newline-snippet-test' in line]
             t(
                 f"{interpreter}: newline-containing snippet is one record",
                 len(session_lines) == 1,
@@ -451,7 +451,7 @@ try:
             ["bulk"],
             {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "10"},
         )
-        result_count = len([l for l in out.strip().split('\n') if l and 'bulk' in l])
+        result_count = len([line for line in out.strip().split('\n') if line and 'bulk' in line])
         t(
             f"{interpreter}: results truncated to SEARCH_CLAUDE_LIMIT",
             result_count <= 10,
@@ -471,7 +471,7 @@ try:
         )
         if "tool-use-only" in out:
             # Extract the line with tool-use-only
-            tool_use_lines = [l for l in out.strip().split('\n') if 'tool-use-only' in l]
+            tool_use_lines = [line for line in out.strip().split('\n') if 'tool-use-only' in line]
             if tool_use_lines:
                 # Format: mtime|timestamp|cwd|session_id|kind|first_prompt|snippet
                 fields = tool_use_lines[0].split('|')
@@ -496,7 +496,7 @@ try:
         )
         if "thinking-only" in out:
             # Extract the line with thinking-only
-            thinking_lines = [l for l in out.strip().split('\n') if 'thinking-only' in l]
+            thinking_lines = [line for line in out.strip().split('\n') if 'thinking-only' in line]
             if thinking_lines:
                 # Format: mtime|timestamp|cwd|session_id|kind|first_prompt|snippet
                 fields = thinking_lines[0].split('|')
@@ -526,7 +526,7 @@ try:
             "ranking-test-new-timestamp not found",
         )
         if code == 0 and "ranking-test-new-timestamp" in out and "ranking-test-old-timestamp" in out:
-            lines = [l for l in out.strip().split('\n') if l and ('ranking-test-new-timestamp' in l or 'ranking-test-old-timestamp' in l)]
+            lines = [line for line in out.strip().split('\n') if line and ('ranking-test-new-timestamp' in line or 'ranking-test-old-timestamp' in line)]
             if len(lines) >= 2:
                 # First result should be the one with more recent timestamp (ranking-test-new-timestamp)
                 # not the one with newer mtime (ranking-test-old-timestamp)
@@ -694,8 +694,8 @@ code_single, out_single, err_single = run(
     ["bulk"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "5", "SEARCH_CLAUDE_WORKERS": "1"},
 )
-result_count_default = len([l for l in out_default.strip().split('\n') if l])
-result_count_single = len([l for l in out_single.strip().split('\n') if l])
+result_count_default = len([line for line in out_default.strip().split('\n') if line])
+result_count_single = len([line for line in out_single.strip().split('\n') if line])
 t("SEARCH_CLAUDE_WORKERS=1 respects limit (bulk results)",
   result_count_single == result_count_default and result_count_single <= 5,
   f"default: {result_count_default}, single-worker: {result_count_single}, limit: 5")
@@ -769,10 +769,10 @@ t("SEARCH_CLAUDE_WORKERS=6 matches default results",
   f"default: {len(out_default_bulk)} chars, workers=6: {len(out_workers_6)} chars")
 
 # Test that all worker counts produce same result count
-count_2 = len([l for l in out_workers_2.strip().split('\n') if l])
-count_4 = len([l for l in out_workers_4.strip().split('\n') if l])
-count_6 = len([l for l in out_workers_6.strip().split('\n') if l])
-count_default = len([l for l in out_default_bulk.strip().split('\n') if l])
+count_2 = len([line for line in out_workers_2.strip().split('\n') if line])
+count_4 = len([line for line in out_workers_4.strip().split('\n') if line])
+count_6 = len([line for line in out_workers_6.strip().split('\n') if line])
+count_default = len([line for line in out_default_bulk.strip().split('\n') if line])
 t("All worker counts return same number of results",
   count_2 == count_4 == count_6 == count_default,
   f"count_2={count_2}, count_4={count_4}, count_6={count_6}, default={count_default}")
@@ -818,8 +818,8 @@ t("Result ordering consistent between default and workers=4",
 
 # Extract ranking order from default to verify it matches workers=4
 if code_rank_default == 0 and out_rank_default and code_rank_4 == 0 and out_rank_4:
-    lines_default = [l for l in out_rank_default.strip().split('\n') if l and 'ranking' in l]
-    lines_4 = [l for l in out_rank_4.strip().split('\n') if l and 'ranking' in l]
+    lines_default = [line for line in out_rank_default.strip().split('\n') if line and 'ranking' in line]
+    lines_4 = [line for line in out_rank_4.strip().split('\n') if line and 'ranking' in line]
     if len(lines_default) >= 2 and len(lines_4) >= 2:
         first_default = lines_default[0].split('|')[3] if '|' in lines_default[0] else None
         first_4 = lines_4[0].split('|')[3] if '|' in lines_4[0] else None
@@ -861,8 +861,8 @@ code_limit_4, out_limit_4, err_limit_4 = run(
     ["test"],
     {"CLAUDE_PROJECTS_DIR": str(fixture_root_path), "SEARCH_CLAUDE_LIMIT": "7", "SEARCH_CLAUDE_WORKERS": "4"},
 )
-count_limit_default = len([l for l in out_limit_default.strip().split('\n') if l])
-count_limit_4 = len([l for l in out_limit_4.strip().split('\n') if l])
+count_limit_default = len([line for line in out_limit_default.strip().split('\n') if line])
+count_limit_4 = len([line for line in out_limit_4.strip().split('\n') if line])
 t("Limit is enforced identically across default and workers=4",
   count_limit_default == count_limit_4 and count_limit_4 <= 7,
   f"default: {count_limit_default}, workers=4: {count_limit_4}, limit: 7")

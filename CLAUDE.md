@@ -31,6 +31,24 @@ untouched.
 Optional (opt-in, zsh + macOS only): Option+Arrow word jumping via
 `./install.sh --with-zsh-keybindings`. Never added by default.
 
+## Local CI
+
+This repo has no GitHub Actions CI (the only configured workflow is "Copilot Code Review", GitHub's
+own PR bot — not a lint/test gate). The `justfile` at the repo root is the actual CI:
+
+- `just check` — the full gate: `lint` + `test`. Run this before shipping.
+- `just lint` — `ruff check .` (rules pinned in `ruff.toml` to the narrow, non-stylistic
+  `E4`/`E7`/`E9`/`F` set — real errors like unused imports and undefined names, not style opinions)
+  plus `shellcheck` on every tracked `*.sh` file.
+- `just test` — `python3 tests/run_all.py`, the existing custom test runner.
+- `just fix` — `ruff check . --fix` for what's auto-fixable.
+
+This is wired into `.claude/repo-cache.json` (`commands.check` = `"just check"`, etc.), the same
+cache `/shipit`, `/cleanup`, and `/merge-and-cleanup` already read generically for any project — so
+those commands run the local CI here with no per-command changes needed. `.claude/repo-cache.json`
+is gitignored per-machine state; if it's ever regenerated from scratch (e.g. `/shipit`'s detection
+step), re-point `lint`/`test`/`check` at the `just` targets above rather than the raw commands.
+
 ## How the review system works
 
 See the ADRs for the full rationale:

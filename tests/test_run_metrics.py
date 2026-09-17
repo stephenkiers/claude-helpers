@@ -800,7 +800,6 @@ def test_explicit_flags_override_state():
         )
         if code1 != 0:
             return False, f"command-begin failed: {stderr1}"
-        auto_cmd_id = stdout1.strip()
 
         # Run stage-end with an EXPLICIT --stage-id and --command-id (different from state)
         explicit_stage_id = "explicit-stage-id-" + uuid.uuid4().hex[:8]
@@ -1275,7 +1274,6 @@ def test_multiple_sequential_stages():
         )
         if code2 != 0:
             return False, f"stage1-begin failed: {stderr2}"
-        stage1_id = stdout2.strip()
 
         code3, stdout3, stderr3 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "stage1", "--outcome", "success"],
@@ -1291,7 +1289,6 @@ def test_multiple_sequential_stages():
         )
         if code4 != 0:
             return False, f"stage2-begin failed: {stderr4}"
-        stage2_id = stdout4.strip()
 
         code5, stdout5, stderr5 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "stage-end", "--stage", "stage2", "--outcome", "success"],
@@ -2966,7 +2963,6 @@ def test_nested_commands_a_b_with_stage():
         )
         if code4 != 0:
             return False, f"stage-begin failed: {stderr4}"
-        stage_id = stdout4.strip()
 
         # Step 5: stage-end
         code5, stdout5, stderr5 = run_script(
@@ -3234,7 +3230,6 @@ def test_command_end_never_mutates_other_entries():
         )
         if code1 != 0:
             return False, f"command-begin A failed: {stderr1}"
-        cmd_a_id = stdout1.strip()
 
         code2, stdout2, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "cmd-b"],
@@ -3242,7 +3237,6 @@ def test_command_end_never_mutates_other_entries():
         )
         if code2 != 0:
             return False, f"command-begin B failed: {stderr2}"
-        cmd_b_id = stdout2.strip()
 
         # Capture state before command-end A
         state_file = state_dir / f"{session_id}.json"
@@ -3349,7 +3343,6 @@ def test_command_end_resolves_innermost_of_duplicate_names():
         )
         if code1 != 0:
             return False, f"first command-begin failed: {stderr1}"
-        cmd_id_1 = stdout1.strip()
 
         code2, stdout2, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "command-begin", "--command", "shipit"],
@@ -3734,7 +3727,6 @@ def test_cross_session_explicit_command_id_sets_state_mismatch_and_warns():
         )
         if code1 != 0:
             return False, f"command-begin in session A failed: {stderr1}"
-        cmd_id_a = stdout1.strip()
 
         # Manually add an entry with a foreign session_id to session_b's state
         state_file_b = state_dir / f"{session_id_b}.json"
@@ -3813,7 +3805,6 @@ def test_cross_session_explicit_stage_id_refuses_mutation():
         )
         if code1 != 0:
             return False, f"command-begin failed: {stderr1}"
-        cmd_id_a = stdout1.strip()
 
         code2, stdout2, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "stage-begin", "--stage", "stage-a"],
@@ -3821,7 +3812,6 @@ def test_cross_session_explicit_stage_id_refuses_mutation():
         )
         if code2 != 0:
             return False, f"stage-begin failed: {stderr2}"
-        stage_id_a = stdout2.strip()
 
         # Manually add a foreign entry to session B's state (recent timestamp, so it
         # survives age-based eviction and the test isolates the mutation-refusal behavior)
@@ -4052,7 +4042,6 @@ def test_stage_end_gates_emission_on_cleared_true():
         )
         if code2 != 0:
             return False, f"stage-begin failed: {stderr2}"
-        stage_id = stdout2.strip()
 
         # Manually clear stage state to simulate already-cleared
         state_file = state_dir / f"{session_id}.json"

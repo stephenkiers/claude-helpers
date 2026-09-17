@@ -242,7 +242,6 @@ def test_peek_command_id_never_mutates_state():
     """peek_command_id() never modifies the state file."""
     with tempfile.TemporaryDirectory() as tmpdir:
         state_path = Path(tmpdir) / "state.json"
-        session_id = "test-session"
 
         # Create initial state
         def init_state(state):
@@ -260,7 +259,6 @@ def test_peek_command_id_never_mutates_state():
         # Read original state
         with open(state_path) as f:
             original_state = json.loads(f.read())
-        original_mtime = state_path.stat().st_mtime
 
         # Call peek_command_id (read-only, should not mutate)
         telemetry_schema.peek_command_id(state_path, "test-cmd")
@@ -268,7 +266,6 @@ def test_peek_command_id_never_mutates_state():
         # Read state after peek
         with open(state_path) as f:
             after_state = json.loads(f.read())
-        after_mtime = state_path.stat().st_mtime
 
         # State content must be unchanged
         if original_state != after_state:
