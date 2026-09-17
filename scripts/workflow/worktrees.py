@@ -5,14 +5,14 @@ Ports ADR-0010's worktree-parent detection logic verbatim.
 """
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from . import git
 
 
-def parse_worktree_list(porcelain_output: str) -> Tuple[list, list]:
+def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
     """
     Parse git worktree list --porcelain output.
-    Returns (worktree_paths, worktree_branches).
+    Returns list of (worktree_path, worktree_branch) tuples.
     Only includes worktrees with a branch (skips detached HEAD entries).
     """
     worktrees = []

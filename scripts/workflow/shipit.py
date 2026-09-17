@@ -257,6 +257,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     return result, result.error
             else:
                 # Edit existing PR
+                assert plan.pr_number is not None  # pr_exists is True implies pr_number is set
                 success, err = git.pr_edit(
                     pr_number=plan.pr_number,
                     title=title,

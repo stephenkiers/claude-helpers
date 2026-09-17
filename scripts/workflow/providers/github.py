@@ -6,7 +6,7 @@ Wraps gh commands via argv builders in scripts/workflow/git.py.
 
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 
 from ..models import IssueInfo
 from .. import git, project
@@ -15,11 +15,13 @@ from .. import git, project
 class GithubProvider:
     """GitHub implementation of the Provider protocol."""
 
-    def __init__(self, cwd: Optional[Path] = None):
+    cwd: Optional[Path]
+
+    def __init__(self, cwd: Optional[Path] = None) -> None:
         """Initialize GitHub provider with optional working directory."""
         self.cwd = cwd
 
-    def repo_identity(self) -> Optional[tuple]:
+    def repo_identity(self) -> Optional[Tuple[str, str]]:
         """
         Return (owner, name) tuple or None if not available.
 

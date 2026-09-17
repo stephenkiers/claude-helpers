@@ -6,7 +6,7 @@ instead of GitHub issues.
 """
 
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 
 from ..models import IssueInfo, LocalTrackerData
 from ..cache import read_local_tracker, write_local_tracker
@@ -15,12 +15,15 @@ from ..cache import read_local_tracker, write_local_tracker
 class LocalProvider:
     """Local provider for project-root issues.json and plans directory."""
 
-    def __init__(self, tracker_path: Path, plans_dir: Path):
+    tracker_path: Path
+    plans_dir: Path
+
+    def __init__(self, tracker_path: Path, plans_dir: Path) -> None:
         """Initialize local provider with tracker and plans directory paths."""
         self.tracker_path = tracker_path
         self.plans_dir = plans_dir
 
-    def repo_identity(self) -> Optional[tuple]:
+    def repo_identity(self) -> Optional[Tuple[str, str]]:
         """Local mode has no GitHub identity."""
         return None
 
