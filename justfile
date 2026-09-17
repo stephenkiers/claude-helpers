@@ -1,8 +1,8 @@
 # Local CI. No GitHub Actions in this repo — this is the gate.
 # `just check` is what /shipit, /cleanup, and /merge-and-cleanup call via .claude/repo-cache.json.
 
-# Run everything: lint + tests. Exits non-zero on first failure.
-check: lint test
+# Run everything: lint + typecheck + tests. Exits non-zero on first failure.
+check: lint typecheck test
 
 # ruff (Python: unused imports, undefined names, bare excepts — see ruff.toml for the
 # deliberately narrow rule set) + shellcheck (every tracked *.sh file).
