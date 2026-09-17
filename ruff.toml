@@ -1,0 +1,7 @@
+# Deliberately narrow: pyflakes (F) + the non-stylistic pycodestyle errors (E4/E7/E9).
+# This is ruff's classic flake8-equivalent baseline, pinned explicitly because ruff's
+# unqualified default rule set has grown to include opinionated plugins (bugbear,
+# flake8-blind-except, flake8-executable, ...) that this repo hasn't opted into.
+# See CLAUDE.md's local-CI section for how this is wired into `just check`.
+[lint]
+select = ["E4", "E7", "E9", "F"]

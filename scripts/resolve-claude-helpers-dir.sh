@@ -28,4 +28,5 @@ if [ $RESOLVE_EXIT -ne 0 ] || [ -z "$RESOLVE_SCRIPT_PATH" ]; then
   return 1
 fi
 
-export CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RESOLVE_SCRIPT_PATH")")"
+CLAUDE_HELPERS_DIR="$(dirname "$(dirname "$RESOLVE_SCRIPT_PATH")")"
+export CLAUDE_HELPERS_DIR

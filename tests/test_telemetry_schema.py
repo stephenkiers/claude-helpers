@@ -700,7 +700,7 @@ def test_load_and_update_state_missing_file():
         if not state_path.exists():
             return False, "state file was not created"
 
-        if result.get("initialized") != True:
+        if not result.get("initialized"):
             return False, f"mutation not applied: {result}"
 
         return True, ""
@@ -720,13 +720,13 @@ def test_load_and_update_state_corrupt_file():
             return state
         result = telemetry_schema.load_and_update_state(state_path, mutate)
 
-        if result.get("recovered") != True:
+        if not result.get("recovered"):
             return False, f"recovery from corrupt failed: {result}"
 
         # Verify file now contains valid JSON
         with open(state_path) as f:
             content = json.loads(f.read())
-        if content.get("recovered") != True:
+        if not content.get("recovered"):
             return False, "file was not updated with valid JSON"
 
         return True, ""
@@ -820,7 +820,7 @@ def test_build_event_state_mismatch_field():
         timestamp="2026-08-26T12:00:00Z",
         state_mismatch=True,
     )
-    if event.get("state_mismatch") != True:
+    if not event.get("state_mismatch"):
         return False, f"state_mismatch not in event: {event}"
     return True, ""
 
@@ -997,7 +997,7 @@ def test_findings_counts_typeddict_importable():
     if set(annotations.keys()) != expected_keys:
         return False, f"expected keys {expected_keys}, got {set(annotations.keys())}"
     # Check all values are int type
-    if not all(v == int for v in annotations.values()):
+    if not all(v is int for v in annotations.values()):
         return False, f"not all annotations are int: {annotations}"
     return True, ""
 
@@ -1010,7 +1010,7 @@ def test_checks_counts_typeddict_importable():
     if set(annotations.keys()) != expected_keys:
         return False, f"expected keys {expected_keys}, got {set(annotations.keys())}"
     # Check all values are int type
-    if not all(v == int for v in annotations.values()):
+    if not all(v is int for v in annotations.values()):
         return False, f"not all annotations are int: {annotations}"
     return True, ""
 
@@ -1704,7 +1704,7 @@ def test_record_agent_usage_folds_tokens():
         telemetry_schema.init_session_state(state_path, session_id, "2026-08-26T12:00:00Z")
 
         tokens = {"input": 100, "output": 50, "cache_creation": 25, "cache_read": 0}
-        result = telemetry_schema.record_agent_usage(
+        telemetry_schema.record_agent_usage(
             state_path, session_id, agent_id,
             tokens=tokens, token_confidence="low", status="counted", recorded_at="2026-08-26T12:00:30Z"
         )
