@@ -308,9 +308,11 @@ been run.
 Accepted as written. No **decision** needed from you — but these still need doing (apply them
 yourself, or hand the plan to `/implement-with-haiku`).
 
-| # | Severity | Finding | File | Fix |
-|---|----------|---------|------|-----|
-| 1 | HIGH | … | path:line | {the recommendation, compressed to a clause} |
+| # | Severity | Finding | File | Raised by | Fix |
+|---|----------|---------|------|-----------|-----|
+| 1 | HIGH | … | path:line | Reviewer | {the recommendation, compressed to a clause} |
+
+The "Raised by" column shows the reviewer name in the same string form already emitted by the Needs You and Needs Measurement templates — using the canonical reviewer name without additional formatting. Note that this column does NOT change escalation counting: `count_reviewer_escalations` (in a parallel unit's `scripts/reviewer-yield.py`) matches the literal `**Raised by**: <reviewer>` line, which remains scoped to the Needs You / Needs Measurement buckets, so "escalation count" keeps its current meaning and this new "Doing it" table column does not silently inflate it.
 
 **Declined nominations**: {count}. {One line each — every finding that arrived carrying
 `**Human Call**` that you did NOT escalate, with the reason you declined. Omit the line if the count

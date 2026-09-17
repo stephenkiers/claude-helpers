@@ -520,14 +520,42 @@ is the step where `--model fable` earns its cost). Its job: synthesis, not revie
 Its mandate and the `final-report.md` template live in **`~/.claude/prompts/amalgamator.md`**. Pass
 the path; do not read it yourself and do not paste it into the prompt (context discipline rule 1).
 
-It writes `{REVIEW_DIR}/final-report.md` and returns a receipt with the finding count summary:
+It writes `{REVIEW_DIR}/final-report.md` and `{REVIEW_DIR}/findings.json`, returning a receipt with the finding count summary:
 
 ```
-amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
+amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path} | findings-json: {path}
 ```
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage amalgamate --outcome success 2>/dev/null || true
+# Extract findings metrics from findings.json for reporting
+# "unique" here means solo-raised (empty supported_by list), never deduplicated
+FINDINGS_METRICS=""
+if [ -f "$REVIEW_DIR/findings.json" ]; then
+  FINDINGS_JSON="$REVIEW_DIR/findings.json"
+  # Extract metrics via jq, passing values as shell variables to avoid interpolation
+  PRODUCED=$(printf '%s' "$(cat "$FINDINGS_JSON")" | jq '.findings | length' 2>/dev/null) || PRODUCED=""
+  ACCEPTED=$(printf '%s' "$(cat "$FINDINGS_JSON")" | jq '[.findings[] | select(.verdict == "CONFIRMED")] | length' 2>/dev/null) || ACCEPTED=""
+  REJECTED=$(printf '%s' "$(cat "$FINDINGS_JSON")" | jq '[.findings[] | select(.verdict == "REJECTED")] | length' 2>/dev/null) || REJECTED=""
+  UNIQUE=$(printf '%s' "$(cat "$FINDINGS_JSON")" | jq '[.findings[] | select(.supported_by | length == 0)] | length' 2>/dev/null) || UNIQUE=""
+  
+  # Build flags, omitting any that are empty or non-numeric
+  if [ -n "$PRODUCED" ] && [ "$PRODUCED" -gt 0 ] 2>/dev/null; then
+    FINDINGS_METRICS="$FINDINGS_METRICS --findings-produced $PRODUCED"
+  fi
+  if [ -n "$ACCEPTED" ] && [ "$ACCEPTED" -gt 0 ] 2>/dev/null; then
+    FINDINGS_METRICS="$FINDINGS_METRICS --findings-accepted $ACCEPTED"
+  fi
+  if [ -n "$REJECTED" ] && [ "$REJECTED" -gt 0 ] 2>/dev/null; then
+    FINDINGS_METRICS="$FINDINGS_METRICS --findings-rejected $REJECTED"
+  fi
+  if [ -n "$UNIQUE" ] && [ "$UNIQUE" -gt 0 ] 2>/dev/null; then
+    FINDINGS_METRICS="$FINDINGS_METRICS --findings-unique $UNIQUE"
+  fi
+  # Note: --findings-acted-upon is not wired; it requires post-implementation outcome data
+  # that no Phase 0 artifact records, so it is left unset per this ticket's scope
+fi
+
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage amalgamate --outcome success $FINDINGS_METRICS 2>/dev/null || true
 ```
 
 ---

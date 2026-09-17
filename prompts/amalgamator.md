@@ -107,7 +107,7 @@ When synthesizing a pod-path finding into `final-report.md`:
 |----------|----------|----------|-----------|-------|
 
 Decision legend: `DEEP-DIVE` thorough investigation · `QUICK-SCAN` quick look at tagged sections ·
-`ROUTED` selected by router · `ALWAYS-RUN` (Sam System, Code Rot Cody, Consistency Checker, Carl) ·
+`ROUTED` selected by router · `ALWAYS-RUN` (Code Rot Cody, Consistency Checker, Carl) ·
 `CODE-ROT` mechanical grep verification · `CONTRARIAN` ran last with all prior findings
 
 ## Routing Accuracy
@@ -140,10 +140,30 @@ one line above the table: "Effort 2 — fixed lens set per pod, no routing decis
 1. [prioritized actions from CONFIRMED findings]
 ```
 
+## Machine-readable findings — `findings.json`
+
+Write `{REVIEW_DIR}/findings.json` alongside `final-report.md`. Use this exact schema:
+
+```json
+{"schema_version": 1,
+ "findings": [{"id": "F1", "severity": "High", "raised_by": "uncle-bob",
+               "supported_by": ["security-sage"], "verdict": "CONFIRMED"}]}
+```
+
+Each finding object contains:
+- `id`: A unique identifier within this review (e.g., "F1", "F2").
+- `severity`: One of `"Critical"`, `"High"`, `"Medium"`, `"Low"` (capitalized form). Note: `final-report.md` renders severities uppercase (e.g., `HIGH`), so all consumers must compare case-insensitively — the two renderings are not two vocabularies.
+- `raised_by`: A single reviewer **slug** (matching `reviewers/index.yaml`'s `file:` stem, e.g., `uncle-bob`). This is the name a parallel unit's `scripts/reviewer-yield.py` rows use for metrics.
+- `supported_by`: A list of reviewer slugs who independently raised or agreed with this finding. An empty list means this is a "solo" finding (raised by exactly one reviewer).
+- `verdict`: One of `"CONFIRMED"`, `"DOWNGRADED"`, `"REJECTED"`. Reuse `prompts/triage.md`'s existing Pass-2 vocabulary by name, not a parallel enum.
+- `schema_version`: Always `1`.
+
+**Important:** This file must NOT carry any triage-bucket, `STATUS`, or `DECISION`-shaped field — it is Pass-2 metrics plumbing, not a second decision surface. `claude-action-plan.md` remains the only record of a finding's disposition.
+
 ## Receipt
 
 Write the file, then return **only** this line — never the report itself:
 
 ```
-amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path}
+amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path} | findings-json: {path}
 ```
