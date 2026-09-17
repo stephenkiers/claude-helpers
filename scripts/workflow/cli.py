@@ -23,6 +23,7 @@ from typing import Callable, Any, Tuple
 from . import cleanup, merge, shipit, checks, track
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
+from .providers.base import Provider
 from . import worktrees
 
 
@@ -244,7 +245,7 @@ def main() -> None:
                 sys.exit(1)
 
             # Construct provider based on mode
-            provider: Any
+            provider: Provider
             if args.mode == "local":
                 # For local mode, determine tracker and plans paths
                 project_root = worktrees.detect_project_root()
@@ -284,7 +285,7 @@ def main() -> None:
                 print(json.dumps(output))
                 sys.exit(1)
 
-            provider_apply: Any
+            provider_apply: Provider
             if mode == "local":
                 # Prefer the project_root already serialized in the plan (matches
                 # apply_track's own approach of reading plan.main_worktree rather
