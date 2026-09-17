@@ -187,3 +187,10 @@ reviewers:
     useWhen: New or modified KB claims (facts, quotes, proposals, problems, source summaries, person attributions) — audits whether each claim's wording is fully supported by its cited source.
     triggers: [kb/facts, kb/quotes, kb/proposals, kb/problems, kb/sources-registry, confidence, evidence_type, source_refs, confirmed, always, never, unlike]
     note: "Epistemic claim auditor for knowledge bases. Complements Data Scientist Dana (structural integrity) by checking claim-strength-vs-evidence: overstatement, unsourced clauses, inference-as-fact, confidence calibration."
+
+# Reviewers whose domain can be fully expressed in a single file or single line
+# (a hardcoded secret, a shell injection, an unescaped path, a race). A structural
+# diff-shape precondition can never prove their domain does not apply, so they are
+# permanently ineligible for Sam-System-style pre-Router exclusion. See
+# prompts/expert-review-panel.md and ADR-0003.2.
+structural_pre_gate_ineligible: [security-sage, rachel, tara-typesafe, contract-chris]
