@@ -28,10 +28,10 @@ Decision 1 (ADR-0013): Every mutation operation must pass through
 check_mutation_allowed() — the CLI never constructs a mutating call directly.
 """
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 
-MUTATION_ALLOWLIST = {
+MUTATION_ALLOWLIST: Dict[str, Dict[Tuple[str, ...], str]] = {
     "worktree": {
         ("remove", "--", "<path>"): "git worktree remove -- <path>",
         ("remove", "--force", "--", "<path>"): "git worktree remove --force -- <path>",
