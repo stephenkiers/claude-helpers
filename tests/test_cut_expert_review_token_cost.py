@@ -259,7 +259,7 @@ if reviewer_yield_module and hasattr(reviewer_yield_module, 'process_review_dir'
 
             # Call process_review_dir
             process_review_dir = reviewer_yield_module.process_review_dir
-            repo_key, rows = process_review_dir(str(review_dir))
+            repo_key, rows, tokens_status = process_review_dir(str(review_dir))
 
             # Verify the function returns a valid structure
             test_result(
