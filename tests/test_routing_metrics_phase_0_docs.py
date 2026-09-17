@@ -67,7 +67,7 @@ if __name__ == "__main__":
             t(
                 "ALWAYS-RUN section does not mention Sam System",
                 not has_sam_system,
-                f"Found 'Sam System' or 'Sam' in ALWAYS-RUN section"
+                "Found 'Sam System' or 'Sam' in ALWAYS-RUN section"
             )
         else:
             # If no ALWAYS-RUN section at all, that's also acceptable (it was removed)

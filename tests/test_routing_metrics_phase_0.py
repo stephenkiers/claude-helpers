@@ -16,7 +16,6 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -246,7 +245,7 @@ if __name__ == "__main__":
                     "file" in reviewer
                 )
 
-        except Exception as e:
+        except Exception:
             t(
                 "index.yaml is valid YAML",
                 False

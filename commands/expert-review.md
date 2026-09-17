@@ -13,7 +13,7 @@ A checkpoint-based, parallel code review pipeline:
 2. **Router** (sonnet) judges which reviewers meet the threshold for this diff
 3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (Code Rot Cody and
    Consistency Checker always run; others routed by the Router, incl. Sam System when selected), each writing its own checkpoint file
-4. **Contrarian Carl** — after all Pass 1 files exist, sees everything, finds what was missed
+4. **Contrarian Carl** — always runs after all Pass 1 files exist, sees everything, finds what was missed
 5. **Haiku Q&A** — parallel haiku subagents answer each reviewer's open questions
 6. **Pass 2 re-evaluations** — parallel subagents, **fresh skeptic-verifier framing**, business context
    + Q&A answers revealed. Judgment reviewers only (mechanical roles get no Pass 2).
@@ -399,8 +399,9 @@ this step and continue at Step 2.
   `diff-index.md` is the file list plus every hunk header — each one already carries its enclosing
   function/section (`@@ -39,13 +39,16 @@ See the ADRs for…`) — at roughly 1/20th the size of the
   full patch. The Router reads `full-diff.patch` (its line ranges in `tagged-sections.md` are
-  offsets into that file, which Pass 1 reviewers use for bounded reads). Sam System, Code Rot Cody,
-  and Consistency Checker read the full patch (their domain is the whole diff).
+  offsets into that file, which Pass 1 reviewers use for bounded reads). Code Rot Cody, Consistency
+  Checker, and Contrarian Carl always read the full patch (their domain is the whole diff); Sam
+  System reads it too, but only when routed in.
 
 ### Step 2: Discover Available Reviewers
 

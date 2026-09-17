@@ -16,9 +16,8 @@ import sys
 import json
 import subprocess
 import tempfile
-import os
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 

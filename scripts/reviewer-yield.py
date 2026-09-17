@@ -9,6 +9,9 @@ final-report.md and claude-action-plan.md, and logs reviewer-level yield metrics
 Designed to be run manually after expert-review to track reviewer ROI (cost vs. output).
 Never wired into expert-review's own steps — running it is opt-in and human-initiated.
 
+Observation-only in Phase 0 — not wired into `prompts/router.md`, `reviewers/index.yaml`
+triggers, or model/effort selection; wiring it into any of those needs an ADR amendment first.
+
 Exception handling policy: Read and parse failures in I/O or JSON operations warn to stderr
 and continue with safe defaults (empty results, zero counts), never raising. Write failures
 in append_yield_data are surfaced to the caller for explicit error handling. This preserves
@@ -24,6 +27,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, TypedDict
+
+OBSERVATION_ONLY_NOTE = (
+    "Observation-only in Phase 0 — not wired into `prompts/router.md`, "
+    "`reviewers/index.yaml` triggers, or model/effort selection; wiring it into "
+    "any of those needs an ADR amendment first."
+)
 
 
 class TokenRecord(TypedDict):
@@ -703,7 +712,7 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> dict:
     - tokens: real numbers or {status, reason}
     - methodology: bucket config, formula, observation note, etc.
     """
-    observation_only_note = "Observation-only in Phase 0 — not wired into `prompts/router.md`, `reviewers/index.yaml` triggers, or model/effort selection; wiring it into any of those needs an ADR amendment first."
+    observation_only_note = OBSERVATION_ONLY_NOTE
 
     reports_dir = Path.home() / ".claude" / "reviews" / repo_key
     if not reports_dir.exists():
@@ -953,9 +962,7 @@ def render_report_markdown(report_data: dict) -> str:
 def main():
     parser = argparse.ArgumentParser(
         description="Track per-reviewer token yield and finding escalation metrics. "
-                    "Observation-only in Phase 0 — not wired into prompts/router.md, "
-                    "reviewers/index.yaml triggers, or model/effort selection; wiring it into "
-                    "any of those needs an ADR amendment first."
+                    + OBSERVATION_ONLY_NOTE
     )
     parser.add_argument(
         "review_dir",
