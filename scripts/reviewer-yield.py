@@ -45,6 +45,7 @@ class YieldRow(TypedDict):
     cache_creation_input_tokens: int
     mention_count: int
     escalation_count: int
+    tokens_status: str
 
 
 class ReviewerStats(TypedDict):
@@ -58,37 +59,55 @@ class ReviewerStats(TypedDict):
     run_count: int
 
 
-def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str], repo_key: str) -> Dict[str, List[Path]]:
+def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) -> Dict[str, List[Path]]:
     """
     Find, for each reviewer, the subagent .jsonl file(s) that wrote that reviewer's own
     checkpoint file into the given review_dir.
 
-    Scopes the search to ~/.claude/projects/{repo_key}/subagents/*.jsonl to avoid unbounded
-    read-scope on a shared machine. Searches for a Write tool_use whose input.file_path
-    both contains review_dir as a substring AND matches one specific reviewer's own filename
-    pattern (e.g. "{reviewer}-pass1.md") — this anchors a transcript to a reviewer, since
-    a review directory holds many subagents' files and sort-order pairing between subagent
-    files and reviewer slugs is not guaranteed to line up (subagents launch and finish in
-    nondeterministic order).
+    Reads {review_dir}/transcript-origin.json to determine the session directory. If missing,
+    unparsable, unavailable, or the named session dir does not exist, warns to stderr and
+    returns an empty mapping. Otherwise, scopes the search to
+    ~/.claude/projects/{project_dir}/{session_id}/subagents/*.jsonl.
 
-    Assumes review directories use $RANDOM-suffixed naming per commands/expert-review.md,
-    which allows substring matching on review_dir_name to disambiguate among subagent
-    transcripts (one $RANDOM suffix is unlikely to collide with another run's suffix).
+    Searches for a Write tool_use whose input.file_path both contains review_dir as a substring
+    AND matches one specific reviewer's own filename pattern (e.g. "{reviewer}-pass1.md") —
+    this anchors a transcript to a reviewer, since a review directory holds many subagents'
+    files and sort-order pairing between subagent files and reviewer slugs is not guaranteed
+    to line up (subagents launch and finish in nondeterministic order).
     """
-    review_dir_name = Path(review_dir).name
-    project_dir = Path.home() / ".claude" / "projects" / repo_key
+    review_dir_path = Path(review_dir).expanduser().resolve()
+    review_dir_name = review_dir_path.name
+    origin_file = review_dir_path / "transcript-origin.json"
 
     result: Dict[str, List[Path]] = {slug: [] for slug in reviewer_slugs}
 
-    if not project_dir.exists():
+    # Read transcript-origin.json
+    if not origin_file.exists():
+        print(f"Warning: transcript-origin.json not found in {review_dir}", file=sys.stderr)
         return result
 
-    subagents_dir = project_dir / "subagents"
-    if not subagents_dir.exists():
-        print(f"Warning: subagent directory not found: {subagents_dir}", file=sys.stderr)
+    try:
+        origin_data = json.loads(origin_file.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: failed to read/parse transcript-origin.json: {e}", file=sys.stderr)
         return result
 
-    for subagent_file in subagents_dir.glob("*.jsonl"):
+    # Check resolution and session_id
+    resolution = origin_data.get("resolution")
+    session_id = origin_data.get("session_id")
+    project_dir_name = origin_data.get("project_dir")
+
+    if resolution == "unavailable" or not session_id or not project_dir_name:
+        print("Warning: transcript-origin.json resolution unavailable or missing session_id", file=sys.stderr)
+        return result
+
+    # Build path to session directory
+    session_dir = Path.home() / ".claude" / "projects" / project_dir_name / session_id / "subagents"
+    if not session_dir.exists():
+        print(f"Warning: session directory not found: {session_dir}", file=sys.stderr)
+        return result
+
+    for subagent_file in session_dir.glob("*.jsonl"):
         matched_reviewer = _subagent_reviewer_for_review_dir(subagent_file, review_dir_name, reviewer_slugs)
         if matched_reviewer:
             result[matched_reviewer].append(subagent_file)
@@ -138,8 +157,11 @@ def parse_tokens_from_subagent(jsonl_file: Path) -> TokenRecord:
     """
     Parse token usage from a subagent transcript.
 
-    Sums input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
-    from all assistant messages that carry an iterations key (complete turns).
+    Reads token usage from message.usage fields (input_tokens, output_tokens,
+    cache_read_input_tokens, cache_creation_input_tokens). De-duplicates by
+    message["id"] when present; entries without an id are counted once each.
+
+    Skips entries without a message key or where message/usage is not a dict.
 
     Returns zero-filled TokenRecord on read or parse error (warns to stderr per file-wide policy).
     """
@@ -149,6 +171,7 @@ def parse_tokens_from_subagent(jsonl_file: Path) -> TokenRecord:
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
     }
+    seen_message_ids: set = set()
 
     try:
         with open(jsonl_file, "r") as f:
@@ -157,14 +180,27 @@ def parse_tokens_from_subagent(jsonl_file: Path) -> TokenRecord:
                     continue
                 try:
                     entry = json.loads(line)
-                    # Only count assistant messages with iterations (complete turns)
-                    if entry.get("type") == "assistant" and "iterations" in entry:
-                        usage = entry.get("usage", {})
-                        if usage:
-                            tokens["input_tokens"] += usage.get("input_tokens", 0)
-                            tokens["output_tokens"] += usage.get("output_tokens", 0)
-                            tokens["cache_read_input_tokens"] += usage.get("cache_read_input_tokens", 0)
-                            tokens["cache_creation_input_tokens"] += usage.get("cache_creation_input_tokens", 0)
+                    if entry.get("type") == "assistant":
+                        message = entry.get("message")
+                        if not isinstance(message, dict):
+                            continue
+
+                        usage = message.get("usage")
+                        if not isinstance(usage, dict):
+                            continue
+
+                        # De-duplicate by message id
+                        message_id = message.get("id")
+                        if message_id:
+                            if message_id in seen_message_ids:
+                                continue
+                            seen_message_ids.add(message_id)
+
+                        # Sum all four fields with defaults
+                        tokens["input_tokens"] += usage.get("input_tokens", 0)
+                        tokens["output_tokens"] += usage.get("output_tokens", 0)
+                        tokens["cache_read_input_tokens"] += usage.get("cache_read_input_tokens", 0)
+                        tokens["cache_creation_input_tokens"] += usage.get("cache_creation_input_tokens", 0)
                 except ValueError:
                     continue
     except OSError as e:
@@ -181,9 +217,59 @@ def extract_reviewer_name(filename: str) -> Optional[str]:
     return None
 
 
-def count_reviewer_mentions(final_report_path: Path, reviewer: str) -> int:
+def load_reviewer_display_names() -> Dict[str, str]:
+    """
+    Load slug → display-name map from reviewers/index.yaml.
+
+    Tries repo path first (via symlink resolution), falls back to ~/.claude/reviewers/index.yaml.
+    Returns dict mapping slug to display name; on error warns to stderr and returns empty dict.
+    """
+    names: Dict[str, str] = {}
+
+    # Try repo path first (following symlink back through installed scripts)
+    repo_reviewers_index = Path(__file__).resolve().parent.parent / "reviewers" / "index.yaml"
+    fallback_index = Path.home() / ".claude" / "reviewers" / "index.yaml"
+
+    for index_path in [repo_reviewers_index, fallback_index]:
+        if not index_path.exists():
+            continue
+
+        try:
+            content = index_path.read_text()
+            # Parse with simple regex over name: and file: lines
+            # Format: "- name: Uncle Bob" / "  file: uncle-bob.yaml" (repeating)
+            name_pattern = r'^\s*-\s+name:\s+(.+)$'
+            file_pattern = r'^\s+file:\s+([a-z\-]+)\.yaml$'
+
+            lines = content.split('\n')
+            current_name = None
+            for line in lines:
+                name_match = re.match(name_pattern, line)
+                if name_match:
+                    current_name = name_match.group(1).strip()
+                    continue
+
+                file_match = re.match(file_pattern, line)
+                if file_match and current_name:
+                    slug = file_match.group(1)
+                    names[slug] = current_name
+                    current_name = None
+
+            return names
+        except OSError as e:
+            print(f"Warning: failed to read reviewers index {index_path}: {e}", file=sys.stderr)
+            continue
+
+    # No index found, warn once but don't raise
+    print("Warning: reviewers/index.yaml not found; using title-cased slugs", file=sys.stderr)
+    return names
+
+
+def count_reviewer_mentions(final_report_path: Path, reviewer: str, display_names: Dict[str, str]) -> int:
     """
     Count mentions of a reviewer by name or slug in final-report.md.
+
+    Matches either the slug or the resolved display name, case-insensitive, whole-word.
 
     Returns 0 on read error (warns to stderr per file-wide exception policy).
     """
@@ -194,20 +280,30 @@ def count_reviewer_mentions(final_report_path: Path, reviewer: str) -> int:
         content = final_report_path.read_text()
         # Look for the reviewer name in various contexts (headers, attribution lines, etc.)
         # Case-insensitive to be safe
-        pattern = re.escape(reviewer)
-        # Match the reviewer name as a whole word (preceded/followed by word boundary or special chars)
-        matches = re.findall(rf"\b{pattern}\b", content, re.IGNORECASE)
-        return len(matches)
+        count = 0
+
+        # Match by slug
+        slug_pattern = re.escape(reviewer)
+        count += len(re.findall(rf"\b{slug_pattern}\b", content, re.IGNORECASE))
+
+        # Match by display name if available
+        display_name = display_names.get(reviewer)
+        if display_name:
+            name_pattern = re.escape(display_name)
+            count += len(re.findall(rf"\b{name_pattern}\b", content, re.IGNORECASE))
+
+        return count
     except OSError as e:
         print(f"Warning: failed to read {final_report_path}: {e}", file=sys.stderr)
         return 0
 
 
-def count_reviewer_escalations(action_plan_path: Path, reviewer: str) -> int:
+def count_reviewer_escalations(action_plan_path: Path, reviewer: str, display_names: Dict[str, str]) -> int:
     """
     Count findings escalated by a reviewer in claude-action-plan.md.
 
-    Looks for lines with '**Raised by**: <reviewer>' format.
+    Looks for lines with '**Raised by**: <reviewer>' format, matching either slug or display name,
+    case-insensitive, whole-word.
 
     Returns 0 on read error (warns to stderr per file-wide exception policy).
     """
@@ -216,11 +312,19 @@ def count_reviewer_escalations(action_plan_path: Path, reviewer: str) -> int:
 
     try:
         content = action_plan_path.read_text()
-        # Match "**Raised by**: <reviewer>" or similar patterns
-        # The reviewer might be listed as a full name or slug
-        pattern = rf"\*\*Raised by\*\*:.*\b{re.escape(reviewer)}\b"
-        matches = re.findall(pattern, content, re.IGNORECASE)
-        return len(matches)
+        count = 0
+
+        # Match "**Raised by**: <reviewer>" by slug
+        slug_pattern = rf"\*\*Raised by\*\*:.*\b{re.escape(reviewer)}\b"
+        count += len(re.findall(slug_pattern, content, re.IGNORECASE))
+
+        # Match by display name if available
+        display_name = display_names.get(reviewer)
+        if display_name:
+            name_pattern = rf"\*\*Raised by\*\*:.*\b{re.escape(display_name)}\b"
+            count += len(re.findall(name_pattern, content, re.IGNORECASE))
+
+        return count
     except OSError as e:
         print(f"Warning: failed to read {action_plan_path}: {e}", file=sys.stderr)
         return 0
@@ -275,23 +379,25 @@ def load_existing_yield_data(yield_file: Path) -> dict:
     return data
 
 
-def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldRow]]:
+def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldRow], str]:
     """
     Process a review directory and extract per-reviewer yield data.
 
-    Returns (repo_key, list of per-reviewer entries) or (None, []) on error.
+    Returns (repo_key, list of per-reviewer entries, tokens_status) or (None, [], "unavailable") on error.
+    tokens_status is "measured" when transcripts are found, "unavailable" when transcript-origin.json
+    is missing/unavailable or session dir cannot be accessed.
     """
     review_dir = Path(review_dir_path).expanduser().resolve()
 
     if not review_dir.exists():
         print(f"Error: review directory not found: {review_dir}", file=sys.stderr)
-        return None, []
+        return None, [], "unavailable"
 
     # Verify this looks like a review directory
     final_report = review_dir / "final-report.md"
     if not final_report.exists():
         print(f"Error: final-report.md not found in {review_dir}", file=sys.stderr)
-        return None, []
+        return None, [], "unavailable"
 
     repo_key = get_repo_key(review_dir)
     run_id = get_review_run_id(review_dir)
@@ -307,7 +413,10 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     # reviewer's own checkpoint file into this review dir (not sort-order pairing —
     # subagents finish in nondeterministic order, so positional pairing with
     # sorted(reviewer_slugs) would silently misattribute token costs).
-    subagent_files_by_reviewer = find_subagent_files_by_reviewer(review_dir_path, sorted(reviewer_slugs), repo_key)
+    subagent_files_by_reviewer = find_subagent_files_by_reviewer(review_dir_path, sorted(reviewer_slugs))
+
+    # Determine tokens_status based on whether transcripts were found
+    tokens_status = "measured" if any(subagent_files_by_reviewer.values()) else "unavailable"
 
     reviewer_tokens: Dict[str, TokenRecord] = {}
     for reviewer in sorted(reviewer_slugs):
@@ -325,14 +434,17 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     # Count mentions and escalations per reviewer
     action_plan = review_dir / "claude-action-plan.md"
 
+    # Load display names for better matching
+    display_names = load_reviewer_display_names()
+
     # Build output rows
     timestamp = datetime.now(timezone.utc).isoformat()
     rows: List[YieldRow] = []
 
     for reviewer in sorted(reviewer_slugs):
         tokens = reviewer_tokens[reviewer]
-        mention_count = count_reviewer_mentions(final_report, reviewer)
-        escalation_count = count_reviewer_escalations(action_plan, reviewer)
+        mention_count = count_reviewer_mentions(final_report, reviewer, display_names)
+        escalation_count = count_reviewer_escalations(action_plan, reviewer, display_names)
 
         row: YieldRow = {
             "run_id": run_id,
@@ -344,10 +456,11 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
             "cache_creation_input_tokens": tokens["cache_creation_input_tokens"],
             "mention_count": mention_count,
             "escalation_count": escalation_count,
+            "tokens_status": tokens_status,
         }
         rows.append(row)
 
-    return repo_key, rows
+    return repo_key, rows, tokens_status
 
 
 def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
@@ -381,6 +494,99 @@ def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
         return None
 
     return yield_file
+
+
+def load_bucket_config() -> dict:
+    """Load bucket configuration from routing-metrics-buckets.json."""
+    config_path = Path(__file__).resolve().parent / "routing-metrics-buckets.json"
+    try:
+        return json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Warning: failed to load bucket config: {e}, using defaults", file=sys.stderr)
+        return {
+            "config_version": 1,
+            "buckets": [
+                {"name": "xs", "max_changed_lines": 49},
+                {"name": "s", "max_changed_lines": 199},
+                {"name": "m", "max_changed_lines": 799},
+                {"name": "l", "max_changed_lines": None}
+            ]
+        }
+
+
+def classify_size_bucket(changed_lines: int, bucket_config: dict) -> str:
+    """Classify a review by changed lines using bucket config."""
+    if changed_lines is None:
+        return "unknown"
+
+    for bucket in bucket_config.get("buckets", []):
+        max_lines = bucket.get("max_changed_lines")
+        if max_lines is None or changed_lines <= max_lines:
+            return bucket.get("name", "unknown")
+
+    return "unknown"
+
+
+def count_changed_lines(review_dir: Path) -> Optional[int]:
+    """Count changed lines from full-diff.patch (lines starting with +/-, excluding +++/---)."""
+    patch_file = review_dir / "full-diff.patch"
+    if not patch_file.exists():
+        return None
+
+    try:
+        content = patch_file.read_text()
+        count = 0
+        for line in content.split('\n'):
+            if line.startswith('+') and not line.startswith('+++'):
+                count += 1
+            elif line.startswith('-') and not line.startswith('---'):
+                count += 1
+        return count
+    except OSError:
+        return None
+
+
+def read_findings_json(review_dir: Path) -> Optional[dict]:
+    """Read findings.json from review directory."""
+    findings_file = review_dir / "findings.json"
+    if not findings_file.exists():
+        return None
+
+    try:
+        return json.loads(findings_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def parse_review_timestamp(review_dir_name: str) -> Optional[datetime]:
+    """Parse timestamp from review directory name (format: branch-hash-YYYYmmddTHHMMSS-rand)."""
+    parts = review_dir_name.rsplit('-', 2)  # Split from right to get YYYYmmddTHHMMSS-rand
+    if len(parts) < 2:
+        return None
+
+    timestamp_part = parts[-2]  # YYYYmmddTHHMMSS
+    try:
+        return datetime.strptime(timestamp_part, "%Y%m%dT%H%M%S")
+    except ValueError:
+        return None
+
+
+def classify_regime(timestamp: Optional[datetime]) -> str:
+    """Classify review into regime based on timestamp."""
+    if not timestamp:
+        return "unknown"
+
+    pre_router_cutoff = datetime(2026, 7, 12)
+    post_148_sam_gated_start = datetime(2026, 9, 16)
+
+    if timestamp < pre_router_cutoff:
+        return "pre-router"
+    elif timestamp < post_148_sam_gated_start:
+        return "judgment-router"
+    elif timestamp >= post_148_sam_gated_start:
+        return "post-148-sam-gated"
+    else:
+        return "unknown"
 
 
 def print_review_table(rows: List[YieldRow]) -> None:
@@ -484,21 +690,299 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
     print()
 
 
+def compute_report_data(repo_key: str, bucket_config: dict) -> dict:
+    """
+    Compute report metrics across all runs for a repo.
+
+    Returns dict with:
+    - reviewers_per_run: grouped by size bucket
+    - verified_crit_high_per_run: grouped by size bucket
+    - verified_value_per_run: crit*8 + high*4 + med*2 + low*1
+    - solo_findings_per_reviewer: empty supported_by findings
+    - regime_counts: {regime: count} with n_included/n_excluded
+    - tokens: real numbers or {status, reason}
+    - methodology: bucket config, formula, observation note, etc.
+    """
+    observation_only_note = "Observation-only in Phase 0 — not wired into `prompts/router.md`, `reviewers/index.yaml` triggers, or model/effort selection; wiring it into any of those needs an ADR amendment first."
+
+    reports_dir = Path.home() / ".claude" / "reviews" / repo_key
+    if not reports_dir.exists():
+        return {
+            "error": f"No reviews found for {repo_key}",
+            "methodology": {
+                "observation_only": True,
+                "observation_only_sentence": observation_only_note,
+            }
+        }
+
+    # Walk all review directories
+    reviewers_per_run = {}  # {bucket: [counts]}
+    verified_crit_high_per_run = {}  # {bucket: [counts]}
+    verified_value_per_run = {}  # {bucket: [values]}
+    solo_findings_per_reviewer = {}  # {reviewer: count}
+    regime_counts = {}  # {regime: count}
+    all_token_rows = []  # For token aggregation
+    runs_with_unavailable_findings = 0
+
+    for review_subdir in sorted(reports_dir.iterdir()):
+        if not review_subdir.is_dir():
+            continue
+
+        # Parse timestamp and classify regime
+        timestamp = parse_review_timestamp(review_subdir.name)
+        regime = classify_regime(timestamp)
+        regime_counts[regime] = regime_counts.get(regime, 0) + 1
+
+        # Only include post-148-sam-gated runs in finding-derived metrics
+        include_in_findings = regime == "post-148-sam-gated"
+
+        # Count changed lines
+        changed_lines = count_changed_lines(review_subdir)
+        bucket = classify_size_bucket(changed_lines or -1, bucket_config)
+
+        # Initialize bucket lists if needed
+        if bucket not in reviewers_per_run:
+            reviewers_per_run[bucket] = []
+            verified_crit_high_per_run[bucket] = []
+            verified_value_per_run[bucket] = []
+
+        # Count reviewers
+        reviewer_count = len(list(review_subdir.glob("*-pass1.md")))
+        reviewers_per_run[bucket].append(reviewer_count)
+
+        # Read findings
+        findings_data = read_findings_json(review_subdir)
+        if not findings_data and include_in_findings:
+            runs_with_unavailable_findings += 1
+            continue
+
+        if findings_data and include_in_findings:
+            findings = findings_data.get("findings", [])
+            crit_high_count = 0
+            value_total = 0
+
+            severity_values = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+
+            for finding in findings:
+                verdict = finding.get("verdict")
+                if verdict != "CONFIRMED":
+                    continue
+
+                severity = finding.get("severity", "")
+                supported_by = finding.get("supported_by", [])
+                raised_by = finding.get("raised_by", "")
+
+                # Crit/High count (case-insensitive)
+                if severity.lower() in ["critical", "high"]:
+                    crit_high_count += 1
+
+                # Value calculation
+                value = severity_values.get(severity, 0)
+                value_total += value
+
+                # Solo finding tracking
+                if not supported_by and raised_by:
+                    solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
+
+            verified_crit_high_per_run[bucket].append(crit_high_count)
+            verified_value_per_run[bucket].append(value_total)
+
+        # Load yield data for tokens
+        yield_file = reports_dir / "reviewer-yield.jsonl"
+        if yield_file.exists():
+            try:
+                with open(yield_file, "r") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                row = json.loads(line)
+                                if row.get("run_id") == review_subdir.name:
+                                    all_token_rows.append(row)
+                            except json.JSONDecodeError:
+                                continue
+            except OSError:
+                pass
+
+    # Compute token aggregation
+    tokens_result = {}
+    measured_rows = [r for r in all_token_rows if r.get("tokens_status") == "measured"]
+    if measured_rows:
+        total_input = sum(r.get("input_tokens", 0) for r in measured_rows)
+        total_output = sum(r.get("output_tokens", 0) for r in measured_rows)
+        total_cache_read = sum(r.get("cache_read_input_tokens", 0) for r in measured_rows)
+        total_cache_creation = sum(r.get("cache_creation_input_tokens", 0) for r in measured_rows)
+        run_count = len(set(r.get("run_id") for r in measured_rows))
+
+        tokens_result = {
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read,
+            "total_cache_creation_tokens": total_cache_creation,
+            "avg_input_per_run": total_input // run_count if run_count > 0 else 0,
+            "avg_output_per_run": total_output // run_count if run_count > 0 else 0,
+        }
+    else:
+        tokens_result = {
+            "status": "unavailable",
+            "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward"
+        }
+
+    # Build regime summary
+    n_included = regime_counts.get("post-148-sam-gated", 0)
+    n_excluded = sum(regime_counts.get(r, 0) for r in ["pre-router", "judgment-router", "unknown"])
+
+    return {
+        "repo_key": repo_key,
+        "reviewers_per_run": reviewers_per_run,
+        "verified_crit_high_per_run": verified_crit_high_per_run,
+        "verified_value_per_run": verified_value_per_run,
+        "solo_findings_per_reviewer": solo_findings_per_reviewer,
+        "regime_counts": regime_counts,
+        "n_included_runs": n_included,
+        "n_excluded_runs": n_excluded,
+        "tokens": tokens_result,
+        "valLift": {
+            "status": "not_yet_available",
+            "reason": "requires the deterministic scorer (#195/#196)"
+        },
+        "shadow_miss_rate": {
+            "status": "not_yet_available",
+            "reason": "requires the deterministic scorer (#195/#196)"
+        },
+        "methodology": {
+            "formula": "crit*8 + high*4 + med*2 + low*1 (over CONFIRMED findings)",
+            "bucket_config": bucket_config,
+            "corpus_boundary": {
+                "repo_keys": [repo_key],
+                "regimes": ["post-148-sam-gated"],
+                "n_included": n_included,
+                "n_excluded": n_excluded
+            },
+            "token_status_note": "unavailable for retrospective runs; measured prospectively from transcript-origin.json fix onward",
+            "observation_only": True,
+            "observation_only_sentence": observation_only_note,
+        }
+    }
+
+
+def render_report_json(report_data: dict) -> str:
+    """Render report data as JSON."""
+    return json.dumps(report_data, indent=2)
+
+
+def render_report_markdown(report_data: dict) -> str:
+    """Render report data as Markdown."""
+    output = []
+    output.append("# Reviewer Routing Metrics Report\n")
+
+    repo_key = report_data.get("repo_key", "unknown")
+    output.append(f"**Repository:** {repo_key}\n")
+
+    # Methodology block
+    methodology = report_data.get("methodology", {})
+    if methodology:
+        output.append("## Methodology\n")
+        output.append(f"- **Formula:** {methodology.get('formula', 'N/A')}\n")
+        output.append(f"- **Bucket Config Version:** {methodology.get('bucket_config', {}).get('config_version', 'N/A')}\n")
+        output.append(f"- **Corpus:** {methodology.get('corpus_boundary', {}).get('n_included', 0)} included, {methodology.get('corpus_boundary', {}).get('n_excluded', 0)} excluded\n")
+        output.append(f"- **Observation Only:** Yes — {methodology.get('observation_only_sentence', 'Phase 0 only')}\n\n")
+
+    # Regime counts
+    regime_counts = report_data.get("regime_counts", {})
+    if regime_counts:
+        output.append("## Regime Counts\n")
+        for regime, count in sorted(regime_counts.items()):
+            output.append(f"- {regime}: {count} runs\n")
+        output.append("\n")
+
+    # Reviewers per run
+    output.append("## Average Reviewers per Run (by Size Bucket)\n")
+    reviewers_per_run = report_data.get("reviewers_per_run", {})
+    for bucket in sorted(reviewers_per_run.keys()):
+        counts = reviewers_per_run[bucket]
+        avg = sum(counts) // len(counts) if counts else 0
+        output.append(f"- **{bucket}**: {avg} avg reviewers ({len(counts)} runs)\n")
+    output.append("\n")
+
+    # Verified findings
+    output.append("## Verified Critical/High Findings per Run (by Size Bucket)\n")
+    verified_crit_high = report_data.get("verified_crit_high_per_run", {})
+    for bucket in sorted(verified_crit_high.keys()):
+        counts = verified_crit_high[bucket]
+        avg = sum(counts) // len(counts) if counts else 0
+        output.append(f"- **{bucket}**: {avg} avg critical/high findings ({len(counts)} runs)\n")
+    output.append("\n")
+
+    # Value calculation
+    output.append("## Verified Value per Run (by Size Bucket)\n")
+    output.append("*(crit×8 + high×4 + med×2 + low×1, CONFIRMED findings only)*\n\n")
+    verified_value = report_data.get("verified_value_per_run", {})
+    for bucket in sorted(verified_value.keys()):
+        values = verified_value[bucket]
+        avg = sum(values) // len(values) if values else 0
+        output.append(f"- **{bucket}**: {avg} avg value points ({len(values)} runs)\n")
+    output.append("\n")
+
+    # Solo findings
+    output.append("## Solo Findings by Reviewer\n")
+    solo_findings = report_data.get("solo_findings_per_reviewer", {})
+    if solo_findings:
+        for reviewer in sorted(solo_findings.keys()):
+            count = solo_findings[reviewer]
+            output.append(f"- {reviewer}: {count} solo findings\n")
+    else:
+        output.append("*(no solo findings in post-148-sam-gated runs)*\n")
+    output.append("\n")
+
+    # Tokens
+    output.append("## Token Usage\n")
+    tokens = report_data.get("tokens", {})
+    if isinstance(tokens, dict) and "status" in tokens:
+        output.append(f"- **Status:** {tokens['status']}\n")
+        output.append(f"- **Reason:** {tokens['reason']}\n")
+    elif isinstance(tokens, dict) and "total_input_tokens" in tokens:
+        output.append(f"- **Total Input Tokens:** {tokens.get('total_input_tokens', 0):,}\n")
+        output.append(f"- **Total Output Tokens:** {tokens.get('total_output_tokens', 0):,}\n")
+        output.append(f"- **Avg Input per Run:** {tokens.get('avg_input_per_run', 0):,}\n")
+        output.append(f"- **Avg Output per Run:** {tokens.get('avg_output_per_run', 0):,}\n")
+    output.append("\n")
+
+    return "".join(output)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Track per-reviewer token yield and finding escalation metrics."
+        description="Track per-reviewer token yield and finding escalation metrics. "
+                    "Observation-only in Phase 0 — not wired into prompts/router.md, "
+                    "reviewers/index.yaml triggers, or model/effort selection; wiring it into "
+                    "any of those needs an ADR amendment first."
     )
     parser.add_argument(
         "review_dir",
         nargs="?",
         default=None,
         help="Review directory path for single-run mode (e.g., ~/.claude/reviews/{repo}/feature-x-123/). "
-             "In --aggregate mode, pass the repo key instead (e.g., owner-repo).",
+             "In --aggregate or --report mode, pass the repo key instead (e.g., owner-repo).",
     )
     parser.add_argument(
         "--aggregate",
         action="store_true",
         help="Print leaderboard across all runs. Requires repo key as positional argument.",
+    )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Generate aggregate metrics report (Phase 0: observation-only). Requires repo key as positional argument.",
+    )
+    parser.add_argument(
+        "--report-all-repos",
+        action="store_true",
+        help="Generate report across all repos under ~/.claude/reviews/.",
+    )
+    parser.add_argument(
+        "--report-json",
+        metavar="PATH",
+        help="Write report JSON source-of-truth to PATH; stdout always prints Markdown rendering.",
     )
 
     args = parser.parse_args()
@@ -512,14 +996,67 @@ def main():
         print_aggregate_leaderboard(args.review_dir)
         return
 
+    if args.report or args.report_all_repos:
+        # Report mode
+        bucket_config = load_bucket_config()
+
+        if args.report_all_repos:
+            # Walk all repos
+            reports_root = Path.home() / ".claude" / "reviews"
+            if not reports_root.exists():
+                print("No reviews found", file=sys.stderr)
+                sys.exit(1)
+
+            all_reports = {}
+            for repo_subdir in sorted(reports_root.iterdir()):
+                if not repo_subdir.is_dir():
+                    continue
+                repo_key = repo_subdir.name
+                all_reports[repo_key] = compute_report_data(repo_key, bucket_config)
+
+            report_data = {
+                "scope": "all-repos",
+                "reports": all_reports,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        else:
+            # Single repo report
+            if not args.review_dir:
+                print("Error: --report requires repo key as positional argument (e.g., owner-repo)", file=sys.stderr)
+                sys.exit(1)
+            report_data = compute_report_data(args.review_dir, bucket_config)
+
+        # Write JSON if requested
+        if args.report_json:
+            try:
+                json_path = Path(args.report_json).expanduser()
+                json_path.parent.mkdir(parents=True, exist_ok=True)
+                json_path.write_text(render_report_json(report_data) + "\n")
+                print(f"Report written to: {json_path}", file=sys.stderr)
+            except OSError as e:
+                print(f"Error writing report JSON: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        # Print Markdown to stdout
+        if args.report_all_repos:
+            print("# All Repository Reports\n")
+            for repo_key, repo_report in report_data.get("reports", {}).items():
+                print(f"## {repo_key}\n")
+                print(render_report_markdown(repo_report))
+                print("\n---\n")
+        else:
+            print(render_report_markdown(report_data))
+
+        return
+
     if not args.review_dir:
         # No positional and no --aggregate: this is for direct/manual invocation only,
         # such as testing or querying a specific repo directly (not part of normal flow)
-        print("Error: provide review directory path or use --aggregate with repo key", file=sys.stderr)
+        print("Error: provide review directory path or use --aggregate/--report with repo key", file=sys.stderr)
         sys.exit(1)
 
     # Single review run mode
-    repo_key, rows = process_review_dir(args.review_dir)
+    repo_key, rows, tokens_status = process_review_dir(args.review_dir)
 
     if repo_key is None:
         sys.exit(1)

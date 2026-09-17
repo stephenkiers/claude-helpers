@@ -1,0 +1,9 @@
+{
+  "config_version": 1,
+  "buckets": [
+    {"name": "xs", "max_changed_lines": 49},
+    {"name": "s", "max_changed_lines": 199},
+    {"name": "m", "max_changed_lines": 799},
+    {"name": "l", "max_changed_lines": null}
+  ]
+}

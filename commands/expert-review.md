@@ -269,6 +269,47 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
 
    REVIEW_DIR="$HOME/.claude/reviews/${REPO_KEY}/${BRANCH}-${HASH}-${TIMESTAMP}"
    mkdir -p "$REVIEW_DIR"
+
+   # Write transcript-origin.json for bounded transcript discovery
+   set +e  # Allow commands to fail without exiting the script
+   PROJECT_DIR_SANITIZED=$(printf '%s' "$(pwd)" | tr '/' '-')
+   SESSION_ID=""
+   RESOLUTION="unavailable"
+   
+   # Try to get session ID from environment
+   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+     SESSION_ID="$CLAUDE_CODE_SESSION_ID"
+     RESOLUTION="env"
+   else
+     # Try to find most-recent session-id subdirectory
+     PROJECTS_DIR="$HOME/.claude/projects/$PROJECT_DIR_SANITIZED"
+     if [ -d "$PROJECTS_DIR" ]; then
+       MOST_RECENT=$(ls -td "$PROJECTS_DIR"/*/ 2>/dev/null | head -1 | xargs -I {} basename {})
+       if [ -n "$MOST_RECENT" ] && [ "$MOST_RECENT" != "subagents" ]; then
+         SESSION_ID="$MOST_RECENT"
+         RESOLUTION="most-recent-dir"
+       fi
+     fi
+   fi
+   set -e
+   
+   RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   
+   # Construct and write transcript-origin.json using jq with proper escaping
+   printf '%s' "$(pwd)" | jq -R --arg schema_version "1" \
+     --arg cwd_val "$(pwd)" \
+     --arg proj_dir "$PROJECT_DIR_SANITIZED" \
+     --arg sess_id "$SESSION_ID" \
+     --arg res "$RESOLUTION" \
+     --arg rec_at "$RECORDED_AT" \
+     '{
+       schema_version: ($schema_version | tonumber),
+       cwd: $cwd_val,
+       project_dir: $proj_dir,
+       session_id: (if $sess_id == "" then null else $sess_id end),
+       resolution: $res,
+       recorded_at: $rec_at
+     }' > "$REVIEW_DIR/transcript-origin.json"
    ```
 
    `PROJECT_ROOT` is where the project's `.claude/project.yaml` lives (still read per-worktree).
