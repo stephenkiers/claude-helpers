@@ -15,6 +15,7 @@ checks), and the caller must fail closed rather than proceed as if nothing happe
 
 import functools
 from dataclasses import dataclass
+from typing import TypeVar, Callable, Any, cast
 
 
 @dataclass
@@ -38,12 +39,14 @@ class Unknown:
         return f"Unknown: {self.reason}"
 
 
-def is_unknown(value) -> bool:
+def is_unknown(value: object) -> bool:
     """Check if a value is an Unknown result."""
     return isinstance(value, Unknown)
 
 
-def fail_closed(func):
+F = TypeVar("F", bound=Callable[..., Any])
+
+def fail_closed(func: F) -> F:
     """
     Decision 8 enforcement: wrapped functions must return a tuple whose
     last element is either None or an Unknown instance — the explicit
@@ -52,7 +55,7 @@ def fail_closed(func):
     "silently collapsed unknown" bug structurally rather than by review.
     """
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         result = func(*args, **kwargs)
         if not isinstance(result, tuple) or len(result) < 2:
             raise TypeError(
@@ -66,4 +69,4 @@ def fail_closed(func):
                 f"error channel is {error_slot!r}, not None or Unknown"
             )
         return result
-    return wrapper
+    return cast(F, wrapper)
