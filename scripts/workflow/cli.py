@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Callable, Any, Tuple
 
 from . import cleanup, merge, shipit, checks, track
 from .models import RepoCacheData
@@ -25,7 +26,7 @@ from .providers import GithubProvider, LocalProvider
 from . import worktrees
 
 
-def _run_plan(plan_fn, arg):
+def _run_plan(plan_fn: Callable[[Any], Tuple[Any, Any]], arg: Any) -> None:
     """
     Execute a plan function and handle output/exit codes.
 
@@ -43,7 +44,7 @@ def _run_plan(plan_fn, arg):
         sys.exit(1)
 
 
-def _run_apply(apply_fn, plan_json):
+def _run_apply(apply_fn: Callable[[str], Tuple[Any, Any]], plan_json: str) -> None:
     """
     Execute an apply function and handle output/exit codes.
 
@@ -59,7 +60,7 @@ def _run_apply(apply_fn, plan_json):
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     # Runtime guard: scripts/workflow/ requires python3 3.8+
     if sys.version_info < (3, 8):
         print(
@@ -216,7 +217,7 @@ def main():
             sys.exit(1)
     elif args.command == "shipit":
         if args.shipit_action == "plan":
-            def plan_shipit_wrapper(_):
+            def plan_shipit_wrapper(_: Any) -> Tuple[Any, Any]:
                 return shipit.plan_shipit(
                     commit_message_path=args.message_path,
                     pr_body_path=args.body_file,
@@ -243,6 +244,7 @@ def main():
                 sys.exit(1)
 
             # Construct provider based on mode
+            provider: Any
             if args.mode == "local":
                 # For local mode, determine tracker and plans paths
                 project_root = worktrees.detect_project_root()
@@ -257,7 +259,7 @@ def main():
             else:
                 provider = GithubProvider()
 
-            def plan_track_wrapper(_):
+            def plan_track_wrapper(_: Any) -> Tuple[Any, Any]:
                 return track.plan_track(
                     provider=provider,
                     plan_content=plan_content,
@@ -282,6 +284,7 @@ def main():
                 print(json.dumps(output))
                 sys.exit(1)
 
+            provider_apply: Any
             if mode == "local":
                 # Prefer the project_root already serialized in the plan (matches
                 # apply_track's own approach of reading plan.main_worktree rather
@@ -300,12 +303,12 @@ def main():
 
                 tracker_path = Path(project_root) / "issues.json"
                 plans_dir = Path(project_root) / "plans"
-                provider = LocalProvider(tracker_path, plans_dir)
+                provider_apply = LocalProvider(tracker_path, plans_dir)
             else:
-                provider = GithubProvider()
+                provider_apply = GithubProvider()
 
-            def apply_track_wrapper(pj):
-                return track.apply_track(provider=provider, plan_json=pj)
+            def apply_track_wrapper(pj: str) -> Tuple[Any, Any]:
+                return track.apply_track(provider=provider_apply, plan_json=pj)
 
             _run_apply(apply_track_wrapper, plan_json)
         else:
