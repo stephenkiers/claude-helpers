@@ -15,6 +15,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
+import yaml
+
+SEVERITY_WEIGHTS = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+
 
 # Reuse from reviewer-yield.py for consistency
 def get_repo_key(review_dir: Path) -> str:
@@ -94,10 +98,14 @@ def parse_panel_decision_table(tagged_sections_path: Path) -> Dict[str, str]:
             continue
 
         # Format: | Reviewer | Selected | Reason |
-        reviewer = parts[1]
-        selected = parts[2]
+        # The table carries display names ("Sam System"); normalize to the same
+        # slug used by structural-gate markers and index.yaml ("sam-system") so
+        # callers can key both by the same identifier. "Selected" may read
+        # "Yes (pre-seated)" for framework-forced reviewers — still attended.
+        reviewer = slugify_reviewer_name(parts[1]) if parts[1] else ""
+        selected = "Yes" if parts[2].strip().lower().startswith("yes") else "No"
 
-        if reviewer and selected and reviewer not in ("Reviewer", ""):
+        if reviewer and reviewer not in ("reviewer", ""):
             result[reviewer] = selected
 
     return result
@@ -158,32 +166,42 @@ def parse_findings_by_severity(final_report_path: Path) -> Dict[str, List[Tuple[
         "Low": [],
     }
 
-    # Split by severity section
-    severity_pattern = r"###\s+(Critical|High|Medium|Low)\s*\n"
-    severity_matches = list(re.finditer(severity_pattern, content))
+    # Corpus reports vary in severity-heading case ("### High", "### HIGH") and
+    # finding-marker shape ("#### M1 — Title", "#### 1. Title", "#### Title").
+    # Split on any "### <severity>" heading (any case), bounded by the next
+    # heading at level <=3 (another severity section, or a new top-level "## ").
+    severity_pattern = r"^###\s+(Critical|High|Medium|Low)\b.*$"
+    severity_matches = list(re.finditer(severity_pattern, content, re.IGNORECASE | re.MULTILINE))
+    next_heading_pattern = re.compile(r"^#{2,3}\s", re.MULTILINE)
 
-    for i, match in enumerate(severity_matches):
-        severity = match.group(1)
+    for match in severity_matches:
+        severity = match.group(1).capitalize()
         section_start = match.end()
-        section_end = severity_matches[i + 1].start() if i + 1 < len(severity_matches) else len(content)
+        next_heading = next_heading_pattern.search(content, section_start)
+        section_end = next_heading.start() if next_heading else len(content)
         section = content[section_start:section_end]
 
-        # Extract findings (e.g., "#### C1 —", "#### H2 —")
-        finding_pattern = r"####\s+([A-Z]\d+[a-z]?)\s*—\s*(.+?)(?=####|$)"
-        for finding_match in re.finditer(finding_pattern, section, re.DOTALL):
-            finding_id = finding_match.group(1)
+        # Findings are "#### ..." headings; body runs until the next #### or EOF.
+        finding_pattern = r"^####\s+(.+?)$(.*?)(?=^####\s|\Z)"
+        for idx, finding_match in enumerate(
+            re.finditer(finding_pattern, section, re.DOTALL | re.MULTILINE), start=1
+        ):
+            heading_text = finding_match.group(1).strip()
             finding_body = finding_match.group(2)
 
-            # Check for CONFIRMED marker
+            # Prefer an explicit short ID ("M1", "C2a") from the heading; else fall
+            # back to a positional ID so every finding is still counted.
+            id_match = re.match(r"([A-Z]\d+[a-z]?)\b", heading_text)
+            finding_id = id_match.group(1) if id_match else f"{severity[0]}{idx}"
+
             is_confirmed = "CONFIRMED" in finding_body.upper()
 
-            # Extract reviewer info (look for "**Reviewer**:" or "**Reviewers**:")
             reviewer_match = re.search(
-                r"\*\*Reviewers?:\*\*\s*([^\n]+)", finding_body
+                r"\*\*Reviewers?\*\*:\s*([^\n]+)", finding_body
             )
             reviewer_str = reviewer_match.group(1) if reviewer_match else ""
 
-            if finding_id and severity in result:
+            if severity in result:
                 result[severity].append((finding_id, reviewer_str, is_confirmed))
 
     return result
@@ -325,6 +343,26 @@ def cmd_attendance(corpus_root: str) -> None:
             print(f"  {reviewer:<28} {selected_yes:>3}/{total:<3} ({attendance_pct:>5.1f}%)")
 
 
+def extract_reviewer_slugs(reviewer_str: str, valid_slugs: set) -> List[str]:
+    """
+    Extract known reviewer slugs from a '**Reviewer(s)**:' field.
+
+    Splits on commas, strips parenthetical asides (e.g. "(orig. HIGH)",
+    "(source-verified; ...)"), slugifies each remaining name, and keeps only
+    slugs present in valid_slugs — so parenthetical commentary words never
+    get mistaken for a reviewer.
+    """
+    slugs = []
+    for segment in reviewer_str.split(","):
+        name = re.sub(r"\(.*?\)", "", segment).strip()
+        if not name:
+            continue
+        slug = slugify_reviewer_name(name)
+        if slug in valid_slugs:
+            slugs.append(slug)
+    return slugs
+
+
 def cmd_yield(corpus_root: str) -> None:
     """
     Report severity-weighted yield per attended run.
@@ -343,7 +381,11 @@ def cmd_yield(corpus_root: str) -> None:
     # Severity weights
     weights = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
 
-    # Track yield per reviewer per run
+    valid_slugs = set(load_reviewer_index(default_current_index_path()).keys())
+
+    # Track yield per reviewer, one entry per ATTENDED run (Selected = Yes in
+    # Panel Decision) — including runs with zero confirmed findings, since
+    # "yield per attended run" divides by attendance, not by hit rate.
     reviewer_yields: Dict[str, List[float]] = defaultdict(list)
     repo_reviewer_yields: Dict[str, Dict[str, List[float]]] = defaultdict(
         lambda: defaultdict(list)
@@ -352,10 +394,18 @@ def cmd_yield(corpus_root: str) -> None:
     for review_dir in corpus:
         repo_key = get_repo_key(review_dir)
         final_report = review_dir / "final-report.md"
+        tagged_sections = review_dir / "tagged-sections.md"
+
+        panel_decisions = parse_panel_decision_table(tagged_sections)
+        attended_slugs = {
+            slug for slug, selected in panel_decisions.items() if selected == "Yes"
+        } & valid_slugs
+        if not attended_slugs:
+            continue
 
         findings_by_severity = parse_findings_by_severity(final_report)
 
-        # Calculate yield per reviewer
+        # Calculate confirmed-finding score per reviewer
         reviewer_scores: Dict[str, float] = defaultdict(float)
 
         for severity in findings_by_severity:
@@ -364,18 +414,17 @@ def cmd_yield(corpus_root: str) -> None:
                 if not is_confirmed:
                     continue
 
-                # Parse reviewer string (could be comma-separated or with other text)
-                # Extract reviewer slugs (words with hyphens)
-                reviewers = re.findall(r"[a-z]+(?:-[a-z]+)*", reviewer_str.lower())
+                # Parse reviewer string (comma-separated names, may carry parenthetical asides)
+                reviewers = extract_reviewer_slugs(reviewer_str, valid_slugs)
 
                 for reviewer in reviewers:
                     reviewer_scores[reviewer] += weight
 
-        # Store yields
-        for reviewer, score in reviewer_scores.items():
-            if score > 0:  # Only track attended runs with findings
-                reviewer_yields[reviewer].append(score)
-                repo_reviewer_yields[repo_key][reviewer].append(score)
+        # One entry per attended reviewer, including a 0.0 for a clean attended run
+        for reviewer in attended_slugs:
+            score = reviewer_scores.get(reviewer, 0.0)
+            reviewer_yields[reviewer].append(score)
+            repo_reviewer_yields[repo_key][reviewer].append(score)
 
     # Print panel-wide summary
     print("Panel-Wide Yield Summary (CONFIRMED findings only)")
@@ -413,35 +462,123 @@ def cmd_yield(corpus_root: str) -> None:
             )
 
 
-def load_candidate_index(candidate_index_path: str) -> Dict:
-    """Load candidate reviewer index YAML (simplified JSON parsing)."""
-    candidate_path = Path(candidate_index_path).expanduser()
-    if not candidate_path.exists():
-        print(f"Error: candidate index not found: {candidate_path}", file=sys.stderr)
+def slugify_reviewer_name(name: str) -> str:
+    """Convert a reviewer 'name' field to its index slug (e.g. 'Sam System' -> 'sam-system')."""
+    return re.sub(r"\s+", "-", name.strip().lower())
+
+
+def load_reviewer_index(index_path: Path) -> Dict[str, Dict]:
+    """
+    Load a reviewer index.yaml into slug -> {'useWhen': str, 'triggers': List[str]}.
+
+    Returns {} if the file is missing or unparsable.
+    """
+    if not index_path.exists():
         return {}
 
     try:
-        with open(candidate_path, "r") as f:
-            # Simple YAML parsing for reviewer index structure
-            # In practice, we'd parse YAML, but for now we read as text and extract
-            # the minimal info needed for comparison
-            content = f.read()
-            return _parse_reviewer_index_yaml(content)
-    except OSError as e:
-        print(f"Error reading candidate index: {e}", file=sys.stderr)
+        data = yaml.safe_load(index_path.read_text())
+    except (OSError, yaml.YAMLError) as e:
+        print(f"Error reading index {index_path}: {e}", file=sys.stderr)
         return {}
 
+    result: Dict[str, Dict] = {}
+    for entry in (data or {}).get("reviewers", []) or []:
+        name = entry.get("name")
+        if not name:
+            continue
+        slug = slugify_reviewer_name(name)
+        result[slug] = {
+            "useWhen": entry.get("useWhen", ""),
+            "triggers": [str(t) for t in (entry.get("triggers") or [])],
+        }
+    return result
 
-def _parse_reviewer_index_yaml(yaml_content: str) -> Dict:
-    """
-    Minimal YAML parser for reviewer index format.
 
-    Returns a dict keyed by reviewer slug with 'useWhen' and 'triggers' fields.
-    This is a simplified implementation; a full YAML parser would be more robust.
+def default_current_index_path() -> Path:
+    """The repo's live reviewers/index.yaml, resolved relative to this script."""
+    return Path(__file__).resolve().parent.parent / "reviewers" / "index.yaml"
+
+
+def trigger_matches(trigger: str, diff_index_content: str) -> bool:
     """
-    # This is a placeholder; actual implementation would use a YAML library
-    # For now, return empty dict to indicate this needs implementation
-    return {}
+    Does a single trigger match diff-index.md content?
+
+    File-extension globs (e.g. "*.ts") match against touched file paths
+    ('+++ b/...' lines). Everything else is a case-insensitive substring match
+    against the diff content, mirroring the Sam System gate's grep -qE approach.
+    """
+    if trigger.startswith("*."):
+        ext = trigger[1:]  # ".ts"
+        touched_files = re.findall(r"^\+\+\+ b/(.+)$", diff_index_content, re.MULTILINE)
+        return any(f.endswith(ext) for f in touched_files)
+    return trigger.lower() in diff_index_content.lower()
+
+
+def matched_triggers(triggers: List[str], diff_index_content: str) -> List[str]:
+    """Return the subset of triggers that match, preserving input order."""
+    return [t for t in triggers if trigger_matches(t, diff_index_content)]
+
+
+def changed_reviewers(current: Dict[str, Dict], candidate: Dict[str, Dict]) -> List[str]:
+    """Reviewer slugs whose triggers or useWhen differ between current and candidate."""
+    slugs = sorted(set(current.keys()) | set(candidate.keys()))
+    changed = []
+    for slug in slugs:
+        cur = current.get(slug, {})
+        cand = candidate.get(slug, {})
+        if cur.get("triggers") != cand.get("triggers") or cur.get("useWhen") != cand.get("useWhen"):
+            changed.append(slug)
+    return changed
+
+
+def has_trigger_delta(slug: str, current: Dict[str, Dict], candidate: Dict[str, Dict]) -> bool:
+    return current.get(slug, {}).get("triggers", []) != candidate.get(slug, {}).get("triggers", [])
+
+
+def repo_stratified_sample(corpus: List[Path], sample_size: int = 60) -> List[Path]:
+    """
+    Sample run directories spread across repos, proportional to each repo's
+    share of the corpus, capped at sample_size total.
+    """
+    by_repo: Dict[str, List[Path]] = defaultdict(list)
+    for review_dir in corpus:
+        by_repo[get_repo_key(review_dir)].append(review_dir)
+
+    if not corpus:
+        return []
+
+    sample: List[Path] = []
+    for repo_key in sorted(by_repo.keys()):
+        repo_dirs = by_repo[repo_key]
+        share = max(1, round(sample_size * len(repo_dirs) / len(corpus)))
+        sample.extend(repo_dirs[:share])
+
+    return sample[:sample_size]
+
+
+REPLAY_PROMPT_TEMPLATE = """You are re-deciding whether reviewer '{slug}' should be selected for this
+run, under its NEW useWhen text (below), using only the diff contents on disk for this run directory.
+Answer strictly Yes or No plus one sentence of reasoning; do not consult the old useWhen text.
+
+New useWhen: {use_when}
+
+Run directory: {run_dir}
+"""
+
+
+def print_prose_fallback(slug: str, use_when: str, corpus: List[Path]) -> None:
+    print(f"No trigger delta for '{slug}' — useWhen text changed but the trigger list did not.")
+    print("Emitting a repo-stratified sample of run directories and the replay prompt for Haiku dispatch.")
+    print()
+    sample = repo_stratified_sample(corpus, sample_size=60)
+    print(f"Sample size: {len(sample)} run(s) across {len(set(get_repo_key(d) for d in sample))} repo(s)")
+    print()
+    print("--- Replay prompt template ---")
+    print(REPLAY_PROMPT_TEMPLATE.format(slug=slug, use_when=use_when, run_dir="<run directory, one per sample entry below>"))
+    print("--- Sample run directories ---")
+    for review_dir in sample:
+        print(f"  {review_dir}")
 
 
 def cmd_simulate(corpus_root: str, candidate_index: str, reviewer_filter: Optional[str] = None) -> None:
@@ -455,14 +592,103 @@ def cmd_simulate(corpus_root: str, candidate_index: str, reviewer_filter: Option
     print("=== Reviewer Selection Simulation ===")
     print()
 
-    # Load current and candidate indexes
-    # For now, this is a placeholder
-    print(f"Candidate index: {candidate_index}")
+    current = load_reviewer_index(default_current_index_path())
+    candidate = load_reviewer_index(Path(candidate_index).expanduser())
+    if not candidate:
+        print(f"Error: candidate index not found or unparsable: {candidate_index}", file=sys.stderr)
+        return
+
     if reviewer_filter:
-        print(f"Reviewer filter: {reviewer_filter}")
+        slugs = [reviewer_filter]
+    else:
+        slugs = changed_reviewers(current, candidate)
+
+    if not slugs:
+        print("No changed reviewers between current and candidate index.")
+        return
+
+    corpus = load_corpus(corpus_root)
+    if not corpus:
+        print(f"No review corpus found at {corpus_root}")
+        return
+
+    # Prose-only fallback: any requested reviewer with no trigger delta at all
+    # (useWhen text changed, triggers identical) gets the replay-prompt path
+    # instead of a mechanical simulation.
+    trigger_delta_slugs = [s for s in slugs if has_trigger_delta(s, current, candidate)]
+    prose_only_slugs = [s for s in slugs if s not in trigger_delta_slugs]
+
+    for slug in prose_only_slugs:
+        use_when = candidate.get(slug, current.get(slug, {})).get("useWhen", "")
+        print_prose_fallback(slug, use_when, corpus)
+        print()
+
+    if not trigger_delta_slugs:
+        return
+
+    print(f"Simulating trigger-delta reviewers: {', '.join(trigger_delta_slugs)}")
     print()
-    print("NOTE: simulate subcommand is not yet implemented.")
-    print("This requires full trigger-matching logic and diff-index.md parsing.")
+
+    include_to_exclude: Dict[str, List[Path]] = defaultdict(list)
+    exclude_to_include: Dict[str, List[Path]] = defaultdict(list)
+    compounding_runs: List[Path] = []
+
+    for review_dir in corpus:
+        diff_index_path = review_dir / "diff-index.md"
+        if not diff_index_path.exists():
+            continue
+        try:
+            diff_content = diff_index_path.read_text()
+        except OSError:
+            continue
+
+        flipped_out_this_run = []
+        for slug in trigger_delta_slugs:
+            cur_triggers = current.get(slug, {}).get("triggers", [])
+            cand_triggers = candidate.get(slug, {}).get("triggers", [])
+            cur_match = bool(matched_triggers(cur_triggers, diff_content))
+            cand_match = bool(matched_triggers(cand_triggers, diff_content))
+
+            if cur_match and not cand_match:
+                include_to_exclude[slug].append(review_dir)
+                flipped_out_this_run.append(slug)
+            elif not cur_match and cand_match:
+                exclude_to_include[slug].append(review_dir)
+
+        if len(trigger_delta_slugs) > 1 and len(flipped_out_this_run) == len(trigger_delta_slugs):
+            compounding_runs.append(review_dir)
+
+    valid_slugs = set(current.keys()) | set(candidate.keys())
+
+    print("=== Runs flipping include -> exclude ===")
+    for slug in trigger_delta_slugs:
+        runs = include_to_exclude.get(slug, [])
+        print(f"\n{slug}: {len(runs)} run(s)")
+        for review_dir in runs:
+            print(f"  {review_dir}")
+            findings = parse_findings_by_severity(review_dir / "final-report.md")
+            for severity in ("Critical", "High"):
+                for finding_id, reviewer_str, is_confirmed in findings.get(severity, []):
+                    if not is_confirmed:
+                        continue
+                    if slug not in extract_reviewer_slugs(reviewer_str, valid_slugs):
+                        continue
+                    print(f"    CONFIRMED {severity} {finding_id} (reviewer: {reviewer_str.strip()})")
+
+    print()
+    print("=== Runs flipping exclude -> include ===")
+    for slug in trigger_delta_slugs:
+        runs = exclude_to_include.get(slug, [])
+        print(f"\n{slug}: {len(runs)} run(s)")
+        for review_dir in runs:
+            print(f"  {review_dir}")
+
+    if len(trigger_delta_slugs) > 1:
+        print()
+        print(f"=== Compounding narrowing: runs where ALL of {', '.join(trigger_delta_slugs)} flip out together ===")
+        print(f"{len(compounding_runs)} run(s)")
+        for review_dir in compounding_runs:
+            print(f"  {review_dir}")
 
 
 def main():
@@ -519,8 +745,11 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
-    # Normalize corpus root (remove glob pattern for actual filesystem search)
-    corpus_root = args.corpus_root.rstrip("/").rstrip("*").rstrip("/")
+    # Normalize corpus root: load_corpus() globs two levels itself (repo/run),
+    # so strip all trailing "*"/"/" segments rather than leaving one behind.
+    corpus_root = args.corpus_root
+    while corpus_root.endswith("/") or corpus_root.endswith("*"):
+        corpus_root = corpus_root[:-1]
 
     if args.subcommand == "attendance":
         cmd_attendance(corpus_root)
