@@ -136,7 +136,7 @@ No mechanism is proposed to fix this; doing so would require a confirmation-rate
 
 ## Post-Ship Re-Check and Revert Threshold
 
-After a Vera Verifier / Curious Casey `useWhen` precision redraw and an Uncle Bob widening ship (in a later, separate pass of issue #202), someone should monitor corpus drift. Re-run `attendance` and `yield` once **40 new review runs** have accumulated across the corpus since the change lands.
+After the Vera Verifier / Curious Casey `useWhen` precision redraw and the Uncle Bob widening ship (issue #202), someone should monitor corpus drift. Re-run `attendance` and `yield` once **40 new review runs** have accumulated across the corpus since the change lands.
 
 ### Baselines (as of 2026-09-17)
 

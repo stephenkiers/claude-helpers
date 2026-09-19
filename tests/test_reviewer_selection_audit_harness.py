@@ -243,7 +243,8 @@ def test_simulate_compounding_two_reviewers(h):
         real_index_text = (REPO_ROOT / "reviewers" / "index.yaml").read_text()
         candidate_text = real_index_text.replace(
             "triggers: [open, close, drop, dispose, new, create, acquire, release, "
-            "shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup]",
+            "shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup, "
+            "class, function, def, impl, module, helper, util, extract, duplicate]",
             "triggers: [nonmatching-trigger-xyz]",
         ).replace(
             'triggers: [interface, type, struct, trait, any, unknown, as, "as any", unsafe, '
@@ -352,6 +353,30 @@ def test_prose_only_useWhen_change_triggers_fallback(h):
         )
 
 
+def test_trigger_matches_multi_star_globs(h):
+    """(h) filename globs with more than one '*' (or a '*' not before '.') match touched files."""
+    mod = _load_module()
+    diff = "## Hunks\n+++ b/src/foo.test.ts\n+++ b/crates/x/lock_test.rs\n+++ b/Tests/Bar.swift\n"
+
+    cases = [
+        ("*.test.*", True, "matches foo.test.ts"),
+        ("*_test.rs", True, "matches lock_test.rs"),
+        ("*/tests/*", False, "no lowercase tests/ dir touched"),
+        ("Tests/*", True, "matches Tests/Bar.swift"),
+        ("*.spec.*", False, "no spec file touched"),
+    ]
+    for trigger, expected, why in cases:
+        h.test_result(
+            f"trigger_matches({trigger!r}) is {expected} ({why})",
+            mod.trigger_matches(trigger, diff) is expected,
+        )
+
+    h.test_result(
+        "non-glob trigger still substring-matches case-insensitively",
+        mod.trigger_matches("BAR.swift", diff) is True,
+    )
+
+
 def main():
     h = Harness("REVIEWER SELECTION AUDIT HARNESS TEST SUITE")
 
@@ -361,6 +386,7 @@ def main():
     test_simulate_compounding_two_reviewers(h)
     test_missing_structural_gate_marker_counts_as_router_no(h)
     test_prose_only_useWhen_change_triggers_fallback(h)
+    test_trigger_matches_multi_star_globs(h)
 
     h.summarize_and_exit()
 

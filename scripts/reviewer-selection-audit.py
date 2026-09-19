@@ -9,6 +9,7 @@ Never invoked by review-time paths; used only for offline tuning and analysis.
 """
 
 import argparse
+import fnmatch
 import re
 import sys
 from collections import defaultdict
@@ -504,14 +505,21 @@ def trigger_matches(trigger: str, diff_index_content: str) -> bool:
     """
     Does a single trigger match diff-index.md content?
 
-    File-extension globs (e.g. "*.ts") match against touched file paths
-    ('+++ b/...' lines). Everything else is a case-insensitive substring match
-    against the diff content, mirroring the Sam System gate's grep -qE approach.
+    Any trigger containing "*" is a filename glob (e.g. "*.ts", "*.test.*",
+    "*_test.rs") and is matched via fnmatch against touched file paths
+    ('+++ b/...' lines). A plain endswith() check only handles single-star
+    prefix globs correctly ("*.ts" -> ext ".ts") — it silently never matches
+    a second "*" later in the pattern (e.g. "*.test.*" -> ext ".test.*",
+    which no real filename ends with literally) or a "*" not immediately
+    followed by "." (e.g. "*_test.rs" falls out of the glob branch entirely
+    and is searched for as a literal asterisk substring, which never
+    appears in diff text). fnmatch handles all of these correctly.
+    Everything else is a case-insensitive substring match against the diff
+    content, mirroring the Sam System gate's grep -qE approach.
     """
-    if trigger.startswith("*."):
-        ext = trigger[1:]  # ".ts"
+    if "*" in trigger:
         touched_files = re.findall(r"^\+\+\+ b/(.+)$", diff_index_content, re.MULTILINE)
-        return any(f.endswith(ext) for f in touched_files)
+        return any(fnmatch.fnmatch(f.lower(), trigger.lower()) for f in touched_files)
     return trigger.lower() in diff_index_content.lower()
 
 
