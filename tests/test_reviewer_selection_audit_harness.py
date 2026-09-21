@@ -243,8 +243,7 @@ def test_simulate_compounding_two_reviewers(h):
         real_index_text = (REPO_ROOT / "reviewers" / "index.yaml").read_text()
         candidate_text = real_index_text.replace(
             "triggers: [open, close, drop, dispose, new, create, acquire, release, "
-            "shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup, "
-            "class, function, def, impl, module, helper, util, extract, duplicate]",
+            "shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup]",
             "triggers: [nonmatching-trigger-xyz]",
         ).replace(
             'triggers: [interface, type, struct, trait, any, unknown, as, "as any", unsafe, '
@@ -327,6 +326,7 @@ def test_prose_only_useWhen_change_triggers_fallback(h):
             "  - name: Vera Verifier\n"
             "    file: vera-verifier.yaml\n"
             "    priority: high\n"
+            "    contexts: {review: primary, plan: primary}\n"
             "    useWhen: a brand-new prose description, triggers unchanged\n"
             f"    triggers: [{triggers_yaml}]\n"
         )
