@@ -26,17 +26,21 @@ this ADR; it was closed unmerged.
 |---|---|---|
 | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`) → 1 merge agent (`prompts/swarm-merge.md`) → `final-report.md` → Triage |
 | 2 | reviewer pods | Two independent compact-lens pods share one neutral evidence packet, followed by batched Q&A and neutral verification |
-| 3 | routed pair + Bob | Independent path: Router's top 2 plus `uncle-bob` pre-seated (full-patch read, like named mode) |
+| 3 | routed top 3 | Independent path: Router's top 3, with Fragile Feynman fallback when fewer than three survive (full-patch read, like named mode) |
 | 4 | normal | Current behavior, unchanged |
-| 5 | everyone | All `index.yaml` reviewers, implemented as named-selection over the full index — the router is bypassed with no new code path |
+| 5 | everyone | All `review`-tagged reviewers (editors excluded), implemented as named-selection over the filtered index — the router is bypassed with no new code path |
 
 Triage runs at **every** level — the output contract (`final-report.md` → `claude-action-plan.md`) is
 identical regardless of how the findings were produced. `--effort` + named reviewers is an error
 (the user is sizing the run twice); `--model` stays orthogonal, with the effort-1 merge agent
 pinned to sonnet unless `--model` was explicit.
 
-**Monotonic-cost rationale for level 3.** Sam System reads the full patch — he is not a cheap seat —
-so he runs only if the router's top-2 includes him. Code Rot Cody and the Consistency Checker stay
+**Monotonic-cost rationale for level 3.** Effort 3 seats the Router's top 3 picks, falling back to
+Fragile Feynman when routing yields fewer than three candidates. This replaces the fixed `uncle-bob`
+pre-seat: Fragile Feynman's measured lift (1.78) exceeds Uncle Bob's (0.74) in the Phase 0 baseline
+corpus, and the dynamic routed pick allows the third seat to adapt to the diff rather than forcing a
+fixed reviewer. Sam System reads the full patch if routed into the top 3 — he is not a cheap seat —
+so he runs only when the router selects him. Code Rot Cody and the Consistency Checker stay
 always-run because they are pinned-haiku checks on unverified claims. Contrarian Carl still runs
 last. Level 2 instead uses the isolated pod path defined in `prompts/expert-review-panel.md`.
 
