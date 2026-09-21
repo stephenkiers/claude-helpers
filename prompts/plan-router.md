@@ -17,7 +17,7 @@ not reach the router; they use deferred swarm/pod paths per the command doc.)
 
 1. **Ticket or requirement description** (`{PLAN_SESSION_DIR}/ticket.md` or provided in prompt)
 2. **Project context** (if available): `.claude/project.yaml`, ADRs, project conventions
-3. **Reviewer index ONLY** — `~/.claude/reviewers/index.yaml` with triggers and `useWhen`
+3. **Reviewer index ONLY** — `~/.claude/reviewers/index.yaml` with triggers and `useWhen`. Consider only entries tagged with `plan` in their `contexts`, and extract only `name`, `file`, and `useWhen` for those entries.
 
 **CRITICAL: Never load full reviewer YAML files.** Progressive disclosure means routing decisions
 come from each expert's declared interests (`useWhen` in `index.yaml`), not their full personas. The
@@ -144,6 +144,8 @@ plan-router | selected: {n} | escalate: {yes|no} | wrote: {path}
 
 `{n}` is the count of routed reviewers selected. Return only this line — never the table.
 
+**Fail closed**: if no reviewers resolve for the `plan` context, stop and report that the `plan` context resolved empty — never run an empty panel.
+
 ---
 
 ## Reading Your Inputs
@@ -152,7 +154,7 @@ Read the following files using the Read tool:
 
 1. **`{PLAN_SESSION_DIR}/ticket.md`** (or ticket description in your prompt) — the planning
    requirement
-2. **`~/.claude/reviewers/index.yaml`** — the reviewer index with all `useWhen` summaries
+2. **`~/.claude/reviewers/index.yaml`** — the reviewer index. Consider only entries tagged with `plan` in their `contexts` and extract only `name`, `file`, and `useWhen` for those entries.
 3. **`.claude/project.yaml`** (if it exists) — project ADRs and conventions
 4. **Targeted field reads from reviewer YAMLs** — only the `planReview.focusAreas` field from
    reviewers you're actively considering, to confirm planning relevance
