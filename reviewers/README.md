@@ -51,6 +51,40 @@ Add a context block to a persona **only** when it loads context *differently* fr
 whose paths come from its local override. In that case, reference the already-loaded context
 rather than re-listing the generic files.
 
+## Contexts and resolution precedence
+
+Each reviewer in [`index.yaml`](index.yaml) carries a `contexts:` map declaring which review
+modes they participate in. The schema is:
+
+```yaml
+contexts: {review: primary, plan: primary}
+```
+
+Keys are limited to `review`, `plan`, and `write`. Values (the **strength**) are limited to
+`primary`, `secondary`, and `named-only`.
+
+**Resolution:** A reviewer is eligible for context X if and only if the `contexts:` map contains
+a key for X (at any strength). The strength value is recorded for Phase 2 and does not change
+Phase 1 ranking.
+
+**Precedence**, in exactly this order:
+
+1. **Named selection** — Explicit user intent wins. A user can name a reviewer even if that
+   reviewer lacks the active context's tag; this is allowed and prints a one-line warning
+   (not an error).
+2. **`contexts`** — Hard eligibility filter applied before the Router sees a candidate list.
+3. **Existing gates** — `structural_pre_gate_ineligible` (the four reviewers in `index.yaml`
+   line 196), the Sam System diff-shape gate and effort clauses in `prompts/expert-review-panel.md`,
+   the always-run roles (Code Rot Cody, Consistency Checker, Contrarian Carl), and the path
+   conditions for Fact-Check Fiona and Data Scientist Dana — applied to the eligible set.
+4. **`useWhen` / `triggers`** — Rank and select among what remains.
+
+**Fail closed:** If no reviewers resolve for the `<context>` context, stop and report that the
+`<context>` context resolved empty — never run an empty panel.
+
+**Note:** `structural_pre_gate_ineligible` stays a sibling top-level key in Phase 1 and is *not*
+folded into `contexts`. Phase 2 will address whether to migrate it.
+
 ## File Conventions
 
 | Location | Naming | Purpose |
