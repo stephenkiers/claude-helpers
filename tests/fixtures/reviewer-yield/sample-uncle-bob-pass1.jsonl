@@ -1,0 +1,7 @@
+{"type": "_fixture_meta", "schema_version": 1, "modeled_on": "2026-09-17"}
+{"type": "assistant", "message": {"id": "msg-1", "content": [{"type": "tool_use", "name": "Write", "input": {"file_path": "/Users/test/.claude/reviews/test-repo/feature-123/uncle-bob-pass1.md"}}], "usage": {"input_tokens": 1000, "output_tokens": 500, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}}, "isSidechain": false, "agentId": "uncle-bob"}
+{"type": "assistant", "message": {"id": "msg-2", "content": [{"type": "text", "text": "Analysis complete"}], "usage": {"input_tokens": 500, "output_tokens": 200, "cache_read_input_tokens": 50, "cache_creation_input_tokens": 25}}, "isSidechain": false, "agentId": "uncle-bob"}
+{"type": "assistant", "message": {"id": "msg-1", "content": [{"type": "text", "text": "Duplicate id"}], "usage": {"input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 5}}, "isSidechain": false, "agentId": "uncle-bob"}
+{"type": "assistant", "message": {"id": "msg-3", "content": [{"type": "text", "text": "No cache"}], "usage": {"input_tokens": 200, "output_tokens": 100}}, "isSidechain": false, "agentId": "uncle-bob"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "No message id"}], "usage": {"input_tokens": 150, "output_tokens": 75, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}, "isSidechain": false, "agentId": "uncle-bob"}
+{"type": "user", "message": {"content": "User input"}}

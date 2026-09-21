@@ -13,7 +13,7 @@ A checkpoint-based, parallel code review pipeline:
 2. **Router** (sonnet) judges which reviewers meet the threshold for this diff
 3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (Code Rot Cody and
    Consistency Checker always run; others routed by the Router, incl. Sam System when selected), each writing its own checkpoint file
-4. **Contrarian Carl** — after all Pass 1 files exist, sees everything, finds what was missed
+4. **Contrarian Carl** — always runs after all Pass 1 files exist, sees everything, finds what was missed
 5. **Haiku Q&A** — parallel haiku subagents answer each reviewer's open questions
 6. **Pass 2 re-evaluations** — parallel subagents, **fresh skeptic-verifier framing**, business context
    + Q&A answers revealed. Judgment reviewers only (mechanical roles get no Pass 2).
@@ -269,6 +269,84 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
 
    REVIEW_DIR="$HOME/.claude/reviews/${REPO_KEY}/${BRANCH}-${HASH}-${TIMESTAMP}"
    mkdir -p "$REVIEW_DIR"
+
+   # Write transcript-origin.json for bounded transcript discovery
+   set +e  # Allow commands to fail without exiting the script
+   PROJECT_DIR_SANITIZED=$(printf '%s' "$(pwd)" | tr '/' '-')
+   SESSION_ID=""
+   RESOLUTION="unavailable"
+   
+   # Validate PROJECT_DIR_SANITIZED matches expected pattern
+   if [[ "$PROJECT_DIR_SANITIZED" =~ ^[A-Za-z0-9_-]+$ ]]; then
+     # Try to get session ID from environment
+     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+       # Validate SESSION_ID from environment
+       if [[ "$CLAUDE_CODE_SESSION_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
+         SESSION_ID="$CLAUDE_CODE_SESSION_ID"
+         RESOLUTION="env"
+       fi
+     fi
+     # If no valid env var, try to find most-recent session-id subdirectory
+     if [ "$RESOLUTION" = "unavailable" ]; then
+       PROJECTS_DIR="$HOME/.claude/projects/$PROJECT_DIR_SANITIZED"
+       # Resolve and validate PROJECTS_DIR is under ~/.claude/projects
+       RESOLVED_PROJECTS_DIR=$(python3 -c "import os; print(os.path.realpath('$PROJECTS_DIR'))" 2>/dev/null)
+       CLAUDE_PROJECTS_BASE=$(python3 -c "import os; print(os.path.realpath(os.path.expanduser('~/.claude/projects')))" 2>/dev/null)
+       if [ -n "$RESOLVED_PROJECTS_DIR" ] && [ -n "$CLAUDE_PROJECTS_BASE" ] && [[ "$RESOLVED_PROJECTS_DIR" == "$CLAUDE_PROJECTS_BASE"* ]]; then
+         if [ -d "$RESOLVED_PROJECTS_DIR" ]; then
+           # Get top 2 directories by mtime to check for concurrent session ambiguity
+           TOP_TWO=$(ls -td "$RESOLVED_PROJECTS_DIR"/*/ 2>/dev/null | head -2)
+           if [ -n "$TOP_TWO" ]; then
+             MOST_RECENT=$(echo "$TOP_TWO" | head -1 | xargs -I {} basename {})
+             SECOND_RECENT=$(echo "$TOP_TWO" | tail -1 | xargs -I {} basename {})
+             # Skip if top directory is "subagents" (not a session ID)
+             if [ "$MOST_RECENT" = "subagents" ] && [ -n "$SECOND_RECENT" ]; then
+               MOST_RECENT="$SECOND_RECENT"
+             fi
+             if [ -n "$MOST_RECENT" ] && [ "$MOST_RECENT" != "subagents" ]; then
+               # Check if top two mtimes are within 5 seconds (concurrent session ambiguity); if so, fail to unavailable
+               FIRST_MTIME=$(stat -f%m "$RESOLVED_PROJECTS_DIR/$MOST_RECENT" 2>/dev/null)
+               SECOND_MTIME=$(stat -f%m "$RESOLVED_PROJECTS_DIR/$SECOND_RECENT" 2>/dev/null)
+               if [ -n "$FIRST_MTIME" ] && [ -n "$SECOND_MTIME" ]; then
+                 MTIME_DIFF=$((FIRST_MTIME - SECOND_MTIME))
+                 if [ $MTIME_DIFF -lt 0 ]; then
+                   MTIME_DIFF=$((-MTIME_DIFF))
+                 fi
+                 if [ $MTIME_DIFF -le 5 ]; then
+                   RESOLUTION="unavailable"
+                 else
+                   SESSION_ID="$MOST_RECENT"
+                   RESOLUTION="most-recent-dir"
+                 fi
+               else
+                 SESSION_ID="$MOST_RECENT"
+                 RESOLUTION="most-recent-dir"
+               fi
+             fi
+           fi
+         fi
+       fi
+     fi
+   fi
+   set -e
+   
+   RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   
+   # Construct and write transcript-origin.json using jq with proper escaping
+   printf '%s' "$(pwd)" | jq -R --arg schema_version "1" \
+     --arg cwd_val "$(pwd)" \
+     --arg proj_dir "$PROJECT_DIR_SANITIZED" \
+     --arg sess_id "$SESSION_ID" \
+     --arg res "$RESOLUTION" \
+     --arg rec_at "$RECORDED_AT" \
+     '{
+       schema_version: ($schema_version | tonumber),
+       cwd: $cwd_val,
+       project_dir: $proj_dir,
+       session_id: (if $sess_id == "" then null else $sess_id end),
+       resolution: $res,
+       recorded_at: $rec_at
+     }' > "$REVIEW_DIR/transcript-origin.json"
    ```
 
    `PROJECT_ROOT` is where the project's `.claude/project.yaml` lives (still read per-worktree).
@@ -358,8 +436,9 @@ this step and continue at Step 2.
   `diff-index.md` is the file list plus every hunk header — each one already carries its enclosing
   function/section (`@@ -39,13 +39,16 @@ See the ADRs for…`) — at roughly 1/20th the size of the
   full patch. The Router reads `full-diff.patch` (its line ranges in `tagged-sections.md` are
-  offsets into that file, which Pass 1 reviewers use for bounded reads). Sam System, Code Rot Cody,
-  and Consistency Checker read the full patch (their domain is the whole diff).
+  offsets into that file, which Pass 1 reviewers use for bounded reads). Code Rot Cody, Consistency
+  Checker, and Contrarian Carl always read the full patch (their domain is the whole diff); Sam
+  System reads it too, but only when routed in.
 
 ### Step 2: Discover Available Reviewers
 

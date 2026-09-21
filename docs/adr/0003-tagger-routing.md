@@ -24,6 +24,8 @@ receive the full diff because their value is cross-cutting:
 - **Consistency Checker** — patterns across the whole diff.
 - **Contrarian Carl** — runs last, sees all findings to find what was missed.
 
+(Note: see the 2026-09-17 amendment below for the current always-run set and Sam System's routing status.)
+
 `--all` overrides routing to force every reviewer. Naming reviewers explicitly
 (`/expert-review rachel,security-sage`) *is* the routing decision
 for judgment reviewers: it bypasses the router and skips its judgment call entirely. The four
@@ -66,6 +68,8 @@ than routing-then-gate-then-escalation.
 **Why Sonnet?** Routing requires understanding English prose (the diff, the summary) and applying
 judgment, so it is not mechanical work (Haiku tier). But it is also not deep expertise (panel model).
 Sonnet is the middle tier: capable of judgment, economical enough for every review.
+
+Amended 2026-09-17 (#193): the always-run set is three — Code Rot Cody, Consistency Checker, and Contrarian Carl. Sam System is not always-run; since #148 he is gated by the deterministic diff-shape precondition in `prompts/expert-review-panel.md` and runs only when routed in, still receiving the full diff on those runs — superseding the four-reviewer list in `Decision (Revised)` above.
 
 ## Consequences
 

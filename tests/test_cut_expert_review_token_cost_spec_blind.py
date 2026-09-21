@@ -45,16 +45,17 @@ try:
 except Exception as e:
     t("reviewer-yield.py imports without error", False, f"import failed: {e}")
 
-# Test 1.1: find_subagent_files_by_reviewer has repo_key parameter
+# Test 1.1: find_subagent_files_by_reviewer has correct parameters
 if reviewer_yield_module and hasattr(reviewer_yield_module, 'find_subagent_files_by_reviewer'):
     func = reviewer_yield_module.find_subagent_files_by_reviewer
     import inspect
     sig = inspect.signature(func)
-    has_repo_key = 'repo_key' in sig.parameters
+    params = list(sig.parameters.keys())
+    has_correct_params = params == ['review_dir', 'reviewer_slugs']
     t(
-        "find_subagent_files_by_reviewer accepts repo_key parameter",
-        has_repo_key,
-        f"parameters: {list(sig.parameters.keys())}"
+        "find_subagent_files_by_reviewer has correct parameters (review_dir, reviewer_slugs)",
+        has_correct_params,
+        f"parameters: {params}"
     )
 else:
     t("find_subagent_files_by_reviewer function exists", False, "function not found or import failed")
@@ -86,7 +87,7 @@ if reviewer_yield_module and hasattr(reviewer_yield_module, 'process_review_dir'
     # Test 2.1: process_review_dir handles nonexistent directory gracefully
     try:
         nonexistent_dir = "/nonexistent/review/directory/12345"
-        repo_key, rows = reviewer_yield_module.process_review_dir(nonexistent_dir)
+        repo_key, rows, tokens_status = reviewer_yield_module.process_review_dir(nonexistent_dir)
         # The function should either return None/empty or raise a clear error
         # A graceful handling returns repo_key as None or empty rows, or raises a ValueError
         is_graceful = repo_key is None or rows == [] or isinstance(rows, list)
@@ -111,7 +112,7 @@ if reviewer_yield_module and hasattr(reviewer_yield_module, 'process_review_dir'
     # Test 2.2: process_review_dir handles empty directory
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            repo_key, rows = reviewer_yield_module.process_review_dir(tmpdir)
+            repo_key, rows, tokens_status = reviewer_yield_module.process_review_dir(tmpdir)
             is_valid_response = repo_key is None or (isinstance(rows, list) and len(rows) == 0)
             t(
                 "process_review_dir handles empty review directory",
