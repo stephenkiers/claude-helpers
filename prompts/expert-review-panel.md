@@ -84,14 +84,20 @@ alone; effort 2's pod path assigns him a fixed pod slot, out of scope here):
 ```bash
 SAM_SYSTEM_GATE_REASON=""
 if [ "$NAMED_SELECTION" != "true" ] && [ "$EFFORT" = "4" ]; then
-  SAM_FILE_COUNT=$(grep -c '^+++ b/' "$REVIEW_DIR/diff-index.md" 2>/dev/null || echo 0)
-  SAM_TOP_DIRS=$(grep '^+++ b/' "$REVIEW_DIR/diff-index.md" 2>/dev/null | sed 's#^+++ b/##; s#/.*##' | sort -u | wc -l | tr -d ' ')
-  SAM_TRIGGER_HIT=false
-  if grep -qE 'createSession|createService|\bfactory\b|\bbus\b|eventBus|\bconfig\b|\boptions\b|\binject\b|\bprovider\b|\bcompose\b' "$REVIEW_DIR/diff-index.md" 2>/dev/null; then
-    SAM_TRIGGER_HIT=true
-  fi
-  if [ "${SAM_FILE_COUNT:-0}" -lt 3 ] && [ "${SAM_TOP_DIRS:-0}" -lt 2 ] && [ "$SAM_TRIGGER_HIT" = "false" ]; then
-    SAM_SYSTEM_GATE_REASON="diff-shape precondition not met: ${SAM_FILE_COUNT} file(s) touched, ${SAM_TOP_DIRS} top-level dir(s), no cross-file-composition trigger (createSession/factory/bus/eventBus/config/options/inject/provider/compose) matched in diff-index.md"
+  # Fail-open guard: if diff-index.md is missing or unreadable, skip the gate
+  # (do not exclude Sam System on an input error — let the Router judge him normally)
+  if [ ! -r "$REVIEW_DIR/diff-index.md" ]; then
+    echo "<!-- structural-gate: sam-system | skipped | diff-index.md unreadable -->" >> "$REVIEW_DIR/tagged-sections.md"
+  else
+    SAM_FILE_COUNT=$(grep -c '^+++ b/' "$REVIEW_DIR/diff-index.md" 2>/dev/null || echo 0)
+    SAM_TOP_DIRS=$(grep '^+++ b/' "$REVIEW_DIR/diff-index.md" 2>/dev/null | sed 's#^+++ b/##; s#/.*##' | sort -u | wc -l | tr -d ' ')
+    SAM_TRIGGER_HIT=false
+    if grep -qE 'createSession|createService|\bfactory\b|\bbus\b|eventBus|\bconfig\b|\boptions\b|\binject\b|\bprovider\b|\bcompose\b' "$REVIEW_DIR/diff-index.md" 2>/dev/null; then
+      SAM_TRIGGER_HIT=true
+    fi
+    if [ "${SAM_FILE_COUNT:-0}" -lt 3 ] && [ "${SAM_TOP_DIRS:-0}" -lt 2 ] && [ "$SAM_TRIGGER_HIT" = "false" ]; then
+      SAM_SYSTEM_GATE_REASON="diff-shape precondition not met: ${SAM_FILE_COUNT} file(s) touched, ${SAM_TOP_DIRS} top-level dir(s), no cross-file-composition trigger (createSession/factory/bus/eventBus/config/options/inject/provider/compose) matched in diff-index.md"
+    fi
   fi
 fi
 export SAM_SYSTEM_GATE_REASON
@@ -104,7 +110,12 @@ this run and must not be evaluated or selected (do not present him as a live can
 `## Panel Decision` table carries his row as `| sam-system | No | {SAM_SYSTEM_GATE_REASON} (structural precondition, not routed) |`
 regardless of what the Router wrote for him — append/overwrite that one row directly from the main
 thread rather than trusting the Router's compliance, the same way effort 3's `uncle-bob` pre-seat is
-appended directly rather than left to Router judgment. If `SAM_SYSTEM_GATE_REASON` is empty (the
+appended directly rather than left to Router judgment. Also append this audit marker line to
+`tagged-sections.md` when overwriting his row:
+```
+<!-- structural-gate: sam-system | excluded | {SAM_SYSTEM_GATE_REASON} -->
+```
+If `SAM_SYSTEM_GATE_REASON` is empty (the
 precondition passed, or the check didn't apply), Sam System is a normal Router candidate exactly as
 before — this gate can only turn a "Yes" into a structural "No," never the reverse, and it costs no
 extra model call since `diff-index.md` is already on disk from Step 1.
@@ -118,6 +129,22 @@ fix that reliably changes the outcome. This does not extend to other reviewers w
 of analysis — Sam System is singled out here because he is the only reviewer that reads the *full*
 diff regardless of relevance (`commands/expert-review.md:283`–`291`), which is what makes his
 over-selection specifically costly rather than merely common.
+
+**Structural pre-Router exclusion: three eligibility conditions and a denylist.** Any future
+pre-Router structural gate must satisfy three conditions to avoid creating shape-gaming incentives:
+(a) its exclusion signal must be a structural signal computable from `diff-index.md` (file paths,
+line counts, deterministic keyword matches — not model judgment); (b) the signal can only ever turn
+a candidate from "Yes" to "No," never the reverse (false negatives are acceptable, false positives
+are not); (c) it must fail open when its own inputs are missing or unreadable, per the guard above.
+Additionally, `reviewers/index.yaml` maintains a `structural_pre_gate_ineligible` denylist: reviewers
+whose domains can be fully expressed in a single file or single line (a hardcoded secret, a shell
+injection, an unescaped path, a race condition in a mutex) — these reviewers are permanently ineligible
+for pre-Router structural gates, because no structural diff-shape precondition can ever prove their
+domain does not apply. The current denylist includes `security-sage`, `rachel`, `tara-typesafe`, and
+`contract-chris`. When tuning or adding gates, verify that the gated reviewer is not in the denylist.
+A published numeric threshold creates an incentive to shape a diff around it, most sharply in PR mode
+where the diff author is untrusted by definition — structural pre-Router gates are a measured exception
+for Sam System's specific cost/benefit profile, not a general mechanism.
 
 Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
 model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:

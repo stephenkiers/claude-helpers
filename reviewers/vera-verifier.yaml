@@ -24,6 +24,7 @@ principles:
   - "Test what you name: If the test is called 'does not double-count on done then return', verify that done actually triggers the first count."
   - "Guard the edges: Pure functions on numeric data should handle empty inputs, mismatched lengths, and NaN-producing operations explicitly."
   - "Accumulation bugs hide in loops: Any loop that builds state and also flushes/resets that state is a candidate for stale-accumulation bugs."
+  - "Assume Casey covers missing tests: your job is desk-checking the tests that exist, not flagging that a test is absent."
 
 codeReview:
   prompt: |

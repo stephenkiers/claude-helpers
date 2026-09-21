@@ -80,3 +80,83 @@ Sonnet is the middle tier: capable of judgment, economical enough for every revi
   which serve as signals the router consults. A persona with no triggers is never routed — the router
   makes judgment calls, so it is possible to exclude a reviewer even if they have triggers, but it is
   harder for reviewers to opt in without declaring their domain.
+
+## Amendment (ADR-0003.2.1) — Structural Pre-Router Exclusion
+
+### Context
+
+The router selects reviewers based on judgment of the code, summary, and declared interests (`triggers`,
+`useWhen`). For most reviewers, judgment is the right mechanism — their domain is broad enough that
+diff shape cannot rule them out. Sam System is a measured exception: he reads the *full* diff
+regardless of relevance, which is costly when the diff touches only a small scope. Analysis showed the
+router still includes him on ~94% of runs despite only ~10% of diffs meeting his cross-file-composition
+domain — the threshold is simply too high when tuning through `useWhen` alone.
+
+### Decision
+
+Introduce **structural pre-Router exclusion** as a third reviewer-participation category, alongside the
+existing "always-run" (Code Rot Cody, Consistency Checker, Contrarian Carl) and "Router-judged"
+categories. When the conditions are met, the candidate is excluded before the Router runs, not by the
+Router's own judgment.
+
+Currently, **Sam System is the only member** of this category. His exclusion signal is deterministic: if
+the diff touches fewer than 3 files, fewer than 2 top-level directories, and contains no cross-file-composition
+triggers (createSession, factory, bus, eventBus, config, options, inject, provider, compose), he is
+structurally excluded (his gate reason is recorded, but he is still a normal Router candidate if the
+precondition passes).
+
+### Three required properties of any structural pre-Router gate
+
+Any future structural exclusion gate must satisfy all three of these conditions, to avoid creating
+shape-gaming incentives and to fail safe when infrastructure breaks:
+
+1. **Structural signal from `diff-index.md`:** The exclusion signal must be deterministically computable
+   from `diff-index.md` (file paths, line counts, keyword matches). It must not depend on model judgment,
+   semantic analysis, or subjective thresholds. The signal is unreadable by definition — it cannot
+   improve judgment; it can only reduce over-inclusion.
+
+2. **One-way gate (Yes → No, never No → Yes):** The signal can only turn a candidate from "Yes" to "No,"
+   never the reverse. False negatives (wrongly excluding a reviewer) are acceptable; false positives
+   (wrongly including one) are not. This constraint keeps the gate from corrupting routing judgment.
+
+3. **Fail-open on missing or unreadable inputs:** If `diff-index.md` is absent, empty, or unreadable,
+   the gate must not fire — the candidate remains a normal Router candidate. Exclusion on an input error
+   is indistinguishable from genuine exclusion and silently breaks the review for a broken file. Marker
+   the skip in `tagged-sections.md` so a harness can audit gate behavior later.
+
+### The structural_pre_gate_ineligible denylist
+
+`reviewers/index.yaml` maintains a `structural_pre_gate_ineligible` list, currently containing:
+`security-sage`, `rachel`, `tara-typesafe`, `contract-chris`. These reviewers are permanently
+ineligible for structural pre-Router gates because their domain can be fully expressed in a single file
+or single line — a hardcoded secret, a shell injection, an unescaped path, a race condition in a mutex,
+an off-by-one in a bounds check. No structural diff-shape precondition can ever prove such vulnerabilities
+do not apply, so excluding them structurally is not a tuning choice; it would be incorrect. Any new
+structural gate must verify that its gated reviewer is not in this list.
+
+### Tuning vs. architecture
+
+A separate offline audit harness will analyze `useWhen`/`triggers` tuning for reviewers selected with
+historically low yield (per `/review-stats`). Tuning is operational, not architectural — it remains
+human-authored edits to `index.yaml`, requiring no new ADR. **Only if an audit harness ever participates
+in the live review-time decision** (e.g., by dynamically excluding reviewers based on measured yield data)
+would that require its own architectural amendment. As long as the harness output is human-curated `index.yaml`
+edits, it is tuning, not architecture.
+
+### Reconciliation with prior decisions
+
+This amendment does not contradict prior recorded findings in ADR-0003.2:
+
+- **Extend existing patterns over inventing new arbiters.** The router already handles judgment; this
+  gate is an exception for a specific over-selection problem, not a new arbitration layer.
+- **Prefer Sonnet for narrow judgment.** This gate is not judgment — it is mechanical — so Sonnet does
+  not run it; it fires during Step 5's setup before the Router runs.
+- **No numeric Router cap.** The gate uses numeric thresholds (3 files, 2 dirs), but these are
+  preconditions on *exclusion*, not caps on Router output — they may stop Sam System, but they cannot
+  reduce any other reviewer's selection.
+- **Fail-closed-but-input-guarded gates.** This gate fails *open*, not closed — if `diff-index.md` is
+  missing, Sam System is *not* excluded. This is correct: on a missing file, the safe default is to run
+  the reviewer, not to guess.
+- **Measure before building.** The gate was tuned on corpus data (`/review-stats` showed 94% Sam System
+  inclusion vs. ~10% domain relevance). The threshold (3 files, 2 dirs) is measured from actual diffs,
+  not arbitrary.
