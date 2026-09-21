@@ -643,6 +643,7 @@ def print_review_table(rows: List[YieldRow]) -> None:
 
     print()
     print("Per-Reviewer Yield Metrics")
+    print("(Caveat: a reviewer tagged review:named-only or secondary will show few or zero runs because they are not auto-routed; zero row is not evidence of no value.)")
     print("=" * 120)
     print(f"{'Reviewer':<30} {'Input':<12} {'Output':<12} {'Cache R':<12} {'Cache W':<12} {'Mentions':<10} {'Escalated':<10}")
     print("-" * 120)
@@ -712,6 +713,7 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
     # Calculate aggregates and averages
     print()
     print(f"Reviewer Leaderboard — {repo_key} (across all runs)")
+    print("(Caveat: a reviewer tagged review:named-only or secondary will show few or zero runs because they are not auto-routed; zero row is not evidence of no value.)")
     print("=" * 140)
     print(
         f"{'Reviewer':<30} {'Avg Input':<14} {'Avg Output':<14} {'Runs':<6} {'Total Mentions':<16} {'Total Escalations':<16} {'Escalation %':<12}"
