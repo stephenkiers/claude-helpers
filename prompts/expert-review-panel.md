@@ -39,11 +39,11 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage summarize >/d
 `/expert-review-coworker` — may have produced it during setup), skip this step and reuse
 that file. Do not re-run the summarizer or overwrite it.
 
-Spawn one subagent (`subagent_type: "general-purpose"`) with the summarizer prompt
-@~/.claude/prompts/summarizer.md, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
+Spawn one subagent (`subagent_type: "expert-reviewer"` — `general-purpose` subagents are blocked
+from writing report files) with the role prompt `~/.claude/prompts/summarizer.md`, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
 diff text to summarize) rather than inlining `git diff` output, plus: changed-file list, commit
 messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if available, and any
-known-issues index. Save its output to `{REVIEW_DIR}/summary.md`. The file contains
+known-issues index. Its output path is `{REVIEW_DIR}/summary.md` (the agent writes it). The file contains
 `## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
 
 **PR mode:** if `{REVIEW_DIR}/pr-context.md` exists, point the summarizer at it alongside the diff:
@@ -545,7 +545,7 @@ mutually exclusive. **Coverage trade-off:** unlike effort 3-5, this path has no 
 Consistency Checker coverage — see ADR-0012's rationale for the accepted cost/coverage trade-off at
 this tier.
 
-**P1 — Generate the neutral packet once.** Spawn one `general-purpose` subagent and instruct it to
+**P1 — Generate the neutral packet once.** Spawn one `expert-reviewer` subagent (`general-purpose` cannot write report files) and instruct it to
 write only these factual artifacts below `{REVIEW_DIR}/review-context/`:
 
 - `manifest.json`: changed files, languages, hunk offsets, base/head hashes, and explicit high-risk
