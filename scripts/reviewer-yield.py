@@ -26,13 +26,21 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple, TypedDict
+from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any
 
 OBSERVATION_ONLY_NOTE = (
     "Observation-only in Phase 0 — not wired into `prompts/router.md`, "
     "`reviewers/index.yaml` triggers, or model/effort selection; wiring it into "
     "any of those needs an ADR amendment first."
 )
+
+
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# Start date of the newest regime classify_regime knows about. If the corpus contains
+# runs far past this date, the regime table is probably stale (see _warn_if_regime_stale).
+LATEST_KNOWN_REGIME_START = datetime(2026, 9, 16)
+REGIME_STALENESS_DAYS = 90
 
 
 class TokenRecord(TypedDict):
@@ -101,6 +109,10 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
         print(f"Warning: failed to read/parse transcript-origin.json: {e}", file=sys.stderr)
         return result
 
+    if not isinstance(origin_data, dict):
+        print("Warning: transcript-origin.json is not a JSON object", file=sys.stderr)
+        return result
+
     # Check resolution and session_id
     resolution = origin_data.get("resolution")
     session_id = origin_data.get("session_id")
@@ -110,8 +122,21 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
         print("Warning: transcript-origin.json resolution unavailable or missing session_id", file=sys.stderr)
         return result
 
-    # Build path to session directory
-    session_dir = Path.home() / ".claude" / "projects" / project_dir_name / session_id / "subagents"
+    if (
+        not isinstance(session_id, str)
+        or not isinstance(project_dir_name, str)
+        or not _SAFE_ID_RE.match(session_id)
+        or not _SAFE_ID_RE.match(project_dir_name)
+    ):
+        print("Warning: transcript-origin.json session_id/project_dir failed validation; treating as unavailable", file=sys.stderr)
+        return result
+
+    # Build path to session directory, and confirm it stays under ~/.claude/projects
+    projects_root = Path.home() / ".claude" / "projects"
+    session_dir = projects_root / project_dir_name / session_id / "subagents"
+    if projects_root.resolve() not in session_dir.resolve().parents:
+        print(f"Warning: session directory escapes {projects_root}; treating as unavailable", file=sys.stderr)
+        return result
     if not session_dir.exists():
         print(f"Warning: session directory not found: {session_dir}", file=sys.stderr)
         return result
@@ -180,7 +205,7 @@ def parse_tokens_from_subagent(jsonl_file: Path) -> TokenRecord:
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
     }
-    seen_message_ids: set = set()
+    seen_message_ids: Set[str] = set()
 
     try:
         with open(jsonl_file, "r") as f:
@@ -264,7 +289,8 @@ def load_reviewer_display_names() -> Dict[str, str]:
                     names[slug] = current_name
                     current_name = None
 
-            return names
+            if names:
+                return names
         except OSError as e:
             print(f"Warning: failed to read reviewers index {index_path}: {e}", file=sys.stderr)
             continue
@@ -424,7 +450,7 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     # sorted(reviewer_slugs) would silently misattribute token costs).
     subagent_files_by_reviewer = find_subagent_files_by_reviewer(review_dir_path, sorted(reviewer_slugs))
 
-    # Determine tokens_status based on whether transcripts were found
+    # Run-level status (returned to caller); rows carry their own per-reviewer status
     tokens_status = "measured" if any(subagent_files_by_reviewer.values()) else "unavailable"
 
     reviewer_tokens: Dict[str, TokenRecord] = {}
@@ -465,7 +491,7 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
             "cache_creation_input_tokens": tokens["cache_creation_input_tokens"],
             "mention_count": mention_count,
             "escalation_count": escalation_count,
-            "tokens_status": tokens_status,
+            "tokens_status": "measured" if subagent_files_by_reviewer.get(reviewer) else "unavailable",
         }
         rows.append(row)
 
@@ -513,6 +539,7 @@ def load_bucket_config() -> dict:
     except (OSError, json.JSONDecodeError) as e:
         print(f"Warning: failed to load bucket config: {e}, using defaults", file=sys.stderr)
         return {
+            "config_source": "fallback",
             "config_version": 1,
             "buckets": [
                 {"name": "xs", "max_changed_lines": 49},
@@ -523,7 +550,7 @@ def load_bucket_config() -> dict:
         }
 
 
-def classify_size_bucket(changed_lines: int, bucket_config: dict) -> str:
+def classify_size_bucket(changed_lines: Optional[int], bucket_config: dict) -> str:
     """Classify a review by changed lines using bucket config."""
     if changed_lines is None:
         return "unknown"
@@ -586,16 +613,26 @@ def classify_regime(timestamp: Optional[datetime]) -> str:
         return "unknown"
 
     pre_router_cutoff = datetime(2026, 7, 12)
-    post_148_sam_gated_start = datetime(2026, 9, 16)
 
     if timestamp < pre_router_cutoff:
         return "pre-router"
-    elif timestamp < post_148_sam_gated_start:
+    elif timestamp < LATEST_KNOWN_REGIME_START:
         return "judgment-router"
-    elif timestamp >= post_148_sam_gated_start:
-        return "post-148-sam-gated"
     else:
-        return "unknown"
+        return "post-148-sam-gated"
+
+
+def _warn_if_regime_stale(newest: Optional[datetime]) -> None:
+    """Warn when the newest run is far past the latest known regime start."""
+    if newest is None:
+        return
+    days = (newest - LATEST_KNOWN_REGIME_START).days
+    if days > REGIME_STALENESS_DAYS:
+        print(
+            f"Warning: newest run is {days} days past LATEST_KNOWN_REGIME_START "
+            f"({LATEST_KNOWN_REGIME_START.date()}); classify_regime may be stale",
+            file=sys.stderr,
+        )
 
 
 def print_review_table(rows: List[YieldRow]) -> None:
@@ -699,7 +736,177 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
     print()
 
 
-def compute_report_data(repo_key: str, bucket_config: dict) -> dict:
+SEVERITY_VALUES = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+
+
+def _verified_value_formula() -> str:
+    """Generate the value formula string from SEVERITY_VALUES."""
+    abbrev = {"Critical": "crit", "High": "high", "Medium": "med", "Low": "low"}
+    terms = " + ".join(f"{abbrev[k]}*{v}" for k, v in SEVERITY_VALUES.items())
+    return f"{terms} (over CONFIRMED findings)"
+
+
+class CorpusBoundary(TypedDict):
+    repo_keys: List[str]
+    regimes: List[str]
+    n_included: int
+    n_excluded: int
+    runs_with_unavailable_findings: int
+
+
+class Methodology(TypedDict, total=False):
+    formula: str
+    bucket_config: Dict[str, Any]
+    config_source: str
+    corpus_boundary: CorpusBoundary
+    token_status_note: str
+    observation_only: bool
+    observation_only_sentence: str
+
+
+class TokensReport(TypedDict, total=False):
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cache_creation_tokens: int
+    avg_input_per_run: int
+    avg_output_per_run: int
+    status: str
+    reason: str
+
+
+class ReportData(TypedDict, total=False):
+    """Aggregate report for one repo (or an error stub with only error/methodology)."""
+    error: str
+    repo_key: str
+    reviewers_per_run: Dict[str, List[int]]
+    verified_crit_high_per_run: Dict[str, List[int]]
+    verified_value_per_run: Dict[str, List[int]]
+    solo_findings_per_reviewer: Dict[str, int]
+    regime_counts: Dict[str, int]
+    n_included_runs: int
+    n_excluded_runs: int
+    tokens: TokensReport
+    valLift: Dict[str, str]
+    shadow_miss_rate: Dict[str, str]
+    methodology: Methodology
+
+
+def _classify_runs(reports_dir: Path, bucket_config: dict) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime]]:
+    """Return ([(run_dir, regime, bucket)], regime_counts, newest_timestamp) for all run dirs."""
+    runs: List[Tuple[Path, str, str]] = []
+    regime_counts: Dict[str, int] = {}
+    newest: Optional[datetime] = None
+    for review_subdir in sorted(reports_dir.iterdir()):
+        if not review_subdir.is_dir():
+            continue
+        timestamp = parse_review_timestamp(review_subdir.name)
+        if timestamp and (newest is None or timestamp > newest):
+            newest = timestamp
+        regime = classify_regime(timestamp)
+        regime_counts[regime] = regime_counts.get(regime, 0) + 1
+        bucket = classify_size_bucket(count_changed_lines(review_subdir), bucket_config)
+        runs.append((review_subdir, regime, bucket))
+    return runs, regime_counts, newest
+
+
+def _score_findings(runs: List[Tuple[Path, str, str]]) -> Tuple[Dict[str, List[int]], Dict[str, List[int]], Dict[str, List[int]], Dict[str, int], int]:
+    """Compute per-bucket reviewer counts, crit/high counts, value, solo findings, and unavailable-findings count."""
+    reviewers_per_run: Dict[str, List[int]] = {}
+    verified_crit_high_per_run: Dict[str, List[int]] = {}
+    verified_value_per_run: Dict[str, List[int]] = {}
+    solo_findings_per_reviewer: Dict[str, int] = {}
+    runs_with_unavailable_findings = 0
+
+    for review_subdir, regime, bucket in runs:
+        include_in_findings = regime == "post-148-sam-gated"
+
+        if bucket not in reviewers_per_run:
+            reviewers_per_run[bucket] = []
+            verified_crit_high_per_run[bucket] = []
+            verified_value_per_run[bucket] = []
+
+        reviewers_per_run[bucket].append(len(list(review_subdir.glob("*-pass1.md"))))
+
+        findings_data = read_findings_json(review_subdir)
+        if not findings_data and include_in_findings:
+            runs_with_unavailable_findings += 1
+            continue
+
+        if findings_data and include_in_findings:
+            crit_high_count = 0
+            value_total = 0
+
+            for finding in findings_data.get("findings", []):
+                if finding.get("verdict") != "CONFIRMED":
+                    continue
+
+                severity = finding.get("severity", "")
+                supported_by = finding.get("supported_by", [])
+                raised_by = finding.get("raised_by", "")
+
+                if severity.lower() in ["critical", "high"]:
+                    crit_high_count += 1
+
+                value_total += SEVERITY_VALUES.get(severity, 0)
+
+                if not supported_by and raised_by:
+                    solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
+
+            verified_crit_high_per_run[bucket].append(crit_high_count)
+            verified_value_per_run[bucket].append(value_total)
+
+    return (
+        reviewers_per_run,
+        verified_crit_high_per_run,
+        verified_value_per_run,
+        solo_findings_per_reviewer,
+        runs_with_unavailable_findings,
+    )
+
+
+def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> TokensReport:
+    """Aggregate measured token rows from reviewer-yield.jsonl for the given runs."""
+    all_token_rows = []
+    yield_file = reports_dir / "reviewer-yield.jsonl"
+    run_names = {r[0].name for r in runs}
+    if yield_file.exists():
+        try:
+            with open(yield_file, "r") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            row = json.loads(line)
+                            if row.get("run_id") in run_names:
+                                all_token_rows.append(row)
+                        except json.JSONDecodeError:
+                            continue
+        except OSError:
+            pass
+
+    measured_rows = [r for r in all_token_rows if r.get("tokens_status") == "measured"]
+    if measured_rows:
+        total_input = sum(r.get("input_tokens", 0) for r in measured_rows)
+        total_output = sum(r.get("output_tokens", 0) for r in measured_rows)
+        total_cache_read = sum(r.get("cache_read_input_tokens", 0) for r in measured_rows)
+        total_cache_creation = sum(r.get("cache_creation_input_tokens", 0) for r in measured_rows)
+        run_count = len(set(r.get("run_id") for r in measured_rows))
+
+        return {
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read,
+            "total_cache_creation_tokens": total_cache_creation,
+            "avg_input_per_run": total_input // run_count if run_count > 0 else 0,
+            "avg_output_per_run": total_output // run_count if run_count > 0 else 0,
+        }
+    return {
+        "status": "unavailable",
+        "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward"
+    }
+
+
+def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     """
     Compute report metrics across all runs for a repo.
 
@@ -724,117 +931,19 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> dict:
             }
         }
 
-    # Walk all review directories
-    reviewers_per_run = {}  # {bucket: [counts]}
-    verified_crit_high_per_run = {}  # {bucket: [counts]}
-    verified_value_per_run = {}  # {bucket: [values]}
-    solo_findings_per_reviewer = {}  # {reviewer: count}
-    regime_counts = {}  # {regime: count}
-    all_token_rows = []  # For token aggregation
-    runs_with_unavailable_findings = 0
+    bucket_config = dict(bucket_config)
+    config_source = "fallback" if bucket_config.pop("config_source", None) == "fallback" else "file"
 
-    for review_subdir in sorted(reports_dir.iterdir()):
-        if not review_subdir.is_dir():
-            continue
-
-        # Parse timestamp and classify regime
-        timestamp = parse_review_timestamp(review_subdir.name)
-        regime = classify_regime(timestamp)
-        regime_counts[regime] = regime_counts.get(regime, 0) + 1
-
-        # Only include post-148-sam-gated runs in finding-derived metrics
-        include_in_findings = regime == "post-148-sam-gated"
-
-        # Count changed lines
-        changed_lines = count_changed_lines(review_subdir)
-        bucket = classify_size_bucket(changed_lines or -1, bucket_config)
-
-        # Initialize bucket lists if needed
-        if bucket not in reviewers_per_run:
-            reviewers_per_run[bucket] = []
-            verified_crit_high_per_run[bucket] = []
-            verified_value_per_run[bucket] = []
-
-        # Count reviewers
-        reviewer_count = len(list(review_subdir.glob("*-pass1.md")))
-        reviewers_per_run[bucket].append(reviewer_count)
-
-        # Read findings
-        findings_data = read_findings_json(review_subdir)
-        if not findings_data and include_in_findings:
-            runs_with_unavailable_findings += 1
-            continue
-
-        if findings_data and include_in_findings:
-            findings = findings_data.get("findings", [])
-            crit_high_count = 0
-            value_total = 0
-
-            severity_values = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
-
-            for finding in findings:
-                verdict = finding.get("verdict")
-                if verdict != "CONFIRMED":
-                    continue
-
-                severity = finding.get("severity", "")
-                supported_by = finding.get("supported_by", [])
-                raised_by = finding.get("raised_by", "")
-
-                # Crit/High count (case-insensitive)
-                if severity.lower() in ["critical", "high"]:
-                    crit_high_count += 1
-
-                # Value calculation
-                value = severity_values.get(severity, 0)
-                value_total += value
-
-                # Solo finding tracking
-                if not supported_by and raised_by:
-                    solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
-
-            verified_crit_high_per_run[bucket].append(crit_high_count)
-            verified_value_per_run[bucket].append(value_total)
-
-        # Load yield data for tokens
-        yield_file = reports_dir / "reviewer-yield.jsonl"
-        if yield_file.exists():
-            try:
-                with open(yield_file, "r") as f:
-                    for line in f:
-                        if line.strip():
-                            try:
-                                row = json.loads(line)
-                                if row.get("run_id") == review_subdir.name:
-                                    all_token_rows.append(row)
-                            except json.JSONDecodeError:
-                                continue
-            except OSError:
-                pass
-
-    # Compute token aggregation
-    tokens_result = {}
-    measured_rows = [r for r in all_token_rows if r.get("tokens_status") == "measured"]
-    if measured_rows:
-        total_input = sum(r.get("input_tokens", 0) for r in measured_rows)
-        total_output = sum(r.get("output_tokens", 0) for r in measured_rows)
-        total_cache_read = sum(r.get("cache_read_input_tokens", 0) for r in measured_rows)
-        total_cache_creation = sum(r.get("cache_creation_input_tokens", 0) for r in measured_rows)
-        run_count = len(set(r.get("run_id") for r in measured_rows))
-
-        tokens_result = {
-            "total_input_tokens": total_input,
-            "total_output_tokens": total_output,
-            "total_cache_read_tokens": total_cache_read,
-            "total_cache_creation_tokens": total_cache_creation,
-            "avg_input_per_run": total_input // run_count if run_count > 0 else 0,
-            "avg_output_per_run": total_output // run_count if run_count > 0 else 0,
-        }
-    else:
-        tokens_result = {
-            "status": "unavailable",
-            "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward"
-        }
+    runs, regime_counts, newest = _classify_runs(reports_dir, bucket_config)
+    _warn_if_regime_stale(newest)
+    (
+        reviewers_per_run,
+        verified_crit_high_per_run,
+        verified_value_per_run,
+        solo_findings_per_reviewer,
+        runs_with_unavailable_findings,
+    ) = _score_findings(runs)
+    tokens_result = _aggregate_tokens(reports_dir, runs)
 
     # Build regime summary
     n_included = regime_counts.get("post-148-sam-gated", 0)
@@ -859,13 +968,15 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> dict:
             "reason": "requires the deterministic scorer (#195/#196)"
         },
         "methodology": {
-            "formula": "crit*8 + high*4 + med*2 + low*1 (over CONFIRMED findings)",
+            "formula": _verified_value_formula(),
             "bucket_config": bucket_config,
+            "config_source": config_source,
             "corpus_boundary": {
                 "repo_keys": [repo_key],
                 "regimes": ["post-148-sam-gated"],
                 "n_included": n_included,
-                "n_excluded": n_excluded
+                "n_excluded": n_excluded,
+                "runs_with_unavailable_findings": runs_with_unavailable_findings,
             },
             "token_status_note": "unavailable for retrospective runs; measured prospectively from transcript-origin.json fix onward",
             "observation_only": True,
@@ -874,12 +985,17 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> dict:
     }
 
 
-def render_report_json(report_data: dict) -> str:
+def _avg(values: list) -> int:
+    """Integer average, 0 for an empty list."""
+    return sum(values) // len(values) if values else 0
+
+
+def render_report_json(report_data: Any) -> str:
     """Render report data as JSON."""
     return json.dumps(report_data, indent=2)
 
 
-def render_report_markdown(report_data: dict) -> str:
+def render_report_markdown(report_data: ReportData) -> str:
     """Render report data as Markdown."""
     output = []
     output.append("# Reviewer Routing Metrics Report\n")
@@ -894,6 +1010,8 @@ def render_report_markdown(report_data: dict) -> str:
         output.append(f"- **Formula:** {methodology.get('formula', 'N/A')}\n")
         output.append(f"- **Bucket Config Version:** {methodology.get('bucket_config', {}).get('config_version', 'N/A')}\n")
         output.append(f"- **Corpus:** {methodology.get('corpus_boundary', {}).get('n_included', 0)} included, {methodology.get('corpus_boundary', {}).get('n_excluded', 0)} excluded\n")
+        output.append(f"- **Bucket Config Source:** {methodology.get('config_source', 'N/A')}\n")
+        output.append(f"- **Runs With Unavailable Findings:** {methodology.get('corpus_boundary', {}).get('runs_with_unavailable_findings', 0)}\n")
         output.append(f"- **Observation Only:** Yes — {methodology.get('observation_only_sentence', 'Phase 0 only')}\n\n")
 
     # Regime counts
@@ -909,7 +1027,7 @@ def render_report_markdown(report_data: dict) -> str:
     reviewers_per_run = report_data.get("reviewers_per_run", {})
     for bucket in sorted(reviewers_per_run.keys()):
         counts = reviewers_per_run[bucket]
-        avg = sum(counts) // len(counts) if counts else 0
+        avg = _avg(counts)
         output.append(f"- **{bucket}**: {avg} avg reviewers ({len(counts)} runs)\n")
     output.append("\n")
 
@@ -918,7 +1036,7 @@ def render_report_markdown(report_data: dict) -> str:
     verified_crit_high = report_data.get("verified_crit_high_per_run", {})
     for bucket in sorted(verified_crit_high.keys()):
         counts = verified_crit_high[bucket]
-        avg = sum(counts) // len(counts) if counts else 0
+        avg = _avg(counts)
         output.append(f"- **{bucket}**: {avg} avg critical/high findings ({len(counts)} runs)\n")
     output.append("\n")
 
@@ -928,7 +1046,7 @@ def render_report_markdown(report_data: dict) -> str:
     verified_value = report_data.get("verified_value_per_run", {})
     for bucket in sorted(verified_value.keys()):
         values = verified_value[bucket]
-        avg = sum(values) // len(values) if values else 0
+        avg = _avg(values)
         output.append(f"- **{bucket}**: {avg} avg value points ({len(values)} runs)\n")
     output.append("\n")
 
