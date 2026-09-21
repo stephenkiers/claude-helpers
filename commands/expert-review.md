@@ -60,7 +60,9 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
 
 - `$1...`: Reviewer selection (default: all discovered reviewers, router-selected)
   - Comma- or space-separated names matched case-insensitively against `index.yaml` — full names or
-    unambiguous prefixes: `/expert-review rachel,security-sage` — error if a name doesn't match
+    unambiguous prefixes: `/expert-review rachel,security-sage` — error if a name doesn't match. Naming
+    a reviewer that lacks the active context tag (e.g., an editor on a code diff) is allowed; prints a
+    one-line warning at run start, not an error.
   - Naming reviewers **bypasses the router**: only named reviewers run
   - `--all`: explicitly run all reviewers (the default; router makes the final call)
 - `--model <haiku|sonnet|opus|fable>`: model for the **judgment panel** — Pass 1, Pass 2, Contrarian
@@ -77,9 +79,9 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   |---|---|---|
   | 1 | swarm | 6 fixed-lens haiku scouts (`prompts/peer-scout.md`, CRITIC `path:line` grounding) → 1 sonnet merge agent → `final-report.md` → Triage → `claude-action-plan.md`. Skips Summarizer/Router/Carl/Q&A/Pass 2/Amalgamator. |
   | 2 | reviewer pods | Two independent pod agents apply 9 compact, attributed lenses over one shared neutral evidence packet; one batched Q&A scout and one neutral verifier; standalone specialists only for grounded uncertain High/Critical or explicit high-risk findings. |
-  | 3 | routed pair + Bob | Independent path: Router's top 2 plus `uncle-bob` pre-seated (full-patch read). |
+  | 3 | routed pair + third | Independent path: Router's top 2 plus third routed pick, or Fragile Feynman fallback (full-patch read). |
   | 4 | normal | Full panel; the heuristic's ceiling and the fallback when no config or `--effort` is given. |
-  | 5 | everyone | All `index.yaml` reviewers; implemented as named-selection over the full index (router bypassed). |
+  | 5 | everyone | All `review`-tagged reviewers (editors excluded); implemented as named-selection over the `review`-filtered index (router bypassed). |
 
   Interaction rules: `--effort` + named reviewers = **error**. `--all --effort 5` is accepted
   (redundant); `--all` + `--effort 1|2|3` is accepted — effort wins. `--model` stays orthogonal; at
@@ -444,7 +446,7 @@ this step and continue at Step 2.
 
 1. Resolve the home directory (`echo $HOME` — tilde doesn't expand in Glob).
 2. **Read `{HOME}/.claude/reviewers/index.yaml`** — the single source of `name`, `priority`,
-   `triggers`, `useWhen`, `note` for every reviewer. The Router consults ONLY this index.
+   `contexts`, `triggers`, `useWhen`, `note` for every reviewer. The Router consults ONLY this index.
 3. **Never read a reviewer's own YAML into this orchestrator context.** `index.yaml` is all you need
    to understand reviewer domains. Each subagent reads its own persona file — that is the whole point
    of ADR-0001. Loading 20+ personas here costs ~28k tokens you then re-read from cache on every
@@ -479,9 +481,9 @@ exit 1
 ```
 `--all --effort 5` is accepted (redundant). `--all` + `--effort 1|2|3` is accepted
 — effort wins. Effort 5 **lowers to named selection**: set `NAMED_SELECTION=true` and `NAMED_REVIEWERS`
-to the full `index.yaml` reviewer list (space-separated, lowercased) — the router is bypassed with no
-new code path. Print the resolved effort and its source at run start, alongside the resolved panel model
-and reviewer count.
+to every reviewer in the index whose `contexts` contains a `review` key **at any strength**, excluding
+the three editors (space-separated, lowercased) — the router is bypassed with no new code path. Print
+the resolved effort and its source at run start, alongside the resolved panel model and reviewer count.
 
 **Effort heuristic** (when `--effort` not passed):
 
