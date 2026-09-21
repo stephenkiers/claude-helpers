@@ -19,7 +19,6 @@ Run with: python3 tests/test_reviewer_contexts.py
 
 import re
 import yaml
-from pathlib import Path
 from _test_harness import REPO_ROOT, Harness
 
 REVIEWERS_DIR = REPO_ROOT / "reviewers"

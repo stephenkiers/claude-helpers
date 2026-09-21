@@ -447,6 +447,9 @@ this step and continue at Step 2.
 1. Resolve the home directory (`echo $HOME` — tilde doesn't expand in Glob).
 2. **Read `{HOME}/.claude/reviewers/index.yaml`** — the single source of `name`, `priority`,
    `contexts`, `triggers`, `useWhen`, `note` for every reviewer. The Router consults ONLY this index.
+   Pass the Router only entries whose `contexts` contains a `review` key (`reviewers/README.md § Contexts
+   and resolution precedence`); if none resolve, stop and report that the `review` context resolved
+   empty — never run an empty panel.
 3. **Never read a reviewer's own YAML into this orchestrator context.** `index.yaml` is all you need
    to understand reviewer domains. Each subagent reads its own persona file — that is the whole point
    of ADR-0001. Loading 20+ personas here costs ~28k tokens you then re-read from cache on every
