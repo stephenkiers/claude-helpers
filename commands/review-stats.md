@@ -58,3 +58,5 @@ mentions that made it into the action plan) for each reviewer across all runs.
 - **Opt-in only:** Manual run after expert-review, never automatic.
 - **Read-only:** No interaction with reviewer logic, rulings, or findings suppression.
 - **Per-repo queue:** Stored at `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` alongside your review directories.
+
+For the methodology behind tuning `/expert-review`'s reviewer selection based on attendance and yield metrics, see `prompts/reviewer-selection-audit.md`.

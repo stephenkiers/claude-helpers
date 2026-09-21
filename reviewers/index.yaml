@@ -12,8 +12,8 @@ reviewers:
   - name: Uncle Bob
     file: uncle-bob.yaml
     priority: high
-    useWhen: Architecture, SOLID principles, clean code, resource management
-    triggers: [open, close, drop, dispose, new, create, acquire, release, shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup]
+    useWhen: Any diff adding or restructuring functions, classes, or modules — naming, single-responsibility, duplication, function length, dead parameters — plus resource acquire/release correctness. Not limited to large architectural changes.
+    triggers: [open, close, drop, dispose, new, create, acquire, release, shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup, class, function, def, impl, module, helper, util, extract, duplicate]
 
   - name: Security Sage
     file: security-sage.yaml
@@ -67,15 +67,15 @@ reviewers:
 
   - name: Curious Casey
     file: curious-casey.yaml
-    priority: medium
-    useWhen: Test coverage, clarity, documentation, onboarding friction
-    triggers: [test, "#[test]", describe, expect, assert, mock, complex logic]
+    priority: high
+    useWhen: Untested or unexplained code — coverage gaps, magic numbers, undocumented decisions, jargon, onboarding friction. Any diff, test files or not.
+    triggers: [test, "#[test]", assert, mock, complex logic, TODO, FIXME, config, export]
 
   - name: Vera Verifier
     file: vera-verifier.yaml
     priority: high
-    useWhen: Test files in diff — verifies tests actually test what they claim by desk-checking execution against implementation
-    triggers: ["*.test.*", "*.spec.*", "*_test.rs", describe, it, test, expect, assert, vi.fn, mock, yield, "for await"]
+    useWhen: Tests, or numeric/loop/accumulator production code whose correctness needs execution tracing.
+    triggers: ["*.test.*", "*.spec.*", "*_test.rs", "tests/*", "*/tests/*", "Tests/*", "*/Tests/*", "test/*", "*/test/*", expect, vi.fn, yield, "for await", "next(", done, generator, flush, reduce]
     note: "Desk-checks tests by mentally executing them step-by-step against the implementation. Catches tests that pass for the wrong reason, comment/name inaccuracies, protocol misunderstandings (async generators, iterator done vs chunk type), and mock fidelity issues. Complements Casey (coverage) and Ariadne (production paths)."
 
   - name: Danielle the Designer
@@ -187,3 +187,10 @@ reviewers:
     useWhen: New or modified KB claims (facts, quotes, proposals, problems, source summaries, person attributions) — audits whether each claim's wording is fully supported by its cited source.
     triggers: [kb/facts, kb/quotes, kb/proposals, kb/problems, kb/sources-registry, confidence, evidence_type, source_refs, confirmed, always, never, unlike]
     note: "Epistemic claim auditor for knowledge bases. Complements Data Scientist Dana (structural integrity) by checking claim-strength-vs-evidence: overstatement, unsourced clauses, inference-as-fact, confidence calibration."
+
+# Reviewers whose domain can be fully expressed in a single file or single line
+# (a hardcoded secret, a shell injection, an unescaped path, a race). A structural
+# diff-shape precondition can never prove their domain does not apply, so they are
+# permanently ineligible for Sam-System-style pre-Router exclusion. See
+# prompts/expert-review-panel.md and ADR-0003.2.
+structural_pre_gate_ineligible: [security-sage, rachel, tara-typesafe, contract-chris]
