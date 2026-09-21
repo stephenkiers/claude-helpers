@@ -164,8 +164,9 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
     on before this CLI existed), not an argv shape this module constructed itself. The funnel
     only guards git/gh calls this module builds directly (gh pr merge, the reentrancy lock).
 
-    Creates/preserves a merge lock file under ~/.claude/state/merge-locks/ (never
-    auto-cleared; see merge_lock_path).
+    Creates/preserves a merge lock file under ~/.claude/state/merge-locks/ (kept after a
+    successful/uncertain merge; released when the merge fails and the PR is still OPEN;
+    see merge_lock_path).
 
     Returns (MergeResult, None) with execution result.
     Returns (MergeResult, Unknown(...)) if a critical error occurs.
@@ -212,6 +213,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 merge_succeeded = True
             else:
                 result.error = Unknown(f"'just merge' failed: {detail}")
+                _release_lock_if_still_open(lock_file, plan, cwd)
                 return result, result.error
 
         if not merge_succeeded:
@@ -221,6 +223,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                     result.error = Unknown(f"Merge gate check failed: {check_detail}")
                 else:
                     result.error = Unknown("Merge gate check failed")
+                lock_file.unlink(missing_ok=True)  # gate runs before any merge: nothing merged
                 return result, result.error
             if gate_applied:
                 merge_gate_used = "repo-cache check"
@@ -233,6 +236,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 merge_succeeded = True
             else:
                 result.error = Unknown(f"gh pr merge failed: {detail}")
+                _release_lock_if_still_open(lock_file, plan, cwd)
                 return result, result.error
 
         if merge_succeeded:
@@ -249,6 +253,20 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         return MergeResult(success=False, error=Unknown(f"Invalid plan JSON: {e}")), None
     except Exception as e:
         return MergeResult(success=False, error=Unknown(f"apply_merge failed: {e}")), None
+
+
+def _release_lock_if_still_open(lock_file: Path, plan: MergePlan, cwd: Optional[Path]) -> None:
+    """
+    Remove the merge lock after a failed merge attempt, but only if the PR is
+    confirmed still OPEN. If state can't be confirmed (or the PR merged despite the
+    error), the lock stays as the "already merged" guard.
+    """
+    try:
+        pr_data = git.pr_view_json(str(plan.pr_number), ["state"], cwd=Path(plan.target_worktree))
+        if pr_data and pr_data.get("state") == "OPEN":
+            lock_file.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _unresolved_pr_message(target_worktree: str, is_current: bool) -> str:
