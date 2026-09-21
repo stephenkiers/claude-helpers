@@ -9,11 +9,16 @@ This command tracks reviewer ROI across `/expert-review` runs: **token cost per 
 
 **This is a leaderboard, not a verdict.** It is opt-in and completely disconnected from expert-review's own decision-making — a bug in this script produces a bad report, never a bad review. Never read by any reviewer prompt or triage logic.
 
+**Observation-only in Phase 0** — not wired into `prompts/router.md`, `reviewers/index.yaml` triggers, or model/effort selection; wiring it into any of those needs an ADR amendment first.
+
 ## Usage
 
 - `/review-stats` (no args) — aggregate leaderboard across all logged runs for the current repo.
 - `/review-stats <review-dir-or-path>` — log that specific run (idempotent) and print its
   per-reviewer breakdown.
+- `/review-stats --report REPO_KEY` — generate aggregate metrics report across all runs for a repo (Phase 0: observation-only).
+- `/review-stats --report-all-repos` — generate reports for all repos under `~/.claude/reviews/`.
+- `/review-stats --report REPO_KEY --report-json PATH` — write JSON report source-of-truth to PATH; Markdown always printed to stdout.
 
 ## Steps
 
@@ -47,11 +52,13 @@ mentions that made it into the action plan) for each reviewer across all runs.
 
 ## How It Works
 
-1. Locates your review directory and finds the subagent transcripts that wrote to it.
-2. Parses token usage from each subagent (only "complete turn" messages with `iterations` key to avoid double-counting).
-3. Counts mentions of each reviewer in `final-report.md`.
-4. Counts escalations in `claude-action-plan.md` (looks for `**Raised by**: <reviewer>` markers).
-5. Appends one JSON line per reviewer to `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` (creates file and parent dirs if missing, skips if run_id already exists).
+1. Locates your review directory and reads `transcript-origin.json` to determine the session directory.
+2. Finds subagent transcripts bounded to `~/.claude/projects/{project_dir}/{session_id}/subagents/*.jsonl` that wrote to this review directory.
+3. Parses token usage from each subagent's `message.usage` fields, de-duplicating by `message["id"]` when present.
+4. Counts mentions of each reviewer in `final-report.md` (matching both slug and display name, case-insensitive).
+5. Counts escalations in `claude-action-plan.md` (looks for `**Raised by**: <reviewer>` markers).
+6. Records each row with `tokens_status: "measured"` (when transcripts found) or `"unavailable"` (when transcript-origin.json missing/unavailable or session dir inaccessible).
+7. Appends one JSON line per reviewer to `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` (creates file and parent dirs if missing, skips if run_id already exists).
 
 ## Notes
 

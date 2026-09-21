@@ -15,7 +15,7 @@ point — your finding is worth having precisely because nobody else's reasoning
   when-NOT-to-flag rules) and your own persona YAML. Read them with the Read tool before anything
   else. Your persona's `codeReview.prompt` is your review lens; adopt it fully.
 - **Your sections** — the diff hunks the router selected for you, or the full diff if your role calls
-  for it (Sam System, Cody, Consistency Checker, Carl always get the full diff).
+  for it (Sam System when routed in and gated by diff-shape precondition, Cody, Consistency Checker, Carl get the full diff). See `prompts/expert-framework.md`'s Reviewer-Specific Input Scope section for the full per-reviewer breakdown.
 - **Your output path** — where your review must be written.
 
 ## Role prompts are not personas

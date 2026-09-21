@@ -210,7 +210,7 @@ commands that need them read them by path. Put a new reference doc in `prompts/`
 - **Rachel** — concurrency, thread safety, race conditions
 - **Eric Evans** — DDD, domain boundaries, ubiquitous language
 - **Mozart** — composition/orchestration and event-driven architecture
-- **Sam System** — cross-file composition and data-flow (receives the full diff)
+- **Sam System** — cross-file composition and data-flow (gated by diff-shape precondition since #148; receives the full diff when routed in)
 - **North Star Nick** — alignment with documented ADRs (reads `docs/adr/` here)
 - **Fragile Feynman** — pre-mortem fragility analysis
 - **Contract Chris** — contract completeness, docstrings, silenced errors
