@@ -322,20 +322,39 @@ def test_report_json_markdown_consistency():
         }
         (review_dir / "transcript-origin.json").write_text(json.dumps(origin_data))
 
-        # Generate report
-        bucket_config = reviewer_yield.load_bucket_config()
-        report_data = reviewer_yield.compute_report_data("test-repo", bucket_config)
+        (review_dir / "findings.json").write_text(json.dumps({
+            "schema_version": 1,
+            "findings": [{
+                "id": "f1", "severity": "Critical", "raised_by": "uncle-bob",
+                "supported_by": [], "verdict": "CONFIRMED",
+            }],
+        }))
+
+        # Isolate HOME so compute_report_data reads only this fixture
+        old_home = os.environ.get("HOME")
+        try:
+            os.environ["HOME"] = tmpdir
+
+            bucket_config = reviewer_yield.load_bucket_config()
+            report_data = reviewer_yield.compute_report_data("test-repo", bucket_config)
+        finally:
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+            else:
+                os.environ.pop("HOME", None)
 
         # Render both formats
         json_output = reviewer_yield.render_report_json(report_data)
         markdown_output = reviewer_yield.render_report_markdown(report_data)
 
-        # Verify both are valid/non-empty
         passed = (
-            json_output and
-            markdown_output and
+            bool(json_output) and
+            bool(markdown_output) and
             "methodology" in json_output and
-            "Methodology" in markdown_output
+            "Methodology" in markdown_output and
+            report_data.get("solo_findings_per_reviewer") == {"uncle-bob": 1} and
+            "uncle-bob: 1 solo findings" in markdown_output and
+            json.loads(json_output).get("n_included_runs") == 1
         )
         harness.test_result("Report generation: JSON and Markdown both generated", passed)
 

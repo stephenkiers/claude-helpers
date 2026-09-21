@@ -11,7 +11,27 @@ and may not yet exist in this worktree. Tests are written to pass once both unit
 
 from _test_harness import REPO_ROOT, Harness
 
-harness = Harness("Findings JSON Contract Tests")
+
+class SkipAwareHarness(Harness):
+    """Harness with a real skip bucket: passed=None records a skip, not a failure."""
+
+    def __init__(self, title):
+        super().__init__(title)
+        self.skip_count = 0
+
+    def test_result(self, test_name, passed, message=""):
+        if passed is None:
+            print(f"- SKIP {test_name}: {message}" if message else f"- SKIP {test_name}")
+            self.skip_count += 1
+            return
+        super().test_result(test_name, passed, message)
+
+    def summarize_and_exit(self):
+        print(f"Skipped: {self.skip_count}")
+        super().summarize_and_exit()
+
+
+harness = SkipAwareHarness("Findings JSON Contract Tests")
 
 # Read content from prompts
 amalgamator_path = REPO_ROOT / "prompts" / "amalgamator.md"
