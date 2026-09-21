@@ -13,7 +13,7 @@ include and exclude.
 ## Your Inputs
 
 1. **Git diff output** (`{REVIEW_DIR}/full-diff.patch`)
-2. **Summary + business context** (`{REVIEW_DIR}/summary.md`)
+2. **Summary + business context** (`{REVIEW_DIR}/technical-summary.md`)
 3. **Plan/issue context** (if present)
 4. **Reviewer index ONLY** — `~/.claude/reviewers/index.yaml` with triggers and `useWhen` (which
    are *signals of interest*, not rules)
@@ -197,7 +197,7 @@ reviewer's `name`, `priority`, `triggers`, `useWhen`, and `note`.
 Read the following files using the Read tool:
 
 1. **`{REVIEW_DIR}/full-diff.patch`** — the complete git diff for this change
-2. **`{REVIEW_DIR}/summary.md`** — summary and business context
+2. **`{REVIEW_DIR}/technical-summary.md`** — summary and business context
 3. **`~/.claude/reviewers/index.yaml`** — the reviewer index with all triggers and interests
 
 These files are your routing intelligence. No diff or index will be substituted into this prompt text;
