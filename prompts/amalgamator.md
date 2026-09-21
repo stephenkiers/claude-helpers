@@ -86,7 +86,7 @@ When synthesizing a pod-path finding into `final-report.md`:
 - **Context Re-evaluation**: CONFIRMED: N, RESOLVED: N, DOWNGRADED: N, DISPUTED: N
 
 ## Technical Summary
-[from summary.md — what changed]
+[from technical-summary.md — what changed]
 
 ## Findings by Severity
 

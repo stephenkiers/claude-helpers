@@ -124,7 +124,7 @@ already-reviewed commit never overwrites the prior run):
 | `diff-index.md` | Main thread | Step 1 — `git diff --stat` + hunk headers only, ~20× smaller |
 | `effort-scout.json` | Effort Scout (Haiku) | Step 3 — `{effort, reason}`; only written when the heuristic runs and no risk keyword floored effort at 4 |
 | `pr-context.md` | `setup-pr-worktree.sh` (PR mode); main thread (effort 1, local mode) | Step 1 / swarm path — PR title, description, metadata; synthesized from branch/plan context in local-mode swarm |
-| `summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
+| `technical-summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
 | `review-context/*` | Neutral packet builder | Effort 2 — shared factual evidence loaded by both pods |
 | `*-pod.md` | Two pod agents | Effort 2 — per-lens attributed results plus post-pass deduplication |
@@ -609,7 +609,7 @@ all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Ste
 At `EFFORT=1` the panel's Swarm Path replaces Steps 4–10; at `EFFORT=5` Step 3 has already lowered
 the run to named selection over the full index.
 
-The panel writes `summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `contrarian-carl-pass1.md`,
+The panel writes `technical-summary.md`, `tagged-sections.md`, `{reviewer}-pass1.md`, `contrarian-carl-pass1.md`,
 `{reviewer}-questions-answered.md`, `{reviewer}-pass2.md`, and `final-report.md` into `REVIEW_DIR`
 (the effort-2 pod path writes `review-context/`, two pod checkpoints, one batched Q&A checkpoint,
 one verification checkpoint, optional specialist checkpoints, metrics, and `final-report.md`; the
@@ -800,7 +800,7 @@ never emit the literal string `{REVIEW_DIR}` to the user.
 {One sentence: does anything here need you, and is this ship-blocking or polish?}
 
 **Run summary**
-- Code recap: {1–2 sentences from `summary.md`'s Technical Summary; if effort 1, use `diff-index.md`'s stat line instead}
+- Code recap: {1–2 sentences from `technical-summary.md`'s Technical Summary; if effort 1, use `diff-index.md`'s stat line instead}
 - Effort: {N} ({"you specified it" if EFFORT_EXPLICIT, else EFFORT_SOURCE + ": " + EFFORT_REASON})
 - Reviewers: {names} ({reasoning from tagged-sections.md's Panel Decision, one clause} | "fixed 6-lens swarm screen" at effort 1 | "full index, effort 5" at effort 5)
 

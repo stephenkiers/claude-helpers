@@ -24,7 +24,7 @@ calling commands stay stable.
 
 ---
 
-### Step 4: Summarizer → `summary.md`
+### Step 4: Summarizer → `technical-summary.md`
 
 **Skip guard (effort):** If `EFFORT=1`, skip Steps 4–10 entirely and run the Swarm Path section
 below instead — the swarm has no Summarizer. If `EFFORT=2`, skip Steps 4–10 entirely and run the
@@ -35,7 +35,7 @@ or per-reviewer Pass 2 in addition to the pod path.
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage summarize >/dev/null 2>&1 || true
 ```
 
-**Skip guard:** If `{REVIEW_DIR}/summary.md` already exists (a caller — e.g.
+**Skip guard:** If `{REVIEW_DIR}/technical-summary.md` already exists (a caller — e.g.
 `/expert-review-coworker` — may have produced it during setup), skip this step and reuse
 that file. Do not re-run the summarizer or overwrite it.
 
@@ -43,7 +43,7 @@ Spawn one subagent (`subagent_type: "expert-reviewer"` — `general-purpose` sub
 from writing report files) with the role prompt `~/.claude/prompts/summarizer.md`, pointing it at `{REVIEW_DIR}/full-diff.patch` (it needs the actual
 diff text to summarize) rather than inlining `git diff` output, plus: changed-file list, commit
 messages (`git log main...HEAD --format="%s%n%n%b"`), PR description if available, and any
-known-issues index. Its output path is `{REVIEW_DIR}/summary.md` (the agent writes it). The file contains
+known-issues index. Its output path is `{REVIEW_DIR}/technical-summary.md` (the agent writes it). The file contains
 `## Technical Summary` (what), `## Business Context` (why), `## Suggested Reviewers`.
 
 **PR mode:** if `{REVIEW_DIR}/pr-context.md` exists, point the summarizer at it alongside the diff:
@@ -150,7 +150,7 @@ Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`
 model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
 - `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
   that file, which later reviewers use for bounded reads)
-- The `{REVIEW_DIR}/summary.md` (Technical Summary and Business Context)
+- The `{REVIEW_DIR}/technical-summary.md` (Technical Summary and Business Context)
 - The plan/issue context (if any)
 - `reviewers/index.yaml` **ONLY** — the router must not load persona YAML files; progressive
   disclosure means routing decisions are made from each expert's declared interest (`triggers`,
@@ -312,7 +312,7 @@ Then supply inline **only what you alone know** — none of it is on disk for th
   ```
   (`NAMED_SELECTION=true`: no router output exists to offset into — tell the reviewer to read
   `{REVIEW_DIR}/full-diff.patch` in full instead.)
-- The **Technical Summary** from `summary.md`
+- The **Technical Summary** from `technical-summary.md`
 - `PROJECT_CONTEXT`, project modifiers, `DETECTED_LANGUAGES`, and the strict delta-scope rule below
 - `{REVIEW_DIR}` and their output path
 
@@ -369,7 +369,7 @@ themselves; you do not need to know them here.)
 
 **If the router selects Sam System:** he receives the **full diff** (not line-range offsets — his
 domain is cross-file data-flow tracing, so he needs to see both ends of every connection), the
-Technical Summary from `summary.md`, and any plan context as "Known Integration Concerns". He must
+Technical Summary from `technical-summary.md`, and any plan context as "Known Integration Concerns". He must
 trace data flow across files — read both ends of every factory/event-bus/config connection and flag
 parameters passed but never used. His findings use the canonical format (not an ADR-0006 carve-out);
 each finding's **Issue** field starts with the data-flow trace, e.g.
@@ -505,7 +505,7 @@ Launch one subagent per eligible reviewer, in one message (`subagent_type: "expe
 - `{REVIEW_DIR}/{reviewer}-questions-answered.md` — if one exists
 - Permission to read any file referenced in their findings, to resolve uncertainty
 
-Supply inline only the **Business Context** section from `summary.md` — revealed now for the first
+Supply inline only the **Business Context** section from `technical-summary.md` — revealed now for the first
 time, and the whole point of Pass 2. Also supply the plan/issue context if available.
 
 **Reframed as skeptic-verifier (anti-anchoring).** The prompt's framing changes from "continue your
