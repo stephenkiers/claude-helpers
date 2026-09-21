@@ -276,18 +276,55 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    SESSION_ID=""
    RESOLUTION="unavailable"
    
-   # Try to get session ID from environment
-   if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-     SESSION_ID="$CLAUDE_CODE_SESSION_ID"
-     RESOLUTION="env"
-   else
-     # Try to find most-recent session-id subdirectory
-     PROJECTS_DIR="$HOME/.claude/projects/$PROJECT_DIR_SANITIZED"
-     if [ -d "$PROJECTS_DIR" ]; then
-       MOST_RECENT=$(ls -td "$PROJECTS_DIR"/*/ 2>/dev/null | head -1 | xargs -I {} basename {})
-       if [ -n "$MOST_RECENT" ] && [ "$MOST_RECENT" != "subagents" ]; then
-         SESSION_ID="$MOST_RECENT"
-         RESOLUTION="most-recent-dir"
+   # Validate PROJECT_DIR_SANITIZED matches expected pattern
+   if [[ "$PROJECT_DIR_SANITIZED" =~ ^[A-Za-z0-9_-]+$ ]]; then
+     # Try to get session ID from environment
+     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+       # Validate SESSION_ID from environment
+       if [[ "$CLAUDE_CODE_SESSION_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
+         SESSION_ID="$CLAUDE_CODE_SESSION_ID"
+         RESOLUTION="env"
+       fi
+     fi
+     # If no valid env var, try to find most-recent session-id subdirectory
+     if [ "$RESOLUTION" = "unavailable" ]; then
+       PROJECTS_DIR="$HOME/.claude/projects/$PROJECT_DIR_SANITIZED"
+       # Resolve and validate PROJECTS_DIR is under ~/.claude/projects
+       RESOLVED_PROJECTS_DIR=$(python3 -c "import os; print(os.path.realpath('$PROJECTS_DIR'))" 2>/dev/null)
+       CLAUDE_PROJECTS_BASE=$(python3 -c "import os; print(os.path.realpath(os.path.expanduser('~/.claude/projects')))" 2>/dev/null)
+       if [ -n "$RESOLVED_PROJECTS_DIR" ] && [ -n "$CLAUDE_PROJECTS_BASE" ] && [[ "$RESOLVED_PROJECTS_DIR" == "$CLAUDE_PROJECTS_BASE"* ]]; then
+         if [ -d "$RESOLVED_PROJECTS_DIR" ]; then
+           # Get top 2 directories by mtime to check for concurrent session ambiguity
+           TOP_TWO=$(ls -td "$RESOLVED_PROJECTS_DIR"/*/ 2>/dev/null | head -2)
+           if [ -n "$TOP_TWO" ]; then
+             MOST_RECENT=$(echo "$TOP_TWO" | head -1 | xargs -I {} basename {})
+             SECOND_RECENT=$(echo "$TOP_TWO" | tail -1 | xargs -I {} basename {})
+             # Skip if top directory is "subagents" (not a session ID)
+             if [ "$MOST_RECENT" = "subagents" ] && [ -n "$SECOND_RECENT" ]; then
+               MOST_RECENT="$SECOND_RECENT"
+             fi
+             if [ -n "$MOST_RECENT" ] && [ "$MOST_RECENT" != "subagents" ]; then
+               # Check if top two mtimes are within 5 seconds (concurrent session ambiguity); if so, fail to unavailable
+               FIRST_MTIME=$(stat -f%m "$RESOLVED_PROJECTS_DIR/$MOST_RECENT" 2>/dev/null)
+               SECOND_MTIME=$(stat -f%m "$RESOLVED_PROJECTS_DIR/$SECOND_RECENT" 2>/dev/null)
+               if [ -n "$FIRST_MTIME" ] && [ -n "$SECOND_MTIME" ]; then
+                 MTIME_DIFF=$((FIRST_MTIME - SECOND_MTIME))
+                 if [ $MTIME_DIFF -lt 0 ]; then
+                   MTIME_DIFF=$((-MTIME_DIFF))
+                 fi
+                 if [ $MTIME_DIFF -le 5 ]; then
+                   RESOLUTION="unavailable"
+                 else
+                   SESSION_ID="$MOST_RECENT"
+                   RESOLUTION="most-recent-dir"
+                 fi
+               else
+                 SESSION_ID="$MOST_RECENT"
+                 RESOLUTION="most-recent-dir"
+               fi
+             fi
+           fi
+         fi
        fi
      fi
    fi

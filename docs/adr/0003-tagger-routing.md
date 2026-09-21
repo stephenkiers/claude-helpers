@@ -24,6 +24,8 @@ receive the full diff because their value is cross-cutting:
 - **Consistency Checker** — patterns across the whole diff.
 - **Contrarian Carl** — runs last, sees all findings to find what was missed.
 
+(Note: see the 2026-09-17 amendment below for the current always-run set and Sam System's routing status.)
+
 `--all` overrides routing to force every reviewer. Naming reviewers explicitly
 (`/expert-review rachel,security-sage`) *is* the routing decision
 for judgment reviewers: it bypasses the router and skips its judgment call entirely. The four
