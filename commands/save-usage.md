@@ -43,7 +43,9 @@ still produces one label built from all of them, but the label alone can't tell 
 actually drove the cost. For that, read the record's structured fields directly: every record
 captures `session_id` (from `CLAUDE_CODE_SESSION_ID`) and `commands` — the full list of
 command.begin events from this session, each with its `model`/`effort` override when one was
-recorded — plus `worktree` (the repository's directory basename), independent of the label.
+recorded — plus `worktree` (the repository's directory basename), independent of the label. Note
+that `session_id` is `null` and `commands` is `[]` when telemetry was not available; callers
+should check for these before relying on these fields.
 
 ## Steps
 
@@ -68,7 +70,7 @@ panel), show its stderr message as-is and stop; do not retry or guess at the mis
 - **Read-only with respect to everything except its own log file** — appends one JSON line to
   `~/.claude/telemetry/usage-log.jsonl`, touches nothing else.
 - **Reads but never writes `run-metrics.py`'s `events.jsonl`** — save-usage reads it only to detect
-  the last slash command for the auto-generated fallback label; it still maintains its own separate,
+  the slash commands run in the session for the auto-generated fallback label (see Usage section above); it still maintains its own separate,
   human-curated log (`usage-log.jsonl`) and never writes to `events.jsonl`. Query `usage-log.jsonl`
   directly with `jq`/`python` (e.g. `jq -s 'group_by(.label)' ~/.claude/telemetry/usage-log.jsonl`)
   the same way `usage-report.md` documents querying `events.jsonl` — no built-in aggregation command
