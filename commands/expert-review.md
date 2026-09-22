@@ -741,19 +741,40 @@ if [ "${PR_MODE:-false}" != true ]; then
 fi
 ```
 
-Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
+Write the `review` section via `scripts/write-review-cache.py`, not hand-assembled `jq`. The fields
+used to be a prose list the executing agent turned into `$REVIEW_JSON` a hundred-odd lines below this
+note, and that drifted in practice: a real run once wrote a `review` object with **no `branch` key at
+all**, which makes `expert-review-status.py`'s `reviewed` check permanently `false` for that entry
+regardless of branch or commit, while also inventing an undocumented `decisions` key nothing reads.
+The script's argparse schema is the single place the object shape is defined, so a required field
+cannot be silently dropped and a stray field cannot be silently added:
 
 ```bash
-EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+python3 "$HOME/.claude/scripts/write-review-cache.py" \
+  --cache-path .claude/github-cache.json \
+  --last-run "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --commit "$HASH" \
+  --branch "$BRANCH" \
+  --review-dir "$REVIEW_DIR" \
+  --reviewers "$REVIEWER_NAMES" \
+  --findings-critical "$FINDINGS_CRITICAL" \
+  --findings-high "$FINDINGS_HIGH" \
+  --findings-medium "$FINDINGS_MEDIUM" \
+  --findings-low "$FINDINGS_LOW" \
+  ${PANEL_MODEL:+--panel-model "$PANEL_MODEL"} \
+  ${METRICS_PATH:+--metrics-path "$METRICS_PATH"}
 ```
 
-Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
-
-`$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
-`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts),
-and, when `EFFORT=2`, `metricsPath` pointing to `{REVIEW_DIR}/review-metrics.json`.
+`--branch` must be `$BRANCH` (the same value Step 0 resolved, slashes intact — e.g.
+`feature/162-...`, matching what `expert-review-status.py` compares against `git rev-parse
+--abbrev-ref HEAD`), not the dash-substituted form used for `REVIEW_DIR` naming. `--reviewers` is a
+comma-separated list of the reviewer names that actually ran (Code Rot Cody and Consistency Checker
+always included; add others per `tagged-sections.md`'s Panel Decision or the named/`--all` selection).
+`FINDINGS_CRITICAL`/`HIGH`/`MEDIUM`/`LOW` come from the counts already computed for the closing
+message's calibration flag — reuse them, don't recompute. The script exits non-zero with a message on
+any missing/empty required field or on a cache-path write failure; treat that as a real Step 13
+failure (do not swallow it), since a broken cache write here is exactly the failure mode this script
+exists to prevent.
 
 Emit `stage-end --stage cache-metadata --outcome success` (non-PR mode only):
 ```bash
