@@ -34,7 +34,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, TypedDict
 
 # Add scripts/ to sys.path so we can import telemetry_schema and workflow.git
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +57,13 @@ PANEL_MARKERS = ("total cost", "total duration", "usage by model", "total code c
 # Bare UI chrome from the /usage panel itself — never a real label, even though it
 # contains no PANEL_MARKERS substring (e.g. the tab bar or the "Session" section header).
 UI_CHROME_LINES = {"session", "settings", "status", "config", "usage", "stats"}
+
+
+class CommandInfo(TypedDict, total=False):
+    """Command info dict with command name and optional model/effort overrides."""
+    command: str  # Always present
+    model: str
+    effort: str
 
 
 def parse_count(raw: str) -> float:
@@ -152,7 +159,7 @@ def detect_current_session_id() -> Optional[str]:
     return os.environ.get("CLAUDE_CODE_SESSION_ID") or None
 
 
-def detect_session_commands(session_id: Optional[str]) -> list:
+def detect_session_commands(session_id: Optional[str]) -> List[CommandInfo]:
     """Return every command run in this session, in chronological order.
 
     Reads ~/.claude/telemetry/events.jsonl (the append-only event log) and collects
@@ -167,6 +174,7 @@ def detect_session_commands(session_id: Optional[str]) -> list:
 
     Returns [] if:
     - session_id is falsy
+    - telemetry_schema module failed to import
     - the events log doesn't exist or is unreadable
     - no matching command.begin events are found
     - any error occurs during read/parse (telemetry is opt-in)
@@ -181,7 +189,7 @@ def detect_session_commands(session_id: Optional[str]) -> list:
         if not log_path.exists():
             return []
 
-        entries = []  # list of (timestamp, command_id, {command, model?, effort?})
+        entries = []  # list of (timestamp, CommandInfo) — only timestamp used for sorting
         try:
             with log_path.open("r") as f:
                 for line in f:
@@ -198,18 +206,18 @@ def detect_session_commands(session_id: Optional[str]) -> list:
                         and event.get("event_type") == "command.begin"
                         and event.get("command")
                     ):
-                        info = {"command": event.get("command")}
+                        info: CommandInfo = {"command": event.get("command")}
                         if event.get("model") is not None:
                             info["model"] = event.get("model")
                         if event.get("effort") is not None:
                             info["effort"] = event.get("effort")
-                        entries.append((event.get("timestamp") or "", event.get("command_id"), info))
+                        entries.append((event.get("timestamp") or "", info))
         except Exception:
             # File may be unreadable, or concurrent append — fail gracefully
             return []
 
         entries.sort(key=lambda e: e[0].replace("Z", "+00:00"))
-        return [info for _, _, info in entries]
+        return [info for _, info in entries]
     except Exception:
         return []
 
@@ -266,6 +274,16 @@ def detect_worktree() -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _format_command(c: CommandInfo) -> str:
+    """Format a single command entry with optional --model and --effort suffixes."""
+    result = c["command"]
+    if c.get("model"):
+        result += f" (--model {c['model']})"
+    if c.get("effort"):
+        result += f" (--effort {c['effort']})"
+    return result
 
 
 def main() -> int:
@@ -331,10 +349,7 @@ def main() -> int:
     model_summary = ", ".join(f"{m['model']} (${m['cost_usd']:.4f})" for m in parsed["models"]) or "no per-model lines parsed"
     print(f"Saved usage for '{label}': ${parsed['total_cost_usd']:.4f} total, {model_summary}")
     if commands:
-        commands_summary = ", ".join(
-            c["command"] + (f" (--model {c['model']})" if c.get("model") else "") + (f" (--effort {c['effort']})" if c.get("effort") else "")
-            for c in commands
-        )
+        commands_summary = ", ".join(_format_command(c) for c in commands)
         print(f"Session ran {len(commands)} command(s): {commands_summary}")
     else:
         print("No commands detected via telemetry for this session — label falls back to repo/branch/timestamp.")
