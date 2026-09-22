@@ -17,7 +17,10 @@ Validates the Phase 1 routing v2 schema and structural constraints:
 Run with: python3 tests/test_reviewer_contexts.py
 """
 
+import importlib.util
 import re
+import sys
+
 import yaml
 from _test_harness import REPO_ROOT, Harness
 
@@ -25,8 +28,38 @@ REVIEWERS_DIR = REPO_ROOT / "reviewers"
 COMMANDS_DIR = REPO_ROOT / "commands"
 PROMPTS_DIR = REPO_ROOT / "prompts"
 
+
+def _load_audit_module():
+    """Load reviewer-selection-audit.py as a module (handles dash in filename), so this
+    suite validates against the same VALID_CONTEXT_KEYS/VALID_CONTEXT_VALUES constants the
+    script enforces at runtime, instead of a second hand-copied literal that could drift."""
+    script = REPO_ROOT / "scripts" / "reviewer-selection-audit.py"
+    spec = importlib.util.spec_from_file_location("reviewer_selection_audit", script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["reviewer_selection_audit_temp"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_audit_module = _load_audit_module()
+
 h = Harness("REVIEWER CONTEXTS TEST SUITE")
 test_result = h.test_result
+
+
+def collect_violations(reviewers, check):
+    """
+    Shared shape for assertions 2, 3, and 5: loop every reviewer, call
+    check(name, contexts) -> list[str] of violation messages, and flatten the results.
+    Keeps each assertion's actual condition local to its own check function while
+    avoiding a third copy of the loop-and-accumulate boilerplate.
+    """
+    violations = []
+    for reviewer in reviewers:
+        name = reviewer.get("name", "UNKNOWN")
+        contexts = reviewer.get("contexts", {})
+        violations.extend(check(name, contexts))
+    return violations
 
 # ============================================================================
 # ASSERTION 1: Every reviewer has a non-empty `contexts` map
@@ -68,21 +101,23 @@ except Exception as e:
 print()
 print("[Assertion 2] All contexts keys and values are valid")
 
-valid_keys = {"review", "plan", "write"}
-valid_values = {"primary", "secondary", "named-only"}
-invalid_context_specs = []
+valid_keys = _audit_module.VALID_CONTEXT_KEYS
+valid_values = _audit_module.VALID_CONTEXT_VALUES
 
-for reviewer in reviewers:
-    name = reviewer.get("name", "UNKNOWN")
-    contexts = reviewer.get("contexts", {})
+
+def _check_valid_keys_values(name, contexts):
     if not isinstance(contexts, dict):
-        continue
-
+        return []
+    violations = []
     for key, value in contexts.items():
         if key not in valid_keys:
-            invalid_context_specs.append(f"{name}: invalid key '{key}'")
+            violations.append(f"{name}: invalid key '{key}'")
         if value not in valid_values:
-            invalid_context_specs.append(f"{name}: invalid value for {key}: '{value}'")
+            violations.append(f"{name}: invalid value for {key}: '{value}'")
+    return violations
+
+
+invalid_context_specs = collect_violations(reviewers, _check_valid_keys_values)
 
 test_result(
     "All context keys and values are valid",
@@ -97,17 +132,15 @@ print()
 print("[Assertion 3] No gate-style keys inside contexts")
 
 gate_keys = {"gate", "condition", "precondition", "gated"}
-gate_violations = []
 
-for reviewer in reviewers:
-    name = reviewer.get("name", "UNKNOWN")
-    contexts = reviewer.get("contexts", {})
+
+def _check_gate_keys(name, contexts):
     if not isinstance(contexts, dict):
-        continue
+        return []
+    return [f"{name}: found gate key '{key}' in contexts" for key in contexts if key in gate_keys]
 
-    for key in contexts.keys():
-        if key in gate_keys:
-            gate_violations.append(f"{name}: found gate key '{key}' in contexts")
+
+gate_violations = collect_violations(reviewers, _check_gate_keys)
 
 test_result(
     "No gate-style keys in contexts",
@@ -152,15 +185,18 @@ test_result(
 print()
 print("[Assertion 5] Code Rot Cody and Consistency Checker have no plan/write")
 
-cody_issues = []
-for reviewer in reviewers:
-    name = reviewer.get("name", "UNKNOWN")
-    if name in ["Code Rot Cody", "Consistency Checker"]:
-        contexts = reviewer.get("contexts", {})
-        if "plan" in contexts:
-            cody_issues.append(f"{name}: has plan key (should not)")
-        if "write" in contexts:
-            cody_issues.append(f"{name}: has write key (should not)")
+def _check_cody_consistency_checker(name, contexts):
+    if name not in ("Code Rot Cody", "Consistency Checker"):
+        return []
+    violations = []
+    if "plan" in contexts:
+        violations.append(f"{name}: has plan key (should not)")
+    if "write" in contexts:
+        violations.append(f"{name}: has write key (should not)")
+    return violations
+
+
+cody_issues = collect_violations(reviewers, _check_cody_consistency_checker)
 
 test_result(
     "Cody and Consistency Checker have no plan/write",

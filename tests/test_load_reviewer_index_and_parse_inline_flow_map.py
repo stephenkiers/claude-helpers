@@ -214,12 +214,50 @@ def test_parse_inline_flow_map_non_string_value_raises_valueerror(h):
         )
 
 
+def test_parse_inline_flow_map_unhashable_value_raises_valueerror(h):
+    """parse_inline_flow_map() raises ValueError (not TypeError) on an unhashable value.
+
+    A hashable-but-wrong-type value (e.g. an int) can't distinguish the fixed behavior
+    from the old code: both old and new code test `val not in VALID_CONTEXT_VALUES`,
+    which raises ValueError for any hashable non-match. An *unhashable* value (list,
+    dict) is the case the fix actually changes: old code's bare `val not in
+    valid_values` raises an uncaught TypeError on an unhashable val, while new code's
+    `not isinstance(val, str) or ...` short-circuits before the `in` check ever runs.
+    """
+    module = _load_module()
+
+    unhashable_value_map = {"review": ["not", "a", "string"]}
+
+    try:
+        result = module.parse_inline_flow_map(unhashable_value_map)
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            False,
+            f"Expected ValueError but got result: {result}"
+        )
+    except ValueError as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            True,
+            f"correctly raised ValueError: {e}"
+        )
+    except TypeError as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            False,
+            f"Expected ValueError but got TypeError: {e}"
+        )
+    except Exception as e:
+        h.test_result(
+            "parse_inline_flow_map raises ValueError on an unhashable value",
+            False,
+            f"Expected ValueError but got {type(e).__name__}: {e}"
+        )
+
+
 def test_parse_inline_flow_map_all_valid_keys_and_values(h):
     """parse_inline_flow_map() accepts all valid key-value combinations."""
     module = _load_module()
-
-    valid_keys = {"review", "plan", "write"}
-    valid_values = {"primary", "secondary", "named-only"}
 
     # Test a few valid combinations
     test_cases = [
@@ -235,7 +273,7 @@ def test_parse_inline_flow_map_all_valid_keys_and_values(h):
             result = module.parse_inline_flow_map(test_case)
             if result != test_case:
                 all_passed = False
-        except Exception as e:
+        except Exception:
             all_passed = False
 
     h.test_result(
@@ -280,6 +318,7 @@ def main():
     test_parse_inline_flow_map_validates_keys(h)
     test_parse_inline_flow_map_validates_values(h)
     test_parse_inline_flow_map_non_string_value_raises_valueerror(h)
+    test_parse_inline_flow_map_unhashable_value_raises_valueerror(h)
     test_parse_inline_flow_map_all_valid_keys_and_values(h)
     test_parse_inline_flow_map_rejects_non_dict_list(h)
 
