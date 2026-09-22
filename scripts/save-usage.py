@@ -13,13 +13,18 @@ Input format (stdin): an optional first line is treated as a label for this run 
 If the first line doesn't look like a label (contains no letters, matches a usage-panel
 field, or is bare panel UI chrome like "Session" or the tab bar), no label is used and
 a repo/branch/timestamp-based one is generated instead. When no explicit label is provided,
-an auto-generated fallback label incorporates the last slash command run in the session
-(when detectable via telemetry events.jsonl) plus branch and timestamp.
+an auto-generated fallback label incorporates every distinct slash command run during the
+session (when detectable via telemetry events.jsonl, joined with "+") plus branch and
+timestamp — not just whichever command happened to run last, since the /usage panel's
+totals are scoped to the whole session.
 
 Each record also auto-detects and stores `repo_key` (from `gh repo view`, falling back to
-the git toplevel dir name), `branch` (from `git branch --show-current`), and `worktree`
-(the current worktree's directory basename) as separate structured fields, regardless of
-whether an explicit label was given.
+the git toplevel dir name), `branch` (from `git branch --show-current`), `worktree`
+(the current worktree's directory basename), `session_id` (from CLAUDE_CODE_SESSION_ID),
+and `commands` (every command.begin event from this session, each with its `model`/`effort`
+overrides when recorded) as separate structured fields, regardless of whether an explicit
+label was given. `commands` is what a mislabeled record should be read against — the label
+is a convenience guess, `commands` is the actual telemetry.
 """
 
 import json
@@ -65,11 +70,13 @@ def parse_count(raw: str) -> float:
 
 
 def parse_duration(raw: str) -> int:
-    """Convert '1h 19m 46s' / '3m 27s' / '46s' -> total seconds."""
+    """Convert '1d 2h 19m 46s' / '3m 27s' / '46s' -> total seconds."""
     total = 0
-    for value, unit in re.findall(r"(\d+)\s*([hms])", raw):
+    for value, unit in re.findall(r"(\d+)\s*([dhms])", raw):
         value = int(value)
-        if unit == "h":
+        if unit == "d":
+            total += value * 86400
+        elif unit == "h":
             total += value * 3600
         elif unit == "m":
             total += value * 60
@@ -98,10 +105,10 @@ def parse_usage_block(text: str) -> dict:
         raise ValueError("no 'Total cost:' line found — doesn't look like a usage panel paste")
     record["total_cost_usd"] = float(cost_match.group(1))
 
-    api_match = re.search(r"Total duration \(API\):\s*([0-9hms ]+)", text, re.IGNORECASE)
+    api_match = re.search(r"Total duration \(API\):\s*([0-9dhms ]+)", text, re.IGNORECASE)
     record["duration_api_seconds"] = parse_duration(api_match.group(1)) if api_match else None
 
-    wall_match = re.search(r"Total duration \(wall\):\s*([0-9hms ]+)", text, re.IGNORECASE)
+    wall_match = re.search(r"Total duration \(wall\):\s*([0-9dhms ]+)", text, re.IGNORECASE)
     record["duration_wall_seconds"] = parse_duration(wall_match.group(1)) if wall_match else None
 
     code_match = re.search(
@@ -140,37 +147,41 @@ def parse_usage_block(text: str) -> dict:
     return record
 
 
-def detect_last_command() -> Optional[str]:
-    """Return the last slash command run in the current session, or None.
+def detect_current_session_id() -> Optional[str]:
+    """Return CLAUDE_CODE_SESSION_ID from the environment, or None if unset."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or None
 
-    Reads CLAUDE_CODE_SESSION_ID from the environment and looks it up in
-    ~/.claude/telemetry/events.jsonl (the append-only event log). Finds the
-    most recent command.begin or command.end event with a non-empty command
-    field and returns its command name.
 
-    Returns None if:
-    - CLAUDE_CODE_SESSION_ID is not set
+def detect_session_commands(session_id: Optional[str]) -> list:
+    """Return every command run in this session, in chronological order.
+
+    Reads ~/.claude/telemetry/events.jsonl (the append-only event log) and collects
+    one entry per command.begin event matching session_id, each as
+    {"command": ..., "model": ..., "effort": ...} (model/effort omitted when the
+    event didn't record them — e.g. commands that don't take those flags).
+
+    A session commonly runs more than one command before /save-usage is invoked, so
+    this replaces the old "last command only" heuristic: the auto-generated label and
+    the record's `commands` field should reflect everything the session did, not just
+    whatever ran last.
+
+    Returns [] if:
+    - session_id is falsy
     - the events log doesn't exist or is unreadable
-    - no matching command event is found
+    - no matching command.begin events are found
     - any error occurs during read/parse (telemetry is opt-in)
 
-    Never raises; failures return None so the caller falls back gracefully.
+    Never raises; failures return [] so the caller falls back gracefully.
     """
+    if not session_id or telemetry_schema is None:
+        return []
+
     try:
-        if telemetry_schema is None:
-            return None
-
-        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
-        if not session_id:
-            return None
-
         log_path = telemetry_schema.default_log_path()
         if not log_path.exists():
-            return None
+            return []
 
-        last_command = None
-        last_timestamp = None
-
+        entries = []  # list of (timestamp, command_id, {command, model?, effort?})
         try:
             with log_path.open("r") as f:
                 for line in f:
@@ -180,30 +191,27 @@ def detect_last_command() -> Optional[str]:
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
-                        # Malformed line — skip it
                         continue
 
-                    # Filter to events matching this session with command.begin or command.end
                     if (
                         event.get("session_id") == session_id
-                        and event.get("event_type") in ("command.begin", "command.end")
+                        and event.get("event_type") == "command.begin"
                         and event.get("command")
                     ):
-                        timestamp = event.get("timestamp")
-                        # Normalize timezone format (Z -> +00:00) for safe string comparison
-                        if timestamp:
-                            normalized_ts = timestamp.replace("Z", "+00:00")
-                            normalized_last_ts = last_timestamp.replace("Z", "+00:00") if last_timestamp else None
-                            if last_timestamp is None or normalized_ts > normalized_last_ts:
-                                last_timestamp = timestamp
-                                last_command = event.get("command")
+                        info = {"command": event.get("command")}
+                        if event.get("model") is not None:
+                            info["model"] = event.get("model")
+                        if event.get("effort") is not None:
+                            info["effort"] = event.get("effort")
+                        entries.append((event.get("timestamp") or "", event.get("command_id"), info))
         except Exception:
             # File may be unreadable, or concurrent append — fail gracefully
-            pass
+            return []
 
-        return last_command
+        entries.sort(key=lambda e: e[0].replace("Z", "+00:00"))
+        return [info for _, _, info in entries]
     except Exception:
-        return None
+        return []
 
 
 def detect_repo_key() -> str:
@@ -282,17 +290,23 @@ def main() -> int:
     repo_key = detect_repo_key()
     branch = detect_branch()
     worktree = detect_worktree()
-    last_command = detect_last_command()
+    session_id = detect_current_session_id()
+    commands = detect_session_commands(session_id)
+    # Unique command names, in first-seen order — used for the auto-label and shown
+    # to the user; the full `commands` list (with model/effort) goes in the record.
+    unique_command_names = list(dict.fromkeys(c["command"] for c in commands))
 
     if not label:
         # No usable label was pasted — fall back to auto-generation.
-        # Prefer the last command run in the session (if detectable) + branch + timestamp.
-        # Otherwise fall back to repo/branch/timestamp, or just timestamp if neither available.
+        # Prefer the commands run in the session (if detectable) + branch + timestamp,
+        # since a session's /usage total is scoped to everything it did, not just the
+        # last command. Otherwise fall back to repo/branch/timestamp, or just timestamp
+        # if neither is available.
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
-        # Try to build from last command first
-        if last_command:
-            parts = [p for p in (last_command, branch) if p and p != "unknown"]
+        if unique_command_names:
+            commands_part = "+".join(unique_command_names)
+            parts = [p for p in (commands_part, branch) if p and p != "unknown"]
             label = "-".join([*parts, stamp]) if parts else f"unlabeled-{stamp}"
         else:
             # Fall back to existing repo/branch/timestamp logic
@@ -305,6 +319,8 @@ def main() -> int:
         "repo_key": repo_key,
         "branch": branch,
         "worktree": worktree,
+        "session_id": session_id,
+        "commands": commands,
         **parsed,
     }
 
@@ -314,6 +330,14 @@ def main() -> int:
 
     model_summary = ", ".join(f"{m['model']} (${m['cost_usd']:.4f})" for m in parsed["models"]) or "no per-model lines parsed"
     print(f"Saved usage for '{label}': ${parsed['total_cost_usd']:.4f} total, {model_summary}")
+    if commands:
+        commands_summary = ", ".join(
+            c["command"] + (f" (--model {c['model']})" if c.get("model") else "") + (f" (--effort {c['effort']})" if c.get("effort") else "")
+            for c in commands
+        )
+        print(f"Session ran {len(commands)} command(s): {commands_summary}")
+    else:
+        print("No commands detected via telemetry for this session — label falls back to repo/branch/timestamp.")
     print(f"-> {USAGE_LOG_PATH}")
     return 0
 
