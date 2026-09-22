@@ -112,6 +112,20 @@ def compute_status(
             "findings": {},
         }
 
+    # A review object with a lastRun/reviewDir/findings but no 'branch' key is malformed —
+    # a known past bug in Step 13's cache write (see scripts/write-review-cache.py's docstring)
+    # produced exactly this shape. Without this check it looks identical to "never reviewed",
+    # which silently discards a real prior review's history. Surface it loudly instead: it is
+    # visible in every /expert-review run against this branch until someone re-runs the review
+    # (which rewrites the entry via the schema-enforcing writer) or backfills 'branch' by hand.
+    if review.get("branch") is None and ("lastRun" in review or "reviewDir" in review):
+        print(
+            "Warning: cached review is missing 'branch' — malformed cache entry "
+            f"(reviewDir={review.get('reviewDir')!r}, commit={review.get('commit')!r}). "
+            "Treating as reviewed=false. Re-run /expert-review to refresh this entry.",
+            file=sys.stderr,
+        )
+
     reviewed = review.get("branch") == branch and "lastRun" in review
     current = reviewed and review.get("commit") == hash_short
 
