@@ -59,9 +59,12 @@ PANEL_MARKERS = ("total cost", "total duration", "usage by model", "total code c
 UI_CHROME_LINES = {"session", "settings", "status", "config", "usage", "stats"}
 
 
-class CommandInfo(TypedDict, total=False):
-    """Command info dict with command name and optional model/effort overrides."""
-    command: str  # Always present
+class _CommandInfoBase(TypedDict):
+    command: str
+
+
+class CommandInfo(_CommandInfoBase, total=False):
+    """Command info dict with a required command name and optional model/effort overrides."""
     model: str
     effort: str
 
