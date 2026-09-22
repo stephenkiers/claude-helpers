@@ -332,17 +332,37 @@ Main thread reads all contribution files once, builds a compact decision index d
 Present to the user, **as chat message text in this step** (not summarized away, not deferred to
 the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book:
 
-1. **Expert round-up** — for each selected expert (Step 2's order, Carl last), a short block, condensed from their `{expert}-contribution.md`, capped at roughly 5-8 lines:
+1. **Expert round-up** — for each selected domain expert (Step 2's order), a block condensed from
+   their `{expert}-contribution.md`, capped at roughly 10-12 lines:
    ```markdown
    ### [Name] — [one-line domain]
    **Take**: [Recommended Approach, compressed to 1-2 sentences]
-   **Flagged**: [the single most important requirement or risk, 1 line — skip the rest]
+   **Flagged**: [the single most important requirement or risk, 1 line, with a file:line ref if the
+   contribution cites one — skip the rest]
+   **Tradeoff**: [the one-line cost of the recommendation — what it gives up, or what a cheaper
+   alternative would look like. This is the expert's own stated tradeoff/confounder, not one you
+   invent — if the contribution doesn't state one, write "None stated" rather than fabricating one]
    **Questions**: [each open question as one line: "Question — recommends X, but Y"; drop the
    Why-it-matters/Source prose, keep only the question + the expert's recommendation + the one-line
    confounder if it changes the answer]
    ```
    This is a condensation, not a re-summary in your own words — keep the expert's actual
-   recommendations and question wording, just drop the surrounding prose.
+   recommendations, evidence, and question wording, just drop the surrounding prose.
+
+   **Carl gets his own template, always last, not the domain-expert one above** — his value is
+   contrastive (what the panel missed or under-costed), so flattening him into the same four fields
+   erases exactly what makes him worth reading:
+   ```markdown
+   ### Contrarian Carl — cost and unverified premises
+   **What others covered**: [1 line — the ground the panel already has]
+   **What they missed or under-costed**: [1-2 lines — the gap Carl is adding, not restating]
+   **Assumption being questioned**: [the specific unverified premise, named plainly, e.g. "treating
+   the probe as a pure read"]
+   **Smaller alternative**: [if Carl proposes a cheaper adequate design, state it in 1 line; else
+   "None — panel's scope holds"]
+   **Questions**: [same one-line format as above]
+   ```
+   Capped at roughly 10-12 lines total, same as the domain-expert template above.
 2. **Decision index** — *after* the round-up, a compact synthesis of recommendations,
    disagreements, and scope options across experts.
 
