@@ -14,7 +14,7 @@ Per the plan:
    - Validates values against {primary, secondary, named-only}
    - Raises ValueError (not TypeError) on invalid keys, invalid values, or non-string values
 
-Run with: python3 tests/test_load_reviewer_index_and_parse_inline_flow_map.py
+Run with: python3 tests/test_reviewer_selection_audit_harness_spec_blind.py
 """
 
 import importlib.util
