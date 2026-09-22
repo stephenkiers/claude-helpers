@@ -139,8 +139,6 @@ expected_write_reviewers = {
 actual_write_reviewers = set(write_tagged)
 
 write_mismatch = actual_write_reviewers != expected_write_reviewers
-write_extra = actual_write_reviewers - expected_write_reviewers
-write_missing = expected_write_reviewers - actual_write_reviewers
 
 test_result(
     "Write-tagged reviewers match expected set",

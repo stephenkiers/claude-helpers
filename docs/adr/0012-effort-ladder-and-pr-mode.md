@@ -171,3 +171,13 @@ This refinement maintains the cost-monotonicity principle: you pay for what you 
 that add no incremental finding on a given diff.
 
 **Note on basis and revisit trigger:** This generalization to all effort levels is based on a single observed run's data (n=1). The metric "zero uniquely-escalated findings" measures whether Sam System's cross-file findings disagreed sharply enough with other reviewers to require adjudication — not whether he independently caught an integration bug nobody else was positioned to notice. The policy will be revisited once more runs' data accumulates, or when a metric is defined that captures "caught a bug nobody else could see" in addition to escalation count. Cost (6.4% of one run) motivates testing the change; escalation count (zero in one run) provides initial evidence it is safe; the revisit trigger ensures the policy adapts if either premise changes.
+
+## Amendment — Effort 3 and 5 semantics (ADR-0012.1)
+
+This ADR's Decision 1 table has been rewritten in place to change effort 3's semantics from pre-seating Uncle Bob alongside the router's top 2 picks to instead routing the top 3 picks with a Fragile Feynman fallback when fewer than three candidates survive routing, and to narrow effort 5 from all reviewers to review-tagged reviewers (editors excluded). These changes are recorded here as a dated amendment to preserve the decision trail.
+
+**Effort 3 change:** The original design pre-seated Uncle Bob as a fixed seat alongside the router's top-2 picks. The current table instead routes the top 3 picks directly, falling back to Fragile Feynman only when routing yields fewer than three eligible candidates. This change reflects the measured lift comparison documented in the "Monotonic-cost rationale for level 3" paragraph: Fragile Feynman's empirical lift (1.78) exceeds Uncle Bob's (0.74) in the Phase 0 baseline corpus, and allowing the third seat to be routed (rather than fixed) enables it to adapt to the diff's actual needs. Uncle Bob is no longer guaranteed a seat at effort 3; he may be routed in by the router if the diff matches his interests, but is not pre-seated.
+
+**Effort 5 change:** The original design was "all reviewers." The current table specifies "all `review`-tagged reviewers, editors excluded" — applying the same context-based filtering that all other effort levels use, while skipping the write-tagged editor personas (Demosthenes, Shakespeare, Strunk) that are reserved for `/expert-write` and not part of code-review panels.
+
+Both changes maintain the cost-monotonicity and measured-ROI principles: effort levels scale predictably, and seating decisions reflect actual measured value rather than defaults.

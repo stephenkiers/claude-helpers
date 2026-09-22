@@ -19,6 +19,8 @@ from typing import Dict, List, Tuple, Optional
 import yaml
 
 SEVERITY_WEIGHTS = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+VALID_CONTEXT_KEYS = {"review", "plan", "write"}
+VALID_CONTEXT_VALUES = {"primary", "secondary", "named-only"}
 
 
 # Reuse from reviewer-yield.py for consistency
@@ -382,7 +384,13 @@ def cmd_yield(corpus_root: str) -> None:
     # Severity weights
     weights = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
 
-    valid_slugs = set(load_reviewer_index(default_current_index_path()).keys())
+    try:
+        index = load_reviewer_index(default_current_index_path())
+    except ValueError as e:
+        print(f"Error loading reviewer index: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    valid_slugs = set(index.keys())
 
     # Track yield per reviewer, one entry per ATTENDED run (Selected = Yes in
     # Panel Decision) — including runs with zero confirmed findings, since
@@ -472,65 +480,28 @@ def parse_inline_flow_map(value) -> Dict[str, str]:
     """
     Parse an inline YAML flow map into a dict.
 
-    Accepts either:
-    - A string like '{review: primary, plan: primary}'
-    - A dict already parsed by YAML (e.g., {'review': 'primary', 'plan': 'primary'})
+    Accepts a dict already parsed by YAML (e.g., {'review': 'primary', 'plan': 'primary'}).
 
     Validates that keys are in {review, plan, write} and values are in
     {primary, secondary, named-only}.
 
     Raises ValueError on invalid format or unknown keys/values.
-    Returns empty dict if value is None or empty string/dict.
+    Returns empty dict if value is None or empty dict.
     """
     if not value:
         return {}
 
-    # If already a dict (parsed by YAML), validate and return
-    if isinstance(value, dict):
-        result: Dict[str, str] = {}
-        valid_keys = {"review", "plan", "write"}
-        valid_values = {"primary", "secondary", "named-only"}
-
-        for key, val in value.items():
-            if key not in valid_keys:
-                raise ValueError(f"Unknown context key: {key} (valid: {', '.join(sorted(valid_keys))})")
-            if val not in valid_values:
-                raise ValueError(f"Unknown context value: {val} (valid: {', '.join(sorted(valid_values))})")
-            result[key] = val
-
-        return result
-
-    # Otherwise parse as string
-    value = str(value).strip()
-    if not value.startswith("{") or not value.endswith("}"):
-        raise ValueError(f"Invalid flow map format: {value}")
-
-    # Remove braces and split by comma
-    content = value[1:-1].strip()
-    if not content:
-        return {}
+    # YAML always parses flow-map syntax ({...}) directly to a dict, never a string
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid contexts format: expected dict, got {type(value).__name__}")
 
     result: Dict[str, str] = {}
-    valid_keys = {"review", "plan", "write"}
-    valid_values = {"primary", "secondary", "named-only"}
 
-    for pair in content.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
-
-        if ":" not in pair:
-            raise ValueError(f"Invalid key-value pair: {pair}")
-
-        key, val = pair.split(":", 1)
-        key = key.strip()
-        val = val.strip()
-
-        if key not in valid_keys:
-            raise ValueError(f"Unknown context key: {key} (valid: {', '.join(sorted(valid_keys))})")
-        if val not in valid_values:
-            raise ValueError(f"Unknown context value: {val} (valid: {', '.join(sorted(valid_values))})")
-
+    for key, val in value.items():
+        if key not in VALID_CONTEXT_KEYS:
+            raise ValueError(f"Unknown context key: {key} (valid: {', '.join(sorted(VALID_CONTEXT_KEYS))})")
+        if not isinstance(val, str) or val not in VALID_CONTEXT_VALUES:
+            raise ValueError(f"Unknown context value: {val} (valid: {', '.join(sorted(VALID_CONTEXT_VALUES))})")
         result[key] = val
 
     return result
@@ -541,7 +512,7 @@ def load_reviewer_index(index_path: Path) -> Dict[str, Dict]:
     Load a reviewer index.yaml into slug -> {'useWhen': str, 'triggers': List[str], 'contexts': Dict[str, str]}.
 
     Returns {} if the file is missing or unparsable.
-    Raises SystemExit on invalid contexts format (unknown keys/values).
+    Raises ValueError on missing contexts field or invalid contexts format.
     """
     if not index_path.exists():
         return {}
@@ -559,13 +530,12 @@ def load_reviewer_index(index_path: Path) -> Dict[str, Dict]:
             continue
         slug = slugify_reviewer_name(name)
 
-        # Parse contexts field if present
+        # contexts field is required and must be present
+        if "contexts" not in entry:
+            raise ValueError(f"Missing required 'contexts' field for reviewer '{name}' ({slug})")
+
         contexts_raw = entry.get("contexts")
-        try:
-            contexts = parse_inline_flow_map(contexts_raw) if contexts_raw else {}
-        except ValueError as e:
-            print(f"Error parsing contexts for reviewer '{name}' ({slug}): {e}", file=sys.stderr)
-            sys.exit(1)
+        contexts = parse_inline_flow_map(contexts_raw)
 
         result[slug] = {
             "useWhen": entry.get("useWhen", ""),
@@ -718,8 +688,13 @@ def cmd_simulate(corpus_root: str, candidate_index: str, reviewer_filter: Option
     print("=== Reviewer Selection Simulation ===")
     print()
 
-    current = load_reviewer_index(default_current_index_path())
-    candidate = load_reviewer_index(Path(candidate_index).expanduser())
+    try:
+        current = load_reviewer_index(default_current_index_path())
+        candidate = load_reviewer_index(Path(candidate_index).expanduser())
+    except ValueError as e:
+        print(f"Error loading reviewer index: {e}", file=sys.stderr)
+        sys.exit(1)
+
     if not candidate:
         print(f"Error: candidate index not found or unparsable: {candidate_index}", file=sys.stderr)
         return

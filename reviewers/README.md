@@ -73,8 +73,7 @@ Phase 1 ranking.
    reviewer lacks the active context's tag; this is allowed and prints a one-line warning
    (not an error).
 2. **`contexts`** — Hard eligibility filter applied before the Router sees a candidate list.
-3. **Existing gates** — `structural_pre_gate_ineligible` (the four reviewers in `index.yaml`
-   line 196), the Sam System diff-shape gate and effort clauses in `prompts/expert-review-panel.md`,
+3. **Existing gates** — `structural_pre_gate_ineligible` (the four reviewers listed under that key in `index.yaml`), the Sam System diff-shape gate and effort clauses in `prompts/expert-review-panel.md`,
    the always-run roles (Code Rot Cody, Consistency Checker, Contrarian Carl), and the path
    conditions for Fact-Check Fiona and Data Scientist Dana — applied to the eligible set.
 4. **`useWhen` / `triggers`** — Rank and select among what remains.

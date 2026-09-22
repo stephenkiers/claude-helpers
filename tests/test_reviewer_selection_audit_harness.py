@@ -193,6 +193,7 @@ def test_simulate_include_to_exclude_surfaces_critical(h):
             "  - name: Uncle Bob\n"
             "    file: uncle-bob.yaml\n"
             "    priority: high\n"
+            "    contexts: {review: secondary, plan: primary}\n"
             "    useWhen: narrowed for test\n"
             "    triggers: [nonmatching-trigger-xyz]\n"
         )

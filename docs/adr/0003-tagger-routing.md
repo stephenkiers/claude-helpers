@@ -179,26 +179,9 @@ stated once, in one place, to prevent drift.
 
 The Router now honors **`contexts`** as a hard eligibility filter applied *before* the router runs, on the
 resolved candidate pool. The tag schema is defined in `reviewers/index.yaml` (header) and `reviewers/README.md`
-(** Contexts and resolution precedence** section).
+(**Contexts and resolution precedence** section).
 
-The **precedence order** for all review-participation mechanisms is:
-
-1. **Named selection** — explicit user intent (e.g., `/expert-review eric-evans`) wins; a reviewer without
-   the active context's tag is permitted and prints a one-line warning, not an error.
-
-2. **`contexts` hard filter** — the entry must have a key matching the active context (`review`, `plan`,
-   or `write`); missing the key means the reviewer is excluded before the router runs.
-
-3. **Existing structural gates** — the deterministic pre-router exclusion gate on Sam System (if applicable),
-   the diff-shape precondition gate on Sam System in panel prose, the always-run roles (Code Rot Cody,
-   Consistency Checker, Contrarian Carl), and path conditions for Fiona/Dana are applied to the
-   `contexts`-eligible set.
-
-4. **`useWhen` / `triggers` ranking** — the router selects and ranks reviewers among what remains after steps 1–3.
-
-**Fail-closed on empty resolution:** if the resolved set for a context is empty after all four steps,
-the command stops and reports which context resolved empty; the review or plan does not run with zero
-reviewers.
+The **precedence order** for all review-participation mechanisms is defined once in `reviewers/README.md`'s **Contexts and resolution precedence** section (Named selection → `contexts` hard filter → Existing structural gates → `useWhen`/triggers ranking) — this ADR records the decision to adopt it, not a second copy of the steps. Consult that section for the canonical ordering and rationale.
 
 **Structural gates stay sibling:** `structural_pre_gate_ineligible` remains a top-level key in
 `reviewers/index.yaml` in Phase 1 and is not folded into `contexts` (Phase 2 may revisit this).
@@ -211,6 +194,9 @@ reviewers.
 explicit `contexts` map with valid keys and values; there are no defaults, and a missing map is not
 silently skipped.
 
+**Fail-closed on empty resolution:** if the resolved set for a context is empty after all four precedence steps,
+the command stops and reports which context resolved empty; the review or plan does not run with zero reviewers.
+
 ### Consequences
 
 - **Good:** one rule for all mechanisms, stated once, cited not restated, preventing the tuning/architecture
@@ -218,6 +204,6 @@ silently skipped.
 - **Good:** phase separation is clear — Phase 1 establishes the schema and four-stage precedence;
   Phase 2 can operationalize `secondary` promotion without changing the precedence rule.
 - **Cost:** Phase 1 reviewers now have an additional tagged field to maintain; missing or wrong tags are
-  caught by test (Step 4, `tests/test_reviewer_contexts.py`) and by the audit harness (Step 10).
+  caught by `tests/test_reviewer_contexts.py` and by the audit harness (`scripts/reviewer-selection-audit.py`).
 - **Constraint:** all four participation mechanisms must yield a non-empty set; an `empty` result for any
   context signals misconfiguration and halts the run.
