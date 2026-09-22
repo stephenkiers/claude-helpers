@@ -694,6 +694,164 @@ Usage by model:
         ), f"Expected label to have repo and timestamp parts, got '{label}'"
 
 
+def test_detect_session_commands_empty_no_matching_events():
+    """detect_session_commands returns [] when file exists but no events match session_id."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        events_dir = Path(tmpdir) / ".claude" / "telemetry"
+        events_dir.mkdir(parents=True)
+        events_log = events_dir / "events.jsonl"
+
+        session_id = "test-session-" + uuid.uuid4().hex[:8]
+        other_session_id = "other-session-" + uuid.uuid4().hex[:8]
+
+        # Write an event for a different session
+        with open(events_log, "w") as f:
+            f.write(json.dumps({
+                "session_id": other_session_id,
+                "event_type": "command.begin",
+                "command": "expert-review",
+                "timestamp": "2026-01-01T10:00:00Z",
+            }) + "\n")
+
+        original_home = os.environ.get("HOME")
+        try:
+            os.environ["HOME"] = tmpdir
+            save_usage = _load_save_usage_module()
+            result = save_usage.detect_session_commands(session_id)
+            return (
+                result == []
+            ), f"Expected [], got {result!r}"
+        finally:
+            if original_home:
+                os.environ["HOME"] = original_home
+            elif "HOME" in os.environ:
+                del os.environ["HOME"]
+
+
+def test_detect_session_commands_empty_string_session_id():
+    """detect_session_commands returns [] if session_id is empty string (falsy)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        events_dir = Path(tmpdir) / ".claude" / "telemetry"
+        events_dir.mkdir(parents=True)
+        events_log = events_dir / "events.jsonl"
+
+        # Write some events
+        with open(events_log, "w") as f:
+            f.write(json.dumps({
+                "session_id": "some-session",
+                "event_type": "command.begin",
+                "command": "expert-review",
+                "timestamp": "2026-01-01T10:00:00Z",
+            }) + "\n")
+
+        original_home = os.environ.get("HOME")
+        try:
+            os.environ["HOME"] = tmpdir
+            save_usage = _load_save_usage_module()
+            result = save_usage.detect_session_commands("")
+            return (
+                result == []
+            ), f"Expected [] for empty string session_id, got {result!r}"
+        finally:
+            if original_home:
+                os.environ["HOME"] = original_home
+            elif "HOME" in os.environ:
+                del os.environ["HOME"]
+
+
+def test_command_summary_formatting_with_model_and_effort():
+    """Command summary formatter includes both model and effort suffixes when present."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            save_usage = _load_save_usage_module()
+            # Test that the formatter function exists and works correctly
+            if not hasattr(save_usage, "_format_command"):
+                return False, "_format_command function not found"
+
+            cmd_info = {"command": "expert-review", "model": "opus", "effort": "4"}
+            result = save_usage._format_command(cmd_info)
+            # Should include command, model suffix, and effort suffix
+            has_command = "expert-review" in result
+            has_model = "opus" in result and "--model" in result
+            has_effort = "4" in result and "--effort" in result
+            return (
+                has_command and has_model and has_effort
+            ), f"Expected format with command, model, and effort, got {result!r}"
+        finally:
+            os.chdir(original_cwd)
+
+
+def test_command_summary_formatting_with_model_only():
+    """Command summary formatter includes model suffix but not effort when only model present."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            save_usage = _load_save_usage_module()
+            if not hasattr(save_usage, "_format_command"):
+                return False, "_format_command function not found"
+
+            cmd_info = {"command": "expert-plan", "model": "sonnet"}
+            result = save_usage._format_command(cmd_info)
+            # Should include command and model suffix, but not effort
+            has_command = "expert-plan" in result
+            has_model = "sonnet" in result and "--model" in result
+            no_effort_flag = "--effort" not in result
+            return (
+                has_command and has_model and no_effort_flag
+            ), f"Expected format with command and model only, got {result!r}"
+        finally:
+            os.chdir(original_cwd)
+
+
+def test_command_summary_formatting_with_effort_only():
+    """Command summary formatter includes effort suffix but not model when only effort present."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            save_usage = _load_save_usage_module()
+            if not hasattr(save_usage, "_format_command"):
+                return False, "_format_command function not found"
+
+            cmd_info = {"command": "expert-plan-v3", "effort": "2"}
+            result = save_usage._format_command(cmd_info)
+            # Should include command and effort suffix, but not model
+            has_command = "expert-plan-v3" in result
+            has_effort = "2" in result and "--effort" in result
+            no_model_flag = "--model" not in result
+            return (
+                has_command and has_effort and no_model_flag
+            ), f"Expected format with command and effort only, got {result!r}"
+        finally:
+            os.chdir(original_cwd)
+
+
+def test_command_summary_formatting_command_only():
+    """Command summary formatter returns just the command when no model or effort."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            save_usage = _load_save_usage_module()
+            if not hasattr(save_usage, "_format_command"):
+                return False, "_format_command function not found"
+
+            cmd_info = {"command": "save-usage"}
+            result = save_usage._format_command(cmd_info)
+            # Should include command but no suffixes
+            has_command = "save-usage" in result
+            no_model_flag = "--model" not in result
+            no_effort_flag = "--effort" not in result
+            return (
+                has_command and no_model_flag and no_effort_flag
+            ), f"Expected format with command only, got {result!r}"
+        finally:
+            os.chdir(original_cwd)
+
+
 def run_all_tests():
     """Run all tests and report results."""
     h = Harness("SAVE-USAGE TEST SUITE")
@@ -726,12 +884,38 @@ def run_all_tests():
         *test_detect_session_commands_empty_missing_file(),
     )
     h.test_result(
+        "detect_session_commands returns [] when no events match session_id",
+        *test_detect_session_commands_empty_no_matching_events(),
+    )
+    h.test_result(
+        "detect_session_commands returns [] for empty string session_id",
+        *test_detect_session_commands_empty_string_session_id(),
+    )
+    h.test_result(
         "detect_session_commands ignores events with empty/missing command",
         *test_detect_session_commands_ignores_empty_command_field(),
     )
     h.test_result(
         "detect_session_commands handles malformed JSON gracefully",
         *test_detect_session_commands_handles_malformed_json(),
+    )
+
+    # Test command summary formatter
+    h.test_result(
+        "command summary formatter includes model and effort when both present",
+        *test_command_summary_formatting_with_model_and_effort(),
+    )
+    h.test_result(
+        "command summary formatter includes model when present, omits effort",
+        *test_command_summary_formatting_with_model_only(),
+    )
+    h.test_result(
+        "command summary formatter includes effort when present, omits model",
+        *test_command_summary_formatting_with_effort_only(),
+    )
+    h.test_result(
+        "command summary formatter returns command only when no model/effort",
+        *test_command_summary_formatting_command_only(),
     )
 
     # Test detect_worktree
