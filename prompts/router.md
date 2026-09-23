@@ -16,7 +16,9 @@ include and exclude.
 2. **Summary + business context** (`{REVIEW_DIR}/technical-summary.md`)
 3. **Plan/issue context** (if present)
 4. **Reviewer index ONLY** — `~/.claude/reviewers/index.yaml` with triggers and `useWhen` (which
-   are *signals of interest*, not rules)
+   are *signals of interest*, not rules). **The candidate list has already been pre-filtered to
+   reviewers whose `contexts` entry contains a `review` key.** You must not select an untagged
+   reviewer. See `reviewers/README.md § Contexts and resolution precedence` for the resolution rule.
 
 **CRITICAL: Never load a reviewer's persona YAML.** Progressive disclosure means routing decisions
 come from each expert's declared interests (`triggers`, `useWhen` in `index.yaml`), not their full
@@ -188,7 +190,8 @@ count of reviewers evaluated (all entries in the index); `escalate` is the escal
 ## Reviewer Index
 
 Read the reviewer index from `~/.claude/reviewers/index.yaml` using the Read tool. It contains every
-reviewer's `name`, `priority`, `triggers`, `useWhen`, and `note`.
+reviewer's `name`, `priority`, `contexts`, `triggers`, `useWhen`, and `note`. The candidate list
+for this run has been pre-filtered to include only reviewers with `review` in their `contexts` key.
 
 ---
 
@@ -198,7 +201,7 @@ Read the following files using the Read tool:
 
 1. **`{REVIEW_DIR}/full-diff.patch`** — the complete git diff for this change
 2. **`{REVIEW_DIR}/technical-summary.md`** — summary and business context
-3. **`~/.claude/reviewers/index.yaml`** — the reviewer index with all triggers and interests
+3. **`~/.claude/reviewers/index.yaml`** — the reviewer index with all triggers, contexts, and interests (pre-filtered to `review`-tagged reviewers only)
 
 These files are your routing intelligence. No diff or index will be substituted into this prompt text;
 you must read them directly.

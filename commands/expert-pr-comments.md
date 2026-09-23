@@ -212,7 +212,8 @@ For each "Address" and "Discuss" comment (not "Ignore"), convene a panel of expe
    echo $HOME
    ```
 
-2. Load the reviewer index (for routing):
+2. Load the reviewer index (for routing); consider only `review`-tagged reviewers per
+   `reviewers/README.md § Contexts and resolution precedence`:
    ```
    Read: {HOME_DIR}/.claude/reviewers/index.yaml
    ```

@@ -43,6 +43,20 @@ def _load_module():
     return module
 
 
+def _load_current_index_or_fail(module, h, test_name):
+    """
+    Load the repo's real reviewers/index.yaml, surfacing a load_reviewer_index()
+    ValueError (e.g. a reviewer entry missing 'contexts', per ADR-0003.2.2's hard-error
+    rule) as a normal test failure instead of an unhandled crash. Returns None on
+    failure so callers can bail out of the rest of their precondition checks.
+    """
+    try:
+        return module.load_reviewer_index(module.default_current_index_path())
+    except ValueError as e:
+        h.test_result(test_name, False, f"load_reviewer_index() raised ValueError: {e}")
+        return None
+
+
 def _make_run(root, repo, run_id, panel_rows, gate_markers="", findings_md="", diff_md=""):
     """
     Build one synthetic review directory: root/repo/run_id/{tagged-sections.md,final-report.md,diff-index.md}.
@@ -180,7 +194,11 @@ def test_simulate_include_to_exclude_surfaces_critical(h):
         diff = "## Files\n foo.py | 3 +\n\n## Hunks\n+++ b/foo.py\n@@ -1,3 +1,3 @@\n+needs cleanup here\n"
         _make_run(root, "repo-d", "run1", [("Uncle Bob", "Yes")], findings_md=findings, diff_md=diff)
 
-        current = module.load_reviewer_index(module.default_current_index_path())
+        current = _load_current_index_or_fail(
+            module, h, "precondition: real index has uncle-bob with 'cleanup' trigger"
+        )
+        if current is None:
+            return
         h.test_result(
             "precondition: real index has uncle-bob with 'cleanup' trigger",
             "uncle-bob" in current and "cleanup" in current["uncle-bob"]["triggers"],
@@ -193,6 +211,7 @@ def test_simulate_include_to_exclude_surfaces_critical(h):
             "  - name: Uncle Bob\n"
             "    file: uncle-bob.yaml\n"
             "    priority: high\n"
+            "    contexts: {review: secondary, plan: primary}\n"
             "    useWhen: narrowed for test\n"
             "    triggers: [nonmatching-trigger-xyz]\n"
         )
@@ -228,7 +247,11 @@ def test_simulate_compounding_two_reviewers(h):
             diff_md=diff,
         )
 
-        current = module.load_reviewer_index(module.default_current_index_path())
+        current = _load_current_index_or_fail(
+            module, h, "precondition: real index has tara-typesafe with 'schema' trigger"
+        )
+        if current is None:
+            return
         h.test_result(
             "precondition: real index has tara-typesafe with 'schema' trigger",
             "tara-typesafe" in current and "schema" in current["tara-typesafe"]["triggers"],
@@ -243,8 +266,7 @@ def test_simulate_compounding_two_reviewers(h):
         real_index_text = (REPO_ROOT / "reviewers" / "index.yaml").read_text()
         candidate_text = real_index_text.replace(
             "triggers: [open, close, drop, dispose, new, create, acquire, release, "
-            "shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup, "
-            "class, function, def, impl, module, helper, util, extract, duplicate]",
+            "shutdown, stop, terminate, timeout, deadline, spawn, thread, task, finally, cleanup]",
             "triggers: [nonmatching-trigger-xyz]",
         ).replace(
             'triggers: [interface, type, struct, trait, any, unknown, as, "as any", unsafe, '
@@ -310,7 +332,9 @@ def test_prose_only_useWhen_change_triggers_fallback(h):
         for i in range(3):
             _make_run(root, "repo-g", f"run{i}", [("Vera Verifier", "Yes")])
 
-        current = module.load_reviewer_index(module.default_current_index_path())
+        current = _load_current_index_or_fail(module, h, "precondition: real index has vera-verifier")
+        if current is None:
+            return
         h.test_result(
             "precondition: real index has vera-verifier",
             "vera-verifier" in current,
@@ -327,6 +351,7 @@ def test_prose_only_useWhen_change_triggers_fallback(h):
             "  - name: Vera Verifier\n"
             "    file: vera-verifier.yaml\n"
             "    priority: high\n"
+            "    contexts: {review: primary, plan: primary}\n"
             "    useWhen: a brand-new prose description, triggers unchanged\n"
             f"    triggers: [{triggers_yaml}]\n"
         )
