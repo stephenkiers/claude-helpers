@@ -150,10 +150,8 @@ def sanitize_project_dir_id(cwd: str) -> Optional[str]:
 
 def _path_is_under_root(child_path: Path, root_path: Path) -> bool:
     """
-    Check if child_path is under root_path by comparing resolved parents.
-
-    Returns True if child_path.resolve().parent == root_path.resolve() or
-    root_path is an ancestor of child_path.
+    Return True if root_path is an ancestor of child_path after resolving symlinks
+    (any depth, not just direct children).
     """
     try:
         child_path.resolve().relative_to(root_path.resolve())
@@ -654,10 +652,9 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     tokens_status is "measured" when transcripts are found, "unavailable" when transcript-origin.json
     is missing/unavailable or session dir cannot be accessed.
 
-    Handles format classification:
-    - classic: proceeds with per-reviewer yield measurement
-    - pod: prints notice and returns (None, [], "unavailable")
-    - unknown: prints notice and returns (None, [], "unavailable")
+    Only classic-format review dirs (`*-pass1.md` checkpoints) yield rows; pod/unknown dirs
+    return empty results. The caller (main()) must classify via classify_review_format() first
+    and print the pod/unknown notice — this function does not.
     """
     review_dir = Path(review_dir_path).expanduser().resolve()
 
@@ -714,7 +711,7 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
     }
-    for subagent_file in subagent_files_by_reviewer.get("overhead:questions-answered", []):
+    for subagent_file in subagent_files_by_reviewer.get(OVERHEAD_QA_KEY, []):
         tokens = parse_tokens_from_subagent(subagent_file)
         for key in overhead_tokens:
             overhead_tokens[key] += tokens[key]
@@ -750,10 +747,10 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
         rows.append(row)
 
     # Add overhead row if questions-answered was found
-    if subagent_files_by_reviewer.get("overhead:questions-answered"):
+    if subagent_files_by_reviewer.get(OVERHEAD_QA_KEY):
         overhead_row: YieldRow = {
             "run_id": run_id,
-            "reviewer": "overhead:questions-answered",
+            "reviewer": OVERHEAD_QA_KEY,
             "timestamp": timestamp,
             "input_tokens": overhead_tokens["input_tokens"],
             "output_tokens": overhead_tokens["output_tokens"],
