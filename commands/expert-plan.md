@@ -340,7 +340,13 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/
 Main thread reads all contribution files once, builds a compact decision index directly. When experts propose materially different scopes, present them side by side with concrete differences (extra behavior, added components, affected repos, testing burden) rather than picking a default silently.
 
 Present to the user, **as chat message text in this step** (not summarized away, not deferred to
-the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book:
+the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book.
+
+**Open with a ticket refresher** — one line, before anything else, so a user juggling many sessions
+can re-orient without scrolling: `**Ticket**: #<n> <title> — WHAT: <what it is, ≤15 words>. WHY: <the
+motivation/problem it solves, ≤15 words>.` Derive it from `context.md`'s Goal; if the ticket doesn't
+state a why, write `WHY: not stated in ticket` rather than inventing one. For a description-only
+(no issue) run, omit the `#<n>`. Write the same line at the top of `decisions.md`.
 
 1. **Expert round-up** — for each selected domain expert (Step 2's order), a block condensed from
    their `{expert}-contribution.md`, capped at roughly 10-12 lines:
