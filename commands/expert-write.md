@@ -34,9 +34,11 @@ If the file doesn't exist, proceed with no rules loaded (editors will still appl
 
 ### Step 2: Load Editors
 
-Glob `~/.claude/reviewers/editor-*.yaml`. Read each file — extract: name, priority, summary (character + voice), principles, editReview.focusAreas.
+Read `~/.claude/reviewers/index.yaml` and load the persona file of every entry whose `contexts` contains `write`, ordered by `priority` as today. For each loaded editor, extract: name, priority, summary (character + voice), principles, editReview.focusAreas.
 
 Sort editors: `high` priority first, then `medium`.
+
+**Fail closed**: if no reviewers resolve for the `write` context, stop and report that the `write` context resolved empty — never run an empty panel.
 
 ### Step 3: Read the Document
 

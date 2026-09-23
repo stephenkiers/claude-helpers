@@ -259,7 +259,11 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-expert
 
 ### Step 2: Select Panel (Main Thread, No Router Subagent)
 
-Read `~/.claude/reviewers/index.yaml` directly. Using a coverage checklist as a mental rubric — user-visible behavior, domain/data assumptions, contracts/types, trust/side effects, integration, failure behavior — pick 3 experts for effort 2. Carl is always added, always last, never counted as a domain specialist.
+Read `~/.claude/reviewers/index.yaml` directly and consider only entries tagged with `plan` in their `contexts`. Extract only `name`, `file`, and `useWhen` for those entries. Using a coverage checklist as a mental rubric — user-visible behavior, domain/data assumptions, contracts/types, trust/side effects, integration, failure behavior — pick 3 experts for effort 2. Carl is always added, always last, never counted as a domain specialist.
+
+**Note on `plan: named-only` reviewers**: Fiona and Dana are marked `plan: named-only` in the index and remain reachable when explicitly named by the user; see "Contexts and resolution precedence" in `reviewers/README.md` for the full rule.
+
+**Fail closed**: if no reviewers resolve for the `plan` context, stop and report that the `plan` context resolved empty — never run an empty panel.
 
 For any contributor whose task looks like novel architecture, concurrency, security-sensitive trust, or an irreversible migration, record `model: opus` for that one contributor with a one-line reason; everyone else gets the `--models` default (sonnet unless `--models opus`).
 
@@ -287,6 +291,8 @@ Escalating one contributor to opus multiplies that one contributor's token cost 
 ```
 
 State the ratio, never an absolute dollar figure. v3 has no measured per-run cost; do not reuse v2's `$4.20` measured cost or fabricate a new one.
+
+**Fail closed**: if no reviewers resolve for the `plan` context, stop and report that the `plan` context resolved empty — never run an empty panel.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage select-experts --outcome success 2>/dev/null || true

@@ -54,32 +54,15 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-expert
 
 ## Step 2: Select Experts
 
-Choose 4-6 relevant experts from `~/.claude/reviewers/*.yaml` based on what the ticket involves. Use the same selection table as `/expert-review-plan`:
+Choose 4-6 relevant experts based on what the ticket involves. Read `~/.claude/reviewers/index.yaml` and consider only entries tagged with `plan` in their `contexts`. Extract the `name`, `file`, and `useWhen` for each `plan`-tagged reviewer to guide your selection.
 
-| Reviewer | File | Use When |
-|----------|------|----------|
-| Uncle Bob | uncle-bob.yaml | Architecture, SOLID, resource management |
-| Security Sage | security-sage.yaml | APIs, auth, user input, secrets, external systems |
-| Tara TypeSafe | tara-typesafe.yaml | Type design, contracts, validation |
-| Eric Evans | eric-evans.yaml | Domain modeling, naming, bounded contexts |
-| Business Beth | business-beth.yaml | User value, business alignment, priorities |
-| Penny Pincher | penny-pincher.yaml | Scope, complexity, build vs buy |
-| Curious Casey | curious-casey.yaml | Clarity, assumptions, test coverage |
-| Rachel | rachel.yaml | Concurrency, async, race conditions |
-| Know-It-All Nigel | know-it-all-nigel.yaml | Language idioms, polyglot best practices |
-| Danielle the Designer | danielle-designer.yaml | UX, user flows, error messages, CLI interfaces |
-| Dependency Skeptic | dependency-skeptic.yaml | New dependencies, version risks, platform coverage |
-| Data Scientist Dana | data-scientist-dana.yaml | Data quality, schema integrity, referential consistency |
-| Sam System | sam-system.yaml | Cross-file composition, factory wiring, data flow |
-| North Star Nick | north-star-nick.yaml | Strategic alignment, ADRs, scope |
-| Mozart | mozart-eda.yaml | Event-driven architecture, pub/sub, message passing |
-| Frontend Fred | frontend-fred.yaml | Component lifecycle, hooks, effects, subscriptions |
-| Scope Creep Steve | scope-creep-steve.yaml | Production readiness, scale concerns, lifecycle coordination |
-| Contrarian Carl | contrarian-carl.yaml | **Always runs last.** Finds what everyone else missed |
+**Note on `plan: named-only` reviewers**: Fiona and Dana are marked `plan: named-only` in the index and remain reachable when explicitly named by the user; see "Contexts and resolution precedence" in `reviewers/README.md` for the full rule.
 
 **Skip experts whose domain doesn't apply.** A backend API plan doesn't need Frontend Fred. A naming refactor doesn't need Security Sage.
 
 Tell the user which experts you selected and why.
+
+**Fail closed**: if no reviewers resolve for the `plan` context, stop and report that the `plan` context resolved empty — never run an empty panel.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage select-experts --outcome success 2>/dev/null || true
