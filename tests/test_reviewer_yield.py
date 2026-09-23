@@ -359,6 +359,116 @@ def test_report_json_markdown_consistency():
         harness.test_result("Report generation: JSON and Markdown both generated", passed)
 
 
+# Tripwire test: CHECKPOINT_FILENAME_PATTERNS is complete and in sync
+def test_checkpoint_filename_patterns_tripwire():
+    """Verify CHECKPOINT_FILENAME_PATTERNS closed set includes all expected patterns."""
+    patterns = reviewer_yield.CHECKPOINT_FILENAME_PATTERNS
+
+    # Expected patterns (as per the module docstring)
+    expected_patterns = [
+        "{slug}-pass1.md",
+        "{slug}-pass2.md",
+        "{slug}-questions-answered.md",
+    ]
+
+    # Check that all expected patterns are present
+    passed = set(patterns) == set(expected_patterns)
+    harness.test_result("CHECKPOINT_FILENAME_PATTERNS has all expected patterns", passed)
+
+    # Verify that questions-answered.md is included (for OVERHEAD_QA_KEY mapping)
+    has_qa_pattern = any("questions-answered" in p for p in patterns)
+    harness.test_result("CHECKPOINT_FILENAME_PATTERNS includes questions-answered.md", has_qa_pattern)
+
+    # Verify each pattern has a {slug} placeholder
+    all_have_slug = all("{slug}" in p for p in patterns)
+    harness.test_result("All patterns contain {slug} placeholder", all_have_slug)
+
+
+# Test pod/unknown-format runs don't feed solo_findings_per_reviewer
+def test_solo_findings_exclude_pod_unknown():
+    """Verify solo_findings_per_reviewer excludes pod and unknown format runs."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = tmpdir
+        try:
+            repo = "test-repo"
+
+            # Create classic run with solo finding
+            classic_dir = Path(tmpdir) / ".claude" / "reviews" / repo / "classic-20260917T120000-00001"
+            classic_dir.mkdir(parents=True)
+            (classic_dir / "final-report.md").write_text("# Report\n")
+            (classic_dir / "uncle-bob-pass1.md").write_text("# pass1\n")
+            findings_data = {
+                "findings": [
+                    {
+                        "verdict": "CONFIRMED",
+                        "severity": "high",
+                        "raised_by": "uncle-bob",
+                        "supported_by": []  # Empty = solo finding
+                    }
+                ]
+            }
+            (classic_dir / "findings.json").write_text(json.dumps(findings_data))
+
+            # Create pod run (should NOT contribute to solo_findings)
+            pod_dir = Path(tmpdir) / ".claude" / "reviews" / repo / "pod-20260917T120100-00002"
+            pod_dir.mkdir(parents=True)
+            (pod_dir / "final-report.md").write_text("# Report\n")
+            (pod_dir / "architecture-reliability-pod.md").write_text("# Pod\n")
+            (pod_dir / "review-metrics.json").write_text(json.dumps({"pods": ["arch"], "lenses": ["l1"]}))
+            pod_findings = {
+                "findings": [
+                    {
+                        "verdict": "CONFIRMED",
+                        "severity": "high",
+                        "raised_by": "another-reviewer",
+                        "supported_by": []  # Would be solo if it were classic
+                    }
+                ]
+            }
+            (pod_dir / "findings.json").write_text(json.dumps(pod_findings))
+
+            # Compute report
+            cfg = reviewer_yield.load_bucket_config()
+            report_data = reviewer_yield.compute_report_data(repo, cfg)
+            solo_findings = report_data.get("solo_findings_per_reviewer", {})
+
+            # Only uncle-bob from classic run should appear
+            passed = (
+                solo_findings.get("uncle-bob") == 1 and
+                "another-reviewer" not in solo_findings
+            )
+            harness.test_result("Pod-format runs excluded from solo_findings", passed)
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
+
+
+# Test read_pod_manifest tolerates wrong-typed JSON fields
+def test_read_pod_manifest_tolerance():
+    """Verify read_pod_manifest tolerates non-string/non-list JSON fields."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        review_dir = Path(tmpdir)
+
+        # Test 1: pods is a string instead of list (invalid)
+        manifest = review_dir / "review-metrics.json"
+        manifest.write_text(json.dumps({"pods": "not-a-list", "lenses": ["l1"]}))
+        pods, lenses = reviewer_yield.read_pod_manifest(review_dir)
+        harness.test_result("Non-list pods field returns empty safely", pods == [] and lenses == [])
+
+        # Test 2: lenses contains non-string values (invalid)
+        manifest.write_text(json.dumps({"pods": ["p1"], "lenses": [1, 2, 3]}))
+        pods, lenses = reviewer_yield.read_pod_manifest(review_dir)
+        harness.test_result("Non-string lenses values returns empty safely", pods == [] and lenses == [])
+
+        # Test 3: Valid pods and lenses
+        manifest.write_text(json.dumps({"pods": ["arch"], "lenses": ["l1", "l2"]}))
+        pods, lenses = reviewer_yield.read_pod_manifest(review_dir)
+        harness.test_result("Valid pods/lenses parsed correctly", pods == ["arch"] and lenses == ["l1", "l2"])
+
+
 # Run all tests
 test_token_parsing_multientry()
 test_token_parsing_missing_cache_fields()
@@ -372,5 +482,8 @@ test_regime_classification()
 test_script_executable()
 test_findings_json_parsing()
 test_report_json_markdown_consistency()
+test_checkpoint_filename_patterns_tripwire()
+test_solo_findings_exclude_pod_unknown()
+test_read_pod_manifest_tolerance()
 
 harness.summarize_and_exit()

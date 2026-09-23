@@ -74,25 +74,35 @@ def main():
     with FakeHome() as home:
         repo = "test-repo"
 
-        # Create 2 classic runs with different reviewer counts
+        # Helper: create a patch file with N changed lines to reach the "s" bucket
+        def make_patch(n_lines):
+            lines = ["--- a/file.txt", "+++ b/file.txt"]
+            for i in range(n_lines):
+                lines.append(f"+added line {i}")
+            return "\n".join(lines)
+
+        # Create 2 classic runs with different reviewer counts (both in "s" bucket)
         classic1_dir = home / ".claude" / "reviews" / repo / "classic-1-20260917T120000-00001"
         classic1_dir.mkdir(parents=True)
         (classic1_dir / "final-report.md").write_text("# Report\n")
         (classic1_dir / "uncle-bob-pass1.md").write_text("# pass1\n")
         (classic1_dir / "security-sage-pass1.md").write_text("# pass1\n")
+        (classic1_dir / "full-diff.patch").write_text(make_patch(100))  # 100 lines -> "s" bucket
 
         classic2_dir = home / ".claude" / "reviews" / repo / "classic-2-20260917T120100-00002"
         classic2_dir.mkdir(parents=True)
         (classic2_dir / "final-report.md").write_text("# Report\n")
         (classic2_dir / "contract-chris-pass1.md").write_text("# pass1\n")
+        (classic2_dir / "full-diff.patch").write_text(make_patch(50))  # 50 lines -> "s" bucket
 
-        # Create 1 pod run with pod-format files
+        # Create 1 pod run with pod-format files (in "s" bucket)
         pod_dir = home / ".claude" / "reviews" / repo / "pod-run-20260917T120200-00003"
         pod_dir.mkdir(parents=True)
         (pod_dir / "final-report.md").write_text("# Report\n")
         (pod_dir / "architecture-reliability-pod.md").write_text("# Pod\n")
         (pod_dir / "contracts-correctness-pod.md").write_text("# Pod\n")
         (pod_dir / "pod-verification.md").write_text("# Verification\n")
+        (pod_dir / "full-diff.patch").write_text(make_patch(75))  # 75 lines -> "s" bucket
         (pod_dir / "review-metrics.json").write_text(json.dumps({
             "pods": ["architecture-reliability", "contracts-correctness"],
             "lenses": ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"]
@@ -103,16 +113,13 @@ def main():
 
         # Check that pod run didn't affect reviewer counts
         reviewers_per_run = report_data.get("reviewers_per_run", {})
-        if "s" in reviewers_per_run:
-            counts = reviewers_per_run["s"]
-            t("Pod run not in reviewers_per_run",
-              isinstance(counts, list) and len(counts) == 2,
-              f"got counts: {counts}, len: {len(counts)}")
-            if len(counts) >= 2:
-                avg = sum(counts) / len(counts)
-                t("Classic average not dragged down by pod run",
-                  avg > 0,
-                  f"average: {avg}")
+        t("Pod run not in reviewers_per_run: bucket exists",
+          "s" in reviewers_per_run,
+          f"got reviewers_per_run: {reviewers_per_run}")
+        counts = reviewers_per_run.get("s", [])
+        t("Pod run not in reviewers_per_run: exactly 2 classic runs",
+          isinstance(counts, list) and len(counts) == 2 and sorted(counts) == [1, 2],
+          f"got counts: {counts}, sorted: {sorted(counts)}")
 
     # ========================================================================
     print("\n[Case c sub-case] Pod-run CLI shows explicit pod notice")
@@ -147,27 +154,38 @@ def main():
     with FakeHome() as home:
         repo = "test-repo"
 
-        # Classic run
+        # Helper: create a patch file with N changed lines to reach the "s" bucket
+        def make_patch(n_lines):
+            lines = ["--- a/file.txt", "+++ b/file.txt"]
+            for i in range(n_lines):
+                lines.append(f"+added line {i}")
+            return "\n".join(lines)
+
+        # Classic run (in "s" bucket)
         classic_dir = home / ".claude" / "reviews" / repo / "classic-20260917T120000-00001"
         classic_dir.mkdir(parents=True)
         (classic_dir / "final-report.md").write_text("# Report\n")
         (classic_dir / "uncle-bob-pass1.md").write_text("# pass1\n")
+        (classic_dir / "full-diff.patch").write_text(make_patch(100))  # 100 lines -> "s" bucket
 
-        # Unknown-format run (no *-pass1.md, no *-pod.md)
+        # Unknown-format run (no *-pass1.md, no *-pod.md, in "s" bucket)
         unknown_dir = home / ".claude" / "reviews" / repo / "unknown-20260917T120100-00002"
         unknown_dir.mkdir(parents=True)
         (unknown_dir / "final-report.md").write_text("# Report\n")
         (unknown_dir / "some-random-file.md").write_text("# Unknown\n")
+        (unknown_dir / "full-diff.patch").write_text(make_patch(75))  # 75 lines -> "s" bucket
 
         cfg = reviewer_yield.load_bucket_config()
         report_data = reviewer_yield.compute_report_data(repo, cfg)
 
         reviewers_per_run = report_data.get("reviewers_per_run", {})
-        if "s" in reviewers_per_run:
-            counts = reviewers_per_run["s"]
-            t("Unknown-format run excluded from reviewers average",
-              len(counts) == 1,
-              f"expected 1 count for classic only, got {counts}")
+        t("Unknown-format run excluded: bucket exists",
+          "s" in reviewers_per_run,
+          f"got reviewers_per_run: {reviewers_per_run}")
+        counts = reviewers_per_run.get("s", [])
+        t("Unknown-format run excluded from reviewers average: exactly 1 classic run",
+          isinstance(counts, list) and len(counts) == 1,
+          f"expected 1 count for classic only, got {counts}")
 
     # ========================================================================
     print("\n[Observation-only: origin file preserved]")

@@ -109,6 +109,49 @@ def main():
         res = _find(tmp, review_dir)
         t("no crash, nothing attributed", not res.get("uncle-bob"))
 
+    print("[garbage line in transcript JSON -> skipped safely]")
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        origin = {"schema_version": 1, "cwd": "/x", "project_dir": "proj", "session_id": None,
+                  "resolution": "unavailable", "recorded_at": "2026-09-22T09:42:12Z"}
+        review_dir, subagents = _setup(tmp, origin)
+
+        # Add a garbage line to one transcript
+        subagent_a = subagents / "a.jsonl"
+        original_content = subagent_a.read_text()
+        subagent_a.write_text(original_content + "{ this is not valid json }\n")
+
+        res = _find(tmp, review_dir)
+        t("garbage line: still attributes valid entries", len(res.get("uncle-bob", [])) == 2)
+
+    print("[truncated JSON in transcript -> handled gracefully]")
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        origin = {"schema_version": 1, "cwd": "/x", "project_dir": "proj", "session_id": None,
+                  "resolution": "unavailable", "recorded_at": "2026-09-22T09:42:12Z"}
+        review_dir, subagents = _setup(tmp, origin)
+
+        # Truncate one transcript file mid-JSON
+        subagent_b = subagents / "b.jsonl"
+        content = subagent_b.read_text()
+        truncated = content[:-20]  # Remove last 20 chars
+        subagent_b.write_text(truncated)
+
+        res = _find(tmp, review_dir)
+        t("truncated: other files still attributed", len(res.get("uncle-bob", [])) >= 1)
+
+    print("[Z-suffix in recorded_at timestamp -> parsed correctly]")
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # The recorded_at has Z suffix which must be handled
+        origin = {"schema_version": 1, "cwd": "/x", "project_dir": "proj", "session_id": None,
+                  "resolution": "unavailable", "recorded_at": "2026-09-22T09:42:12Z"}
+        review_dir, _ = _setup(tmp, origin)
+
+        res = _find(tmp, review_dir)
+        # Should parse the Z-suffix correctly and find files within the time window
+        t("Z-suffix: time bound works with Z", len(res.get("uncle-bob", [])) == 2)
+
     print()
     h.summarize_and_exit()
 

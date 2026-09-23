@@ -158,22 +158,32 @@ def main():
         result = run_script(str(bad_dir), env={})
         t("REVIEW_DIR outside ~/.claude/reviews/: non-zero exit", result.returncode != 0)
 
-    # Test 5: Read-only directory
-    with FakeHome() as home:
-        review_dir = home / ".claude" / "reviews" / "test-repo"
-        review_dir.mkdir(parents=True)
+    # Test 5: Read-only directory (skip when running as root)
+    if os.geteuid() != 0:
+        with FakeHome() as home:
+            review_dir = home / ".claude" / "reviews" / "test-repo"
+            review_dir.mkdir(parents=True)
 
-        os.chmod(review_dir, 0o555)
+            os.chmod(review_dir, 0o555)
 
-        try:
-            result = run_script(str(review_dir), env={})
-            t("Read-only dir: non-zero exit", result.returncode != 0)
+            try:
+                result = run_script(str(review_dir), env={})
+                t("Read-only dir: non-zero exit", result.returncode != 0)
 
-            origin_file = review_dir / "transcript-origin.json"
-            t("Read-only dir: no partial file written",
-              not origin_file.exists() or origin_file.stat().st_size == 0)
-        finally:
-            os.chmod(review_dir, 0o755)
+                origin_file = review_dir / "transcript-origin.json"
+                t("Read-only dir: no partial file written",
+                  not origin_file.exists() or origin_file.stat().st_size == 0)
+
+                # Check for leftover .tmp files
+                tmp_files = list(review_dir.glob(".transcript-origin-*.tmp"))
+                t("Read-only dir: no leftover .tmp file",
+                  len(tmp_files) == 0,
+                  f"found tmp files: {tmp_files}")
+            finally:
+                os.chmod(review_dir, 0o755)
+    else:
+        print("  (Skipping read-only-dir test: running as root)")
+
 
     # Test 6: Valid write produces correct schema
     with FakeHome() as home:
@@ -188,6 +198,93 @@ def main():
             t("Output JSON has valid schema_version", data.get("schema_version") == 1)
             t("Output JSON has cwd field", "cwd" in data)
             t("Output JSON has project_dir field", "project_dir" in data)
+
+    # Test 7: Zero-match glob scenario (session_id set but no matching project dir)
+    with FakeHome() as home:
+        review_dir = home / ".claude" / "reviews" / "test-repo"
+        review_dir.mkdir(parents=True)
+
+        # Session ID is set but no matching project files exist
+        result = run_script(
+            str(review_dir),
+            env={"CLAUDE_CODE_SESSION_ID": "valid-sess-1"}
+        )
+
+        t("Zero-match: exit 0", result.returncode == 0, result.stderr)
+
+        origin_file = review_dir / "transcript-origin.json"
+        t("Zero-match: file written", origin_file.exists())
+
+        if origin_file.exists():
+            data = json.loads(origin_file.read_text())
+            t("Zero-match: resolution is env", data.get("resolution") == "env")
+            t("Zero-match: session_id set", data.get("session_id") == "valid-sess-1")
+            t("Zero-match: project_dir falls back to sanitized cwd",
+              data.get("project_dir") != "",
+              f"expected non-empty project_dir, got {data.get('project_dir')}")
+            t("Zero-match: fallback warning in stderr",
+              "Warning" not in result.stderr or "sanitized cwd" in result.stderr or "session_id unavailable" in result.stderr,
+              f"stderr: {result.stderr}")
+
+    # Test 8: Two-match glob scenario (multiple project dirs match session_id)
+    with FakeHome() as home:
+        review_dir = home / ".claude" / "reviews" / "test-repo"
+        review_dir.mkdir(parents=True)
+
+        # Create two projects with the same session_id
+        for proj_name in ["proj-a", "proj-b"]:
+            projects_dir = home / ".claude" / "projects" / proj_name
+            projects_dir.mkdir(parents=True)
+            (projects_dir / "ambig-sess-1.jsonl").write_text('{"type": "start"}\n')
+
+        result = run_script(
+            str(review_dir),
+            env={"CLAUDE_CODE_SESSION_ID": "ambig-sess-1"}
+        )
+
+        t("Two-match: exit 0", result.returncode == 0, result.stderr)
+
+        origin_file = review_dir / "transcript-origin.json"
+        if origin_file.exists():
+            data = json.loads(origin_file.read_text())
+            t("Two-match: resolution is env", data.get("resolution") == "env")
+            t("Two-match: session_id set", data.get("session_id") == "ambig-sess-1")
+            # When glob finds more than one match, project_dir should fall back to sanitized cwd
+            t("Two-match: project_dir falls back (not ambiguous)",
+              data.get("project_dir") != "",
+              f"expected non-empty fallback, got {data.get('project_dir')}")
+
+    # Test 9: Unset CLAUDE_CODE_SESSION_ID with cwd fallback
+    with FakeHome() as home:
+        review_dir = home / ".claude" / "reviews" / "test-repo"
+        review_dir.mkdir(parents=True)
+
+        # Ensure CLAUDE_CODE_SESSION_ID is explicitly unset
+        env = dict(os.environ)
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), str(review_dir)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        t("Unset-env: exit 0", result.returncode == 0)
+
+        origin_file = review_dir / "transcript-origin.json"
+        t("Unset-env: file written", origin_file.exists())
+
+        if origin_file.exists():
+            data = json.loads(origin_file.read_text())
+            t("Unset-env: resolution is unavailable", data.get("resolution") == "unavailable")
+            t("Unset-env: session_id is null", data.get("session_id") is None)
+            t("Unset-env: project_dir populated via sanitized cwd",
+              data.get("project_dir") != "",
+              f"expected non-empty project_dir, got {data.get('project_dir')}")
+            t("Unset-env: fallback warning in stderr",
+              "Warning" in result.stderr and "sanitized cwd" in result.stderr,
+              f"expected warning in stderr, got: {result.stderr}")
 
     # ========================================================================
     print("\n[Case e] Doc assertion: write path is a single script invocation")
