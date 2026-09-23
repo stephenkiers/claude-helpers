@@ -50,3 +50,15 @@ Plan Mode, when active in a session, restricts the `Write` tool to a single desi
 v2 no longer enters or ends in Plan Mode. Step 6 (the hard-stop checkpoint with `AskUserQuestion`) is v2's human gate, serving the role that Plan Mode serves for v1. The orchestrator's writes are confined to `plan-sessions/` and `~/.claude/plans/` — no code changes at any point. Subagent write-scope enforcement is documented as a prompt convention (residual risk, not a tool-enforced guarantee) in CLAUDE.md's "Panel agents are capability-restricted, not dialog-gated" section.
 
 The guard belongs here (to v2's architecture decision) rather than to a cross-cutting session-management ADR because it is specific to the tension between v2's multi-file checkpoint pipeline and Plan Mode's single-file constraint.
+
+## Amendment — Harness-agnostic barrier waiting (2026-09-23)
+
+**Prior assumption (removed):** Join barriers were documented as if subagents always returned their results in the launching turn — "they have all returned by the time you continue." This assumption held only for older harness versions returning results inline. Observed transcripts (2026-09) show every Agent call returns a launch acknowledgement, with the final report arriving separately: either a hand-back message or a task notification in a later turn. The false premise created confusion about what "waiting" meant.
+
+**Decision: End-turn protocol.** Waiting means ending the turn and re-evaluating per-id state on each return or notification. The receipt (the id's final report) is the first message carrying it — a synchronous result containing the report, an `<agent-message from="{id}">` hand-back, or a task notification whose `<result>` contains the report. A synchronous result that only says the agent was launched ("Async agent launched", "working in the background") is a launch acknowledgement, not a return.
+
+Per-id state progresses: `launched → returned → ok | bad`. The barrier closes when every id is `ok` or stood-in. At most one 1800s status-only `ScheduleWakeup` per phase (one dispatch batch) is permitted as a fallback; it tells the user which ids are missing, never retries or writes stand-ins.
+
+The canonical text lives in `prompts/join-barrier-pattern.md` § "Waiting for the barrier". All commands referencing join barriers now point at that section via a fixed pointer sentence, replacing earlier contradictory inline wording.
+
+Observed in transcripts 2026-09, not a harness guarantee: calls return a launch ack regardless of `run_in_background` flag value, a notification follows for 1626 of 1633 launched agents, and the flag made no observable waiting difference. The receipt/file/sentinel contract is unchanged.

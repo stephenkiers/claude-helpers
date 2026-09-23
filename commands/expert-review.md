@@ -47,7 +47,7 @@ they are the difference between a ~180k review and a ~430k one:
 2. **The file is the contract.** Every panel agent Writes its output to `{REVIEW_DIR}` and returns a
    one-line **receipt**, never its report. A returned report reaches you *twice* — as the tool result
    and again in the completion notification's `<result>` block. The Amalgamator reads the files once; you never do.
-3. **Never poll.** No `ScheduleWakeup`, no `sleep`. Launch a batch in one message and let it return.
+3. **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase. Launch a batch in one message and let it return.
 4. **The diff is a file, not a string.** Write `full-diff.patch` once (Step 1);
    pass paths. Never `cat` the diff into your own context and never paste it into a prompt — a
    44k-token diff inlined into 20 prompts is 880k tokens of *your* context, re-read from cache on
