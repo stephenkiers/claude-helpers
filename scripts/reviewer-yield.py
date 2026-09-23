@@ -135,7 +135,7 @@ def read_pod_manifest(review_dir: Path) -> Tuple[List[str], List[str]]:
             print(f"Warning: review-metrics.json pods/lenses are not lists in {review_dir}", file=sys.stderr)
             return [], []
 
-        if not all(isinstance(p, str) for p in pods) or not all(isinstance(l, str) for l in lenses):
+        if not all(isinstance(p, str) for p in pods) or not all(isinstance(x, str) for x in lenses):
             print(f"Warning: review-metrics.json pods/lenses contain non-string values in {review_dir}", file=sys.stderr)
             return [], []
 
@@ -1329,7 +1329,7 @@ def render_report_markdown(report_data: ReportData) -> str:
     # Unknown format runs (if any)
     unknown_format_runs = report_data.get("unknown_format_runs", 0)
     if unknown_format_runs > 0:
-        output.append(f"## Excluded Runs\n")
+        output.append("## Excluded Runs\n")
         output.append(f"- Unrecognized review format: {unknown_format_runs} runs\n\n")
 
     # Verified findings
