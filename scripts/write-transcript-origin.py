@@ -7,6 +7,11 @@ enabling downstream tools to anchor transcript discovery to the correct project
 session. Only session_id resolution values: "env" (valid CLAUDE_CODE_SESSION_ID)
 or "unavailable". Legacy readers still accept "most-recent-dir" from older files.
 
+project_dir fallback chain:
+  1. If session_id resolved from env: glob ~/.claude/projects/*/[session_id].jsonl
+  2. Fallback (session_id unavailable or glob failed): sanitize and record cwd
+  3. Record both cwd and project_dir; downstream readers will apply same fallback chain
+
 Usage:
     write-transcript-origin.py <REVIEW_DIR>
 
@@ -25,6 +30,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _sanitize_project_dir(path: str) -> str:
+    """
+    Sanitize a path to a project dir id by replacing every char outside [A-Za-z0-9-] with -.
+    Used as fallback when session_id is unavailable; mirrors reviewer-yield.py logic.
+    Returns the sanitized string (may fail _SAFE_ID_RE if result is all dashes).
+    """
+    return re.sub(r"[^A-Za-z0-9-]", "-", path)
 
 
 def main():
@@ -63,8 +77,9 @@ def main():
         session_id = env_session_id
         resolution = "env"
 
-    # Resolve project_dir
+    # Resolve project_dir: try session_id glob first, fall back to sanitized cwd
     project_dir = ""
+    current_cwd = os.getcwd()
 
     if session_id:
         # If session_id is set, glob ~/.claude/projects/*/[session_id].jsonl
@@ -77,22 +92,22 @@ def main():
         except (OSError, ValueError):
             # Silently ignore glob errors; project_dir stays ""
             pass
-    else:
-        # Sanitize cwd: replace every char outside [A-Za-z0-9-] with -
-        cwd = os.getcwd()
-        sanitized = "".join(
-            c if c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-" else "-"
-            for c in cwd
-        )
-        if _SAFE_ID_RE.match(sanitized):
-            project_dir = sanitized
+
+    # If project_dir still empty, sanitize cwd as fallback
+    if not project_dir:
+        sanitized_cwd = _sanitize_project_dir(current_cwd)
+        if _SAFE_ID_RE.match(sanitized_cwd):
+            project_dir = sanitized_cwd
+            if not session_id:
+                # Warn when falling back to cwd with no session_id available
+                print("Warning: session_id unavailable; using sanitized cwd as project_dir", file=sys.stderr)
         # else project_dir stays ""
 
     # Build the output object
     recorded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     output = {
         "schema_version": 1,
-        "cwd": os.getcwd(),
+        "cwd": current_cwd,
         "project_dir": project_dir,
         "session_id": session_id,
         "resolution": resolution,

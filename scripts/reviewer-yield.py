@@ -27,7 +27,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any
+from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any, NamedTuple, Final
 
 OBSERVATION_ONLY_NOTE = (
     "Observation-only in Phase 0 — not wired into `prompts/router.md`, "
@@ -45,7 +45,25 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 LATEST_KNOWN_REGIME_START = datetime(2026, 9, 16)
 REGIME_STALENESS_DAYS = 90
 
-REVIEW_FORMATS = frozenset(["classic", "pod", "unknown"])
+# Time slack for backdating backstop scan when parsing from review_dir timestamp
+BACKSTOP_TIME_SLACK_SECONDS: Final[int] = 300
+
+# Sentinel key for overhead questions-answered unit
+OVERHEAD_QA_KEY: Final[str] = "overhead:questions-answered"
+
+# Exhaustive checkpoint filename patterns (closed set as of 2026-09-23).
+# Used by _subagent_reviewer_for_review_dir to attribute transcripts to reviewers/overhead.
+# Patterns:
+#   - {slug}-pass1.md -> slug (classic Pass 1)
+#   - {slug}-pass2.md -> slug (classic Pass 2)
+#   - {slug}-questions-answered.md -> OVERHEAD_QA_KEY (Q&A overhead)
+# Pod-format runs use {pod-name}-pod.md and are not attributed per-reviewer.
+# A tripwire test (to be added) will verify this set remains complete.
+CHECKPOINT_FILENAME_PATTERNS: Final[List[str]] = [
+    "{slug}-pass1.md",
+    "{slug}-pass2.md",
+    "{slug}-questions-answered.md",
+]
 
 
 class TokenRecord(TypedDict):
@@ -82,6 +100,38 @@ class ReviewerStats(TypedDict):
     run_count: int
 
 
+class TranscriptOrigin(TypedDict, total=False):
+    """
+    Schema for transcript-origin.json: session discovery metadata.
+
+    Fields:
+    - schema_version: int (required)
+    - cwd: str (recorded working directory; used as fallback for project_dir when empty)
+    - project_dir: str (sanitized project directory id; empty string when unavailable)
+    - session_id: str or None (Claude Code session id; None when unavailable)
+    - resolution: str ("env", "most-recent-dir", "unavailable"; "unavailable" means session_id is None)
+    - recorded_at: str (ISO 8601 UTC timestamp with Z suffix)
+    """
+    schema_version: int
+    cwd: str
+    project_dir: str
+    session_id: Optional[str]
+    resolution: str
+    recorded_at: str
+
+
+class FindingsScoreResult(NamedTuple):
+    """Result of _score_findings: per-bucket reviewer counts, crit/high counts, value, and metadata."""
+    reviewers_per_run: Dict[str, List[int]]
+    verified_crit_high_per_run: Dict[str, List[int]]
+    verified_value_per_run: Dict[str, List[int]]
+    solo_findings_per_reviewer: Dict[str, int]
+    runs_with_unavailable_findings: int
+    pod_lenses_per_run: Dict[str, List[int]]
+    pod_runs_unrecorded: int
+    unknown_format_runs: int
+
+
 def sanitize_project_dir_id(cwd: str) -> Optional[str]:
     """
     Sanitize cwd to a project dir id by replacing every char outside [A-Za-z0-9-] with -.
@@ -96,6 +146,20 @@ def sanitize_project_dir_id(cwd: str) -> Optional[str]:
     if _SAFE_ID_RE.match(sanitized):
         return sanitized
     return None
+
+
+def _path_is_under_root(child_path: Path, root_path: Path) -> bool:
+    """
+    Check if child_path is under root_path by comparing resolved parents.
+
+    Returns True if child_path.resolve().parent == root_path.resolve() or
+    root_path is an ancestor of child_path.
+    """
+    try:
+        child_path.resolve().relative_to(root_path.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def classify_review_format(review_dir: Path) -> str:
@@ -153,15 +217,16 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
     Two-stage search:
     1. Hint path: reads {review_dir}/transcript-origin.json to determine the session directory.
        Searches within ~/.claude/projects/{project_dir}/{session_id}/subagents/*.jsonl.
-       Any failure (missing, unparseable, unavailable, validation-failed, session dir missing)
-       falls through to stage 2 without early return.
+       On success, logs matching count; on failure (missing, unparseable, unavailable,
+       validation-failed, session dir missing), falls through to stage 2 without early return.
 
     2. Backstop scan: if stage 1 found zero matches, triggers a glob scan of
        projects/<project_dir>/*/subagents/*.jsonl (one project_dir only).
        Uses recorded_at or parsed review_dir timestamp for time-bound filtering.
-       Project dir from origin file if present and valid, else sanitized os.getcwd().
-       Prints one stderr line on success.
+       Project dir from origin file if present and valid, then sanitized origin cwd,
+       then os.getcwd(). Prints one stderr line on success.
 
+    Returns dict mapping reviewer slug or OVERHEAD_QA_KEY to list of subagent transcript paths.
     Searches for a Write tool_use whose input.file_path both contains review_dir as a substring
     AND matches one specific reviewer's own filename pattern (e.g. "{reviewer}-pass1.md") —
     this anchors a transcript to a reviewer, since a review directory holds many subagents'
@@ -173,16 +238,17 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
     origin_file = review_dir_path / "transcript-origin.json"
 
     result: Dict[str, List[Path]] = {slug: [] for slug in reviewer_slugs}
-    result["overhead:questions-answered"] = []
+    result[OVERHEAD_QA_KEY] = []
 
-    # Stage 1: Hint path (current logic)
-    origin_data = None
+    # Stage 1: Hint path search (fast path via transcript-origin.json)
+    origin_data: Optional[TranscriptOrigin] = None
     if origin_file.exists():
         try:
             origin_data = json.loads(origin_file.read_text())
         except (json.JSONDecodeError, OSError) as e:
             print(f"Warning: failed to read/parse transcript-origin.json: {e}", file=sys.stderr)
 
+    stage1_match_count = 0
     if origin_data and isinstance(origin_data, dict):
         resolution = origin_data.get("resolution")
         session_id = origin_data.get("session_id")
@@ -201,23 +267,35 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
                 # Build path to session directory and confirm it stays under ~/.claude/projects
                 projects_root = Path.home() / ".claude" / "projects"
                 session_dir = projects_root / project_dir_name / session_id / "subagents"
-                if projects_root.resolve() in session_dir.resolve().parents:
+                if _path_is_under_root(session_dir, projects_root):
                     if session_dir.exists():
                         # Stage 1: scan hint path
                         for subagent_file in session_dir.glob("*.jsonl"):
                             matched_reviewer = _subagent_reviewer_for_review_dir(subagent_file, review_dir_name, reviewer_slugs)
                             if matched_reviewer:
                                 result[matched_reviewer].append(subagent_file)
+                                stage1_match_count += 1
 
     # Stage 2: Backstop scan (only if stage 1 found zero matches)
     if not any(result.values()):
-        # Determine project_dir for backstop search
+        if stage1_match_count == 0 and origin_data and isinstance(origin_data, dict):
+            print("Info: stage 1 hint path found no matches; falling back to backstop scan", file=sys.stderr)
+
+        # Determine project_dir for backstop search: try origin project_dir,
+        # then sanitized origin cwd, then os.getcwd()
         project_dir_name = None
         if origin_data and isinstance(origin_data, dict):
             project_dir_name = origin_data.get("project_dir")
 
         if not project_dir_name:
-            # Fall back to sanitized cwd
+            # Try sanitizing the recorded cwd
+            if origin_data and isinstance(origin_data, dict):
+                recorded_cwd = origin_data.get("cwd")
+                if recorded_cwd:
+                    project_dir_name = sanitize_project_dir_id(recorded_cwd)
+
+        if not project_dir_name:
+            # Fall back to sanitized os.getcwd()
             project_dir_name = sanitize_project_dir_id(os.getcwd())
 
         if not project_dir_name:
@@ -251,15 +329,15 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
             print("Warning: cannot determine time bound for backstop scan", file=sys.stderr)
             return result
 
-        # Subtract 300s slack
-        time_lower_bound -= 300
+        # Subtract time slack
+        time_lower_bound -= BACKSTOP_TIME_SLACK_SECONDS
 
         # Perform backstop scan: glob exactly projects/<project_dir>/*/subagents/*.jsonl
         projects_root = Path.home() / ".claude" / "projects"
         project_path = projects_root / project_dir_name
 
         # Validate path stays under projects_root
-        if projects_root.resolve() not in project_path.resolve().parents and projects_root.resolve() != project_path.resolve().parent:
+        if not _path_is_under_root(project_path, projects_root):
             print(f"Warning: project path escapes {projects_root}", file=sys.stderr)
             return result
 
@@ -292,19 +370,23 @@ def _subagent_reviewer_for_review_dir(
     if it wrote that reviewer's own checkpoint file into the given review directory;
     None otherwise.
 
-    Filename-to-unit mapping:
-    - {slug}-pass1.md -> slug
-    - {slug}-pass2.md -> slug
-    - {slug}-questions-answered.md -> "overhead:questions-answered"
+    Filename-to-unit mapping (exhaustive closed set as of 2026-09-23):
+    - {slug}-pass1.md -> slug (classic-format Pass 1 checkpoint)
+    - {slug}-pass2.md -> slug (classic-format Pass 2 checkpoint)
+    - {slug}-questions-answered.md -> OVERHEAD_QA_KEY (Q&A overhead for that reviewer)
+
+    The mapping is exhaustive: all review checkpoints belong to one of these three patterns.
+    Pod-format runs use different filenames (*-pod.md) and are not attributed per-reviewer.
 
     Returns None on read or parse error (warns to stderr per file-wide exception policy).
     """
-    # Build explicit filename-to-unit map
+    # Build explicit filename-to-unit map for this review run
     filename_to_unit: Dict[str, str] = {}
     for slug in reviewer_slugs:
         filename_to_unit[f"{slug}-pass1.md"] = slug
         filename_to_unit[f"{slug}-pass2.md"] = slug
-        filename_to_unit[f"{slug}-questions-answered.md"] = "overhead:questions-answered"
+        # Questions-answered files (Q&A overhead) map to overhead unit, not the reviewer
+        filename_to_unit[f"{slug}-questions-answered.md"] = OVERHEAD_QA_KEY
 
     try:
         with open(jsonl_file, "r") as f:
@@ -605,8 +687,12 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     # sorted(reviewer_slugs) would silently misattribute token costs).
     subagent_files_by_reviewer = find_subagent_files_by_reviewer(review_dir_path, sorted(reviewer_slugs))
 
-    # Run-level status (returned to caller); rows carry their own per-reviewer status
-    tokens_status = "measured" if any(subagent_files_by_reviewer.values()) else "unavailable"
+    # Run-level status (returned to caller); only check reviewer rows, not overhead
+    # (overhead presence alone does not mean reviewers were measured)
+    reviewer_files_found = any(
+        subagent_files_by_reviewer.get(slug, []) for slug in reviewer_slugs
+    )
+    tokens_status = "measured" if reviewer_files_found else "unavailable"
 
     reviewer_tokens: Dict[str, TokenRecord] = {}
     for reviewer in sorted(reviewer_slugs):
@@ -820,6 +906,21 @@ def _warn_if_regime_stale(newest: Optional[datetime]) -> None:
         )
 
 
+def _print_yield_row(row: YieldRow) -> None:
+    """Print a single yield row with consistent formatting."""
+    reviewer = row["reviewer"]
+    input_t = row["input_tokens"]
+    output_t = row["output_tokens"]
+    cache_r = row["cache_read_input_tokens"]
+    cache_w = row["cache_creation_input_tokens"]
+    mentions = row["mention_count"]
+    escalated = row["escalation_count"]
+
+    print(
+        f"{reviewer:<30} {input_t:<12,} {output_t:<12,} {cache_r:<12,} {cache_w:<12,} {mentions:<10} {escalated:<10}"
+    )
+
+
 def print_review_table(rows: List[YieldRow]) -> None:
     """Print a per-reviewer table to stdout for a single review run, with overhead rows under a separator."""
     if not rows:
@@ -838,18 +939,7 @@ def print_review_table(rows: List[YieldRow]) -> None:
         unit_kind = row.get("unit_kind", "reviewer")  # Default to "reviewer" for legacy rows
         if unit_kind != "reviewer":
             continue
-
-        reviewer = row["reviewer"]
-        input_t = row["input_tokens"]
-        output_t = row["output_tokens"]
-        cache_r = row["cache_read_input_tokens"]
-        cache_w = row["cache_creation_input_tokens"]
-        mentions = row["mention_count"]
-        escalated = row["escalation_count"]
-
-        print(
-            f"{reviewer:<30} {input_t:<12,} {output_t:<12,} {cache_r:<12,} {cache_w:<12,} {mentions:<10} {escalated:<10}"
-        )
+        _print_yield_row(row)
 
     # Separate and print overhead rows
     overhead_rows = [r for r in rows if r.get("unit_kind") == "overhead"]
@@ -858,17 +948,7 @@ def print_review_table(rows: List[YieldRow]) -> None:
         print("Overhead (not attributed to any reviewer)")
         print("-" * 120)
         for row in overhead_rows:
-            reviewer = row["reviewer"]
-            input_t = row["input_tokens"]
-            output_t = row["output_tokens"]
-            cache_r = row["cache_read_input_tokens"]
-            cache_w = row["cache_creation_input_tokens"]
-            mentions = row["mention_count"]
-            escalated = row["escalation_count"]
-
-            print(
-                f"{reviewer:<30} {input_t:<12,} {output_t:<12,} {cache_r:<12,} {cache_w:<12,} {mentions:<10} {escalated:<10}"
-            )
+            _print_yield_row(row)
 
     print()
 
@@ -903,7 +983,7 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
                     reviewer = row["reviewer"]
                     unit_kind = row.get("unit_kind", "reviewer")  # Default to "reviewer" for legacy rows
 
-                    # Skip overhead rows in per-reviewer aggregation
+                    # Separate overhead rows from per-reviewer stats
                     if unit_kind == "overhead":
                         overhead_stats["total_input_tokens"] += row["input_tokens"]
                         overhead_stats["total_output_tokens"] += row["output_tokens"]
@@ -1010,6 +1090,16 @@ class Methodology(TypedDict, total=False):
 
 
 class TokensReport(TypedDict, total=False):
+    """Token usage aggregation for a report.
+
+    When all fields are present (success case):
+    - total_*: aggregate token counts including all overhead (Q&A, triage, etc.)
+    - avg_*_per_run: totals divided by number of included runs
+
+    When status/reason fields are present (unavailable case):
+    - status: "unavailable"
+    - reason: explanation (e.g. historical runs before transcript-origin.json)
+    """
     total_input_tokens: int
     total_output_tokens: int
     total_cache_read_tokens: int
@@ -1058,8 +1148,12 @@ def _classify_runs(reports_dir: Path, bucket_config: dict) -> Tuple[List[Tuple[P
     return runs, regime_counts, newest
 
 
-def _score_findings(runs: List[Tuple[Path, str, str]]) -> Tuple[Dict[str, List[int]], Dict[str, List[int]], Dict[str, List[int]], Dict[str, int], int, Dict[str, List[int]], int, int]:
-    """Compute per-bucket reviewer counts, crit/high counts, value, solo findings, unavailable-findings count, pod lens counts, pod-unrecorded count, and unknown-format count."""
+def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
+    """
+    Compute metrics across all runs: per-bucket reviewer counts, crit/high counts, value,
+    solo findings, unavailable-findings count, pod lens counts, pod-unrecorded count,
+    and unknown-format count. Returns FindingsScoreResult NamedTuple.
+    """
     reviewers_per_run: Dict[str, List[int]] = {}
     verified_crit_high_per_run: Dict[str, List[int]] = {}
     verified_value_per_run: Dict[str, List[int]] = {}
@@ -1116,7 +1210,8 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> Tuple[Dict[str, List[i
 
                 value_total += SEVERITY_VALUES.get(severity, 0)
 
-                if not supported_by and raised_by:
+                # Gate solo finding accumulation to classic format only
+                if review_format == "classic" and not supported_by and raised_by:
                     solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
 
             # Only add to classic findings if classic format
@@ -1127,15 +1222,15 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> Tuple[Dict[str, List[i
                 verified_crit_high_per_run[bucket].append(crit_high_count)
                 verified_value_per_run[bucket].append(value_total)
 
-    return (
-        reviewers_per_run,
-        verified_crit_high_per_run,
-        verified_value_per_run,
-        solo_findings_per_reviewer,
-        runs_with_unavailable_findings,
-        pod_lenses_per_run,
-        pod_runs_unrecorded,
-        unknown_format_runs,
+    return FindingsScoreResult(
+        reviewers_per_run=reviewers_per_run,
+        verified_crit_high_per_run=verified_crit_high_per_run,
+        verified_value_per_run=verified_value_per_run,
+        solo_findings_per_reviewer=solo_findings_per_reviewer,
+        runs_with_unavailable_findings=runs_with_unavailable_findings,
+        pod_lenses_per_run=pod_lenses_per_run,
+        pod_runs_unrecorded=pod_runs_unrecorded,
+        unknown_format_runs=unknown_format_runs,
     )
 
 
