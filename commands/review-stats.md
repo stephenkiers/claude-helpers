@@ -71,7 +71,7 @@ For the methodology behind tuning `/expert-review`'s reviewer selection based on
 
 ## Shadow Scorer Report (#195)
 
-When `--report` is used, `reviewer-yield.py` includes a "Shadow Scorer (observe-only)" section that
+When `--report` is used, `reviewer-yield.py` includes a "Shadow scorer (observe-only)" section that
 compares the Router's seating authority against a deterministic, no-LLM scorer (`scripts/route-score.py`)
 run in shadow mode.
 
@@ -99,7 +99,9 @@ scoring Must or Candidate is not a miss.
 unattributable runs (no `findings.json`), and runs over 800 changed lines.
 
 **Methodology:** Re-scored with current config from stored `full-diff.patch` (fallback `full.diff`).
-Thresholds labeled provisional (`thresholds_provisional: true`). Scorer version recorded.
+Thresholds labeled provisional (`thresholds_provisional: true`). Scorer version recorded. A cohort with
+no Critical/High findings reports n=0 and no rate, never "0%". If the scorer or `reviewers/index.yaml` route
+config fails to load, the section is `{status: unavailable, reason}` and the rest of the report renders.
 
 **Censoring caveat (verbatim):** The effort-4 miss rate only measures whether the scorer's exclusions
 remove a reviewer the Router seated who then produced a verified finding; it is a lower bound, not proof

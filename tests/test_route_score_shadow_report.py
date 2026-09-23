@@ -13,8 +13,6 @@ Run with: python3 tests/test_route_score_shadow_report.py
 import importlib.util
 import json
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -367,5 +365,113 @@ if __name__ == "__main__":
               reviewer_yield.render_report_markdown(data) is not None)
         except Exception as e:
             t("scorer error handling", False, str(e))
+
+    # ========================================================================
+    # The fixtures above use untimestamped run ids, which the report classifies
+    # as regime "unknown" and skips. These use post-148 run ids so re-scoring
+    # actually runs, and the expected values are derived from the real scorer.
+    print("\n[Section 9] Per-finding misses, severities and contingency on a scored corpus")
+
+    _spec_rs = importlib.util.spec_from_file_location("route_score_for_tests", ROUTE_SCORE_PATH)
+    route_score = importlib.util.module_from_spec(_spec_rs)
+    _spec_rs.loader.exec_module(route_score)
+
+    ui_diff = """diff --git a/web/components/Button.tsx b/web/components/Button.tsx
+--- a/web/components/Button.tsx
++++ b/web/components/Button.tsx
+@@ -1 +1 @@
++export const Button = () => <button className="primary">Click</button>
+"""
+    configs = route_score.load_route_configs(REPO_ROOT / "reviewers" / "index.yaml")
+    tiers = {slug: r.tier for slug, r in route_score.score_diff(ui_diff, configs).reviewers.items()}
+    excluded = sorted(slug for slug, tier in tiers.items() if tier == "Exclude")
+    included = sorted(slug for slug, tier in tiers.items() if tier in ("Must", "Candidate"))
+    t("fixture diff yields both an Exclude and a Must/Candidate reviewer",
+      bool(excluded) and bool(included), f"tiers={tiers}")
+
+    if excluded and included:
+        ex, inc = excluded[0], included[0]
+        run_id = "feat-abc123-20260920T120000-xyz"
+        with FakeHome() as home:
+            run_dir = make_run_dir(home, "test-repo", run_id)
+            run_dir.joinpath("full-diff.patch").write_text(ui_diff)
+            run_dir.joinpath("tagged-sections.md").write_text(
+                "## Panel Decision\n\n| Reviewer | Selected | Reason |\n|---|---|---|\n"
+                f"| {inc} | Yes | routed |\n| {ex} | No | not routed |\n"
+            )
+            run_dir.joinpath("findings.json").write_text(json.dumps({"schema_version": 1, "findings": [
+                make_finding("f1", "Critical", ex),                  # miss, sole-source
+                make_finding("f2", "High", ex, [inc]),               # not a miss: supporter included
+                make_finding("f3", "Medium", ex, [ex]),              # miss, not sole-source
+                make_finding("f4", "Low", ex),                       # miss, sole-source
+                make_finding("f5", "High", "contrarian-carl"),       # always-run-only
+                make_finding("f6", "High", "no-such-reviewer"),      # unattributed
+                make_finding("f7", "Critical", ex, verdict="REFUTED"),  # not confirmed
+            ]}))
+            run_dir.joinpath("route-scores.json").write_text(json.dumps(make_route_scores(mode="routed", effort=4)))
+
+            data = reviewer_yield.compute_report_data("test-repo", reviewer_yield.load_bucket_config())
+            shadow = data["shadow"]
+            t("shadow section is available", shadow.get("status") == "available", str(shadow.get("reason")))
+            cohort = shadow.get("effort4_routed") or {}
+            t("confirmed counts by severity",
+              cohort.get("confirmed_count") == {"critical": 1, "high": 3, "medium": 1, "low": 1},
+              str(cohort.get("confirmed_count")))
+            t("missed counts include medium and low",
+              cohort.get("missed_count") == {"critical": 1, "high": 0, "medium": 1, "low": 1},
+              str(cohort.get("missed_count")))
+            t("crit+high rate is misses over confirmed", cohort.get("crit_high_rate") == "1/4",
+              str(cohort.get("crit_high_rate")))
+            t("sole-source misses counted per reviewer", cohort.get("sole_source_misses") == {ex: 2},
+              str(cohort.get("sole_source_misses")))
+            t("unattributed and always-run-only counted",
+              cohort.get("unattributed_count") == 1 and cohort.get("always_run_only_count") == 1)
+            t("missed list names the findings",
+              sorted(m["finding_id"] for m in cohort.get("missed_findings", [])) == ["f1", "f3", "f4"])
+
+            expected = {"seated_yes": {"Must": 0, "Candidate": 0, "Exclude": 0},
+                        "seated_no": {"Must": 0, "Candidate": 0, "Exclude": 0}}
+            for slug, tier in tiers.items():
+                if tier in ("Must", "Candidate", "Exclude"):
+                    expected["seated_yes" if slug == inc else "seated_no"][tier] += 1
+            t("contingency table matches hand-computed seated x tier cells",
+              cohort.get("contingency_table") == expected, str(cohort.get("contingency_table")))
+
+            md = reviewer_yield.render_report_markdown(data)
+            t("markdown has the exact shadow heading", "Shadow scorer (observe-only)" in md)
+            t("markdown carries the censoring sentence verbatim",
+              "it is a lower bound, not proof the scorer is safe" in md)
+            t("markdown lists a missed finding", "f1 (Critical)" in md)
+
+    # ========================================================================
+    print("\n[Section 10] All-unscored corpus reports n=0 and no rate")
+
+    with FakeHome() as home:
+        run_dir = make_run_dir(home, "test-repo", "feat-abc123-20260920T120000-nodiff")
+        run_dir.joinpath("route-scores.json").write_text(json.dumps(make_route_scores()))
+        data = reviewer_yield.compute_report_data("test-repo", reviewer_yield.load_bucket_config())
+        shadow = data["shadow"]
+        t("unscored run counted", shadow.get("counts", {}).get("unscored_no_diff") == 1, str(shadow.get("counts")))
+        t("no effort-4 cohort stats", shadow.get("effort4_routed") is None)
+        md = reviewer_yield.render_report_markdown(data)
+        t("markdown says no rate rather than 0%", "n=0 runs; no rate" in md and "0/0" not in md)
+
+    # ========================================================================
+    print("\n[Section 11] Unloadable route config makes the section unavailable")
+
+    original_resolve = reviewer_yield._resolve_index_path
+    with FakeHome() as home, tempfile.TemporaryDirectory() as td:
+        bad_index = Path(td) / "index.yaml"
+        bad_index.write_text("reviewers:\n  - name: X\n    file: x.yaml\n    route: {include_at: nope}\n")
+        reviewer_yield._resolve_index_path = lambda: bad_index
+        try:
+            run_dir = make_run_dir(home, "test-repo", "feat-abc123-20260920T120000-bad")
+            data = reviewer_yield.compute_report_data("test-repo", reviewer_yield.load_bucket_config())
+            t("status unavailable with a reason",
+              data["shadow"].get("status") == "unavailable" and "route config" in data["shadow"].get("reason", ""),
+              str(data["shadow"]))
+            t("rest of report still renders", "Shadow scorer (observe-only)" in reviewer_yield.render_report_markdown(data))
+        finally:
+            reviewer_yield._resolve_index_path = original_resolve
 
     h.summarize_and_exit()

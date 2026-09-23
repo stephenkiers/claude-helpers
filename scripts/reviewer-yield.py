@@ -1188,7 +1188,7 @@ class ReportData(TypedDict, total=False):
 def _classify_shadow_run(
     run_dir: Path,
     scorer,
-    parse_panel_decision_table,
+    configs: Dict[str, Any],
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
     Classify a single run for shadow scoring and re-score it.
@@ -1227,12 +1227,12 @@ def _classify_shadow_run(
     if not diff_text:
         return "unscored:no-diff", stored_data
 
-    # Re-score with the current scorer
+    # Re-score with the current scorer and config; downstream code works on the
+    # JSON-shaped dict form so it never depends on the scorer's dataclasses.
     try:
-        limits = scorer.Limits()
-        result = scorer.score_diff(diff_text, {}, limits)
+        result = scorer.score_diff(diff_text, configs, scorer.Limits())
         return "scored", {
-            "score_result": result,
+            "score_result": scorer.result_to_dict(result),
             "stored_status": stored_data.get("status"),
             "mode": stored_data.get("mode"),
             "pr": stored_data.get("pr", False),
@@ -1293,6 +1293,14 @@ def _finding_miss_status(
         return False, "not-miss"
 
 
+def _resolve_index_path() -> Path:
+    """Repo reviewers/index.yaml (via the script's symlink target), else ~/.claude/reviewers/index.yaml."""
+    repo_index = Path(__file__).resolve().parent.parent / "reviewers" / "index.yaml"
+    if repo_index.exists():
+        return repo_index
+    return Path.home() / ".claude" / "reviewers" / "index.yaml"
+
+
 def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
     """
     Compute the shadow section by re-scoring all post-148 runs.
@@ -1306,6 +1314,14 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
     parse_panel_func, parse_error = _load_panel_decision_parser()
     if not parse_panel_func or parse_error:
         return {"status": "unavailable", "reason": parse_error or "Unknown error"}
+
+    # Re-scoring needs the current route: config; without it every reviewer
+    # would be absent from the scores and the section would be silently empty.
+    index_path = _resolve_index_path()
+    try:
+        configs = scorer.load_route_configs(index_path)
+    except Exception as e:
+        return {"status": "unavailable", "reason": f"route config load failed ({index_path}): {type(e).__name__}: {e}"}
 
     # Get always-run slugs from scorer
     if not hasattr(scorer, "ALWAYS_RUN_SLUGS"):
@@ -1341,7 +1357,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
             runs_data["large_diffs"] += 1
 
         # Classify and re-score
-        status, result_dict = _classify_shadow_run(review_subdir, scorer, parse_panel_func)
+        status, result_dict = _classify_shadow_run(review_subdir, scorer, configs)
 
         if status == "pre-shadow":
             runs_data["pre_shadow"].append(review_subdir.name)
@@ -1373,11 +1389,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
             continue
 
         # Extract re-scored reviewers
-        re_scored_reviewers = {}
-        if score_result and hasattr(score_result, "reviewers"):
-            re_scored_reviewers = score_result.reviewers
-        elif score_result and isinstance(score_result, dict) and "reviewers" in score_result:
-            re_scored_reviewers = score_result["reviewers"]
+        re_scored_reviewers = (score_result or {}).get("reviewers", {})
 
         # Get panel decision
         tagged_sections_path = review_subdir / "tagged-sections.md"
@@ -1409,115 +1421,98 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
             runs_data["excluded_non_router_seated"].append(run_info)
 
     # Compute miss rates and details for each cohort
+    severities = ("critical", "high", "medium", "low")
+
     def compute_cohort_stats(cohort_runs):
-        crit_count = 0
-        high_count = 0
-        med_count = 0
-        low_count = 0
-        crit_misses = 0
-        high_misses = 0
+        confirmed_count = {sev: 0 for sev in severities}
+        missed_count = {sev: 0 for sev in severities}
+        other_severity = 0
+        unattributed = 0
+        always_run_only = 0
         missed_findings_list = []
         sole_source_misses: Dict[str, int] = {}
+        # Router x scorer contingency: reviewer-run cells, seated Yes/No x tier.
+        contingency: Dict[str, Dict[str, int]] = {
+            "seated_yes": {"Must": 0, "Candidate": 0, "Exclude": 0},
+            "seated_no": {"Must": 0, "Candidate": 0, "Exclude": 0},
+        }
+        runs_list = []
 
         for run_info in cohort_runs:
             re_scored = run_info.get("re_scored", {})
+            panel_decision = run_info.get("panel_decision", {})
+            runs_list.append({"run_id": run_info["run_id"], "pr": run_info.get("pr", False)})
+
+            for slug, reviewer_score in re_scored.items():
+                tier = reviewer_score.get("tier")
+                if tier not in ("Must", "Candidate", "Exclude"):
+                    continue  # always-run reviewers are not scored for routing
+                seated = str(panel_decision.get(slug, "No")).strip().lower().startswith("yes")
+                contingency["seated_yes" if seated else "seated_no"][tier] += 1
+
             for finding in run_info.get("findings", []):
-                if finding.get("verdict", "").upper() != "CONFIRMED":
+                if str(finding.get("verdict", "")).upper() != "CONFIRMED":
                     continue
 
-                severity = finding.get("severity", "").lower()
-                if severity == "critical":
-                    crit_count += 1
-                elif severity == "high":
-                    high_count += 1
-                elif severity == "medium":
-                    med_count += 1
+                severity = str(finding.get("severity", "")).strip().lower()
+                if severity in confirmed_count:
+                    confirmed_count[severity] += 1
                 else:
-                    low_count += 1
+                    other_severity += 1
 
                 is_miss, miss_status = _finding_miss_status(finding, re_scored, always_run_slugs)
+                if miss_status == "unattributed":
+                    unattributed += 1
+                elif miss_status == "always-run-only":
+                    always_run_only += 1
+                if not is_miss:
+                    continue
 
-                if is_miss:
-                    if severity == "critical":
-                        crit_misses += 1
-                    elif severity == "high":
-                        high_misses += 1
+                if severity in missed_count:
+                    missed_count[severity] += 1
 
-                    # Record missed finding
-                    raised_by = finding.get("raised_by", "")
-                    supported_by = finding.get("supported_by", []) or []
-                    all_attrs = [raised_by] + supported_by
+                raised_by = finding.get("raised_by", "")
+                supported_by = finding.get("supported_by", []) or []
+                attr_reasons = {}
+                for slug in [raised_by] + list(supported_by):
+                    reasons = re_scored.get(slug, {}).get("reasons") or []
+                    if reasons:
+                        attr_reasons[slug] = reasons[:3]  # Top 3 reasons
 
-                    # Get top reasons for each attributor
-                    attr_reasons = {}
-                    for slug in all_attrs:
-                        if slug in re_scored:
-                            reviewer_score = re_scored[slug]
-                            if isinstance(reviewer_score, dict) and "reasons" in reviewer_score:
-                                reasons = reviewer_score["reasons"]
-                                if reasons:
-                                    attr_reasons[slug] = reasons[:3]  # Top 3 reasons
+                if not supported_by:
+                    sole_source_misses[raised_by] = sole_source_misses.get(raised_by, 0) + 1
 
-                    # Check if sole-source (supported_by empty)
-                    if not supported_by and raised_by:
-                        sole_source_misses[raised_by] = sole_source_misses.get(raised_by, 0) + 1
+                missed_findings_list.append({
+                    "run_id": run_info["run_id"],
+                    "pr": run_info.get("pr", False),
+                    "finding_id": finding.get("id", "unknown"),
+                    "severity": finding.get("severity", "Unknown"),
+                    "title": finding.get("title"),
+                    "raised_by": raised_by,
+                    "supported_by": supported_by,
+                    "attributor_reasons": attr_reasons,
+                })
 
-                    missed_findings_list.append({
-                        "run_id": run_info["run_id"],
-                        "finding_id": finding.get("id", "unknown"),
-                        "severity": finding.get("severity", "Unknown"),
-                        "title": finding.get("title"),
-                        "raised_by": raised_by,
-                        "supported_by": supported_by,
-                        "attributor_reasons": attr_reasons,
-                    })
-
-        total_crit_high = crit_count + high_count
-        missed_crit_high = crit_misses + high_misses
-        crit_high_rate = None
-        if total_crit_high > 0:
-            crit_high_rate = f"{missed_crit_high}/{total_crit_high}"
+        total_crit_high = confirmed_count["critical"] + confirmed_count["high"]
+        missed_crit_high = missed_count["critical"] + missed_count["high"]
+        # n=0 yields no rate, never "0% misses".
+        crit_high_rate = f"{missed_crit_high}/{total_crit_high}" if total_crit_high > 0 else None
 
         return {
-            "confirmed_count": {
-                "critical": crit_count,
-                "high": high_count,
-                "medium": med_count,
-                "low": low_count,
-            },
-            "missed_count": {
-                "critical": crit_misses,
-                "high": high_misses,
-            },
+            "runs": runs_list,
+            "confirmed_count": confirmed_count,
+            "missed_count": missed_count,
+            "other_severity_count": other_severity,
+            "unattributed_count": unattributed,
+            "always_run_only_count": always_run_only,
             "crit_high_rate": crit_high_rate,
+            "contingency_table": contingency,
             "missed_findings": missed_findings_list,
             "sole_source_misses": sole_source_misses,
         }
 
     effort4_stats = compute_cohort_stats(runs_data["effort4_routed"]) if runs_data["effort4_routed"] else None
     effort5_stats = compute_cohort_stats(runs_data["effort5_full"]) if runs_data["effort5_full"] else None
-
-    # Build router x scorer contingency table (for effort4)
-    contingency_table = {}
-    if runs_data["effort4_routed"]:
-        for run_info in runs_data["effort4_routed"]:
-            panel_decision = run_info.get("panel_decision", {})
-            re_scored = run_info.get("re_scored", {})
-
-            for slug in re_scored:
-                if slug not in contingency_table:
-                    contingency_table[slug] = {"seated_yes": 0, "seated_no": 0}
-
-                reviewer_score = re_scored[slug]
-                tier = reviewer_score.get("tier") if isinstance(reviewer_score, dict) else getattr(reviewer_score, "tier", "Unknown")
-                is_must_or_candidate = tier in ("Must", "Candidate")
-
-                seated = panel_decision.get(slug, "No").lower().startswith("yes")
-
-                if seated:
-                    contingency_table[slug]["seated_yes"] += 1 if is_must_or_candidate else 0
-                else:
-                    contingency_table[slug]["seated_no"] += 1 if is_must_or_candidate else 0
 
     scorer_version = getattr(scorer, "SCORER_VERSION", "unknown") if scorer else "unknown"
 
@@ -1527,7 +1522,6 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
         "thresholds_provisional": True,
         "effort4_routed": effort4_stats,
         "effort5_full": effort5_stats,
-        "contingency_table": contingency_table,
         "counts": {
             "pre_shadow": len(runs_data["pre_shadow"]),
             "unscored_no_diff": len(runs_data["unscored_no_diff"]),
@@ -1884,7 +1878,7 @@ def render_report_markdown(report_data: ReportData) -> str:
 
     # Shadow scorer section
     shadow = report_data.get("shadow", {})
-    output.append("## Shadow Scorer (observe-only)\n")
+    output.append("## Shadow scorer (observe-only)\n")
 
     if isinstance(shadow, dict) and shadow.get("status") == "unavailable":
         output.append("**Status:** Unavailable\n")
@@ -1905,27 +1899,48 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- Excluded (non-router-seated): {counts.get('excluded_non_router_seated', 0)}\n")
         output.append(f"- Large diffs (>800 lines): {counts.get('large_diffs', 0)}\n\n")
 
-        # Effort-4 routed cohort
-        effort4 = shadow.get("effort4_routed")
-        if effort4:
-            output.append("**Effort-4 Routed Cohort (censored lower bound):**\n")
-            output.append(f"- Critical/High confirmed: {effort4.get('confirmed_count', {}).get('critical', 0)} + {effort4.get('confirmed_count', {}).get('high', 0)}\n")
-            output.append(f"- Critical/High missed: {effort4.get('missed_count', {}).get('critical', 0)} + {effort4.get('missed_count', {}).get('high', 0)}\n")
-            if effort4.get("crit_high_rate"):
-                output.append(f"- Miss rate (crit+high): {effort4.get('crit_high_rate')} (3% guardrail as observation)\n")
-            output.append(f"- Medium missed: {effort4.get('missed_count', {}).get('medium', 0)}\n")
-            output.append(f"- Low confirmed: {effort4.get('confirmed_count', {}).get('low', 0)}\n\n")
+        cohorts = [
+            ("effort4_routed", "Effort-4 Routed Cohort (censored lower bound)", " (3% guardrail as observation)"),
+            ("effort5_full", "Effort-5 Full Cohort (uncensored estimate)", ""),
+        ]
+        for key, heading, rate_note in cohorts:
+            cohort = shadow.get(key)
+            output.append(f"**{heading}:**\n")
+            if not cohort:
+                output.append("- n=0 runs; no rate\n\n")
+                continue
+            confirmed = cohort.get("confirmed_count", {})
+            missed = cohort.get("missed_count", {})
+            pr_runs = sum(1 for r in cohort.get("runs", []) if r.get("pr"))
+            output.append(f"- Runs: {len(cohort.get('runs', []))} ({pr_runs} PR-mode)\n")
+            for sev in ("critical", "high", "medium", "low"):
+                output.append(f"- {sev.capitalize()}: {missed.get(sev, 0)} missed / {confirmed.get(sev, 0)} confirmed\n")
+            rate = cohort.get("crit_high_rate")
+            output.append(f"- Miss rate (crit+high): {rate + rate_note if rate else 'n=0; no rate'}\n")
+            output.append(f"- Unattributed findings: {cohort.get('unattributed_count', 0)}; always-run-only: {cohort.get('always_run_only_count', 0)}\n\n")
 
-        # Effort-5 full cohort
-        effort5 = shadow.get("effort5_full")
-        if effort5:
-            output.append("**Effort-5 Full Cohort (uncensored estimate):**\n")
-            output.append(f"- Critical/High confirmed: {effort5.get('confirmed_count', {}).get('critical', 0)} + {effort5.get('confirmed_count', {}).get('high', 0)}\n")
-            output.append(f"- Critical/High missed: {effort5.get('missed_count', {}).get('critical', 0)} + {effort5.get('missed_count', {}).get('high', 0)}\n")
-            if effort5.get("crit_high_rate"):
-                output.append(f"- Miss rate (crit+high): {effort5.get('crit_high_rate')}\n")
-            output.append(f"- Medium missed: {effort5.get('missed_count', {}).get('medium', 0)}\n")
-            output.append(f"- Low confirmed: {effort5.get('confirmed_count', {}).get('low', 0)}\n\n")
+            table = cohort.get("contingency_table", {})
+            output.append("| Router seated | Must | Candidate | Exclude |\n|---|---|---|---|\n")
+            for row_key, label in (("seated_yes", "Yes"), ("seated_no", "No")):
+                row = table.get(row_key, {})
+                output.append(f"| {label} | {row.get('Must', 0)} | {row.get('Candidate', 0)} | {row.get('Exclude', 0)} |\n")
+            output.append("\n")
+
+            missed_list = cohort.get("missed_findings", [])
+            if missed_list:
+                output.append("Missed findings:\n")
+                for m in missed_list:
+                    attrs = ", ".join([m.get("raised_by", "")] + list(m.get("supported_by", [])))
+                    title = f" — {m['title']}" if m.get("title") else ""
+                    pr_tag = " [pr]" if m.get("pr") else ""
+                    output.append(f"- {m.get('run_id')}{pr_tag} {m.get('finding_id')} ({m.get('severity')}){title}; attributors: {attrs}\n")
+                    for slug, reasons in sorted(m.get("attributor_reasons", {}).items()):
+                        details = "; ".join(f"{r.get('kind')}:{r.get('detail')} (+{r.get('points')})" for r in reasons)
+                        output.append(f"  - {slug}: {details}\n")
+                output.append("\n")
+            sole = cohort.get("sole_source_misses", {})
+            if sole:
+                output.append("Sole-source misses: " + ", ".join(f"{k}={v}" for k, v in sorted(sole.items())) + "\n\n")
 
         # Censoring sentence
         methodology = shadow.get("methodology", {})

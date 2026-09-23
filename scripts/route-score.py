@@ -15,7 +15,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 SCORER_VERSION = "1"
 ALWAYS_RUN_SLUGS = frozenset(["contrarian-carl", "code-rot-cody", "consistency-checker"])
@@ -119,9 +119,11 @@ def _is_excluded_path(path: str) -> bool:
     import fnmatch
 
     for pattern in EXCLUDED_PATTERNS:
-        if fnmatch.fnmatch(path, pattern):
-            return True
-        if "/" in pattern and fnmatch.fnmatch(path, f"*/{pattern}"):
+        if pattern.endswith("/"):
+            # Directory pattern: exclude everything beneath it, at any depth.
+            if path.startswith(pattern) or f"/{pattern}" in path:
+                return True
+        elif fnmatch.fnmatch(Path(path).name, pattern):
             return True
     return False
 
@@ -345,6 +347,96 @@ def _word_to_regex(word: str) -> str:
     return r"\b" + re.escape(word) + r"\b"
 
 
+_DEP_MANIFESTS = {"package.json", "Cargo.toml", "pyproject.toml", "go.mod", "Gemfile", "setup.py"}
+_UI_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss"}
+_PREDICATE_DEFAULT_N = {"file_count_ge": 3, "top_dirs_ge": 2}
+
+
+@dataclass(frozen=True)
+class _DiffFacts:
+    """Per-diff inputs to shape predicates, computed once and shared across reviewers."""
+    files: List[Dict[str, Any]]
+    file_count: int
+    top_dirs: int
+    cross_file_symbol: bool
+
+
+def _cross_file_symbol(files: List[Dict[str, Any]], limits: Limits) -> Tuple[bool, bool]:
+    """
+    True if a definition-shaped identifier from one file's hunk lines appears in another file's.
+    Bounded by limits; returns (result, degraded) where degraded means scanning stopped early.
+    """
+    degraded = False
+    definitions_per_file: Dict[str, List[str]] = {}
+    all_definitions: Set[str] = set()
+    scan_line_count = 0
+
+    for f in files:
+        if scan_line_count > limits.max_scan_lines:
+            degraded = True
+            break
+        defs_in_file: List[str] = []
+        for line in f["added_lines"] + f["removed_lines"]:
+            scan_line_count += 1
+            defs_in_file.extend(_extract_definitions(line))
+            if scan_line_count > limits.max_scan_lines:
+                degraded = True
+                break
+        if len(all_definitions) + len(defs_in_file) > limits.max_symbols:
+            degraded = True
+            break
+        definitions_per_file[f["path"]] = defs_in_file
+        all_definitions.update(defs_in_file)
+
+    for path, defs in definitions_per_file.items():
+        for definition in defs:
+            word_re = _word_to_regex(definition)
+            for other in files:
+                if other["path"] == path:
+                    continue
+                if any(re.search(word_re, line) for line in other["added_lines"] + other["removed_lines"]):
+                    return True, degraded
+    return False, degraded
+
+
+def _predicate_true(pred_name: str, pred_n: Optional[int], facts: _DiffFacts) -> bool:
+    """Evaluate one SHAPE_PREDICATES entry against the diff; used for both shape points and hard_requires."""
+    files = facts.files
+    if pred_name == "new_files":
+        return any(f["is_new"] for f in files)
+    if pred_name == "adr_touched":
+        return any("docs/adr/" in f["path"] for f in files)
+    if pred_name == "dep_manifest":
+        return any(
+            Path(f["path"]).name in _DEP_MANIFESTS or re.match(r"^requirements.*\.txt$", Path(f["path"]).name)
+            for f in files
+        )
+    if pred_name == "test_files":
+        return any(
+            "tests/" in f["path"]
+            or re.search(r"(test_.*|.*_test|.*\.test|.*\.spec)\.(py|js|ts|jsx|tsx)$", f["path"])
+            for f in files
+        )
+    if pred_name == "exports_changed":
+        return any(
+            re.search(r"^\s*export\b", line)
+            or re.search(r"\bpub (fn|struct|enum|trait)\b", line)
+            or "__all__" in line
+            or "module.exports" in line
+            for f in files
+            for line in f["added_lines"] + f["removed_lines"]
+        )
+    if pred_name == "ui_paths":
+        return any(Path(f["path"]).suffix in _UI_EXTS or "components/" in f["path"] for f in files)
+    if pred_name in _PREDICATE_DEFAULT_N:
+        n = pred_n if pred_n is not None else _PREDICATE_DEFAULT_N[pred_name]
+        value = facts.file_count if pred_name == "file_count_ge" else facts.top_dirs
+        return value >= n
+    if pred_name == "cross_file_symbol":
+        return facts.cross_file_symbol
+    return False
+
+
 def score_diff(
     diff_text: str, configs: Dict[str, RouteConfig], limits: Limits = Limits()
 ) -> ScoreResult:
@@ -407,6 +499,12 @@ def score_diff(
     if current_file is not None:
         files.append(current_file)
 
+    # Diff-level facts shared by every reviewer's predicates.
+    file_count, top_dirs = count_shape(diff_text)
+    cross_file, symbols_degraded = _cross_file_symbol(files, limits)
+    degraded = degraded or symbols_degraded
+    facts = _DiffFacts(files=files, file_count=file_count, top_dirs=top_dirs, cross_file_symbol=cross_file)
+
     # Score each reviewer against all files.
     for slug, config in configs.items():
         reasons = []
@@ -452,7 +550,7 @@ def score_diff(
         for words_in_file in strong_hits_per_file.values():
             strong_hits_all.update(words_in_file)
 
-        for word in strong_hits_all:
+        for word in sorted(strong_hits_all):
             reason = Reason(kind="strong", detail=word, points=3)
             reasons.append(reason)
             score += 3
@@ -463,7 +561,7 @@ def score_diff(
             weak_hits_all.update(words_in_file)
 
         weak_points = 0
-        for word in weak_hits_all:
+        for word in sorted(weak_hits_all):
             if weak_points < 3:
                 reason = Reason(kind="weak", detail=word, points=1)
                 reasons.append(reason)
@@ -479,227 +577,23 @@ def score_diff(
                 score += 3
 
         # Shape predicates.
-        file_count, top_dirs = count_shape(diff_text)
-        new_file_count = sum(1 for f in files if f["is_new"])
-
         for pred_name, pred_config in config.shape.items():
-            # Extract points and optional n parameter.
             if isinstance(pred_config, dict):
                 pred_points = pred_config.get("points", 0)
                 pred_n = pred_config.get("n")
             else:
                 pred_points = pred_config
                 pred_n = None
-
-            pred_true = False
-
-            if pred_name == "new_files":
-                pred_true = new_file_count > 0
-            elif pred_name == "adr_touched":
-                pred_true = any("docs/adr/" in f["path"] for f in files)
-            elif pred_name == "dep_manifest":
-                dep_files = {
-                    "package.json",
-                    "Cargo.toml",
-                    "pyproject.toml",
-                    "go.mod",
-                    "Gemfile",
-                    "setup.py",
-                }
-                pred_true = any(
-                    Path(f["path"]).name in dep_files or
-                    re.match(r"^requirements.*\.txt$", Path(f["path"]).name)
-                    for f in files
-                )
-            elif pred_name == "test_files":
-                pred_true = any(
-                    "tests/" in f["path"] or
-                    re.search(r"(test_.*|.*_test|.*\.test|.*\.spec)\.(py|js|ts|jsx|tsx)$", f["path"])
-                    for f in files
-                )
-            elif pred_name == "exports_changed":
-                pred_true = False
-                for f in files:
-                    for line in f["added_lines"] + f["removed_lines"]:
-                        if re.search(r"^[+-]\s*export\b", line) or \
-                           re.search(r"\bpub (fn|struct|enum|trait)\b", line) or \
-                           re.search(r"__all__", line) or \
-                           re.search(r"module\.exports", line):
-                            pred_true = True
-                            break
-                    if pred_true:
-                        break
-            elif pred_name == "ui_paths":
-                ui_exts = {".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss"}
-                pred_true = any(
-                    Path(f["path"]).suffix in ui_exts or "components/" in f["path"]
-                    for f in files
-                )
-            elif pred_name == "file_count_ge":
-                n = pred_n if pred_n is not None else 3
-                pred_true = file_count >= n
-            elif pred_name == "top_dirs_ge":
-                n = pred_n if pred_n is not None else 2
-                pred_true = top_dirs >= n
-            elif pred_name == "cross_file_symbol":
-                # Collect definitions from all files (within limit).
-                definitions_per_file = {}
-                all_definitions = set()
-                scan_line_count = 0
-
-                for f in files:
-                    if scan_line_count > limits.max_scan_lines:
-                        degraded = True
-                        break
-
-                    defs_in_file = []
-                    for line in f["added_lines"] + f["removed_lines"]:
-                        scan_line_count += 1
-                        defs_in_file.extend(_extract_definitions(line))
-                        if scan_line_count > limits.max_scan_lines:
-                            degraded = True
-                            break
-
-                    if len(all_definitions) + len(defs_in_file) > limits.max_symbols:
-                        degraded = True
-                        break
-
-                    definitions_per_file[f["path"]] = defs_in_file
-                    all_definitions.update(defs_in_file)
-
-                # Check if any definition appears in another file.
-                pred_true = False
-                for path, defs in definitions_per_file.items():
-                    for definition in defs:
-                        word_re = _word_to_regex(definition)
-                        for other_path, other_file in zip(
-                            [f["path"] for f in files],
-                            [f for f in files],
-                        ):
-                            if other_path != path:
-                                for line in other_file["added_lines"] + other_file["removed_lines"]:
-                                    if re.search(word_re, line):
-                                        pred_true = True
-                                        break
-                            if pred_true:
-                                break
-                        if pred_true:
-                            break
-                    if pred_true:
-                        break
-
-            if pred_true:
-                reason = Reason(kind="shape", detail=pred_name, points=pred_points)
-                reasons.append(reason)
+            if _predicate_true(pred_name, pred_n, facts):
+                reasons.append(Reason(kind="shape", detail=pred_name, points=pred_points))
                 score += pred_points
 
-        # Check hard_requires.
+        # Check hard_requires; a threshold predicate uses the same n as its shape entry.
         hard_requires_failed = None
         for pred_name in config.hard_requires:
-            # Re-evaluate the predicate (duplicate logic above; could refactor).
-            pred_true = False
-
-            if pred_name == "new_files":
-                pred_true = new_file_count > 0
-            elif pred_name == "adr_touched":
-                pred_true = any("docs/adr/" in f["path"] for f in files)
-            elif pred_name == "dep_manifest":
-                dep_files = {
-                    "package.json",
-                    "Cargo.toml",
-                    "pyproject.toml",
-                    "go.mod",
-                    "Gemfile",
-                    "setup.py",
-                }
-                pred_true = any(
-                    Path(f["path"]).name in dep_files or
-                    re.match(r"^requirements.*\.txt$", Path(f["path"]).name)
-                    for f in files
-                )
-            elif pred_name == "test_files":
-                pred_true = any(
-                    "tests/" in f["path"] or
-                    re.search(r"(test_.*|.*_test|.*\.test|.*\.spec)\.(py|js|ts|jsx|tsx)$", f["path"])
-                    for f in files
-                )
-            elif pred_name == "exports_changed":
-                pred_true = False
-                for f in files:
-                    for line in f["added_lines"] + f["removed_lines"]:
-                        if re.search(r"^[+-]\s*export\b", line) or \
-                           re.search(r"\bpub (fn|struct|enum|trait)\b", line) or \
-                           re.search(r"__all__", line) or \
-                           re.search(r"module\.exports", line):
-                            pred_true = True
-                            break
-                    if pred_true:
-                        break
-            elif pred_name == "ui_paths":
-                ui_exts = {".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss"}
-                pred_true = any(
-                    Path(f["path"]).suffix in ui_exts or "components/" in f["path"]
-                    for f in files
-                )
-            elif pred_name == "file_count_ge":
-                # Re-get the n value from shape config if present.
-                shape_config = config.shape.get(pred_name, {})
-                if isinstance(shape_config, dict):
-                    n = shape_config.get("n", 3)
-                else:
-                    n = 3
-                pred_true = file_count >= n
-            elif pred_name == "top_dirs_ge":
-                shape_config = config.shape.get(pred_name, {})
-                if isinstance(shape_config, dict):
-                    n = shape_config.get("n", 2)
-                else:
-                    n = 2
-                pred_true = top_dirs >= n
-            elif pred_name == "cross_file_symbol":
-                # Re-evaluate cross_file_symbol.
-                definitions_per_file = {}
-                all_definitions = set()
-                scan_line_count = 0
-
-                for f in files:
-                    if scan_line_count > limits.max_scan_lines:
-                        break
-
-                    defs_in_file = []
-                    for line in f["added_lines"] + f["removed_lines"]:
-                        scan_line_count += 1
-                        defs_in_file.extend(_extract_definitions(line))
-                        if scan_line_count > limits.max_scan_lines:
-                            break
-
-                    if len(all_definitions) + len(defs_in_file) > limits.max_symbols:
-                        break
-
-                    definitions_per_file[f["path"]] = defs_in_file
-                    all_definitions.update(defs_in_file)
-
-                pred_true = False
-                for path, defs in definitions_per_file.items():
-                    for definition in defs:
-                        word_re = _word_to_regex(definition)
-                        for other_path, other_file in zip(
-                            [f["path"] for f in files],
-                            [f for f in files],
-                        ):
-                            if other_path != path:
-                                for line in other_file["added_lines"] + other_file["removed_lines"]:
-                                    if re.search(word_re, line):
-                                        pred_true = True
-                                        break
-                            if pred_true:
-                                break
-                        if pred_true:
-                            break
-                    if pred_true:
-                        break
-
-            if not pred_true:
+            shape_config = config.shape.get(pred_name)
+            pred_n = shape_config.get("n") if isinstance(shape_config, dict) else None
+            if not _predicate_true(pred_name, pred_n, facts):
                 hard_requires_failed = pred_name
                 break
 
@@ -802,8 +696,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         return 0
 
-    except Exception as e:
-        # Fail open: catch all exceptions and write error JSON.
+    except (Exception, SystemExit) as e:
+        # Fail open: catch all exceptions (including argparse's SystemExit) and write error JSON.
         exc_type = type(e).__name__
         exc_msg = str(e)
         error_output = {

@@ -13,7 +13,6 @@ Run with: python3 tests/test_route_score.py
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -418,7 +417,7 @@ if __name__ == "__main__":
                 t("CLI writes JSON on error",
                   output.get("status") in ("error", "ok"),
                   f"status={output.get('status')}")
-        except:
+        except Exception:
             t("CLI writes valid JSON", False, "Could not parse JSON")
 
     # Normal run writes status: ok
@@ -505,7 +504,7 @@ if __name__ == "__main__":
             content = script.read_text()
             if "route-scores.json" in content or "route_scores.json" in content:
                 readers.append(script.name)
-        except:
+        except Exception:
             pass
 
     # At minimum, reviewer-yield.py should reference it
@@ -525,5 +524,83 @@ if __name__ == "__main__":
           has_hook)
     else:
         t("expert-review-panel.md exists", False)
+
+    # ========================================================================
+    print("\n[Section 16] Tier boundaries are inclusive")
+
+    def one_reviewer(route):
+        return route_score.parse_route_configs({"reviewers": [{
+            "name": "Boundary", "file": "boundary.yaml",
+            "contexts": {"review": "primary"}, "route": route,
+        }]})
+
+    boundary_cfg = one_reviewer({"strong": ["alpha", "beta"], "include_at": 6, "candidate_at": 3})
+    two_hits = make_file_diff("src/a.py", added_lines=["alpha beta"])
+    one_hit = make_file_diff("src/a.py", added_lines=["alpha"])
+    no_hit = make_file_diff("src/a.py", added_lines=["gamma"])
+    t("score == include_at is Must",
+      route_score.score_diff(two_hits, boundary_cfg).reviewers["boundary"].tier == "Must")
+    t("score == candidate_at is Candidate",
+      route_score.score_diff(one_hit, boundary_cfg).reviewers["boundary"].tier == "Candidate")
+    t("score below candidate_at is Exclude",
+      route_score.score_diff(no_hit, boundary_cfg).reviewers["boundary"].tier == "Exclude")
+
+    # ========================================================================
+    print("\n[Section 17] Excluded directories match at any depth")
+
+    vendor_cfg = one_reviewer({"strong": ["alpha"], "include_at": 6, "candidate_at": 3})
+    for path in ["vendor/lib/deep/x.js", "web/node_modules/pkg/index.js", "dist/bundle.js", "pkg/sub/Cargo.lock"]:
+        r = route_score.score_diff(make_file_diff(path, added_lines=["alpha"]), vendor_cfg).reviewers["boundary"]
+        t(f"words in {path} are not scored", r.score == 0, f"score={r.score}")
+    r = route_score.score_diff(make_file_diff("src/vendored_helpers.py", added_lines=["alpha"]), vendor_cfg).reviewers["boundary"]
+    t("a non-excluded path containing 'vendor' still scores", r.score == 3, f"score={r.score}")
+
+    # ========================================================================
+    print("\n[Section 18] hard_requires uses the shape entry's n")
+
+    hr_cfg = one_reviewer({
+        "strong": ["alpha", "beta"], "include_at": 6, "candidate_at": 3,
+        "shape": {"file_count_ge": {"points": 0, "n": 2}}, "hard_requires": ["file_count_ge"],
+    })
+    single = make_file_diff("src/a.py", added_lines=["alpha beta"])
+    double = single + "\n" + make_file_diff("src/b.py", added_lines=["x"])
+    t("hard_requires fails below n -> Exclude",
+      route_score.score_diff(single, hr_cfg).reviewers["boundary"].tier == "Exclude")
+    t("hard_requires passes at n -> Must",
+      route_score.score_diff(double, hr_cfg).reviewers["boundary"].tier == "Must")
+
+    # ========================================================================
+    print("\n[Section 19] exports_changed sees export lines")
+
+    exp_cfg = one_reviewer({"include_at": 6, "candidate_at": 3, "shape": {"exports_changed": 3}})
+    r = route_score.score_diff(make_file_diff("src/a.ts", added_lines=["export function foo() {}"]), exp_cfg).reviewers["boundary"]
+    t("added export line triggers exports_changed", r.score == 3, f"reasons={r.reasons}")
+
+    # ========================================================================
+    print("\n[Section 20] Output is identical across hash seeds")
+
+    with tempfile.TemporaryDirectory() as td:
+        idx = Path(td) / "index.yaml"
+        idx.write_text(
+            "reviewers:\n  - name: Many\n    file: many.yaml\n    contexts: {review: primary}\n"
+            "    route: {weak: [aa, bb, cc, dd, ee, ff, gg], strong: [hh, ii, jj], include_at: 6, candidate_at: 3}\n"
+        )
+        diff = Path(td) / "d.patch"
+        diff.write_text(make_file_diff("src/a.py", added_lines=["aa bb cc dd ee ff gg hh ii jj"]))
+        outputs = set()
+        for seed in ["1", "2", "3", "4", "5"]:
+            out = Path(td) / f"o{seed}.json"
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            subprocess.run([sys.executable, str(SCRIPT_PATH), "--diff", str(diff), "--index", str(idx),
+                            "--out", str(out)], env=env, check=False)
+            outputs.add(out.read_text())
+        t("five hash seeds produce byte-identical JSON", len(outputs) == 1, f"distinct={len(outputs)}")
+
+    # ========================================================================
+    print("\n[Section 21] Bad CLI arguments still exit 0")
+
+    proc = subprocess.run([sys.executable, str(SCRIPT_PATH), "--no-such-flag"],
+                          capture_output=True, text=True, check=False)
+    t("argparse error exits 0", proc.returncode == 0, f"rc={proc.returncode}")
 
     h.summarize_and_exit()
