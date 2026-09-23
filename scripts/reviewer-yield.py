@@ -21,6 +21,7 @@ JSON parse failures (ValueError/JSONDecodeError) trigger warnings; JSON structur
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -64,6 +65,63 @@ CHECKPOINT_FILENAME_PATTERNS: Final[List[str]] = [
     "{slug}-pass2.md",
     "{slug}-questions-answered.md",
 ]
+
+# Module path for route-score.py, overridable for testing
+_ROUTE_SCORE_MODULE_PATH = None
+
+
+def _get_route_score_module_path() -> Optional[Path]:
+    """Get the path to route-score.py, with override support for testing."""
+    global _ROUTE_SCORE_MODULE_PATH
+    if _ROUTE_SCORE_MODULE_PATH is not None:
+        return _ROUTE_SCORE_MODULE_PATH
+    return Path(__file__).resolve().parent / "route-score.py"
+
+
+def set_route_score_module_path_for_testing(path: Optional[Path]) -> None:
+    """Override the scorer module path for testing purposes."""
+    global _ROUTE_SCORE_MODULE_PATH
+    _ROUTE_SCORE_MODULE_PATH = path
+
+
+def _load_scorer_module():
+    """
+    Load route-score.py module via importlib.
+    Returns (module, error_msg). If error, module is None and error_msg is a string.
+    """
+    scorer_path = _get_route_score_module_path()
+    if not scorer_path or not scorer_path.exists():
+        return None, f"route-score.py not found at {scorer_path}"
+    try:
+        spec = importlib.util.spec_from_file_location("route_score", scorer_path)
+        if spec is None or spec.loader is None:
+            return None, f"Failed to load spec from {scorer_path}"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _load_panel_decision_parser():
+    """
+    Load parse_panel_decision_table from reviewer-selection-audit.py via importlib.
+    Returns (func, error_msg). If error, func is None and error_msg is a string.
+    """
+    audit_path = Path(__file__).resolve().parent / "reviewer-selection-audit.py"
+    if not audit_path.exists():
+        return None, f"reviewer-selection-audit.py not found at {audit_path}"
+    try:
+        spec = importlib.util.spec_from_file_location("reviewer_selection_audit", audit_path)
+        if spec is None or spec.loader is None:
+            return None, f"Failed to load spec from {audit_path}"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "parse_panel_decision_table"):
+            return None, "parse_panel_decision_table not found in reviewer-selection-audit.py"
+        return module.parse_panel_decision_table, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 class TokenRecord(TypedDict):
@@ -1120,11 +1178,370 @@ class ReportData(TypedDict, total=False):
     n_excluded_runs: int
     tokens: TokensReport
     valLift: Dict[str, str]
-    shadow_miss_rate: Dict[str, str]
     pod_lenses_per_run: Dict[str, List[int]]
     pod_runs_unrecorded: int
     unknown_format_runs: int
+    shadow: Dict[str, Any]
     methodology: Methodology
+
+
+def _classify_shadow_run(
+    run_dir: Path,
+    scorer,
+    parse_panel_decision_table,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Classify a single run for shadow scoring and re-score it.
+    Returns (status, result_dict) where status is:
+    - "pre-shadow": no route-scores.json
+    - "unscored:no-diff": no diff found
+    - "unscored:scorer-error": exception during scoring
+    - "unattributable": no findings.json
+    - "scored": success
+    And result_dict carries the re-scored tiers and mode/effort/pr info.
+    """
+    route_scores_file = run_dir / "route-scores.json"
+
+    # Check for stored route-scores.json
+    stored_data = None
+    if route_scores_file.exists():
+        try:
+            stored_data = json.loads(route_scores_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if not stored_data:
+        return "pre-shadow", None
+
+    # Find diff file
+    diff_text = None
+    for diff_name in ["full-diff.patch", "full.diff"]:
+        diff_file = run_dir / diff_name
+        if diff_file.exists():
+            try:
+                diff_text = diff_file.read_text()
+                break
+            except OSError:
+                pass
+
+    if not diff_text:
+        return "unscored:no-diff", stored_data
+
+    # Re-score with the current scorer
+    try:
+        limits = scorer.Limits()
+        result = scorer.score_diff(diff_text, {}, limits)
+        return "scored", {
+            "score_result": result,
+            "stored_status": stored_data.get("status"),
+            "mode": stored_data.get("mode"),
+            "pr": stored_data.get("pr", False),
+            "effort": stored_data.get("effort"),
+        }
+    except Exception as e:
+        return "unscored:scorer-error", {
+            "error": f"{type(e).__name__}: {e}",
+            "stored_status": stored_data.get("status"),
+            "mode": stored_data.get("mode"),
+            "pr": stored_data.get("pr", False),
+            "effort": stored_data.get("effort"),
+        }
+
+
+def _finding_miss_status(
+    finding: Dict[str, Any],
+    re_scored_reviewers: Dict[str, Any],
+    always_run_slugs: Set[str],
+) -> Tuple[bool, str]:
+    """
+    Determine if a finding is a miss.
+    Returns (is_miss, status_code) where status_code is:
+    - "always-run-only": all attributors are always-run
+    - "unattributed": raised_by missing or attributor not in scores
+    - "not-miss": at least one attributor is not Exclude
+    - "miss": all attributors are Exclude
+    """
+    raised_by = finding.get("raised_by", "")
+    supported_by = finding.get("supported_by", []) or []
+
+    if not raised_by:
+        return False, "unattributed"
+
+    attributors = {raised_by}
+    if supported_by:
+        attributors.update(supported_by)
+
+    # Remove always-run slugs
+    attributors_after_removal = attributors - always_run_slugs
+    if not attributors_after_removal:
+        return False, "always-run-only"
+
+    # Check if all remaining attributors are in scores
+    for slug in attributors_after_removal:
+        if slug not in re_scored_reviewers:
+            return False, "unattributed"
+
+    # Check if all attributors are Exclude
+    all_excluded = all(
+        re_scored_reviewers.get(slug, {}).get("tier") == "Exclude"
+        for slug in attributors_after_removal
+    )
+
+    if all_excluded:
+        return True, "miss"
+    else:
+        return False, "not-miss"
+
+
+def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
+    """
+    Compute the shadow section by re-scoring all post-148 runs.
+    Returns a dict with status and data, or {status: "unavailable", reason}.
+    """
+    # Load scorer and parser
+    scorer, scorer_error = _load_scorer_module()
+    if not scorer or scorer_error:
+        return {"status": "unavailable", "reason": scorer_error or "Unknown error"}
+
+    parse_panel_func, parse_error = _load_panel_decision_parser()
+    if not parse_panel_func or parse_error:
+        return {"status": "unavailable", "reason": parse_error or "Unknown error"}
+
+    # Get always-run slugs from scorer
+    if not hasattr(scorer, "ALWAYS_RUN_SLUGS"):
+        return {"status": "unavailable", "reason": "ALWAYS_RUN_SLUGS not found in scorer"}
+    always_run_slugs = set(scorer.ALWAYS_RUN_SLUGS)
+
+    # Collect runs
+    runs_data: Dict[str, Any] = {
+        "pre_shadow": [],
+        "unscored_no_diff": [],
+        "unscored_scorer_error": [],
+        "hook_errors": 0,
+        "unattributable": [],
+        "excluded_non_router_seated": [],
+        "effort4_routed": [],
+        "effort5_full": [],
+        "large_diffs": 0,
+    }
+
+    for review_subdir in sorted(reports_dir.iterdir()):
+        if not review_subdir.is_dir():
+            continue
+
+        timestamp = parse_review_timestamp(review_subdir.name)
+        regime = classify_regime(timestamp)
+
+        # Only include post-148 runs
+        if regime != "post-148-sam-gated":
+            continue
+
+        changed_lines = count_changed_lines(review_subdir)
+        if changed_lines and changed_lines > 800:
+            runs_data["large_diffs"] += 1
+
+        # Classify and re-score
+        status, result_dict = _classify_shadow_run(review_subdir, scorer, parse_panel_func)
+
+        if status == "pre-shadow":
+            runs_data["pre_shadow"].append(review_subdir.name)
+            continue
+        elif status == "unscored:no-diff":
+            runs_data["unscored_no_diff"].append(review_subdir.name)
+            if result_dict and result_dict.get("status") == "error":
+                runs_data["hook_errors"] += 1
+            continue
+        elif status.startswith("unscored:scorer-error"):
+            runs_data["unscored_scorer_error"].append(review_subdir.name)
+            if result_dict and result_dict.get("stored_status") == "error":
+                runs_data["hook_errors"] += 1
+            continue
+
+        # At this point, status == "scored"
+        if result_dict and result_dict.get("stored_status") == "error":
+            runs_data["hook_errors"] += 1
+
+        mode = result_dict.get("mode", "unknown")
+        pr = result_dict.get("pr", False)
+        effort = result_dict.get("effort")
+        score_result = result_dict.get("score_result")
+
+        # Read findings
+        findings_data = read_findings_json(review_subdir)
+        if not findings_data:
+            runs_data["unattributable"].append(review_subdir.name)
+            continue
+
+        # Extract re-scored reviewers
+        re_scored_reviewers = {}
+        if score_result and hasattr(score_result, "reviewers"):
+            re_scored_reviewers = score_result.reviewers
+        elif score_result and isinstance(score_result, dict) and "reviewers" in score_result:
+            re_scored_reviewers = score_result["reviewers"]
+
+        # Get panel decision
+        tagged_sections_path = review_subdir / "tagged-sections.md"
+        panel_decision = parse_panel_func(tagged_sections_path) if tagged_sections_path.exists() else {}
+
+        # Determine cohort
+        if mode == "routed" and effort == 4:
+            cohort = "effort4-routed"
+        elif mode == "named" and effort == 5:
+            cohort = "effort5-full"
+        else:
+            cohort = "excluded-non-router-seated"
+
+        # Process findings
+        run_info = {
+            "run_id": review_subdir.name,
+            "cohort": cohort,
+            "pr": pr,
+            "panel_decision": panel_decision,
+            "re_scored": re_scored_reviewers,
+            "findings": findings_data.get("findings", []),
+        }
+
+        if cohort == "effort4-routed":
+            runs_data["effort4_routed"].append(run_info)
+        elif cohort == "effort5-full":
+            runs_data["effort5_full"].append(run_info)
+        else:
+            runs_data["excluded_non_router_seated"].append(run_info)
+
+    # Compute miss rates and details for each cohort
+    def compute_cohort_stats(cohort_runs):
+        crit_count = 0
+        high_count = 0
+        med_count = 0
+        low_count = 0
+        crit_misses = 0
+        high_misses = 0
+        missed_findings_list = []
+        sole_source_misses: Dict[str, int] = {}
+
+        for run_info in cohort_runs:
+            re_scored = run_info.get("re_scored", {})
+            for finding in run_info.get("findings", []):
+                if finding.get("verdict", "").upper() != "CONFIRMED":
+                    continue
+
+                severity = finding.get("severity", "").lower()
+                if severity == "critical":
+                    crit_count += 1
+                elif severity == "high":
+                    high_count += 1
+                elif severity == "medium":
+                    med_count += 1
+                else:
+                    low_count += 1
+
+                is_miss, miss_status = _finding_miss_status(finding, re_scored, always_run_slugs)
+
+                if is_miss:
+                    if severity == "critical":
+                        crit_misses += 1
+                    elif severity == "high":
+                        high_misses += 1
+
+                    # Record missed finding
+                    raised_by = finding.get("raised_by", "")
+                    supported_by = finding.get("supported_by", []) or []
+                    all_attrs = [raised_by] + supported_by
+
+                    # Get top reasons for each attributor
+                    attr_reasons = {}
+                    for slug in all_attrs:
+                        if slug in re_scored:
+                            reviewer_score = re_scored[slug]
+                            if isinstance(reviewer_score, dict) and "reasons" in reviewer_score:
+                                reasons = reviewer_score["reasons"]
+                                if reasons:
+                                    attr_reasons[slug] = reasons[:3]  # Top 3 reasons
+
+                    # Check if sole-source (supported_by empty)
+                    if not supported_by and raised_by:
+                        sole_source_misses[raised_by] = sole_source_misses.get(raised_by, 0) + 1
+
+                    missed_findings_list.append({
+                        "run_id": run_info["run_id"],
+                        "finding_id": finding.get("id", "unknown"),
+                        "severity": finding.get("severity", "Unknown"),
+                        "title": finding.get("title"),
+                        "raised_by": raised_by,
+                        "supported_by": supported_by,
+                        "attributor_reasons": attr_reasons,
+                    })
+
+        total_crit_high = crit_count + high_count
+        missed_crit_high = crit_misses + high_misses
+        crit_high_rate = None
+        if total_crit_high > 0:
+            crit_high_rate = f"{missed_crit_high}/{total_crit_high}"
+
+        return {
+            "confirmed_count": {
+                "critical": crit_count,
+                "high": high_count,
+                "medium": med_count,
+                "low": low_count,
+            },
+            "missed_count": {
+                "critical": crit_misses,
+                "high": high_misses,
+            },
+            "crit_high_rate": crit_high_rate,
+            "missed_findings": missed_findings_list,
+            "sole_source_misses": sole_source_misses,
+        }
+
+    effort4_stats = compute_cohort_stats(runs_data["effort4_routed"]) if runs_data["effort4_routed"] else None
+    effort5_stats = compute_cohort_stats(runs_data["effort5_full"]) if runs_data["effort5_full"] else None
+
+    # Build router x scorer contingency table (for effort4)
+    contingency_table = {}
+    if runs_data["effort4_routed"]:
+        for run_info in runs_data["effort4_routed"]:
+            panel_decision = run_info.get("panel_decision", {})
+            re_scored = run_info.get("re_scored", {})
+
+            for slug in re_scored:
+                if slug not in contingency_table:
+                    contingency_table[slug] = {"seated_yes": 0, "seated_no": 0}
+
+                reviewer_score = re_scored[slug]
+                tier = reviewer_score.get("tier") if isinstance(reviewer_score, dict) else getattr(reviewer_score, "tier", "Unknown")
+                is_must_or_candidate = tier in ("Must", "Candidate")
+
+                seated = panel_decision.get(slug, "No").lower().startswith("yes")
+
+                if seated:
+                    contingency_table[slug]["seated_yes"] += 1 if is_must_or_candidate else 0
+                else:
+                    contingency_table[slug]["seated_no"] += 1 if is_must_or_candidate else 0
+
+    scorer_version = getattr(scorer, "SCORER_VERSION", "unknown") if scorer else "unknown"
+
+    return {
+        "status": "available",
+        "scorer_version": scorer_version,
+        "thresholds_provisional": True,
+        "effort4_routed": effort4_stats,
+        "effort5_full": effort5_stats,
+        "contingency_table": contingency_table,
+        "counts": {
+            "pre_shadow": len(runs_data["pre_shadow"]),
+            "unscored_no_diff": len(runs_data["unscored_no_diff"]),
+            "unscored_scorer_error": len(runs_data["unscored_scorer_error"]),
+            "hook_errors": runs_data["hook_errors"],
+            "unattributable": len(runs_data["unattributable"]),
+            "excluded_non_router_seated": len(runs_data["excluded_non_router_seated"]),
+            "large_diffs": runs_data["large_diffs"],
+        },
+        "methodology": {
+            "scoring_note": "re-scored with current config",
+            "censoring_sentence": "The effort-4 miss rate only measures whether the scorer's exclusions remove a reviewer the Router seated who then produced a verified finding; it is a lower bound, not proof the scorer is safe. The effort-5 cohort is the uncensored estimate.",
+        }
+    }
 
 
 def _classify_runs(reports_dir: Path, bucket_config: dict) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime]]:
@@ -1314,6 +1731,9 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     ) = _score_findings(runs)
     tokens_result = _aggregate_tokens(reports_dir, runs)
 
+    # Compute shadow section
+    shadow_result = _compute_shadow_section(reports_dir)
+
     # Build regime summary
     n_included = regime_counts.get("post-148-sam-gated", 0)
     n_excluded = sum(regime_counts.get(r, 0) for r in ["pre-router", "judgment-router", "unknown"])
@@ -1332,13 +1752,10 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
             "status": "not_yet_available",
             "reason": "requires the deterministic scorer (#195/#196)"
         },
-        "shadow_miss_rate": {
-            "status": "not_yet_available",
-            "reason": "requires the deterministic scorer (#195/#196)"
-        },
         "pod_lenses_per_run": pod_lenses_per_run,
         "pod_runs_unrecorded": pod_runs_unrecorded,
         "unknown_format_runs": unknown_format_runs,
+        "shadow": shadow_result,
         "methodology": {
             "formula": _verified_value_formula(),
             "bucket_config": bucket_config,
@@ -1464,6 +1881,58 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- **Avg Input per Run:** {tokens.get('avg_input_per_run', 0):,}\n")
         output.append(f"- **Avg Output per Run:** {tokens.get('avg_output_per_run', 0):,}\n")
     output.append("\n")
+
+    # Shadow scorer section
+    shadow = report_data.get("shadow", {})
+    output.append("## Shadow Scorer (observe-only)\n")
+
+    if isinstance(shadow, dict) and shadow.get("status") == "unavailable":
+        output.append("**Status:** Unavailable\n")
+        output.append(f"**Reason:** {shadow.get('reason', 'Unknown error')}\n\n")
+    elif isinstance(shadow, dict) and shadow.get("status") == "available":
+        output.append(f"**Scorer Version:** {shadow.get('scorer_version', 'unknown')}\n")
+        output.append(f"**Thresholds Provisional:** {shadow.get('thresholds_provisional', False)}\n")
+        output.append(f"**Methodology:** {shadow.get('methodology', {}).get('scoring_note', 'N/A')}\n\n")
+
+        # Counts
+        counts = shadow.get("counts", {})
+        output.append("**Counts:**\n")
+        output.append(f"- Pre-shadow runs: {counts.get('pre_shadow', 0)}\n")
+        output.append(f"- Unscored (no diff): {counts.get('unscored_no_diff', 0)}\n")
+        output.append(f"- Unscored (scorer error): {counts.get('unscored_scorer_error', 0)}\n")
+        output.append(f"- Hook errors: {counts.get('hook_errors', 0)}\n")
+        output.append(f"- Unattributable: {counts.get('unattributable', 0)}\n")
+        output.append(f"- Excluded (non-router-seated): {counts.get('excluded_non_router_seated', 0)}\n")
+        output.append(f"- Large diffs (>800 lines): {counts.get('large_diffs', 0)}\n\n")
+
+        # Effort-4 routed cohort
+        effort4 = shadow.get("effort4_routed")
+        if effort4:
+            output.append("**Effort-4 Routed Cohort (censored lower bound):**\n")
+            output.append(f"- Critical/High confirmed: {effort4.get('confirmed_count', {}).get('critical', 0)} + {effort4.get('confirmed_count', {}).get('high', 0)}\n")
+            output.append(f"- Critical/High missed: {effort4.get('missed_count', {}).get('critical', 0)} + {effort4.get('missed_count', {}).get('high', 0)}\n")
+            if effort4.get("crit_high_rate"):
+                output.append(f"- Miss rate (crit+high): {effort4.get('crit_high_rate')} (3% guardrail as observation)\n")
+            output.append(f"- Medium missed: {effort4.get('missed_count', {}).get('medium', 0)}\n")
+            output.append(f"- Low confirmed: {effort4.get('confirmed_count', {}).get('low', 0)}\n\n")
+
+        # Effort-5 full cohort
+        effort5 = shadow.get("effort5_full")
+        if effort5:
+            output.append("**Effort-5 Full Cohort (uncensored estimate):**\n")
+            output.append(f"- Critical/High confirmed: {effort5.get('confirmed_count', {}).get('critical', 0)} + {effort5.get('confirmed_count', {}).get('high', 0)}\n")
+            output.append(f"- Critical/High missed: {effort5.get('missed_count', {}).get('critical', 0)} + {effort5.get('missed_count', {}).get('high', 0)}\n")
+            if effort5.get("crit_high_rate"):
+                output.append(f"- Miss rate (crit+high): {effort5.get('crit_high_rate')}\n")
+            output.append(f"- Medium missed: {effort5.get('missed_count', {}).get('medium', 0)}\n")
+            output.append(f"- Low confirmed: {effort5.get('confirmed_count', {}).get('low', 0)}\n\n")
+
+        # Censoring sentence
+        methodology = shadow.get("methodology", {})
+        if methodology.get("censoring_sentence"):
+            output.append(f"**Censoring caveat:** {methodology.get('censoring_sentence')}\n\n")
+    else:
+        output.append("*(Shadow section unavailable)*\n\n")
 
     return "".join(output)
 
