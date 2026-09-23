@@ -61,7 +61,8 @@ See the ADRs for the full rationale:
   only relevant personas run, and each loads its own context on demand.
 - [ADR-0002 Blind-first, two-pass review](docs/adr/0002-blind-first-two-pass-review.md)
 - [ADR-0003 Reviewer routing](docs/adr/0003-tagger-routing.md) — superseded by a single judgment
-  Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone.
+  Router (ADR-0003.2); the original keyword tagger + confirm-gate is gone. Amended (ADR-0003.2.2) to
+  define reviewer participation contexts and precedence order.
 - [ADR-0004 Model cost routing](docs/adr/0004-model-cost-routing.md) — Haiku for mechanical work.
 - [ADR-0005 Three-layer context cascade](docs/adr/0005-three-layer-context-cascade.md) — amended by
   ADR-0007 with a fourth layer (that layer was removed in chore/29; see ADR-0007's second amendment).
@@ -127,7 +128,8 @@ separate from the reviewer-context cascade.
   you rule. Takes `[reviewers...]`, `--model haiku|sonnet|opus|fable` (panel tier; router
   and mechanical roles stay pinned per ADR-0004, Fable is the deliberate expensive step), and
   optional `--effort 1–5` (ADR-0012: 1 = 6 haiku scouts + merge, 2 = two compact-lens reviewer pods,
-  3 = routed top 2 + uncle-bob, 4 = default full panel, 5 = everyone). When `--effort` is not passed,
+  3 = routed top 3 with Fragile Feynman fallback, 4 = default full panel, 5 = all `review`-tagged
+  reviewers, editors excluded). When `--effort` is not passed,
   default is heuristic-derived from `~/.claude/effort-heuristic.yaml` (copy
   `prompts/effort-heuristic.yaml.template` to configure; project-level `.claude/effort-heuristic.yaml`
   overrides user-level). A positional GitHub PR URL switches to PR mode: review a coworker's PR in
@@ -201,8 +203,8 @@ commands that need them read them by path. Put a new reference doc in `prompts/`
 
 ## Reviewers (personas)
 
-28 character-driven reviewers in `reviewers/`, indexed with their triggers in
-[`reviewers/index.yaml`](reviewers/index.yaml). Highlights:
+28 character-driven reviewers in `reviewers/`, indexed in [`reviewers/index.yaml`](reviewers/index.yaml)
+with their triggers, participation contexts (`review`, `plan`, `write`), and strengths. Highlights:
 
 - **Uncle Bob** — clean code, SOLID, resource management
 - **Security Sage** — security, input validation, failure modes
