@@ -197,6 +197,7 @@ class FindingsScoreResult(NamedTuple):
     reviewers_per_run: Dict[str, List[int]]
     verified_crit_high_per_run: Dict[str, List[int]]
     verified_value_per_run: Dict[str, List[int]]
+    strata: Dict[str, Dict[str, Dict[str, List[int]]]]
     solo_findings_per_reviewer: Dict[str, int]
     runs_with_unavailable_findings: int
     pod_lenses_per_run: Dict[str, List[int]]
@@ -204,6 +205,7 @@ class FindingsScoreResult(NamedTuple):
     unknown_format_runs: int
     malformed_findings_by_reason: Dict[str, int]
     skipped_findings_total: int
+    excluded_by_effort_reason: Dict[str, int]
 
 
 def sanitize_project_dir_id(cwd: str) -> Optional[str]:
@@ -1374,6 +1376,7 @@ class TokensReport(TypedDict, total=False):
     avg_output_per_run: int
     status: str
     reason: str
+    by_stratum: Dict[str, Dict[str, Any]]
 
 
 class ReportData(TypedDict, total=False):
@@ -1383,6 +1386,7 @@ class ReportData(TypedDict, total=False):
     reviewers_per_run: Dict[str, List[int]]
     verified_crit_high_per_run: Dict[str, List[int]]
     verified_value_per_run: Dict[str, List[int]]
+    strata: Dict[str, Dict[str, Dict[str, List[int]]]]
     solo_findings_per_reviewer: Dict[str, int]
     regime_counts: Dict[str, int]
     n_included_runs: int
@@ -1765,10 +1769,16 @@ def classify_effort_path(run_dir: Path) -> str:
     Returns: "full-panel", "pods", "scouts", or "unknown"
 
     Decision tree (in order):
-    1. review-metrics.json.effort (effort 2 only) -> "pods"
-    2. effort-scout.json.effort (valid, not error form) -> "scouts" or "pods"
-    3. File signature: *-pod.md exists -> "pods", final-report.md with no pass1/pod -> "scouts"
-    4. Otherwise -> "unknown"
+    1. review-metrics.json with dict and "effort" key -> "pods"
+    2. effort-scout.json valid dict without "error" key:
+       - effort==2 -> "pods"
+       - effort in (3,4,5) -> "full-panel"
+       - effort==1 -> "scouts"
+    3. File signature:
+       - any *-pod.md -> "pods"
+       - any *-pass1.md -> "full-panel"
+       - final-report.md exists with neither -> "scouts"
+    4. else -> "unknown"
     """
     # Check for review-metrics.json (effort 2)
     review_metrics = run_dir / "review-metrics.json"
@@ -1789,6 +1799,10 @@ def classify_effort_path(run_dir: Path) -> str:
                 effort = scout_data.get("effort")
                 if effort == 2:
                     return "pods"
+                elif effort in (3, 4, 5):
+                    return "full-panel"
+                elif effort == 1:
+                    return "scouts"
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -1799,11 +1813,11 @@ def classify_effort_path(run_dir: Path) -> str:
 
     if has_pod:
         return "pods"
+    elif has_pass1:
+        return "full-panel"
     elif has_final and not has_pass1 and not has_pod:
         # Scouts: final-report but no pass1/pod files
         return "scouts"
-    elif has_pass1:
-        return "full-panel"
 
     # Unknown
     return "unknown"
@@ -1831,12 +1845,15 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     """
     Compute metrics across all runs: per-bucket reviewer counts, crit/high counts, value,
     solo findings, unavailable-findings count, pod lens counts, pod-unrecorded count,
-    unknown-format count, malformed-findings count, and skipped-findings count.
+    unknown-format count, malformed-findings count, skipped-findings count, per-effort-stratum
+    breakdown (reviewers/crit_high/value by stratum+bucket), and effort-exclusion counters.
+
     Returns FindingsScoreResult NamedTuple.
     """
     reviewers_per_run: Dict[str, List[int]] = {}
     verified_crit_high_per_run: Dict[str, List[int]] = {}
     verified_value_per_run: Dict[str, List[int]] = {}
+    strata: Dict[str, Dict[str, Dict[str, List[int]]]] = {}
     solo_findings_per_reviewer: Dict[str, int] = {}
     pod_lenses_per_run: Dict[str, List[int]] = {}
     runs_with_unavailable_findings = 0
@@ -1844,21 +1861,15 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     unknown_format_runs = 0
     malformed_findings_by_reason: Dict[str, int] = {}
     skipped_findings_total = 0
+    excluded_by_effort_reason: Dict[str, int] = {}
 
     for review_subdir, regime, bucket in runs:
         include_in_findings = regime == "post-148-sam-gated"
 
-        # Classify format
+        # Classify format (classic/pod/unknown) for pod-lens tracking (backward compat)
         review_format = classify_review_format(review_subdir)
 
-        if review_format == "classic":
-            if bucket not in reviewers_per_run:
-                reviewers_per_run[bucket] = []
-                verified_crit_high_per_run[bucket] = []
-                verified_value_per_run[bucket] = []
-
-            reviewers_per_run[bucket].append(len(list(review_subdir.glob("*-pass1.md"))))
-        elif review_format == "pod":
+        if review_format == "pod":
             if bucket not in pod_lenses_per_run:
                 pod_lenses_per_run[bucket] = []
 
@@ -1869,6 +1880,55 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
                 pod_runs_unrecorded += 1
         elif review_format == "unknown":
             unknown_format_runs += 1
+
+        # Initialize bucket dicts if needed
+        if bucket not in reviewers_per_run:
+            reviewers_per_run[bucket] = []
+            verified_crit_high_per_run[bucket] = []
+            verified_value_per_run[bucket] = []
+
+        # Classify effort stratum
+        effort_stratum = classify_effort_path(review_subdir)
+        if effort_stratum not in strata:
+            strata[effort_stratum] = {}
+        if bucket not in strata[effort_stratum]:
+            strata[effort_stratum][bucket] = {"reviewers": [], "crit_high": [], "value": []}
+
+        # Compute reviewer count for this stratum
+        if effort_stratum == "full-panel":
+            reviewer_count = len(list(review_subdir.glob("*-pass1.md")))
+        elif effort_stratum == "pods":
+            # Try to get lenses count from review-metrics.json
+            review_metrics = review_subdir / "review-metrics.json"
+            if review_metrics.exists():
+                try:
+                    metrics = json.loads(review_metrics.read_text())
+                    lenses = metrics.get("lenses")
+                    if isinstance(lenses, list):
+                        reviewer_count = len(lenses)
+                    else:
+                        # Unmeasured lenses
+                        excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                        reviewer_count = None
+                except (json.JSONDecodeError, OSError):
+                    excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                    reviewer_count = None
+            else:
+                excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                reviewer_count = None
+        elif effort_stratum == "scouts":
+            reviewer_count = 6
+        else:
+            # unknown
+            excluded_by_effort_reason["unknown-effort"] = excluded_by_effort_reason.get("unknown-effort", 0) + 1
+            reviewer_count = None
+
+        # Only append to strata and full-panel metrics when include_in_findings
+        if include_in_findings and reviewer_count is not None:
+            # For full-panel, also update the main reviewers_per_run (backward compat)
+            if effort_stratum == "full-panel":
+                reviewers_per_run[bucket].append(reviewer_count)
+            strata[effort_stratum][bucket]["reviewers"].append(reviewer_count)
 
         parsed = read_findings_json(review_subdir)
         if not parsed:
@@ -1907,22 +1967,22 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
 
             value_total += SEVERITY_VALUES.get(severity, 0)
 
-            # Gate solo finding accumulation to classic format only
-            if review_format == "classic" and not supported_by and raised_by:
+            # Gate solo finding accumulation to full-panel runs only
+            if effort_stratum == "full-panel" and not supported_by and raised_by:
                 solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
 
-        # Only add to classic findings if classic format
-        if review_format == "classic":
-            if bucket not in verified_crit_high_per_run:
-                verified_crit_high_per_run[bucket] = []
-                verified_value_per_run[bucket] = []
+        # For full-panel, also update main dicts (backward compat)
+        if effort_stratum == "full-panel":
             verified_crit_high_per_run[bucket].append(crit_high_count)
             verified_value_per_run[bucket].append(value_total)
+        strata[effort_stratum][bucket]["crit_high"].append(crit_high_count)
+        strata[effort_stratum][bucket]["value"].append(value_total)
 
     return FindingsScoreResult(
         reviewers_per_run=reviewers_per_run,
         verified_crit_high_per_run=verified_crit_high_per_run,
         verified_value_per_run=verified_value_per_run,
+        strata=strata,
         solo_findings_per_reviewer=solo_findings_per_reviewer,
         runs_with_unavailable_findings=runs_with_unavailable_findings,
         pod_lenses_per_run=pod_lenses_per_run,
@@ -1930,14 +1990,21 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
         unknown_format_runs=unknown_format_runs,
         malformed_findings_by_reason=malformed_findings_by_reason,
         skipped_findings_total=skipped_findings_total,
+        excluded_by_effort_reason=excluded_by_effort_reason,
     )
 
 
 def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> TokensReport:
-    """Aggregate measured token rows from reviewer-yield.jsonl for the given runs."""
+    """Aggregate measured token rows from reviewer-yield.jsonl for the given runs, with per-stratum breakdown."""
     all_token_rows = []
     yield_file = reports_dir / "reviewer-yield.jsonl"
-    run_names = {r[0].name for r in runs}
+    run_names_to_strata: Dict[str, str] = {}  # Maps run_id to stratum
+
+    # Build map of run_id -> stratum
+    for run_dir, _, _ in runs:
+        run_names_to_strata[run_dir.name] = classify_effort_path(run_dir)
+
+    run_names = set(run_names_to_strata.keys())
     if yield_file.exists():
         try:
             with open(yield_file, "r") as f:
@@ -1953,6 +2020,24 @@ def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> T
             pass
 
     measured_rows = [r for r in all_token_rows if r.get("tokens_status") == "measured"]
+
+    # Build per-stratum breakdown
+    by_stratum: Dict[str, Dict[str, Any]] = {}
+    for stratum in set(run_names_to_strata.values()):
+        stratum_runs = {run_id for run_id, s in run_names_to_strata.items() if s == stratum}
+        stratum_measured = [r for r in measured_rows if r.get("run_id") in stratum_runs]
+
+        total_input = sum(r.get("input_tokens", 0) for r in stratum_measured)
+        total_output = sum(r.get("output_tokens", 0) for r in stratum_measured)
+        measured_run_count = len(set(r.get("run_id") for r in stratum_measured))
+
+        by_stratum[stratum] = {
+            "measured_runs": measured_run_count,
+            "total_runs": len(stratum_runs),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+        }
+
     if measured_rows:
         total_input = sum(r.get("input_tokens", 0) for r in measured_rows)
         total_output = sum(r.get("output_tokens", 0) for r in measured_rows)
@@ -1960,18 +2045,23 @@ def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> T
         total_cache_creation = sum(r.get("cache_creation_input_tokens", 0) for r in measured_rows)
         run_count = len(set(r.get("run_id") for r in measured_rows))
 
-        return {
+        result: TokensReport = {
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_cache_read_tokens": total_cache_read,
             "total_cache_creation_tokens": total_cache_creation,
             "avg_input_per_run": total_input // run_count if run_count > 0 else 0,
             "avg_output_per_run": total_output // run_count if run_count > 0 else 0,
+            "by_stratum": by_stratum,  # type: ignore
         }
-    return {
+        return result
+
+    result = {
         "status": "unavailable",
-        "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward"
+        "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward",
+        "by_stratum": by_stratum,  # type: ignore
     }
+    return result
 
 
 def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
@@ -1979,13 +2069,14 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     Compute report metrics across all runs for a repo.
 
     Returns dict with:
-    - reviewers_per_run: grouped by size bucket
-    - verified_crit_high_per_run: grouped by size bucket
-    - verified_value_per_run: crit*8 + high*4 + med*2 + low*1
+    - reviewers_per_run: grouped by size bucket (full-panel only, backward compat)
+    - verified_crit_high_per_run: grouped by size bucket (full-panel only)
+    - verified_value_per_run: crit*8 + high*4 + med*2 + low*1 (full-panel only)
+    - strata: {stratum: {bucket: {metric: [counts]}}} covering all strata
     - solo_findings_per_reviewer: empty supported_by findings
     - regime_counts: {regime: count} with n_included/n_excluded
-    - tokens: real numbers or {status, reason}
-    - methodology: bucket config, formula, observation note, etc.
+    - tokens: real numbers or {status, reason}, includes by_stratum breakdown
+    - methodology: bucket config, formula, observation note, etc., includes effort exclusions
     """
     observation_only_note = OBSERVATION_ONLY_NOTE
 
@@ -2008,6 +2099,7 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
         reviewers_per_run,
         verified_crit_high_per_run,
         verified_value_per_run,
+        strata,
         solo_findings_per_reviewer,
         runs_with_unavailable_findings,
         pod_lenses_per_run,
@@ -2015,6 +2107,7 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
         unknown_format_runs,
         malformed_findings_by_reason,
         skipped_findings_total,
+        excluded_by_effort_reason,
     ) = _score_findings(runs)
     tokens_result = _aggregate_tokens(reports_dir, runs)
 
@@ -2025,11 +2118,20 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     n_included = regime_counts.get("post-148-sam-gated", 0)
     n_excluded = sum(regime_counts.get(r, 0) for r in ["pre-router", "judgment-router", "unknown"])
 
-    return {
+    # Merge effort-reason counters into excluded_by_reason
+    excluded_by_reason: Dict[str, Any] = {
+        "malformed_findings": malformed_findings_by_reason,
+        "skipped_findings_total": skipped_findings_total,
+    }
+    if excluded_by_effort_reason:
+        excluded_by_reason["effort"] = excluded_by_effort_reason
+
+    report: ReportData = {
         "repo_key": repo_key,
         "reviewers_per_run": reviewers_per_run,
         "verified_crit_high_per_run": verified_crit_high_per_run,
         "verified_value_per_run": verified_value_per_run,
+        "strata": strata,  # type: ignore
         "solo_findings_per_reviewer": solo_findings_per_reviewer,
         "regime_counts": regime_counts,
         "n_included_runs": n_included,
@@ -2054,15 +2156,13 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
                 "n_excluded": n_excluded,
                 "runs_with_unavailable_findings": runs_with_unavailable_findings,
             },
-            "excluded_by_reason": {
-                "malformed_findings": malformed_findings_by_reason,
-                "skipped_findings_total": skipped_findings_total,
-            },
+            "excluded_by_reason": excluded_by_reason,  # type: ignore
             "token_status_note": "unavailable for retrospective runs; measured prospectively from transcript-origin.json fix onward",
             "observation_only": True,
             "observation_only_sentence": observation_only_note,
         }
     }
+    return report
 
 
 def _avg(values: list) -> int:
@@ -2183,6 +2283,19 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- **Total Output Tokens:** {tokens.get('total_output_tokens', 0):,}\n")
         output.append(f"- **Avg Input per Run:** {tokens.get('avg_input_per_run', 0):,}\n")
         output.append(f"- **Avg Output per Run:** {tokens.get('avg_output_per_run', 0):,}\n")
+
+    # Per-stratum token coverage
+    by_stratum = tokens.get("by_stratum", {})
+    if by_stratum:
+        output.append("\n### Token Coverage by Effort Stratum\n")
+        for stratum in sorted(by_stratum.keys()):
+            stratum_data = by_stratum[stratum]
+            measured = stratum_data.get("measured_runs", 0)
+            total = stratum_data.get("total_runs", 0)
+            input_tokens = stratum_data.get("total_input_tokens", 0)
+            output_tokens = stratum_data.get("total_output_tokens", 0)
+            coverage = f"{measured}/{total}" if total > 0 else "0/0"
+            output.append(f"- **{stratum}**: {coverage} measured ({input_tokens:,} input, {output_tokens:,} output)\n")
     output.append("\n")
 
     # Shadow scorer section
@@ -2263,6 +2376,35 @@ def render_report_markdown(report_data: ReportData) -> str:
             output.append(f"**Censoring caveat:** {methodology.get('censoring_sentence')}\n\n")
     else:
         output.append("*(Shadow section unavailable)*\n\n")
+
+    # Effort Strata
+    strata = report_data.get("strata", {})
+    if strata:
+        output.append("## Effort Strata\n")
+        for stratum in sorted(strata.keys()):
+            stratum_buckets = strata[stratum]
+            output.append(f"\n### {stratum}\n")
+
+            # Aggregate across buckets for this stratum
+            total_reviewers = []
+            total_crit_high = []
+            total_value = []
+            total_runs = 0
+
+            for bucket, metrics in stratum_buckets.items():
+                total_reviewers.extend(metrics.get("reviewers", []))
+                total_crit_high.extend(metrics.get("crit_high", []))
+                total_value.extend(metrics.get("value", []))
+                total_runs += len(metrics.get("reviewers", []))
+
+            if total_runs > 0:
+                output.append(f"- **Runs:** {total_runs}\n")
+                output.append(f"- **Avg Reviewers:** {_avg(total_reviewers)}\n")
+                output.append(f"- **Avg Crit/High Findings:** {_avg(total_crit_high)}\n")
+                output.append(f"- **Avg Value Points:** {_avg(total_value)}\n")
+            else:
+                output.append("- *(no runs with measured findings)*\n")
+        output.append("\n")
 
     return "".join(output)
 
