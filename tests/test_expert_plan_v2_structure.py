@@ -3,14 +3,14 @@
 Test suite for structural requirements of expert-plan-v2 command and plan-contribution-contract prompt.
 
 Covers:
-1. File existence: commands/expert-plan-v2.md and prompts/plan-contribution-contract.md exist
+1. File existence: commands/expert-plan-deprecated-v2.md and prompts/plan-contribution-contract.md exist
    and are non-empty.
-2. Stage list match: commands/expert-plan-v2.md contains all 8 required stage-begin and
+2. Stage list match: commands/expert-plan-deprecated-v2.md contains all 8 required stage-begin and
    stage-end calls (gather-context, route-experts, expert-contributions, contrarian,
    digest-questions, checkpoint, synthesize-plan, alignment-pass).
 3. Contract file fields: prompts/plan-contribution-contract.md contains all required
    open-question sub-fields and top-level format keys.
-4. Directory-boundary constraint: commands/expert-plan-v2.md uses ~/.claude/plan-sessions/
+4. Directory-boundary constraint: commands/expert-plan-deprecated-v2.md uses ~/.claude/plan-sessions/
    for checkpoints, not repo-relative paths.
 
 Run with: python3 tests/test_expert_plan_v2_structure.py
@@ -31,11 +31,11 @@ SCRIPT_CHECK_STAGE = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 def main():
     h = Harness("EXPERT-PLAN-V2 STRUCTURAL TEST SUITE")
 
-    # Test 1: File existence for commands/expert-plan-v2.md
-    command_file = REPO_ROOT / "commands" / "expert-plan-v2.md"
+    # Test 1: File existence for commands/expert-plan-deprecated-v2.md
+    command_file = REPO_ROOT / "commands" / "expert-plan-deprecated-v2.md"
     command_exists = command_file.is_file()
     h.test_result(
-        "commands/expert-plan-v2.md exists as a regular file",
+        "commands/expert-plan-deprecated-v2.md exists as a regular file",
         command_exists,
         str(command_file) if not command_exists else "",
     )
@@ -46,7 +46,7 @@ def main():
         command_content = command_file.read_text()
         command_nonempty = len(command_content.strip()) > 0
     h.test_result(
-        "commands/expert-plan-v2.md is non-empty",
+        "commands/expert-plan-deprecated-v2.md is non-empty",
         command_nonempty,
         "file is empty" if not command_nonempty else "",
     )
@@ -81,7 +81,7 @@ def main():
         stage_pairing_clean = result.returncode == 0
         stage_findings = result.stdout.strip()
         h.test_result(
-            "commands/expert-plan-v2.md has no orphaned or unmatched stages",
+            "commands/expert-plan-deprecated-v2.md has no orphaned or unmatched stages",
             stage_pairing_clean,
             stage_findings if not stage_pairing_clean else "",
         )
@@ -113,18 +113,18 @@ def main():
         if extra:
             detail += f"extra: {', '.join(sorted(extra))}"
         h.test_result(
-            "commands/expert-plan-v2.md contains all 10 required stage names",
+            "commands/expert-plan-deprecated-v2.md contains all 10 required stage names",
             stages_match,
             detail.rstrip("; ") if detail else "",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md has no orphaned or unmatched stages",
+            "commands/expert-plan-deprecated-v2.md has no orphaned or unmatched stages",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v2.md contains all 10 required stage names",
+            "commands/expert-plan-deprecated-v2.md contains all 10 required stage names",
             False,
             "file does not exist",
         )
@@ -192,7 +192,7 @@ def main():
         # Look for evidence of plan-sessions directory usage
         has_plan_sessions = "plan-sessions" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md references plan-sessions directory",
+            "commands/expert-plan-deprecated-v2.md references plan-sessions directory",
             has_plan_sessions,
             "plan-sessions not found in command doc" if not has_plan_sessions else "",
         )
@@ -218,18 +218,18 @@ def main():
             else ""
         )
         h.test_result(
-            "commands/expert-plan-v2.md does not use repo-relative paths for checkpoints",
+            "commands/expert-plan-deprecated-v2.md does not use repo-relative paths for checkpoints",
             no_repo_relative,
             detail,
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md references plan-sessions directory",
+            "commands/expert-plan-deprecated-v2.md references plan-sessions directory",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v2.md does not use repo-relative paths for checkpoints",
+            "commands/expert-plan-deprecated-v2.md does not use repo-relative paths for checkpoints",
             False,
             "file does not exist",
         )

@@ -3,11 +3,11 @@
 Test suite for Effort 1-2 swarm/pod modes of expert-plan-v2 command.
 
 Covers the new role prompts (plan-swarm-scout.md, plan-swarm-merge.md, plan-pod.md),
-their references in commands/expert-plan-v2.md, sentinel strings, reviewer availability,
+their references in commands/expert-plan-deprecated-v2.md, sentinel strings, reviewer availability,
 ADR link fix, and join-barrier-pattern.md pod support.
 
 This test is spec-blind: written from the plan (GitHub issue #151) alone, without
-reading round 1's implementation files (commands/expert-plan-v2.md, agents/expert-reviewer.md,
+reading round 1's implementation files (commands/expert-plan-deprecated-v2.md, agents/expert-reviewer.md,
 prompts/join-barrier-pattern.md, prompts/plan-swarm-scout.md, prompts/plan-swarm-merge.md,
 prompts/plan-pod.md).
 
@@ -171,11 +171,11 @@ def main():
 
     # ========== COMMAND DOC REFERENCES TESTS ==========
 
-    # Test 8: commands/expert-plan-v2.md exists
-    command_file = REPO_ROOT / "commands" / "expert-plan-v2.md"
+    # Test 8: commands/expert-plan-deprecated-v2.md exists
+    command_file = REPO_ROOT / "commands" / "expert-plan-deprecated-v2.md"
     command_exists = command_file.is_file()
     h.test_result(
-        "commands/expert-plan-v2.md exists",
+        "commands/expert-plan-deprecated-v2.md exists",
         command_exists,
         "" if command_exists else "file not found",
     )
@@ -184,67 +184,67 @@ def main():
     if command_exists:
         command_content = command_file.read_text()
 
-    # Test 9: commands/expert-plan-v2.md mentions plan-swarm-scout.md
+    # Test 9: commands/expert-plan-deprecated-v2.md mentions plan-swarm-scout.md
     if command_exists:
         has_swarm_scout = "plan-swarm-scout.md" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md references plan-swarm-scout.md",
+            "commands/expert-plan-deprecated-v2.md references plan-swarm-scout.md",
             has_swarm_scout,
             "" if has_swarm_scout else "reference not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md references plan-swarm-scout.md",
+            "commands/expert-plan-deprecated-v2.md references plan-swarm-scout.md",
             False,
             "file does not exist",
         )
 
-    # Test 10: commands/expert-plan-v2.md mentions plan-swarm-merge.md
+    # Test 10: commands/expert-plan-deprecated-v2.md mentions plan-swarm-merge.md
     if command_exists:
         has_swarm_merge = "plan-swarm-merge.md" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md references plan-swarm-merge.md",
+            "commands/expert-plan-deprecated-v2.md references plan-swarm-merge.md",
             has_swarm_merge,
             "" if has_swarm_merge else "reference not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md references plan-swarm-merge.md",
+            "commands/expert-plan-deprecated-v2.md references plan-swarm-merge.md",
             False,
             "file does not exist",
         )
 
-    # Test 11: commands/expert-plan-v2.md mentions plan-pod.md
+    # Test 11: commands/expert-plan-deprecated-v2.md mentions plan-pod.md
     if command_exists:
         has_pod_ref = "plan-pod.md" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md references plan-pod.md",
+            "commands/expert-plan-deprecated-v2.md references plan-pod.md",
             has_pod_ref,
             "" if has_pod_ref else "reference not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md references plan-pod.md",
+            "commands/expert-plan-deprecated-v2.md references plan-pod.md",
             False,
             "file does not exist",
         )
 
-    # Test 12: commands/expert-plan-v2.md mentions swarm-contribution.md
+    # Test 12: commands/expert-plan-deprecated-v2.md mentions swarm-contribution.md
     if command_exists:
         has_swarm_contrib = "swarm-contribution.md" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md mentions swarm-contribution.md",
+            "commands/expert-plan-deprecated-v2.md mentions swarm-contribution.md",
             has_swarm_contrib,
             "" if has_swarm_contrib else "reference not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md mentions swarm-contribution.md",
+            "commands/expert-plan-deprecated-v2.md mentions swarm-contribution.md",
             False,
             "file does not exist",
         )
 
-    # Test 13: commands/expert-plan-v2.md mentions pod file pattern
+    # Test 13: commands/expert-plan-deprecated-v2.md mentions pod file pattern
     if command_exists:
         has_pod_files = (
             "domain-requirements-pod.md" in command_content
@@ -252,43 +252,43 @@ def main():
             or "{pod-id}-pod.md" in command_content
         )
         h.test_result(
-            "commands/expert-plan-v2.md mentions pod file names/pattern",
+            "commands/expert-plan-deprecated-v2.md mentions pod file names/pattern",
             has_pod_files,
             "" if has_pod_files else "pod file references not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md mentions pod file names/pattern",
+            "commands/expert-plan-deprecated-v2.md mentions pod file names/pattern",
             False,
             "file does not exist",
         )
 
-    # Test 14: commands/expert-plan-v2.md mentions pod-end sentinel
+    # Test 14: commands/expert-plan-deprecated-v2.md mentions pod-end sentinel
     if command_exists:
         has_pod_end_sentinel = "<!-- pod-end -->" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md mentions <!-- pod-end --> sentinel",
+            "commands/expert-plan-deprecated-v2.md mentions <!-- pod-end --> sentinel",
             has_pod_end_sentinel,
             "" if has_pod_end_sentinel else "sentinel not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md mentions <!-- pod-end --> sentinel",
+            "commands/expert-plan-deprecated-v2.md mentions <!-- pod-end --> sentinel",
             False,
             "file does not exist",
         )
 
-    # Test 15: commands/expert-plan-v2.md mentions contribution-end sentinel (for swarm)
+    # Test 15: commands/expert-plan-deprecated-v2.md mentions contribution-end sentinel (for swarm)
     if command_exists:
         has_contrib_end_sentinel = "<!-- contribution-end -->" in command_content
         h.test_result(
-            "commands/expert-plan-v2.md mentions <!-- contribution-end --> sentinel (for swarm)",
+            "commands/expert-plan-deprecated-v2.md mentions <!-- contribution-end --> sentinel (for swarm)",
             has_contrib_end_sentinel,
             "" if has_contrib_end_sentinel else "sentinel not found",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v2.md mentions <!-- contribution-end --> sentinel (for swarm)",
+            "commands/expert-plan-deprecated-v2.md mentions <!-- contribution-end --> sentinel (for swarm)",
             False,
             "file does not exist",
         )
