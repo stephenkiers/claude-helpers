@@ -235,7 +235,7 @@ def find_subagent_files_by_reviewer(review_dir: str, reviewer_slugs: List[str]) 
             recorded_at_str = origin_data.get("recorded_at")
             if recorded_at_str:
                 try:
-                    recorded_at = datetime.fromisoformat(recorded_at_str)
+                    recorded_at = datetime.fromisoformat(recorded_at_str.replace("Z", "+00:00"))
                     time_lower_bound = recorded_at.astimezone().timestamp()
                 except (ValueError, TypeError):
                     pass
@@ -304,9 +304,7 @@ def _subagent_reviewer_for_review_dir(
     for slug in reviewer_slugs:
         filename_to_unit[f"{slug}-pass1.md"] = slug
         filename_to_unit[f"{slug}-pass2.md"] = slug
-    filename_to_unit["{slug}-questions-answered.md"] = "overhead:questions-answered"
-    # Add literal questions-answered mapping
-    filename_to_unit["questions-answered.md"] = "overhead:questions-answered"
+        filename_to_unit[f"{slug}-questions-answered.md"] = "overhead:questions-answered"
 
     try:
         with open(jsonl_file, "r") as f:
