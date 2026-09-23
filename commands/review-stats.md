@@ -1,13 +1,13 @@
 ---
 name: review-stats
-description: Per-reviewer token yield and finding escalation leaderboard — opt-in human reporting, never wired into expert-review.
+description: Per-reviewer token yield and finding escalation leaderboard — human reporting interface for automatic logging.
 ---
 
 # Review Stats — Per-Reviewer Leaderboard
 
 This command tracks reviewer ROI across `/expert-review` runs: **token cost per reviewer** (input, output, cache), **mention count** (how many times each reviewer's findings appear in the final report), and **escalation count** (findings that made it into the action plan as high-priority).
 
-**This is a leaderboard, not a verdict.** It is opt-in and completely disconnected from expert-review's own decision-making — a bug in this script produces a bad report, never a bad review. Never read by any reviewer prompt or triage logic.
+**This is a leaderboard, not a verdict.** Logging happens automatically at the end of each `/expert-review` run (non-PR mode only), and is completely disconnected from expert-review's own decision-making — a bug in this script produces a bad report, never a bad review. Never read by any reviewer prompt or triage logic.
 
 **Observation-only in Phase 0** — not wired into `prompts/router.md`, `reviewers/index.yaml` triggers, or model/effort selection; wiring it into any of those needs an ADR amendment first.
 
@@ -42,9 +42,11 @@ else
 fi
 ```
 
-Idempotent: running the single-review form twice for the same review-dir does nothing the second
-time (already logged). Outputs a per-reviewer table to stdout and appends one JSON line per
-reviewer to `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl`.
+Idempotent with upgrade semantics: running on the same review-dir multiple times either appends nothing
+(if measured rows already exist) or replaces all unavailable rows with measured ones (upgrade). When
+measured rows exist, the file stays unchanged; when all rows are unavailable, a fresh run can replace
+them with measured data via atomic rewrite (temp file, then rename). Outputs a per-reviewer table to
+stdout and appends one JSON line per reviewer to `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl`.
 
 Reads `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` in aggregate mode and prints average
 cost (input + output tokens per run), total mentions and escalations, and escalation rate (% of
@@ -62,7 +64,7 @@ mentions that made it into the action plan) for each reviewer across all runs.
 
 ## Notes
 
-- **Opt-in only:** Manual run after expert-review, never automatic.
+- **Automatic logging in non-PR mode:** Token logging runs automatically at the end of each `/expert-review` (non-PR only), and the command here serves as the human interface for querying and aggregating results.
 - **Read-only:** No interaction with reviewer logic, rulings, or findings suppression.
 - **Per-repo queue:** Stored at `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` alongside your review directories.
 - **Zero runs ≠ zero value:** A reviewer tagged `review: named-only` or `review: secondary` will show few or zero runs because they are not auto-routed; a zero row must not be cited as evidence of no value. Phase 3 exploration seats are the designed measurement.
