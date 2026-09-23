@@ -24,8 +24,8 @@ Parse `$ARGUMENTS` for:
 
 1. **`--model <haiku|sonnet|opus|fable>`** — sets `PANEL_MODEL` and `MODEL_EXPLICIT=true`; if absent, leave `PANEL_MODEL` unset and set `MODEL_EXPLICIT=false` so subagents inherit this command's model, which is `sonnet` (error if any other value)
 2. **`--include-medium`** — parse this flag (default false → `INCLUDE_MEDIUM=false`; if present → `INCLUDE_MEDIUM=true`)
-3. **`--all` or no named reviewers** → `NAMED_SELECTION=false` (all reviewers)
-4. **Named reviewers** — match names case-insensitively against `~/.claude/reviewers/index.yaml` keys; error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names)
+3. **`--all` or no named reviewers** → `NAMED_SELECTION=false` (all reviewers, filtered to `review`-tagged only per `reviewers/README.md § Contexts and resolution precedence`)
+4. **Named reviewers** — match names case-insensitively against `~/.claude/reviewers/index.yaml` keys; error on no match. Set `NAMED_SELECTION=true` (Router is bypassed) and record the matched names in `NAMED_REVIEWERS` (a bash variable, space-separated lowercased names). Naming a reviewer without a `review` tag prints a one-line warning, not an error.
 
 Validate `--model` value; error if not one of the four permitted values.
 
@@ -59,7 +59,7 @@ Same as `/expert-review` Step 0, sub-steps 3–5, but rooted at `${WORKTREE_PATH
 Same as `/expert-review` Step 2:
 
 1. Resolve `$HOME`
-2. Read `~/.claude/reviewers/index.yaml` — extract reviewer names, triggers, `useWhen` criteria
+2. Read `~/.claude/reviewers/index.yaml` — extract reviewer names, `contexts`, triggers, `useWhen` criteria (filter to `review`-tagged reviewers per `reviewers/README.md § Contexts and resolution precedence`)
 3. Glob `${WORKTREE_PATH}/.claude/reviewers/*-local.yaml` for project overrides — record paths but **do not read them yet**
 
 ## Step 4 — Summarizer → `technical-summary.md`

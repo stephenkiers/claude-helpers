@@ -19,6 +19,8 @@ from typing import Dict, List, Tuple, Optional
 import yaml
 
 SEVERITY_WEIGHTS = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+VALID_CONTEXT_KEYS = {"review", "plan", "write"}
+VALID_CONTEXT_VALUES = {"primary", "secondary", "named-only"}
 
 
 # Reuse from reviewer-yield.py for consistency
@@ -382,7 +384,13 @@ def cmd_yield(corpus_root: str) -> None:
     # Severity weights
     weights = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
 
-    valid_slugs = set(load_reviewer_index(default_current_index_path()).keys())
+    try:
+        index = load_reviewer_index(default_current_index_path())
+    except ValueError as e:
+        print(f"Error loading reviewer index: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    valid_slugs = set(index.keys())
 
     # Track yield per reviewer, one entry per ATTENDED run (Selected = Yes in
     # Panel Decision) — including runs with zero confirmed findings, since
@@ -468,11 +476,43 @@ def slugify_reviewer_name(name: str) -> str:
     return re.sub(r"\s+", "-", name.strip().lower())
 
 
+def parse_inline_flow_map(value) -> Dict[str, str]:
+    """
+    Parse an inline YAML flow map into a dict.
+
+    Accepts a dict already parsed by YAML (e.g., {'review': 'primary', 'plan': 'primary'}).
+
+    Validates that keys are in {review, plan, write} and values are in
+    {primary, secondary, named-only}.
+
+    Raises ValueError on invalid format or unknown keys/values.
+    Returns empty dict if value is None or empty dict.
+    """
+    if not value:
+        return {}
+
+    # YAML always parses flow-map syntax ({...}) directly to a dict, never a string
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid contexts format: expected dict, got {type(value).__name__}")
+
+    result: Dict[str, str] = {}
+
+    for key, val in value.items():
+        if key not in VALID_CONTEXT_KEYS:
+            raise ValueError(f"Unknown context key: {key} (valid: {', '.join(sorted(VALID_CONTEXT_KEYS))})")
+        if not isinstance(val, str) or val not in VALID_CONTEXT_VALUES:
+            raise ValueError(f"Unknown context value: {val} (valid: {', '.join(sorted(VALID_CONTEXT_VALUES))})")
+        result[key] = val
+
+    return result
+
+
 def load_reviewer_index(index_path: Path) -> Dict[str, Dict]:
     """
-    Load a reviewer index.yaml into slug -> {'useWhen': str, 'triggers': List[str]}.
+    Load a reviewer index.yaml into slug -> {'useWhen': str, 'triggers': List[str], 'contexts': Dict[str, str]}.
 
     Returns {} if the file is missing or unparsable.
+    Raises ValueError on missing contexts field or invalid contexts format.
     """
     if not index_path.exists():
         return {}
@@ -489,9 +529,18 @@ def load_reviewer_index(index_path: Path) -> Dict[str, Dict]:
         if not name:
             continue
         slug = slugify_reviewer_name(name)
+
+        # contexts field is required and must be present
+        if "contexts" not in entry:
+            raise ValueError(f"Missing required 'contexts' field for reviewer '{name}' ({slug})")
+
+        contexts_raw = entry.get("contexts")
+        contexts = parse_inline_flow_map(contexts_raw)
+
         result[slug] = {
             "useWhen": entry.get("useWhen", ""),
             "triggers": [str(t) for t in (entry.get("triggers") or [])],
+            "contexts": contexts,
         }
     return result
 
@@ -529,19 +578,58 @@ def matched_triggers(triggers: List[str], diff_index_content: str) -> List[str]:
 
 
 def changed_reviewers(current: Dict[str, Dict], candidate: Dict[str, Dict]) -> List[str]:
-    """Reviewer slugs whose triggers or useWhen differ between current and candidate."""
+    """Reviewer slugs whose triggers, useWhen, or contexts differ between current and candidate."""
     slugs = sorted(set(current.keys()) | set(candidate.keys()))
     changed = []
     for slug in slugs:
         cur = current.get(slug, {})
         cand = candidate.get(slug, {})
-        if cur.get("triggers") != cand.get("triggers") or cur.get("useWhen") != cand.get("useWhen"):
+        cur_contexts = cur.get("contexts", {})
+        cand_contexts = cand.get("contexts", {})
+        if (cur.get("triggers") != cand.get("triggers") or
+            cur.get("useWhen") != cand.get("useWhen") or
+            cur_contexts != cand_contexts):
             changed.append(slug)
     return changed
 
 
 def has_trigger_delta(slug: str, current: Dict[str, Dict], candidate: Dict[str, Dict]) -> bool:
     return current.get(slug, {}).get("triggers", []) != candidate.get(slug, {}).get("triggers", [])
+
+
+def has_contexts_delta(slug: str, current: Dict[str, Dict], candidate: Dict[str, Dict]) -> bool:
+    """Check if contexts differ between current and candidate for a reviewer."""
+    cur_contexts = current.get(slug, {}).get("contexts", {})
+    cand_contexts = candidate.get(slug, {}).get("contexts", {})
+    return cur_contexts != cand_contexts
+
+
+def format_contexts_delta(slug: str, current: Dict[str, Dict], candidate: Dict[str, Dict]) -> str:
+    """Format context changes as a human-readable string."""
+    cur_contexts = current.get(slug, {}).get("contexts", {})
+    cand_contexts = candidate.get(slug, {}).get("contexts", {})
+
+    changes = []
+    all_keys = sorted(set(cur_contexts.keys()) | set(cand_contexts.keys()))
+
+    for key in all_keys:
+        cur_val = cur_contexts.get(key)
+        cand_val = cand_contexts.get(key)
+
+        if cur_val == cand_val:
+            continue
+
+        if cur_val and cand_val:
+            # Both present but different (strength change)
+            changes.append(f"contexts: {key}: {cur_val} → {cand_val}")
+        elif cur_val and not cand_val:
+            # Was present, now removed (exclude)
+            changes.append(f"contexts: {key}: {cur_val} → (removed)")
+        else:
+            # Was not present, now added (include)
+            changes.append(f"contexts: {key}: (added) → {cand_val}")
+
+    return "; ".join(changes)
 
 
 def repo_stratified_sample(corpus: List[Path], sample_size: int = 60) -> List[Path]:
@@ -600,8 +688,13 @@ def cmd_simulate(corpus_root: str, candidate_index: str, reviewer_filter: Option
     print("=== Reviewer Selection Simulation ===")
     print()
 
-    current = load_reviewer_index(default_current_index_path())
-    candidate = load_reviewer_index(Path(candidate_index).expanduser())
+    try:
+        current = load_reviewer_index(default_current_index_path())
+        candidate = load_reviewer_index(Path(candidate_index).expanduser())
+    except ValueError as e:
+        print(f"Error loading reviewer index: {e}", file=sys.stderr)
+        sys.exit(1)
+
     if not candidate:
         print(f"Error: candidate index not found or unparsable: {candidate_index}", file=sys.stderr)
         return
@@ -620,12 +713,22 @@ def cmd_simulate(corpus_root: str, candidate_index: str, reviewer_filter: Option
         print(f"No review corpus found at {corpus_root}")
         return
 
+    # Separate reviewers by type of change
+    trigger_delta_slugs = [s for s in slugs if has_trigger_delta(s, current, candidate)]
+    contexts_delta_slugs = [s for s in slugs if has_contexts_delta(s, current, candidate) and s not in trigger_delta_slugs]
+    prose_only_slugs = [s for s in slugs if s not in trigger_delta_slugs and s not in contexts_delta_slugs]
+
+    # Report context-only changes
+    if contexts_delta_slugs:
+        print("=== Context Changes (no trigger delta) ===")
+        for slug in contexts_delta_slugs:
+            delta_str = format_contexts_delta(slug, current, candidate)
+            print(f"{slug}: {delta_str}")
+        print()
+
     # Prose-only fallback: any requested reviewer with no trigger delta at all
     # (useWhen text changed, triggers identical) gets the replay-prompt path
     # instead of a mechanical simulation.
-    trigger_delta_slugs = [s for s in slugs if has_trigger_delta(s, current, candidate)]
-    prose_only_slugs = [s for s in slugs if s not in trigger_delta_slugs]
-
     for slug in prose_only_slugs:
         use_when = candidate.get(slug, current.get(slug, {})).get("useWhen", "")
         print_prose_fallback(slug, use_when, corpus)

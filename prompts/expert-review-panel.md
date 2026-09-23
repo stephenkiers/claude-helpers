@@ -63,14 +63,20 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage route >/dev/n
 
 **Effort clause:**
 - `EFFORT=1` — never reached; Step 4's skip guard already diverted to the Swarm Path.
-- `EFFORT=5` — the caller has already lowered this to named selection over the full `index.yaml`
-  (`NAMED_SELECTION=true`, `NAMED_REVIEWERS` = every reviewer in the index). The router is bypassed;
-  synthesize `tagged-sections.md` via the existing named-mode block below. No new code path.
+- `EFFORT=5` — the caller has already lowered this to named selection over `review`-tagged reviewers
+  (`NAMED_SELECTION=true`, `NAMED_REVIEWERS` = every reviewer in the index whose `contexts` contains
+  a `review` key **at any strength** — explicitly including `named-only` Eric Evans, Business Beth,
+  Penny Pincher and `secondary` Bob, and explicitly excluding the three editors). The router is bypassed;
+  synthesize `tagged-sections.md` via the existing named-mode block below. No new code path. **Fail
+  closed:** if no reviewers resolve for the `review` context, stop and report that the `review` context
+  resolved empty — never run an empty panel.
 - `EFFORT=2` — never reached; Step 4 diverted to the Reviewer Pod Path.
-- `EFFORT=3` — select exactly the top 2 judgment reviewers and pre-seat `uncle-bob`: he reads
-  `full-diff.patch` in full (like a named reviewer — no line-range offsets for him). Record him in
-  the synthesized portion of `tagged-sections.md` with a line `| uncle-bob | Yes | Pre-seated at
-  effort 3 |` (append to the router's `## Panel Decision` table after it returns).
+- `EFFORT=3` — select exactly the top 2 judgment reviewers from the Router, plus the Router's **third**
+  pick (if three or more candidates resolve); when fewer than three candidates survive routing, seat
+  `fragile-feynman` instead. The third reviewer reads `full-diff.patch` in full (like a named reviewer —
+  no line-range offsets). Record them in the synthesized portion of `tagged-sections.md` with a line
+  `| {third-pick-name} | Yes | Routed third pick |` or `| fragile-feynman | Yes | Fallback (fewer than
+  three routed candidates) |` (append to the router's `## Panel Decision` table after it returns).
 
 **Sam System diff-shape precondition (deterministic, computed before the Router runs — issue #148).**
 Sam System's `useWhen` in `index.yaml` ("cross-file composition, factory wiring, event bus
@@ -109,8 +115,8 @@ this run and must not be evaluated or selected (do not present him as a live can
 `SAM_SYSTEM_GATE_REASON` as the reason. After the Router returns, ensure `tagged-sections.md`'s
 `## Panel Decision` table carries his row as `| sam-system | No | {SAM_SYSTEM_GATE_REASON} (structural precondition, not routed) |`
 regardless of what the Router wrote for him — append/overwrite that one row directly from the main
-thread rather than trusting the Router's compliance, the same way effort 3's `uncle-bob` pre-seat is
-appended directly rather than left to Router judgment. Also append this audit marker line to
+thread rather than trusting the Router's compliance, the same way effort 3's routed third pick/fallback
+is appended directly rather than left to Router judgment. Also append this audit marker line to
 `tagged-sections.md` when overwriting his row:
 ```
 <!-- structural-gate: sam-system | excluded | {SAM_SYSTEM_GATE_REASON} -->

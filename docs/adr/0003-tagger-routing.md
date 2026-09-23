@@ -164,3 +164,46 @@ This amendment does not contradict prior recorded findings in ADR-0003.2:
 - **Measure before building.** The gate was tuned on corpus data (`/review-stats` showed 94% Sam System
   inclusion vs. ~10% domain relevance). The threshold (3 files, 2 dirs) is measured from actual diffs,
   not arbitrary.
+
+## Amendment (ADR-0003.2.2) — Reviewer contexts and precedence
+
+### Context
+
+As the system evolved (ADR-0012, Phase 1 of Routing v2), reviewers gained tagged roles: `review` for code
+review participation, `plan` for planning-command participation, and `write` for writing/editing commands.
+Multiple participation-control mechanisms now coexist — the pre-router exclusion gate, the router's judgment,
+named-selection override, effort levels, and the new context tags — and their interaction order must be
+stated once, in one place, to prevent drift.
+
+### Decision
+
+The Router now honors **`contexts`** as a hard eligibility filter applied *before* the router runs, on the
+resolved candidate pool. The tag schema is defined in `reviewers/index.yaml` (header) and `reviewers/README.md`
+(**Contexts and resolution precedence** section).
+
+The **precedence order** for all review-participation mechanisms is defined once in `reviewers/README.md`'s **Contexts and resolution precedence** section (Named selection → `contexts` hard filter → Existing structural gates → `useWhen`/triggers ranking) — this ADR records the decision to adopt it, not a second copy of the steps. Consult that section for the canonical ordering and rationale.
+
+**Structural gates stay sibling:** `structural_pre_gate_ineligible` remains a top-level key in
+`reviewers/index.yaml` in Phase 1 and is not folded into `contexts` (Phase 2 may revisit this).
+
+**No `gate` field:** gating behavior (always-run, shape-gated, path-gated) stays where it is today
+(router/panel prose, structural_pre_gate_ineligible list, trigger conditions), pointed at from the entry's
+`note:` if needed. The `contexts` key carries only the strength enum (`primary|secondary|named-only`).
+
+**Missing `contexts` is a hard error:** every reviewer entry in `reviewers/index.yaml` must carry an
+explicit `contexts` map with valid keys and values; there are no defaults, and a missing map is not
+silently skipped.
+
+**Fail-closed on empty resolution:** if the resolved set for a context is empty after all four precedence steps,
+the command stops and reports which context resolved empty; the review or plan does not run with zero reviewers.
+
+### Consequences
+
+- **Good:** one rule for all mechanisms, stated once, cited not restated, preventing the tuning/architecture
+  drift that plagued the two planning tables.
+- **Good:** phase separation is clear — Phase 1 establishes the schema and four-stage precedence;
+  Phase 2 can operationalize `secondary` promotion without changing the precedence rule.
+- **Cost:** Phase 1 reviewers now have an additional tagged field to maintain; missing or wrong tags are
+  caught by `tests/test_reviewer_contexts.py` and by the audit harness (`scripts/reviewer-selection-audit.py`).
+- **Constraint:** all four participation mechanisms must yield a non-empty set; an `empty` result for any
+  context signals misconfiguration and halts the run.

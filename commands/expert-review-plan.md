@@ -22,25 +22,13 @@ Read the plan and identify:
 
 ## Step 3: Select Reviewers
 
-Choose 4-6 relevant reviewers from `~/.claude/reviewers/*.yaml`. Not every plan needs all perspectives:
+Choose 4-6 relevant reviewers based on the plan's scope. Read `~/.claude/reviewers/index.yaml` and consider only entries tagged with `plan` in their `contexts`. Extract the `name`, `file`, and `useWhen` for each `plan`-tagged reviewer to guide your selection.
 
-| Reviewer | File | Use When |
-|----------|------|----------|
-| Uncle Bob | uncle-bob.yaml | Architecture, SOLID, resource management |
-| Security Sage | security-sage.yaml | APIs, auth, user input, secrets, external systems |
-| Tara TypeSafe | tara-typesafe.yaml | Type design, contracts, validation |
-| Eric Evans | eric-evans.yaml | Domain modeling, naming, bounded contexts |
-| Business Beth | business-beth.yaml | User value, business alignment, priorities |
-| Penny Pincher | penny-pincher.yaml | Scope, complexity, build vs buy |
-| Curious Casey | curious-casey.yaml | Clarity, assumptions, test coverage |
-| Rachel | rachel.yaml | Concurrency, async, race conditions |
-| Know-It-All Nigel | know-it-all-nigel.yaml | Language idioms, polyglot best practices |
-| Danielle the Designer | danielle-designer.yaml | UX, user flows, error messages, CLI interfaces |
-| Dependency Skeptic | dependency-skeptic.yaml | New dependencies, version risks, platform coverage |
-| Data Scientist Dana | data-scientist-dana.yaml | Data quality, schema integrity, referential consistency, dedup |
-| Contrarian Carl | contrarian-carl.yaml | **Always runs last.** Finds what everyone else missed |
+**Note on `plan: named-only` reviewers**: Fiona and Dana are marked `plan: named-only` in the index and remain reachable when explicitly named by the user; see "Contexts and resolution precedence" in `reviewers/README.md` for the full rule.
 
 **Skip reviewers whose expertise doesn't apply.** A pure UI plan doesn't need Rachel. A naming refactor doesn't need Security Sage.
+
+**Fail closed**: if no reviewers resolve for the `plan` context, stop and report that the `plan` context resolved empty — never run an empty panel.
 
 **Contrarian Carl is special**: He runs LAST, sees all prior reviews, and must find something DIFFERENT. Most of his concerns get rejected — that's fine. His value is catching groupthink blind spots.
 

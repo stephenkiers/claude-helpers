@@ -65,5 +65,6 @@ mentions that made it into the action plan) for each reviewer across all runs.
 - **Opt-in only:** Manual run after expert-review, never automatic.
 - **Read-only:** No interaction with reviewer logic, rulings, or findings suppression.
 - **Per-repo queue:** Stored at `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` alongside your review directories.
+- **Zero runs ≠ zero value:** A reviewer tagged `review: named-only` or `review: secondary` will show few or zero runs because they are not auto-routed; a zero row must not be cited as evidence of no value. Phase 3 exploration seats are the designed measurement.
 
 For the methodology behind tuning `/expert-review`'s reviewer selection based on attendance and yield metrics, see `prompts/reviewer-selection-audit.md`.
