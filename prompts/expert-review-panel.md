@@ -13,6 +13,7 @@ read this file and follow these steps.
 - `MODEL_EXPLICIT` — `true` when the caller passed `--model` explicitly, else `false` (REQUIRED)
 - `EFFORT` — the effort ladder level, 1–5 (OPTIONAL, default 4; unset ≡ 4 ≡ the full panel exactly as documented below, so callers that predate the ladder — the deprecated `/expert-review-coworker(-beta)` — keep working unchanged)
 - `EFFORT_EXPLICIT` — `true` when the caller passed `--effort` explicitly, else `false` (OPTIONAL, default `false`)
+- `PR_MODE` — `true` if in PR mode (reviewing a coworker's PR), else `false` (OPTIONAL, default `false`)
 - `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
@@ -221,6 +222,18 @@ input:
   echo "## (Named selection: all reviewers read full-diff.patch directly — no line-range offsets)"
 } > "$REVIEW_DIR/tagged-sections.md"
 ```
+
+**Shadow hook (observe-only, #195):** After the Router and named-mode synthesis complete, write a
+deterministic score copy for shadow measurement only:
+
+```bash
+ROUTE_SCORE_MODE=routed; [ "$NAMED_SELECTION" = "true" ] && ROUTE_SCORE_MODE=named
+ROUTE_SCORE_PR=""; [ "$PR_MODE" = "true" ] && ROUTE_SCORE_PR="--pr"
+python3 "$HOME/.claude/scripts/route-score.py" --diff "$REVIEW_DIR/full-diff.patch" \
+  --mode "$ROUTE_SCORE_MODE" $ROUTE_SCORE_PR --effort "$EFFORT" --out "$REVIEW_DIR/route-scores.json" >/dev/null 2>&1 || true
+```
+
+Observe-only (#195): never read this file, never pass it to any subagent, never let it affect seating.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage route --outcome success 2>/dev/null || true
