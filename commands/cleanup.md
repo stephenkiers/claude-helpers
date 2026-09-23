@@ -59,7 +59,8 @@ Every call below is non-fatal (see docs/metrics.md's telemetry call-site convent
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command cleanup >/dev/null 2>&1 || true
 
 # Checkpoint-abandonment reconciliation: scan the telemetry log for any `checkpoint` stage.begin
-# events with no matching stage.end. These represent /expert-plan-v2 sessions the user abandoned
+# events with no matching stage.end. These represent /expert-plan-deprecated-v2 (formerly
+# /expert-plan-v2) sessions the user abandoned
 # (stopped responding without explicitly declining the Step 6 checkpoint, so no stage-end could
 # ever fire from inside that conversation). Backfill --outcome interrupted for them directly via
 # telemetry_schema (not the stage-end CLI, which resolves state against the *current* session —

@@ -1,8 +1,9 @@
 # Join-Barrier Pattern for Parallel Expert Contributions
 
-This pattern is used by `/expert-plan-v2` in Steps 3 (parallel contributions), 4 (contrarian Carl),
-and 8 (alignment pass) to coordinate multiple subagents and ensure all checkpoints are written
-before proceeding.
+This pattern is used by `/expert-plan-deprecated-v2` (formerly v2) in Steps 3 (parallel contributions),
+4 (contrarian Carl), and 8 (alignment pass), and by `/expert-plan` (formerly v3) in Step 3 (parallel
+contributions), to coordinate multiple subagents and ensure all checkpoints are written before
+proceeding.
 
 ## Overview
 

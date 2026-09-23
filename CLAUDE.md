@@ -137,13 +137,16 @@ separate from the reviewer-context cascade.
   flow: fetch a coworker's PR into an isolated worktree, run the same shared blind-first panel
   (`prompts/expert-review-panel.md`), then draft PR-ready comments you paste yourself (never
   auto-posted). Takes a PR URL and `--include-medium`
-- `/expert-plan` — collaborative plan building with expert personas (asks, doesn't assume)
-- `/expert-plan-v2` — parallel isolated expert contributions; A/B baseline alongside v1 for personal
-  preference, `--effort 1-5` scaling (see
-  [ADR-0018](docs/adr/0018-parallel-planning-checkpoint-architecture.md) for why it exists alongside v1)
-- `/expert-plan-v3` — focused-panel planning with two effort levels (2 = 3 experts + consistency check, 3 = + independent auditor);
-  leaner alternative to v2 with Sonnet main-thread orchestration + per-step Opus judgment work (see
+- `/expert-plan` — **default planning entry point** (formerly `/expert-plan-v3`); focused-panel
+  planning with two effort levels (2 = 3 experts + consistency check, 3 = + independent auditor),
+  Sonnet main-thread orchestration + per-step Opus judgment work (see
   [ADR-0020](docs/adr/0020-expert-plan-v3-focused-panel.md))
+- `/expert-plan-deprecated` — **deprecated** (still functional): the original v1 design, collaborative
+  plan building with expert personas (asks, doesn't assume); superseded by `/expert-plan`
+- `/expert-plan-deprecated-v2` — **deprecated** (still functional): parallel isolated expert
+  contributions with the full `--effort 1-5` scaling ladder (see
+  [ADR-0018](docs/adr/0018-parallel-planning-checkpoint-architecture.md) for why it existed alongside v1);
+  superseded by `/expert-plan` as the default but kept as the reference implementation for the full ladder
 - `/expert-review-plan` — review a plan with the expert panel
 - `/expert-pr-comments` — review PR comments, convene an expert huddle on flagged items
 - `/pr-comments` — review PR comments and decide how to respond

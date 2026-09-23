@@ -1,7 +1,7 @@
 # Plan Contribution Contract
 
-This file defines the **output format** for expert contributors to `/expert-plan-v2` planning
-sessions. This is a **format specification**, not a persona or lens — read this alongside your
+This file defines the **output format** for expert contributors to `/expert-plan-deprecated-v2`
+(formerly v2) and `/expert-plan` (formerly v3) planning sessions. This is a **format specification**, not a persona or lens — read this alongside your
 assigned reviewer persona YAML, not instead of it.
 
 ## How This File Works With Personas

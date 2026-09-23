@@ -1,11 +1,13 @@
 ---
-description: Parallel expert planning with isolated contributions (v2) — A-B baseline alongside /expert-plan. Scales better on large tickets — subagents write checkpoints instead of accumulating in orchestrator context.
+description: "Deprecated: superseded by /expert-plan (formerly v3) — see ADR-0020. Parallel expert planning with isolated contributions (v2) — A-B baseline alongside /expert-plan-deprecated (v1). Scales better on large tickets — subagents write checkpoints instead of accumulating in orchestrator context."
 argument-hint: [--effort 1|2|3|4|5] [--model haiku|sonnet|opus|fable]
 allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(gh repo view:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
-# Expert Plan v2
+# Expert Plan v2 (Deprecated)
+
+**Deprecated:** `/expert-plan` now refers to the former `/expert-plan-v3` — a leaner pipeline with genuinely isolated contributions and a mandatory consistency check at a fraction of v2 effort-4's cost. This command is kept for reference and its full 1-5 effort ladder but is no longer the default. See [ADR-0020](../docs/adr/0020-expert-plan-v3-focused-panel.md).
 
 A checkpoint-based, parallel planning pipeline:
 
@@ -47,7 +49,7 @@ A checkpoint-based, parallel planning pipeline:
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25 · **fable** $10/$50.
 
-Examples: `/expert-plan-v2 --model haiku` (contributors run haiku; synthesis and alignment still run opus — see Model Policy) · `/expert-plan-v2 --effort 4` (default: 4-6 experts + Carl, full pipeline with alignment pass) · `/expert-plan-v2 --effort 5` (everyone, full depth) · `/expert-plan-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue).
+Examples: `/expert-plan-deprecated-v2 --model haiku` (contributors run haiku; synthesis and alignment still run opus — see Model Policy) · `/expert-plan-deprecated-v2 --effort 4` (default: 4-6 experts + Carl, full pipeline with alignment pass) · `/expert-plan-deprecated-v2 --effort 5` (everyone, full depth) · `/expert-plan-deprecated-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue).
 
 ## Checkpoint Files
 
@@ -91,7 +93,7 @@ the distinction between real controls (no `Edit`, no write-capable Bash) and res
 convention on `Write`).
 
 **If the invoking session is already in Plan Mode** (the user was mid-plan at the interactive-session
-level — independent of this command — when they typed `/expert-plan-v2`), that pre-existing Plan Mode
+level — independent of this command — when they typed `/expert-plan-deprecated-v2`), that pre-existing Plan Mode
 still restricts `Write` to a single designated plan file, which the checkpoint pipeline cannot work
 under. Step 0 (the Plan Mode guard, documented in detail below) checks for this explicitly and exits
 Plan Mode deterministically before any subagent work begins, rather than leaving it to be improvised
@@ -113,7 +115,7 @@ If `WAS_IN_PLAN_MODE=1`: explain the situation to the
 user in a chat message (without writing or editing the plan file), then call `ExitPlanMode` right away,
 e.g.:
 
-"This session is already in Plan Mode. `/expert-plan-v2` is a multi-agent planning pipeline that writes
+"This session is already in Plan Mode. `/expert-plan-deprecated-v2` is a multi-agent planning pipeline that writes
 working artifacts (routing decision, per-expert contributions, digest, synthesized plan) to
 `~/.claude/plan-sessions/` and its final deliverable to `~/.claude/plans/{slug}.md`. The `ExitPlanMode`
 dialog will appear — approve to exit Plan Mode and proceed with the pipeline (Steps 1–11 below). When the
@@ -133,13 +135,13 @@ If `WAS_IN_PLAN_MODE=0`, skip this guard entirely and proceed directly to setup 
   - If the user **declines** the dialog: stop cleanly (no telemetry call needed yet).
   - If `ExitPlanMode` **errors**: `WAS_IN_PLAN_MODE=1` already established that the session is in
     Plan Mode, so an error here is not evidence the guard can skip — report "Plan Mode is still
-    active. Press Shift+Tab to switch modes, then re-run `/expert-plan-v2`" and use `guard_block`
+    active. Press Shift+Tab to switch modes, then re-run `/expert-plan-deprecated-v2`" and use `guard_block`
     to stop the pipeline.
 
   Only when `WAS_IN_PLAN_MODE=0` from the start does the run proceed without calling `ExitPlanMode`
   at all.
 
-**Recovery:** If a `Write` or `mkdir` denial during the checkpoint pipeline mentions Plan Mode, Plan Mode is still active despite the guard. Press Shift+Tab to exit, then re-run `/expert-plan-v2`.
+**Recovery:** If a `Write` or `mkdir` denial during the checkpoint pipeline mentions Plan Mode, Plan Mode is still active despite the guard. Press Shift+Tab to exit, then re-run `/expert-plan-deprecated-v2`.
 
 Then set up the checkpoint directory and parse `--effort`:
 
@@ -236,10 +238,10 @@ export PLAN_SESSION_DIR REPO_KEY SLUG PROJECT_ROOT EFFORT
 
 ### Telemetry: mark command start
 
-Telemetry is local, observational, and best-effort — it must never block or fail `/expert-plan-v2`:
+Telemetry is local, observational, and best-effort — it must never block or fail `/expert-plan-deprecated-v2`:
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan-v2 >/dev/null 2>&1 || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-plan-deprecated-v2 >/dev/null 2>&1 || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-context >/dev/null 2>&1 || true
 ```
 
@@ -496,7 +498,7 @@ If the user declines to continue at this checkpoint (says "never mind" or "let's
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome interrupted 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v2 --outcome interrupted 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-deprecated-v2 --outcome interrupted 2>/dev/null || true
 ```
 
 Then exit cleanly.
@@ -702,7 +704,7 @@ Next steps:
 Always include the alignment pass status line, even if it says "skipped", so the user knows what ran. The plan handed to `/track-and-start` → `/implement-with-haiku` contains no unresolved defects the alignment pass found, except any the user explicitly declined to decide on in Step 10 (left as known open gaps in `## Alignment Notes — Needs Decision`).
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-v2 --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan-deprecated-v2 --outcome success 2>/dev/null || true
 ```
 
 ---
@@ -754,7 +756,7 @@ Replace `<name>` with the current stage name and `<class>` with a descriptive fa
 
 Stages, in order: `gather-context`, `route-experts`, `expert-contributions`, `contrarian`, `digest-questions`, `checkpoint`, `synthesize-plan`, `alignment-pass`, `reconcile-alignment`, `post-alignment-checkpoint`.
 
-Use the exact `run-metrics.py` call-site convention (matching `commands/expert-plan.md`):
+Use the exact `run-metrics.py` call-site convention (matching `commands/expert-plan-deprecated.md`):
 - `stage-begin` calls are non-fatal with `|| true`
 - `stage-end` and `command-end` use `--outcome success|interrupted|failure` and `2>/dev/null || true`
 - **Every code path that CAN reach an exit must call `stage-end --outcome interrupted` then `command-end --outcome interrupted`** before returning — including early abort/decline at the Step 6 checkpoint. This addresses the issue's explicit callout: "v1's 39% completion rate traced to leaked `checkpoint` stages."
@@ -787,6 +789,6 @@ Subagents in this command run as `subagent_type: "expert-reviewer"`, exactly lik
 
 ## Out of Scope — Do Not Do These
 
-- Do not modify `commands/expert-plan.md` (v1) in any way.
+- Do not modify `commands/expert-plan-deprecated.md` (v1) in any way.
 - Do not implement any v1-retirement/deprecation banner in this command.
 - Do not implement prior-plan-session cache reuse — every run is fresh (the issue explicitly forbids it).

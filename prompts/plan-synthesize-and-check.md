@@ -1,6 +1,6 @@
 # Plan Synthesize and Consistency Check Agent Prompt
 
-You are performing **two sequential roles** for `/expert-plan-v3`:
+You are performing **two sequential roles** for `/expert-plan` (formerly v3):
 1. **Synthesize** — read all expert contributions, the user's decisions, and the gathered context to write a concrete, actionable plan
 2. **Consistency Check** — immediately after writing the plan, verify it against its own inputs (self-check, not independent audit)
 

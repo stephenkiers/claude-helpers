@@ -37,11 +37,11 @@ SCRIPT_CHECK_STAGE = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 def main():
     h = Harness("EXPERT-PLAN-V3 STRUCTURAL TEST SUITE")
 
-    # Test 1: File existence for commands/expert-plan-v3.md
-    command_file = REPO_ROOT / "commands" / "expert-plan-v3.md"
+    # Test 1: File existence for commands/expert-plan.md
+    command_file = REPO_ROOT / "commands" / "expert-plan.md"
     command_exists = command_file.is_file()
     h.test_result(
-        "commands/expert-plan-v3.md exists as a regular file",
+        "commands/expert-plan.md exists as a regular file",
         command_exists,
         str(command_file) if not command_exists else "",
     )
@@ -52,7 +52,7 @@ def main():
         command_content = command_file.read_text()
         command_nonempty = len(command_content.strip()) > 0
     h.test_result(
-        "commands/expert-plan-v3.md is non-empty",
+        "commands/expert-plan.md is non-empty",
         command_nonempty,
         "file is empty" if not command_nonempty else "",
     )
@@ -65,7 +65,7 @@ def main():
 
         has_model_sonnet = re.search(r'model:\s*sonnet', frontmatter)
         h.test_result(
-            "commands/expert-plan-v3.md frontmatter specifies model: sonnet",
+            "commands/expert-plan.md frontmatter specifies model: sonnet",
             bool(has_model_sonnet),
             "frontmatter does not specify model: sonnet" if not has_model_sonnet else "",
         )
@@ -73,18 +73,18 @@ def main():
         # Verify it's not set to opus at command level
         has_model_opus = re.search(r'model:\s*opus', frontmatter)
         h.test_result(
-            "commands/expert-plan-v3.md frontmatter is NOT model: opus",
+            "commands/expert-plan.md frontmatter is NOT model: opus",
             not has_model_opus,
             "frontmatter incorrectly specifies model: opus" if has_model_opus else "",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md frontmatter specifies model: sonnet",
+            "commands/expert-plan.md frontmatter specifies model: sonnet",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md frontmatter is NOT model: opus",
+            "commands/expert-plan.md frontmatter is NOT model: opus",
             False,
             "file does not exist",
         )
@@ -94,12 +94,12 @@ def main():
         has_effort_2 = re.search(r'--effort\s+2|--effort\s*=\s*2|--effort\s*<[^>]*2', command_content)
         has_effort_3 = re.search(r'--effort\s+3|--effort\s*=\s*3|--effort\s*<[^>]*3', command_content)
         h.test_result(
-            "commands/expert-plan-v3.md documents --effort 2",
+            "commands/expert-plan.md documents --effort 2",
             bool(has_effort_2),
             "" if has_effort_2 else "no mention of --effort 2",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents --effort 3",
+            "commands/expert-plan.md documents --effort 3",
             bool(has_effort_3),
             "" if has_effort_3 else "no mention of --effort 3",
         )
@@ -114,23 +114,23 @@ def main():
             re.IGNORECASE
         )
         h.test_result(
-            "commands/expert-plan-v3.md indicates --effort 1/4/5 are not supported",
+            "commands/expert-plan.md indicates --effort 1/4/5 are not supported",
             bool(rejects_bad_efforts),
             "" if rejects_bad_efforts else "no mention of rejecting invalid effort levels",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md documents --effort 2",
+            "commands/expert-plan.md documents --effort 2",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents --effort 3",
+            "commands/expert-plan.md documents --effort 3",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md indicates --effort 1/4/5 are not supported",
+            "commands/expert-plan.md indicates --effort 1/4/5 are not supported",
             False,
             "file does not exist",
         )
@@ -145,7 +145,7 @@ def main():
         stage_pairing_clean = result.returncode == 0
         stage_findings = result.stdout.strip()
         h.test_result(
-            "commands/expert-plan-v3.md has no orphaned or unmatched stages",
+            "commands/expert-plan.md has no orphaned or unmatched stages",
             stage_pairing_clean,
             stage_findings if not stage_pairing_clean else "",
         )
@@ -176,7 +176,7 @@ def main():
         required_present = required_stages.issubset(stage_begins)
         missing = required_stages - stage_begins
         h.test_result(
-            "commands/expert-plan-v3.md contains all required stage names",
+            "commands/expert-plan.md contains all required stage names",
             required_present,
             f"missing: {', '.join(sorted(missing))}" if missing else "",
         )
@@ -184,7 +184,7 @@ def main():
         # Check that any extra stages (besides conditional) are noted
         extra = stage_begins - all_expected
         h.test_result(
-            "commands/expert-plan-v3.md contains only expected stages",
+            "commands/expert-plan.md contains only expected stages",
             len(extra) == 0,
             f"unexpected: {', '.join(sorted(extra))}" if extra else "",
         )
@@ -197,34 +197,34 @@ def main():
                 re.IGNORECASE
             )
             h.test_result(
-                "commands/expert-plan-v3.md documents conditional stages (audit-plan, repair-plan)",
+                "commands/expert-plan.md documents conditional stages (audit-plan, repair-plan)",
                 bool(conditional_documented),
                 "" if conditional_documented else "no documentation of conditional nature",
             )
         else:
             h.test_result(
-                "commands/expert-plan-v3.md documents conditional stages (audit-plan, repair-plan)",
+                "commands/expert-plan.md documents conditional stages (audit-plan, repair-plan)",
                 True,
                 "conditional stages not present (may be acceptable if effort 3 logic is conditional)",
             )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md has no orphaned or unmatched stages",
+            "commands/expert-plan.md has no orphaned or unmatched stages",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md contains all required stage names",
+            "commands/expert-plan.md contains all required stage names",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md contains only expected stages",
+            "commands/expert-plan.md contains only expected stages",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents conditional stages (audit-plan, repair-plan)",
+            "commands/expert-plan.md documents conditional stages (audit-plan, repair-plan)",
             False,
             "file does not exist",
         )
@@ -247,13 +247,13 @@ def main():
                 found_v2.append(agent)
 
         h.test_result(
-            "commands/expert-plan-v3.md does NOT mention v2 subagents (router/digest/pod/swarm)",
+            "commands/expert-plan.md does NOT mention v2 subagents (router/digest/pod/swarm)",
             not has_v2_patterns,
             f"found: {', '.join(found_v2)}" if found_v2 else "",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md does NOT mention v2 subagents (router/digest/pod/swarm)",
+            "commands/expert-plan.md does NOT mention v2 subagents (router/digest/pod/swarm)",
             False,
             "file does not exist",
         )
@@ -273,24 +273,24 @@ def main():
         )
 
         h.test_result(
-            "commands/expert-plan-v3.md references plan-synthesize-and-check.md",
+            "commands/expert-plan.md references plan-synthesize-and-check.md",
             has_synthesize_and_check_prompt,
             "" if has_synthesize_and_check_prompt else "no reference to plan-synthesize-and-check.md",
         )
 
         h.test_result(
-            "commands/expert-plan-v3.md documents Step 6 (merged Synthesize+Check) dispatched with model: opus",
+            "commands/expert-plan.md documents Step 6 (merged Synthesize+Check) dispatched with model: opus",
             bool(has_opus_for_dispatch),
             "" if has_opus_for_dispatch else "no explicit model: opus for Step 6 dispatch",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md references plan-synthesize-and-check.md",
+            "commands/expert-plan.md references plan-synthesize-and-check.md",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents Step 6 (merged Synthesize+Check) dispatched with model: opus",
+            "commands/expert-plan.md documents Step 6 (merged Synthesize+Check) dispatched with model: opus",
             False,
             "file does not exist",
         )
@@ -299,7 +299,7 @@ def main():
     if command_exists:
         has_audit_prompt = "plan-audit" in command_content
         h.test_result(
-            "commands/expert-plan-v3.md references plan-audit.md",
+            "commands/expert-plan.md references plan-audit.md",
             has_audit_prompt,
             "" if has_audit_prompt else "no reference to plan-audit.md",
         )
@@ -311,7 +311,7 @@ def main():
             re.IGNORECASE
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents audit as conditional (effort 3)",
+            "commands/expert-plan.md documents audit as conditional (effort 3)",
             bool(has_audit_conditional),
             "" if has_audit_conditional else "no documentation of audit being conditional on effort 3",
         )
@@ -328,23 +328,23 @@ def main():
             command_content
         )
         h.test_result(
-            "commands/expert-plan-v3.md's audit-plan stage is conditionally gated",
+            "commands/expert-plan.md's audit-plan stage is conditionally gated",
             bool(has_audit_conditional_gate),
             "" if has_audit_conditional_gate else "audit-plan stage-begin is not properly gated",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md references plan-audit.md",
+            "commands/expert-plan.md references plan-audit.md",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents audit as conditional (effort 3)",
+            "commands/expert-plan.md documents audit as conditional (effort 3)",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md's audit-plan stage gate uses -eq 3",
+            "commands/expert-plan.md's audit-plan stage gate uses -eq 3",
             False,
             "file does not exist",
         )
@@ -364,7 +364,7 @@ def main():
         )
 
         h.test_result(
-            "commands/expert-plan-v3.md defines FINAL_PLAN_PATH with INVOCATION_ID",
+            "commands/expert-plan.md defines FINAL_PLAN_PATH with INVOCATION_ID",
             bool(has_invocation_id and invocation_in_path),
             "" if (has_invocation_id and invocation_in_path) else "FINAL_PLAN_PATH does not include INVOCATION_ID",
         )
@@ -375,18 +375,18 @@ def main():
             command_content
         )
         h.test_result(
-            "commands/expert-plan-v3.md does NOT use bare ${SLUG}.md for FINAL_PLAN_PATH",
+            "commands/expert-plan.md does NOT use bare ${SLUG}.md for FINAL_PLAN_PATH",
             not bool(has_bare_slug_path),
             "FINAL_PLAN_PATH uses bare ${SLUG}.md" if has_bare_slug_path else "",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md defines FINAL_PLAN_PATH with INVOCATION_ID",
+            "commands/expert-plan.md defines FINAL_PLAN_PATH with INVOCATION_ID",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md does NOT use bare ${SLUG}.md for FINAL_PLAN_PATH",
+            "commands/expert-plan.md does NOT use bare ${SLUG}.md for FINAL_PLAN_PATH",
             False,
             "file does not exist",
         )
@@ -406,24 +406,24 @@ def main():
         )
 
         h.test_result(
-            "commands/expert-plan-v3.md documents exit path with stage-end --outcome interrupted",
+            "commands/expert-plan.md documents exit path with stage-end --outcome interrupted",
             bool(has_interrupted_exit),
             "" if has_interrupted_exit else "no stage-end --outcome interrupted documented",
         )
 
         h.test_result(
-            "commands/expert-plan-v3.md documents exit path with command-end --outcome interrupted",
+            "commands/expert-plan.md documents exit path with command-end --outcome interrupted",
             bool(has_interrupted_command_end),
             "" if has_interrupted_command_end else "no command-end --outcome interrupted documented",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md documents exit path with stage-end --outcome interrupted",
+            "commands/expert-plan.md documents exit path with stage-end --outcome interrupted",
             False,
             "file does not exist",
         )
         h.test_result(
-            "commands/expert-plan-v3.md documents exit path with command-end --outcome interrupted",
+            "commands/expert-plan.md documents exit path with command-end --outcome interrupted",
             False,
             "file does not exist",
         )
@@ -448,13 +448,13 @@ def main():
     if command_exists:
         has_literal_zero = re.search(r'[^$]\$0|^\$0', command_content, re.MULTILINE)
         h.test_result(
-            "commands/expert-plan-v3.md contains no literal $0 (checked by test_command_doc_shell_conventions.py)",
+            "commands/expert-plan.md contains no literal $0 (checked by test_command_doc_shell_conventions.py)",
             not bool(has_literal_zero),
             "" if not has_literal_zero else "found literal $0",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md contains no literal $0 (checked by test_command_doc_shell_conventions.py)",
+            "commands/expert-plan.md contains no literal $0 (checked by test_command_doc_shell_conventions.py)",
             False,
             "file does not exist",
         )
@@ -467,13 +467,13 @@ def main():
             command_content
         )
         h.test_result(
-            "commands/expert-plan-v3.md does not use echo \"$VAR\" | pattern",
+            "commands/expert-plan.md does not use echo \"$VAR\" | pattern",
             not bool(has_dangerous_echo),
             "" if not has_dangerous_echo else "found dangerous echo \"$VAR\" | pattern",
         )
     else:
         h.test_result(
-            "commands/expert-plan-v3.md does not use echo \"$VAR\" | pattern",
+            "commands/expert-plan.md does not use echo \"$VAR\" | pattern",
             False,
             "file does not exist",
         )
@@ -489,7 +489,7 @@ def main():
     # is added here.
     if command_exists:
         # Count command-end occurrences — each exit path should have one
-        command_end_count = len(re.findall(r'command-end.*--command\s+expert-plan-v3', command_content))
+        command_end_count = len(re.findall(r'command-end.*--command\s+expert-plan', command_content))
 
         h.test_result(
             "Spec 1a: Exit-path telemetry — command-end appears multiple times (all exit paths)",
