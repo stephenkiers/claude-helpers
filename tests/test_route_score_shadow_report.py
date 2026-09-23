@@ -140,105 +140,7 @@ if __name__ == "__main__":
             t("shadow section creation", False, str(e))
 
     # ========================================================================
-    print("\n[Section 2] Shadow section with effort-4 routed run")
-
-    with FakeHome() as home:
-        run_dir = make_run_dir(home, "test-repo", "routed-run")
-        run_dir.joinpath("full-diff.patch").write_text(make_minimal_diff())
-        run_dir.joinpath("tagged-sections.md").write_text(make_tagged_sections())
-        run_dir.joinpath("findings.json").write_text(json.dumps({
-            "schema_version": 1,
-            "findings": [
-                make_finding("f1", "Critical", "uncle-bob", [], "CONFIRMED"),
-                make_finding("f2", "High", "uncle-bob", [], "CONFIRMED"),
-            ]
-        }))
-        run_dir.joinpath("route-scores.json").write_text(json.dumps(
-            make_route_scores(mode="routed", effort=4)
-        ))
-
-        try:
-            cfg = reviewer_yield.load_bucket_config()
-            data = reviewer_yield.compute_report_data("test-repo", cfg)
-
-            shadow = data.get("shadow", {})
-            # The effort4_routed cohort should exist or be None
-            effort4 = shadow.get("effort4_routed")
-
-            t("effort4_routed cohort is dict or None when present",
-              effort4 is None or isinstance(effort4, dict),
-              f"effort4={effort4}")
-        except Exception as e:
-            t("effort4 routed cohort", False, str(e))
-
-    # ========================================================================
-    print("\n[Section 3] Shadow section with effort-5 named run")
-
-    with FakeHome() as home:
-        run_dir = make_run_dir(home, "test-repo", "named-run")
-        run_dir.joinpath("full-diff.patch").write_text(make_minimal_diff())
-        run_dir.joinpath("tagged-sections.md").write_text(make_tagged_sections())
-        run_dir.joinpath("findings.json").write_text(json.dumps({
-            "schema_version": 1,
-            "findings": [make_finding("f1", "High", "uncle-bob", [], "CONFIRMED")]
-        }))
-        run_dir.joinpath("route-scores.json").write_text(json.dumps(
-            make_route_scores(mode="named", effort=5)
-        ))
-
-        try:
-            cfg = reviewer_yield.load_bucket_config()
-            data = reviewer_yield.compute_report_data("test-repo", cfg)
-
-            shadow = data.get("shadow", {})
-            # The effort5_full cohort should exist or be None
-            effort5 = shadow.get("effort5_full")
-
-            t("effort5_full cohort is dict or None when present",
-              effort5 is None or isinstance(effort5, dict),
-              f"effort5={effort5}")
-        except Exception as e:
-            t("effort5 named cohort", False, str(e))
-
-    # ========================================================================
-    print("\n[Section 4] Silent-zero guard: classifications exist")
-
-    with FakeHome() as home:
-        # Runs with various missing pieces
-        for i, (has_diff, has_findings, has_scores) in enumerate([
-            (False, True, True),   # no-diff
-            (True, False, True),   # unattributable
-            (True, True, False),   # pre-shadow
-        ]):
-            run_id = f"test-{i}"
-            run_dir = make_run_dir(home, "test-repo", run_id)
-            run_dir.joinpath("tagged-sections.md").write_text(make_tagged_sections())
-
-            if has_diff:
-                run_dir.joinpath("full-diff.patch").write_text(make_minimal_diff())
-            if has_findings:
-                run_dir.joinpath("findings.json").write_text(json.dumps({
-                    "schema_version": 1,
-                    "findings": [make_finding("f", "High", "uncle-bob", [], "CONFIRMED")]
-                }))
-            if has_scores:
-                run_dir.joinpath("route-scores.json").write_text(json.dumps(make_route_scores()))
-
-        try:
-            cfg = reviewer_yield.load_bucket_config()
-            data = reviewer_yield.compute_report_data("test-repo", cfg)
-
-            shadow = data.get("shadow", {})
-            counts = shadow.get("counts", {})
-
-            t("shadow section has counts dict for classifications",
-              isinstance(counts, dict) and len(counts) > 0,
-              f"counts={counts}")
-        except Exception as e:
-            t("silent-zero guard classifications", False, str(e))
-
-    # ========================================================================
-    print("\n[Section 5] Methodology section includes explanation")
+    print("\n[Section 2] Methodology section includes explanation")
 
     with FakeHome() as home:
         run_dir = make_run_dir(home, "test-repo", "method-test")
@@ -268,7 +170,7 @@ if __name__ == "__main__":
             t("methodology section", False, str(e))
 
     # ========================================================================
-    print("\n[Section 6] Markdown rendering includes shadow section")
+    print("\n[Section 3] Markdown rendering includes shadow section")
 
     with FakeHome() as home:
         run_dir = make_run_dir(home, "test-repo", "markdown-test")
@@ -297,80 +199,30 @@ if __name__ == "__main__":
             t("markdown rendering", False, str(e))
 
     # ========================================================================
-    print("\n[Section 7] Always-run reviewers excluded from miss rate")
+    print("\n[Section 4] Stored hook error is counted but the run is still re-scored")
 
     with FakeHome() as home:
-        run_dir = make_run_dir(home, "test-repo", "always-run-test")
+        run_dir = make_run_dir(home, "test-repo", "feat-abc123-20260920T120000-hookerr")
         run_dir.joinpath("full-diff.patch").write_text(make_minimal_diff())
-        run_dir.joinpath("tagged-sections.md").write_text(make_tagged_sections())
-        run_dir.joinpath("findings.json").write_text(json.dumps({
-            "schema_version": 1,
-            "findings": [
-                make_finding("f1", "High", "contrarian-carl", [], "CONFIRMED"),
-                make_finding("f2", "High", "code-rot-cody", [], "CONFIRMED"),
-            ]
-        }))
-
-        scores = make_route_scores()
-        scores["reviewers"]["contrarian-carl"] = {"score": 0, "tier": "Always", "reasons": []}
-        scores["reviewers"]["code-rot-cody"] = {"score": 0, "tier": "Always", "reasons": []}
-        run_dir.joinpath("route-scores.json").write_text(json.dumps(scores))
-
-        try:
-            cfg = reviewer_yield.load_bucket_config()
-            data = reviewer_yield.compute_report_data("test-repo", cfg)
-
-            shadow = data.get("shadow", {})
-            counts = shadow.get("counts", {})
-
-            # Always-run findings should not count as misses
-            always_run_count = counts.get("always_run_only", 0)
-            t("findings by always-run reviewers tracked separately",
-              isinstance(counts, dict),
-              f"counts={counts}")
-        except Exception as e:
-            t("always-run exclusion", False, str(e))
-
-    # ========================================================================
-    print("\n[Section 8] Report handles missing scorer gracefully")
-
-    with FakeHome() as home:
-        run_dir = make_run_dir(home, "test-repo", "unavail-test")
-        run_dir.joinpath("full-diff.patch").write_text(make_minimal_diff())
-        run_dir.joinpath("tagged-sections.md").write_text(make_tagged_sections())
         run_dir.joinpath("findings.json").write_text(json.dumps({
             "schema_version": 1,
             "findings": [make_finding("f1", "High", "uncle-bob", [], "CONFIRMED")]
         }))
-        # Stored status is error
-        scores = make_route_scores()
-        scores["status"] = "error"
-        scores["error"] = "ImportError: No module named 'yaml'"
-        run_dir.joinpath("route-scores.json").write_text(json.dumps(scores))
-
-        try:
-            cfg = reviewer_yield.load_bucket_config()
-            data = reviewer_yield.compute_report_data("test-repo", cfg)
-
-            shadow = data.get("shadow", {})
-            counts = shadow.get("counts", {})
-
-            # Should track hook errors but still process
-            t("hook_errors tracked in counts",
-              isinstance(counts, dict) and ("hook_errors" in counts or len(counts) > 0),
-              f"counts={counts}")
-
-            # Rest of report should still render
-            t("report still produces markdown after scorer error",
-              reviewer_yield.render_report_markdown(data) is not None)
-        except Exception as e:
-            t("scorer error handling", False, str(e))
+        run_dir.joinpath("route-scores.json").write_text(json.dumps(
+            {"scorer_version": "1", "status": "error", "error": "ImportError: No module named 'yaml'",
+             "mode": "routed", "pr": False, "effort": 4}
+        ))
+        data = reviewer_yield.compute_report_data("test-repo", reviewer_yield.load_bucket_config())
+        shadow = data["shadow"]
+        t("hook error counted", shadow.get("counts", {}).get("hook_errors") == 1, str(shadow.get("counts")))
+        t("run still re-scored into effort-4 cohort",
+          (shadow.get("effort4_routed") or {}).get("confirmed_count", {}).get("high") == 1)
 
     # ========================================================================
     # The fixtures above use untimestamped run ids, which the report classifies
     # as regime "unknown" and skips. These use post-148 run ids so re-scoring
     # actually runs, and the expected values are derived from the real scorer.
-    print("\n[Section 9] Per-finding misses, severities and contingency on a scored corpus")
+    print("\n[Section 5] Per-finding misses, severities and contingency on a scored corpus")
 
     _spec_rs = importlib.util.spec_from_file_location("route_score_for_tests", ROUTE_SCORE_PATH)
     route_score = importlib.util.module_from_spec(_spec_rs)
@@ -444,7 +296,7 @@ if __name__ == "__main__":
             t("markdown lists a missed finding", "f1 (Critical)" in md)
 
     # ========================================================================
-    print("\n[Section 10] All-unscored corpus reports n=0 and no rate")
+    print("\n[Section 6] All-unscored corpus reports n=0 and no rate")
 
     with FakeHome() as home:
         run_dir = make_run_dir(home, "test-repo", "feat-abc123-20260920T120000-nodiff")
@@ -457,7 +309,7 @@ if __name__ == "__main__":
         t("markdown says no rate rather than 0%", "n=0 runs; no rate" in md and "0/0" not in md)
 
     # ========================================================================
-    print("\n[Section 11] Unloadable route config makes the section unavailable")
+    print("\n[Section 7] Unloadable route config makes the section unavailable")
 
     original_resolve = reviewer_yield._resolve_index_path
     with FakeHome() as home, tempfile.TemporaryDirectory() as td:

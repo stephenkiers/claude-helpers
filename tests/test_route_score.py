@@ -297,28 +297,7 @@ if __name__ == "__main__":
         t("rewritten lists exist", False, str(e))
 
     # ========================================================================
-    print("\n[Section 7] hard_requires predicate")
-
-    # Verify hard_requires can be parsed
-    try:
-        test_index = {
-            "reviewers": [{
-                "file": "test.yaml",
-                "contexts": {"review": "primary"},
-                "route": {
-                    "hard_requires": ["adr_touched"],
-                    "include_at": 6,
-                    "candidate_at": 3
-                }
-            }]
-        }
-        configs = route_score.parse_route_configs(test_index)
-        t("hard_requires predicate parsed successfully", len(configs) > 0)
-    except Exception as e:
-        t("hard_requires parsing", False, str(e))
-
-    # ========================================================================
-    print("\n[Section 8] Shape predicates exist")
+    print("\n[Section 7] Shape predicates exist")
 
     try:
         import yaml
@@ -338,36 +317,29 @@ if __name__ == "__main__":
         t("shape predicates in index", False, str(e))
 
     # ========================================================================
-    print("\n[Section 9] Sam gate parity (file_count, top_dirs exist)")
+    print("\n[Section 8] Sam gate parity: count_shape matches the panel's shell pipeline")
 
-    # Verify the shape predicates include file_count_ge and top_dirs_ge
-    try:
-        import yaml
-        index_data = yaml.safe_load(INDEX_PATH.read_text())
-        reviewers_list = index_data.get("reviewers", [])
-
-        has_file_count = False
-        has_top_dirs = False
-
-        for entry in reviewers_list:
-            shape = entry.get("route", {}).get("shape", {})
-            if shape:
-                if "file_count_ge" in shape:
-                    has_file_count = True
-                if "top_dirs_ge" in shape:
-                    has_top_dirs = True
-
-        t("file_count_ge predicate exists in some reviewer",
-          has_file_count or True,  # May or may not be used
-          "Check index.yaml")
-        t("top_dirs_ge predicate exists in some reviewer",
-          has_top_dirs or True,  # May or may not be used
-          "Check index.yaml")
-    except Exception as e:
-        t("sam gate predicates", False, str(e))
+    parity_diff = "\n".join([
+        make_file_diff("scripts/a.py", added_lines=["x"]),
+        make_file_diff("scripts/sub/b.py", added_lines=["y"]),
+        make_file_diff("README.md", added_lines=["z"]),
+        make_file_diff("docs/adr/0001.md", added_lines=["w"], is_new=True),
+        "diff --git a/old/gone.py b/old/gone.py\ndeleted file mode 100644\n--- a/old/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone",
+    ]) + "\n"
+    with tempfile.TemporaryDirectory() as td:
+        diff_file = Path(td) / "diff-index.md"
+        diff_file.write_text(parity_diff)
+        # Same commands as the Sam System gate in prompts/expert-review-panel.md.
+        shell = subprocess.run(["bash", "-c",
+            "grep -c '^+++ b/' \"$1\"; grep '^+++ b/' \"$1\" | sed 's#^+++ b/##; s#/.*##' | sort -u | wc -l | tr -d ' '",
+            "_", str(diff_file)], capture_output=True, text=True, check=True).stdout.split()
+    shell_counts = (int(shell[0]), int(shell[1]))
+    t("count_shape equals shell file_count/top_dirs", route_score.count_shape(parity_diff) == shell_counts,
+      f"python={route_score.count_shape(parity_diff)} shell={shell_counts}")
+    t("fixture exercises a deletion and a root-level file", shell_counts == (4, 3), f"shell={shell_counts}")
 
     # ========================================================================
-    print("\n[Section 10] Bounded symbols (degraded flag functionality)")
+    print("\n[Section 9] Bounded symbols (degraded flag functionality)")
 
     try:
         import yaml
@@ -396,7 +368,7 @@ if __name__ == "__main__":
         t("bounded symbols test", False, str(e))
 
     # ========================================================================
-    print("\n[Section 11] CLI fails open")
+    print("\n[Section 10] CLI fails open")
 
     # Missing --diff file
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -450,7 +422,7 @@ if __name__ == "__main__":
                 t("CLI JSON parsing", False, str(e))
 
     # ========================================================================
-    print("\n[Section 12] Determinism")
+    print("\n[Section 11] Determinism")
 
     try:
         import yaml
@@ -474,7 +446,7 @@ if __name__ == "__main__":
         t("determinism test", False, str(e))
 
     # ========================================================================
-    print("\n[Section 13] Leak guard: route-scores.json not in critical prompts")
+    print("\n[Section 12] Leak guard: route-scores.json not in critical prompts")
 
     prompt_files = [
         REPO_ROOT / "prompts" / "router.md",
@@ -494,7 +466,7 @@ if __name__ == "__main__":
       all_clear)
 
     # ========================================================================
-    print("\n[Section 14] Leak guard: only relevant scripts reference route-scores")
+    print("\n[Section 13] Leak guard: only relevant scripts reference route-scores")
 
     scripts_dir = REPO_ROOT / "scripts"
     scripts = list(scripts_dir.glob("*.py"))
@@ -514,7 +486,7 @@ if __name__ == "__main__":
       f"readers={readers}")
 
     # ========================================================================
-    print("\n[Section 15] Leak guard: hook in expert-review-panel.md")
+    print("\n[Section 14] Leak guard: hook in expert-review-panel.md")
 
     panel_path = REPO_ROOT / "prompts" / "expert-review-panel.md"
     if panel_path.exists():
@@ -526,7 +498,7 @@ if __name__ == "__main__":
         t("expert-review-panel.md exists", False)
 
     # ========================================================================
-    print("\n[Section 16] Tier boundaries are inclusive")
+    print("\n[Section 15] Tier boundaries are inclusive")
 
     def one_reviewer(route):
         return route_score.parse_route_configs({"reviewers": [{
@@ -546,7 +518,7 @@ if __name__ == "__main__":
       route_score.score_diff(no_hit, boundary_cfg).reviewers["boundary"].tier == "Exclude")
 
     # ========================================================================
-    print("\n[Section 17] Excluded directories match at any depth")
+    print("\n[Section 16] Excluded directories match at any depth")
 
     vendor_cfg = one_reviewer({"strong": ["alpha"], "include_at": 6, "candidate_at": 3})
     for path in ["vendor/lib/deep/x.js", "web/node_modules/pkg/index.js", "dist/bundle.js", "pkg/sub/Cargo.lock"]:
@@ -556,7 +528,7 @@ if __name__ == "__main__":
     t("a non-excluded path containing 'vendor' still scores", r.score == 3, f"score={r.score}")
 
     # ========================================================================
-    print("\n[Section 18] hard_requires uses the shape entry's n")
+    print("\n[Section 17] hard_requires uses the shape entry's n")
 
     hr_cfg = one_reviewer({
         "strong": ["alpha", "beta"], "include_at": 6, "candidate_at": 3,
@@ -570,14 +542,14 @@ if __name__ == "__main__":
       route_score.score_diff(double, hr_cfg).reviewers["boundary"].tier == "Must")
 
     # ========================================================================
-    print("\n[Section 19] exports_changed sees export lines")
+    print("\n[Section 18] exports_changed sees export lines")
 
     exp_cfg = one_reviewer({"include_at": 6, "candidate_at": 3, "shape": {"exports_changed": 3}})
     r = route_score.score_diff(make_file_diff("src/a.ts", added_lines=["export function foo() {}"]), exp_cfg).reviewers["boundary"]
     t("added export line triggers exports_changed", r.score == 3, f"reasons={r.reasons}")
 
     # ========================================================================
-    print("\n[Section 20] Output is identical across hash seeds")
+    print("\n[Section 19] Output is identical across hash seeds")
 
     with tempfile.TemporaryDirectory() as td:
         idx = Path(td) / "index.yaml"
@@ -597,7 +569,7 @@ if __name__ == "__main__":
         t("five hash seeds produce byte-identical JSON", len(outputs) == 1, f"distinct={len(outputs)}")
 
     # ========================================================================
-    print("\n[Section 21] Bad CLI arguments still exit 0")
+    print("\n[Section 20] Bad CLI arguments still exit 0")
 
     proc = subprocess.run([sys.executable, str(SCRIPT_PATH), "--no-such-flag"],
                           capture_output=True, text=True, check=False)
