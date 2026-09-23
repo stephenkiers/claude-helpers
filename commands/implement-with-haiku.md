@@ -31,11 +31,19 @@ This command records telemetry via fixed kebab-case terminal paths:
 
 These are wired into the shell commands throughout this doc at each terminal path.
 
+**Flags:** `--pause` opts in to the Round 1 join pause (Step 4d). Without it the run goes straight
+through to the end in one pass, interrupting only when it genuinely needs the human (failed units,
+unassigned-file conflicts, gate non-convergence).
+
 ```bash
 RESUMED_FROM=""
+PAUSE=""
 for arg in "$@"; do
   if [[ "$prev_arg" == "--resumed-from" ]]; then
     RESUMED_FROM="$arg"
+  fi
+  if [[ "$arg" == "--pause" ]]; then
+    PAUSE="yes"
   fi
   prev_arg="$arg"
 done
@@ -593,7 +601,10 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
 
-**Checkpoint — Round 1 join.** This is the run's only mandatory pause (per
+**Checkpoint — Round 1 join (opt-in via `--pause`).** If `PAUSE` is not `yes`, do **not** pause: close
+the stage with the two telemetry commands below, skip the rest of the checkpoint (command-id capture,
+resume line, options, HEAD re-verify), handle any `failed` units per the last part of this step, and
+proceed straight to the Integration Gate. When `--pause` was passed, this is the run's only pause (per
 [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174): round 1's parallel fanout
 is reliably the single biggest context cost in the whole flow, over threshold in every one of 8
 measured real runs — the other four checkpoints this run used to have were dropped because they
@@ -605,7 +616,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage round1-join --o
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
 
-Now capture the current run's command ID and emit the pause options:
+**Only if `PAUSE` is `yes`:** capture the current run's command ID and emit the pause options:
 ```bash
 # Read current command ID before telemetry clears it
 CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-id --command implement-with-haiku 2>/dev/null || true)
@@ -1400,7 +1411,7 @@ orchestrator's own verification — never trust round self-reports.
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
 wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
 
-**Usage gate log.** Only two seams run `usage-check` now: `round1-join` (the sole mandatory pause,
+**Usage gate log.** Only two seams run `usage-check` now: `round1-join` (the opt-in `--pause` checkpoint,
 below) and `final`. Per [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174), the
 other four seams were removed outright — not just skipped — because they never once needed a
 `/compact` break across 8 measured real runs, and the per-seam Bash call + printed line cost tokens

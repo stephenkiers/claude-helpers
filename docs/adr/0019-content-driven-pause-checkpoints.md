@@ -199,3 +199,18 @@ unchanged.
   being large, which biases the comparison against the resume arm, and arm membership is human
   self-reported because nothing in a resumed invocation can detect whether the human actually
   cleared.
+
+## Amendment (2026-09-23): the round1-join pause is opt-in via `--pause`
+
+The maintainer no longer finds the round 1 pause valuable, so `/implement-with-haiku` now runs
+straight through in one pass by default. The `round1-join` checkpoint (resume line, "continue" /
+`/clear` options, HEAD-drift re-check) only runs when `--pause` is passed. The `round1-join` stage-end
+and `usage-check` telemetry still run either way.
+
+**Unchanged:** the run still interrupts the human when it genuinely needs them — failed units
+(abort vs. proceed with merged units), conflicts on unassigned/shared files, and gate non-convergence.
+`--resume-after-round1` still works for runs that were started with `--pause`.
+
+**What's now stale:** earlier amendments describe `round1-join` as the run's "one mandatory
+checkpoint"; read that as "the one checkpoint, mandatory only under `--pause`". The kill criterion
+above measures the resume arm and only accumulates data from `--pause` runs.

@@ -178,7 +178,7 @@ separate from the reviewer-context cascade.
 - `/setup-local` — symlink this repo's helpers into `~/.claude/`
 - `/setup-repo` — clone a remote into the preferred layout (default `~/Repositories/<repo>/worktrees/<default-branch>`, configurable via `CLAUDE_REPOS_ROOT` or `~/.claude/preferences.yaml`) so the worktree workflow (`/track-and-start`, `/shipit`, `/cleanup`) finds the worktree parent where it expects it. Takes a full URL or `owner/name` (never assumes the org)
 - `/track`, `/track-and-start` — create a GitHub issue (or local plan) and optionally branch + worktree
-- `/implement-with-haiku` — parallel Haiku implementers (diff handoff; orchestrator applies + commits)
+- `/implement-with-haiku` — parallel Haiku implementers (diff handoff; orchestrator applies + commits); runs in one pass by default, `--pause` opts in to the round 1 checkpoint
   → orchestrator-owned integration gate (anti-cheat + bounded fix loop) → round-sized, concurrent
   spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
