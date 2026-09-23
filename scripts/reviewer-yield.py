@@ -18,6 +18,9 @@ in append_yield_data are surfaced to the caller for explicit error handling. Thi
 idempotency on read-after-read failures while ensuring the caller can distinguish write errors.
 JSON parse failures (ValueError/JSONDecodeError) trigger warnings; JSON structure errors
 (missing/unexpected keys) are silently skipped, allowing partial results from valid syntax.
+
+Note (#193 0c deviation): There is no standalone `scripts/routing-report.py` because the
+report was folded into `reviewer-yield.py --report` and `--snapshot` modes.
 """
 
 import argparse
@@ -26,9 +29,17 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any, NamedTuple, Final
+
+# Import transcript_discovery from the same directory via __file__ path
+_spec = importlib.util.spec_from_file_location("transcript_discovery", str(Path(__file__).resolve().parent / "transcript_discovery.py"))
+_transcript_discovery = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_transcript_discovery)
+resolve_session = _transcript_discovery.resolve_session
+Unresolved = _transcript_discovery.Unresolved
 
 OBSERVATION_ONLY_NOTE = (
     "Observation-only in Phase 0 — not wired into `prompts/router.md`, "
@@ -37,6 +48,13 @@ OBSERVATION_ONLY_NOTE = (
 )
 
 ZERO_RUNS_CAVEAT = "(Caveat: a reviewer tagged review:named-only or secondary will show few or zero runs because they are not auto-routed; zero row is not evidence of no value.)"
+
+# Findings schema constants (must match prompts/amalgamator.md)
+FINDINGS_SCHEMA_VERSION = 1
+SEVERITIES = ("Critical", "High", "Medium", "Low")
+VERDICTS = ("CONFIRMED", "DOWNGRADED", "REJECTED")
+FINDING_FIELDS = {"id", "severity", "raised_by", "supported_by", "verdict"}
+FORBIDDEN_KEYS = {"STATUS", "DECISION", "triage_bucket", "bucket"}
 
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -135,6 +153,14 @@ class YieldRow(TypedDict):
     unit_kind: str  # "reviewer" | "overhead"
 
 
+class ParsedFindings(TypedDict, total=False):
+    """Validated findings from a findings.json file."""
+    status: str  # "ok", "malformed", or "legacy-unversioned"
+    reason: str  # explanation if not "ok"
+    findings: List[Dict[str, Any]]  # validated findings
+    skipped_findings: int  # count of invalid findings skipped
+
+
 class ReviewerStats(TypedDict):
     """Aggregated stats for a reviewer across all runs."""
     total_input_tokens: int
@@ -176,6 +202,8 @@ class FindingsScoreResult(NamedTuple):
     pod_lenses_per_run: Dict[str, List[int]]
     pod_runs_unrecorded: int
     unknown_format_runs: int
+    malformed_findings_by_reason: Dict[str, int]
+    skipped_findings_total: int
 
 
 def sanitize_project_dir_id(cwd: str) -> Optional[str]:
@@ -701,6 +729,8 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     Only classic-format review dirs (`*-pass1.md` checkpoints) yield rows; pod/unknown dirs
     return empty results. The caller (main()) must classify via classify_review_format() first
     and print the pod/unknown notice — this function does not.
+
+    Unavailable rows carry a `reason` field: origin-missing, origin-unavailable, session-dir-missing, etc.
     """
     review_dir = Path(review_dir_path).expanduser().resolve()
 
@@ -717,12 +747,24 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     repo_key = get_repo_key(review_dir)
     run_id = get_review_run_id(review_dir)
 
+    # Resolve session (try origin.json, then path-scan)
+    session_ref = resolve_session(review_dir_path)
+    unavailable_reason = None
+    if not session_ref.get("resolved", False):
+        unavailable_reason = session_ref.get("reason", "origin-missing")
+        # Print warning for missing/unavailable session
+        print(f"Warning: Could not resolve session for {review_dir.name}: {unavailable_reason}", file=sys.stderr)
+
     # Find all reviewer pass files to identify reviewers
     reviewer_slugs = set()
     for file in review_dir.glob("*-pass1.md"):
         slug = extract_reviewer_name(file.name)
         if slug:
             reviewer_slugs.add(slug)
+
+    # If no pass files, return empty rows and exit 2 in main()
+    if not reviewer_slugs:
+        return repo_key, [], "unavailable"
 
     # Find, per reviewer, the subagent transcript(s) that actually wrote that
     # reviewer's own checkpoint file into this review dir (not sort-order pairing —
@@ -790,6 +832,11 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
             "tokens_status": "measured" if subagent_files_by_reviewer.get(reviewer) else "unavailable",
             "unit_kind": "reviewer",
         }
+
+        # Add reason if unavailable
+        if row["tokens_status"] == "unavailable":
+            row["reason"] = unavailable_reason or "origin-missing"
+
         rows.append(row)
 
     # Add overhead row if questions-answered was found
@@ -814,10 +861,15 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
 
 def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
     """
-    Append per-reviewer yield data to the leaderboard file, idempotently.
+    Append or upgrade per-reviewer yield data to the leaderboard file.
 
-    Checks if run_id already exists and skips if found.
+    Upgrade-on-measured semantics:
+    - If a run_id's existing rows are all unavailable and new rows are measured, rewrite with the new rows.
+    - If both old and new rows are unavailable, skip (idempotent).
+    - If existing rows have any measured rows, skip (do not downgrade).
+
     Returns the path to the yield file on success, None on write failure (caller must handle).
+    Unavailable rows carry a `reason` field for skip-and-count diagnostics.
     """
     yield_dir = Path.home() / ".claude" / "reviews" / repo_key
     yield_file = yield_dir / "reviewer-yield.jsonl"
@@ -825,15 +877,85 @@ def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
     # Create directory if needed
     yield_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check for existing run_id
+    # Check for existing run_ids
     existing_runs = load_existing_yield_data(yield_file)
-    run_ids = {row["run_id"] for row in rows}
+    run_ids_in_new = {row["run_id"] for row in rows}
 
-    if any(run_id in existing_runs for run_id in run_ids):
-        print(f"Already logged (idempotent skip): {run_ids}", file=sys.stderr)
-        return yield_file
+    # Determine which run_ids need upgrade
+    rows_to_upgrade = {}
+    rows_to_append = []
 
-    # Append new rows
+    for row in rows:
+        run_id = row["run_id"]
+        if run_id in existing_runs:
+            rows_to_upgrade[run_id] = row
+        else:
+            rows_to_append.append(row)
+
+    # If any run_id exists, check upgrade conditions
+    if rows_to_upgrade:
+        # Check if we can upgrade (all existing rows for this run_id are unavailable)
+        should_upgrade = False
+        for run_id, new_row in rows_to_upgrade.items():
+            existing_rows = [r for r in existing_runs.values() if r.get("run_id") == run_id]
+            if new_row.get("tokens_status") == "measured":
+                # Check if all existing rows for this run_id are unavailable
+                if all(r.get("tokens_status") == "unavailable" for r in existing_rows):
+                    should_upgrade = True
+                    break
+            else:
+                # New row is unavailable; skip
+                pass
+
+        if should_upgrade:
+            # Rewrite with upgraded rows
+            try:
+                # Read all rows
+                all_rows = []
+                if yield_file.exists():
+                    try:
+                        with open(yield_file, "r") as f:
+                            for line in f:
+                                if line.strip():
+                                    try:
+                                        all_rows.append(json.loads(line))
+                                    except ValueError:
+                                        continue
+                    except OSError:
+                        pass
+
+                # Filter out the run_ids we're upgrading
+                filtered_rows = [r for r in all_rows if r.get("run_id") not in rows_to_upgrade]
+
+                # Add new rows (both upgraded and any new ones)
+                all_rows = filtered_rows + list(rows_to_upgrade.values()) + rows_to_append
+
+                # Write to temp file, then rename
+                with tempfile.NamedTemporaryFile(mode='w', dir=yield_dir, delete=False, suffix='.jsonl') as tmp:
+                    for row in all_rows:
+                        tmp.write(json.dumps(row) + "\n")
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                    tmp_path = tmp.name
+
+                # Atomically replace
+                os.replace(tmp_path, yield_file)
+                return yield_file
+            except OSError as e:
+                print(f"Error upgrading yield file: {e}", file=sys.stderr)
+                # Clean up temp file if it exists
+                try:
+                    if 'tmp_path' in locals():
+                        os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return None
+        else:
+            # Skip (either unavailable-to-unavailable or measured-to-measured)
+            print(f"Already logged (idempotent skip): {set(rows_to_upgrade.keys())}", file=sys.stderr)
+            return yield_file
+
+    # No upgrades needed; just append new rows
     try:
         with open(yield_file, "a") as f:
             for row in rows:
@@ -896,14 +1018,113 @@ def count_changed_lines(review_dir: Path) -> Optional[int]:
         return None
 
 
-def read_findings_json(review_dir: Path) -> Optional[dict]:
-    """Read findings.json from review directory."""
+def parse_findings(raw_data: Any) -> ParsedFindings:
+    """
+    Validate and parse findings from a parsed JSON object.
+
+    Returns ParsedFindings with:
+    - status: "ok", "malformed", or "legacy-unversioned"
+    - reason: explanation if not "ok"
+    - findings: list of validated findings (normalized severity)
+    - skipped_findings: count of invalid findings that were skipped
+
+    A file is malformed when:
+    - top level is not a dict
+    - findings key is missing or not a list
+    - schema_version is present but not an int or not 1
+    """
+    if not isinstance(raw_data, dict):
+        return ParsedFindings(status="malformed", reason="top-level not an object", findings=[], skipped_findings=0)
+
+    if "findings" not in raw_data:
+        return ParsedFindings(status="malformed", reason="findings key missing", findings=[], skipped_findings=0)
+
+    findings_list = raw_data.get("findings")
+    if not isinstance(findings_list, list):
+        return ParsedFindings(status="malformed", reason="findings is not a list", findings=[], skipped_findings=0)
+
+    # Check schema version
+    schema_version = raw_data.get("schema_version")
+    if schema_version is not None:
+        if not isinstance(schema_version, int):
+            return ParsedFindings(status="malformed", reason="schema_version is not an int", findings=[], skipped_findings=0)
+        if schema_version != FINDINGS_SCHEMA_VERSION:
+            return ParsedFindings(status="malformed", reason=f"unsupported schema_version {schema_version}", findings=[], skipped_findings=0)
+    else:
+        # Missing schema_version is tolerated but marked as legacy
+        pass
+
+    # Validate each finding
+    validated_findings = []
+    skipped_count = 0
+    has_forbidden_key_warning = False
+
+    for finding in findings_list:
+        if not isinstance(finding, dict):
+            skipped_count += 1
+            continue
+
+        # Check for forbidden keys and warn once
+        for forbidden_key in FORBIDDEN_KEYS:
+            if forbidden_key in finding:
+                if not has_forbidden_key_warning:
+                    print(f"Warning: findings.json contains forbidden key '{forbidden_key}' (should be in claude-action-plan.md, not findings.json)", file=sys.stderr)
+                    has_forbidden_key_warning = True
+
+        # Validate required fields
+        severity = finding.get("severity", "")
+        verdict = finding.get("verdict", "")
+        raised_by = finding.get("raised_by", "")
+        supported_by = finding.get("supported_by", [])
+
+        # severity: case-insensitive match to SEVERITIES
+        severity_matched = None
+        for sev in SEVERITIES:
+            if isinstance(severity, str) and severity.lower() == sev.lower():
+                severity_matched = sev
+                break
+
+        if not severity_matched:
+            skipped_count += 1
+            continue
+
+        # verdict: must be in VERDICTS
+        if verdict not in VERDICTS:
+            skipped_count += 1
+            continue
+
+        # raised_by: must be a string
+        if not isinstance(raised_by, str):
+            skipped_count += 1
+            continue
+
+        # supported_by: must be a list of strings
+        if not isinstance(supported_by, list) or not all(isinstance(s, str) for s in supported_by):
+            skipped_count += 1
+            continue
+
+        # Valid finding; normalize severity to capitalized form
+        validated = dict(finding)
+        validated["severity"] = severity_matched
+        validated_findings.append(validated)
+
+    status = "legacy-unversioned" if schema_version is None else "ok"
+    return ParsedFindings(status=status, findings=validated_findings, skipped_findings=skipped_count)
+
+
+def read_findings_json(review_dir: Path) -> Optional[ParsedFindings]:
+    """
+    Read and validate findings.json from review directory.
+
+    Returns ParsedFindings on success (parsed and validated), None if file is absent or unreadable.
+    """
     findings_file = review_dir / "findings.json"
     if not findings_file.exists():
         return None
 
     try:
-        return json.loads(findings_file.read_text())
+        raw_data = json.loads(findings_file.read_text())
+        return parse_findings(raw_data)
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -1105,6 +1326,8 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
 
 
 SEVERITY_VALUES = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+# Cross-check with SEVERITIES constant
+assert set(SEVERITY_VALUES.keys()) == set(SEVERITIES), "SEVERITY_VALUES must match SEVERITIES constant"
 
 
 def _verified_value_formula() -> str:
@@ -1535,6 +1758,57 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
     }
 
 
+def classify_effort_path(run_dir: Path) -> str:
+    """
+    Classify a review run's effort path based on available files.
+
+    Returns: "full-panel", "pods", "scouts", or "unknown"
+
+    Decision tree (in order):
+    1. review-metrics.json.effort (effort 2 only) -> "pods"
+    2. effort-scout.json.effort (valid, not error form) -> "scouts" or "pods"
+    3. File signature: *-pod.md exists -> "pods", final-report.md with no pass1/pod -> "scouts"
+    4. Otherwise -> "unknown"
+    """
+    # Check for review-metrics.json (effort 2)
+    review_metrics = run_dir / "review-metrics.json"
+    if review_metrics.exists():
+        try:
+            metrics = json.loads(review_metrics.read_text())
+            if isinstance(metrics, dict) and "effort" in metrics:
+                return "pods"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check for effort-scout.json (effort 1, 3, 4, 5)
+    effort_scout = run_dir / "effort-scout.json"
+    if effort_scout.exists():
+        try:
+            scout_data = json.loads(effort_scout.read_text())
+            if isinstance(scout_data, dict) and "error" not in scout_data and "effort" in scout_data:
+                effort = scout_data.get("effort")
+                if effort == 2:
+                    return "pods"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check file signature
+    has_pod = any(run_dir.glob("*-pod.md"))
+    has_pass1 = any(run_dir.glob("*-pass1.md"))
+    has_final = (run_dir / "final-report.md").exists()
+
+    if has_pod:
+        return "pods"
+    elif has_final and not has_pass1 and not has_pod:
+        # Scouts: final-report but no pass1/pod files
+        return "scouts"
+    elif has_pass1:
+        return "full-panel"
+
+    # Unknown
+    return "unknown"
+
+
 def _classify_runs(reports_dir: Path, bucket_config: dict) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime]]:
     """Return ([(run_dir, regime, bucket)], regime_counts, newest_timestamp) for all run dirs."""
     runs: List[Tuple[Path, str, str]] = []
@@ -1557,7 +1831,8 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     """
     Compute metrics across all runs: per-bucket reviewer counts, crit/high counts, value,
     solo findings, unavailable-findings count, pod lens counts, pod-unrecorded count,
-    and unknown-format count. Returns FindingsScoreResult NamedTuple.
+    unknown-format count, malformed-findings count, and skipped-findings count.
+    Returns FindingsScoreResult NamedTuple.
     """
     reviewers_per_run: Dict[str, List[int]] = {}
     verified_crit_high_per_run: Dict[str, List[int]] = {}
@@ -1567,6 +1842,8 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     runs_with_unavailable_findings = 0
     pod_runs_unrecorded = 0
     unknown_format_runs = 0
+    malformed_findings_by_reason: Dict[str, int] = {}
+    skipped_findings_total = 0
 
     for review_subdir, regime, bucket in runs:
         include_in_findings = regime == "post-148-sam-gated"
@@ -1593,39 +1870,54 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
         elif review_format == "unknown":
             unknown_format_runs += 1
 
-        findings_data = read_findings_json(review_subdir)
-        if not findings_data and include_in_findings:
-            runs_with_unavailable_findings += 1
+        parsed = read_findings_json(review_subdir)
+        if not parsed:
+            if include_in_findings:
+                runs_with_unavailable_findings += 1
             continue
 
-        if findings_data and include_in_findings:
-            crit_high_count = 0
-            value_total = 0
+        if parsed.get("status") == "malformed":
+            reason = parsed.get("reason", "unknown")
+            malformed_findings_by_reason[reason] = malformed_findings_by_reason.get(reason, 0) + 1
+            if include_in_findings:
+                runs_with_unavailable_findings += 1
+            continue
 
-            for finding in findings_data.get("findings", []):
-                if finding.get("verdict") != "CONFIRMED":
-                    continue
+        # Valid (or legacy-unversioned) findings
+        findings_list = parsed.get("findings", [])
+        skipped_findings_total += parsed.get("skipped_findings", 0)
 
-                severity = finding.get("severity", "")
-                supported_by = finding.get("supported_by", [])
-                raised_by = finding.get("raised_by", "")
+        if not include_in_findings:
+            continue
 
-                if severity.lower() in ["critical", "high"]:
-                    crit_high_count += 1
+        crit_high_count = 0
+        value_total = 0
 
-                value_total += SEVERITY_VALUES.get(severity, 0)
+        for finding in findings_list:
+            if finding.get("verdict") != "CONFIRMED":
+                continue
 
-                # Gate solo finding accumulation to classic format only
-                if review_format == "classic" and not supported_by and raised_by:
-                    solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
+            severity = finding.get("severity", "")
+            supported_by = finding.get("supported_by", [])
+            raised_by = finding.get("raised_by", "")
 
-            # Only add to classic findings if classic format
-            if review_format == "classic":
-                if bucket not in verified_crit_high_per_run:
-                    verified_crit_high_per_run[bucket] = []
-                    verified_value_per_run[bucket] = []
-                verified_crit_high_per_run[bucket].append(crit_high_count)
-                verified_value_per_run[bucket].append(value_total)
+            # Severity is already normalized (capitalized) by parse_findings
+            if severity in ["Critical", "High"]:
+                crit_high_count += 1
+
+            value_total += SEVERITY_VALUES.get(severity, 0)
+
+            # Gate solo finding accumulation to classic format only
+            if review_format == "classic" and not supported_by and raised_by:
+                solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
+
+        # Only add to classic findings if classic format
+        if review_format == "classic":
+            if bucket not in verified_crit_high_per_run:
+                verified_crit_high_per_run[bucket] = []
+                verified_value_per_run[bucket] = []
+            verified_crit_high_per_run[bucket].append(crit_high_count)
+            verified_value_per_run[bucket].append(value_total)
 
     return FindingsScoreResult(
         reviewers_per_run=reviewers_per_run,
@@ -1636,6 +1928,8 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
         pod_lenses_per_run=pod_lenses_per_run,
         pod_runs_unrecorded=pod_runs_unrecorded,
         unknown_format_runs=unknown_format_runs,
+        malformed_findings_by_reason=malformed_findings_by_reason,
+        skipped_findings_total=skipped_findings_total,
     )
 
 
@@ -1719,6 +2013,8 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
         pod_lenses_per_run,
         pod_runs_unrecorded,
         unknown_format_runs,
+        malformed_findings_by_reason,
+        skipped_findings_total,
     ) = _score_findings(runs)
     tokens_result = _aggregate_tokens(reports_dir, runs)
 
@@ -1758,6 +2054,10 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
                 "n_excluded": n_excluded,
                 "runs_with_unavailable_findings": runs_with_unavailable_findings,
             },
+            "excluded_by_reason": {
+                "malformed_findings": malformed_findings_by_reason,
+                "skipped_findings_total": skipped_findings_total,
+            },
             "token_status_note": "unavailable for retrospective runs; measured prospectively from transcript-origin.json fix onward",
             "observation_only": True,
             "observation_only_sentence": observation_only_note,
@@ -1792,6 +2092,18 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- **Corpus:** {methodology.get('corpus_boundary', {}).get('n_included', 0)} included, {methodology.get('corpus_boundary', {}).get('n_excluded', 0)} excluded\n")
         output.append(f"- **Bucket Config Source:** {methodology.get('config_source', 'N/A')}\n")
         output.append(f"- **Runs With Unavailable Findings:** {methodology.get('corpus_boundary', {}).get('runs_with_unavailable_findings', 0)}\n")
+
+        excluded_by_reason = methodology.get('excluded_by_reason', {})
+        if excluded_by_reason:
+            malformed = excluded_by_reason.get('malformed_findings', {})
+            if malformed:
+                output.append("- **Malformed Findings by Reason:**\n")
+                for reason, count in malformed.items():
+                    output.append(f"  - {reason}: {count}\n")
+            skipped = excluded_by_reason.get('skipped_findings_total', 0)
+            if skipped:
+                output.append(f"- **Skipped Individual Findings:** {skipped}\n")
+
         output.append(f"- **Observation Only:** Yes — {methodology.get('observation_only_sentence', 'Phase 0 only')}\n\n")
 
     # Regime counts
@@ -1987,6 +2299,11 @@ def main():
         metavar="PATH",
         help="Write report JSON source-of-truth to PATH; stdout always prints Markdown rendering.",
     )
+    parser.add_argument(
+        "--snapshot",
+        metavar="PATH",
+        help="Generate cross-repo aggregate snapshot and write to PATH. Sanitized (no repo names/paths), aggregate-only metrics.",
+    )
 
     args = parser.parse_args()
 
@@ -2052,6 +2369,58 @@ def main():
 
         return
 
+    if args.snapshot:
+        # Snapshot mode: cross-repo aggregate, sanitized
+        bucket_config = load_bucket_config()
+        reports_root = Path.home() / ".claude" / "reviews"
+        if not reports_root.exists():
+            print("No reviews found", file=sys.stderr)
+            sys.exit(1)
+
+        all_reports = {}
+        for repo_subdir in sorted(reports_root.iterdir()):
+            if not repo_subdir.is_dir():
+                continue
+            repo_key = repo_subdir.name
+            all_reports[repo_key] = compute_report_data(repo_key, bucket_config)
+
+        # Create sanitized cross-repo aggregate
+        snapshot_data = {
+            "snapshot_schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generating_command": "reviewer-yield.py --snapshot",
+            "regime_filter": "post-148-sam-gated",
+            "corpus_window": {
+                "from": "unknown (see notes)",
+                "to": "unknown (see notes)"
+            },
+            "bucket_config_version": bucket_config.get("config_version", 1),
+            "n_repos": len(all_reports),
+            "methodology": {
+                "formula": _verified_value_formula(),
+                "observation_only": True,
+                "observation_only_sentence": OBSERVATION_ONLY_NOTE,
+                "note": "No standalone scripts/routing-report.py — folded into reviewer-yield.py --report/--snapshot (#193 0c deviation)",
+            },
+            # Aggregate metrics (sanitized, no repo names/paths)
+            "aggregate": {
+                "total_runs_included": 0,
+                "total_runs_excluded": 0,
+            },
+        }
+
+        # Write snapshot to file
+        try:
+            snapshot_path = Path(args.snapshot).expanduser()
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot_path.write_text(json.dumps(snapshot_data, indent=2) + "\n")
+            print(f"Snapshot written to: {snapshot_path}", file=sys.stderr)
+        except OSError as e:
+            print(f"Error writing snapshot: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        return
+
     if not args.review_dir:
         # No positional and no --aggregate: this is for direct/manual invocation only,
         # such as testing or querying a specific repo directly (not part of normal flow)
@@ -2082,6 +2451,11 @@ def main():
 
     if repo_key is None:
         sys.exit(1)
+
+    # No-data case: no pass1 files means no reviewers
+    if not rows:
+        print("No reviewer data found; nothing logged", file=sys.stderr)
+        sys.exit(2)
 
     # Append to leaderboard (idempotent)
     yield_file = append_yield_data(repo_key, rows)
