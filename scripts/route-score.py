@@ -472,6 +472,8 @@ def _word_to_regex(word: str) -> str:
 
 _DEP_MANIFESTS = {"package.json", "Cargo.toml", "pyproject.toml", "go.mod", "Gemfile", "setup.py"}
 _UI_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss"}
+# Keys are the threshold predicates. A shape entry must state n explicitly; these defaults only
+# apply when a threshold predicate appears in hard_requires with no matching shape entry.
 _PREDICATE_DEFAULT_N = {"file_count_ge": 3, "top_dirs_ge": 2}
 
 

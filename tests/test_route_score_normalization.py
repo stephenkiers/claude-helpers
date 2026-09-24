@@ -13,7 +13,6 @@ Run with: python3 tests/test_route_score_normalization.py
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -456,7 +455,6 @@ if __name__ == "__main__":
     print("\n[Section 12] live index loads cleanly via load_route_configs")
 
     try:
-        import yaml
         index_path = REPO_ROOT / "reviewers" / "index.yaml"
         configs = route_score.load_route_configs(index_path)
 
