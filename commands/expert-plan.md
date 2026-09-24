@@ -308,7 +308,9 @@ No proposed design, no other expert's report, no digest. Expected receipt format
 {expert}-contribution.md written — {n} requirements, {n} risks, {n} open questions
 ```
 
-**Join barrier.** All Step 3 agents launched in one message with `run_in_background: false` means they return by the time you continue. Apply `~/.claude/prompts/join-barrier-pattern.md`'s pattern: receipt validation, file existence, sentinel (`<!-- contribution-end -->`), retry once on failure, stand-in file on second failure. The orchestrator never hangs.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+**Join barrier.** All Step 3 agents launched in one message apply `~/.claude/prompts/join-barrier-pattern.md`'s pattern: receipt validation, file existence, sentinel (`<!-- contribution-end -->`), retry once on failure, stand-in file on second failure. The orchestrator never hangs.
 
 If a contributor fails after two retries, write a stand-in `{SESSION_DIR}/{expert}-contribution.md` with `Decision: FAILED`. Report the missing domain. (Note: `Decision: FAILED` is a coverage gap indicating the expert's domain was not evaluated; treat it as a missing lens rather than skipping that file.)
 
@@ -320,6 +322,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage contrarian >/
 ### Step 4: Carl (Fresh Agent, Sees Everything)
 
 One `Task` call after all Step 3 contributions land: persona `~/.claude/reviewers/contrarian-carl.yaml` + `~/.claude/prompts/plan-contribution-contract.md` + `{SESSION_DIR}/context.md` + all `{expert}-contribution.md` paths.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 Inline addition to the dispatch prompt: "Also examine the cost of the panel's recommendations — which risks already existed vs. which are introduced by a proposed retry/abstraction/API change, and whether a smaller adequate design avoids them; check for shared unverified premises (e.g., treating a probe as a pure read)."
 
@@ -429,6 +433,8 @@ One `Task` call, `subagent_type: "expert-reviewer"`, `model: opus`, role prompt 
 - `{SESSION_DIR}/contrarian-carl-contribution.md`
 - `{SESSION_DIR}/decisions.md`
 
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
 The subagent **first** writes `{SESSION_DIR}/plan.md` using the synthesis template:
 
 ```markdown
@@ -472,9 +478,15 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan
   - `{SESSION_DIR}/decisions.md`
   - `{SESSION_DIR}/plan.md`
 
+  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
   It reads original contributions itself. Writes `{SESSION_DIR}/audit.md`: actionable discrepancies with evidence and affected section, or a compact "No findings." result.
 
-- **Effort 2**: No automatic auditor. Escalate the same role prompt, scoped to one concrete question, only if a material disagreement remains unresolved after checking sources, or synthesis introduced a mechanism no expert reviewed. State the question and why existing work can't settle it before spawning it — this is a recorded exception, not silent scope creep. One retry on join-barrier failure, same as contributors.
+- **Effort 2**: No automatic auditor. Escalate the same role prompt, scoped to one concrete question, only if a material disagreement remains unresolved after checking sources, or synthesis introduced a mechanism no expert reviewed. State the question and why existing work can't settle it before spawning it — this is a recorded exception, not silent scope creep.
+
+  **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+  One retry on join-barrier failure, same as contributors.
 
   After Step 6 returns, if the synthesized plan introduced a mechanism no contribution reviewed, the main thread may also write `audit-escalation.txt` (same format, `RAISED-AT: post-step-6-synthesis`) before the Step 7 gate. One question only.
 

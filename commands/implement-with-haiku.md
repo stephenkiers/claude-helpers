@@ -395,9 +395,11 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
 
 **Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
 directly in the main working directory (background, `run_in_background: true`) with the same self-contained
-prompt described in Step 4b. The agent stages its changes (`git add -A`, no commit); you commit them
-yourself in the main worktree once `STAGED: yes` is confirmed via `git status --porcelain`. Proceed to
-the Integration Gate when it completes.
+prompt described in Step 4b.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+The agent stages its changes (`git add -A`, no commit); you commit them yourself in the main worktree once `STAGED: yes` is confirmed via `git status --porcelain`. Proceed to the Integration Gate when it completes.
 
 ## Step 4a: Create one worktree per unit (multi-unit only)
 
@@ -435,6 +437,8 @@ Track the created worktrees: `[{id, branch: WT_BRANCH, path: WT_PATH, status: "r
 ## Step 4b: Launch round-1 implementers (background, parallel)
 
 Launch one background `plan-implementer` agent per unit simultaneously (`run_in_background: true`).
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 Each prompt must be **fully self-contained** (the agent has no other context). Include:
 - The unit's sub-task text (verbatim, from Step 3)
@@ -599,7 +603,11 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 ## Step 4d: Join barrier
 
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
-`conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave).
+`conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave); a notification for a unit id moves that id to returned/terminal, and the ban is on a running tally.
+
+Unit outcomes map to join-barrier states: `merged` or `conflict-resolved` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 **Checkpoint — Round 1 join (opt-in via `--pause`).** If `PAUSE` is not `yes`, do **not** pause: close
 the stage with the two telemetry commands below, skip the rest of the checkpoint (command-id capture,
@@ -853,7 +861,11 @@ The gate and anti-tamper scan are never skippable — they already ran.
 ## Post-gate fan-out: Round 2, Round 3 (pass 1), and sweeps — concurrent
 
 Launch all of the following **in a single message** (background, parallel) once round sizing says
-to proceed. Round 2 gets its own worktree with the diff-handoff protocol, which is what makes running
+to proceed.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+Round 2 gets its own worktree with the diff-handoff protocol, which is what makes running
 it alongside Round 3 pass 1 safe — Round 3 pass 1 only reads the main worktree's round-1 result and
 never touches Round 2's tests.
 

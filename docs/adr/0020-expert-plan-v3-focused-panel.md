@@ -95,7 +95,7 @@ v3 uses `agents/expert-reviewer.md`'s existing hybrid dispatch mode (persona + c
 
 ## References
 
-- ADR-0018: Parallel planning with checkpoint-based isolation (v2 design, which v3 builds on)
+- ADR-0018: Parallel planning with checkpoint-based isolation (v2 design, which v3 builds on) and its Amendment on harness-agnostic barrier waiting — defines the join-barrier pattern used for coordinating parallel subagents
 - ADR-0004: Model cost routing (the Opus-for-judgment principle that v3 extends)
 - `/expert-plan-v2`: The comprehensive reference implementation that v3 adapts (not replaces)
 - `commands/expert-plan-v3.md`: The command specification

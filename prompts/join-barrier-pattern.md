@@ -1,9 +1,8 @@
 # Join-Barrier Pattern for Parallel Expert Contributions
 
-This pattern is used by `/expert-plan-deprecated-v2` (formerly v2) in Steps 3 (parallel contributions),
-4 (contrarian Carl), and 8 (alignment pass), and by `/expert-plan` (formerly v3) in Step 3 (parallel
-contributions), to coordinate multiple subagents and ensure all checkpoints are written before
-proceeding.
+This pattern is used by the `/expert-review` panel (Pass 1, Q&A, Pass 2 dispatches), `/implement-with-haiku` 
+Step 4d, and `/expert-plan` (Steps 3, 4, 6, 7) to coordinate multiple parallel subagents and ensure all 
+checkpoints are written before proceeding.
 
 ## Overview
 
@@ -14,7 +13,32 @@ A **join barrier** coordinates N parallel subagents by checking three conditions
 3. **Sentinel present** — the file ends with `<!-- {type}-end -->` sentinel line
 
 If any condition fails for an expert, **retry once**. If the retry also fails, write a stand-in
-file so downstream glob patterns find something (the barrier never hangs).
+file so downstream glob patterns find something (the barrier never hangs silently — a non-returning
+agent escalates to the user).
+
+## Waiting for the barrier (harness-agnostic)
+
+This section defines when a barrier closes and how orchestrators wait for it, independent of whether
+the harness returns agent results synchronously (older harness) or through notifications (current harness).
+
+1. **Launch** the whole batch in one message. Do not assume the batch has finished by your next turn.
+
+2. **The launched set** is the list of ids you just dispatched, taken from existing on-disk artifacts: the Router's selection in the review dir, `selected-experts.md` in the plan session dir, or the unit ids in implement-with-haiku. It is re-derivable after context compaction. There is no new manifest file.
+
+3. **Per-id state** is `launched → returned → ok | bad`, with a branch to `launched (retry)` on first failure. An id becomes *returned* when its final report arrives: a synchronous result containing the report, an `<agent-message from="{id}">` hand-back, or a task notification whose `<result>` contains the report. A synchronous result that only says the agent was launched ("Async agent launched", "working in the background") is a launch acknowledgement: the id stays `launched`. A notification whose `<result>` only points at a hand-back marks the id *returned*, but the receipt is read from the hand-back message. The hand-back and the notification for one id may arrive in separate turns: that is two partial turns and one state change, never a retry. A second or late notification for an id that has already returned is a no-op, including one that arrives after that id's stand-in was written: it never overwrites the stand-in or triggers another retry. Never keep a running count of notifications.
+
+4. **On return**, check that id's checkpoint file and sentinel and mark it `ok` or `bad`. For agents that write no checkpoint file and return their result inline (Router, Q&A), the report carried by the hand-back (or synchronous result or notification, whichever contains it) is the whole receipt. **After context compaction, or whenever remembered state is uncertain,** an id whose checkpoint file exists with its sentinel is `ok` regardless of remembered receipt state; only ids without a valid file remain outstanding, and a missing file still never triggers a retry. A present-but-invalid file (exists, but lacks a sentinel or is unreadable) with no pending notification for that id is surfaced in the 1800s status report to the user. Late or "duplicate" notifications after compaction are no-ops, not a reason to poll.
+
+5. **Retry once** only when an id has *returned* and is `bad` — state becomes `launched (retry)`. Evaluate the next return once: if still `bad`, write the stand-in file per the existing pattern. A missing file for an id that has not returned means it is still running and is never a retry trigger. Wakeups for an id remain outstanding only within the phase that launched it; if the phase is closed, any pending wakeup for that id is a no-op.
+
+6. **If any id is still outstanding**, end your turn. A turn triggered by a partial arrival updates state and ends the turn again: no re-launch, no reading other agents' checkpoints early, no sleeping, no short-interval `ScheduleWakeup`.
+
+7. **The barrier closes** when every id is `ok` or stood-in. If every final report arrived in the launching turn (a harness that returns reports inline), it closes right away with no turn end. A launch acknowledgement alone never closes it.
+
+8. **Fallback.** When ending a turn with ids still outstanding, you may schedule **at most one** `ScheduleWakeup` of 1800s for the current phase (one dispatch batch), and only if none is already scheduled for that phase. When it fires:
+   - If the phase is already closed (all ids terminal), the wakeup is a no-op — take no action.
+   - Otherwise, write a **status report only**: which ids have returned, which files are missing or lack a sentinel. Tell the user, then end the turn.
+   - It never retries, never writes stand-ins, and never schedules another wakeup. A later notification still closes the barrier normally.
 
 ## Receipt Format
 

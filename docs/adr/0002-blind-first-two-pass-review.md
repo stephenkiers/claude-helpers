@@ -63,3 +63,7 @@ multiply with panel size. `--model` (ADR-0004) is the knob for that.
 ## Amendment — panel extracted to shared prompt (ADR-0009)
 
 The blind-first two-pass panel (Summarizer → Router → Pass 1 → Contrarian Carl → Q&A → Pass 2 → Amalgamator) is now located in `prompts/expert-review-panel.md` and consumed by both `/expert-review` and `/expert-review-coworker`. The decision and consequences above remain unchanged; the panel logic is shared and identical across both commands. See [ADR-0009](0009-peer-review-and-shared-panel.md).
+
+## Amendment — Harness-agnostic barrier waiting (see ADR-0018)
+
+The join-barrier pattern that coordinates parallel subagents and ensures all checkpoints are written before proceeding is documented in detail in [ADR-0018](0018-parallel-planning-checkpoint-architecture.md) § Harness-agnostic barrier waiting. Both the review panel and planning workflows rely on this pattern.
