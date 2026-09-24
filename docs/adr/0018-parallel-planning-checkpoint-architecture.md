@@ -61,4 +61,4 @@ Per-id state progresses: `launched → returned → ok | bad`. The barrier close
 
 The canonical text lives in `prompts/join-barrier-pattern.md` § "Waiting for the barrier". All commands referencing join barriers now point at that section via a fixed pointer sentence, replacing earlier contradictory inline wording.
 
-Observed in transcripts 2026-09, not a harness guarantee: calls return a launch ack regardless of `run_in_background` flag value, a notification follows for 1626 of 1633 launched agents, and the flag made no observable waiting difference. The receipt/file/sentinel contract is unchanged.
+Observed in sampled transcripts (2026-09), not a harness guarantee: calls return a launch ack regardless of `run_in_background` flag value, a notification follows for nearly all launched agents, and the flag made no observable waiting difference. The receipt/file/sentinel contract is unchanged.

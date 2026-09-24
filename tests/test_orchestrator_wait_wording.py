@@ -73,43 +73,34 @@ def main():
                 f"found {len(matches)} match(es)" if matches else "",
             )
 
-        # Check for presence of pointer sentence
+        # Check for presence of pointer sentence (with normalized whitespace)
+        normalized_content = re.sub(r'\s+', ' ', content)
+        normalized_pointer = re.sub(r'\s+', ' ', POINTER_SENTENCE)
         h.test_result(
             f"{file_path} contains the pointer sentence",
-            POINTER_SENTENCE in content,
-            "pointer sentence not found" if POINTER_SENTENCE not in content else "",
+            normalized_pointer in normalized_content,
+            "pointer sentence not found" if normalized_pointer not in normalized_content else "",
         )
 
         # Check that ScheduleWakeup mentions only appear inside the pointer sentence
-        # Find all lines with ScheduleWakeup or sleep (case-insensitive for sleep)
+        # Strip the pointer sentence from content before checking for remaining references
+        content_without_pointer = content.replace(POINTER_SENTENCE, "")
+
+        # Find all lines with ScheduleWakeup or sleep (case-insensitive for sleep) outside pointer
         lines_with_wake = []
         lines_with_sleep = []
-        for lineno, line in enumerate(content.splitlines(), start=1):
+        for lineno, line in enumerate(content_without_pointer.splitlines(), start=1):
             if "ScheduleWakeup" in line:
                 lines_with_wake.append((lineno, line))
             if re.search(r"\bsleep\b", line, re.IGNORECASE):
                 lines_with_sleep.append((lineno, line))
 
-        # For each line with ScheduleWakeup or sleep, check if it's part of the pointer sentence
+        # Flag any remaining ScheduleWakeup or sleep mentions outside the pointer
         for lineno, line in lines_with_wake + lines_with_sleep:
-            # Check if this line is part of the pointer sentence context
-            # by looking for the pointer sentence in nearby lines
-            pointer_context = POINTER_SENTENCE in content
-            is_in_pointer = POINTER_SENTENCE.split("ScheduleWakeup")[0] in line or \
-                            POINTER_SENTENCE.split("ScheduleWakeup")[1] in line or \
-                            "Waiting:" in line and "ScheduleWakeup" in line
-
-            # More lenient check: if the line contains key parts of the pointer sentence
-            if pointer_context:
-                # Extract just the ScheduleWakeup reference from the pointer
-                schedule_ref = "`ScheduleWakeup`"
-                is_in_pointer = (schedule_ref in line and "Waiting:" in line) or \
-                                (schedule_ref in line and "join-barrier-pattern.md" in line)
-
             h.test_result(
-                f"{file_path}:{lineno} — ScheduleWakeup/sleep appears in waiting context",
-                is_in_pointer or pointer_context,
-                f"line: {line.strip()}" if not (is_in_pointer or pointer_context) else "",
+                f"{file_path}: ScheduleWakeup/sleep should only appear in pointer sentence",
+                False,
+                f"line: {line.strip()}",
             )
 
     # Test join-barrier-pattern.md for canonical section content

@@ -605,6 +605,8 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
 `conflict-resolved`, or `failed`). Track state per `id` — never count notifications (they interleave); a notification for a unit id moves that id to returned/terminal, and the ban is on a running tally.
 
+Unit outcomes map to join-barrier states: `merged` or `conflict-resolved` → `ok`; `failed` → `bad`. Units do not automatically retry; they use the existing Incomplete-report menu (Re-run / Inspect / Skip / Abort) if a unit's report or diff is incomplete, rather than the join-barrier's automatic retry mechanism.
+
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 **Checkpoint — Round 1 join (opt-in via `--pause`).** If `PAUSE` is not `yes`, do **not** pause: close
