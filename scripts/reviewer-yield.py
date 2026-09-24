@@ -20,7 +20,8 @@ JSON parse failures (ValueError/JSONDecodeError) trigger warnings; JSON structur
 (missing/unexpected keys) are silently skipped, allowing partial results from valid syntax.
 
 Note (#193 0c deviation): There is no standalone `scripts/routing-report.py` because the
-report was folded into `reviewer-yield.py --report` and `--snapshot` modes.
+report was folded into `reviewer-yield.py --report` and `--snapshot` modes. Related #193 0c
+deviation is already noted; do not duplicate.
 """
 
 import argparse
@@ -1823,22 +1824,45 @@ def classify_effort_path(run_dir: Path) -> str:
     return "unknown"
 
 
-def _classify_runs(reports_dir: Path, bucket_config: dict) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime]]:
-    """Return ([(run_dir, regime, bucket)], regime_counts, newest_timestamp) for all run dirs."""
+def _classify_runs(reports_dir: Path, bucket_config: dict, until: Optional[datetime] = None) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime], int, Optional[datetime], Optional[datetime]]:
+    """
+    Return ([(run_dir, regime, bucket)], regime_counts, newest_timestamp, n_after_window, first_run_timestamp, last_run_timestamp) for all run dirs.
+
+    If until is provided, drops runs whose timestamp is >= until.
+    Returns n_after_window count of dropped runs, and first_run_timestamp/last_run_timestamp of included runs.
+    """
     runs: List[Tuple[Path, str, str]] = []
     regime_counts: Dict[str, int] = {}
     newest: Optional[datetime] = None
+    n_after_window: int = 0
+    first_run_timestamp: Optional[datetime] = None
+    last_run_timestamp: Optional[datetime] = None
+
     for review_subdir in sorted(reports_dir.iterdir()):
         if not review_subdir.is_dir():
             continue
         timestamp = parse_review_timestamp(review_subdir.name)
+
+        # Check if this run should be excluded by the until cutoff
+        if until is not None and timestamp is not None and timestamp >= until:
+            n_after_window += 1
+            continue
+
         if timestamp and (newest is None or timestamp > newest):
             newest = timestamp
         regime = classify_regime(timestamp)
         regime_counts[regime] = regime_counts.get(regime, 0) + 1
         bucket = classify_size_bucket(count_changed_lines(review_subdir), bucket_config)
         runs.append((review_subdir, regime, bucket))
-    return runs, regime_counts, newest
+
+        # Track min and max timestamps of included runs
+        if timestamp:
+            if first_run_timestamp is None or timestamp < first_run_timestamp:
+                first_run_timestamp = timestamp
+            if last_run_timestamp is None or timestamp > last_run_timestamp:
+                last_run_timestamp = timestamp
+
+    return runs, regime_counts, newest, n_after_window, first_run_timestamp, last_run_timestamp
 
 
 def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
@@ -2064,7 +2088,7 @@ def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> T
     return result
 
 
-def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
+def compute_report_data(repo_key: str, bucket_config: dict, until: Optional[datetime] = None) -> ReportData:
     """
     Compute report metrics across all runs for a repo.
 
@@ -2077,6 +2101,8 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     - regime_counts: {regime: count} with n_included/n_excluded
     - tokens: real numbers or {status, reason}, includes by_stratum breakdown
     - methodology: bucket config, formula, observation note, etc., includes effort exclusions
+
+    If until is provided (as datetime), drops runs with timestamp >= until.
     """
     observation_only_note = OBSERVATION_ONLY_NOTE
 
@@ -2093,7 +2119,7 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     bucket_config = dict(bucket_config)
     config_source = "fallback" if bucket_config.pop("config_source", None) == "fallback" else "file"
 
-    runs, regime_counts, newest = _classify_runs(reports_dir, bucket_config)
+    runs, regime_counts, newest, n_after_window, first_run_timestamp, last_run_timestamp = _classify_runs(reports_dir, bucket_config, until)
     _warn_if_regime_stale(newest)
     (
         reviewers_per_run,
@@ -2154,6 +2180,9 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
                 "regimes": ["post-148-sam-gated"],
                 "n_included": n_included,
                 "n_excluded": n_excluded,
+                "n_after_window": n_after_window,
+                "first_run": first_run_timestamp.isoformat() if first_run_timestamp else None,
+                "last_run": last_run_timestamp.isoformat() if last_run_timestamp else None,
                 "runs_with_unavailable_findings": runs_with_unavailable_findings,
             },
             "excluded_by_reason": excluded_by_reason,  # type: ignore
@@ -2446,8 +2475,25 @@ def main():
         metavar="PATH",
         help="Generate cross-repo aggregate snapshot and write to PATH. Sanitized (no repo names/paths), aggregate-only metrics.",
     )
+    parser.add_argument(
+        "--until",
+        metavar="ISO_DATETIME",
+        help="Exclude runs with timestamp >= until (naive local ISO like 2026-09-23T00:51:00). Valid only with --snapshot. On parse failure, error to stderr and exit 1.",
+    )
 
     args = parser.parse_args()
+
+    # Parse --until if provided
+    until_dt: Optional[datetime] = None
+    if args.until:
+        if not args.snapshot:
+            print("Error: --until is only valid with --snapshot", file=sys.stderr)
+            sys.exit(1)
+        try:
+            until_dt = datetime.fromisoformat(args.until)
+        except ValueError:
+            print(f"Error: failed to parse --until: {args.until} (expected naive local ISO like 2026-09-23T00:51:00)", file=sys.stderr)
+            sys.exit(1)
 
     if args.aggregate:
         # Aggregate mode: read from ~/.claude/reviews/{repo_key}/reviewer-yield.jsonl
@@ -2519,36 +2565,174 @@ def main():
             print("No reviews found", file=sys.stderr)
             sys.exit(1)
 
+        # Compute aggregates across all repos
         all_reports = {}
+        total_runs_included = 0
+        total_runs_excluded = 0
+        total_runs_after_window = 0
+        aggregate_regime_counts: Dict[str, int] = {}
+        aggregate_strata: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        aggregate_excluded_by_reason: Dict[str, Any] = {"malformed_findings": {}, "effort": {}}
+        aggregate_skipped_findings_total = 0
+        aggregate_solo_findings: Dict[str, int] = {}
+        aggregate_tokens_by_stratum: Dict[str, Dict[str, int]] = {}
+        first_run_timestamp: Optional[datetime] = None
+        last_run_timestamp: Optional[datetime] = None
+
         for repo_subdir in sorted(reports_root.iterdir()):
             if not repo_subdir.is_dir():
                 continue
             repo_key = repo_subdir.name
-            all_reports[repo_key] = compute_report_data(repo_key, bucket_config)
+            report = compute_report_data(repo_key, bucket_config, until_dt)
+            all_reports[repo_key] = report
+
+            # Skip repos with errors (no reviews)
+            if "error" in report:
+                continue
+
+            # Accumulate metrics
+            total_runs_included += report.get("n_included_runs", 0)
+            total_runs_excluded += report.get("n_excluded_runs", 0)
+
+            # Track corpus window timestamps
+            corpus = report.get("methodology", {}).get("corpus_boundary", {})
+            first_iso = corpus.get("first_run")
+            last_iso = corpus.get("last_run")
+            if first_iso:
+                first_dt = datetime.fromisoformat(first_iso)
+                if first_run_timestamp is None or first_dt < first_run_timestamp:
+                    first_run_timestamp = first_dt
+            if last_iso:
+                last_dt = datetime.fromisoformat(last_iso)
+                if last_run_timestamp is None or last_dt > last_run_timestamp:
+                    last_run_timestamp = last_dt
+
+            # Accumulate n_after_window
+            total_runs_after_window += corpus.get("n_after_window", 0)
+
+            # Accumulate regime counts
+            for regime, count in report.get("regime_counts", {}).items():
+                aggregate_regime_counts[regime] = aggregate_regime_counts.get(regime, 0) + count
+
+            # Accumulate strata
+            for stratum, buckets in report.get("strata", {}).items():
+                if stratum not in aggregate_strata:
+                    aggregate_strata[stratum] = {}
+                for bucket, metrics in buckets.items():
+                    if bucket not in aggregate_strata[stratum]:
+                        aggregate_strata[stratum][bucket] = {
+                            "n_runs": 0,
+                            "reviewers": [],
+                            "crit_high": [],
+                            "value": [],
+                        }
+                    aggregate_strata[stratum][bucket]["reviewers"].extend(metrics.get("reviewers", []))
+                    aggregate_strata[stratum][bucket]["crit_high"].extend(metrics.get("crit_high", []))
+                    aggregate_strata[stratum][bucket]["value"].extend(metrics.get("value", []))
+                    aggregate_strata[stratum][bucket]["n_runs"] += len(metrics.get("reviewers", []))
+
+            # Accumulate solo findings
+            for reviewer, count in report.get("solo_findings_per_reviewer", {}).items():
+                aggregate_solo_findings[reviewer] = aggregate_solo_findings.get(reviewer, 0) + count
+
+            # Accumulate excluded_by_reason
+            excluded = report.get("methodology", {}).get("excluded_by_reason", {})
+            for reason, count in excluded.get("malformed_findings", {}).items():
+                aggregate_excluded_by_reason["malformed_findings"][reason] = aggregate_excluded_by_reason["malformed_findings"].get(reason, 0) + count
+            aggregate_skipped_findings_total += excluded.get("skipped_findings_total", 0)
+            for reason, count in excluded.get("effort", {}).items():
+                aggregate_excluded_by_reason["effort"][reason] = aggregate_excluded_by_reason["effort"].get(reason, 0) + count
+
+            # Accumulate tokens by stratum
+            tokens = report.get("tokens", {})
+            by_stratum = tokens.get("by_stratum", {})
+            for stratum, token_data in by_stratum.items():
+                if stratum not in aggregate_tokens_by_stratum:
+                    aggregate_tokens_by_stratum[stratum] = {
+                        "measured_runs": 0,
+                        "total_runs": 0,
+                    }
+                aggregate_tokens_by_stratum[stratum]["measured_runs"] += token_data.get("measured_runs", 0)
+                aggregate_tokens_by_stratum[stratum]["total_runs"] += token_data.get("total_runs", 0)
+
+        # Compute aggregated strata with averages (pooled per-repo lists, then averaged)
+        sanitized_strata: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for stratum, buckets in aggregate_strata.items():
+            sanitized_strata[stratum] = {}
+            for bucket, data in buckets.items():
+                reviewers_list = data.get("reviewers", [])
+                crit_high_list = data.get("crit_high", [])
+                value_list = data.get("value", [])
+                n_runs = data.get("n_runs", 0)
+
+                sanitized_strata[stratum][bucket] = {
+                    "n_runs": n_runs,
+                    "avg_reviewers": round(_avg(reviewers_list), 3) if reviewers_list else None,
+                    "avg_crit_high": round(_avg(crit_high_list), 3) if crit_high_list else None,
+                    "avg_verified_value": round(_avg(value_list), 3) if value_list else None,
+                }
+
+        # Build token status strings per stratum
+        tokens_status_by_stratum: Dict[str, str] = {}
+        for stratum in sanitized_strata.keys():
+            stratum_token_data = aggregate_tokens_by_stratum.get(stratum, {})
+            measured_runs = stratum_token_data.get("measured_runs", 0)
+            if measured_runs == 0:
+                tokens_status_by_stratum[stratum] = "not measured pre-#206 (unrecoverable by construction)"
+            else:
+                tokens_status_by_stratum[stratum] = f"{measured_runs} measured"
+
+        # Build the aggregate with pooled token strata
+        aggregate_dict: Dict[str, Any] = {
+            "total_runs_included": total_runs_included,
+            "total_runs_excluded": total_runs_excluded,
+            "total_runs_after_window": total_runs_after_window,
+            "regime_counts": aggregate_regime_counts,
+            "strata": sanitized_strata,
+            "solo_findings_per_reviewer": aggregate_solo_findings,
+            "excluded_by_reason": {
+                "malformed_findings": aggregate_excluded_by_reason["malformed_findings"],
+                "skipped_findings_total": aggregate_skipped_findings_total,
+            },
+        }
+        if aggregate_excluded_by_reason["effort"]:
+            aggregate_dict["excluded_by_reason"]["effort"] = aggregate_excluded_by_reason["effort"]
+
+        # Add tokens by stratum with status strings
+        aggregate_dict["tokens"] = {}
+        for stratum in sorted(sanitized_strata.keys()):
+            stratum_token_data = aggregate_tokens_by_stratum.get(stratum, {})
+            aggregate_dict["tokens"][stratum] = {
+                "measured_runs": stratum_token_data.get("measured_runs", 0),
+                "total_runs": stratum_token_data.get("total_runs", 0),
+                "status": tokens_status_by_stratum.get(stratum, "unknown"),
+            }
+
+        # Build generating_command with exact flags
+        generating_command = "reviewer-yield.py --snapshot"
+        if args.until:
+            generating_command += f" --until {args.until}"
 
         # Create sanitized cross-repo aggregate
         snapshot_data = {
             "snapshot_schema_version": 1,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "generating_command": "reviewer-yield.py --snapshot",
+            "generating_command": generating_command,
             "regime_filter": "post-148-sam-gated",
             "corpus_window": {
-                "from": "unknown (see notes)",
-                "to": "unknown (see notes)"
+                "from": first_run_timestamp.isoformat() if first_run_timestamp else None,
+                "to": last_run_timestamp.isoformat() if last_run_timestamp else None,
+                "until_exclusive": args.until if args.until else None,
             },
             "bucket_config_version": bucket_config.get("config_version", 1),
-            "n_repos": len(all_reports),
+            "n_repos": len([r for r in all_reports.values() if "error" not in r]),
             "methodology": {
                 "formula": _verified_value_formula(),
                 "observation_only": True,
                 "observation_only_sentence": OBSERVATION_ONLY_NOTE,
                 "note": "No standalone scripts/routing-report.py — folded into reviewer-yield.py --report/--snapshot (#193 0c deviation)",
             },
-            # Aggregate metrics (sanitized, no repo names/paths)
-            "aggregate": {
-                "total_runs_included": 0,
-                "total_runs_excluded": 0,
-            },
+            "aggregate": aggregate_dict,
         }
 
         # Write snapshot to file
