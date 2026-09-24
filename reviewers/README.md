@@ -84,6 +84,41 @@ Phase 1 ranking.
 **Note:** `structural_pre_gate_ineligible` stays a sibling top-level key in Phase 1 and is *not*
 folded into `contexts`. Phase 2 will address whether to migrate it.
 
+## Route Schema (shadow scoring, #195)
+
+Each reviewer in `index.yaml` carries an optional `route:` block (required for reviewers with a
+`review` context in Phase 2). The schema is read **only** by `scripts/route-score.py` in shadow mode
+(observe-only, no effect on seating; #195). `triggers:` remains the Router's input until Phase 3 (#196).
+
+```yaml
+route:
+  paths: [glob, glob, ...]              # fnmatch-style, matched against full path and basename; 3 points per matching file; no trailing `/` (use `dir/**`)
+  strong: [word, word, ...]             # 3 points per distinct hit (word-boundary, added/removed lines only, at most once per file); words must start and end with \w
+  weak: [word, word, ...]               # 1 point per distinct hit, capped at 3 total
+  shape:                                # mapping predicate_name -> points (non-negative int)
+    predicate_name: <int>
+    file_count_ge: {points: <int>, n: <int>}   # threshold predicates (file_count_ge, top_dirs_ge) require this dict form with explicit n; n is rejected elsewhere
+  include_at: <int>                     # score >= include_at → tier "Must" (default 6, PROVISIONAL)
+  candidate_at: <int>                   # score >= candidate_at → tier "Candidate"; else "Exclude" (default 3, PROVISIONAL, must be <= include_at)
+  hard_requires: [predicate, ...]       # if any false → tier "Exclude" (named predicates from registry only)
+  always: true                          # must be ONLY key and the literal bool true; tier "Always"; must agree with ALWAYS_RUN_SLUGS (contrarian-carl, code-rot-cody, consistency-checker)
+```
+
+**Shape predicates (registry, closed set):** `cross_file_symbol`, `file_count_ge`, `top_dirs_ge`,
+`new_files`, `adr_touched`, `dep_manifest`, `test_files`, `exports_changed`, `ui_paths`.
+
+**Defaults (PROVISIONAL, untuned until Phase 3 #196):**
+- `include_at: 6`, `candidate_at: 3` — independent thresholds per reviewer allowed
+- `file_count_ge` and `top_dirs_ge` default N values: 3 files, 2 dirs (matching the Sam System diff-shape gate)
+
+**Always-run set:** `contrarian-carl`, `code-rot-cody`, `consistency-checker` get `route: {always: true}`.
+
+**Editors (no `review` context):** no `route:` block required.
+
+**Validation (fail-loud):** `scripts/route-score.py`'s `parse_route_configs` normalizes every block into typed values and raises `RouteConfigError` on any violation above, on non-string or empty list items, on negative or bool thresholds, on `candidate_at > include_at` (checked after defaults resolve), and on duplicate reviewer slugs.
+
+The stored `route-scores.json` (audit copy, written after every Step 5) carries `{status, scorer_version, mode, pr, effort, degraded, thresholds_provisional: true, reviewers: {...}}`. The report (`scripts/reviewer-yield.py --report`) re-scores from the stored diff with the current config, so `route-scores.json` is only an audit and hook-health record — the report does not depend on it.
+
 ## File Conventions
 
 | Location | Naming | Purpose |

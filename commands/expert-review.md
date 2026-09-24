@@ -128,6 +128,7 @@ already-reviewed commit never overwrites the prior run):
 | `pr-context.md` | `setup-pr-worktree.sh` (PR mode); main thread (effort 1, local mode) | Step 1 / swarm path — PR title, description, metadata; synthesized from branch/plan context in local-mode swarm |
 | `technical-summary.md` | Summarizer | Step 4 — Technical Summary + Business Context |
 | `tagged-sections.md` | Router (or Step 5 synthesis) | Step 5 — section → reviewer routing with Panel Decision (includes/excludes); synthesized from the user's explicit selection when `NAMED_SELECTION=true` |
+| `route-scores.json` | Main thread (shadow scorer, observe-only, #195) | Step 5 — deterministic scored reviewer tiers (not used for seating; audit copy for shadow measurement) |
 | `review-context/*` | Neutral packet builder | Effort 2 — shared factual evidence loaded by both pods |
 | `*-pod.md` | Two pod agents | Effort 2 — per-lens attributed results plus post-pass deduplication |
 | `pod-questions-answered.md` | One Haiku scout | Effort 2 — all pod questions in one batch |
@@ -537,7 +538,7 @@ When `PR_MODE=true`:
 
 Read `~/.claude/prompts/expert-review-panel.md` and follow those steps exactly. `REVIEW_DIR`,
 `PANEL_MODEL`, `MODEL_EXPLICIT`, `EFFORT`, `EFFORT_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`,
-`PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
+`PR_MODE`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, and
 all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
 At `EFFORT=1` the panel's Swarm Path replaces Steps 4–10; at `EFFORT=5` Step 3 has already lowered
 the run to named selection over the full index.

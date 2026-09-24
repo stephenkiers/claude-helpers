@@ -155,8 +155,8 @@ if __name__ == "__main__":
           "regime_counts" in report and report.get("n_included_runs") == 2 and report.get("n_excluded_runs") == 2)
         t("valLift renders not_yet_available with reason",
           report.get("valLift", {}).get("status") == "not_yet_available" and report["valLift"].get("reason"))
-        t("shadow_miss_rate renders not_yet_available",
-          report.get("shadow_miss_rate", {}).get("status") == "not_yet_available")
+        t("shadow section renders with a status (placeholder replaced)",
+          "shadow_miss_rate" not in report and "status" in report.get("shadow", {}))
         t("tokens render as unavailable status, not zero", report.get("tokens", {}).get("status") == "unavailable")
 
     print()

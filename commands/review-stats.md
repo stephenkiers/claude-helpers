@@ -68,3 +68,46 @@ mentions that made it into the action plan) for each reviewer across all runs.
 - **Zero runs ≠ zero value:** A reviewer tagged `review: named-only` or `review: secondary` will show few or zero runs because they are not auto-routed; a zero row must not be cited as evidence of no value. Phase 3 exploration seats are the designed measurement.
 
 For the methodology behind tuning `/expert-review`'s reviewer selection based on attendance and yield metrics, see `prompts/reviewer-selection-audit.md`.
+
+## Shadow Scorer Report (#195)
+
+When `--report` is used, `reviewer-yield.py` includes a "Shadow scorer (observe-only)" section that
+compares the Router's seating authority against a deterministic, no-LLM scorer (`scripts/route-score.py`)
+run in shadow mode.
+
+**Cohorts measured:**
+- **effort4-routed:** effort 4 runs where the Router decided seating (excluding named selection); includes
+  PR-mode runs. This is the **censored lower bound** — only measures misses when the scorer's exclusions
+  remove a reviewer the Router seated who then produced a verified finding.
+- **effort5-full:** effort 5 runs (all review-tagged reviewers explicitly named, bypassing the Router),
+  the **uncensored estimate** without Router influence.
+- **excluded-non-router-seated:** all other runs (named selection at other efforts, effort-3 routed runs),
+  excluded from the miss rate but counted.
+
+**Per-finding rule:** A finding is a miss **if every attributed reviewer** (`raised_by ∪ supported_by`,
+minus always-run reviewers) would be excluded by the scorer. A finding with any attributed reviewer
+scoring Must or Candidate is not a miss.
+
+**Report contents (per cohort):**
+- Total CONFIRMED findings and missed counts by severity (Critical, High, Medium, Low — lows included)
+- Crit+High miss rate shown next to the 3% guardrail as an observation, not a pass/fail
+- Router×scorer contingency table (seated Yes/No from Panel Decision × tier Must/Candidate/Exclude)
+- Missed-findings list (run id, finding id, severity, title, attributors and their top reasons)
+- Sole-source misses counted per reviewer (missed and `supported_by == []`)
+
+**Counts:** runs pre-shadow (no `route-scores.json`), runs with scorer errors (`unscored:*`),
+unattributable runs (no `findings.json`), and runs over 800 changed lines. Hook errors overlap with the other buckets
+rather than being a separate bucket; they are reported as a subordinate count.
+
+**Methodology:** Re-scored with current config from stored `full-diff.patch` (fallback `full.diff`).
+Thresholds labeled provisional (`thresholds_provisional: true`). Scorer version recorded. A cohort with
+no Critical/High findings reports n=0 and no rate, never "0%". If the scorer or `reviewers/index.yaml` route
+config fails to load, the section is `{status: unavailable, reason}` and the rest of the report renders.
+**In-sample caveat:** The shadow miss rate re-scores all stored diffs against the current `reviewers/index.yaml`,
+so once the `route:` blocks are tuned against reported misses, the rate is in-sample and will overstate accuracy.
+No config fingerprint is recorded yet; config fingerprints and as-recorded vs. as-re-scored rates are deferred
+to a follow-up tied to #196 and must land before Phase 3 tuning relies on the rate.
+
+**Censoring caveat (verbatim):** The effort-4 miss rate only measures whether the scorer's exclusions
+remove a reviewer the Router seated who then produced a verified finding; it is a lower bound, not proof
+the scorer is safe. The effort-5 cohort is the uncensored estimate.

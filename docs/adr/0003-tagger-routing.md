@@ -207,3 +207,19 @@ the command stops and reports which context resolved empty; the review or plan d
   caught by `tests/test_reviewer_contexts.py` and by the audit harness (`scripts/reviewer-selection-audit.py`).
 - **Constraint:** all four participation mechanisms must yield a non-empty set; an `empty` result for any
   context signals misconfiguration and halts the run.
+
+## Amendment (ADR-0003.3) — Deterministic shadow scorer (observe-only, #195)
+
+Amended 2026-09-23 (#195): A deterministic, no-LLM scorer (`scripts/route-score.py`) runs in shadow mode
+during Step 5 after the Router's Panel Decision is final, writing `route-scores.json` as an audit copy.
+The shadow scorer has zero effect on seating — the Router (ADR-0003.2) remains the sole seating authority
+until Phase 3 (#196). The shadow scorer measures whether a deterministic-only routing would have matched
+the Router's judgment over a collection window, enabling Phase 3 to decide whether to flip seating authority.
+Any flip in Phase 3 requires a real ADR-0003 amendment (not a shadow mode), per ADR-0016 (usage data must
+not silently change routing). See `reviewers/README.md` (route: schema), `commands/review-stats.md` (shadow
+section), and `prompts/expert-review-panel.md` Step 5 for implementation details.
+
+**In-sample caveat:** The shadow miss rate re-scores all stored diffs against the current `reviewers/index.yaml`,
+so once the `route:` blocks are tuned against reported misses, the rate is in-sample and will overstate accuracy.
+No config fingerprint is recorded yet; config fingerprints and as-recorded vs. as-re-scored rates are deferred
+to a follow-up tied to #196 and must land before Phase 3 tuning relies on the rate.

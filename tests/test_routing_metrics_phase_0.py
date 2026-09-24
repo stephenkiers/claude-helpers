@@ -243,7 +243,9 @@ if __name__ == "__main__":
         t("tokens unavailable (no measured rows) is a status dict, not zero",
           data["tokens"].get("status") == "unavailable" and "total_input_tokens" not in data["tokens"])
         t("valLift is not_yet_available", data["valLift"]["status"] == "not_yet_available")
-        t("shadow_miss_rate is not_yet_available", data["shadow_miss_rate"]["status"] == "not_yet_available")
+        t("shadow placeholder replaced by computed shadow section",
+          "shadow_miss_rate" not in data and isinstance(data.get("shadow"), dict) and "status" in data["shadow"],
+          str(data.get("shadow")))
         t("methodology carries observation-only sentence",
           data["methodology"]["observation_only_sentence"] == ry.OBSERVATION_ONLY_NOTE)
 
