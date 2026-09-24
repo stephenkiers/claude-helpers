@@ -67,7 +67,9 @@ reviewers:
     route:
       strong: [factory, bus, eventBus, inject, compose]
       weak: [createSession, createService, config, options, provider]
-      shape: {cross_file_symbol: 3, file_count_ge: 2}
+      shape:
+        cross_file_symbol: 3
+        file_count_ge: {points: 2, n: 3}
       include_at: 6
       candidate_at: 3
 
@@ -106,7 +108,7 @@ reviewers:
     triggers: [import, use, from, interface, type, struct, trait, contracts/, core/, services/]
     note: "Code review participation is naming-only in Phase 1; plan participation is primary."
     route:
-      paths: ["contracts/", "core/", "services/"]
+      paths: ["contracts/**", "core/**", "services/**"]
       strong: [interface, struct, trait]
       include_at: 6
       candidate_at: 3
@@ -218,9 +220,8 @@ reviewers:
     triggers: [sources, src_, person_, comm_, evt_, issue_, related_issues, participants, shared_profile, content_hashes, _meta.json, "*.json"]
     note: "Data quality and schema integrity specialist. Fills the gap no other reviewer covers: referential integrity across JSON knowledge files, duplicate detection, enum validation, bidirectional link consistency, and source traceability chains. Review participation is path-conditioned on data files by existing triggers."
     route:
-      paths: ["**/*.json", "**/*sources*", "**/*_meta*"]
+      paths: ["**/*.json", "**/*sources*", "**/*_meta*", "*.json"]
       strong: [sources, participants]
-      weak: ["*.json"]
       include_at: 6
       candidate_at: 3
 

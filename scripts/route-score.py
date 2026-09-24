@@ -15,7 +15,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple, get_args
 
 SCORER_VERSION = "1"
 ALWAYS_RUN_SLUGS = frozenset(["contrarian-carl", "code-rot-cody", "consistency-checker"])
@@ -61,7 +61,7 @@ class RouteConfigError(ValueError):
 @dataclass(frozen=True)
 class Reason:
     """One contribution to a reviewer score."""
-    kind: str  # ReasonKind
+    kind: ReasonKind
     detail: str
     points: int
 
@@ -71,7 +71,7 @@ class ReviewerScore:
     """Score and tier for one reviewer."""
     slug: str
     score: int
-    tier: str  # Tier
+    tier: Tier
     reasons: Tuple[Reason, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -81,8 +81,16 @@ class ReviewerScore:
             raise ValueError(
                 f"{self.slug}: score {self.score} != sum(points) {computed_score}"
             )
-        if self.tier not in ("Must", "Candidate", "Exclude", "Always"):
+        valid_tiers = get_args(Tier)
+        if self.tier not in valid_tiers:
             raise ValueError(f"{self.slug}: tier {self.tier} not in Tier literal")
+
+
+@dataclass(frozen=True)
+class ShapeRule:
+    """One shape predicate with its points and optional n threshold."""
+    points: int
+    n: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -91,7 +99,7 @@ class RouteConfig:
     paths: Tuple[str, ...] = field(default_factory=tuple)
     strong: Tuple[str, ...] = field(default_factory=tuple)
     weak: Tuple[str, ...] = field(default_factory=tuple)
-    shape: Dict[str, Any] = field(default_factory=dict)
+    shape: Tuple[Tuple[str, ShapeRule], ...] = field(default_factory=tuple)
     include_at: int = 6  # PROVISIONAL
     candidate_at: int = 3  # PROVISIONAL
     hard_requires: Tuple[str, ...] = field(default_factory=tuple)
@@ -129,44 +137,67 @@ def _is_excluded_path(path: str) -> bool:
 
 
 def _match_glob_patterns(path: str, patterns: Tuple[str, ...]) -> bool:
-    """Check if path matches any glob pattern."""
+    """Check if path matches any glob pattern (checks both full path and basename)."""
     import fnmatch
 
+    basename = Path(path).name
     for pattern in patterns:
-        if fnmatch.fnmatch(path, pattern):
+        if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(basename, pattern):
             return True
     return False
 
 
 def parse_route_configs(index_data: Any) -> Dict[str, RouteConfig]:
     """
-    Parse route: blocks from index.yaml data structure.
+    Parse and normalize route: blocks from index.yaml data structure.
 
-    Validates:
+    Validates and normalizes:
+    - Index is a dict, reviewers is a list.
     - Every `review`-context reviewer has a `route:` block.
     - `route:` has only allowed keys.
-    - No string where list is expected.
-    - All thresholds and points are ints (not bool).
-    - candidate_at <= include_at.
+    - No string where list is expected; list items are non-empty strings.
+    - Shape predicates: int or dict form with required `points` and optional `n`.
+    - `file_count_ge` and `top_dirs_ge` require dict form with explicit `n` (scalar raises).
+    - All thresholds are non-bool non-negative ints; 0 <= candidate_at <= include_at.
+    - Paths do not end in `/` (must be `dir/**` not `dir/`).
+    - Strong/weak words are `\\w`-bounded at both ends.
+    - No duplicate slugs.
     - All shape/hard_requires names are in the registry.
-    - always: true is the only key if present.
+    - `always: true` is the only key if present; must be exact bool True, not truthy.
+    - After parsing, the set of `always: true` slugs matches ALWAYS_RUN_SLUGS exactly.
 
     Returns {slug: RouteConfig}, slug = file: stem (e.g. "north-star-nick").
-    Raises RouteConfigError.
+    Raises RouteConfigError with slug and field context.
     """
-    configs = {}
+    # Type-check top-level structure first.
+    if not isinstance(index_data, dict):
+        raise RouteConfigError("index data must be a dict")
 
-    reviewers = index_data.get("reviewers", [])
-    for entry in reviewers:
+    reviewers_raw = index_data.get("reviewers", [])
+    if not isinstance(reviewers_raw, list):
+        raise RouteConfigError("reviewers must be a list")
+
+    configs = {}
+    always_run_observed = set()
+
+    for entry in reviewers_raw:
+        if not isinstance(entry, dict):
+            raise RouteConfigError("each reviewer entry must be a dict")
+
         file_path = entry.get("file", "")
         if not file_path:
             continue
 
         slug = Path(file_path).stem
+        if slug in configs:
+            raise RouteConfigError(f"{slug}: duplicate slug in reviewers")
+
         contexts = entry.get("contexts", {})
+        if not isinstance(contexts, (dict, list)):
+            raise RouteConfigError(f"{slug}: contexts must be a dict or list")
 
         # Check if this reviewer has a review context.
-        has_review_context = "review" in contexts
+        has_review_context = "review" in contexts if isinstance(contexts, dict) else "review" in contexts
 
         route_block = entry.get("route")
 
@@ -180,15 +211,15 @@ def parse_route_configs(index_data: Any) -> Dict[str, RouteConfig]:
         if not isinstance(route_block, dict):
             raise RouteConfigError(f"{slug}: route: must be a dict")
 
-        # If always: true, must be the only key.
-        always = route_block.get("always", False)
-        if always and len(route_block) > 1:
-            raise RouteConfigError(
-                f"{slug}: always: true must be the only key in route:"
-            )
-
-        if always:
+        # If always is present, it must be exactly True and the only key.
+        always = route_block.get("always")
+        if always is not None:
+            if always is not True:  # Strict bool check, reject 1, "yes", truthy non-bool
+                raise RouteConfigError(f"{slug}: always must be exactly True (bool), not {type(always).__name__} {always!r}")
+            if len(route_block) > 1:
+                raise RouteConfigError(f"{slug}: always: true must be the only key in route:")
             configs[slug] = RouteConfig(always=True)
+            always_run_observed.add(slug)
             continue
 
         # Validate allowed keys.
@@ -197,82 +228,171 @@ def parse_route_configs(index_data: Any) -> Dict[str, RouteConfig]:
             if key not in allowed_keys:
                 raise RouteConfigError(f"{slug}: unknown key in route:: {key}")
 
-        # Parse fields.
+        # Parse and normalize fields.
         try:
+            # Paths: list of non-empty strings, no trailing /
             paths = route_block.get("paths", [])
             if isinstance(paths, str):
-                raise RouteConfigError(f"{slug}: paths must be a list, not a string")
+                raise RouteConfigError(f"{slug}.paths: must be a list, not a string")
             if not isinstance(paths, list):
-                raise RouteConfigError(f"{slug}: paths must be a list")
-            paths_tuple = tuple(str(p) for p in paths)
+                raise RouteConfigError(f"{slug}.paths: must be a list")
+            paths_list = []
+            for p in paths:
+                if not isinstance(p, str) or not p:
+                    raise RouteConfigError(f"{slug}.paths: entries must be non-empty strings, got {p!r}")
+                if p.endswith("/"):
+                    raise RouteConfigError(f"{slug}.paths: entry {p!r} ends with `/`; use `dir/**` instead")
+                paths_list.append(p)
+            paths_tuple = tuple(paths_list)
 
+            # Strong words: list of non-empty strings, \w-bounded at both ends
             strong = route_block.get("strong", [])
             if isinstance(strong, str):
-                raise RouteConfigError(f"{slug}: strong must be a list, not a string")
+                raise RouteConfigError(f"{slug}.strong: must be a list, not a string")
             if not isinstance(strong, list):
-                raise RouteConfigError(f"{slug}: strong must be a list")
-            strong_tuple = tuple(str(w) for w in strong)
+                raise RouteConfigError(f"{slug}.strong: must be a list")
+            strong_list = []
+            for w in strong:
+                if not isinstance(w, str) or not w:
+                    raise RouteConfigError(f"{slug}.strong: entries must be non-empty strings, got {w!r}")
+                if not (w[0].isalnum() or w[0] == "_") or not (w[-1].isalnum() or w[-1] == "_"):
+                    raise RouteConfigError(f"{slug}.strong: word {w!r} must start and end with \\w (alphanumeric or underscore)")
+                strong_list.append(w)
+            strong_tuple = tuple(strong_list)
 
+            # Weak words: list of non-empty strings, \w-bounded at both ends
             weak = route_block.get("weak", [])
             if isinstance(weak, str):
-                raise RouteConfigError(f"{slug}: weak must be a list, not a string")
+                raise RouteConfigError(f"{slug}.weak: must be a list, not a string")
             if not isinstance(weak, list):
-                raise RouteConfigError(f"{slug}: weak must be a list")
-            weak_tuple = tuple(str(w) for w in weak)
+                raise RouteConfigError(f"{slug}.weak: must be a list")
+            weak_list = []
+            for w in weak:
+                if not isinstance(w, str) or not w:
+                    raise RouteConfigError(f"{slug}.weak: entries must be non-empty strings, got {w!r}")
+                if not (w[0].isalnum() or w[0] == "_") or not (w[-1].isalnum() or w[-1] == "_"):
+                    raise RouteConfigError(f"{slug}.weak: word {w!r} must start and end with \\w (alphanumeric or underscore)")
+                weak_list.append(w)
+            weak_tuple = tuple(weak_list)
 
+            # Resolve defaults first, then validate thresholds.
             include_at = route_block.get("include_at")
-            if include_at is not None:
+            if include_at is None:
+                include_at = 6
+            else:
                 if isinstance(include_at, bool) or not isinstance(include_at, int):
-                    raise RouteConfigError(f"{slug}: include_at must be an int")
+                    raise RouteConfigError(f"{slug}.include_at: must be an int, not {type(include_at).__name__}")
+                if include_at < 0:
+                    raise RouteConfigError(f"{slug}.include_at: must be non-negative, got {include_at}")
 
             candidate_at = route_block.get("candidate_at")
-            if candidate_at is not None:
+            if candidate_at is None:
+                candidate_at = 3
+            else:
                 if isinstance(candidate_at, bool) or not isinstance(candidate_at, int):
-                    raise RouteConfigError(f"{slug}: candidate_at must be an int")
+                    raise RouteConfigError(f"{slug}.candidate_at: must be an int, not {type(candidate_at).__name__}")
+                if candidate_at < 0:
+                    raise RouteConfigError(f"{slug}.candidate_at: must be non-negative, got {candidate_at}")
 
-            if include_at is not None and candidate_at is not None:
-                if candidate_at > include_at:
-                    raise RouteConfigError(
-                        f"{slug}: candidate_at ({candidate_at}) must be <= include_at ({include_at})"
-                    )
+            # Validate threshold invariant.
+            if candidate_at > include_at:
+                raise RouteConfigError(
+                    f"{slug}: candidate_at ({candidate_at}) must be <= include_at ({include_at})"
+                )
 
-            shape_dict = route_block.get("shape", {})
-            if not isinstance(shape_dict, dict):
-                raise RouteConfigError(f"{slug}: shape must be a dict")
+            # Shape predicates: normalize to ShapeRule.
+            shape_raw = route_block.get("shape", {})
+            if not isinstance(shape_raw, dict):
+                raise RouteConfigError(f"{slug}.shape: must be a dict")
 
-            # Validate shape predicate names.
-            for pred_name in shape_dict.keys():
+            shape_list: List[Tuple[str, ShapeRule]] = []
+            for pred_name, pred_config in shape_raw.items():
                 if pred_name not in SHAPE_PREDICATES:
-                    raise RouteConfigError(f"{slug}: unknown shape predicate: {pred_name}")
+                    raise RouteConfigError(f"{slug}.shape: unknown predicate: {pred_name}")
 
+                # Scalar form: int points, or dict form: {points, n?}
+                pred_points: int
+                pred_n: Optional[int] = None
+
+                if isinstance(pred_config, dict):
+                    # Dict form
+                    if not all(k in {"points", "n"} for k in pred_config.keys()):
+                        invalid_keys = set(pred_config.keys()) - {"points", "n"}
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}: unknown keys {invalid_keys}")
+                    if "points" not in pred_config:
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}: required key `points` missing")
+
+                    pred_points = pred_config["points"]
+                    if isinstance(pred_points, bool) or not isinstance(pred_points, int):
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}.points: must be an int, not {type(pred_points).__name__}")
+                    if pred_points < 0:
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}.points: must be non-negative, got {pred_points}")
+
+                    if "n" in pred_config:
+                        pred_n = pred_config["n"]
+                        if isinstance(pred_n, bool) or not isinstance(pred_n, int):
+                            raise RouteConfigError(f"{slug}.shape.{pred_name}.n: must be an int, not {type(pred_n).__name__}")
+                        if pred_n <= 0:
+                            raise RouteConfigError(f"{slug}.shape.{pred_name}.n: must be positive, got {pred_n}")
+
+                elif isinstance(pred_config, int) and not isinstance(pred_config, bool):
+                    # Scalar form (int points)
+                    pred_points = pred_config
+                    if pred_points < 0:
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}: must be non-negative, got {pred_points}")
+                    # Threshold predicates cannot use scalar form.
+                    if pred_name in {"file_count_ge", "top_dirs_ge"}:
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}: scalar form not allowed; use dict form with explicit `n`")
+                else:
+                    raise RouteConfigError(f"{slug}.shape.{pred_name}: must be int or dict, got {type(pred_config).__name__}")
+
+                shape_list.append((pred_name, ShapeRule(points=pred_points, n=pred_n)))
+
+            shape_tuple = tuple(shape_list)
+
+            # Hard requires: list of predicate names.
             hard_requires = route_block.get("hard_requires", [])
             if isinstance(hard_requires, str):
-                raise RouteConfigError(f"{slug}: hard_requires must be a list, not a string")
+                raise RouteConfigError(f"{slug}.hard_requires: must be a list, not a string")
             if not isinstance(hard_requires, list):
-                raise RouteConfigError(f"{slug}: hard_requires must be a list")
+                raise RouteConfigError(f"{slug}.hard_requires: must be a list")
 
-            # Validate hard_requires names.
+            hard_requires_list = []
             for pred_name in hard_requires:
+                if not isinstance(pred_name, str) or not pred_name:
+                    raise RouteConfigError(f"{slug}.hard_requires: entries must be non-empty strings, got {pred_name!r}")
                 if pred_name not in SHAPE_PREDICATES:
-                    raise RouteConfigError(f"{slug}: unknown hard_requires predicate: {pred_name}")
-            hard_requires_tuple = tuple(str(p) for p in hard_requires)
+                    raise RouteConfigError(f"{slug}.hard_requires: unknown predicate: {pred_name}")
+                hard_requires_list.append(pred_name)
+            hard_requires_tuple = tuple(hard_requires_list)
 
             config = RouteConfig(
                 paths=paths_tuple,
                 strong=strong_tuple,
                 weak=weak_tuple,
-                shape=shape_dict,
-                include_at=include_at if include_at is not None else 6,
-                candidate_at=candidate_at if candidate_at is not None else 3,
+                shape=shape_tuple,
+                include_at=include_at,
+                candidate_at=candidate_at,
                 hard_requires=hard_requires_tuple,
                 always=False,
             )
             configs[slug] = config
 
-        except (KeyError, TypeError, ValueError) as e:
+        except (KeyError, TypeError) as e:
             if isinstance(e, RouteConfigError):
                 raise
             raise RouteConfigError(f"{slug}: {e}")
+
+    # Validate that the set of always: true slugs matches ALWAYS_RUN_SLUGS.
+    if always_run_observed != ALWAYS_RUN_SLUGS:
+        missing = ALWAYS_RUN_SLUGS - always_run_observed
+        extra = always_run_observed - ALWAYS_RUN_SLUGS
+        msg = f"always: true slugs mismatch: "
+        if missing:
+            msg += f"missing {missing} "
+        if extra:
+            msg += f"extra {extra}"
+        raise RouteConfigError(msg.strip())
 
     return configs
 
@@ -352,6 +472,11 @@ _UI_EXTS = {".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss"}
 _PREDICATE_DEFAULT_N = {"file_count_ge": 3, "top_dirs_ge": 2}
 
 
+def _is_dep_manifest(name: str) -> bool:
+    """Check if a file name is a dependency manifest."""
+    return name in _DEP_MANIFESTS or re.match(r"^requirements.*\.txt$", name) is not None
+
+
 @dataclass(frozen=True)
 class _DiffFacts:
     """Per-diff inputs to shape predicates, computed once and shared across reviewers."""
@@ -365,13 +490,17 @@ def _cross_file_symbol(files: List[Dict[str, Any]], limits: Limits) -> Tuple[boo
     """
     True if a definition-shaped identifier from one file's hunk lines appears in another file's.
     Bounded by limits; returns (result, degraded) where degraded means scanning stopped early.
+    Skips excluded paths in both extraction and search phases.
     """
     degraded = False
     definitions_per_file: Dict[str, List[str]] = {}
     all_definitions: Set[str] = set()
     scan_line_count = 0
 
+    # First phase: extract definitions from each file (skip excluded paths).
     for f in files:
+        if _is_excluded_path(f["path"]):
+            continue
         if scan_line_count > limits.max_scan_lines:
             degraded = True
             break
@@ -388,14 +517,31 @@ def _cross_file_symbol(files: List[Dict[str, Any]], limits: Limits) -> Tuple[boo
         definitions_per_file[f["path"]] = defs_in_file
         all_definitions.update(defs_in_file)
 
+    # Second phase: search for definitions in other files (skip excluded paths, apply line budget).
+    search_scan_line_count = 0
     for path, defs in definitions_per_file.items():
         for definition in defs:
             word_re = _word_to_regex(definition)
             for other in files:
-                if other["path"] == path:
+                if other["path"] == path or _is_excluded_path(other["path"]):
                     continue
-                if any(re.search(word_re, line) for line in other["added_lines"] + other["removed_lines"]):
-                    return True, degraded
+                for line in other["added_lines"] + other["removed_lines"]:
+                    search_scan_line_count += 1
+                    if search_scan_line_count > limits.max_scan_lines:
+                        degraded = True
+                        break
+                    if re.search(word_re, line):
+                        return True, degraded
+                if search_scan_line_count > limits.max_scan_lines:
+                    degraded = True
+                    break
+            if search_scan_line_count > limits.max_scan_lines:
+                degraded = True
+                break
+        if search_scan_line_count > limits.max_scan_lines:
+            degraded = True
+            break
+
     return False, degraded
 
 
@@ -408,7 +554,7 @@ def _predicate_true(pred_name: str, pred_n: Optional[int], facts: _DiffFacts) ->
         return any("docs/adr/" in f["path"] for f in files)
     if pred_name == "dep_manifest":
         return any(
-            Path(f["path"]).name in _DEP_MANIFESTS or re.match(r"^requirements.*\.txt$", Path(f["path"]).name)
+            _is_dep_manifest(Path(f["path"]).name)
             for f in files
         )
     if pred_name == "test_files":
@@ -518,6 +664,10 @@ def score_diff(
             reviewers[slug] = ReviewerScore(slug=slug, score=0, tier=tier, reasons=tuple(reasons))
             continue
 
+        # Compile word regexes once per reviewer (outside the per-file loops).
+        strong_regexes = [(_word_to_regex(w), w) for w in config.strong]
+        weak_regexes = [(_word_to_regex(w), w) for w in config.weak]
+
         # Collect strong/weak word hits per file (per-file cap).
         strong_hits_per_file = {}
         weak_hits_per_file = {}
@@ -532,13 +682,11 @@ def score_diff(
 
             # Scan added and removed lines.
             for line in file_record["added_lines"] + file_record["removed_lines"]:
-                for word in config.strong:
-                    word_re = _word_to_regex(word)
+                for word_re, word in strong_regexes:
                     if re.search(word_re, line, re.IGNORECASE):
                         strong_words_in_file.add(word)
 
-                for word in config.weak:
-                    word_re = _word_to_regex(word)
+                for word_re, word in weak_regexes:
                     if re.search(word_re, line, re.IGNORECASE):
                         weak_words_in_file.add(word)
 
@@ -576,23 +724,21 @@ def score_diff(
                 reasons.append(reason)
                 score += 3
 
-        # Shape predicates.
-        for pred_name, pred_config in config.shape.items():
-            if isinstance(pred_config, dict):
-                pred_points = pred_config.get("points", 0)
-                pred_n = pred_config.get("n")
-            else:
-                pred_points = pred_config
-                pred_n = None
-            if _predicate_true(pred_name, pred_n, facts):
-                reasons.append(Reason(kind="shape", detail=pred_name, points=pred_points))
-                score += pred_points
+        # Shape predicates (now stored as tuples of (name, ShapeRule)).
+        for pred_name, rule in config.shape:
+            if _predicate_true(pred_name, rule.n, facts):
+                reasons.append(Reason(kind="shape", detail=pred_name, points=rule.points))
+                score += rule.points
 
         # Check hard_requires; a threshold predicate uses the same n as its shape entry.
         hard_requires_failed = None
         for pred_name in config.hard_requires:
-            shape_config = config.shape.get(pred_name)
-            pred_n = shape_config.get("n") if isinstance(shape_config, dict) else None
+            # Find the shape rule for this predicate.
+            pred_n = None
+            for shape_pred_name, rule in config.shape:
+                if shape_pred_name == pred_name:
+                    pred_n = rule.n
+                    break
             if not _predicate_true(pred_name, pred_n, facts):
                 hard_requires_failed = pred_name
                 break
@@ -647,6 +793,21 @@ def result_to_dict(result: ScoreResult) -> dict:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI entry point. Always returns 0."""
+    # Resolve --out before full parsing so that argparse errors can still write the artifact.
+    out_path = None
+    if argv is None:
+        argv = sys.argv[1:]
+    else:
+        argv = list(argv)  # Make a copy to avoid modifying the caller's list
+
+    # First pass: find --out value without full parsing.
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--out" and i + 1 < len(argv):
+            out_path = argv[i + 1]
+            break
+        i += 1
+
     try:
         parser = argparse.ArgumentParser(description="Route diff scorer")
         parser.add_argument("--diff", required=True, help="Path to diff file")
@@ -709,12 +870,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             "effort": args.effort if "args" in locals() else None,
         }
 
-        # Try to write error JSON.
+        # Try to write error JSON using args.out if available, otherwise use out_path from first pass.
+        output_file = None
         if "args" in locals() and args.out:
+            output_file = args.out
+        elif out_path:
+            output_file = out_path
+
+        if output_file:
             try:
-                out_path = Path(args.out)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text(json.dumps(error_output, sort_keys=True, indent=2))
+                output_path = Path(output_file)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(error_output, sort_keys=True, indent=2))
             except Exception:
                 pass  # If write fails, just continue silently.
 

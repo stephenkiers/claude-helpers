@@ -227,10 +227,10 @@ input:
 deterministic score copy for shadow measurement only:
 
 ```bash
-ROUTE_SCORE_MODE=routed; [ "$NAMED_SELECTION" = "true" ] && ROUTE_SCORE_MODE=named
-ROUTE_SCORE_PR=""; [ "$PR_MODE" = "true" ] && ROUTE_SCORE_PR="--pr"
+ROUTE_SCORE_MODE=routed; [ "${NAMED_SELECTION:-false}" = "true" ] && ROUTE_SCORE_MODE=named
+ROUTE_SCORE_PR=""; [ "${PR_MODE:-false}" = "true" ] && ROUTE_SCORE_PR="--pr"
 python3 "$HOME/.claude/scripts/route-score.py" --diff "$REVIEW_DIR/full-diff.patch" \
-  --mode "$ROUTE_SCORE_MODE" $ROUTE_SCORE_PR --effort "$EFFORT" --out "$REVIEW_DIR/route-scores.json" >/dev/null 2>&1 || true
+  --mode "$ROUTE_SCORE_MODE" $ROUTE_SCORE_PR --effort "${EFFORT:-4}" --out "$REVIEW_DIR/route-scores.json" >/dev/null 2>&1 || true
 ```
 
 Observe-only (#195): never read this file, never pass it to any subagent, never let it affect seating.
