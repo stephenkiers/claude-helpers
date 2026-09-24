@@ -52,12 +52,12 @@ mentions that made it into the action plan) for each reviewer across all runs.
 
 ## How It Works
 
-1. Locates your review directory and reads `transcript-origin.json` to determine the session directory.
+1. Locates your review directory and reads `transcript-origin.json` (if present) as a *hint* to the session directory. If the hint yields zero matching transcripts, performs a read-time backstop scan: anchors on the unique review-dir name from `REVIEW_DIR` path, scopes to one `project_dir`, and bounds by the review timestamp from the path. Triggered only when zero anchored matches found via the hint.
 2. Finds subagent transcripts bounded to `~/.claude/projects/{project_dir}/{session_id}/subagents/*.jsonl` that wrote to this review directory.
 3. Parses token usage from each subagent's `message.usage` fields, de-duplicating by `message["id"]` when present.
 4. Counts mentions of each reviewer in `final-report.md` (matching both slug and display name, case-insensitive).
 5. Counts escalations in `claude-action-plan.md` (looks for `**Raised by**: <reviewer>` markers).
-6. Records each row with `tokens_status: "measured"` (when transcripts found) or `"unavailable"` (when transcript-origin.json missing/unavailable or session dir inaccessible).
+6. Records each row with `tokens_status: "measured"` (when transcripts found) or `"unavailable"` (when transcript-origin.json missing/unavailable and backstop scan yields nothing). Pod-format (effort 2) runs print an explicit pod notice (pods/lenses from `review-metrics.json`); unrecognized-format runs print a "not measured" notice. Both notices are excluded from classic reviewers-per-run averages in `--report`.
 7. Appends one JSON line per reviewer to `~/.claude/reviews/{owner-repo}/reviewer-yield.jsonl` (creates file and parent dirs if missing, skips if run_id already exists).
 
 ## Notes

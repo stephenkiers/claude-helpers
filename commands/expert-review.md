@@ -139,6 +139,7 @@ already-reviewed commit never overwrites the prior run):
 | `{reviewer}-pass2.md` | Pass 2 subagents | Step 9 — only reviewers with findings, judgment reviewers only |
 | `final-report.md` | Amalgamator | Step 10 — the complete record; the gut-check instrument |
 | `claude-action-plan.md` | Triage Chief (Step 11); `STATUS`/`DECISION` fields updated in place by the main thread (Step 12) | Step 11 — decision-first; **the file the human opens** |
+| `transcript-origin.json` | `write-transcript-origin.py` | Step 1 — bounded transcript discovery hint, recording where the review's session is anchored |
 
 ---
 
@@ -272,84 +273,11 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    REVIEW_DIR="$HOME/.claude/reviews/${REPO_KEY}/${BRANCH}-${HASH}-${TIMESTAMP}"
    mkdir -p "$REVIEW_DIR"
 
-   # Write transcript-origin.json for bounded transcript discovery
-   set +e  # Allow commands to fail without exiting the script
-   PROJECT_DIR_SANITIZED=$(printf '%s' "$(pwd)" | tr '/' '-')
-   SESSION_ID=""
-   RESOLUTION="unavailable"
-   
-   # Validate PROJECT_DIR_SANITIZED matches expected pattern
-   if [[ "$PROJECT_DIR_SANITIZED" =~ ^[A-Za-z0-9_-]+$ ]]; then
-     # Try to get session ID from environment
-     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-       # Validate SESSION_ID from environment
-       if [[ "$CLAUDE_CODE_SESSION_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
-         SESSION_ID="$CLAUDE_CODE_SESSION_ID"
-         RESOLUTION="env"
-       fi
-     fi
-     # If no valid env var, try to find most-recent session-id subdirectory
-     if [ "$RESOLUTION" = "unavailable" ]; then
-       PROJECTS_DIR="$HOME/.claude/projects/$PROJECT_DIR_SANITIZED"
-       # Resolve and validate PROJECTS_DIR is under ~/.claude/projects
-       RESOLVED_PROJECTS_DIR=$(python3 -c "import os; print(os.path.realpath('$PROJECTS_DIR'))" 2>/dev/null)
-       CLAUDE_PROJECTS_BASE=$(python3 -c "import os; print(os.path.realpath(os.path.expanduser('~/.claude/projects')))" 2>/dev/null)
-       if [ -n "$RESOLVED_PROJECTS_DIR" ] && [ -n "$CLAUDE_PROJECTS_BASE" ] && [[ "$RESOLVED_PROJECTS_DIR" == "$CLAUDE_PROJECTS_BASE"* ]]; then
-         if [ -d "$RESOLVED_PROJECTS_DIR" ]; then
-           # Get top 2 directories by mtime to check for concurrent session ambiguity
-           TOP_TWO=$(ls -td "$RESOLVED_PROJECTS_DIR"/*/ 2>/dev/null | head -2)
-           if [ -n "$TOP_TWO" ]; then
-             MOST_RECENT=$(echo "$TOP_TWO" | head -1 | xargs -I {} basename {})
-             SECOND_RECENT=$(echo "$TOP_TWO" | tail -1 | xargs -I {} basename {})
-             # Skip if top directory is "subagents" (not a session ID)
-             if [ "$MOST_RECENT" = "subagents" ] && [ -n "$SECOND_RECENT" ]; then
-               MOST_RECENT="$SECOND_RECENT"
-             fi
-             if [ -n "$MOST_RECENT" ] && [ "$MOST_RECENT" != "subagents" ]; then
-               # Check if top two mtimes are within 5 seconds (concurrent session ambiguity); if so, fail to unavailable
-               FIRST_MTIME=$(stat -f%m "$RESOLVED_PROJECTS_DIR/$MOST_RECENT" 2>/dev/null)
-               SECOND_MTIME=$(stat -f%m "$RESOLVED_PROJECTS_DIR/$SECOND_RECENT" 2>/dev/null)
-               if [ -n "$FIRST_MTIME" ] && [ -n "$SECOND_MTIME" ]; then
-                 MTIME_DIFF=$((FIRST_MTIME - SECOND_MTIME))
-                 if [ $MTIME_DIFF -lt 0 ]; then
-                   MTIME_DIFF=$((-MTIME_DIFF))
-                 fi
-                 if [ $MTIME_DIFF -le 5 ]; then
-                   RESOLUTION="unavailable"
-                 else
-                   SESSION_ID="$MOST_RECENT"
-                   RESOLUTION="most-recent-dir"
-                 fi
-               else
-                 SESSION_ID="$MOST_RECENT"
-                 RESOLUTION="most-recent-dir"
-               fi
-             fi
-           fi
-         fi
-       fi
-     fi
-   fi
-   set -e
-   
-   RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   
-   # Construct and write transcript-origin.json using jq with proper escaping
-   printf '%s' "$(pwd)" | jq -R --arg schema_version "1" \
-     --arg cwd_val "$(pwd)" \
-     --arg proj_dir "$PROJECT_DIR_SANITIZED" \
-     --arg sess_id "$SESSION_ID" \
-     --arg res "$RESOLUTION" \
-     --arg rec_at "$RECORDED_AT" \
-     '{
-       schema_version: ($schema_version | tonumber),
-       cwd: $cwd_val,
-       project_dir: $proj_dir,
-       session_id: (if $sess_id == "" then null else $sess_id end),
-       resolution: $res,
-       recorded_at: $rec_at
-     }' > "$REVIEW_DIR/transcript-origin.json"
+   python3 "$HOME/.claude/scripts/write-transcript-origin.py" "$REVIEW_DIR" \
+     || echo "WARN: transcript-origin.json not written; reviewer-yield will fall back to a read-time scan" >&2
    ```
+
+   Run this line verbatim. Do not reimplement it inline.
 
    `PROJECT_ROOT` is where the project's `.claude/project.yaml` lives (still read per-worktree).
    `REVIEW_DIR` is per-invocation, under `~/.claude/reviews/${REPO_KEY}/`.
