@@ -164,7 +164,7 @@ def parse_route_configs(index_data: Any) -> Dict[str, RouteConfig]:
     - No duplicate slugs.
     - All shape/hard_requires names are in the registry.
     - `always: true` is the only key if present; must be exact bool True, not truthy.
-    - After parsing, the set of `always: true` slugs matches ALWAYS_RUN_SLUGS exactly.
+    - `always: true` agrees with ALWAYS_RUN_SLUGS for every reviewer present.
 
     Returns {slug: RouteConfig}, slug = file: stem (e.g. "north-star-nick").
     Raises RouteConfigError with slug and field context.
@@ -327,8 +327,12 @@ def parse_route_configs(index_data: Any) -> Dict[str, RouteConfig]:
                         raise RouteConfigError(f"{slug}.shape.{pred_name}.points: must be an int, not {type(pred_points).__name__}")
                     if pred_points < 0:
                         raise RouteConfigError(f"{slug}.shape.{pred_name}.points: must be non-negative, got {pred_points}")
+                    if pred_name in _PREDICATE_DEFAULT_N and "n" not in pred_config:
+                        raise RouteConfigError(f"{slug}.shape.{pred_name}: threshold predicates require an explicit `n`")
 
                     if "n" in pred_config:
+                        if pred_name not in _PREDICATE_DEFAULT_N:
+                            raise RouteConfigError(f"{slug}.shape.{pred_name}.n: `n` is only allowed on threshold predicates")
                         pred_n = pred_config["n"]
                         if isinstance(pred_n, bool) or not isinstance(pred_n, int):
                             raise RouteConfigError(f"{slug}.shape.{pred_name}.n: must be an int, not {type(pred_n).__name__}")
@@ -383,16 +387,15 @@ def parse_route_configs(index_data: Any) -> Dict[str, RouteConfig]:
                 raise
             raise RouteConfigError(f"{slug}: {e}")
 
-    # Validate that the set of always: true slugs matches ALWAYS_RUN_SLUGS.
-    if always_run_observed != ALWAYS_RUN_SLUGS:
-        missing = ALWAYS_RUN_SLUGS - always_run_observed
-        extra = always_run_observed - ALWAYS_RUN_SLUGS
-        msg = f"always: true slugs mismatch: "
-        if missing:
-            msg += f"missing {missing} "
-        if extra:
-            msg += f"extra {extra}"
-        raise RouteConfigError(msg.strip())
+    # ALWAYS_RUN_SLUGS and `always: true` must agree for every reviewer present in the config.
+    # (Partial configs may omit always-run reviewers entirely; a present one must match.)
+    extra = sorted(always_run_observed - ALWAYS_RUN_SLUGS)
+    not_always = sorted(s for s in ALWAYS_RUN_SLUGS if s in configs and s not in always_run_observed)
+    if extra or not_always:
+        raise RouteConfigError(
+            f"always: true disagrees with ALWAYS_RUN_SLUGS: not in ALWAYS_RUN_SLUGS {extra}, "
+            f"in ALWAYS_RUN_SLUGS but not always: true {not_always}"
+        )
 
     return configs
 
@@ -665,8 +668,8 @@ def score_diff(
             continue
 
         # Compile word regexes once per reviewer (outside the per-file loops).
-        strong_regexes = [(_word_to_regex(w), w) for w in config.strong]
-        weak_regexes = [(_word_to_regex(w), w) for w in config.weak]
+        strong_regexes = [(re.compile(_word_to_regex(w), re.IGNORECASE), w) for w in config.strong]
+        weak_regexes = [(re.compile(_word_to_regex(w), re.IGNORECASE), w) for w in config.weak]
 
         # Collect strong/weak word hits per file (per-file cap).
         strong_hits_per_file = {}
@@ -683,11 +686,11 @@ def score_diff(
             # Scan added and removed lines.
             for line in file_record["added_lines"] + file_record["removed_lines"]:
                 for word_re, word in strong_regexes:
-                    if re.search(word_re, line, re.IGNORECASE):
+                    if word_re.search(line):
                         strong_words_in_file.add(word)
 
                 for word_re, word in weak_regexes:
-                    if re.search(word_re, line, re.IGNORECASE):
+                    if word_re.search(line):
                         weak_words_in_file.add(word)
 
             strong_hits_per_file[path] = strong_words_in_file
@@ -805,6 +808,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     while i < len(argv):
         if argv[i] == "--out" and i + 1 < len(argv):
             out_path = argv[i + 1]
+            break
+        if argv[i].startswith("--out="):
+            out_path = argv[i][len("--out="):]
             break
         i += 1
 
