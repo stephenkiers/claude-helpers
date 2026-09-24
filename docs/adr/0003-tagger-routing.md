@@ -218,3 +218,8 @@ the Router's judgment over a collection window, enabling Phase 3 to decide wheth
 Any flip in Phase 3 requires a real ADR-0003 amendment (not a shadow mode), per ADR-0016 (usage data must
 not silently change routing). See `reviewers/README.md` (route: schema), `commands/review-stats.md` (shadow
 section), and `prompts/expert-review-panel.md` Step 5 for implementation details.
+
+**In-sample caveat:** The shadow miss rate re-scores all stored diffs against the current `reviewers/index.yaml`,
+so once the `route:` blocks are tuned against reported misses, the rate is in-sample and will overstate accuracy.
+No config fingerprint is recorded yet; config fingerprints and as-recorded vs. as-re-scored rates are deferred
+to a follow-up tied to #196 and must land before Phase 3 tuning relies on the rate.

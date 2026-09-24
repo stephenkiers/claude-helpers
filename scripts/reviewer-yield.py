@@ -66,22 +66,10 @@ CHECKPOINT_FILENAME_PATTERNS: Final[List[str]] = [
     "{slug}-questions-answered.md",
 ]
 
-# Module path for route-score.py, overridable for testing
-_ROUTE_SCORE_MODULE_PATH = None
 
-
-def _get_route_score_module_path() -> Optional[Path]:
-    """Get the path to route-score.py, with override support for testing."""
-    global _ROUTE_SCORE_MODULE_PATH
-    if _ROUTE_SCORE_MODULE_PATH is not None:
-        return _ROUTE_SCORE_MODULE_PATH
+def _get_route_score_module_path() -> Path:
+    """Get the path to route-score.py."""
     return Path(__file__).resolve().parent / "route-score.py"
-
-
-def set_route_score_module_path_for_testing(path: Optional[Path]) -> None:
-    """Override the scorer module path for testing purposes."""
-    global _ROUTE_SCORE_MODULE_PATH
-    _ROUTE_SCORE_MODULE_PATH = path
 
 
 def _load_scorer_module():
@@ -1334,6 +1322,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
         "unscored_no_diff": [],
         "unscored_scorer_error": [],
         "hook_errors": 0,
+        "degraded": 0,
         "unattributable": [],
         "excluded_non_router_seated": [],
         "effort4_routed": [],
@@ -1382,6 +1371,11 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
         effort = result_dict.get("effort")
         score_result = result_dict.get("score_result")
 
+        # Track degraded re-scores
+        is_degraded = (score_result or {}).get("degraded", False)
+        if is_degraded:
+            runs_data["degraded"] += 1
+
         # Read findings
         findings_data = read_findings_json(review_subdir)
         if not findings_data:
@@ -1408,6 +1402,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
             "run_id": review_subdir.name,
             "cohort": cohort,
             "pr": pr,
+            "degraded": is_degraded,
             "panel_decision": panel_decision,
             "re_scored": re_scored_reviewers,
             "findings": findings_data.get("findings", []),
@@ -1485,6 +1480,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
                 missed_findings_list.append({
                     "run_id": run_info["run_id"],
                     "pr": run_info.get("pr", False),
+                    "degraded": run_info.get("degraded", False),
                     "finding_id": finding.get("id", "unknown"),
                     "severity": finding.get("severity", "Unknown"),
                     "title": finding.get("title"),
@@ -1527,6 +1523,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
             "unscored_no_diff": len(runs_data["unscored_no_diff"]),
             "unscored_scorer_error": len(runs_data["unscored_scorer_error"]),
             "hook_errors": runs_data["hook_errors"],
+            "degraded": runs_data["degraded"],
             "unattributable": len(runs_data["unattributable"]),
             "excluded_non_router_seated": len(runs_data["excluded_non_router_seated"]),
             "large_diffs": runs_data["large_diffs"],
@@ -1894,10 +1891,15 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- Pre-shadow runs: {counts.get('pre_shadow', 0)}\n")
         output.append(f"- Unscored (no diff): {counts.get('unscored_no_diff', 0)}\n")
         output.append(f"- Unscored (scorer error): {counts.get('unscored_scorer_error', 0)}\n")
-        output.append(f"- Hook errors: {counts.get('hook_errors', 0)}\n")
         output.append(f"- Unattributable: {counts.get('unattributable', 0)}\n")
         output.append(f"- Excluded (non-router-seated): {counts.get('excluded_non_router_seated', 0)}\n")
-        output.append(f"- Large diffs (>800 lines): {counts.get('large_diffs', 0)}\n\n")
+        output.append(f"- Large diffs (>800 lines): {counts.get('large_diffs', 0)}\n")
+        hook_errors = counts.get('hook_errors', 0)
+        output.append(f"  - Of the above, {hook_errors} had a stored hook error\n")
+        degraded = counts.get('degraded', 0)
+        if degraded > 0:
+            output.append(f"  - Of the above, {degraded} were degraded re-scores\n")
+        output.append("\n")
 
         cohorts = [
             ("effort4_routed", "Effort-4 Routed Cohort (censored lower bound)", " (3% guardrail as observation)"),
@@ -1933,7 +1935,8 @@ def render_report_markdown(report_data: ReportData) -> str:
                     attrs = ", ".join([m.get("raised_by", "")] + list(m.get("supported_by", [])))
                     title = f" — {m['title']}" if m.get("title") else ""
                     pr_tag = " [pr]" if m.get("pr") else ""
-                    output.append(f"- {m.get('run_id')}{pr_tag} {m.get('finding_id')} ({m.get('severity')}){title}; attributors: {attrs}\n")
+                    degraded_tag = " (degraded)" if m.get("degraded") else ""
+                    output.append(f"- {m.get('run_id')}{pr_tag}{degraded_tag} {m.get('finding_id')} ({m.get('severity')}){title}; attributors: {attrs}\n")
                     for slug, reasons in sorted(m.get("attributor_reasons", {}).items()):
                         details = "; ".join(f"{r.get('kind')}:{r.get('detail')} (+{r.get('points')})" for r in reasons)
                         output.append(f"  - {slug}: {details}\n")
