@@ -153,7 +153,11 @@ where the diff author is untrusted by definition — structural pre-Router gates
 for Sam System's specific cost/benefit profile, not a general mechanism.
 
 Spawn a subagent (`subagent_type: "expert-reviewer"`, `run_in_background: false`, `model: "sonnet"` —
-model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md. The router reads:
+model explicitly pinned to sonnet here, a narrow judgment task independent of the panel tier) with the router prompt @~/.claude/prompts/router.md.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+The router reads:
 - `{REVIEW_DIR}/full-diff.patch` (it needs the full patch: the line ranges it emits are offsets into
   that file, which later reviewers use for bounded reads)
 - The `{REVIEW_DIR}/technical-summary.md` (Technical Summary and Business Context)
@@ -268,8 +272,7 @@ message. All run as **`subagent_type: "expert-reviewer"`**, `run_in_background: 
 `model: PANEL_MODEL` (caller-supplied precondition).
 
 **Launch ALL Pass 1 reviewers in ONE message** (multiple Task calls in a single assistant turn).
-One subagent per reviewer. They still run concurrently — the harness caps concurrency — and they have
-all returned by the time you continue.
+One subagent per reviewer. They still run concurrently — the harness caps concurrency.
 
 **Why a custom agent, not `general-purpose`.** Twenty concurrent subagents reading persona files and
 writing checkpoints outside the working directory would produce twenty near-identical permission
@@ -382,14 +385,11 @@ each finding's **Issue** field starts with the data-flow trace, e.g.
 `Flow createSession (a.ts:12) → createRecordingSession (b.ts:30): eventBus passed but never destructured`.
 His decision is always DEEP-DIVE.
 
-**Join barrier.** All Step 6 agents launched in one message with `run_in_background: false` means
-they have all returned by the time you continue. For every selected reviewer, the join condition is
-**all three** simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists
-on disk AND the file ends with the sentinel `<!-- pass1-end -->` (which every reviewer appends as its
-last line — its absence means the write was truncated, not just missing). If any of the three conditions fails,
-**re-run that one reviewer once** — do not try to reconstruct the review from the receipt; the
-receipt is a status line, not a report. If the re-run also fails the joint condition, do not retry a
-third time — write a stand-in file so downstream globs find something rather than nothing:
+**Join barrier.** For every selected reviewer, the join condition is **all three** simultaneously: a receipt was returned AND `{REVIEW_DIR}/{reviewer}-pass1.md` exists on disk AND the file ends with the sentinel `<!-- pass1-end -->` (which every reviewer appends as its last line — its absence means the write was truncated, not just missing). 
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+If any of the three conditions fails, **re-run that one reviewer once** — do not try to reconstruct the review from the receipt; the receipt is a status line, not a report. If the re-run also fails the joint condition, do not retry a third time — write a stand-in file so downstream globs find something rather than nothing:
 
 ```bash
 cat > "$REVIEW_DIR/${reviewer}-pass1.md" <<'EOF'
@@ -415,12 +415,9 @@ EOF
 
 Then report that reviewer as failed and continue the pipeline without it.
 
-**Never poll.** Do not use `ScheduleWakeup`, `sleep`, or repeated status checks to wait for
-subagents. A timed wakeup re-reads your *entire* context from cache and learns nothing you would not
-have learned by waiting — in one observed run, 14 such wakeups each re-read ~430k tokens. If a panel
-is large enough that you truly want it backgrounded, then **end your turn**: the harness re-invokes
-you when the agents finish. Track per-reviewer status by checking for files, never by counting
-notifications.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+Cost rationale: a timed wakeup re-reads your entire context from cache and learns nothing you would not have learned by waiting — in one observed run, 14 such wakeups each re-read ~430k tokens. End your turn instead; the harness re-invokes you when the agents finish.
 
 ```bash
 PASS1_END_ARGS=(--stage pass1 --outcome success)
@@ -483,12 +480,11 @@ It writes `{REVIEW_DIR}/{reviewer}-questions-answered.md` — **Answer** + **Evi
 per question — and returns a receipt only: `{reviewer} | answered: {n} | wrote: {path}`. Launch all
 Q&A agents in one message.
 
-**Join barrier.** All Q&A agents run with `run_in_background: false`, so they have all returned
-before Step 9 starts — Step 9 must not launch a reviewer's Pass 2 until its Q&A file (if one was
-expected) exists. Before Step 9, verify `{REVIEW_DIR}/{reviewer}-questions-answered.md` exists for
-every reviewer whose Pass 1 receipt reported `open-questions > 0`; re-run just the missing Q&A
-agent(s) and wait for them before proceeding — do not let Pass 2 start without the answers it exists
-to use.
+**Join barrier.** All Q&A agents run with `run_in_background: false`. Step 9 must not launch a reviewer's Pass 2 until its Q&A file (if one was expected) exists.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+Before Step 9, verify `{REVIEW_DIR}/{reviewer}-questions-answered.md` exists for every reviewer whose Pass 1 receipt reported `open-questions > 0`; re-run just the missing Q&A agent(s) and wait for them before proceeding — do not let Pass 2 start without the answers it exists to use.
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage qa --outcome success 2>/dev/null || true
@@ -504,7 +500,11 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pass2 >/dev/n
 (Code Rot Cody, Consistency Checker) skip Pass 2. Carl is not re-evaluated; his findings stand as-is.
 
 Launch one subagent per eligible reviewer, in one message (`subagent_type: "expert-reviewer"`,
-`model: PANEL_MODEL`). Pass paths, not contents — each prompt names the files to Read:
+`model: PANEL_MODEL`).
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+Pass paths, not contents — each prompt names the files to Read:
 
 - `~/.claude/prompts/pass2-reevaluation.md` — the pass2 prompt and output format
 - `{REVIEW_DIR}/{reviewer}-pass1.md` — their own Pass 1
@@ -646,8 +646,11 @@ Record both pod IDs and their ordered lens lists in `tagged-sections.md`. This r
 lenses across the two pods.
 
 **P3 — Run exactly two pods concurrently.** In one message, launch exactly two
-`subagent_type: "expert-reviewer"` agents (`run_in_background: false`, `model: PANEL_MODEL`). Both
-read by path:
+`subagent_type: "expert-reviewer"` agents (`run_in_background: false`, `model: PANEL_MODEL`).
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+Both read by path:
 
 - `~/.claude/prompts/reviewer-pod.md`
 - `~/.claude/prompts/reviewer-lens-cards.yaml`
@@ -749,7 +752,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage swarm-scouts 
 ```
 
 **Step S2 — Wave 1: 6 haiku scouts, one message.** Spawn all six as `subagent_type: "expert-scout"`,
-`model: "haiku"`, `run_in_background: false`, **in one message** — no polling, no backgrounding:
+`model: "haiku"`, `run_in_background: false`, **in one message**.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 | Lens name | Persona file |
 |-----------|-------------|
