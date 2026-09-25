@@ -1,5 +1,5 @@
 ---
-description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 (default) or 3 (+ one independent auditor) only. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
+description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
 argument-hint: [--effort 2|3] [--models balanced|opus]
 allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
