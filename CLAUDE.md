@@ -142,7 +142,10 @@ separate from the reviewer-context cascade.
 - `/expert-plan` — **default planning entry point** (formerly `/expert-plan-v3`); focused-panel
   planning with two effort levels (2 = 3 experts + consistency check, 3 = + independent auditor),
   Sonnet main-thread orchestration + per-step Opus judgment work (see
-  [ADR-0020](docs/adr/0020-expert-plan-v3-focused-panel.md))
+  [ADR-0020](docs/adr/0020-expert-plan-v3-focused-panel.md)). When `--effort` isn't passed, a
+  deterministic heuristic (`scripts/plan-effort.py`, no model call) picks 2 or 3 from the ticket:
+  any risk keyword or a large ticket → 3, else 2. Configure via `~/.claude/plan-effort-heuristic.yaml`
+  (project `.claude/plan-effort-heuristic.yaml` overrides; copy `prompts/plan-effort-heuristic.yaml.template`)
 - `/expert-plan-deprecated` — **deprecated** (still functional): the original v1 design, collaborative
   plan building with expert personas (asks, doesn't assume); superseded by `/expert-plan`
 - `/expert-plan-deprecated-v2` — **deprecated** (still functional): parallel isolated expert

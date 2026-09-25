@@ -276,7 +276,7 @@ def test_diagnose_incomplete_pairs():
                 f.write(json.dumps(event) + "\n")
 
         code, stdout, stderr = run_script(
-            ["--log", str(log_path), "diagnose"],
+            ["--log", str(log_path), "diagnose", "--window-days", "3650"],
         )
 
         if code == 0:
@@ -564,7 +564,7 @@ def test_diagnose_excludes_unknown_as_correlation_id():
             for event in events:
                 f.write(json.dumps(event) + "\n")
 
-        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose"])
+        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose", "--window-days", "3650"])
 
         if "Match rate" not in stdout:
             return False, f"diagnose output missing 'Match rate': {stdout}"
@@ -625,7 +625,7 @@ def test_diagnose_prints_per_stage_breakdown():
             for event in events:
                 f.write(json.dumps(event) + "\n")
 
-        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose"])
+        code, stdout, stderr = run_script(["--log", str(log_path), "diagnose", "--window-days", "3650"])
 
         if code != 0:
             return False, f"diagnose exited non-zero: {stderr}"
