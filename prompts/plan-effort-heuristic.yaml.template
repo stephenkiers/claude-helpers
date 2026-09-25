@@ -17,13 +17,18 @@
 #   3. Otherwise -> default_effort.
 #
 # default_effort: 2 | 3 — used when no rule fires (default 2)
+#   Valid values: 2 (effort 2 + consistency check) or 3 (effort 2 + independent audit)
+#   Must be a positive integer in the range [2, 3].
 #
-# size_thresholds (ticket text, comments excluded from nothing — the whole resolved text counts):
-#   body_chars:  characters at or above which the ticket counts as large (default 3000)
-#   task_items:  checklist/numbered/bulleted items at or above which it counts as large (default 12)
+# size_thresholds (ticket text, comments excluded — the whole resolved text counts):
+#   body_chars:  positive int: characters at or above which the ticket counts as large (default 3000)
+#   task_items:  positive int: checklist/numbered/bulleted items at or above which it counts as large (default 12)
 #
-# risk_keywords: case-insensitive whole-word-prefix matches (e.g. "migrat" is not needed —
-#   "migration" and "migrate" are listed separately on purpose).
+# risk_keywords: case-insensitive word-boundary matches — keyword must start at a word boundary.
+#   Examples: "auth" matches "auth", "authentication", "auth-token" but not "Reauthor" or "Oauth".
+#   Listed entries are matched exactly (e.g., both "migration" and "migrate" are needed; neither
+#   is a prefix of the other; "migrat" alone would not match "migration" or "migrate").
+#   Order matters: first matching keyword (in list order) raises the ticket to effort 3.
 
 default_effort: 2
 

@@ -240,7 +240,7 @@ Collect the input to plan against:
 
 Write `{SESSION_DIR}/context.md` with the requirements, explicit user constraints verbatim, relevant existing behavior with file refs, known unknowns, and starting scope.
 
-**Size effort (only if `--effort` was not passed)**: write the resolved ticket title, body, and labels (not comments) to `{SESSION_DIR}/ticket-text.txt`, then:
+**Size effort (only if `--effort` was not passed)**: collect the raw ticket title, body, and labels as resolved from `gh issue view` to `{SESSION_DIR}/ticket-text.txt`, then:
 
 ```bash
 if [ -z "$EFFORT" ]; then
