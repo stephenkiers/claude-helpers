@@ -1,0 +1,47 @@
+# .claude/plan-effort-heuristic.yaml — tunable heuristic for auto-sizing /expert-plan effort
+#
+# Copy this file to: ~/.claude/plan-effort-heuristic.yaml
+# Project-level copy at: .claude/plan-effort-heuristic.yaml (overrides user-level, key by key)
+# All entries are optional; omit what you want the defaults for.
+#
+# Without this file, /expert-plan uses the built-in defaults below. The heuristic only runs when
+# --effort is NOT passed; explicit --effort always skips it. It is deterministic (no model call):
+# scripts/plan-effort.py reads the ticket text gathered in Step 1 and picks effort 2 or 3.
+#
+#   effort 2 = 3 experts + consistency check
+#   effort 3 = effort 2 + independent Opus auditor
+#
+# Rules, in order:
+#   1. Any risk keyword in the ticket title/body/labels -> effort 3 (floor; size can't lower it).
+#   2. Ticket size at or above either threshold -> effort 3.
+#   3. Otherwise -> default_effort.
+#
+# default_effort: 2 | 3 — used when no rule fires (default 2)
+#
+# size_thresholds (ticket text, comments excluded from nothing — the whole resolved text counts):
+#   body_chars:  characters at or above which the ticket counts as large (default 3000)
+#   task_items:  checklist/numbered/bulleted items at or above which it counts as large (default 12)
+#
+# risk_keywords: case-insensitive whole-word-prefix matches (e.g. "migrat" is not needed —
+#   "migration" and "migrate" are listed separately on purpose).
+
+default_effort: 2
+
+size_thresholds:
+  body_chars: 3000
+  task_items: 12
+
+risk_keywords:
+  - auth
+  - payment
+  - migration
+  - migrate
+  - schema
+  - security
+  - secret
+  - token
+  - crypto
+  - permission
+  - password
+  - concurrency
+  - irreversible

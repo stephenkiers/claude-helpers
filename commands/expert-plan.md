@@ -34,7 +34,7 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 ## Arguments
 
-- `--effort <2|3>`: effort level. Effort 2 (default): 3 focused experts + consistency check, no independent auditor. Effort 3: baseline + independent auditor. Effort 1, 4, and 5 are not supported — v3 does not implement them. If `--effort` is omitted, defaults to 2.
+- `--effort <2|3>`: effort level. Effort 2: 3 focused experts + consistency check, no independent auditor. Effort 3: baseline + independent auditor. Effort 1, 4, and 5 are not supported — v3 does not implement them. If `--effort` is omitted, a deterministic heuristic (`scripts/plan-effort.py`, configured by `~/.claude/plan-effort-heuristic.yaml` or project `.claude/plan-effort-heuristic.yaml`; template `prompts/plan-effort-heuristic.yaml.template`) picks 2 or 3 from the ticket: any risk keyword or a large ticket → 3, else `default_effort` (2). No model call. An explicit `--effort` always skips it.
 
 - `--models <balanced|opus>`: model tier for dispatched contributors and roles. Balanced (default): contributors Sonnet-by-default-unless-marked-difficult, Carl/Synthesize-and-check/Auditor always Opus. Opus: all subagents escalated to Opus. The main-thread orchestration shell remains Sonnet (fixed by frontmatter).
 
@@ -134,7 +134,7 @@ if ! mkdir -p "$SESSION_DIR"; then
 fi
 
 # Parse --effort and --models flags using single while loop
-EFFORT=2
+EFFORT=""   # empty = not passed; Step 1 sizes it via scripts/plan-effort.py
 MODELS="balanced"
 
 while [ $# -gt 0 ]; do
@@ -181,9 +181,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Validate --effort
+# Validate --effort (empty is allowed: the heuristic resolves it in Step 1)
 case "$EFFORT" in
-  2|3)
+  ""|2|3)
     # Valid
     ;;
   *)
@@ -239,6 +239,20 @@ Collect the input to plan against:
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
 
 Write `{SESSION_DIR}/context.md` with the requirements, explicit user constraints verbatim, relevant existing behavior with file refs, known unknowns, and starting scope.
+
+**Size effort (only if `--effort` was not passed)**: write the resolved ticket title, body, and labels (not comments) to `{SESSION_DIR}/ticket-text.txt`, then:
+
+```bash
+if [ -z "$EFFORT" ]; then
+  PLAN_EFFORT_JSON=$(python3 "$HOME/.claude/scripts/plan-effort.py" "$SESSION_DIR/ticket-text.txt" --project-root "$PROJECT_ROOT" 2>/dev/null) || PLAN_EFFORT_JSON=""
+  EFFORT=$(printf '%s' "$PLAN_EFFORT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effort"])' 2>/dev/null) || EFFORT=""
+  case "$EFFORT" in 2|3) ;; *) EFFORT=2 ;; esac
+  printf 'Effort %s (auto-sized): %s\n' "$EFFORT" "$(printf '%s' "$PLAN_EFFORT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])' 2>/dev/null)"
+  export EFFORT
+fi
+```
+
+Announce the chosen effort and reason to the user; they can re-run with `--effort` to override.
 
 **After resolving the ticket title**, recompute SLUG and FINAL_PLAN_PATH:
 
