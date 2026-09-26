@@ -274,6 +274,13 @@ independently discovered in `/track-and-start`: its CLI JSON output consumption 
 (reading `.claude/github-cache.json` from disk and merging it) needed fixing. This note exists
 so newly-written bash blocks don't regress the printf pattern.
 
+## Force-push carve-out (merge queue)
+
+The local merge queue's single pinned-lease push is the **only** authorized force-push in this repo's
+tooling. It runs only after the full gate has passed on the rebased tip, uses
+`--force-with-lease=<branch>:<40-hex sha>` with the explicit `<tested_sha>:refs/heads/<branch>`
+refspec, and is never a bare `--force`. See [ADR-0021](docs/adr/0021-local-merge-queue.md).
+
 ## Inspecting check-gate failures
 
 When a check gate (tests, lint, merge gate, CI) fails and output must be inspected to diagnose it,
