@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""
+Local merge queue: serialize PRs into the repo's single merge-lock, verify each
+against the exact base it lands on, run gate steps, and push atomically only
+after all checks pass. Ordering is deterministic (FIFO by ticket file); no LLM,
+no stale-lock TTL, no wait timeout.
+
+Subcommands:
+  enqueue [--config <path>] [--no-claude]  Queue this PR (default if omitted).
+  status                                    Show queue position, holder, and step.
+  reverify [<sha>]                         Clear a failed base-sha record.
+  bootstrap [--yes]                         Anchor the unbootstrapped base.
+  resume [--pr N]                          Re-launch Claude from the last result.
+
+Each queue entry runs in its own gate: fetch, rebase, steps, push, merge,
+and cleanup. Failures kick back to the PR worktree with detailed logs;
+see the ADR (docs/adr/0021-local-merge-queue.md) and /queued-merge command docs.
+"""
+
+import os
+import sys
+
+# Add scripts/ to sys.path so we can import workflow.merge_queue.
+# Follow the existing entry-point convention (save-usage.py, run-metrics.py):
+# resolve the scripts/ directory via os.path.abspath(__file__), which follows
+# symlinks (since this script is installed as a symlink under ~/.claude/scripts/).
+# Then import from workflow.merge_queue, which is a package-relative import.
+#
+# Do NOT put scripts/workflow itself on sys.path, because cleanup.py uses
+# relative imports (from . import git, from .merge import merge_lock_path)
+# that only work when imported as part of the workflow package.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from workflow.merge_queue import main
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
