@@ -683,18 +683,63 @@ that drifts from it even slightly succeeds silently and makes every future fast-
 "not reviewed" with no error, indefinitely. This has happened in practice. The script owns the
 schema, writes via `mktemp` + rename (never a bare `>` redirect, which truncates the target before
 the write completes), and reads its own write back through the same parsing the fast-path checker
-uses — so a mismatch fails loudly, here, instead of silently, later:
+uses — so a mismatch fails loudly, here, instead of silently, later.
+
+First, extract severity counts from findings.json and collect the reviewers that ran:
 
 ```bash
-python3 "$HOME/.claude/scripts/write-review-cache.py" \
-  --cache-path .claude/github-cache.json \
-  --commit "$HASH" \
-  --branch "$BRANCH" \
-  --review-dir "$REVIEW_DIR" \
-  --panel-model "$PANEL_MODEL" \
-  --critical "$CRITICAL_COUNT" --high "$HIGH_COUNT" --medium "$MEDIUM_COUNT" --low "$LOW_COUNT" \
-  $(for r in "${REVIEWERS[@]}"; do printf -- '--reviewer %s ' "$r"; done) \
-  ${METRICS_PATH:+--metrics-path "$METRICS_PATH"}
+# Extract severity counts from findings.json (written by Amalgamator). A missing or
+# malformed file is an error, not zero findings — a silent 0 would poison the cache.
+[ -f "$REVIEW_DIR/findings.json" ] || { echo "ERROR: $REVIEW_DIR/findings.json not found" >&2; false; }
+sev_count() {
+  jq -e --arg s "$1" '[.findings[] | select(.verdict == "CONFIRMED" and (.severity | ascii_downcase) == $s)] | length' "$REVIEW_DIR/findings.json"
+}
+CRITICAL_COUNT=$(sev_count critical) && HIGH_COUNT=$(sev_count high) && \
+  MEDIUM_COUNT=$(sev_count medium) && LOW_COUNT=$(sev_count low) || \
+  { echo "ERROR: could not derive severity counts from findings.json" >&2; false; }
+
+# Collect reviewers that actually ran by checking for pass1 files and known always-run reviewers.
+# Always-run reviewers (code-rot-cody, consistency-checker, contrarian-carl) are included if
+# their pass files exist; conditionally-routed reviewers are included only if they have pass files.
+REVIEWERS=()
+for pass1_file in "$REVIEW_DIR"/*-pass1.md; do
+  if [ -e "$pass1_file" ]; then
+    # Extract reviewer name from filename (e.g., "uncle-bob-pass1.md" → "uncle-bob")
+    reviewer=$(basename "$pass1_file" -pass1.md)
+    REVIEWERS+=("$reviewer")
+  fi
+done
+
+if [ ${#REVIEWERS[@]} -eq 0 ]; then
+  echo "ERROR: No reviewers found in $REVIEW_DIR (no *-pass1.md files found)" >&2
+  false
+fi
+```
+
+Then invoke the script with properly-quoted arrays:
+
+```bash
+ARGS=(
+  --cache-path .claude/github-cache.json
+  --commit "$HASH"
+  --branch "$BRANCH"
+  --review-dir "$REVIEW_DIR"
+  --panel-model "$PANEL_MODEL"
+  --critical "$CRITICAL_COUNT"
+  --high "$HIGH_COUNT"
+  --medium "$MEDIUM_COUNT"
+  --low "$LOW_COUNT"
+)
+
+for r in "${REVIEWERS[@]}"; do
+  ARGS+=(--reviewer "$r")
+done
+
+if [ -n "${METRICS_PATH:-}" ]; then
+  ARGS+=(--metrics-path "$METRICS_PATH")
+fi
+
+python3 "$HOME/.claude/scripts/write-review-cache.py" "${ARGS[@]}"
 ```
 
 If this exits non-zero, say so in the closing message — the review itself is still valid and its
