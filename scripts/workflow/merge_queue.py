@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple, Sequence, Union
+from typing import List, Optional, Dict, Any, Tuple, Sequence
 
 from . import git
 
@@ -754,22 +754,12 @@ def parse_trailer(commit: str, cwd: Optional[Path] = None) -> Tuple[Optional[str
         # Get commit message via git show
         commit_msg = Runner.run_git(["show", "-s", "--format=%B", commit], cwd=cwd, check=False)
         # Pipe it to git interpret-trailers --parse
-        try:
-            output = git.run_git_command_input(
-                ["interpret-trailers", "--parse"],
-                input_data=commit_msg,
-                cwd=cwd,
-                check=False
-            )
-        except (AttributeError, TypeError):
-            # Fallback if run_git_command_input doesn't exist - use subprocess directly
-            result = subprocess.run(
-                ["git", "interpret-trailers", "--parse"],
-                input=commit_msg.encode(),
-                capture_output=True,
-                cwd=str(cwd) if cwd else None,
-            )
-            output = result.stdout.decode()
+        output = git.run_git_command_input(
+            ["interpret-trailers", "--parse"],
+            input_data=commit_msg,
+            cwd=cwd,
+            check=False
+        )
     except Exception:
         return None, None
 
@@ -2096,7 +2086,7 @@ def _cmd_bootstrap(argv: List[str]) -> int:
                 print(f"Success: base {base_sha[:8]} is verified")
                 return 0
             elif is_infra_error:
-                print(f"Infrastructure error: base verification failed due to setup/infrastructure issues", file=sys.stderr)
+                print("Infrastructure error: base verification failed due to setup/infrastructure issues", file=sys.stderr)
                 return 1
             else:
                 print(f"Failed: base {base_sha[:8]} did not pass gate", file=sys.stderr)
