@@ -67,7 +67,10 @@ The queue reads a local per-machine config file at one of these locations (in or
 
 If the layout doesn't match a `worktrees/` ancestor, the queue fails closed with a message naming
 both override mechanisms. The config is **never** read from `origin/<base>` or the PR worktree —
-it is local, per-machine state only.
+it is local, per-machine state only. `--config`/`MERGE_QUEUE_CONFIG` overrides are trust-boundary
+checked: the resolved path must lie outside the PR worktree (under `git-common-dir`), and the check
+itself fails closed — raising rather than silently allowing the override through — if
+`git-common-dir` can't be determined.
 
 ### Config schema
 
@@ -85,7 +88,9 @@ it is local, per-machine state only.
   "inherit_lock_fd": false,
   "allow_unverified": [
     "abc123def456...(40-hex SHA)..."
-  ]
+  ],
+  "mutation_timeout_secs": 300,
+  "pr_merge_poll_secs": 60
 }
 ```
 
@@ -103,6 +108,10 @@ it is local, per-machine state only.
 - **`allow_unverified`** (optional, list of 40-hex SHAs): Shas of commits on the base branch that
   are excused from the trailerization check individually (not anchors). Allows a hotfix to land
   without first poisoning the base; the scan still continues below it.
+- **`mutation_timeout_secs`** (optional, positive int, default `300`): Fallback timeout for any gate
+  or scratch-setup step that doesn't set its own `timeout_secs`.
+- **`pr_merge_poll_secs`** (optional, positive int, default `60`): How long to poll GitHub for
+  PR-metadata convergence before merging.
 
 Unknown keys are rejected. Error messages point to this schema.
 
@@ -137,6 +146,10 @@ This trailer is **provenance against accidents**, not a hostile committer:
   record, or a sha in the `allow_unverified` list). Any commits in between are reported as untrailered.
 - **Parsing:** the trailer is extracted via `git interpret-trailers --parse`, not string search or
   regex.
+- **Commit body shape:** the merge commit body is `"Tested by merge-queue.\n\n<trailer>"`, not the
+  bare trailer line — `git interpret-trailers --parse` only recognizes a trailer block that follows
+  a non-trailer paragraph and a blank line, so a body consisting solely of the trailer would be
+  silently dropped by the parser that reads it back.
 
 The trailer defends against forgetting to retest after a force-rewrite or stale CI state, not against
 a committer who deliberately forges one.
@@ -193,6 +206,8 @@ match going back through all reachable history), the queue fails closed with "ba
 run `merge-queue bootstrap`". The bootstrap command:
 
 - Asks for explicit confirmation (or accepts `--yes`).
+- Acquires `merge.lock` before verifying the base in the scratch worktree, so bootstrap can't race a
+  concurrently-running enqueue over the shared scratch checkout.
 - Records the current `origin/<base>` sha as `base-verified`.
 - Allows subsequent enqueues to proceed (the bootstrap sha is an anchor).
 

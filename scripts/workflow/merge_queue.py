@@ -14,7 +14,6 @@ Subcommands:
 """
 
 import argparse
-import dataclasses
 import fcntl
 import json
 import os
@@ -69,6 +68,27 @@ class MergeQueueConfig:
         return cls(**{k: v for k, v in data.items() if k in field_names})
 
 
+def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
+    """
+    Verify `resolved` is outside the PR worktree (under git-common-dir).
+
+    Fails closed: if the boundary can't be verified, refuse rather than
+    silently trusting a path that might be inside the PR worktree.
+    """
+    try:
+        git_common_dir = Path(git.get_git_common_dir()).resolve()
+    except Exception as e:
+        raise RuntimeError(
+            f"{source_label} trust-boundary check failed: could not resolve git-common-dir: {e}"
+        ) from e
+    if str(resolved).startswith(str(git_common_dir)):
+        raise RuntimeError(
+            f"{source_label} path is inside the PR worktree; must be outside: {resolved}\n"
+            f"Place config at <repo>/merge-queue.json or override with an absolute path outside the PR worktree"
+        )
+    return resolved
+
+
 def resolve_config_path(config_flag: Optional[str] = None) -> Path:
     """
     Resolve the merge-queue config location.
@@ -82,39 +102,10 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
     Raises if the layout doesn't match and no override is provided.
     """
     if config_flag:
-        resolved = Path(config_flag).resolve()
-        # Check that override is outside the PR worktree (under git-common-dir).
-        # Fails closed: if the boundary can't be verified, refuse rather than
-        # silently trusting a path that might be inside the PR worktree.
-        try:
-            git_common_dir = Path(git.get_git_common_dir()).resolve()
-        except Exception as e:
-            raise RuntimeError(
-                f"--config trust-boundary check failed: could not resolve git-common-dir: {e}"
-            ) from e
-        if str(resolved).startswith(str(git_common_dir)):
-            raise RuntimeError(
-                f"--config path is inside the PR worktree; must be outside: {resolved}\n"
-                f"Set MERGE_QUEUE_CONFIG or place config at <repo>/merge-queue.json"
-            )
-        return resolved
+        return _check_outside_worktree(Path(config_flag).resolve(), "--config")
 
     if env_path := os.environ.get("MERGE_QUEUE_CONFIG"):
-        resolved = Path(env_path).resolve()
-        # Check that override is outside the PR worktree (under git-common-dir).
-        # Fails closed: see rationale above.
-        try:
-            git_common_dir = Path(git.get_git_common_dir()).resolve()
-        except Exception as e:
-            raise RuntimeError(
-                f"MERGE_QUEUE_CONFIG trust-boundary check failed: could not resolve git-common-dir: {e}"
-            ) from e
-        if str(resolved).startswith(str(git_common_dir)):
-            raise RuntimeError(
-                f"MERGE_QUEUE_CONFIG path is inside the PR worktree; must be outside: {resolved}\n"
-                f"Place config at <repo>/merge-queue.json or override with absolute path outside PR"
-            )
-        return resolved
+        return _check_outside_worktree(Path(env_path).resolve(), "MERGE_QUEUE_CONFIG")
 
     try:
         git_common_dir = Path(git.get_git_common_dir()).resolve()
@@ -144,6 +135,14 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
             f"Could not derive default config location: {e}\n"
             f"Use --config <path> or set MERGE_QUEUE_CONFIG"
         )
+
+
+def _validate_positive_int(value: Any, field_label: str) -> None:
+    """Raise ValueError unless value is a positive int (bool excluded, since bool is a subclass of int)."""
+    if not (isinstance(value, int) and not isinstance(value, bool)):
+        raise ValueError(f"{field_label} must be an integer")
+    if value <= 0:
+        raise ValueError(f"{field_label} must be a positive integer")
 
 
 def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
@@ -193,11 +192,7 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
             if not isinstance(step.get("cmd"), str) or not step["cmd"]:
                 raise ValueError("steps: each dict step must have a non-empty 'cmd' string")
             if "timeout_secs" in step:
-                # Use isinstance(x, int) and not isinstance(x, bool) to reject bool as int
-                if not (isinstance(step["timeout_secs"], int) and not isinstance(step["timeout_secs"], bool)):
-                    raise ValueError("steps: timeout_secs must be an integer")
-                if step["timeout_secs"] <= 0:
-                    raise ValueError("steps: timeout_secs must be a positive integer")
+                _validate_positive_int(step["timeout_secs"], "steps: timeout_secs")
         else:
             raise ValueError("steps: each step must be a string or dict")
 
@@ -222,16 +217,10 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
                 raise ValueError(f"allow_unverified: invalid sha {sha} (must be 40-hex)")
 
     if "mutation_timeout_secs" in data:
-        if not (isinstance(data["mutation_timeout_secs"], int) and not isinstance(data["mutation_timeout_secs"], bool)):
-            raise ValueError("mutation_timeout_secs must be an integer")
-        if data["mutation_timeout_secs"] <= 0:
-            raise ValueError("mutation_timeout_secs must be positive")
+        _validate_positive_int(data["mutation_timeout_secs"], "mutation_timeout_secs")
 
     if "pr_merge_poll_secs" in data:
-        if not (isinstance(data["pr_merge_poll_secs"], int) and not isinstance(data["pr_merge_poll_secs"], bool)):
-            raise ValueError("pr_merge_poll_secs must be an integer")
-        if data["pr_merge_poll_secs"] <= 0:
-            raise ValueError("pr_merge_poll_secs must be positive")
+        _validate_positive_int(data["pr_merge_poll_secs"], "pr_merge_poll_secs")
 
     default_branch, err = git.get_default_branch()
     if err or not default_branch:
@@ -960,37 +949,35 @@ def prune_old_results(max_results: int = 100) -> None:
 # Result JSON (Step 7)
 # ============================================================================
 
+def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
+    """Write JSON to path atomically via temp file (O_EXCL) + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.tmp"
+    fd = os.open(str(temp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, json.dumps(data, indent=2).encode())
+    finally:
+        os.close(fd)
+    os.replace(str(temp_path), str(path))
+
+
 def write_result_json(result: MergeResult, cwd: Optional[Path] = None) -> None:
     """Write result.json to state dir atomically."""
     state_dir = ensure_state_dir()
     result_path = state_dir / "result.json"
 
     # Use asdict to serialize the result
-    result_dict = dataclasses.asdict(result)
+    result_dict = asdict(result)
     # Normalize outcome to lowercase enum value
     result_dict["outcome"] = result.outcome.value
     result_dict["timestamp"] = time.time()
 
-    # Write result.json atomically via temp file + rename
-    temp_path = result_path.parent / f".{result_path.name}.tmp"
-    fd = os.open(str(temp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, json.dumps(result_dict, indent=2).encode())
-    finally:
-        os.close(fd)
-    os.replace(str(temp_path), str(result_path))
+    _atomic_write_json(result_path, result_dict)
 
     # Also keep a copy in results/<pr>-<ts>.json
     ts = int(time.time() * 1000)
     copy_path = state_dir / "results" / f"{result.pr}-{ts}.json"
-    copy_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_copy = copy_path.parent / f".{copy_path.name}.tmp"
-    fd = os.open(str(temp_copy), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, json.dumps(result_dict, indent=2).encode())
-    finally:
-        os.close(fd)
-    os.replace(str(temp_copy), str(copy_path))
+    _atomic_write_json(copy_path, result_dict)
 
     # Prune old result files to prevent unbounded growth
     prune_old_results()
