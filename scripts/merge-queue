@@ -22,9 +22,11 @@ import sys
 
 # Add scripts/ to sys.path so we can import workflow.merge_queue.
 # Follow the existing entry-point convention (save-usage.py, run-metrics.py):
-# resolve the scripts/ directory via os.path.abspath(__file__), which follows
-# symlinks (since this script is installed as a symlink under ~/.claude/scripts/).
-# Then import from workflow.merge_queue, which is a package-relative import.
+# resolve the scripts/ directory via os.path.abspath(__file__), which is
+# called on the symlink itself, then the symlink is followed to the target.
+# This script is installed as a symlink under ~/.claude/scripts/ and resolves
+# to the original under this repo. Then import from workflow.merge_queue,
+# which is a package-relative import.
 #
 # Do NOT put scripts/workflow itself on sys.path, because cleanup.py uses
 # relative imports (from . import git, from .merge import merge_lock_path)

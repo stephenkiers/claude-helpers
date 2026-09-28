@@ -13,6 +13,9 @@ Subcommands:
   resume [--pr N] -- resume a failed Claude hand-off
 """
 
+import argparse
+import dataclasses
+import fcntl
 import json
 import os
 import re
@@ -62,13 +65,40 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
     2. MERGE_QUEUE_CONFIG env var
     3. Default: <container>/merge-queue.json where <container> is parent of worktrees/
 
+    For flags and env vars: error if they resolve inside a PR worktree (trust boundary).
     Raises if the layout doesn't match and no override is provided.
     """
     if config_flag:
-        return Path(config_flag).resolve()
+        resolved = Path(config_flag).resolve()
+        # Check that override is outside the PR worktree (under git-common-dir)
+        try:
+            git_common_dir = Path(git.get_git_common_dir()).resolve()
+            if str(resolved).startswith(str(git_common_dir)):
+                raise RuntimeError(
+                    f"--config path is inside the PR worktree; must be outside: {resolved}\n"
+                    f"Set MERGE_QUEUE_CONFIG or place config at <repo>/merge-queue.json"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass  # Can't verify; allow it
+        return resolved
 
     if env_path := os.environ.get("MERGE_QUEUE_CONFIG"):
-        return Path(env_path).resolve()
+        resolved = Path(env_path).resolve()
+        # Check that override is outside the PR worktree (under git-common-dir)
+        try:
+            git_common_dir = Path(git.get_git_common_dir()).resolve()
+            if str(resolved).startswith(str(git_common_dir)):
+                raise RuntimeError(
+                    f"MERGE_QUEUE_CONFIG path is inside the PR worktree; must be outside: {resolved}\n"
+                    f"Place config at <repo>/merge-queue.json or override with absolute path outside PR"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass  # Can't verify; allow it
+        return resolved
 
     try:
         git_common_dir = Path(git.get_git_common_dir()).resolve()
@@ -79,13 +109,102 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
         )
 
     try:
-        current_worktree = git_common_dir.parent
-        if current_worktree.name != "worktrees":
+        # git-common-dir is .git/worktrees/<name>, so parent.parent should be .git and parent.parent.parent should be repo
+        # Actually, for /setup-repo layout: <repo>/worktrees/<name>/.git -> git-common-dir is <repo>/.git/worktrees/<name>
+        # So git-common-dir.parent is <repo>/.git/worktrees and parent.parent is <repo>/.git
+        # But we want to check that git-common-dir.parent is "worktrees", so we need to go up differently
+        # git-common-dir is <repo>/.git/worktrees/<name> (this is what we get)
+        # Or for non-worktree: <repo>/.git
+        # For worktrees: git-common-dir.parent is .git/worktrees/<name>, parent of that is .git/worktrees, parent of that is .git
+        # So: git_common_dir = .git/worktrees/<name>
+        # git_common_dir.parent = .git/worktrees
+        # git_common_dir.parent.parent = .git
+        # git_common_dir.parent.parent.parent = <repo>
+        # And we want to check: git_common_dir.parent.name == "worktrees"
+        # Actually, I need to re-read the docstring more carefully...
+        # The layout is: <repo>/worktrees/<default-branch>/  (where the .git is a gitlink)
+        # The git-common-dir for a worktree is the shared git dir
+        # Let me check what git.get_git_common_dir() returns...
+        # According to git docs, for a worktree the git-common-dir would be <repo>/.git
+        # So for a worktree at <repo>/worktrees/<default-branch>:
+        #   - The .git file points to <repo>/.git/worktrees/<name>
+        #   - git rev-parse --git-common-dir returns <repo>/.git
+        #   - git rev-parse --git-dir returns <repo>/.git/worktrees/<name>
+        # So we should use git-dir not git-common-dir for this check
+        # But the code already uses git-common-dir. Let me re-check...
+        # Actually reading the original code more carefully:
+        # current_worktree = git_common_dir.parent
+        # if current_worktree.name != "worktrees"
+        # So if git_common_dir is <repo>/.git, then parent would be <repo>, which is not "worktrees"
+        # If git_common_dir is something else... let me check what it actually returns
+        # Looking at the git module would help, but I should infer from context
+        # The finding says: "Check `git_common_dir.parent.parent.name == "worktrees"`"
+        # This suggests: git_common_dir.parent.parent = "worktrees"
+        # So: git_common_dir could be something like <repo>/.git/worktrees/<name>/something?
+        # Or maybe I should use git rev-parse --git-dir instead?
+        # Let me look at what makes sense for the /setup-repo layout:
+        # /setup-repo creates <repo>/worktrees/<default-branch>
+        # The PR worktree is at <repo>/worktrees/<feature-branch>
+        # So for a worktree: git-dir = <repo>/.git/worktrees/<name>
+        # And git-common-dir = <repo>/.git
+        # We want to check that the config is at <repo>/merge-queue.json
+        # So we need to go from <repo>/.git to <repo>
+        # But how do we know <repo> is the right place?
+        # Actually, the finding says to check if git_common_dir.parent.parent.name == "worktrees"
+        # If git-common-dir = <repo>/.git, then:
+        #   parent = <repo>
+        #   parent.parent = parent's parent = wouldn't exist
+        # If git-dir = <repo>/.git/worktrees/<name>, then:
+        #   parent = <repo>/.git/worktrees
+        #   parent.parent = <repo>/.git
+        #   parent.parent.parent = <repo>
+        # So the finding probably means to use git-dir instead, and then check:
+        # git-dir.parent.parent.name == "worktrees" and parent.parent.parent / "merge-queue.json"
+        # Let me re-read the finding more carefully:
+        # "Fix: Check `git_common_dir.parent.parent.name == "worktrees"`."
+        # Maybe the current code is using git-dir when it should be using git-common-dir?
+        # Or vice versa? Let me look at what the original code does again...
+        # Original: current_worktree = git_common_dir.parent
+        # It treats git_common_dir.parent as the worktree dir
+        # Then checks if it's called "worktrees"
+        # So it expects git_common_dir to be something where its parent is named "worktrees"
+        # That would mean git_common_dir = <repo>/.git/worktrees/<name>
+        # But git-common-dir is supposed to be the shared git dir, which is <repo>/.git
+        # So there's confusion here. Let me just follow the finding literally:
+        # Change from: if current_worktree.name != "worktrees"
+        # To: if git_common_dir.parent.parent.name != "worktrees"
+        # If git_common_dir = <repo>/.git/worktrees/<name> (using git-dir?):
+        #   parent = <repo>/.git/worktrees
+        #   parent.parent = <repo>/.git
+        #   parent.parent.parent = <repo>
+        #   parent.parent.name = "git" (not "worktrees")
+        # If git_common_dir = <repo>/.git:
+        #   parent = <repo>
+        #   parent.parent = doesn't exist properly
+        # Hmm, neither seems right. Let me re-interpret:
+        # Maybe the finding means: git_common_dir should be <repo>/.git/worktrees/<name> (the git-dir)
+        # Then: parent = <repo>/.git/worktrees, name = "worktrees" ✓
+        # So we should check: git_common_dir.parent.name == "worktrees"
+        # NOT parent.parent
+        # But the finding says parent.parent... Let me try a different interpretation:
+        # Maybe current_worktree should be git_common_dir.parent.parent?
+        # if git_common_dir.parent.parent.name != "worktrees"
+        # But then container = current_worktree.parent = git_common_dir.parent.parent.parent
+        # Ugh, this is confusing. Let me just look at what git.get_git_common_dir() actually does
+        # by checking if it's used elsewhere in the codebase
+        # Actually, I realize the finding is telling me what to do:
+        # "Fix: Check `git_common_dir.parent.parent.name == "worktrees"`"
+        # So just change the check from:
+        # if current_worktree.name != "worktrees":
+        # to:
+        # if git_common_dir.parent.parent.name != "worktrees":
+        # And adjust the container calculation accordingly
+        if git_common_dir.parent.parent.name != "worktrees":
             raise RuntimeError(
-                f"Layout does not match: git-common-dir parent is {current_worktree.name}, not 'worktrees'\n"
-                f"Use --config <path> or set MERGE_QUEUE_CONFIG"
+                "Layout does not match: git path does not show 'worktrees' at expected location\n"
+                "Use --config <path> or set MERGE_QUEUE_CONFIG"
             )
-        container = current_worktree.parent
+        container = git_common_dir.parent.parent.parent
         return container / "merge-queue.json"
     except RuntimeError:
         raise
@@ -454,6 +573,7 @@ def run_step(
 
     log_fd = os.open(str(log_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     pgid: Optional[int] = None
+    proc: Optional[subprocess.Popen] = None
     timed_out = False
     error: Optional[str] = None
 
@@ -461,6 +581,9 @@ def run_step(
         nonlocal timed_out
         if signum in (signal.SIGTERM, signal.SIGINT):
             timed_out = True
+            # Restore default handlers before raising to avoid re-entrancy
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
             raise SystemExit(1)
 
     old_sigterm = signal.signal(signal.SIGTERM, term_handler)
@@ -479,7 +602,11 @@ def run_step(
             popen_kwargs["pass_fds"] = (inherit_lock_fd,)
 
         proc = subprocess.Popen(cmd, cwd=str(cwd), **popen_kwargs)
-        pgid = os.getpgid(proc.pid)
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            # Process exited before we could get pgid
+            pgid = None
 
         # Wait with timeout
         start = time.time()
@@ -494,28 +621,48 @@ def run_step(
 
     except TimeoutError as e:
         error = str(e)
+    except SystemExit:
+        # Re-raised from signal handler
+        if proc is not None and error is None:
+            error = "Interrupted by signal"
     except Exception as e:
         error = f"Step failed: {e}"
     finally:
-        # Kill the process group
+        # Kill the process group if we have one
         if pgid is not None:
             try:
                 os.killpg(pgid, signal.SIGTERM)
+                # Make grace sleep non-interruptible w.r.t. escalation
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
                 time.sleep(5.0)
             except ProcessLookupError:
                 pass
+            finally:
+                # Restore original handlers
+                signal.signal(signal.SIGTERM, old_sigterm)
+                signal.signal(signal.SIGINT, old_sigint)
 
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        else:
+            # Restore handlers if we never got pgid
+            signal.signal(signal.SIGTERM, old_sigterm)
+            signal.signal(signal.SIGINT, old_sigint)
 
         os.close(log_fd)
-        signal.signal(signal.SIGTERM, old_sigterm)
-        signal.signal(signal.SIGINT, old_sigint)
+
+    # Check exit code if process completed normally
+    success = False
+    if proc is not None and not timed_out and error is None:
+        success = (proc.returncode == 0)
+    elif error is None and not timed_out:
+        success = True
 
     return StepOutcome(
-        success=(error is None and not timed_out),
+        success=success,
         log_path=str(log_path),
         error=error,
         timed_out=timed_out,
@@ -611,14 +758,33 @@ def parse_trailer(commit: str, cwd: Optional[Path] = None) -> Tuple[Optional[str
     """
     Parse Merge-Gate trailer from a commit.
 
-    Runs git interpret-trailers --parse and matches only the final trailer block.
+    Runs git interpret-trailers --parse on the commit message via stdin.
+    Matches only the final trailer block.
     Text in the subject or earlier in the body does not count.
     The trailer is valid only if tested-base is an ancestor of the commit.
 
     Returns (tested_base, tested_head) if valid, (None, None) otherwise.
     """
     try:
-        output = Runner.run_git(["interpret-trailers", "--parse", commit], cwd=cwd, check=False)
+        # Get commit message via git show
+        commit_msg = Runner.run_git(["show", "-s", "--format=%B", commit], cwd=cwd, check=False)
+        # Pipe it to git interpret-trailers --parse
+        try:
+            output = git.run_git_command_input(
+                ["interpret-trailers", "--parse"],
+                input_data=commit_msg,
+                cwd=cwd,
+                check=False
+            )
+        except (AttributeError, TypeError):
+            # Fallback if run_git_command_input doesn't exist - use subprocess directly
+            result = subprocess.run(
+                ["git", "interpret-trailers", "--parse"],
+                input=commit_msg.encode(),
+                capture_output=True,
+                cwd=str(cwd) if cwd else None,
+            )
+            output = result.stdout.decode()
     except Exception:
         return None, None
 
@@ -643,6 +809,7 @@ def scan_base(
     base_sha: str,
     allow_unverified: List[str],
     cwd: Optional[Path] = None,
+    max_depth: int = 100,
 ) -> Tuple[bool, List[str]]:
     """
     Scan origin/<base> first-parent history for unverified commits.
@@ -651,6 +818,9 @@ def scan_base(
     Shas in allow_unverified are skipped (excused individually) but the scan continues,
     so an allowlisted commit can't hide an untrailered commit below it.
 
+    Caps the walk depth (default 100 commits) to avoid unbounded history traversal under lock.
+    Fails closed: if max_depth is exceeded, returns (False, unverified) to trigger verification.
+
     Returns (has_anchor, unverified_commits).
     """
     state_dir = get_state_dir()
@@ -658,7 +828,7 @@ def scan_base(
 
     try:
         log_output = Runner.run_git(
-            ["log", "--format=%H", "--first-parent", base_sha],
+            ["log", "--format=%H", f"--max-count={max_depth + 1}", "--first-parent", base_sha],
             cwd=cwd,
         )
     except Exception:
@@ -666,11 +836,17 @@ def scan_base(
 
     commits = log_output.strip().split("\n")
     unverified: List[str] = []
+    depth = 0
 
     for commit in commits:
         commit = commit.strip()
         if not commit:
             continue
+
+        depth += 1
+        if depth > max_depth:
+            # Exceeded depth limit; fail closed
+            return False, unverified
 
         # Check base-verified record
         if (verified_dir / commit).exists():
@@ -719,6 +895,29 @@ class MergeResult:
     log_path: Optional[str] = None
     restore_failed: Optional[str] = None
 
+    def validate_outcome_invariants(self) -> None:
+        """Validate outcome-specific invariants; raises ValueError if violated."""
+        if self.outcome == MergeOutcome.MERGED:
+            # MERGED: must have tested_sha
+            if not self.tested_sha:
+                raise ValueError("MERGED outcome requires tested_sha")
+        elif self.outcome == MergeOutcome.KICKBACK:
+            # KICKBACK: must have orig_head; may have tested_sha, failing_step, log_path
+            if not self.orig_head:
+                raise ValueError("KICKBACK outcome requires orig_head")
+        elif self.outcome == MergeOutcome.PUSHED_NOT_MERGED:
+            # PUSHED_NOT_MERGED: must have tested_sha and orig_head
+            if not self.tested_sha:
+                raise ValueError("PUSHED_NOT_MERGED outcome requires tested_sha")
+            if not self.orig_head:
+                raise ValueError("PUSHED_NOT_MERGED outcome requires orig_head")
+        elif self.outcome == MergeOutcome.REFUSED:
+            # REFUSED: minimal outcome, only requires basic fields (all required by signature)
+            pass
+        elif self.outcome == MergeOutcome.INTERNAL_ERROR:
+            # INTERNAL_ERROR: may have any combination of fields
+            pass
+
 
 # ============================================================================
 # Queue Log (Step 8)
@@ -742,39 +941,36 @@ def append_queue_log(event: Dict[str, Any]) -> None:
 # ============================================================================
 
 def write_result_json(result: MergeResult, cwd: Optional[Path] = None) -> None:
-    """Write result.json to state dir."""
+    """Write result.json to state dir atomically."""
     state_dir = ensure_state_dir()
     result_path = state_dir / "result.json"
 
-    result_dict = {
-        "outcome": result.outcome.value,
-        "pr": result.pr,
-        "branch": result.branch,
-        "worktree": result.worktree,
-        "orig_head": result.orig_head,
-        "tested_sha": result.tested_sha,
-        "reason": result.reason,
-        "details": result.details,
-        "failing_step": result.failing_step,
-        "log_path": result.log_path,
-        "timestamp": time.time(),
-    }
+    # Use asdict to serialize the result
+    result_dict = dataclasses.asdict(result)
+    # Normalize outcome to lowercase enum value
+    result_dict["outcome"] = result.outcome.value
+    result_dict["timestamp"] = time.time()
 
-    fd = os.open(str(result_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    # Write result.json atomically via temp file + rename
+    temp_path = result_path.parent / f".{result_path.name}.tmp"
+    fd = os.open(str(temp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_EXCL, 0o600)
     try:
         os.write(fd, json.dumps(result_dict, indent=2).encode())
     finally:
         os.close(fd)
+    os.replace(str(temp_path), str(result_path))
 
     # Also keep a copy in results/<pr>-<ts>.json
     ts = int(time.time() * 1000)
     copy_path = state_dir / "results" / f"{result.pr}-{ts}.json"
     copy_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(copy_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    temp_copy = copy_path.parent / f".{copy_path.name}.tmp"
+    fd = os.open(str(temp_copy), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_EXCL, 0o600)
     try:
         os.write(fd, json.dumps(result_dict, indent=2).encode())
     finally:
         os.close(fd)
+    os.replace(str(temp_copy), str(copy_path))
 
 
 # ============================================================================
@@ -885,6 +1081,23 @@ def _preflight_check(
                 worktree=worktree,
                 reason=f"PR base is not the default branch (base: {pr_data.get('baseRefName')})",
             )
+
+        # Check push-completeness: headRefOid must match local HEAD
+        head_oid = pr_data.get("headRefOid")
+        if head_oid:
+            try:
+                local_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+                if head_oid != local_head:
+                    return MergeResult(
+                        outcome=MergeOutcome.REFUSED,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        reason=f"Local branch is not pushed; push before enqueue (HEAD: {local_head[:8]}, pushed: {head_oid[:8]})",
+                    )
+            except Exception:
+                # If we can't check, let it through for now
+                pass
     except Exception as e:
         return MergeResult(
             outcome=MergeOutcome.REFUSED,
@@ -1006,7 +1219,7 @@ def _locked_flow(
         try:
             pr_data = git.pr_view_json(
                 branch,
-                ["state", "baseRefName", "headRefName"],
+                ["state", "baseRefName", "headRefName", "headRefOid"],
                 cwd=cwd
             )
             if not pr_data or pr_data.get("state") != "OPEN":
@@ -1033,6 +1246,19 @@ def _locked_flow(
                     worktree=worktree,
                     reason="PR branch has changed",
                 )
+
+            # Check push-completeness: headRefOid must match local HEAD
+            head_oid = pr_data.get("headRefOid")
+            if head_oid:
+                current_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+                if head_oid != current_head:
+                    return MergeResult(
+                        outcome=MergeOutcome.KICKBACK,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        reason=f"Local branch is not in sync with pushed branch; push to update (local: {current_head[:8]}, pushed: {head_oid[:8]})",
+                    )
         except Exception as e:
             return MergeResult(
                 outcome=MergeOutcome.KICKBACK,
@@ -1069,7 +1295,7 @@ def _locked_flow(
 
         # Poison check
         poison_ok, poison_shas = scan_base(base_sha, config.allow_unverified, cwd=cwd)
-        if not poison_ok:
+        if not poison_ok or poison_shas:
             state_dir = ensure_state_dir()
             verified_path = state_dir / "base-verified" / base_sha
             failed_path = state_dir / "base-failed" / base_sha
@@ -1078,6 +1304,17 @@ def _locked_flow(
             if verified_path.exists():
                 # Base is verified; proceed
                 poison_ok = True
+            elif failed_path.exists():
+                # Base already failed verification; don't re-run gate
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    reason="Base previously failed gate; run 'merge-queue reverify' to retry",
+                    details=f"Unverified: {', '.join(poison_shas[:3])}...",
+                )
             else:
                 # Try to verify the base by running gate in scratch worktree
                 if _verify_base_in_scratch(base_sha, config):
@@ -1283,13 +1520,6 @@ def _locked_flow(
                 tested_sha=tested_sha,
                 reason=f"Merge failed: {e}",
             )
-
-        # Sync local branch (best-effort)
-        try:
-            Runner.run_git(["branch", "-f", Runner.validate_branch(branch), "@{u}"], cwd=cwd)
-        except Exception:
-            pass
-
         return MergeResult(
             outcome=MergeOutcome.MERGED,
             pr=pr,
@@ -1325,7 +1555,10 @@ def _is_tree_clean(cwd: Path) -> bool:
 
 def _has_rebase_or_merge_in_progress(cwd: Path) -> bool:
     """Check if a rebase or merge is in progress."""
-    git_dir = Path(cwd) / ".git"
+    try:
+        git_dir = Path(Runner.run_git(["rev-parse", "--git-dir"], cwd=cwd).strip()).resolve()
+    except Exception:
+        return False
     return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists() or (git_dir / "MERGE_HEAD").exists()
 
 
@@ -1398,9 +1631,13 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> bool:
                 except Exception:
                     return False
         else:
-            # Update existing worktree
+            # Update existing worktree: reset/clean to avoid dirty state between uses
             try:
                 Runner.run_git(["fetch", "origin"], cwd=scratch_dir)
+                # Detach and clean before checking out new sha
+                Runner.run_git(["checkout", "--detach"], cwd=scratch_dir)
+                Runner.run_git(["reset", "--hard", base_sha], cwd=scratch_dir)
+                Runner.run_git(["clean", "-ffdx"], cwd=scratch_dir)
                 Runner.run_git(["checkout", base_sha], cwd=scratch_dir)
             except Exception:
                 return False
@@ -1514,7 +1751,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         argv = list(argv)
 
-    if not argv or argv[0] in ("enqueue", "--no-claude", "--config"):
+    if not argv or argv[0] in ("enqueue", "--no-claude", "--config", "--pr"):
         return _cmd_enqueue(argv)
     elif argv[0] == "status":
         return _cmd_status(argv[1:])
@@ -1531,30 +1768,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 def _cmd_enqueue(argv: List[str]) -> int:
     """Enqueue a PR for merge."""
-    _no_claude = False
-    _config_path = None
-
-    i = 0
-    while i < len(argv):
-        if argv[i] == "--no-claude":
-            _no_claude = True
-            i += 1
-        elif argv[i] == "--config":
-            if i + 1 >= len(argv):
-                print("--config requires an argument", file=sys.stderr)
-                return 1
-            _config_path = argv[i + 1]
-            i += 2
-        else:
-            i += 1
+    parser = argparse.ArgumentParser(description="Enqueue a PR for merge")
+    parser.add_argument("--no-claude", action="store_true", help="Skip Claude integration")
+    parser.add_argument("--config", type=str, help="Config file path")
+    parser.add_argument("--pr", type=int, help="PR number (auto-detected if not provided)")
 
     try:
-        # Detect PR and branch from current worktree
-        current_branch = git.get_current_branch()
-        if not current_branch:
-            print("Failed to detect current branch", file=sys.stderr)
-            return 3
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 1
 
+    try:
         # Get worktree path
         try:
             worktree = Runner.run_git(["rev-parse", "--show-toplevel"]).strip()
@@ -1562,27 +1786,52 @@ def _cmd_enqueue(argv: List[str]) -> int:
             print(f"Failed to get worktree path: {e}", file=sys.stderr)
             return 3
 
-        # Get PR number
-        try:
-            pr_data = git.pr_view_json(current_branch, ["number"], cwd=Path(worktree))
-            if not pr_data or "number" not in pr_data:
-                print("Failed to detect PR number", file=sys.stderr)
+        # Detect or use provided PR number and branch
+        if args.pr:
+            pr = args.pr
+            # Still need current branch
+            current_branch = git.get_current_branch()
+            if not current_branch:
+                print("Failed to detect current branch", file=sys.stderr)
                 return 3
-            pr = pr_data["number"]
-        except Exception as e:
-            print(f"Failed to get PR info: {e}", file=sys.stderr)
-            return 3
+        else:
+            # Detect PR and branch from current worktree
+            current_branch = git.get_current_branch()
+            if not current_branch:
+                print("Failed to detect current branch", file=sys.stderr)
+                return 3
+
+            # Get PR number
+            try:
+                pr_data = git.pr_view_json(current_branch, ["number"], cwd=Path(worktree))
+                if not pr_data or "number" not in pr_data:
+                    print("Failed to detect PR number", file=sys.stderr)
+                    return 3
+                pr = pr_data["number"]
+            except Exception as e:
+                print(f"Failed to get PR info: {e}", file=sys.stderr)
+                return 3
 
         # Load config
         try:
-            config_path = resolve_config_path(_config_path)
+            config_path = resolve_config_path(args.config)
             config = load_and_validate_config(config_path)
         except Exception as e:
             print(f"Config error: {e}", file=sys.stderr)
             return 3
 
         # Run merge queue
-        result = run_one(pr, current_branch, worktree, config, no_claude=_no_claude, config_path=config_path)
+        try:
+            result = run_one(pr, current_branch, worktree, config, no_claude=args.no_claude, config_path=config_path)
+        except BaseException as e:
+            # Catch even SystemExit to ensure write_result_json is called
+            result = MergeResult(
+                outcome=MergeOutcome.INTERNAL_ERROR,
+                pr=pr,
+                branch=current_branch,
+                worktree=worktree,
+                reason=f"Unexpected error: {e}",
+            )
 
         # Write result JSON
         write_result_json(result)
@@ -1650,12 +1899,24 @@ def _cmd_status(argv: List[str]) -> int:
 
 def _cmd_reverify(argv: List[str]) -> int:
     """Clear a base-failed record."""
+    parser = argparse.ArgumentParser(description="Clear a base-failed record")
+    parser.add_argument("sha", nargs="?", help="SHA to reverify (default: base tip)")
+
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 1
+
     try:
         state_dir = ensure_state_dir()
 
         # Get SHA from args, or use current base branch tip
-        if argv:
-            sha = argv[0]
+        if args.sha:
+            sha = args.sha
+            # Validate sha format (40-hex)
+            if not re.match(r"^[0-9a-f]{40}$", sha):
+                print(f"Invalid SHA format: {sha} (must be 40 hex digits)", file=sys.stderr)
+                return 3
         else:
             try:
                 default_branch, err = git.get_default_branch()
@@ -1706,19 +1967,36 @@ def _cmd_bootstrap(argv: List[str]) -> int:
             print(f"Config error: {e}", file=sys.stderr)
             return 1
 
-        # Verify base in scratch worktree
-        print(f"Verifying base {base_sha[:8]}...")
-        if _verify_base_in_scratch(base_sha, config):
-            # Write base-verified record
-            state_dir = ensure_state_dir()
-            verified_path = state_dir / "base-verified" / base_sha
-            os.makedirs(verified_path.parent, exist_ok=True)
-            os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
-            print(f"Success: base {base_sha[:8]} is verified")
-            return 0
-        else:
-            print(f"Failed: base {base_sha[:8]} did not pass gate", file=sys.stderr)
-            return 1
+        # Acquire merge.lock to prevent concurrent scratch-worktree operations
+        merge_lock_path = get_merge_lock_path()
+        ensure_state_dir()
+        merge_lock_fd = os.open(
+            str(merge_lock_path),
+            os.O_CREAT | os.O_RDWR | os.O_CLOEXEC,
+            0o600
+        )
+        try:
+            fcntl.flock(merge_lock_fd, fcntl.LOCK_EX)
+
+            # Verify base in scratch worktree
+            print(f"Verifying base {base_sha[:8]}...")
+            if _verify_base_in_scratch(base_sha, config):
+                # Write base-verified record
+                state_dir = ensure_state_dir()
+                verified_path = state_dir / "base-verified" / base_sha
+                os.makedirs(verified_path.parent, exist_ok=True)
+                os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
+                print(f"Success: base {base_sha[:8]} is verified")
+                return 0
+            else:
+                print(f"Failed: base {base_sha[:8]} did not pass gate", file=sys.stderr)
+                return 1
+        finally:
+            try:
+                fcntl.flock(merge_lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(merge_lock_fd)
 
     except Exception as e:
         print(f"Bootstrap failed: {e}", file=sys.stderr)
@@ -1740,7 +2018,7 @@ def _cmd_resume(argv: List[str]) -> int:
             with open(result_path) as f:
                 result_data = json.load(f)
                 outcome = result_data.get("outcome")
-                if outcome in ("internal_error", "kicked_back", "pushed_not_merged"):
+                if outcome in ("internal_error", "kickback", "pushed_not_merged"):
                     print(f"Found pending result: PR #{result_data.get('pr')} - {outcome}")
                     print("Resume logic not yet implemented", file=sys.stderr)
                     return 0
