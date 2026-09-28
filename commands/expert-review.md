@@ -675,19 +675,36 @@ if [ "${PR_MODE:-false}" != true ]; then
 fi
 ```
 
-Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
+Merge a `review` section into `.claude/github-cache.json` via `scripts/write-review-cache.py` —
+**do not hand-assemble this JSON with `jq`.** The schema (key name `review`, field name `lastRun`,
+not e.g. `lastExpertReview`/`timestamp`) is duplicated in two readers
+(`expert-review-status.py`, `scripts/workflow/models.py`) that both hard-code it; a freehand write
+that drifts from it even slightly succeeds silently and makes every future fast-path check report
+"not reviewed" with no error, indefinitely. This has happened in practice. The script owns the
+schema, writes via `mktemp` + rename (never a bare `>` redirect, which truncates the target before
+the write completes), and reads its own write back through the same parsing the fast-path checker
+uses — so a mismatch fails loudly, here, instead of silently, later:
 
 ```bash
-EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+python3 "$HOME/.claude/scripts/write-review-cache.py" \
+  --cache-path .claude/github-cache.json \
+  --commit "$HASH" \
+  --branch "$BRANCH" \
+  --review-dir "$REVIEW_DIR" \
+  --panel-model "$PANEL_MODEL" \
+  --critical "$CRITICAL_COUNT" --high "$HIGH_COUNT" --medium "$MEDIUM_COUNT" --low "$LOW_COUNT" \
+  $(for r in "${REVIEWERS[@]}"; do printf -- '--reviewer %s ' "$r"; done) \
+  ${METRICS_PATH:+--metrics-path "$METRICS_PATH"}
 ```
 
-Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
+If this exits non-zero, say so in the closing message — the review itself is still valid and its
+files are on disk, but the fast-path cache didn't record it, so a future run on this branch won't
+detect it either without a manual fix.
 
-`$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
-`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts),
-and, when `EFFORT=2`, `metricsPath` pointing to `{REVIEW_DIR}/review-metrics.json`.
+Fields: `commit` (short HASH), `branch`, `reviewDir`, `--reviewer` (repeatable, one per name that
+actually ran), `panelModel`, the four finding counts, and, when `EFFORT=2`, `--metrics-path`
+pointing to `{REVIEW_DIR}/review-metrics.json`. `lastRun` is stamped by the script itself (ISO 8601,
+now) — never pass it in.
 
 Emit `stage-end --stage cache-metadata --outcome success` (non-PR mode only):
 ```bash
