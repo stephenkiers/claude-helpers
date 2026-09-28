@@ -234,7 +234,10 @@ The implementation is **partial**: the following features are **documented but n
 - **Claude hand-off on base verification failure:** Residual 4 (Decision 4) describes launching Claude
   when the base fails verification. This behavior is documented but not implemented — the queue currently
   kicks back immediately on any base-failed record without triggering Claude. (needs a tracking issue)
-- **`resume` subcommand:** An explicit stub; documented in Per-SHA Base Records but not built. (needs a tracking issue)
+- **`resume` subcommand:** An explicit stub; documented in Per-SHA Base Records but not built. The CLI
+  accepts `resume [--pr N]` but returns non-zero (unimplemented). (needs a tracking issue)
+- **`--no-claude` flag:** Reserved for future use; accepted by the CLI but currently ignored. 
+  (needs a tracking issue once Claude integration is designed)
 - **Cleanup consumption:** The config's `cleanup` field is validated but never read or acted upon; the
   actual cleanup integration is planned but not implemented. (needs a tracking issue)
 - **Bounded git-fetch retry:** Residual 3 mentions a bounded (3-attempt) `git fetch` ref-lock retry

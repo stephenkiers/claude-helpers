@@ -241,20 +241,33 @@ else
 fi
 
 # The result.json lives in the git state dir
+# M6: Read from per-PR result slot (result-<pr>.json) rather than shared result.json
 STATE_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/merge-queue"
 
-if [ ! -f "$STATE_DIR/result.json" ]; then
-  echo "ERROR: result.json not found at $STATE_DIR/result.json"
+# Try per-PR result file first (M6)
+PER_PR_RESULT_FILE="$STATE_DIR/result-$PR_NUM.json"
+SHARED_RESULT_FILE="$STATE_DIR/result.json"
+
+RESULT_FILE=""
+if [ -f "$PER_PR_RESULT_FILE" ]; then
+  RESULT_FILE="$PER_PR_RESULT_FILE"
+elif [ -f "$SHARED_RESULT_FILE" ]; then
+  # Fallback to shared result.json for backward compatibility
+  RESULT_FILE="$SHARED_RESULT_FILE"
+fi
+
+if [ -z "$RESULT_FILE" ]; then
+  echo "ERROR: result file not found (tried $PER_PR_RESULT_FILE and $SHARED_RESULT_FILE)"
   exit 1
 fi
 
 # Extract and verify the result JSON
-RESULT_JSON=$(cat "$STATE_DIR/result.json" 2>/dev/null)
+RESULT_JSON=$(cat "$RESULT_FILE" 2>/dev/null)
 
 # Verify the .pr field matches the resolved PR number
 RESULT_PR=$(printf '%s' "$RESULT_JSON" | jq -r '.pr // ""' 2>/dev/null)
 if [ "$RESULT_PR" != "$PR_NUM" ]; then
-  echo "ERROR: result.json PR mismatch (expected $PR_NUM, found $RESULT_PR) — result may be from a different PR"
+  echo "ERROR: result PR mismatch (expected $PR_NUM, found $RESULT_PR) — result may be from a different PR"
   exit 1
 fi
 

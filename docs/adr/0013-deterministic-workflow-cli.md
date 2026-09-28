@@ -233,6 +233,10 @@ identically, but doing so now is out of scope for this ticket.
 `Runner.run_git`/`Runner.run_gh`) bypass the centralized `check_mutation_allowed()` allowlist
 (Decision 1, Amendment 1). This is intentional per [ADR-0021 Decision 7](0021-local-merge-queue.md):
 the queue's mutating calls (rebase, the pinned force-push, `gh pr merge` with queue-specific flags)
-are shaped differently from what the allowlist covers, and the queue module provides an equivalent,
-narrower audit via `force_push_tested()` for the force-push call. This exception is documented in
-both ADRs to mark the boundary clearly.
+are shaped differently from what the allowlist covers. 
+
+The queue module provides a narrower, focused audit covering only the pinned force-push via 
+`force_push_tested()` (validates shas, checks lease semantics, distinguishes lease rejection from 
+other errors). Rebase, fetch, and `gh pr merge` mutations are gated by broader infrastructure:
+the full gate passes before mutations run, and the queue enforces serialization via kernel flock.
+This exception is documented in both ADRs to mark the boundary clearly.

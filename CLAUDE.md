@@ -276,18 +276,20 @@ so newly-written bash blocks don't regress the printf pattern.
 
 ## Force-push carve-out
 
-Three commands are authorized to use `--force-with-lease` (never bare `--force`) in this repo's
+Four commands are authorized to use `--force-with-lease` (never bare `--force`) in this repo's
 tooling, each with its own audit and confirmation gate:
 
 1. **Merge queue** — `--force-with-lease=<branch>:<lease_sha>` with explicit refspec
    `<tested_sha>:refs/heads/<branch>`, audited in a single function (`force_push_tested()`), runs
    only after the full gate has passed. See [ADR-0021 Decision 6](docs/adr/0021-local-merge-queue.md).
-2. **`/stack-sync`** — per-child `--force-with-lease` push, gated behind the project's check gate
+2. **`/shipit`** — stacked-branch `--force-with-lease` push (for rebased stacked branches), confirmed
+   after the local CI gate passes. See `commands/shipit.md` "Sync stacked children" section.
+3. **`/stack-sync`** — per-child `--force-with-lease` push, gated behind the project's check gate
    inside the canonical Restack-a-child block. See `commands/stack-sync.md`.
-3. **`/expert-rebase`** — per-branch `--force-with-lease` push (or `--force-with-lease --force-if-includes`
+4. **`/expert-rebase`** — per-branch `--force-with-lease` push (or `--force-with-lease --force-if-includes`
    for stacked branches), confirmation-gated for the branch being rebased. See `commands/expert-rebase.md`.
 
-All three use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
+All use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
 
 ## Inspecting check-gate failures
 

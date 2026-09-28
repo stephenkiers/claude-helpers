@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 from pathlib import Path
@@ -495,11 +496,13 @@ def wait_turn(ticket_num: int) -> int:
     return merge_lock_fd
 
 
-def release_ticket(ticket_num: int, merge_lock_fd: int) -> None:
+def release_ticket(ticket_num: int, merge_lock_fd: int, ticket_fd: int = -1) -> None:
     """
     Release the ticket and merge.lock under alloc.lock.
 
-    Unlink ticket, unlock merge.lock, close both.
+    Unlink ticket, unlock merge.lock, close all held fds.
+
+    M17: ticket_fd parameter ensures ticket fd is always closed in finally block.
     """
     state_dir = get_state_dir()
     tickets_dir = state_dir / "tickets"
@@ -516,16 +519,29 @@ def release_ticket(ticket_num: int, merge_lock_fd: int) -> None:
     finally:
         os.close(alloc_lock_fd)
 
-    # Guard against invalid fd (e.g., -1 from error path)
-    if merge_lock_fd >= 0:
-        try:
-            fcntl.flock(merge_lock_fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        try:
-            os.close(merge_lock_fd)
-        except OSError:
-            pass
+    # M17: Close ticket_fd in finally to avoid leaking it
+    try:
+        # Guard against invalid fd (e.g., -1 from error path)
+        if ticket_fd >= 0:
+            try:
+                fcntl.flock(ticket_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(ticket_fd)
+            except OSError:
+                pass
+    finally:
+        # Close merge_lock_fd
+        if merge_lock_fd >= 0:
+            try:
+                fcntl.flock(merge_lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(merge_lock_fd)
+            except OSError:
+                pass
 
 
 # ============================================================================
@@ -691,14 +707,18 @@ class Runner:
         return ref
 
     @staticmethod
-    def run_git(args: List[str], cwd: Optional[Path] = None, check: bool = True) -> str:
+    def run_git(args: List[str], cwd: Optional[Path] = None, check: bool = True, timeout: Optional[int] = None) -> str:
         """Run git with argv list."""
-        return git.run_git_command(args, cwd=cwd, check=check)
+        if timeout is None:
+            timeout = git.DEFAULT_TIMEOUT
+        return git.run_git_command(args, cwd=cwd, check=check, timeout=timeout)
 
     @staticmethod
-    def run_gh(args: List[str], cwd: Optional[Path] = None, check: bool = True) -> str:
+    def run_gh(args: List[str], cwd: Optional[Path] = None, check: bool = True, timeout: Optional[int] = None) -> str:
         """Run gh with argv list."""
-        return git.run_gh_command(args, cwd=cwd, check=check)
+        if timeout is None:
+            timeout = git.DEFAULT_TIMEOUT
+        return git.run_gh_command(args, cwd=cwd, check=check, timeout=timeout)
 
     @staticmethod
     def force_push_tested(
@@ -706,6 +726,7 @@ class Runner:
         tested_sha: str,
         lease_sha: str,
         cwd: Optional[Path] = None,
+        timeout: Optional[int] = None,
     ) -> bool:
         """
         Force-push with pinned lease.
@@ -715,7 +736,7 @@ class Runner:
         Runs: git push --force-with-lease=<branch>:<lease_sha> origin <tested_sha>:refs/heads/<branch>
 
         Returns True if push succeeded, False if lease rejected (no-op).
-        Raises on other errors.
+        Raises RuntimeError on timeout; other errors are raised as-is.
         """
         # Validate shas are exactly 40 hex digits (anchored regex)
         if not re.match(r"^[0-9a-f]{40}$", tested_sha.strip()):
@@ -732,8 +753,14 @@ class Runner:
                 "origin",
                 f"{tested_sha}:refs/heads/{branch}",
             ]
-            Runner.run_git(args, cwd=cwd)
+            Runner.run_git(args, cwd=cwd, timeout=timeout)
             return True
+        except RuntimeError as e:
+            # M2: Timeout; will be caught and handled by caller with re-querying
+            if "timed out" in str(e):
+                raise
+            # Unexpected RuntimeError; re-raise
+            raise
         except git.GitCommandError as e:
             # Lease rejection: "stale info" or "fast-forward check failed"
             # Other rejections (branch protection, hooks) should be raised
@@ -907,6 +934,7 @@ class MergeResult:
     failing_step: Optional[str] = None
     log_path: Optional[str] = None
     restore_failed: Optional[str] = None
+    run_id: str = field(default_factory=lambda: str(uuid.uuid4()))  # M6: Unique identifier for this run
 
     def __post_init__(self) -> None:
         """Enforce outcome-specific invariants on construction."""
@@ -1014,7 +1042,14 @@ def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
 
 
 def write_result_json(result: MergeResult, cwd: Optional[Path] = None) -> None:
-    """Write result.json to state dir atomically."""
+    """
+    Write result.json to state dir atomically.
+
+    M6: Writes to both:
+    - result.json (shared, backward-compatible)
+    - result-<pr>.json (per-PR, for Phase 4 reading)
+    - results/<pr>-<ts>.json (timestamped archive)
+    """
     state_dir = ensure_state_dir()
     result_path = state_dir / "result.json"
 
@@ -1024,9 +1059,14 @@ def write_result_json(result: MergeResult, cwd: Optional[Path] = None) -> None:
     result_dict["outcome"] = result.outcome.value
     result_dict["timestamp"] = time.time()
 
+    # Write to shared result.json (backward-compatible)
     _atomic_write_json(result_path, result_dict)
 
-    # Also keep a copy in results/<pr>-<ts>.json
+    # M6: Write to per-PR result file for Phase 4 reading
+    per_pr_result_path = state_dir / f"result-{result.pr}.json"
+    _atomic_write_json(per_pr_result_path, result_dict)
+
+    # Also keep a timestamped copy in results/<pr>-<ts>.json
     ts = int(time.time() * 1000)
     copy_path = state_dir / "results" / f"{result.pr}-{ts}.json"
     _atomic_write_json(copy_path, result_dict)
@@ -1119,7 +1159,8 @@ def run_one(
         try:
             merge_lock_fd = wait_turn(ticket_num)
         except Exception as e:
-            release_ticket(ticket_num, -1)
+            # M17: Pass ticket_fd to release_ticket so it gets closed
+            release_ticket(ticket_num, -1, ticket_fd)
             return MergeResult(
                 outcome=MergeOutcome.INTERNAL_ERROR,
                 pr=pr,
@@ -1134,7 +1175,8 @@ def run_one(
             result = _locked_flow(pr, branch, worktree, config, merge_lock_fd, inherit_lock_fd, config_path)
             return result
         finally:
-            release_ticket(ticket_num, merge_lock_fd)
+            # M17: Pass ticket_fd to release_ticket so both fds are properly closed
+            release_ticket(ticket_num, merge_lock_fd, ticket_fd)
 
     except Exception as e:
         return MergeResult(
@@ -1410,7 +1452,24 @@ def _locked_flow(
 
         # Fetch and record lease_sha, base_sha
         try:
-            Runner.run_git(["fetch", "origin"], cwd=cwd)
+            Runner.run_git(["fetch", "origin"], cwd=cwd, timeout=config.mutation_timeout_secs)
+        except RuntimeError as e:
+            # M2: Timeout; re-query state
+            if "timed out" in str(e):
+                try:
+                    # Re-query to ensure we have current state
+                    Runner.run_git(["fetch", "origin"], cwd=cwd, timeout=config.mutation_timeout_secs)
+                except Exception:
+                    pass  # Proceed with whatever we have
+            else:
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    reason=f"Failed to fetch: {e}",
+                )
         except Exception as e:
             return MergeResult(
                 outcome=MergeOutcome.KICKBACK,
@@ -1473,7 +1532,8 @@ def _locked_flow(
                 )
             else:
                 # Try to verify the base by running gate in scratch worktree
-                verify_outcome = _verify_base_in_scratch(base_sha, config)
+                # M9: Thread lock_fd_to_inherit through to _verify_base_in_scratch
+                verify_outcome = _verify_base_in_scratch(base_sha, config, lock_fd_to_inherit=inherit_lock_fd)
                 if verify_outcome == VerifyBaseOutcome.VERIFIED:
                     # Gate passed; write verified record
                     os.makedirs(verified_path.parent, exist_ok=True)
@@ -1507,11 +1567,59 @@ def _locked_flow(
 
         # Rebase
         try:
-            Runner.run_git(["rebase", f"origin/{config.base}"], cwd=cwd)
+            Runner.run_git(["rebase", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs)
+        except RuntimeError as e:
+            # M2: Handle rebase timeout
+            if "timed out" in str(e):
+                # Try to abort the rebase
+                try:
+                    Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
+                except Exception as abort_err:
+                    restore_failed = f"rebase --abort failed: {abort_err}"
+                    return MergeResult(
+                        outcome=MergeOutcome.KICKBACK,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        orig_head=orig_head,
+                        reason="Rebase timed out (abort also failed)",
+                        restore_failed=restore_failed,
+                    )
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    reason=f"Rebase timed out after {config.mutation_timeout_secs}s",
+                )
+            else:
+                # Non-timeout error; likely a conflict
+                try:
+                    Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
+                except Exception as abort_err:
+                    restore_failed = f"rebase --abort failed: {abort_err}"
+                    return MergeResult(
+                        outcome=MergeOutcome.KICKBACK,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        orig_head=orig_head,
+                        reason="Rebase conflict (abort failed)",
+                        restore_failed=restore_failed,
+                    )
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    reason=f"Rebase conflict: {e}",
+                )
         except Exception as e:
             # Conflict; abort and kick back
             try:
-                Runner.run_git(["rebase", "--abort"], cwd=cwd)
+                Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
             except Exception as abort_err:
                 restore_failed = f"rebase --abort failed: {abort_err}"
                 return MergeResult(
@@ -1610,7 +1718,7 @@ def _locked_flow(
 
         # Push
         try:
-            push_ok = Runner.force_push_tested(branch, tested_sha, lease_sha, cwd=cwd)
+            push_ok = Runner.force_push_tested(branch, tested_sha, lease_sha, cwd=cwd, timeout=config.mutation_timeout_secs)
             if not push_ok:
                 return MergeResult(
                     outcome=MergeOutcome.KICKBACK,
@@ -1620,6 +1728,48 @@ def _locked_flow(
                     orig_head=orig_head,
                     tested_sha=tested_sha,
                     reason="Push rejected by lease (another clone pushed to branch)",
+                )
+        except RuntimeError as e:
+            # M2: Handle push timeout by re-querying actual state
+            if "timed out" in str(e):
+                try:
+                    actual_remote_tip = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd, timeout=config.mutation_timeout_secs).strip()
+                    if actual_remote_tip == tested_sha:
+                        # Push actually succeeded (maybe succeeded then timeout on confirmation)
+                        # Continue to merge step
+                        pass
+                    else:
+                        # Push timed out and remote tip is not what we tested
+                        return MergeResult(
+                            outcome=MergeOutcome.KICKBACK,
+                            pr=pr,
+                            branch=branch,
+                            worktree=worktree,
+                            orig_head=orig_head,
+                            tested_sha=tested_sha,
+                            reason="Push timed out; could not verify success",
+                        )
+                except Exception:
+                    # Could not re-query; treat as timeout failure
+                    return MergeResult(
+                        outcome=MergeOutcome.KICKBACK,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        orig_head=orig_head,
+                        tested_sha=tested_sha,
+                        reason=f"Push timed out and could not re-query state: {e}",
+                    )
+            else:
+                # Non-timeout RuntimeError; treat as failure
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    tested_sha=tested_sha,
+                    reason=f"Push failed: {e}",
                 )
         except Exception as e:
             return MergeResult(
@@ -1634,8 +1784,8 @@ def _locked_flow(
 
         # Base unchanged check (fresh fetch)
         try:
-            Runner.run_git(["fetch", "origin", config.base], cwd=cwd)
-            new_base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd).strip()
+            Runner.run_git(["fetch", "origin", config.base], cwd=cwd, timeout=config.mutation_timeout_secs)
+            new_base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs).strip()
             if new_base_sha != base_sha:
                 return MergeResult(
                     outcome=MergeOutcome.KICKBACK,
@@ -1645,6 +1795,28 @@ def _locked_flow(
                     orig_head=orig_head,
                     tested_sha=tested_sha,
                     reason=f"Base moved during gate (new: {new_base_sha[:8]})",
+                )
+        except RuntimeError as e:
+            # M2: Timeout checking base; treat as KICKBACK (can retry)
+            if "timed out" in str(e):
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    tested_sha=tested_sha,
+                    reason=f"Base check timed out after {config.mutation_timeout_secs}s",
+                )
+            else:
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    tested_sha=tested_sha,
+                    reason=f"Failed to verify base unchanged: {e}",
                 )
         except Exception as e:
             return MergeResult(
@@ -1793,7 +1965,7 @@ def _no_remote_only_commits(branch: str, base: str, cwd: Optional[Path] = None) 
         return False
 
 
-def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> VerifyBaseOutcome:
+def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_inherit: Optional[int] = None) -> VerifyBaseOutcome:
     """
     Verify the base by running the main gate in a scratch worktree.
 
@@ -1837,12 +2009,18 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> VerifyBa
         else:
             # Update existing worktree: reset/clean to avoid dirty state between uses
             try:
-                Runner.run_git(["fetch", "origin"], cwd=scratch_dir)
+                Runner.run_git(["fetch", "origin"], cwd=scratch_dir, timeout=config.mutation_timeout_secs)
                 # Detach and clean before checking out new sha
                 Runner.run_git(["checkout", "--detach"], cwd=scratch_dir)
                 Runner.run_git(["reset", "--hard", base_sha], cwd=scratch_dir)
                 Runner.run_git(["clean", "-ffdx"], cwd=scratch_dir)
                 Runner.run_git(["checkout", base_sha], cwd=scratch_dir)
+            except RuntimeError as e:
+                # M2: Fetch timeout; treat as infra error (can retry)
+                if "timed out" in str(e):
+                    return VerifyBaseOutcome.INFRA_ERROR
+                else:
+                    return VerifyBaseOutcome.INFRA_ERROR
             except Exception:
                 # Infrastructure error (git operations failed)
                 return VerifyBaseOutcome.INFRA_ERROR
@@ -1850,7 +2028,8 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> VerifyBa
         # Run setup commands
         for setup_cmd in config.scratch_setup:
             log_path = state_dir / "logs" / "setup.log"
-            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs)
+            # M9: Thread lock_fd_to_inherit through to run_step
+            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs, inherit_lock_fd=lock_fd_to_inherit)
             if not outcome.success:
                 # Setup failed; this is a gate failure, not infra error
                 return VerifyBaseOutcome.GATE_FAILED
@@ -1859,7 +2038,8 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> VerifyBa
         for i, step in enumerate(config.steps):
             log_path = state_dir / "logs" / f"base-verify-step-{i}.log"
             timeout_secs = step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs
-            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs)
+            # M9: Thread lock_fd_to_inherit through to run_step
+            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs, inherit_lock_fd=lock_fd_to_inherit)
             if not outcome.success:
                 # Gate step failed; this is a gate failure, not infra error
                 return VerifyBaseOutcome.GATE_FAILED
@@ -1922,6 +2102,7 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
                 body,
             ],
             cwd=cwd,
+            timeout=config.mutation_timeout_secs,
         )
         # C1: Re-query PR state after gh pr merge succeeds to confirm it's actually MERGED
         try:
@@ -1934,6 +2115,28 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
         except (git.GitCommandError, json.JSONDecodeError):
             # Can't verify the merge; treat as unverified rather than assuming success
             return MergePROutcome.GH_MERGE_UNVERIFIED
+    except RuntimeError as e:
+        # M2: gh pr merge timed out; re-query state to see if it actually merged
+        if "timed out" in str(e):
+            try:
+                pr_data = git.pr_view_json(str(pr), ["state", "headRefOid"], cwd=cwd)
+                if pr_data and pr_data.get("state") == "MERGED":
+                    # Verify that the merged head matches what we tested
+                    merged_oid = pr_data.get("headRefOid")
+                    if merged_oid and merged_oid == tested_sha:
+                        return MergePROutcome.SUCCESS
+                    else:
+                        # Merged but with different head
+                        return MergePROutcome.ALREADY_MERGED_OTHER_HEAD
+                else:
+                    # Timed out and not merged
+                    return MergePROutcome.GH_MERGE_ERROR
+            except (git.GitCommandError, json.JSONDecodeError):
+                # Can't verify; treat as unverified
+                return MergePROutcome.GH_MERGE_UNVERIFIED
+        else:
+            # Other RuntimeError; treat as merge error
+            return MergePROutcome.GH_MERGE_ERROR
     except git.GitCommandError as e:
         # Re-query PR state to confirm if it was already merged
         try:
@@ -2223,7 +2426,9 @@ def _cmd_bootstrap(argv: List[str]) -> int:
 
             # Verify base in scratch worktree
             print(f"Verifying base {base_sha[:8]}...")
-            verify_outcome = _verify_base_in_scratch(base_sha, config)
+            # M9: Thread lock fd if configured to inherit
+            lock_fd_to_pass = merge_lock_fd if config.inherit_lock_fd else None
+            verify_outcome = _verify_base_in_scratch(base_sha, config, lock_fd_to_inherit=lock_fd_to_pass)
             if verify_outcome == VerifyBaseOutcome.VERIFIED:
                 # Write base-verified record
                 state_dir = ensure_state_dir()
@@ -2259,7 +2464,8 @@ def _cmd_resume(argv: List[str]) -> int:
         result_path = state_dir / "result.json"
         if not result_path.exists():
             print("Nothing to resume", file=sys.stderr)
-            return 0
+            # M15: Exit non-zero; resume is not yet implemented
+            return 1
 
         try:
             with open(result_path) as f:
@@ -2268,13 +2474,16 @@ def _cmd_resume(argv: List[str]) -> int:
                 if outcome in ("internal_error", "kickback", "pushed_not_merged"):
                     print(f"Found pending result: PR #{result_data.get('pr')} - {outcome}")
                     print("Resume logic not yet implemented", file=sys.stderr)
-                    return 0
+                    # M15: Exit non-zero; stub is unimplemented
+                    return 1
                 else:
                     print("Nothing to resume", file=sys.stderr)
-                    return 0
+                    # M15: Exit non-zero when there's nothing to resume
+                    return 1
         except Exception:
             print("Nothing to resume", file=sys.stderr)
-            return 0
+            # M15: Exit non-zero on error
+            return 1
 
     except Exception as e:
         print(f"Resume failed: {e}", file=sys.stderr)
