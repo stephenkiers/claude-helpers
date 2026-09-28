@@ -764,9 +764,14 @@ def parse_trailer(commit: str, cwd: Optional[Path] = None) -> Tuple[Optional[str
             )
             if match:
                 base, head = match.groups()
-                # Verify tested-base is an ancestor
-                if git.is_ancestor(base, commit, cwd=cwd):
-                    return base, head
+                # Decided #5: Verify tested-base is the immediate first parent, not just any ancestor
+                try:
+                    parent = Runner.run_git(["rev-parse", f"{commit}^1"], cwd=cwd).strip()
+                    if parent == base:
+                        return base, head
+                except Exception:
+                    # Could not get parent; fail closed
+                    pass
             return None, None
 
     return None, None
@@ -854,6 +859,14 @@ class MergePROutcome(Enum):
     GH_MERGE_REJECTED = "gh_merge_rejected"
     GH_MERGE_ERROR = "gh_merge_error"
     ALREADY_MERGED_OTHER_HEAD = "already_merged_other_head"
+
+
+class VerifyBaseOutcome(Enum):
+    """Outcome of verifying base in scratch worktree."""
+    VERIFIED = "verified"
+    GATE_FAILED = "gate_failed"
+    INFRA_ERROR = "infra_error"
+    INTERRUPTED = "interrupted"
 
 
 @dataclass
@@ -1084,6 +1097,15 @@ def _preflight_check(
                 branch=branch,
                 worktree=worktree,
                 reason="Could not fetch PR state",
+            )
+        # Verify PR number matches provided argument (M5)
+        if pr_data.get("number") != pr:
+            return MergeResult(
+                outcome=MergeOutcome.REFUSED,
+                pr=pr,
+                branch=branch,
+                worktree=worktree,
+                reason=f"PR number mismatch: provided {pr}, but branch targets PR #{pr_data.get('number')}",
             )
         if pr_data.get("state") != "OPEN":
             return MergeResult(
@@ -1321,8 +1343,23 @@ def _locked_flow(
                 reason=f"Failed to fetch: {e}",
             )
 
+        # M7: Pin lease to orig_head, not to post-fetch tip
+        # Verify that the remote tip matches orig_head (KICKBACK if it changed)
         try:
-            lease_sha = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd).strip()
+            remote_tip = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd).strip()
+            if remote_tip != orig_head:
+                # Remote has moved; someone else pushed to this branch
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    tested_sha=remote_tip,
+                    reason="Base moved: remote branch changed; retry after sync",
+                    details=f"Expected orig_head={orig_head[:8]}, found remote={remote_tip[:8]}",
+                )
+            lease_sha = orig_head
             base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd).strip()
         except Exception as e:
             return MergeResult(
@@ -1358,13 +1395,13 @@ def _locked_flow(
                 )
             else:
                 # Try to verify the base by running gate in scratch worktree
-                verify_ok, is_infra_error = _verify_base_in_scratch(base_sha, config)
-                if verify_ok:
+                verify_outcome = _verify_base_in_scratch(base_sha, config)
+                if verify_outcome == VerifyBaseOutcome.VERIFIED:
                     # Gate passed; write verified record
                     os.makedirs(verified_path.parent, exist_ok=True)
                     os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
                     poison_ok = True
-                elif is_infra_error:
+                elif verify_outcome == VerifyBaseOutcome.INFRA_ERROR:
                     # Infrastructure error during verification; return INTERNAL_ERROR
                     return MergeResult(
                         outcome=MergeOutcome.INTERNAL_ERROR,
@@ -1678,17 +1715,17 @@ def _no_remote_only_commits(branch: str, base: str, cwd: Optional[Path] = None) 
         return False
 
 
-def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bool, bool]:
+def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> VerifyBaseOutcome:
     """
     Verify the base by running the main gate in a scratch worktree.
 
     Creates or reuses a scratch worktree, checks out base_sha, runs setup commands,
     and runs all gate steps.
 
-    Returns (success, is_infra_error):
-    - (True, False): base verified (all gates passed)
-    - (False, False): base failed gate (gate step or setup failed)
-    - (False, True): infrastructure error (worktree creation, clone, etc. failed)
+    Returns:
+    - VERIFIED: base verified (all gates passed)
+    - GATE_FAILED: base failed gate (gate step or setup failed)
+    - INFRA_ERROR: infrastructure error (worktree creation, clone, etc. failed)
     """
     state_dir = ensure_state_dir()
     scratch_dir = state_dir / "scratch"
@@ -1715,10 +1752,10 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bo
                     Runner.run_git(["checkout", base_sha], cwd=scratch_dir)
                 except subprocess.TimeoutExpired:
                     # Infrastructure timeout; treat as infra error
-                    return (False, True)
+                    return VerifyBaseOutcome.INFRA_ERROR
                 except Exception:
                     # Infrastructure error (clone failed)
-                    return (False, True)
+                    return VerifyBaseOutcome.INFRA_ERROR
         else:
             # Update existing worktree: reset/clean to avoid dirty state between uses
             try:
@@ -1730,7 +1767,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bo
                 Runner.run_git(["checkout", base_sha], cwd=scratch_dir)
             except Exception:
                 # Infrastructure error (git operations failed)
-                return (False, True)
+                return VerifyBaseOutcome.INFRA_ERROR
 
         # Run setup commands
         for setup_cmd in config.scratch_setup:
@@ -1738,7 +1775,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bo
             outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs)
             if not outcome.success:
                 # Setup failed; this is a gate failure, not infra error
-                return (False, False)
+                return VerifyBaseOutcome.GATE_FAILED
 
         # Run gate steps
         for i, step in enumerate(config.steps):
@@ -1747,13 +1784,13 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bo
             outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs)
             if not outcome.success:
                 # Gate step failed; this is a gate failure, not infra error
-                return (False, False)
+                return VerifyBaseOutcome.GATE_FAILED
 
-        return (True, False)
+        return VerifyBaseOutcome.VERIFIED
 
     except Exception:
         # Unexpected exception; treat as infra error to be safe
-        return (False, True)
+        return VerifyBaseOutcome.INFRA_ERROR
 
 
 def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig, cwd: Optional[Path] = None) -> MergePROutcome:
@@ -1808,7 +1845,17 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
             ],
             cwd=cwd,
         )
-        return MergePROutcome.SUCCESS
+        # C1: Re-query PR state after gh pr merge succeeds to confirm it's actually MERGED
+        try:
+            pr_data = git.pr_view_json(str(pr), ["state"], cwd=cwd)
+            if pr_data and pr_data.get("state") == "MERGED":
+                return MergePROutcome.SUCCESS
+            else:
+                # Merge exit 0 but PR is not actually merged; treat as error
+                return MergePROutcome.GH_MERGE_ERROR
+        except (git.GitCommandError, json.JSONDecodeError):
+            # Can't verify; assume success (gh pr merge succeeded)
+            return MergePROutcome.SUCCESS
     except git.GitCommandError as e:
         # Re-query PR state to confirm if it was already merged
         try:
@@ -1857,7 +1904,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         argv = list(argv)
 
     if not argv or argv[0] in ("enqueue", "--no-claude", "--config", "--pr"):
-        return _cmd_enqueue(argv)
+        # Dispatch enqueue, skipping the "enqueue" token if present
+        enqueue_argv = argv[1:] if argv and argv[0] == "enqueue" else argv
+        return _cmd_enqueue(enqueue_argv)
     elif argv[0] == "status":
         return _cmd_status(argv[1:])
     elif argv[0] == "reverify":
@@ -2096,8 +2145,8 @@ def _cmd_bootstrap(argv: List[str]) -> int:
 
             # Verify base in scratch worktree
             print(f"Verifying base {base_sha[:8]}...")
-            verify_ok, is_infra_error = _verify_base_in_scratch(base_sha, config)
-            if verify_ok:
+            verify_outcome = _verify_base_in_scratch(base_sha, config)
+            if verify_outcome == VerifyBaseOutcome.VERIFIED:
                 # Write base-verified record
                 state_dir = ensure_state_dir()
                 verified_path = state_dir / "base-verified" / base_sha
@@ -2105,7 +2154,7 @@ def _cmd_bootstrap(argv: List[str]) -> int:
                 os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
                 print(f"Success: base {base_sha[:8]} is verified")
                 return 0
-            elif is_infra_error:
+            elif verify_outcome == VerifyBaseOutcome.INFRA_ERROR:
                 print("Infrastructure error: base verification failed due to setup/infrastructure issues", file=sys.stderr)
                 return 1
             else:

@@ -330,26 +330,33 @@ commit_msg = f"Tested by merge-queue.\n\n{trailer_text}"
 # We need to mock the git calls; run_git_command_input still runs real git
 # interpret-trailers against this mocked commit message.
 with patch('workflow.merge_queue.Runner.run_git') as mock_git:
-    with patch('workflow.merge_queue.git.is_ancestor') as mock_ancestor:
-        mock_git.return_value = commit_msg
-        mock_ancestor.return_value = True
+    # Mock to return commit msg for "show" and base_sha for "^1" (parent) queries
+    def mock_git_impl(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) > 0:
+            if cmd[0] == "show":
+                return commit_msg
+            elif cmd[0] == "rev-parse" and "^1" in cmd[-1]:
+                return base_sha  # Return base_sha as the parent
+        return commit_msg
 
-        parsed_base, parsed_head = parse_trailer("dummycommit")
-        test_result(
-            "parse_trailer returns tuple of (base, head)",
-            isinstance((parsed_base, parsed_head), tuple),
-            f"Got {type((parsed_base, parsed_head))}"
-        )
-        test_result(
-            "parse_trailer extracts correct base",
-            parsed_base == base_sha,
-            f"Got {parsed_base}"
-        )
-        test_result(
-            "parse_trailer extracts correct head",
-            parsed_head == tested_sha,
-            f"Got {parsed_head}"
-        )
+    mock_git.side_effect = mock_git_impl
+
+    parsed_base, parsed_head = parse_trailer("dummycommit")
+    test_result(
+        "parse_trailer returns tuple of (base, head)",
+        isinstance((parsed_base, parsed_head), tuple),
+        f"Got {type((parsed_base, parsed_head))}"
+    )
+    test_result(
+        "parse_trailer extracts correct base",
+        parsed_base == base_sha,
+        f"Got {parsed_base}"
+    )
+    test_result(
+        "parse_trailer extracts correct head",
+        parsed_head == tested_sha,
+        f"Got {parsed_head}"
+    )
 
 # Test 13: parse_trailer returns (None, None) for invalid trailer
 print("  [Test 2.3] parse_trailer returns None for invalid trailer")
@@ -790,8 +797,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
                                     base="main",
                                     steps=[Step(cmd="echo test")]
                                 )
-                                # Mock returns tuple: (success, is_infra_error)
-                                mock_verify.return_value = (True, False)
+                                # Mock returns VerifyBaseOutcome enum
+                                from workflow.merge_queue import VerifyBaseOutcome
+                                mock_verify.return_value = VerifyBaseOutcome.VERIFIED
 
                                 # Call _cmd_bootstrap
                                 result = _cmd_bootstrap([])
@@ -1358,7 +1366,17 @@ with tempfile.TemporaryDirectory() as tmpdir:
     )
 
     # Create a commit with the exact body shape used by _merge_pr()
-    base_sha = "a" * 40
+    # Get the actual parent SHA (for Decided #5: immediate parent check)
+    parent_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout.strip()
+
+    # Use the actual parent as the tested-base to satisfy Decided #5 check
+    base_sha = parent_sha
     tested_sha = "b" * 40
     trailer_text = build_trailer(base_sha, tested_sha)
     body = f"Tested by merge-queue.\n\n{trailer_text}"
@@ -1366,14 +1384,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
     # Create a commit with this exact body by using git commit-tree
     tree_sha = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True
-    ).stdout.strip()
-
-    parent_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -1391,27 +1401,24 @@ with tempfile.TemporaryDirectory() as tmpdir:
     ).stdout.strip()
 
     # Now test parse_trailer with the real commit
-    with patch('workflow.merge_queue.git.is_ancestor') as mock_ancestor:
-        mock_ancestor.return_value = True
-
-        try:
-            parsed_base, parsed_head = parse_trailer(commit_sha, cwd=cwd)
-            test_result(
-                "parse_trailer round-trip extracts correct base",
-                parsed_base == base_sha,
-                f"Got {parsed_base}, expected {base_sha}"
-            )
-            test_result(
-                "parse_trailer round-trip extracts correct head",
-                parsed_head == tested_sha,
-                f"Got {parsed_head}, expected {tested_sha}"
-            )
-        except Exception as e:
-            test_result(
-                "parse_trailer round-trip with real commit",
-                False,
-                f"Got error: {e}"
-            )
+    try:
+        parsed_base, parsed_head = parse_trailer(commit_sha, cwd=cwd)
+        test_result(
+            "parse_trailer round-trip extracts correct base",
+            parsed_base == base_sha,
+            f"Got {parsed_base}, expected {base_sha}"
+        )
+        test_result(
+            "parse_trailer round-trip extracts correct head",
+            parsed_head == tested_sha,
+            f"Got {parsed_head}, expected {tested_sha}"
+        )
+    except Exception as e:
+        test_result(
+            "parse_trailer round-trip with real commit",
+            False,
+            f"Got error: {e}"
+        )
 
 
 # ============================================================================

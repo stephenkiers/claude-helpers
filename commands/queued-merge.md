@@ -2,7 +2,7 @@
 name: queued-merge
 description: Merge a PR through the local merge queue, testing it against the exact base it lands on. The queue serializes PRs and merges them one at a time in arrival order. Run from the worktree you want to merge, or from the main worktree with a PR number.
 argument-hint: [PR number]
-allowed-tools: Read, Bash(git symbolic-ref:*), Bash(git rev-parse:*), Bash(git worktree:*), Bash(gh pr view:*), Bash(printf:*), Bash(jq:*), Bash(cat:*), Bash(python3:*), Bash(test:*)
+allowed-tools: Read, Bash(git symbolic-ref:*), Bash(git rev-parse:*), Bash(git worktree:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(printf:*), Bash(jq:*), Bash(cat:*), Bash(python3:*), Bash(test:*), Bash(command:*), Bash(cd:*), Bash(*merge-queue*)
 model: haiku
 ---
 
@@ -87,18 +87,36 @@ Resolve the worktree path. If run from the main worktree, the PR worktree must e
 # If running from the main worktree, we need to find the PR worktree
 # If running from a linked worktree, use the current one
 
-MAIN_WORKTREE=$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname)
 CURRENT_WORKTREE=$(pwd)
+# Get the git common dir (shared .git directory for all worktrees)
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+if [ -z "$GIT_COMMON_DIR" ]; then
+  echo "ERROR: could not determine git common dir"
+  exit 1
+fi
+
+# Determine the main worktree path
+# For linked worktrees, git-common-dir is <main>/.git
+# For bare repos or non-worktree setups, git-common-dir is .git
+if [ -d "$GIT_COMMON_DIR/worktrees" ]; then
+  # This is a worktree layout; main worktree is the parent of git-common-dir
+  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
+else
+  # Bare repo or single-worktree; main worktree is the directory containing git-common-dir
+  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
+fi
 
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
-  # Running from main worktree; find the PR worktree using absolute paths and porcelain parsing
-  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" git worktree list --path-format=absolute --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
+  # Running from main worktree; find the PR worktree using git worktree list
+  PR_WORKTREE=$(git worktree list --path-format=absolute --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
 import sys
 import os
 pr_head = os.environ.get('PR_HEAD', '')
 for line in sys.stdin:
-  parts = line.split()
-  if len(parts) >= 4 and parts[2] == 'branch' and parts[3] == pr_head:
+  line = line.rstrip('\n')
+  parts = line.split(None, 3)  # Split on whitespace, max 4 parts
+  # porcelain format: <path> <detached|bare> [branch <branch_name>] [detached]
+  if len(parts) >= 3 and parts[1] == 'branch' and len(parts) > 2 and parts[2] == pr_head:
     print(parts[0])
     break
 PYTHON_EOF
@@ -128,6 +146,25 @@ proceeding fine. A backgrounded call has no such ceiling; wait for its completio
 then move to Phase 4, which reads the result from disk.
 
 ```bash
+# Re-derive PR_NUM and PR_HEAD from fresh git state (variables don't persist across Bash blocks)
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
+if [ -z "$CURRENT_BRANCH" ]; then
+  # Fall back to PR detection via arguments (if Phase 1 passed an explicit PR)
+  if [ -n "$ARGUMENTS" ]; then
+    PR_NUM="$ARGUMENTS"
+  else
+    echo "ERROR: could not derive PR number; branch is detached and no --pr argument given"
+    exit 3
+  fi
+else
+  # Auto-detect PR from current branch
+  PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null)
+  if [ -z "$PR_NUM" ]; then
+    echo "ERROR: no PR found for branch '$CURRENT_BRANCH'"
+    exit 3
+  fi
+fi
+
 echo "Enqueuing PR #$PR_NUM in the local merge queue..."
 
 # Locate the merge-queue script
@@ -142,8 +179,41 @@ else
   MERGE_QUEUE_SCRIPT=$(command -v merge-queue)
 fi
 
-# Run the merge queue in the PR worktree (background)
-cd "$PR_WORKTREE"
+# Determine worktree path (current directory for linked worktree, or derived for main worktree)
+CURRENT_WORKTREE=$(pwd)
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+if [ -d "$GIT_COMMON_DIR/worktrees" ]; then
+  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
+else
+  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
+fi
+
+if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
+  # Running from main; need to cd to the PR worktree
+  PR_WORKTREE=$(git worktree list --path-format=absolute --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
+import sys
+import os
+pr_num = os.environ.get('PR_NUM', '')
+for line in sys.stdin:
+  line = line.rstrip('\n')
+  parts = line.split(None, 3)
+  # Match worktree containing the PR branch
+  if len(parts) >= 3 and parts[1] == 'branch':
+    print(parts[0])
+    break
+PYTHON_EOF
+)
+  if [ -z "$PR_WORKTREE" ]; then
+    echo "ERROR: could not find PR worktree"
+    exit 3
+  fi
+  cd "$PR_WORKTREE" || exit 1
+else
+  # Already in the PR worktree
+  PR_WORKTREE="$CURRENT_WORKTREE"
+fi
+
+# Run the merge queue (background)
 "$MERGE_QUEUE_SCRIPT" enqueue --no-claude --pr "$PR_NUM" 2>&1
 ```
 
@@ -153,8 +223,25 @@ After the merge queue finishes (when you see the completion notification), read 
 the git state directory and report the outcome.
 
 ```bash
+# Re-derive PR_NUM from current state (variables don't persist across Bash blocks)
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
+if [ -z "$CURRENT_BRANCH" ]; then
+  if [ -n "$ARGUMENTS" ]; then
+    PR_NUM="$ARGUMENTS"
+  else
+    echo "ERROR: could not derive PR number"
+    exit 1
+  fi
+else
+  PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null)
+  if [ -z "$PR_NUM" ]; then
+    echo "ERROR: could not resolve PR number for branch '$CURRENT_BRANCH'"
+    exit 1
+  fi
+fi
+
 # The result.json lives in the git state dir
-STATE_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/merge-queue"
+STATE_DIR="$(git rev-parse --git-common-dir 2>/dev/null)/merge-queue"
 
 if [ ! -f "$STATE_DIR/result.json" ]; then
   echo "ERROR: result.json not found at $STATE_DIR/result.json"
@@ -171,18 +258,24 @@ if [ "$RESULT_PR" != "$PR_NUM" ]; then
   exit 1
 fi
 
-# Extract outcome and details (assume normalized casing from the writer)
-OUTCOME=$(printf '%s' "$RESULT_JSON" | jq -r '.outcome // "UNKNOWN"' 2>/dev/null)
+# Extract outcome and details
+# result.json schema:
+#   - outcome: string enum value (lowercase: "merged", "kickback", "pushed_not_merged", "refused", "internal_error")
+#   - pr: integer PR number
+#   - reason: string with brief failure reason
+#   - details: optional string with additional context
+#   - timestamp: unix timestamp when result was written
+OUTCOME=$(printf '%s' "$RESULT_JSON" | jq -r '.outcome // "unknown"' 2>/dev/null)
 REASON=$(printf '%s' "$RESULT_JSON" | jq -r '.reason // ""' 2>/dev/null)
 DETAILS=$(printf '%s' "$RESULT_JSON" | jq -r '.details // ""' 2>/dev/null)
 
-# Report the outcome
+# Report the outcome (lowercase enum values from merge_queue.py)
 case "$OUTCOME" in
-  MERGED)
+  merged)
     echo "✓ PR #$PR_NUM merged successfully via the local merge queue"
     exit 0
     ;;
-  KICKBACK)
+  kickback)
     echo "⚠ PR #$PR_NUM was kicked back:"
     echo "  $REASON"
     if [ -n "$DETAILS" ]; then
@@ -190,12 +283,12 @@ case "$OUTCOME" in
     fi
     exit 2
     ;;
-  PUSHED_NOT_MERGED)
+  pushed_not_merged)
     echo "⚠ PR #$PR_NUM was pushed but merge failed:"
     echo "  $REASON"
     exit 2
     ;;
-  REFUSED)
+  refused)
     echo "✗ PR #$PR_NUM was refused at enqueue:"
     echo "  $REASON"
     if [ -n "$DETAILS" ]; then
@@ -203,7 +296,7 @@ case "$OUTCOME" in
     fi
     exit 3
     ;;
-  INTERNAL_ERROR)
+  internal_error)
     echo "✗ Internal error in the merge queue:"
     echo "  $REASON"
     if [ -n "$DETAILS" ]; then
