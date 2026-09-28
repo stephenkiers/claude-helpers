@@ -1791,6 +1791,10 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
     # Merge
     try:
         trailer = build_trailer(base_sha, tested_sha)
+        # git interpret-trailers --parse only recognizes a trailer block that
+        # follows a non-trailer paragraph and a blank line; a body consisting
+        # only of the trailer line is silently dropped by parse_trailer later.
+        body = f"Tested by merge-queue.\n\n{trailer}"
         Runner.run_gh(
             [
                 "pr",
@@ -1801,7 +1805,7 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
                 "--subject",
                 f"{pr_title} (#{pr})",
                 "--body",
-                trailer,
+                body,
             ],
             cwd=cwd,
         )

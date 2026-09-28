@@ -316,12 +316,16 @@ test_result(
 # Test 12: parse_trailer extracts values from valid trailer
 print("  [Test 2.2] parse_trailer extracts from valid trailer")
 trailer_text = build_trailer(base_sha, tested_sha)
+# git interpret-trailers --parse only recognizes a trailer block that follows
+# a non-trailer paragraph and a blank line, matching the real commit body
+# shape built in _merge_pr() (see build_trailer callers).
+commit_msg = f"Tested by merge-queue.\n\n{trailer_text}"
 # The parse_trailer function expects a commit SHA, which it will query via git
-# We need to mock the git calls
+# We need to mock the git calls; run_git_command_input still runs real git
+# interpret-trailers against this mocked commit message.
 with patch('workflow.merge_queue.Runner.run_git') as mock_git:
     with patch('workflow.merge_queue.git.is_ancestor') as mock_ancestor:
-        # Mock git interpret-trailers to return the trailer
-        mock_git.return_value = trailer_text
+        mock_git.return_value = commit_msg
         mock_ancestor.return_value = True
 
         parsed_base, parsed_head = parse_trailer("dummycommit")
