@@ -24,7 +24,7 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, asdict, fields, replace
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Sequence
@@ -191,6 +191,9 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
             data = json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in config: {e}")
+
+    if not isinstance(data, dict):
+        raise ValueError("Config must be a JSON object (dict), not a list or primitive value")
 
     known_keys = {"base", "steps", "cleanup", "scratch_setup", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs"}
     unknown = set(data.keys()) - known_keys
@@ -563,7 +566,7 @@ def run_step(
     cwd: Path,
     log_path: Path,
     timeout_secs: Optional[int] = None,
-    inherit_lock_fd: Optional[int] = None,
+    lock_fd_to_inherit: Optional[int] = None,
 ) -> StepOutcome:
     """
     Run a step via subprocess.Popen with a new session.
@@ -603,8 +606,8 @@ def run_step(
             "stdin": subprocess.DEVNULL,
             "close_fds": True,
         }
-        if inherit_lock_fd is not None:
-            popen_kwargs["pass_fds"] = (inherit_lock_fd,)
+        if lock_fd_to_inherit is not None:
+            popen_kwargs["pass_fds"] = (lock_fd_to_inherit,)
 
         proc = subprocess.Popen(cmd, cwd=str(cwd), **popen_kwargs)
         try:
@@ -920,7 +923,7 @@ class VerifyBaseOutcome(Enum):
     INTERRUPTED = "interrupted"
 
 
-@dataclass
+@dataclass(frozen=True)
 class MergeResult:
     """Result of run_one()."""
     outcome: MergeOutcome
@@ -1922,6 +1925,7 @@ def _locked_flow(
     # orig_head). If HEAD itself can't be resolved, that's a genuine internal error, not a
     # kickback, so let it propagate to run_one's outer handler.
     orig_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+    tested_sha: Optional[str] = None
 
     try:
         # Phase 1: Validate tree and rebase state
@@ -1977,22 +1981,13 @@ def _locked_flow(
         return _phase_merge(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd)
 
     except Exception as e:
-        # Try to preserve orig_head and tested_sha from local scope if available
-        # These may not be set if error occurs early in the flow
-        try:
-            local_orig_head = locals().get("orig_head")
-            local_tested_sha = locals().get("tested_sha")
-        except Exception:
-            local_orig_head = None
-            local_tested_sha = None
-
         return MergeResult(
             outcome=MergeOutcome.INTERNAL_ERROR,
             pr=pr,
             branch=branch,
             worktree=worktree,
-            orig_head=local_orig_head,
-            tested_sha=local_tested_sha,
+            orig_head=orig_head,
+            tested_sha=tested_sha,
             reason=f"Locked flow error: {e}",
         )
 
