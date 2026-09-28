@@ -675,19 +675,81 @@ if [ "${PR_MODE:-false}" != true ]; then
 fi
 ```
 
-Merge a `review` section into `.claude/github-cache.json`, preserving existing sections:
+Merge a `review` section into `.claude/github-cache.json` via `scripts/write-review-cache.py` —
+**do not hand-assemble this JSON with `jq`.** The schema (key name `review`, field name `lastRun`,
+not e.g. `lastExpertReview`/`timestamp`) is duplicated in two readers
+(`expert-review-status.py`, `scripts/workflow/models.py`) that both hard-code it; a freehand write
+that drifts from it even slightly succeeds silently and makes every future fast-path check report
+"not reviewed" with no error, indefinitely. This has happened in practice. The script owns the
+schema, writes via `mktemp` + rename (never a bare `>` redirect, which truncates the target before
+the write completes), and reads its own write back through the same parsing the fast-path checker
+uses — so a mismatch fails loudly, here, instead of silently, later.
+
+First, extract severity counts from findings.json and collect the reviewers that ran:
 
 ```bash
-EXISTING=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-TMP=$(mktemp .claude/github-cache.json.XXXXXX)
-echo "$EXISTING" | jq --argjson review "$REVIEW_JSON" '. + {review: $review}' > "$TMP" && mv "$TMP" .claude/github-cache.json || rm -f "$TMP"
+# Extract severity counts from findings.json (written by Amalgamator). A missing or
+# malformed file is an error, not zero findings — a silent 0 would poison the cache.
+[ -f "$REVIEW_DIR/findings.json" ] || { echo "ERROR: $REVIEW_DIR/findings.json not found" >&2; false; }
+sev_count() {
+  jq -e --arg s "$1" '[.findings[] | select(.verdict == "CONFIRMED" and (.severity | ascii_downcase) == $s)] | length' "$REVIEW_DIR/findings.json"
+}
+CRITICAL_COUNT=$(sev_count critical) && HIGH_COUNT=$(sev_count high) && \
+  MEDIUM_COUNT=$(sev_count medium) && LOW_COUNT=$(sev_count low) || \
+  { echo "ERROR: could not derive severity counts from findings.json" >&2; false; }
+
+# Collect reviewers that actually ran by checking for pass1 files and known always-run reviewers.
+# Always-run reviewers (code-rot-cody, consistency-checker, contrarian-carl) are included if
+# their pass files exist; conditionally-routed reviewers are included only if they have pass files.
+REVIEWERS=()
+for pass1_file in "$REVIEW_DIR"/*-pass1.md; do
+  if [ -e "$pass1_file" ]; then
+    # Extract reviewer name from filename (e.g., "uncle-bob-pass1.md" → "uncle-bob")
+    reviewer=$(basename "$pass1_file" -pass1.md)
+    REVIEWERS+=("$reviewer")
+  fi
+done
+
+if [ ${#REVIEWERS[@]} -eq 0 ]; then
+  echo "ERROR: No reviewers found in $REVIEW_DIR (no *-pass1.md files found)" >&2
+  false
+fi
 ```
 
-Write to a `mktemp`-generated temp file colocated with the target, then `mv` only on success — never redirect `jq` output directly onto the target. A bare `> .claude/github-cache.json` truncates the file the instant the shell opens it for writing, before `jq` runs; if `jq` then fails (malformed JSON, a stray quote in `$REVIEW_JSON`), the cache is silently wiped rather than left unchanged.
+Then invoke the script with properly-quoted arrays:
 
-`$REVIEW_JSON` fields: `lastRun` (ISO 8601 now), `commit` (HASH), `branch`, `reviewDir`,
-`reviewers` (names that actually ran), `panelModel`, `findings` (`{critical, high, medium, low}` counts),
-and, when `EFFORT=2`, `metricsPath` pointing to `{REVIEW_DIR}/review-metrics.json`.
+```bash
+ARGS=(
+  --cache-path .claude/github-cache.json
+  --commit "$HASH"
+  --branch "$BRANCH"
+  --review-dir "$REVIEW_DIR"
+  --panel-model "$PANEL_MODEL"
+  --critical "$CRITICAL_COUNT"
+  --high "$HIGH_COUNT"
+  --medium "$MEDIUM_COUNT"
+  --low "$LOW_COUNT"
+)
+
+for r in "${REVIEWERS[@]}"; do
+  ARGS+=(--reviewer "$r")
+done
+
+if [ -n "${METRICS_PATH:-}" ]; then
+  ARGS+=(--metrics-path "$METRICS_PATH")
+fi
+
+python3 "$HOME/.claude/scripts/write-review-cache.py" "${ARGS[@]}"
+```
+
+If this exits non-zero, say so in the closing message — the review itself is still valid and its
+files are on disk, but the fast-path cache didn't record it, so a future run on this branch won't
+detect it either without a manual fix.
+
+Fields: `commit` (short HASH), `branch`, `reviewDir`, `--reviewer` (repeatable, one per name that
+actually ran), `panelModel`, the four finding counts, and, when `EFFORT=2`, `--metrics-path`
+pointing to `{REVIEW_DIR}/review-metrics.json`. `lastRun` is stamped by the script itself (ISO 8601,
+now) — never pass it in.
 
 Emit `stage-end --stage cache-metadata --outcome success` (non-PR mode only):
 ```bash
