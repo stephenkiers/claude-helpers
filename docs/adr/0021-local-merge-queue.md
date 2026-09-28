@@ -1,6 +1,6 @@
 # ADR-0021: Local merge queue
 
-**Status:** Accepted
+**Status:** Accepted (partial)
 
 ## Context
 
@@ -9,7 +9,7 @@ state (the result of rebasing onto `main` at enqueue time), not against the exac
 actually land on. By the time the tests finish, another PR may have merged and `main` may have moved,
 so the "passing" PR could land on an untested base — introducing a hidden integration risk.
 
-The previous incident (lotl #1431) caught this: a test passed on one base, but a concurrent PR merged
+A prior integration-gap incident caught this exact problem: a test passed on one base, but a concurrent PR merged
 in the meantime, and the first PR's merge landed on an untested state. Detecting this required manual
 analysis; the queue should catch it automatically.
 
@@ -39,22 +39,23 @@ analysis; the queue should catch it automatically.
    with the exact issue. The result is written to `result.json`. Subsequent PRs in the queue proceed
    immediately (not blocked by an earlier failure).
 
-6. **Force-push carve-out:** The queue's only force-push is `--force-with-lease=<branch>:<lease_sha>`
+6. **Force-push carve-out:** The queue's force-push is `--force-with-lease=<branch>:<lease_sha>`
    (the lease pins the branch's *pre-rebase* tip, so the push is rejected if the remote moved
    underneath it) with an explicit refspec `<tested_sha>:refs/heads/<branch>` for what's actually
    pushed, audited in a single function (`force_push_tested()`) with no other push call site in the
-   queue module and no bare `--force` or `+`-prefixed refspecs. This is the **only authorized
-   force-push** — it happens only after the full gate passes, and it is never a bare `--force` or
-   inherited from `git config`.
+   queue module and no bare `--force` or `+`-prefixed refspecs. This is one of three **authorized
+   force-pushes** in this repo's tooling: the merge queue's pinned force-push (after the full gate
+   passes), `/stack-sync`'s `--force-with-lease` push (gated behind the project check gate per child),
+   and `/expert-rebase`'s `--force-with-lease` push (confirmation-gated for the branch being rebased).
+   All three use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
 
 7. **Parallel mutation seam:** This module's `Runner.run_git`/`Runner.run_gh` are a separate, self-audited
    choke point for merge-queue mutations — they do not go through `scripts/workflow/mutations.py`'s
    `check_mutation_allowed()` allowlist (ADR-0013). This is intentional: the queue's mutating calls
-   (rebase, the pinned force-push, `gh pr merge` with queue-specific flags, the best-effort local
-   branch sync) are shaped differently from what that allowlist covers, and `force_push_tested()`
-   already provides an equivalent, narrower audit for the one call that matters most. Anyone editing
-   this module should keep both funnels in mind rather than assume ADR-0013's allowlist covers this
-   code.
+   (rebase, the pinned force-push, `gh pr merge` with queue-specific flags) are shaped differently
+   from what that allowlist covers, and `force_push_tested()` already provides an equivalent, narrower
+   audit for the one call that matters most. Anyone editing this module should keep both funnels in
+   mind rather than assume ADR-0013's allowlist covers this code.
 
 ## Configuration
 
@@ -144,10 +145,10 @@ a committer who deliberately forges one.
 
 These gaps cannot be closed locally and are documented as follows:
 
-1. **Step 8/9 TOCTOU window:** Between the base-unmoved check (step 8) and `gh pr merge` (step 9),
-   another clone can push to the base, making the tested base stale before the merge lands. The next
-   queue run's poison scan detects the untrailered commit and runs the main gate. A GitHub
-   "require up to date" ruleset is a follow-up.
+1. **Testing-to-merge TOCTOU window:** Between the base-unmoved verification (in Decision 3) and the
+   final merge operation, another clone can push to the base, making the tested base stale before the
+   merge lands. The next queue run's poison scan detects the untrailered commit and runs the main gate.
+   A GitHub "require up to date" ruleset is a follow-up.
 
 2. **SIGKILL orphan:** If the queue process receives `SIGKILL` alone (not SIGINT/SIGTERM), and
    `inherit_lock_fd` is `false` (the default), the `merge.lock` fd is released but any step process
@@ -195,16 +196,32 @@ run `merge-queue bootstrap`". The bootstrap command:
 - Records the current `origin/<base>` sha as `base-verified`.
 - Allows subsequent enqueues to proceed (the bootstrap sha is an anchor).
 
+## Built vs. Planned
+
+The implementation is **partial**: the following features are **documented but not yet built**:
+
+- **Claude hand-off on base verification failure:** Residual 4 (Decision 4) describes launching Claude
+  when the base fails verification. This behavior is documented but not implemented — the queue currently
+  kicks back immediately on any base-failed record without triggering Claude. (needs a tracking issue)
+- **`resume` subcommand:** An explicit stub; documented in Per-SHA Base Records but not built. (needs a tracking issue)
+- **Cleanup consumption:** The config's `cleanup` field is validated but never read or acted upon; the
+  actual cleanup integration is planned but not implemented. (needs a tracking issue)
+- **Bounded git-fetch retry:** Residual 3 mentions a bounded (3-attempt) `git fetch` ref-lock retry
+  with backoff. This behavior is documented but not implemented — there are no retry attempts in the
+  current code. (needs a tracking issue)
+- **ADR-0013 mutation-allowlist exception:** The queue's mutations (`Runner.run_git`/`Runner.run_gh`)
+  bypass ADR-0013's `check_mutation_allowed()` allowlist per Decision 7. This exception is now
+  documented in both ADR-0021 (Decision 7) and ADR-0013 Amendment (as a formal note).
+
 ## Follow-ups
 
 - **GitHub ruleset:** after two clean weeks of local queuing, add a GitHub ruleset requiring the
   `Merge-Gate:` trailer and `tested-base` ancestry to prevent out-of-order merges via the GitHub UI.
 - **Retire or shrink merge.py:** the existing `merge.py` (O_EXCL lock, 1800s timeout, `capture_output`)
-  can be retired or simplified once the queue is stable; this PR deliberately does not modify it
-  (ADR-0021 Step 3, Out of Scope).
-- **Machine-wide E2E lock:** lotl may need a machine-wide lock order (queue lock → E2E lock) to prevent
-  step orphans when `inherit_lock_fd` is false. Set `inherit_lock_fd: true` per repo as a temporary
-  measure.
+  can be retired or simplified once the queue is stable; this PR deliberately does not modify it.
+- **Machine-wide E2E lock:** a project may need a machine-wide lock order (queue lock → E2E lock) to
+  prevent step orphans when `inherit_lock_fd` is false. Set `inherit_lock_fd: true` per repo as a
+  temporary measure.
 
 ## Consequences
 

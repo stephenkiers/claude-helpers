@@ -226,3 +226,13 @@ tested directly against the other, and they can diverge over time. This duplicat
 interest of keeping the wrapper's deterministic bash blocks self-contained and testable without invoking
 Python. A future amendment may extract a shared slugify function and verify both callers use it
 identically, but doing so now is out of scope for this ticket.
+
+### Amendment 5: Mutation-allowlist exception for merge-queue module
+
+**Amended by ADR-0021:** The local merge queue's mutations (`scripts/workflow/merge_queue.py`'s
+`Runner.run_git`/`Runner.run_gh`) bypass the centralized `check_mutation_allowed()` allowlist
+(Decision 1, Amendment 1). This is intentional per [ADR-0021 Decision 7](0021-local-merge-queue.md):
+the queue's mutating calls (rebase, the pinned force-push, `gh pr merge` with queue-specific flags)
+are shaped differently from what the allowlist covers, and the queue module provides an equivalent,
+narrower audit via `force_push_tested()` for the force-push call. This exception is documented in
+both ADRs to mark the boundary clearly.
