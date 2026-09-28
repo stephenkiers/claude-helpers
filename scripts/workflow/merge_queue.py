@@ -787,6 +787,7 @@ def run_one(
     worktree: str,
     config: MergeQueueConfig,
     no_claude: bool = False,
+    config_path: Optional[Path] = None,
 ) -> MergeResult:
     """
     Run a single enqueue with a single outcome.
@@ -829,7 +830,7 @@ def run_one(
         # In the lock
         inherit_lock_fd = merge_lock_fd if config.inherit_lock_fd else None
         try:
-            result = _locked_flow(pr, branch, worktree, config, merge_lock_fd, inherit_lock_fd)
+            result = _locked_flow(pr, branch, worktree, config, merge_lock_fd, inherit_lock_fd, config_path)
             return result
         finally:
             release_ticket(ticket_num, merge_lock_fd)
@@ -960,6 +961,7 @@ def _locked_flow(
     config: MergeQueueConfig,
     merge_lock_fd: int,
     inherit_lock_fd: Optional[int],
+    config_path: Optional[Path] = None,
 ) -> MergeResult:
     """
     Locked flow (steps 3-10 of the plan).
@@ -988,7 +990,9 @@ def _locked_flow(
 
         # Re-validate config
         try:
-            config = load_and_validate_config(resolve_config_path())
+            if config_path is None:
+                config_path = resolve_config_path()
+            config = load_and_validate_config(config_path)
         except Exception as e:
             return MergeResult(
                 outcome=MergeOutcome.KICKBACK,
@@ -1067,22 +1071,35 @@ def _locked_flow(
         poison_ok, poison_shas = scan_base(base_sha, config.allow_unverified, cwd=cwd)
         if not poison_ok:
             state_dir = ensure_state_dir()
+            verified_path = state_dir / "base-verified" / base_sha
             failed_path = state_dir / "base-failed" / base_sha
 
-            # Only the first failure launches Claude (Step 7)
-            if not failed_path.exists():
-                os.makedirs(failed_path.parent, exist_ok=True)
-                os.open(str(failed_path), os.O_CREAT | os.O_WRONLY, 0o600)
+            # Check if already verified
+            if verified_path.exists():
+                # Base is verified; proceed
+                poison_ok = True
+            else:
+                # Try to verify the base by running gate in scratch worktree
+                if _verify_base_in_scratch(base_sha, config):
+                    # Gate passed; write verified record
+                    os.makedirs(verified_path.parent, exist_ok=True)
+                    os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
+                    poison_ok = True
+                else:
+                    # Gate failed; write failed record only on first failure
+                    if not failed_path.exists():
+                        os.makedirs(failed_path.parent, exist_ok=True)
+                        os.open(str(failed_path), os.O_CREAT | os.O_WRONLY, 0o600)
 
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason="Base has unverified commits; run 'merge-queue bootstrap' or 'merge-queue reverify'",
-                details=f"Unverified: {', '.join(poison_shas[:3])}...",
-            )
+                    return MergeResult(
+                        outcome=MergeOutcome.KICKBACK,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        orig_head=orig_head,
+                        reason="Base has unverified commits; run 'merge-queue bootstrap' or 'merge-queue reverify'",
+                        details=f"Unverified: {', '.join(poison_shas[:3])}...",
+                    )
 
         # Rebase
         try:
@@ -1245,7 +1262,7 @@ def _locked_flow(
 
         # Merge
         try:
-            merge_ok = _merge_pr(pr, tested_sha, config, cwd=cwd)
+            merge_ok = _merge_pr(pr, tested_sha, base_sha, config, cwd=cwd)
             if not merge_ok:
                 return MergeResult(
                     outcome=MergeOutcome.PUSHED_NOT_MERGED,
@@ -1350,7 +1367,72 @@ def _no_remote_only_commits(branch: str, base: str, cwd: Optional[Path] = None) 
         return False
 
 
-def _merge_pr(pr: int, tested_sha: str, config: MergeQueueConfig, cwd: Optional[Path] = None) -> bool:
+def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> bool:
+    """
+    Verify the base by running the main gate in a scratch worktree.
+
+    Creates or reuses a scratch worktree, checks out base_sha, runs setup commands,
+    and runs all gate steps. Returns True if all pass, False otherwise.
+    """
+    state_dir = ensure_state_dir()
+    scratch_dir = state_dir / "scratch"
+
+    try:
+        # Create or update scratch worktree
+        if not (scratch_dir / ".git").exists():
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                # Try to create a new worktree
+                Runner.run_git(["worktree", "add", "--detach", str(scratch_dir), base_sha])
+            except Exception:
+                # Fallback: clone from origin
+                try:
+                    origin_url = Runner.run_git(["config", "--get", "remote.origin.url"]).strip()
+                    subprocess.run(
+                        ["git", "clone", "--shared", origin_url, str(scratch_dir)],
+                        check=True,
+                        capture_output=True,
+                        cwd=str(state_dir),
+                    )
+                    Runner.run_git(["checkout", base_sha], cwd=scratch_dir)
+                except Exception:
+                    return False
+        else:
+            # Update existing worktree
+            try:
+                Runner.run_git(["fetch", "origin"], cwd=scratch_dir)
+                Runner.run_git(["checkout", base_sha], cwd=scratch_dir)
+            except Exception:
+                return False
+
+        # Run setup commands
+        for setup_cmd in config.scratch_setup:
+            log_path = state_dir / "logs" / "setup.log"
+            outcome = run_step(setup_cmd, scratch_dir, log_path)
+            if not outcome.success:
+                return False
+
+        # Run gate steps
+        for i, step in enumerate(config.steps):
+            if isinstance(step, str):
+                step_cmd = step
+                step_timeout = None
+            else:
+                step_cmd = step.get("cmd", "")
+                step_timeout = step.get("timeout_secs")
+
+            log_path = state_dir / "logs" / f"base-verify-step-{i}.log"
+            outcome = run_step(step_cmd, scratch_dir, log_path, timeout_secs=step_timeout)
+            if not outcome.success:
+                return False
+
+        return True
+
+    except Exception:
+        return False
+
+
+def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig, cwd: Optional[Path] = None) -> bool:
     """
     Merge the PR.
 
@@ -1359,18 +1441,24 @@ def _merge_pr(pr: int, tested_sha: str, config: MergeQueueConfig, cwd: Optional[
     """
     # Poll for headRefOid match
     max_attempts = 60
+    converged = False
     for _ in range(max_attempts):
         try:
             pr_data = git.pr_view_json(str(pr), ["headRefOid", "mergeable"], cwd=cwd)
             if pr_data and pr_data.get("headRefOid") == tested_sha and pr_data.get("mergeable") != "UNKNOWN":
+                converged = True
                 break
         except Exception:
             pass
         time.sleep(1.0)
 
+    # If polling didn't converge, return False
+    if not converged:
+        return False
+
     # Merge
     try:
-        trailer = build_trailer(tested_sha, tested_sha)
+        trailer = build_trailer(base_sha, tested_sha)
         Runner.run_gh(
             [
                 "pr",
@@ -1457,33 +1545,212 @@ def _cmd_enqueue(argv: List[str]) -> int:
         else:
             i += 1
 
-    # For now, just return 0 (stub)
-    # A full implementation would detect PR and branch, run run_one(), etc.
-    return 0
+    try:
+        # Detect PR and branch from current worktree
+        current_branch = git.get_current_branch()
+        if not current_branch:
+            print("Failed to detect current branch", file=sys.stderr)
+            return 3
+
+        # Get worktree path
+        try:
+            worktree = Runner.run_git(["rev-parse", "--show-toplevel"]).strip()
+        except Exception as e:
+            print(f"Failed to get worktree path: {e}", file=sys.stderr)
+            return 3
+
+        # Get PR number
+        try:
+            pr_data = git.pr_view_json(current_branch, ["number"], cwd=Path(worktree))
+            if not pr_data or "number" not in pr_data:
+                print("Failed to detect PR number", file=sys.stderr)
+                return 3
+            pr = pr_data["number"]
+        except Exception as e:
+            print(f"Failed to get PR info: {e}", file=sys.stderr)
+            return 3
+
+        # Load config
+        try:
+            config_path = resolve_config_path(_config_path)
+            config = load_and_validate_config(config_path)
+        except Exception as e:
+            print(f"Config error: {e}", file=sys.stderr)
+            return 3
+
+        # Run merge queue
+        result = run_one(pr, current_branch, worktree, config, no_claude=_no_claude, config_path=config_path)
+
+        # Write result JSON
+        write_result_json(result)
+
+        # Print summary
+        print(f"PR #{pr}: {result.outcome.value}")
+        if result.reason:
+            print(f"  {result.reason}")
+
+        # Return appropriate exit code
+        if result.outcome == MergeOutcome.MERGED:
+            return 0
+        elif result.outcome in (MergeOutcome.KICKBACK, MergeOutcome.PUSHED_NOT_MERGED):
+            return 2
+        elif result.outcome == MergeOutcome.REFUSED:
+            return 3
+        else:  # INTERNAL_ERROR
+            return 1
+
+    except Exception as e:
+        print(f"Enqueue failed: {e}", file=sys.stderr)
+        return 1
 
 
 def _cmd_status(argv: List[str]) -> int:
     """Show queue status."""
-    # Stub
-    return 0
+    try:
+        state_dir = ensure_state_dir()
+
+        # Get current ticket holder (if any)
+        tickets_dir = state_dir / "tickets"
+        live_tickets = []
+        if tickets_dir.exists():
+            for ticket_file in sorted(tickets_dir.iterdir()):
+                if ticket_file.is_file():
+                    try:
+                        with open(ticket_file) as f:
+                            data = json.load(f)
+                            live_tickets.append((int(ticket_file.name), data.get("pr")))
+                    except Exception:
+                        pass
+
+        # Print queue depth
+        print(f"Queue depth: {len(live_tickets)}")
+        if live_tickets:
+            for ticket_num, pr in live_tickets:
+                print(f"  Ticket {ticket_num}: PR #{pr}")
+
+        # Print last result if exists
+        result_path = state_dir / "result.json"
+        if result_path.exists():
+            try:
+                with open(result_path) as f:
+                    result_data = json.load(f)
+                    print(f"Last result: PR #{result_data.get('pr')} - {result_data.get('outcome')}")
+            except Exception:
+                pass
+
+        return 0
+
+    except Exception as e:
+        print(f"Status check failed: {e}", file=sys.stderr)
+        return 1
 
 
 def _cmd_reverify(argv: List[str]) -> int:
     """Clear a base-failed record."""
-    # Stub
-    return 0
+    try:
+        state_dir = ensure_state_dir()
+
+        # Get SHA from args, or use current base branch tip
+        if argv:
+            sha = argv[0]
+        else:
+            try:
+                default_branch, err = git.get_default_branch()
+                if err or not default_branch:
+                    print("Failed to get default branch", file=sys.stderr)
+                    return 1
+                sha = Runner.run_git(["rev-parse", f"origin/{default_branch}"]).strip()
+            except Exception as e:
+                print(f"Failed to get base tip: {e}", file=sys.stderr)
+                return 1
+
+        # Delete base-failed/<sha> if it exists
+        failed_path = state_dir / "base-failed" / sha
+        if failed_path.exists():
+            failed_path.unlink()
+            print(f"Cleared base-failed record for {sha[:8]}")
+        else:
+            print(f"No base-failed record found for {sha[:8]}")
+
+        return 0
+
+    except Exception as e:
+        print(f"Reverify failed: {e}", file=sys.stderr)
+        return 1
 
 
 def _cmd_bootstrap(argv: List[str]) -> int:
     """Anchor base history."""
-    # Stub
-    return 0
+    try:
+        # Get default branch
+        default_branch, err = git.get_default_branch()
+        if err or not default_branch:
+            print("Failed to get default branch", file=sys.stderr)
+            return 1
+
+        # Get current tip of base branch
+        try:
+            base_sha = Runner.run_git(["rev-parse", f"origin/{default_branch}"]).strip()
+        except Exception as e:
+            print(f"Failed to get base tip: {e}", file=sys.stderr)
+            return 1
+
+        # Load config
+        try:
+            config_path = resolve_config_path()
+            config = load_and_validate_config(config_path)
+        except Exception as e:
+            print(f"Config error: {e}", file=sys.stderr)
+            return 1
+
+        # Verify base in scratch worktree
+        print(f"Verifying base {base_sha[:8]}...")
+        if _verify_base_in_scratch(base_sha, config):
+            # Write base-verified record
+            state_dir = ensure_state_dir()
+            verified_path = state_dir / "base-verified" / base_sha
+            os.makedirs(verified_path.parent, exist_ok=True)
+            os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
+            print(f"Success: base {base_sha[:8]} is verified")
+            return 0
+        else:
+            print(f"Failed: base {base_sha[:8]} did not pass gate", file=sys.stderr)
+            return 1
+
+    except Exception as e:
+        print(f"Bootstrap failed: {e}", file=sys.stderr)
+        return 1
 
 
 def _cmd_resume(argv: List[str]) -> int:
     """Resume a failed Claude hand-off."""
-    # Stub
-    return 0
+    try:
+        state_dir = ensure_state_dir()
+
+        # Check if there's a result.json with INTERNAL_ERROR or similar
+        result_path = state_dir / "result.json"
+        if not result_path.exists():
+            print("Nothing to resume", file=sys.stderr)
+            return 0
+
+        try:
+            with open(result_path) as f:
+                result_data = json.load(f)
+                outcome = result_data.get("outcome")
+                if outcome in ("internal_error", "kicked_back", "pushed_not_merged"):
+                    print(f"Found pending result: PR #{result_data.get('pr')} - {outcome}")
+                    print("Resume logic not yet implemented", file=sys.stderr)
+                    return 0
+                else:
+                    print("Nothing to resume", file=sys.stderr)
+                    return 0
+        except Exception:
+            print("Nothing to resume", file=sys.stderr)
+            return 0
+
+    except Exception as e:
+        print(f"Resume failed: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
