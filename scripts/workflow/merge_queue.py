@@ -1331,6 +1331,575 @@ def _preflight_check(
     return None
 
 
+# ============================================================================
+# _locked_flow helpers and phase functions
+# ============================================================================
+
+def _kickback(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    reason: str,
+    tested_sha: Optional[str] = None,
+    details: Optional[str] = None,
+    failing_step: Optional[str] = None,
+    log_path: Optional[str] = None,
+    restore_failed: Optional[str] = None,
+) -> MergeResult:
+    """Builder for KICKBACK MergeResult; collapses repeated boilerplate."""
+    return MergeResult(
+        outcome=MergeOutcome.KICKBACK,
+        pr=pr,
+        branch=branch,
+        worktree=worktree,
+        orig_head=orig_head,
+        tested_sha=tested_sha,
+        reason=reason,
+        details=details,
+        failing_step=failing_step,
+        log_path=log_path,
+        restore_failed=restore_failed,
+    )
+
+
+def _phase_validate_tree_and_rebase_state(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    cwd: Path,
+) -> Optional[MergeResult]:
+    """
+    Phase 1: Re-check tree is clean and no rebase/merge in progress.
+    Returns KICKBACK if validation fails, else None.
+    """
+    if not _is_tree_clean(cwd):
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            "Worktree tree is not clean (re-check in lock)"
+        )
+
+    if _has_rebase_or_merge_in_progress(cwd):
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            "Rebase or merge is in progress; run appropriate abort command"
+        )
+
+    return None
+
+
+def _phase_validate_config(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    config: MergeQueueConfig,
+    config_path: Optional[Path],
+) -> Tuple[Optional[MergeResult], MergeQueueConfig]:
+    """
+    Phase 2: Re-validate config.
+    Returns (KICKBACK if validation fails, updated config) or (None, updated config).
+    """
+    try:
+        if config_path is None:
+            config_path = resolve_config_path()
+        config = load_and_validate_config(config_path)
+        return None, config
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Config changed or invalid: {e}"
+        ), config
+
+
+def _phase_validate_pr(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    config: MergeQueueConfig,
+    cwd: Path,
+) -> Optional[MergeResult]:
+    """
+    Phase 3: Re-validate PR state.
+    Returns KICKBACK if validation fails, else None.
+    """
+    try:
+        pr_data = git.pr_view_json(
+            branch,
+            ["state", "baseRefName", "headRefName", "headRefOid"],
+            cwd=cwd
+        )
+        if not pr_data or pr_data.get("state") != "OPEN":
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "PR is no longer OPEN"
+            )
+        if pr_data.get("baseRefName") != config.base:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "PR base has changed"
+            )
+        if pr_data.get("headRefName") != branch:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "PR branch has changed"
+            )
+
+        # Check push-completeness: headRefOid must match local HEAD
+        # or local HEAD must match tested_sha of last KICKBACK in result.json (Decision 5)
+        head_oid = pr_data.get("headRefOid")
+        if head_oid and head_oid != orig_head:
+            # Allow fallback: local HEAD == tested_sha of last KICKBACK (Decision 5)
+            if not _check_result_json_kickback_state(orig_head, cwd=cwd):
+                return _kickback(
+                    pr, branch, worktree, orig_head,
+                    f"Local branch is not in sync with pushed branch; push to update (local: {orig_head[:8]}, pushed: {head_oid[:8]})"
+                )
+        return None
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Failed to re-validate PR: {e}"
+        )
+
+
+def _phase_fetch_and_verify_lease(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    config: MergeQueueConfig,
+    cwd: Path,
+) -> Tuple[Optional[MergeResult], Optional[str], Optional[str]]:
+    """
+    Phase 4: Fetch and record lease_sha, base_sha.
+    Returns (KICKBACK if fails, lease_sha, base_sha) or (None, lease_sha, base_sha).
+    """
+    # Fetch with retry on timeout (M2)
+    try:
+        Runner.run_git(["fetch", "origin"], cwd=cwd, timeout=config.mutation_timeout_secs)
+    except RuntimeError as e:
+        if "timed out" in str(e):
+            try:
+                # Re-query to ensure we have current state
+                Runner.run_git(["fetch", "origin"], cwd=cwd, timeout=config.mutation_timeout_secs)
+            except Exception:
+                pass  # Proceed with whatever we have
+        else:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Failed to fetch: {e}"
+            ), None, None
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Failed to fetch: {e}"
+        ), None, None
+
+    # M7: Pin lease to orig_head, not to post-fetch tip
+    # Verify that the remote tip matches orig_head (KICKBACK if it changed)
+    try:
+        remote_tip = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd).strip()
+        if remote_tip != orig_head:
+            # Remote has moved; someone else pushed to this branch
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "Base moved: remote branch changed; retry after sync",
+                tested_sha=remote_tip,
+                details=f"Expected orig_head={orig_head[:8]}, found remote={remote_tip[:8]}"
+            ), None, None
+        lease_sha = orig_head
+        base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd).strip()
+        return None, lease_sha, base_sha
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Failed to parse shas: {e}"
+        ), None, None
+
+
+def _phase_verify_base(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    base_sha: str,
+    config: MergeQueueConfig,
+    inherit_lock_fd: Optional[int],
+    cwd: Path,
+) -> Optional[MergeResult]:
+    """
+    Phase 5: Poison check and base verification.
+    Returns KICKBACK if verification fails, else None.
+    """
+    poison_ok, poison_shas = scan_base(base_sha, config.allow_unverified, cwd=cwd)
+    if not poison_ok or poison_shas:
+        state_dir = ensure_state_dir()
+        verified_path = state_dir / "base-verified" / base_sha
+        failed_path = state_dir / "base-failed" / base_sha
+
+        # Check if already verified
+        if verified_path.exists():
+            # Base is verified; proceed
+            return None
+        elif failed_path.exists():
+            # Base already failed verification; don't re-run gate
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "Base previously failed gate; run 'merge-queue reverify' to retry",
+                details=f"Unverified: {', '.join(poison_shas[:3])}..."
+            )
+        else:
+            # Try to verify the base by running gate in scratch worktree
+            # M9: Thread lock_fd_to_inherit through to _verify_base_in_scratch
+            verify_outcome = _verify_base_in_scratch(base_sha, config, lock_fd_to_inherit=inherit_lock_fd)
+            if verify_outcome == VerifyBaseOutcome.VERIFIED:
+                # Gate passed; write verified record
+                os.makedirs(verified_path.parent, exist_ok=True)
+                os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
+                return None
+            elif verify_outcome == VerifyBaseOutcome.INFRA_ERROR:
+                # Infrastructure error during verification; return INTERNAL_ERROR
+                return MergeResult(
+                    outcome=MergeOutcome.INTERNAL_ERROR,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    reason="Base verification infrastructure failed; retry later",
+                )
+            else:
+                # Gate failed; write failed record only on first failure
+                if not failed_path.exists():
+                    os.makedirs(failed_path.parent, exist_ok=True)
+                    os.open(str(failed_path), os.O_CREAT | os.O_WRONLY, 0o600)
+
+                return _kickback(
+                    pr, branch, worktree, orig_head,
+                    "Base has unverified commits; run 'merge-queue bootstrap' or 'merge-queue reverify'",
+                    details=f"Unverified: {', '.join(poison_shas[:3])}..."
+                )
+
+    return None
+
+
+def _phase_rebase(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    config: MergeQueueConfig,
+    cwd: Path,
+) -> Optional[MergeResult]:
+    """
+    Phase 6: Rebase on origin/base.
+    Returns KICKBACK if rebase fails, else None.
+    """
+    try:
+        Runner.run_git(["rebase", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs)
+    except RuntimeError as e:
+        # M2: Handle rebase timeout
+        if "timed out" in str(e):
+            # Try to abort the rebase
+            try:
+                Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
+            except Exception as abort_err:
+                restore_failed = f"rebase --abort failed: {abort_err}"
+                return _kickback(
+                    pr, branch, worktree, orig_head,
+                    "Rebase timed out (abort also failed)",
+                    restore_failed=restore_failed
+                )
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Rebase timed out after {config.mutation_timeout_secs}s"
+            )
+        else:
+            # Non-timeout error; likely a conflict
+            try:
+                Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
+            except Exception as abort_err:
+                restore_failed = f"rebase --abort failed: {abort_err}"
+                return _kickback(
+                    pr, branch, worktree, orig_head,
+                    "Rebase conflict (abort failed)",
+                    restore_failed=restore_failed
+                )
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Rebase conflict: {e}"
+            )
+    except Exception as e:
+        # Conflict; abort and kick back
+        try:
+            Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
+        except Exception as abort_err:
+            restore_failed = f"rebase --abort failed: {abort_err}"
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "Rebase conflict (abort failed)",
+                restore_failed=restore_failed
+            )
+
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Rebase conflict: {e}"
+        )
+
+    return None
+
+
+def _phase_run_gate_and_assertions(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    config: MergeQueueConfig,
+    inherit_lock_fd: Optional[int],
+    cwd: Path,
+) -> Tuple[Optional[MergeResult], Optional[str]]:
+    """
+    Phase 7: Record tested_sha, run gate steps, and re-assert HEAD/tree.
+    Returns (KICKBACK if fails, tested_sha) or (None, tested_sha).
+    """
+    # Record tested_sha
+    try:
+        tested_sha = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Failed to record tested_sha: {e}"
+        ), None
+
+    # Run gate steps
+    state_dir = ensure_state_dir()
+    for i, step in enumerate(config.steps):
+        step_name = f"step-{i}"
+        log_path = state_dir / "logs" / f"{pr}-{step_name}.log"
+
+        step_outcome = run_step(
+            step.cmd,
+            cwd,
+            log_path,
+            timeout_secs=step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs,
+            inherit_lock_fd=inherit_lock_fd,
+        )
+
+        if not step_outcome.success:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Step {step_name} failed",
+                tested_sha=tested_sha,
+                failing_step=step_name,
+                log_path=str(log_path),
+                details=step_outcome.error
+            ), tested_sha
+
+    # Re-assert HEAD == tested_sha and clean tree
+    try:
+        current_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+        if current_head != tested_sha:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "HEAD moved during gate steps",
+                tested_sha=tested_sha
+            ), tested_sha
+        if not _is_tree_clean(cwd):
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "Tree became dirty during gate steps",
+                tested_sha=tested_sha
+            ), tested_sha
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Failed to re-assert HEAD: {e}",
+            tested_sha=tested_sha
+        ), tested_sha
+
+    return None, tested_sha
+
+
+def _phase_push(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    tested_sha: str,
+    lease_sha: str,
+    config: MergeQueueConfig,
+    cwd: Path,
+) -> Optional[MergeResult]:
+    """
+    Phase 8: Push changes with force-push-tested.
+    Returns KICKBACK if push fails, else None.
+    """
+    try:
+        push_ok = Runner.force_push_tested(branch, tested_sha, lease_sha, cwd=cwd, timeout=config.mutation_timeout_secs)
+        if not push_ok:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                "Push rejected by lease (another clone pushed to branch)",
+                tested_sha=tested_sha
+            )
+    except RuntimeError as e:
+        # M2: Handle push timeout by re-querying actual state
+        if "timed out" in str(e):
+            try:
+                actual_remote_tip = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd, timeout=config.mutation_timeout_secs).strip()
+                if actual_remote_tip == tested_sha:
+                    # Push actually succeeded (maybe succeeded then timeout on confirmation)
+                    # Continue to merge step
+                    return None
+                else:
+                    # Push timed out and remote tip is not what we tested
+                    return _kickback(
+                        pr, branch, worktree, orig_head,
+                        "Push timed out; could not verify success",
+                        tested_sha=tested_sha
+                    )
+            except Exception:
+                # Could not re-query; treat as timeout failure
+                return _kickback(
+                    pr, branch, worktree, orig_head,
+                    f"Push timed out and could not re-query state: {e}",
+                    tested_sha=tested_sha
+                )
+        else:
+            # Non-timeout RuntimeError; treat as failure
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Push failed: {e}",
+                tested_sha=tested_sha
+            )
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Push failed: {e}",
+            tested_sha=tested_sha
+        )
+
+    return None
+
+
+def _phase_verify_base_unchanged(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    tested_sha: str,
+    base_sha: str,
+    config: MergeQueueConfig,
+    cwd: Path,
+) -> Optional[MergeResult]:
+    """
+    Phase 9: Verify base hasn't moved during gate (fresh fetch).
+    Returns KICKBACK if base has moved, else None.
+    """
+    try:
+        Runner.run_git(["fetch", "origin", config.base], cwd=cwd, timeout=config.mutation_timeout_secs)
+        new_base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs).strip()
+        if new_base_sha != base_sha:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Base moved during gate (new: {new_base_sha[:8]})",
+                tested_sha=tested_sha
+            )
+    except RuntimeError as e:
+        # M2: Timeout checking base; treat as KICKBACK (can retry)
+        if "timed out" in str(e):
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Base check timed out after {config.mutation_timeout_secs}s",
+                tested_sha=tested_sha
+            )
+        else:
+            return _kickback(
+                pr, branch, worktree, orig_head,
+                f"Failed to verify base unchanged: {e}",
+                tested_sha=tested_sha
+            )
+    except Exception as e:
+        return _kickback(
+            pr, branch, worktree, orig_head,
+            f"Failed to verify base unchanged: {e}",
+            tested_sha=tested_sha
+        )
+
+    return None
+
+
+def _phase_merge(
+    pr: int,
+    branch: str,
+    worktree: str,
+    orig_head: str,
+    tested_sha: str,
+    base_sha: str,
+    config: MergeQueueConfig,
+    cwd: Path,
+) -> MergeResult:
+    """
+    Phase 10: Merge the PR.
+    Returns appropriate MergeResult (MERGED, PUSHED_NOT_MERGED, etc).
+    """
+    try:
+        merge_outcome = _merge_pr(pr, tested_sha, base_sha, config, cwd=cwd)
+        if merge_outcome == MergePROutcome.SUCCESS:
+            return MergeResult(
+                outcome=MergeOutcome.MERGED,
+                pr=pr,
+                branch=branch,
+                worktree=worktree,
+                orig_head=orig_head,
+                tested_sha=tested_sha,
+                reason="Merged successfully",
+            )
+        elif merge_outcome == MergePROutcome.POLL_TIMEOUT:
+            return MergeResult(
+                outcome=MergeOutcome.PUSHED_NOT_MERGED,
+                pr=pr,
+                branch=branch,
+                worktree=worktree,
+                orig_head=orig_head,
+                tested_sha=tested_sha,
+                reason="Push succeeded but PR metadata did not converge for merge",
+            )
+        elif merge_outcome == MergePROutcome.GH_MERGE_REJECTED:
+            return MergeResult(
+                outcome=MergeOutcome.PUSHED_NOT_MERGED,
+                pr=pr,
+                branch=branch,
+                worktree=worktree,
+                orig_head=orig_head,
+                tested_sha=tested_sha,
+                reason="Push succeeded but gh merge was rejected",
+            )
+        else:
+            # GH_MERGE_ERROR or ALREADY_MERGED_OTHER_HEAD
+            return MergeResult(
+                outcome=MergeOutcome.PUSHED_NOT_MERGED,
+                pr=pr,
+                branch=branch,
+                worktree=worktree,
+                orig_head=orig_head,
+                tested_sha=tested_sha,
+                reason=f"Push succeeded but merge failed: {merge_outcome.value}",
+            )
+    except Exception as e:
+        return MergeResult(
+            outcome=MergeOutcome.PUSHED_NOT_MERGED,
+            pr=pr,
+            branch=branch,
+            worktree=worktree,
+            orig_head=orig_head,
+            tested_sha=tested_sha,
+            reason=f"Merge failed: {e}",
+        )
+
+
 def _locked_flow(
     pr: int,
     branch: str,
@@ -1355,534 +1924,57 @@ def _locked_flow(
     orig_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
 
     try:
-        # Re-check tree is clean and no rebase/merge
-        if not _is_tree_clean(cwd):
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason="Worktree tree is not clean (re-check in lock)",
-            )
+        # Phase 1: Validate tree and rebase state
+        result = _phase_validate_tree_and_rebase_state(pr, branch, worktree, orig_head, cwd)
+        if result:
+            return result
 
-        if _has_rebase_or_merge_in_progress(cwd):
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason="Rebase or merge is in progress; run appropriate abort command",
-            )
+        # Phase 2: Validate config
+        result, config = _phase_validate_config(pr, branch, worktree, orig_head, config, config_path)
+        if result:
+            return result
 
-        # Re-validate config
-        try:
-            if config_path is None:
-                config_path = resolve_config_path()
-            config = load_and_validate_config(config_path)
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason=f"Config changed or invalid: {e}",
-            )
+        # Phase 3: Validate PR
+        result = _phase_validate_pr(pr, branch, worktree, orig_head, config, cwd)
+        if result:
+            return result
 
-        # Re-validate PR
-        try:
-            pr_data = git.pr_view_json(
-                branch,
-                ["state", "baseRefName", "headRefName", "headRefOid"],
-                cwd=cwd
-            )
-            if not pr_data or pr_data.get("state") != "OPEN":
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason="PR is no longer OPEN",
-                )
-            if pr_data.get("baseRefName") != config.base:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason="PR base has changed",
-                )
-            if pr_data.get("headRefName") != branch:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason="PR branch has changed",
-                )
+        # Phase 4: Fetch and verify lease/base
+        result, lease_sha, base_sha = _phase_fetch_and_verify_lease(pr, branch, worktree, orig_head, config, cwd)
+        if result:
+            return result
+        # lease_sha and base_sha are guaranteed to be non-None here
+        assert lease_sha is not None and base_sha is not None
 
-            # Check push-completeness: headRefOid must match local HEAD
-            # or local HEAD must match tested_sha of last KICKBACK in result.json (Decision 5)
-            head_oid = pr_data.get("headRefOid")
-            if head_oid and head_oid != orig_head:
-                # Allow fallback: local HEAD == tested_sha of last KICKBACK (Decision 5)
-                if not _check_result_json_kickback_state(orig_head, cwd=cwd):
-                    return MergeResult(
-                        outcome=MergeOutcome.KICKBACK,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        orig_head=orig_head,
-                        reason=f"Local branch is not in sync with pushed branch; push to update (local: {orig_head[:8]}, pushed: {head_oid[:8]})",
-                    )
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason=f"Failed to re-validate PR: {e}",
-            )
+        # Phase 5: Verify base
+        result = _phase_verify_base(pr, branch, worktree, orig_head, base_sha, config, inherit_lock_fd, cwd)
+        if result:
+            return result
 
-        # Fetch and record lease_sha, base_sha
-        try:
-            Runner.run_git(["fetch", "origin"], cwd=cwd, timeout=config.mutation_timeout_secs)
-        except RuntimeError as e:
-            # M2: Timeout; re-query state
-            if "timed out" in str(e):
-                try:
-                    # Re-query to ensure we have current state
-                    Runner.run_git(["fetch", "origin"], cwd=cwd, timeout=config.mutation_timeout_secs)
-                except Exception:
-                    pass  # Proceed with whatever we have
-            else:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason=f"Failed to fetch: {e}",
-                )
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason=f"Failed to fetch: {e}",
-            )
+        # Phase 6: Rebase
+        result = _phase_rebase(pr, branch, worktree, orig_head, config, cwd)
+        if result:
+            return result
 
-        # M7: Pin lease to orig_head, not to post-fetch tip
-        # Verify that the remote tip matches orig_head (KICKBACK if it changed)
-        try:
-            remote_tip = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd).strip()
-            if remote_tip != orig_head:
-                # Remote has moved; someone else pushed to this branch
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=remote_tip,
-                    reason="Base moved: remote branch changed; retry after sync",
-                    details=f"Expected orig_head={orig_head[:8]}, found remote={remote_tip[:8]}",
-                )
-            lease_sha = orig_head
-            base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd).strip()
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason=f"Failed to parse shas: {e}",
-            )
+        # Phase 7: Run gate and post-gate assertions
+        result, tested_sha = _phase_run_gate_and_assertions(pr, branch, worktree, orig_head, config, inherit_lock_fd, cwd)
+        if result:
+            return result
+        # tested_sha is guaranteed to be non-None here
+        assert tested_sha is not None
 
-        # Poison check
-        poison_ok, poison_shas = scan_base(base_sha, config.allow_unverified, cwd=cwd)
-        if not poison_ok or poison_shas:
-            state_dir = ensure_state_dir()
-            verified_path = state_dir / "base-verified" / base_sha
-            failed_path = state_dir / "base-failed" / base_sha
+        # Phase 8: Push
+        result = _phase_push(pr, branch, worktree, orig_head, tested_sha, lease_sha, config, cwd)
+        if result:
+            return result
 
-            # Check if already verified
-            if verified_path.exists():
-                # Base is verified; proceed
-                poison_ok = True
-            elif failed_path.exists():
-                # Base already failed verification; don't re-run gate
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason="Base previously failed gate; run 'merge-queue reverify' to retry",
-                    details=f"Unverified: {', '.join(poison_shas[:3])}...",
-                )
-            else:
-                # Try to verify the base by running gate in scratch worktree
-                # M9: Thread lock_fd_to_inherit through to _verify_base_in_scratch
-                verify_outcome = _verify_base_in_scratch(base_sha, config, lock_fd_to_inherit=inherit_lock_fd)
-                if verify_outcome == VerifyBaseOutcome.VERIFIED:
-                    # Gate passed; write verified record
-                    os.makedirs(verified_path.parent, exist_ok=True)
-                    os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
-                    poison_ok = True
-                elif verify_outcome == VerifyBaseOutcome.INFRA_ERROR:
-                    # Infrastructure error during verification; return INTERNAL_ERROR
-                    return MergeResult(
-                        outcome=MergeOutcome.INTERNAL_ERROR,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        orig_head=orig_head,
-                        reason="Base verification infrastructure failed; retry later",
-                    )
-                else:
-                    # Gate failed; write failed record only on first failure
-                    if not failed_path.exists():
-                        os.makedirs(failed_path.parent, exist_ok=True)
-                        os.open(str(failed_path), os.O_CREAT | os.O_WRONLY, 0o600)
+        # Phase 9: Verify base unchanged
+        result = _phase_verify_base_unchanged(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd)
+        if result:
+            return result
 
-                    return MergeResult(
-                        outcome=MergeOutcome.KICKBACK,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        orig_head=orig_head,
-                        reason="Base has unverified commits; run 'merge-queue bootstrap' or 'merge-queue reverify'",
-                        details=f"Unverified: {', '.join(poison_shas[:3])}...",
-                    )
-
-        # Rebase
-        try:
-            Runner.run_git(["rebase", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs)
-        except RuntimeError as e:
-            # M2: Handle rebase timeout
-            if "timed out" in str(e):
-                # Try to abort the rebase
-                try:
-                    Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
-                except Exception as abort_err:
-                    restore_failed = f"rebase --abort failed: {abort_err}"
-                    return MergeResult(
-                        outcome=MergeOutcome.KICKBACK,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        orig_head=orig_head,
-                        reason="Rebase timed out (abort also failed)",
-                        restore_failed=restore_failed,
-                    )
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason=f"Rebase timed out after {config.mutation_timeout_secs}s",
-                )
-            else:
-                # Non-timeout error; likely a conflict
-                try:
-                    Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
-                except Exception as abort_err:
-                    restore_failed = f"rebase --abort failed: {abort_err}"
-                    return MergeResult(
-                        outcome=MergeOutcome.KICKBACK,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        orig_head=orig_head,
-                        reason="Rebase conflict (abort failed)",
-                        restore_failed=restore_failed,
-                    )
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason=f"Rebase conflict: {e}",
-                )
-        except Exception as e:
-            # Conflict; abort and kick back
-            try:
-                Runner.run_git(["rebase", "--abort"], cwd=cwd, timeout=config.mutation_timeout_secs)
-            except Exception as abort_err:
-                restore_failed = f"rebase --abort failed: {abort_err}"
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason="Rebase conflict (abort failed)",
-                    restore_failed=restore_failed,
-                )
-
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason=f"Rebase conflict: {e}",
-            )
-
-        # Record tested_sha
-        try:
-            tested_sha = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                reason=f"Failed to record tested_sha: {e}",
-            )
-
-        # Run gate steps
-        state_dir = ensure_state_dir()
-        for i, step in enumerate(config.steps):
-            step_name = f"step-{i}"
-            log_path = state_dir / "logs" / f"{pr}-{step_name}.log"
-
-            step_outcome = run_step(
-                step.cmd,
-                cwd,
-                log_path,
-                timeout_secs=step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs,
-                inherit_lock_fd=inherit_lock_fd,
-            )
-
-            if not step_outcome.success:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason=f"Step {step_name} failed",
-                    failing_step=step_name,
-                    log_path=str(log_path),
-                    details=step_outcome.error,
-                )
-
-        # Re-assert HEAD == tested_sha and clean tree
-        try:
-            current_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
-            if current_head != tested_sha:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason="HEAD moved during gate steps",
-                )
-            if not _is_tree_clean(cwd):
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason="Tree became dirty during gate steps",
-                )
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                tested_sha=tested_sha,
-                reason=f"Failed to re-assert HEAD: {e}",
-            )
-
-        # Push
-        try:
-            push_ok = Runner.force_push_tested(branch, tested_sha, lease_sha, cwd=cwd, timeout=config.mutation_timeout_secs)
-            if not push_ok:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason="Push rejected by lease (another clone pushed to branch)",
-                )
-        except RuntimeError as e:
-            # M2: Handle push timeout by re-querying actual state
-            if "timed out" in str(e):
-                try:
-                    actual_remote_tip = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd, timeout=config.mutation_timeout_secs).strip()
-                    if actual_remote_tip == tested_sha:
-                        # Push actually succeeded (maybe succeeded then timeout on confirmation)
-                        # Continue to merge step
-                        pass
-                    else:
-                        # Push timed out and remote tip is not what we tested
-                        return MergeResult(
-                            outcome=MergeOutcome.KICKBACK,
-                            pr=pr,
-                            branch=branch,
-                            worktree=worktree,
-                            orig_head=orig_head,
-                            tested_sha=tested_sha,
-                            reason="Push timed out; could not verify success",
-                        )
-                except Exception:
-                    # Could not re-query; treat as timeout failure
-                    return MergeResult(
-                        outcome=MergeOutcome.KICKBACK,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        orig_head=orig_head,
-                        tested_sha=tested_sha,
-                        reason=f"Push timed out and could not re-query state: {e}",
-                    )
-            else:
-                # Non-timeout RuntimeError; treat as failure
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason=f"Push failed: {e}",
-                )
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                tested_sha=tested_sha,
-                reason=f"Push failed: {e}",
-            )
-
-        # Base unchanged check (fresh fetch)
-        try:
-            Runner.run_git(["fetch", "origin", config.base], cwd=cwd, timeout=config.mutation_timeout_secs)
-            new_base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd, timeout=config.mutation_timeout_secs).strip()
-            if new_base_sha != base_sha:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason=f"Base moved during gate (new: {new_base_sha[:8]})",
-                )
-        except RuntimeError as e:
-            # M2: Timeout checking base; treat as KICKBACK (can retry)
-            if "timed out" in str(e):
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason=f"Base check timed out after {config.mutation_timeout_secs}s",
-                )
-            else:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason=f"Failed to verify base unchanged: {e}",
-                )
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.KICKBACK,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                tested_sha=tested_sha,
-                reason=f"Failed to verify base unchanged: {e}",
-            )
-
-        # Merge
-        try:
-            merge_outcome = _merge_pr(pr, tested_sha, base_sha, config, cwd=cwd)
-            if merge_outcome == MergePROutcome.SUCCESS:
-                return MergeResult(
-                    outcome=MergeOutcome.MERGED,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason="Merged successfully",
-                )
-            elif merge_outcome == MergePROutcome.POLL_TIMEOUT:
-                return MergeResult(
-                    outcome=MergeOutcome.PUSHED_NOT_MERGED,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason="Push succeeded but PR metadata did not converge for merge",
-                )
-            elif merge_outcome == MergePROutcome.GH_MERGE_REJECTED:
-                return MergeResult(
-                    outcome=MergeOutcome.PUSHED_NOT_MERGED,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason="Push succeeded but gh merge was rejected",
-                )
-            else:
-                # GH_MERGE_ERROR or ALREADY_MERGED_OTHER_HEAD
-                return MergeResult(
-                    outcome=MergeOutcome.PUSHED_NOT_MERGED,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    tested_sha=tested_sha,
-                    reason=f"Push succeeded but merge failed: {merge_outcome.value}",
-                )
-        except Exception as e:
-            return MergeResult(
-                outcome=MergeOutcome.PUSHED_NOT_MERGED,
-                pr=pr,
-                branch=branch,
-                worktree=worktree,
-                orig_head=orig_head,
-                tested_sha=tested_sha,
-                reason=f"Merge failed: {e}",
-            )
+        # Phase 10: Merge
+        return _phase_merge(pr, branch, worktree, orig_head, tested_sha, base_sha, config, cwd)
 
     except Exception as e:
         # Try to preserve orig_head and tested_sha from local scope if available
@@ -2204,7 +2296,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 def _cmd_enqueue(argv: List[str]) -> int:
     """Enqueue a PR for merge."""
     parser = argparse.ArgumentParser(description="Enqueue a PR for merge")
-    parser.add_argument("--no-claude", action="store_true", help="Skip Claude integration")
+    parser.add_argument("--no-claude", action="store_true", help="Reserved for future Claude integration (not yet implemented)")
     parser.add_argument("--config", type=str, help="Config file path")
     parser.add_argument("--pr", type=int, help="PR number (auto-detected if not provided)")
 

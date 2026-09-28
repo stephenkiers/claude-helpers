@@ -174,10 +174,11 @@ a committer who deliberately forges one.
 
 These gaps cannot be closed locally and are documented as follows:
 
-1. **Testing-to-merge TOCTOU window:** Between the base-unmoved verification (in Decision 3) and the
-   final merge operation, another clone can push to the base, making the tested base stale before the
-   merge lands. The next queue run's poison scan detects the untrailered commit and runs the main gate.
-   A GitHub "require up to date" ruleset is a follow-up.
+1. **Testing-to-merge TOCTOU window:** Between the base-unmoved verification (in Decision 3's step 9)
+   and the final merge operation, another clone can push to the base, making the tested base stale
+   before the merge lands. The next queue run's poison scan detects the untrailered commit and runs
+   the main gate automatically (Decision 4, auto-anchoring). A GitHub "require up to date" ruleset
+   would close this window server-side.
 
 2. **SIGKILL orphan:** If the queue process receives `SIGKILL` alone (not SIGINT/SIGTERM), and
    `inherit_lock_fd` is `false` (the default), the `merge.lock` fd is released but any step process
@@ -188,8 +189,9 @@ These gaps cannot be closed locally and are documented as follows:
 
 3. **Cleanup concurrency:** Cleanup (deleting the PR worktree and syncing the base branch) runs
    after the lock is released and races with the next PR's fetch/rebase. A `git fetch` ref-lock
-   error (`cannot lock ref`) triggers a bounded retry (3 attempts with backoff); this is the only
-   retry (push and merge are never retried).
+   error (`cannot lock ref`) is a known outcome; a bounded retry (3 attempts with backoff) is
+   documented as a mitigation but not yet implemented (see Built vs. Planned). This is the only
+   retry in the system (push and merge are never retried).
 
 ## Bypass Limit and Rollout Metric
 
@@ -217,32 +219,47 @@ command deletes the record, allowing retry (or defaults to the current base sha 
 The first PR to enqueue at a new base sha also runs the gate at that sha if no verification record
 exists. A successful run clears any `base-failed` record for a previous sha.
 
-**Bootstrap:** if the base has no anchor (no trailered commit, no verification record, no allowlist
-match going back through all reachable history), the queue fails closed with "base is unbootstrapped —
-run `merge-queue bootstrap`". The bootstrap command:
-
-- Asks for explicit confirmation (or accepts `--yes`).
-- Acquires `merge.lock` before verifying the base in the scratch worktree, so bootstrap can't race a
-  concurrently-running enqueue over the shared scratch checkout.
-- Records the current `origin/<base>` sha as `base-verified`.
-- Allows subsequent enqueues to proceed (the bootstrap sha is an anchor).
+**Auto-anchoring:** if the base has no anchor (no trailered commit, no verification record, no allowlist
+match going back through all reachable history), the queue runs the verification automatically (as part
+of the enqueue flow), acquiring `merge.lock` and running the main gate in the scratch worktree before
+proceeding. On success, the base is recorded as `base-verified` and subsequent enqueues can proceed
+(the verified sha is an anchor). The `merge-queue bootstrap` command exists as an explicit escape hatch
+to pre-verify a base before any PR enqueue, following the same path: acquire `merge.lock`, verify in
+scratch, and write `base-verified`.
 
 ## Built vs. Planned
 
 The implementation is **partial**: the following features are **documented but not yet built**:
 
-- **Claude hand-off on base verification failure:** Residual 4 (Decision 4) describes launching Claude
-  when the base fails verification. This behavior is documented but not implemented — the queue currently
-  kicks back immediately on any base-failed record without triggering Claude. (needs a tracking issue)
-- **`resume` subcommand:** An explicit stub; documented in Per-SHA Base Records but not built. The CLI
-  accepts `resume [--pr N]` but returns non-zero (unimplemented). (needs a tracking issue)
-- **`--no-claude` flag:** Reserved for future use; accepted by the CLI but currently ignored. 
+- **Explicit confirmation for bootstrap:** The `merge-queue bootstrap` command is documented as having
+  an optional confirmation step (`--yes` flag to skip it), but the current implementation does not prompt
+  for confirmation — it silently verifies and records. (needs a tracking issue)
+- **Claude hand-off on base verification failure:** When the base fails verification, the ADR describes
+  launching Claude; the current implementation writes a `base-failed` record and kicks back immediately
+  without triggering Claude. (needs a tracking issue)
+- **`resume` subcommand:** Documented in Per-SHA Base Records but not built. The CLI accepts 
+  `resume [--pr N]` but returns non-zero (unimplemented). (needs a tracking issue)
+- **`--no-claude` flag for enqueue:** Reserved for future use; accepted by the CLI but currently ignored.
   (needs a tracking issue once Claude integration is designed)
 - **Cleanup consumption:** The config's `cleanup` field is validated but never read or acted upon; the
   actual cleanup integration is planned but not implemented. (needs a tracking issue)
-- **Bounded git-fetch retry:** Residual 3 mentions a bounded (3-attempt) `git fetch` ref-lock retry
-  with backoff. This behavior is documented but not implemented — there are no retry attempts in the
-  current code. (needs a tracking issue)
+- **Bounded git-fetch retry on cleanup:** Residual 3 describes a bounded (3-attempt) `git fetch` ref-lock
+  retry with backoff during cleanup. The current implementation does not retry on cleanup-phase fetch
+  failures. (needs a tracking issue)
+
+**Built features:**
+- **Automatic base verification on unanchored base:** Enqueue automatically verifies an unanchored base
+  before proceeding, without requiring explicit bootstrap. Bootstrap exists as an optional escape hatch
+  to pre-verify ahead of time.
+- **Successful verification clears base-failed:** When the base passes verification, any prior
+  `base-failed` record for a previous sha is superseded by the new `base-verified` record for the
+  current sha.
+- **Partial fetch timeout retry (M2):** Timeout handling for fetch and push operations re-queries state
+  to verify actual success or failure, avoiding false negatives on slow networks. This is narrower than
+  the full 3-attempt retry mentioned in Residual 3.
+- **Decision 5 post-kickback contract:** Worktrees are left at the tested commit after a kickback,
+  and preflight checks accept this state without requiring re-push if the local HEAD matches the last
+  KICKBACK's tested_sha.
 - **ADR-0013 mutation-allowlist exception:** The queue's mutations (`Runner.run_git`/`Runner.run_gh`)
   bypass ADR-0013's `check_mutation_allowed()` allowlist per Decision 7. This exception is now
   documented in both ADR-0021 (Decision 7) and ADR-0013 Amendment (as a formal note).

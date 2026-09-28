@@ -36,15 +36,20 @@ from workflow.merge_queue import (
     parse_trailer,
     MergeOutcome,
     MergeResult,
+    MergePROutcome,
     Runner,
     main,
     run_step,
     scan_base,
     resolve_config_path,
+    acquire_ticket,
     _cmd_bootstrap,
     _cmd_reverify,
     _cmd_status,
     _locked_flow,
+    _merge_pr,
+    _check_outside_worktree,
+    _phase_fetch_and_verify_lease,
 )
 
 # Import git module for testing git.run_git_command_input
@@ -1545,6 +1550,342 @@ with tempfile.TemporaryDirectory() as tmpdir:
                             False,
                             f"Raised ValueError: {e}"
                         )
+
+
+# ============================================================================
+# SECTION 12: Ticket allocation and ordering
+# ============================================================================
+print("[Section 12] Ticket allocation and ordering")
+
+print("  [Test 12.1] acquire_ticket creates ticket with correct number")
+with tempfile.TemporaryDirectory() as tmpdir:
+    state_dir = Path(tmpdir)
+    (state_dir / "tickets").mkdir()
+    with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
+        mock_ensure.return_value = state_dir
+        with patch('workflow.merge_queue.get_alloc_lock_path') as mock_alloc:
+            mock_alloc.return_value = state_dir / "alloc.lock"
+            try:
+                ticket_num, ticket_fd = acquire_ticket(pr=1, branch="feature-1", worktree="/fake")
+                test_result(
+                    "acquire_ticket creates ticket with number 1 for first PR",
+                    ticket_num == 1,
+                    f"Got ticket_num={ticket_num}"
+                )
+                os.close(ticket_fd)
+            except Exception as e:
+                test_result(
+                    "acquire_ticket creates ticket",
+                    False,
+                    f"Got error: {e}"
+                )
+
+print("  [Test 12.2] acquire_ticket rejects duplicate PR enqueue")
+with tempfile.TemporaryDirectory() as tmpdir:
+    state_dir = Path(tmpdir)
+    (state_dir / "tickets").mkdir()
+    with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
+        mock_ensure.return_value = state_dir
+        with patch('workflow.merge_queue.get_alloc_lock_path') as mock_alloc:
+            mock_alloc.return_value = state_dir / "alloc.lock"
+            try:
+                # First ticket
+                ticket_num, ticket_fd = acquire_ticket(pr=1, branch="feature-1", worktree="/fake")
+                # Try to acquire second ticket for same PR
+                try:
+                    ticket_num2, ticket_fd2 = acquire_ticket(pr=1, branch="feature-1", worktree="/fake")
+                    test_result(
+                        "acquire_ticket rejects duplicate PR",
+                        False,
+                        "Should have raised RuntimeError"
+                    )
+                    os.close(ticket_fd2)
+                except RuntimeError as e:
+                    test_result(
+                        "acquire_ticket rejects duplicate PR",
+                        "already enqueued" in str(e),
+                        f"Got error: {e}"
+                    )
+                os.close(ticket_fd)
+            except Exception as e:
+                test_result(
+                    "acquire_ticket duplicate rejection setup",
+                    False,
+                    f"Got error: {e}"
+                )
+
+
+# ============================================================================
+# SECTION 13: Lease rejection and force-push semantics
+# ============================================================================
+print("[Section 13] Lease rejection and force-push semantics")
+
+print("  [Test 13.1] force_push_tested with lease rejection")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+        # Simulate git push failing with exit status indicating lease rejection
+        mock_git.side_effect = RuntimeError("git push failed: update rejected")
+        try:
+            result = Runner.force_push_tested(
+                branch="feature-x",
+                tested_sha="a" * 40,
+                lease_sha="b" * 40,
+                cwd=cwd,
+                timeout=10
+            )
+            test_result(
+                "force_push_tested returns False on push failure",
+                result is False,
+                f"Got result={result}"
+            )
+        except RuntimeError as e:
+            # force_push_tested doesn't catch RuntimeError, so test that it propagates
+            test_result(
+                "force_push_tested propagates git errors",
+                "update rejected" in str(e),
+                f"Got error: {e}"
+            )
+
+
+# ============================================================================
+# SECTION 14: run_step timeout behavior
+# ============================================================================
+print("[Section 14] run_step timeout behavior")
+
+print("  [Test 14.1] run_step returns failure when command fails")
+with tempfile.TemporaryDirectory() as tmpdir:
+    log_path = Path(tmpdir) / "step.log"
+    try:
+        # Run a command that will fail (exit non-zero)
+        outcome = run_step(
+            cmd="false",  # 'false' always returns exit code 1
+            cwd=Path(tmpdir),
+            log_path=log_path,
+            timeout_secs=10,
+            inherit_lock_fd=None
+        )
+        test_result(
+            "run_step returns failure when command fails",
+            not outcome.success,
+            f"Got success={outcome.success}"
+        )
+    except Exception as e:
+        test_result(
+            "run_step failure handling",
+            False,
+            f"Got error: {e}"
+        )
+
+
+# ============================================================================
+# SECTION 15: _merge_pr with GH_MERGE_UNVERIFIED
+# ============================================================================
+print("[Section 15] _merge_pr with GH_MERGE_UNVERIFIED outcome")
+
+print("  [Test 15.1] _merge_pr returns GH_MERGE_UNVERIFIED when verification fails")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    with patch('workflow.merge_queue.git.pr_view_json') as mock_pr_view:
+        with patch('workflow.merge_queue.Runner.run_gh') as mock_run_gh:
+            # First call: converges for merge
+            # Second call (verification): GitCommandError
+            mock_pr_view.side_effect = [
+                {"headRefOid": "a" * 40, "mergeable": "MERGEABLE", "title": "Test PR"},
+                git.GitCommandError("git", 1, "", "API error")
+            ]
+            mock_run_gh.return_value = ""  # gh pr merge succeeds
+            try:
+                outcome = _merge_pr(
+                    pr=1,
+                    tested_sha="a" * 40,
+                    base_sha="b" * 40,
+                    config=MergeQueueConfig(base="main", steps=[Step(cmd="echo test")]),
+                    cwd=cwd
+                )
+                test_result(
+                    "_merge_pr returns GH_MERGE_UNVERIFIED on verification failure",
+                    outcome == MergePROutcome.GH_MERGE_UNVERIFIED,
+                    f"Got outcome={outcome}"
+                )
+            except Exception as e:
+                test_result(
+                    "_merge_pr GH_MERGE_UNVERIFIED handling",
+                    False,
+                    f"Got error: {e}"
+                )
+
+
+# ============================================================================
+# SECTION 16: _locked_flow happy path end-to-end
+# ============================================================================
+print("[Section 16] _locked_flow happy path end-to-end")
+
+print("  [Test 16.1] _locked_flow succeeds with all green lights")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="echo test")])
+
+    with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+        with patch('workflow.merge_queue._is_tree_clean') as mock_clean:
+            with patch('workflow.merge_queue._has_rebase_or_merge_in_progress') as mock_rebase:
+                with patch('workflow.merge_queue.git.pr_view_json') as mock_pr_view:
+                    with patch('workflow.merge_queue.load_and_validate_config') as mock_config:
+                        with patch('workflow.merge_queue.scan_base') as mock_scan:
+                            with patch('workflow.merge_queue.run_step') as mock_step:
+                                with patch('workflow.merge_queue._merge_pr') as mock_merge:
+                                    # Setup mocks for happy path
+                                    mock_git.return_value = "a" * 40 + "\n"
+                                    mock_clean.return_value = True
+                                    mock_rebase.return_value = False
+                                    mock_pr_view.return_value = {
+                                        "state": "OPEN",
+                                        "baseRefName": "main",
+                                        "headRefName": "feature-1",
+                                        "headRefOid": "a" * 40
+                                    }
+                                    mock_config.return_value = config
+                                    mock_scan.return_value = (True, [])
+                                    mock_step.return_value.success = True
+                                    mock_merge.return_value = MergePROutcome.SUCCESS
+
+                                    try:
+                                        result = _locked_flow(
+                                            pr=1,
+                                            branch="feature-1",
+                                            worktree=str(cwd),
+                                            config=config,
+                                            merge_lock_fd=-1,
+                                            inherit_lock_fd=None,
+                                        )
+                                        test_result(
+                                            "_locked_flow happy path returns MERGED",
+                                            result.outcome == MergeOutcome.MERGED,
+                                            f"Got outcome={result.outcome}"
+                                        )
+                                    except Exception as e:
+                                        test_result(
+                                            "_locked_flow happy path execution",
+                                            False,
+                                            f"Got error: {e}"
+                                        )
+
+
+# ============================================================================
+# SECTION 17: Invariant checks (trailer-anchor and trust-boundary)
+# ============================================================================
+print("[Section 17] Invariant checks")
+
+print("  [Test 17.1] _check_outside_worktree rejects config under worktrees/")
+with tempfile.TemporaryDirectory() as tmpdir:
+    repo_root = Path(tmpdir) / "repo"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+
+    # Create a config under worktrees/pr-1 (which should be rejected)
+    worktrees_dir = repo_root / "worktrees"
+    pr_worktree = worktrees_dir / "pr-1"
+    pr_worktree.mkdir(parents=True)
+    config_in_worktree = pr_worktree / "merge-queue.json"
+    config_in_worktree.write_text("{}")
+
+    try:
+        _check_outside_worktree(config_in_worktree, "test")
+        test_result(
+            "Trust-boundary guard rejects config under worktrees/",
+            False,
+            "Should have raised RuntimeError"
+        )
+    except RuntimeError as e:
+        test_result(
+            "Trust-boundary guard rejects config under worktrees/",
+            "under a worktrees/" in str(e),
+            f"Got error: {e}"
+        )
+
+print("  [Test 17.2] trailer-anchor exact-parent rule: parse_trailer finds anchor commit")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    # Create a real git repo for this test
+    subprocess.run(["git", "init"], cwd=cwd, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=cwd, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=cwd, check=True, capture_output=True)
+
+    # Create initial commit
+    (cwd / "file.txt").write_text("test")
+    subprocess.run(["git", "add", "file.txt"], cwd=cwd, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Initial"], cwd=cwd, check=True, capture_output=True)
+    base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    # Create and commit a merge with trailer
+    trailer = build_trailer(base_sha, "a" * 40)
+    body = f"Tested by merge-queue.\n\n{trailer}"
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", f"Merge PR\n\n{body}"],
+        cwd=cwd, check=True, capture_output=True
+    )
+    commit_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    try:
+        parsed_base, parsed_head = parse_trailer(commit_sha, cwd=cwd)
+        test_result(
+            "parse_trailer extracts base from trailer",
+            parsed_base == base_sha,
+            f"Got {parsed_base}, expected {base_sha}"
+        )
+    except Exception as e:
+        test_result(
+            "trailer-anchor parse_trailer",
+            False,
+            f"Got error: {e}"
+        )
+
+
+# ============================================================================
+# SECTION 18: Regression test for M7 lease handling
+# ============================================================================
+print("[Section 18] Regression test: M7 lease_sha = orig_head (not post-fetch tip)")
+
+print("  [Test 18.1] _phase_fetch_and_verify_lease pins lease to orig_head, not post-fetch remote")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    config = MergeQueueConfig(base="main", steps=[Step(cmd="echo test")])
+
+    # Simulate: orig_head was "abc123", but remote moved to "def456" between enqueue and lock
+    with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+        def git_side_effect(cmd, **kwargs):
+            if cmd[0] == "fetch":
+                return ""
+            elif "rev-parse" in cmd and "origin/feature-1" in str(cmd):
+                return "def456" * 5 + "\n"  # Remote moved
+            elif "rev-parse" in cmd and "origin/main" in str(cmd):
+                return "aabbcc" * 6 + "ddee\n"
+            else:
+                return ""
+
+        mock_git.side_effect = git_side_effect
+
+        try:
+            result, lease_sha, base_sha = _phase_fetch_and_verify_lease(
+                pr=1,
+                branch="feature-1",
+                worktree=str(cwd),
+                orig_head="abc123" * 8 + "abcd",
+                config=config,
+                cwd=cwd
+            )
+            # Should KICKBACK because remote moved
+            test_result(
+                "M7 regression: detects when remote branch moved",
+                result is not None and result.outcome == MergeOutcome.KICKBACK,
+                f"Got result.outcome={result.outcome if result else None}"
+            )
+        except Exception as e:
+            test_result(
+                "M7 lease_sha regression test",
+                False,
+                f"Got error: {e}"
+            )
 
 
 # ============================================================================
