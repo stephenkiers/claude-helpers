@@ -128,6 +128,22 @@ The queue's safeguards (serialization, base testing, force-push auditing, unveri
 protect against *accidents* and *integration gaps*, not against a hostile maintainer or a hostile PR
 that already has review approval.
 
+## Decision 5: Post-kickback worktree contract
+
+When a rebase completes but a subsequent operation fails (step failure, base moved, push rejected),
+the PR is kicked back. By default, the worktree is left at the tested commit (the rebase's result
+SHA) rather than being rolled back to the original pre-rebase tip.
+
+The preflight check (run on the next enqueue of the same PR) accepts this state without requiring a
+re-push:
+- If `remote/<branch>` == original pre-rebase tip but `local HEAD` == tested commit from the last KICKBACK
+  (recorded in `result.json`), preflight allows the enqueue to proceed.
+- This avoids a required re-push when the developer hasn't touched the branch since the kickback.
+
+The worktree may remain at this tested SHA until the developer either:
+1. Fixes the issue locally and pushes a new commit (satisfying the normal push-completeness check).
+2. Enqueues again without changes (using the Decision 5 fallback via `result.json`).
+
 ## Trailerization and Provenance
 
 The `Merge-Gate:` trailer (added to the commit message by the queue) records which base and head

@@ -241,7 +241,7 @@ else
 fi
 
 # The result.json lives in the git state dir
-STATE_DIR="$(git rev-parse --git-common-dir 2>/dev/null)/merge-queue"
+STATE_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/merge-queue"
 
 if [ ! -f "$STATE_DIR/result.json" ]; then
   echo "ERROR: result.json not found at $STATE_DIR/result.json"

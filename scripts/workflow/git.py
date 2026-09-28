@@ -181,6 +181,11 @@ def get_git_common_dir(cwd: Optional[Path] = None) -> str:
     return run_git_command(["rev-parse", "--git-common-dir"], cwd=cwd)
 
 
+def get_repository_root(cwd: Optional[Path] = None) -> str:
+    """Get the repository root directory (git rev-parse --show-toplevel)."""
+    return run_git_command(["rev-parse", "--show-toplevel"], cwd=cwd)
+
+
 def is_linked_worktree(cwd: Optional[Path] = None) -> bool:
     """True if cwd is inside a linked worktree (not main/bare)."""
     resolved_cwd = Path(cwd or Path.cwd()).resolve()

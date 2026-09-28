@@ -21,6 +21,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
@@ -70,22 +71,42 @@ class MergeQueueConfig:
 
 def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
     """
-    Verify `resolved` is outside the PR worktree (under git-common-dir).
+    Verify `resolved` is outside the PR worktree.
 
-    Fails closed: if the boundary can't be verified, refuse rather than
-    silently trusting a path that might be inside the PR worktree.
+    Trust boundary: config must not be under git-common-dir (the shared git dir),
+    under the repository root (--show-toplevel), or under the worktrees/ container.
+    Fails closed: if the boundary can't be verified, refuse rather than silently
+    trusting a path that might be inside the PR worktree.
     """
     try:
         git_common_dir = Path(git.get_git_common_dir()).resolve()
+        show_toplevel = Path(git.get_repository_root()).resolve()
     except Exception as e:
         raise RuntimeError(
-            f"{source_label} trust-boundary check failed: could not resolve git-common-dir: {e}"
+            f"{source_label} trust-boundary check failed: could not resolve git directories: {e}"
         ) from e
+
+    # Reject if under git-common-dir (the shared git directory)
     if resolved == git_common_dir or git_common_dir in resolved.parents:
         raise RuntimeError(
-            f"{source_label} path is inside the PR worktree; must be outside: {resolved}\n"
-            f"Place config at <repo>/merge-queue.json or override with an absolute path outside the PR worktree"
+            f"{source_label} path is inside the git directory; must be outside: {resolved}\n"
+            f"Place config at <repo>/merge-queue.json or override with an absolute path outside the repository"
         )
+
+    # Reject if under the repository root (--show-toplevel)
+    if resolved == show_toplevel or show_toplevel in resolved.parents:
+        raise RuntimeError(
+            f"{source_label} path is inside the repository; must be outside: {resolved}\n"
+            f"Place config outside the repository or override with an absolute path"
+        )
+
+    # Reject if under a worktrees/ container directory
+    if resolved.parent.name == "worktrees" or any(p.name == "worktrees" for p in resolved.parents):
+        raise RuntimeError(
+            f"{source_label} path is under a worktrees/ directory; must be outside: {resolved}\n"
+            f"Place config at <repo>/merge-queue.json or override with an absolute path outside the repository"
+        )
+
     return resolved
 
 
@@ -116,11 +137,13 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
         )
 
     try:
-        # /setup-repo layout: <repo>/worktrees/<name>/.git. git-common-dir for a
-        # worktree is that worktree's own .git dir, so:
-        #   git_common_dir               = <repo>/worktrees/<name>/.git
-        #   git_common_dir.parent        = <repo>/worktrees/<name>
+        # /setup-repo layout: <repo>/worktrees/main/.git (main checkout) and
+        # <repo>/worktrees/pr-1/ (linked worktrees). For a linked worktree,
+        # git-common-dir points to the main worktree's .git, so:
+        #   git_common_dir               = <repo>/worktrees/main/.git
+        #   git_common_dir.parent        = <repo>/worktrees/main
         #   git_common_dir.parent.parent = <repo>/worktrees
+        #   git_common_dir.parent.parent.parent = <repo>
         if git_common_dir.parent.parent.name != "worktrees":
             raise RuntimeError(
                 "Layout does not match: git path does not show 'worktrees' at expected location\n"
@@ -859,6 +882,7 @@ class MergePROutcome(Enum):
     GH_MERGE_REJECTED = "gh_merge_rejected"
     GH_MERGE_ERROR = "gh_merge_error"
     ALREADY_MERGED_OTHER_HEAD = "already_merged_other_head"
+    GH_MERGE_UNVERIFIED = "gh_merge_unverified"
 
 
 class VerifyBaseOutcome(Enum):
@@ -963,14 +987,29 @@ def prune_old_results(max_results: int = 100) -> None:
 # ============================================================================
 
 def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
-    """Write JSON to path atomically via temp file (O_EXCL) + os.replace."""
+    """Write JSON to path atomically via mkstemp + os.replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.parent / f".{path.name}.tmp"
-    fd = os.open(str(temp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_EXCL, 0o600)
+    # Use mkstemp for a unique temp filename in the same directory as the destination
+    fd, temp_path_str = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    temp_path = Path(temp_path_str)
     try:
         os.write(fd, json.dumps(data, indent=2).encode())
+    except BaseException:
+        # Clean up temp file on any exception (including interrupt)
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        try:
+            temp_path.unlink()
+        except Exception:
+            pass
+        raise
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except Exception:
+            pass
     os.replace(str(temp_path), str(path))
 
 
@@ -994,6 +1033,39 @@ def write_result_json(result: MergeResult, cwd: Optional[Path] = None) -> None:
 
     # Prune old result files to prevent unbounded growth
     prune_old_results()
+
+
+def _check_result_json_kickback_state(local_head: str, cwd: Optional[Path] = None) -> bool:
+    """
+    Check if current local HEAD matches the tested_sha of the last KICKBACK in result.json.
+
+    This is the documented fallback state for post-kickback worktrees (Decision 5):
+    the worktree may be left at the last tested (kicked-back) SHA, and preflight
+    knows to expect and accept that specific state via result.json.
+
+    Returns True if result.json exists with outcome KICKBACK and tested_sha == local_head.
+    """
+    try:
+        state_dir = get_state_dir()
+        result_path = state_dir / "result.json"
+        if not result_path.exists():
+            return False
+
+        with open(result_path) as f:
+            result_data = json.load(f)
+
+        # Check if last result was a KICKBACK
+        if result_data.get("outcome") != MergeOutcome.KICKBACK.value:
+            return False
+
+        # Check if local HEAD matches the tested_sha from that KICKBACK
+        tested_sha = result_data.get("tested_sha")
+        if tested_sha and tested_sha == local_head:
+            return True
+
+        return False
+    except (json.JSONDecodeError, OSError, Exception):
+        return False
 
 
 # ============================================================================
@@ -1125,6 +1197,7 @@ def _preflight_check(
             )
 
         # Check push-completeness: headRefOid must match local HEAD
+        # or local HEAD must match tested_sha of last KICKBACK in result.json (Decision 5)
         head_oid = pr_data.get("headRefOid")
         if head_oid:
             try:
@@ -1138,13 +1211,15 @@ def _preflight_check(
                     reason=f"Failed to check push-completeness: {e}",
                 )
             if head_oid != local_head:
-                return MergeResult(
-                    outcome=MergeOutcome.REFUSED,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    reason=f"Local branch is not pushed; push before enqueue (HEAD: {local_head[:8]}, pushed: {head_oid[:8]})",
-                )
+                # Allow fallback: local HEAD == tested_sha of last KICKBACK (Decision 5)
+                if not _check_result_json_kickback_state(local_head, cwd=cwd):
+                    return MergeResult(
+                        outcome=MergeOutcome.REFUSED,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        reason=f"Local branch is not pushed; push before enqueue (HEAD: {local_head[:8]}, pushed: {head_oid[:8]})",
+                    )
     except Exception as e:
         return MergeResult(
             outcome=MergeOutcome.REFUSED,
@@ -1310,16 +1385,19 @@ def _locked_flow(
                 )
 
             # Check push-completeness: headRefOid must match local HEAD
+            # or local HEAD must match tested_sha of last KICKBACK in result.json (Decision 5)
             head_oid = pr_data.get("headRefOid")
             if head_oid and head_oid != orig_head:
-                return MergeResult(
-                    outcome=MergeOutcome.KICKBACK,
-                    pr=pr,
-                    branch=branch,
-                    worktree=worktree,
-                    orig_head=orig_head,
-                    reason=f"Local branch is not in sync with pushed branch; push to update (local: {orig_head[:8]}, pushed: {head_oid[:8]})",
-                )
+                # Allow fallback: local HEAD == tested_sha of last KICKBACK (Decision 5)
+                if not _check_result_json_kickback_state(orig_head, cwd=cwd):
+                    return MergeResult(
+                        outcome=MergeOutcome.KICKBACK,
+                        pr=pr,
+                        branch=branch,
+                        worktree=worktree,
+                        orig_head=orig_head,
+                        reason=f"Local branch is not in sync with pushed branch; push to update (local: {orig_head[:8]}, pushed: {head_oid[:8]})",
+                    )
         except Exception as e:
             return MergeResult(
                 outcome=MergeOutcome.KICKBACK,
@@ -1854,8 +1932,8 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
                 # Merge exit 0 but PR is not actually merged; treat as error
                 return MergePROutcome.GH_MERGE_ERROR
         except (git.GitCommandError, json.JSONDecodeError):
-            # Can't verify; assume success (gh pr merge succeeded)
-            return MergePROutcome.SUCCESS
+            # Can't verify the merge; treat as unverified rather than assuming success
+            return MergePROutcome.GH_MERGE_UNVERIFIED
     except git.GitCommandError as e:
         # Re-query PR state to confirm if it was already merged
         try:

@@ -54,6 +54,51 @@ h = Harness("MERGE QUEUE SPEC-BLIND TEST SUITE")
 test_result = h.test_result
 
 
+def setup_real_git_worktrees(tmpdir: Path):
+    """
+    Set up a real git repo with linked worktrees (security-sensitive test fixture).
+
+    Returns a dict with:
+      - main_worktree: path to main worktree
+      - pr_worktree: path to linked PR worktree
+      - config_in_pr: path to a config file inside PR worktree
+      - config_outside: path to a config file outside repo
+    """
+    # Create structure: tmpdir/work/ (main) and tmpdir/work/worktrees/pr-1 (linked worktree)
+    work_dir = tmpdir / "work"
+    work_dir.mkdir(exist_ok=True)
+
+    # Initialize a git repo directly
+    subprocess.run(["git", "init"], cwd=work_dir, check=True, capture_output=True)
+
+    # Create an initial commit
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=work_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=work_dir, check=True, capture_output=True)
+    (work_dir / "README.md").write_text("# Test Repo")
+    subprocess.run(["git", "add", "README.md"], cwd=work_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=work_dir, check=True, capture_output=True)
+
+    # Create a linked worktree for pr-1
+    pr_worktree = work_dir / "worktrees" / "pr-1"
+    subprocess.run(
+        ["git", "worktree", "add", str(pr_worktree), "-b", "pr-1"],
+        cwd=work_dir, check=True, capture_output=True
+    )
+
+    # Create config files
+    config_in_pr = pr_worktree / "merge-queue.json"
+    config_in_pr.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+    config_outside = tmpdir / "merge-queue.json"
+    config_outside.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+
+    return {
+        "main_worktree": work_dir,
+        "pr_worktree": pr_worktree,
+        "config_in_pr": config_in_pr,
+        "config_outside": config_outside,
+    }
+
+
 # ============================================================================
 # SECTION 1: Config Resolution and Validation
 # ============================================================================
@@ -1045,66 +1090,76 @@ with tempfile.TemporaryDirectory() as tmpdir:
                     f"Wrong exception type: {type(e).__name__}: {e}"
                 )
 
-# Test 10.3: resolve_config_path rejects --config path inside PR worktree
-print("  [Test 10.3] resolve_config_path rejects --config inside PR worktree")
+# Test 10.3: resolve_config_path rejects --config path inside PR worktree (real git worktree)
+print("  [Test 10.3] resolve_config_path rejects --config inside PR worktree (real worktree)")
 with tempfile.TemporaryDirectory() as tmpdir:
-    # Create the /setup-repo layout
-    container = Path(tmpdir) / "myrepo"
-    worktrees_dir = container / "worktrees"
-    worktree = worktrees_dir / "pr-1"
-    git_common_dir = worktree / ".git"
-    git_common_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        worktrees = setup_real_git_worktrees(Path(tmpdir))
+        pr_worktree = worktrees["pr_worktree"]
+        config_in_pr = worktrees["config_in_pr"]
 
-    # Try to place config inside the PR worktree
-    config_path = git_common_dir / "merge-queue.json"
-    config_path.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
-
-    with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
-        mock_common_dir.return_value = str(git_common_dir)
-
+        # Try to resolve config path that's inside the PR worktree
         try:
-            resolved = resolve_config_path(str(config_path))
+            resolved = resolve_config_path(str(config_in_pr))
             test_result(
-                "resolve_config_path rejects --config inside PR worktree",
+                "resolve_config_path rejects --config inside PR worktree (real)",
                 False,
-                "No error raised"
+                "No error raised; config inside PR worktree was accepted"
             )
         except RuntimeError as e:
+            # Should reject because config is inside repo or worktrees/
+            error_msg = str(e)
+            rejected = (
+                "inside the" in error_msg or "must be outside" in error_msg
+                or "worktrees" in error_msg
+            )
             test_result(
-                "resolve_config_path rejects --config inside PR worktree",
-                "inside the PR worktree" in str(e) or "must be outside" in str(e),
+                "resolve_config_path rejects --config inside PR worktree (real)",
+                rejected,
                 f"Got error: {e}"
             )
+    except Exception as e:
+        test_result(
+            "resolve_config_path rejects --config inside PR worktree (real)",
+            False,
+            f"Test setup failed: {e}"
+        )
 
-# Test 10.4: resolve_config_path rejects MERGE_QUEUE_CONFIG env var inside PR worktree
-print("  [Test 10.4] resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree")
+# Test 10.4: resolve_config_path rejects MERGE_QUEUE_CONFIG env var inside PR worktree (real git worktree)
+print("  [Test 10.4] resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree (real)")
 with tempfile.TemporaryDirectory() as tmpdir:
-    container = Path(tmpdir) / "myrepo"
-    worktrees_dir = container / "worktrees"
-    worktree = worktrees_dir / "pr-2"
-    git_common_dir = worktree / ".git"
-    git_common_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        worktrees = setup_real_git_worktrees(Path(tmpdir))
+        pr_worktree = worktrees["pr_worktree"]
+        config_in_pr = worktrees["config_in_pr"]
 
-    config_path = git_common_dir / "merge-queue.json"
-    config_path.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
-
-    with patch.dict(os.environ, {"MERGE_QUEUE_CONFIG": str(config_path)}):
-        with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
-            mock_common_dir.return_value = str(git_common_dir)
-
+        # Try to resolve config path via env var when it's inside the PR worktree
+        with patch.dict(os.environ, {"MERGE_QUEUE_CONFIG": str(config_in_pr)}):
             try:
                 resolved = resolve_config_path()
                 test_result(
-                    "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree",
+                    "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree (real)",
                     False,
-                    "No error raised"
+                    "No error raised; config inside PR worktree was accepted"
                 )
             except RuntimeError as e:
+                # Should reject because config is inside repo or worktrees/
+                error_msg = str(e)
+                rejected = (
+                    "inside the" in error_msg or "must be outside" in error_msg
+                    or "worktrees" in error_msg
+                )
                 test_result(
-                    "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree",
-                    "inside the PR worktree" in str(e) or "must be outside" in str(e),
+                    "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree (real)",
+                    rejected,
                     f"Got error: {e}"
                 )
+    except Exception as e:
+        test_result(
+            "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree (real)",
+            False,
+            f"Test setup failed: {e}"
+        )
 
 # Test 10.5: Config validation for mutation_timeout_secs as integer
 print("  [Test 10.5] Config validates mutation_timeout_secs as integer")
