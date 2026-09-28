@@ -81,7 +81,7 @@ def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
         raise RuntimeError(
             f"{source_label} trust-boundary check failed: could not resolve git-common-dir: {e}"
         ) from e
-    if str(resolved).startswith(str(git_common_dir)):
+    if resolved == git_common_dir or git_common_dir in resolved.parents:
         raise RuntimeError(
             f"{source_label} path is inside the PR worktree; must be outside: {resolved}\n"
             f"Place config at <repo>/merge-queue.json or override with an absolute path outside the PR worktree"
@@ -1107,17 +1107,22 @@ def _preflight_check(
         if head_oid:
             try:
                 local_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
-                if head_oid != local_head:
-                    return MergeResult(
-                        outcome=MergeOutcome.REFUSED,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        reason=f"Local branch is not pushed; push before enqueue (HEAD: {local_head[:8]}, pushed: {head_oid[:8]})",
-                    )
-            except Exception:
-                # If we can't check, let it through for now
-                pass
+            except Exception as e:
+                return MergeResult(
+                    outcome=MergeOutcome.REFUSED,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    reason=f"Failed to check push-completeness: {e}",
+                )
+            if head_oid != local_head:
+                return MergeResult(
+                    outcome=MergeOutcome.REFUSED,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    reason=f"Local branch is not pushed; push before enqueue (HEAD: {local_head[:8]}, pushed: {head_oid[:8]})",
+                )
     except Exception as e:
         return MergeResult(
             outcome=MergeOutcome.REFUSED,
@@ -1923,6 +1928,17 @@ def _cmd_enqueue(argv: List[str]) -> int:
         # Run merge queue
         try:
             result = run_one(pr, current_branch, worktree, config, no_claude=args.no_claude, config_path=config_path)
+        except KeyboardInterrupt:
+            # Still record the interrupted attempt, but let the interrupt actually
+            # terminate the process rather than being silently absorbed.
+            write_result_json(MergeResult(
+                outcome=MergeOutcome.INTERNAL_ERROR,
+                pr=pr,
+                branch=current_branch,
+                worktree=worktree,
+                reason="Interrupted",
+            ))
+            raise
         except BaseException as e:
             # Catch even SystemExit to ensure write_result_json is called
             result = MergeResult(
