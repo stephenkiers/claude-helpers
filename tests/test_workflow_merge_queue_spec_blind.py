@@ -4,13 +4,15 @@ Spec-blind test suite for merge_queue.py (local merge queue feature).
 
 Tests the observable behavior of the merge_queue module:
 - Config resolution and validation (valid, missing, malformed)
-- Ticket-based FIFO ordering scheme
 - Trailer build/parse round-trip (Merge-Gate trailer)
 - force_push_tested() force-push validation (--force-with-lease only)
-- main(argv) subcommand routing
+- run_step exit-code validation (gate step failures detected)
+- scan_base poison-commit detection (unverified commits flagged even with anchor)
+- resolve_config_path worktrees layout handling
+- main(argv) subcommand routing (exit codes and mocked handlers)
 - MergeOutcome enum and typed results
 
-Run with: python3 tests/test_merge_queue_spec_blind.py
+Run with: python3 tests/test_workflow_merge_queue_spec_blind.py
 """
 
 import sys
@@ -33,6 +35,12 @@ from workflow.merge_queue import (
     MergeResult,
     Runner,
     main,
+    run_step,
+    scan_base,
+    resolve_config_path,
+    _cmd_bootstrap,
+    _cmd_reverify,
+    _cmd_status,
 )
 
 h = Harness("MERGE QUEUE SPEC-BLIND TEST SUITE")
@@ -321,18 +329,16 @@ with patch('workflow.merge_queue.Runner.run_git') as mock_git:
             isinstance((parsed_base, parsed_head), tuple),
             f"Got {type((parsed_base, parsed_head))}"
         )
-        # The return values depend on the regex match
-        if parsed_base and parsed_head:
-            test_result(
-                "parse_trailer extracts correct base",
-                parsed_base == base_sha,
-                f"Got {parsed_base}"
-            )
-            test_result(
-                "parse_trailer extracts correct head",
-                parsed_head == tested_sha,
-                f"Got {parsed_head}"
-            )
+        test_result(
+            "parse_trailer extracts correct base",
+            parsed_base == base_sha,
+            f"Got {parsed_base}"
+        )
+        test_result(
+            "parse_trailer extracts correct head",
+            parsed_head == tested_sha,
+            f"Got {parsed_head}"
+        )
 
 # Test 13: parse_trailer returns (None, None) for invalid trailer
 print("  [Test 2.3] parse_trailer returns None for invalid trailer")
@@ -452,6 +458,8 @@ with patch('workflow.merge_queue.Runner.run_git') as mock_git:
                 "origin" in args,
                 f"Args: {args}"
             )
+        else:
+            test_result("force_push_tested calls run_git", False, "run_git not called")
     except Exception as e:
         test_result("force_push_tested constructs correct git command", False, str(e))
 
@@ -523,74 +531,84 @@ test_result(
     f"Got return code {result}"
 )
 
-# Test 23: main() routes status subcommand (returns 0 or 1)
+# Test 23: main() routes status subcommand (mocked handler)
 print("  [Test 5.2] main() 'status' subcommand routing")
-with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
-    mock_ensure.return_value = Path("/nonexistent")
+with patch('workflow.merge_queue._cmd_status') as mock_status:
+    mock_status.return_value = 0
     result = main(["status"])
     test_result(
-        "main('status') returns integer exit code",
-        isinstance(result, int),
-        f"Got {type(result)}"
+        "main('status') calls _cmd_status handler",
+        mock_status.called,
+        "Handler not called"
+    )
+    test_result(
+        "main('status') returns handler's exit code",
+        result == 0,
+        f"Got {result}"
     )
 
-# Test 24: main() routes reverify subcommand
+# Test 24: main() routes reverify subcommand (mocked handler)
 print("  [Test 5.3] main() 'reverify' subcommand")
-with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
-    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
-        with patch('workflow.merge_queue.Runner.run_git') as mock_git:
-            mock_ensure.return_value = Path("/nonexistent")
-            mock_branch.return_value = ("main", None)
-            mock_git.return_value = "a" * 40
-            result = main(["reverify", "a" * 40])
-            test_result(
-                "main('reverify') returns integer exit code",
-                isinstance(result, int),
-                f"Got {type(result)}"
-            )
+with patch('workflow.merge_queue._cmd_reverify') as mock_reverify:
+    mock_reverify.return_value = 0
+    result = main(["reverify", "a" * 40])
+    test_result(
+        "main('reverify') calls _cmd_reverify handler",
+        mock_reverify.called,
+        "Handler not called"
+    )
+    test_result(
+        "main('reverify') passes args to handler",
+        mock_reverify.call_args[0][0] == ["a" * 40],
+        f"Got {mock_reverify.call_args}"
+    )
 
-# Test 25: main() routes bootstrap subcommand
+# Test 25: main() routes bootstrap subcommand (mocked handler)
 print("  [Test 5.4] main() 'bootstrap' subcommand")
-with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
-    with patch('workflow.merge_queue.Runner.run_git') as mock_git:
-        with patch('workflow.merge_queue.resolve_config_path') as mock_config_path:
-            with patch('workflow.merge_queue.load_and_validate_config') as mock_load_config:
-                with patch('workflow.merge_queue._verify_base_in_scratch') as mock_verify:
-                    mock_branch.return_value = ("main", None)
-                    mock_git.return_value = "a" * 40
-                    mock_config_path.return_value = Path("/fake/config.json")
-                    mock_load_config.return_value = MergeQueueConfig(
-                        base="main",
-                        steps=["echo test"]
-                    )
-                    mock_verify.return_value = False
-                    result = main(["bootstrap"])
-                    test_result(
-                        "main('bootstrap') returns integer exit code",
-                        isinstance(result, int),
-                        f"Got {type(result)}"
-                    )
+with patch('workflow.merge_queue._cmd_bootstrap') as mock_bootstrap:
+    mock_bootstrap.return_value = 0
+    result = main(["bootstrap"])
+    test_result(
+        "main('bootstrap') calls _cmd_bootstrap handler",
+        mock_bootstrap.called,
+        "Handler not called"
+    )
+    test_result(
+        "main('bootstrap') returns handler's exit code",
+        result == 0,
+        f"Got {result}"
+    )
 
-# Test 26: main() routes resume subcommand
+# Test 26: main() routes resume subcommand (mocked handler)
 print("  [Test 5.5] main() 'resume' subcommand")
-with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
-    mock_ensure.return_value = Path("/nonexistent")
+with patch('workflow.merge_queue._cmd_resume') as mock_resume:
+    mock_resume.return_value = 0
     result = main(["resume"])
     test_result(
-        "main('resume') returns integer exit code",
-        isinstance(result, int),
-        f"Got {type(result)}"
+        "main('resume') calls _cmd_resume handler",
+        mock_resume.called,
+        "Handler not called"
+    )
+    test_result(
+        "main('resume') returns handler's exit code",
+        result == 0,
+        f"Got {result}"
     )
 
-# Test 27: main() with no args routes to enqueue
+# Test 27: main() with no args routes to enqueue (mocked handler)
 print("  [Test 5.6] main() with no args routes to enqueue")
-with patch('workflow.merge_queue.git.get_current_branch') as mock_branch:
-    mock_branch.return_value = None
+with patch('workflow.merge_queue._cmd_enqueue') as mock_enqueue:
+    mock_enqueue.return_value = 1
     result = main([])
     test_result(
-        "main() with no args returns non-zero (enqueue handler)",
-        result != 0,
-        f"Got return code {result}"
+        "main() with no args calls _cmd_enqueue handler",
+        mock_enqueue.called,
+        "Handler not called"
+    )
+    test_result(
+        "main() returns enqueue handler's exit code",
+        result == 1,
+        f"Got {result}"
     )
 
 
@@ -732,59 +750,81 @@ except Exception as e:
 print()
 print("[Section 8] Bootstrap and Reverify Filesystem Interaction")
 
-# Test 35: bootstrap writes base-verified record on successful gate
-print("  [Test 8.1] bootstrap writes base-verified record on success")
+# Test 35: _cmd_bootstrap writes base-verified record on successful gate
+print("  [Test 8.1] _cmd_bootstrap writes base-verified record on gate pass")
 with tempfile.TemporaryDirectory() as tmpdir:
+    # Mock the state dir to use our temp dir
+    base_sha = "a" * 40
     state_dir = Path(tmpdir) / "merge-queue"
     verified_dir = state_dir / "base-verified"
     verified_dir.mkdir(parents=True, exist_ok=True)
 
-    base_sha = "a" * 40
     verified_path = verified_dir / base_sha
 
-    # File should not exist yet
-    test_result(
-        "base-verified file does not exist initially",
-        not verified_path.exists(),
-        f"Path: {verified_path}"
-    )
+    # Mock the necessary dependencies for bootstrap
+    with patch('workflow.merge_queue.get_state_dir') as mock_get_state:
+        with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
+            with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+                with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+                    with patch('workflow.merge_queue.resolve_config_path') as mock_config_path:
+                        with patch('workflow.merge_queue.load_and_validate_config') as mock_load_config:
+                            with patch('workflow.merge_queue._verify_base_in_scratch') as mock_verify:
+                                mock_get_state.return_value = state_dir
+                                mock_ensure.return_value = state_dir
+                                mock_branch.return_value = ("main", None)
+                                mock_git.return_value = base_sha
+                                mock_config_path.return_value = Path("/fake/config.json")
+                                mock_load_config.return_value = MergeQueueConfig(
+                                    base="main",
+                                    steps=["echo test"]
+                                )
+                                mock_verify.return_value = True
 
-    # Simulate bootstrap writing the record
-    verified_path.touch()
-    test_result(
-        "base-verified file created by bootstrap",
-        verified_path.exists(),
-        f"Path: {verified_path}"
-    )
+                                # Call _cmd_bootstrap
+                                result = _cmd_bootstrap([])
+                                test_result(
+                                    "bootstrap exits with 0 on successful gate",
+                                    result == 0,
+                                    f"Got exit code {result}"
+                                )
+                                test_result(
+                                    "bootstrap writes base-verified record",
+                                    verified_path.exists(),
+                                    f"Path not created: {verified_path}"
+                                )
 
-# Test 36: reverify clears base-failed record
-print("  [Test 8.2] reverify clears base-failed record")
+# Test 36: _cmd_reverify clears base-failed record
+print("  [Test 8.2] _cmd_reverify clears base-failed record")
 with tempfile.TemporaryDirectory() as tmpdir:
+    base_sha = "b" * 40
     state_dir = Path(tmpdir) / "merge-queue"
     failed_dir = state_dir / "base-failed"
     failed_dir.mkdir(parents=True, exist_ok=True)
 
-    base_sha = "b" * 40
     failed_path = failed_dir / base_sha
-
-    # Create a base-failed record
     failed_path.touch()
-    test_result(
-        "base-failed file exists initially",
-        failed_path.exists(),
-        f"Path: {failed_path}"
-    )
 
-    # Simulate reverify clearing it
-    failed_path.unlink(missing_ok=True)
-    test_result(
-        "base-failed file cleared by reverify",
-        not failed_path.exists(),
-        f"Path: {failed_path}"
-    )
+    # Mock the state dir and dependencies
+    with patch('workflow.merge_queue.get_state_dir') as mock_get_state:
+        with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
+            mock_get_state.return_value = state_dir
+            mock_ensure.return_value = state_dir
 
-# Test 37: status reads live tickets from state dir
-print("  [Test 8.3] status reads queue state from filesystem")
+            # Call _cmd_reverify with the sha
+            result = _cmd_reverify([base_sha])
+            test_result(
+                "reverify exits with 0",
+                result == 0,
+                f"Got exit code {result}"
+            )
+            test_result(
+                "reverify clears base-failed record",
+                not failed_path.exists(),
+                f"Path still exists: {failed_path}"
+            )
+
+# Test 37: _cmd_status reads live tickets from state dir
+print("  [Test 8.3] _cmd_status reads queue state from filesystem")
 with tempfile.TemporaryDirectory() as tmpdir:
     state_dir = Path(tmpdir) / "merge-queue"
     tickets_dir = state_dir / "tickets"
@@ -795,36 +835,127 @@ with tempfile.TemporaryDirectory() as tmpdir:
     ticket_data = {"pr": 123, "branch": "feature-x", "worktree": "/path/to/work", "enqueued_at": 1234567890}
     ticket_path.write_text(json.dumps(ticket_data))
 
+    # Mock the state dir
+    with patch('workflow.merge_queue.get_state_dir') as mock_get_state:
+        with patch('workflow.merge_queue.ensure_state_dir') as mock_ensure:
+            mock_get_state.return_value = state_dir
+            mock_ensure.return_value = state_dir
+
+            # Call _cmd_status
+            result = _cmd_status([])
+            test_result(
+                "status exits with 0",
+                result == 0,
+                f"Got exit code {result}"
+            )
+
+# Test 38: run_step detects gate failure (exit code != 0)
+print("  [Test 8.4] run_step reports step failure when exit code is nonzero (regression test)")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    log_path = cwd / "test.log"
+
+    # Run a step that exits with code 1
+    # This validates the fix for bug #1: run_step must check proc.returncode == 0
+    outcome = run_step("exit 1", cwd, log_path, timeout_secs=5)
     test_result(
-        "status can read ticket metadata from disk",
-        ticket_path.exists() and json.loads(ticket_path.read_text()).get("pr") == 123,
-        "Ticket content valid"
+        "run_step success=False when step exits nonzero (bug #1 regression)",
+        outcome.success is False,
+        f"Got success={outcome.success} (fails on unfixed code, expected per bug #1)"
     )
 
-# Test 38: Trailer contains both base_sha and tested_sha (catches parameter order bug)
-print("  [Test 8.4] Trailer round-trip preserves both base and tested SHA")
-base_sha = "c" * 40
-tested_sha = "d" * 40
-trailer = build_trailer(base_sha, tested_sha)
 
-# This test would have caught the bug where build_trailer was called with
-# (tested_sha, tested_sha) instead of (base_sha, tested_sha)
-test_result(
-    "Trailer contains distinct base SHA",
-    base_sha in trailer,
-    f"Trailer missing base: {trailer}"
-)
-test_result(
-    "Trailer contains distinct tested SHA",
-    tested_sha in trailer,
-    f"Trailer missing tested: {trailer}"
-)
-# If the bug existed (both params the same), this would fail:
-test_result(
-    "Trailer distinguishes base from tested when different",
-    trailer.count(base_sha) == 1 and trailer.count(tested_sha) == 1,
-    f"Trailer does not properly distinguish SHAs: {trailer}"
-)
+# ============================================================================
+# SECTION 9: Regression Tests
+# ============================================================================
+print()
+print("[Section 9] Regression Tests")
+
+# Regression Test 1: scan_base with anchor present AND poison commit above it
+print("  [Test 9.1] scan_base flags poison commits even when anchor exists (regression)")
+with tempfile.TemporaryDirectory() as tmpdir:
+    # Mock the state dir and git operations
+    poison_sha = "p" * 40  # Untrailered commit
+    anchor_sha = "a" * 40  # Commit with verified record
+
+    state_dir = Path(tmpdir) / "merge-queue"
+    verified_dir = state_dir / "base-verified"
+    verified_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a verified record for anchor
+    (verified_dir / anchor_sha).touch()
+
+    # Mock Runner.run_git to return log with poison above anchor
+    # The log order is newest first in first-parent history
+    log_output = f"{poison_sha}\n{anchor_sha}"
+
+    with patch('workflow.merge_queue.get_state_dir') as mock_get_state:
+        with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+            mock_get_state.return_value = state_dir
+            mock_git.return_value = log_output
+
+            # Call scan_base
+            has_anchor, unverified = scan_base(poison_sha, [])
+            test_result(
+                "scan_base finds anchor despite poison above it",
+                has_anchor is True,
+                f"Got has_anchor={has_anchor}"
+            )
+            test_result(
+                "scan_base reports poison commit as unverified",
+                poison_sha in unverified,
+                f"Got unverified={unverified}"
+            )
+
+# Regression Test 2: resolve_config_path against /setup-repo layout (bug #4)
+print("  [Test 9.2] resolve_config_path validates worktrees layout (regression)")
+with tempfile.TemporaryDirectory() as tmpdir:
+    # Create the /setup-repo layout: <container>/worktrees/<worktree>/
+    # git.get_git_common_dir() returns container/worktrees/.git (the shared git dir)
+    container = Path(tmpdir) / "myrepo"
+    worktrees_dir = container / "worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a worktree directory
+    worktree = worktrees_dir / "main"
+    worktree.mkdir(parents=True, exist_ok=True)
+
+    # Create a merge-queue.json in the container
+    config_file = container / "merge-queue.json"
+    config_file.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+
+    # The git-common-dir for worktrees layout points to worktrees/.git
+    git_common_dir = worktrees_dir / ".git"
+    git_common_dir.mkdir(exist_ok=True)
+
+    # Mock git.get_git_common_dir to return the shared git dir (validates bug #4 fix)
+    with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
+        mock_common_dir.return_value = str(git_common_dir)
+
+        # Call resolve_config_path (with no override)
+        resolved = resolve_config_path()
+        # Resolve both paths to handle symlink expansion on macOS
+        resolved_normalized = resolved.resolve()
+        expected_normalized = config_file.resolve()
+        test_result(
+            "resolve_config_path resolves to container/merge-queue.json (bug #4 regression)",
+            resolved_normalized == expected_normalized,
+            f"Got {resolved_normalized}, expected {expected_normalized}"
+        )
+
+# Regression Test 3: run_step with successful step (exit 0)
+print("  [Test 9.3] run_step success=True when step exits 0 (regression)")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    log_path = cwd / "test.log"
+
+    # Run a step that exits with code 0
+    outcome = run_step("exit 0", cwd, log_path, timeout_secs=5)
+    test_result(
+        "run_step success=True when step exits 0",
+        outcome.success is True,
+        f"Got success={outcome.success}"
+    )
 
 
 # ============================================================================
