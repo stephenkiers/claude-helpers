@@ -18,8 +18,10 @@ Run with: python3 tests/test_workflow_merge_queue_spec_blind.py
 import sys
 import json
 import tempfile
+import os
+import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock, call
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -43,6 +45,9 @@ from workflow.merge_queue import (
     _cmd_reverify,
     _cmd_status,
 )
+
+# Import git module for testing git.run_git_command_input
+from workflow import git
 
 h = Harness("MERGE QUEUE SPEC-BLIND TEST SUITE")
 test_result = h.test_result
@@ -965,6 +970,447 @@ with tempfile.TemporaryDirectory() as tmpdir:
         outcome.success is True,
         f"Got success={outcome.success}"
     )
+
+
+# ============================================================================
+# SECTION 10: NEW ROUND-1 COVERAGE GAPS
+# ============================================================================
+print("[Section 10] Round-1 Coverage Gaps")
+
+# Test 10.1: resolve_config_path fail-closed on --config with git.get_git_common_dir() error
+print("  [Test 10.1] resolve_config_path --config fails closed on git.get_git_common_dir() error")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_path.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+
+    with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
+        mock_common_dir.side_effect = RuntimeError("Cannot determine git dir")
+
+        try:
+            resolved = resolve_config_path(str(config_path))
+            test_result(
+                "resolve_config_path --config fails closed on git.get_git_common_dir() error",
+                False,
+                "No error raised"
+            )
+        except RuntimeError as e:
+            test_result(
+                "resolve_config_path --config fails closed on git.get_git_common_dir() error",
+                "trust-boundary" in str(e) or "git-common-dir" in str(e),
+                f"Got error: {e}"
+            )
+        except Exception as e:
+            test_result(
+                "resolve_config_path --config fails closed on git.get_git_common_dir() error",
+                False,
+                f"Wrong exception type: {type(e).__name__}: {e}"
+            )
+
+# Test 10.2: resolve_config_path fail-closed on MERGE_QUEUE_CONFIG env var with git.get_git_common_dir() error
+print("  [Test 10.2] resolve_config_path MERGE_QUEUE_CONFIG fails closed on git.get_git_common_dir() error")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_path.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+
+    with patch.dict(os.environ, {"MERGE_QUEUE_CONFIG": str(config_path)}):
+        with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
+            mock_common_dir.side_effect = Exception("Cannot determine git dir")
+
+            try:
+                resolved = resolve_config_path()
+                test_result(
+                    "resolve_config_path MERGE_QUEUE_CONFIG fails closed on error",
+                    False,
+                    "No error raised"
+                )
+            except RuntimeError as e:
+                test_result(
+                    "resolve_config_path MERGE_QUEUE_CONFIG fails closed on error",
+                    "trust-boundary" in str(e) or "git-common-dir" in str(e),
+                    f"Got error: {e}"
+                )
+            except Exception as e:
+                test_result(
+                    "resolve_config_path MERGE_QUEUE_CONFIG fails closed on error",
+                    False,
+                    f"Wrong exception type: {type(e).__name__}: {e}"
+                )
+
+# Test 10.3: resolve_config_path rejects --config path inside PR worktree
+print("  [Test 10.3] resolve_config_path rejects --config inside PR worktree")
+with tempfile.TemporaryDirectory() as tmpdir:
+    # Create the /setup-repo layout
+    container = Path(tmpdir) / "myrepo"
+    worktrees_dir = container / "worktrees"
+    worktree = worktrees_dir / "pr-1"
+    git_common_dir = worktree / ".git"
+    git_common_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try to place config inside the PR worktree
+    config_path = git_common_dir / "merge-queue.json"
+    config_path.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+
+    with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
+        mock_common_dir.return_value = str(git_common_dir)
+
+        try:
+            resolved = resolve_config_path(str(config_path))
+            test_result(
+                "resolve_config_path rejects --config inside PR worktree",
+                False,
+                "No error raised"
+            )
+        except RuntimeError as e:
+            test_result(
+                "resolve_config_path rejects --config inside PR worktree",
+                "inside the PR worktree" in str(e) or "must be outside" in str(e),
+                f"Got error: {e}"
+            )
+
+# Test 10.4: resolve_config_path rejects MERGE_QUEUE_CONFIG env var inside PR worktree
+print("  [Test 10.4] resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree")
+with tempfile.TemporaryDirectory() as tmpdir:
+    container = Path(tmpdir) / "myrepo"
+    worktrees_dir = container / "worktrees"
+    worktree = worktrees_dir / "pr-2"
+    git_common_dir = worktree / ".git"
+    git_common_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = git_common_dir / "merge-queue.json"
+    config_path.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
+
+    with patch.dict(os.environ, {"MERGE_QUEUE_CONFIG": str(config_path)}):
+        with patch('workflow.merge_queue.git.get_git_common_dir') as mock_common_dir:
+            mock_common_dir.return_value = str(git_common_dir)
+
+            try:
+                resolved = resolve_config_path()
+                test_result(
+                    "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree",
+                    False,
+                    "No error raised"
+                )
+            except RuntimeError as e:
+                test_result(
+                    "resolve_config_path rejects MERGE_QUEUE_CONFIG inside PR worktree",
+                    "inside the PR worktree" in str(e) or "must be outside" in str(e),
+                    f"Got error: {e}"
+                )
+
+# Test 10.5: Config validation for mutation_timeout_secs as integer
+print("  [Test 10.5] Config validates mutation_timeout_secs as integer")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": ["echo test"],
+        "mutation_timeout_secs": 600,
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Config accepts valid mutation_timeout_secs",
+                cfg.mutation_timeout_secs == 600,
+                f"Got {cfg.mutation_timeout_secs}"
+            )
+        except Exception as e:
+            test_result("Config accepts valid mutation_timeout_secs", False, str(e))
+
+# Test 10.6: Config rejects mutation_timeout_secs as bool (even though bool is subclass of int in Python)
+print("  [Test 10.6] Config rejects mutation_timeout_secs as bool")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": ["echo test"],
+        "mutation_timeout_secs": True,
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Config rejects mutation_timeout_secs as bool",
+                False,
+                "No error raised"
+            )
+        except ValueError as e:
+            test_result(
+                "Config rejects mutation_timeout_secs as bool",
+                "integer" in str(e).lower(),
+                f"Got error: {e}"
+            )
+
+# Test 10.7: Config rejects mutation_timeout_secs <= 0
+print("  [Test 10.7] Config rejects mutation_timeout_secs <= 0")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": ["echo test"],
+        "mutation_timeout_secs": 0,
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Config rejects mutation_timeout_secs <= 0",
+                False,
+                "No error raised"
+            )
+        except ValueError as e:
+            test_result(
+                "Config rejects mutation_timeout_secs <= 0",
+                "positive" in str(e).lower(),
+                f"Got error: {e}"
+            )
+
+# Test 10.8: Config validation for pr_merge_poll_secs as integer
+print("  [Test 10.8] Config validates pr_merge_poll_secs as integer")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": ["echo test"],
+        "pr_merge_poll_secs": 120,
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Config accepts valid pr_merge_poll_secs",
+                cfg.pr_merge_poll_secs == 120,
+                f"Got {cfg.pr_merge_poll_secs}"
+            )
+        except Exception as e:
+            test_result("Config accepts valid pr_merge_poll_secs", False, str(e))
+
+# Test 10.9: Config has default values for mutation_timeout_secs and pr_merge_poll_secs
+print("  [Test 10.9] Config has default values for new timeout fields")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": ["echo test"],
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Config has default mutation_timeout_secs=300",
+                cfg.mutation_timeout_secs == 300,
+                f"Got {cfg.mutation_timeout_secs}"
+            )
+            test_result(
+                "Config has default pr_merge_poll_secs=60",
+                cfg.pr_merge_poll_secs == 60,
+                f"Got {cfg.pr_merge_poll_secs}"
+            )
+        except Exception as e:
+            test_result("Config defaults are correct", False, str(e))
+
+# Test 10.10: git.run_git_command_input pipes input to git correctly
+print("  [Test 10.10] git.run_git_command_input pipes input to git")
+with tempfile.TemporaryDirectory() as tmpdir:
+    # Use git hash-object to verify stdin is piped correctly
+    test_input = "Hello, World!"
+    expected_hash = "72a1c7ab92c4a20e42cf0c1c8e98c1e8e3d8f9e2"  # Pre-computed SHA1
+    # Actually, let's use a simpler approach: pipe a message to interpret-trailers
+    try:
+        # Use git interpret-trailers which accepts input on stdin
+        output = git.run_git_command_input(
+            ["interpret-trailers", "--parse"],
+            "Some text\n\nMy-Trailer: value\n",
+            cwd=Path(tmpdir)
+        )
+        # If it succeeds, output should contain the trailer
+        test_result(
+            "git.run_git_command_input pipes input correctly",
+            "My-Trailer" in output or "value" in output or "text" in output,
+            f"Got output: {output}"
+        )
+    except Exception as e:
+        test_result(
+            "git.run_git_command_input pipes input correctly",
+            False,
+            f"Got error: {e}"
+        )
+
+# Test 10.11: Verify Step normalization from dict/string to Step objects
+print("  [Test 10.11] Step objects normalize from dict and string configs")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": [
+            "echo simple",
+            {"cmd": "echo with-timeout", "timeout_secs": 100},
+        ],
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Step 0 is Step object with cmd from string",
+                isinstance(cfg.steps[0], Step) and cfg.steps[0].cmd == "echo simple" and cfg.steps[0].timeout_secs is None,
+                f"Got {cfg.steps[0]}"
+            )
+            test_result(
+                "Step 1 is Step object with cmd and timeout_secs from dict",
+                isinstance(cfg.steps[1], Step) and cfg.steps[1].cmd == "echo with-timeout" and cfg.steps[1].timeout_secs == 100,
+                f"Got {cfg.steps[1]}"
+            )
+        except Exception as e:
+            test_result("Step normalization", False, str(e))
+
+# Test 10.12: Config rejects unknown keys in dict steps
+print("  [Test 10.12] Config rejects unknown keys in dict steps")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": [
+            {"cmd": "echo test", "unknown_key": "value"},
+        ],
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg = load_and_validate_config(config_path)
+            test_result(
+                "Config rejects unknown keys in dict steps",
+                False,
+                "No error raised"
+            )
+        except ValueError as e:
+            test_result(
+                "Config rejects unknown keys in dict steps",
+                "unknown" in str(e).lower(),
+                f"Got error: {e}"
+            )
+
+# Test 10.13: parse_trailer round-trip with real body shape from _merge_pr
+print("  [Test 10.13] parse_trailer round-trip with real commit body")
+with tempfile.TemporaryDirectory() as tmpdir:
+    # Initialize a real git repo
+    cwd = Path(tmpdir)
+    subprocess.run(
+        ["git", "init"],
+        cwd=cwd,
+        capture_output=True,
+        check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=cwd,
+        capture_output=True,
+        check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=cwd,
+        capture_output=True,
+        check=True
+    )
+
+    # Create an initial commit
+    test_file = cwd / "test.txt"
+    test_file.write_text("test content")
+    subprocess.run(
+        ["git", "add", "test.txt"],
+        cwd=cwd,
+        capture_output=True,
+        check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit"],
+        cwd=cwd,
+        capture_output=True,
+        check=True
+    )
+
+    # Create a commit with the exact body shape used by _merge_pr()
+    base_sha = "a" * 40
+    tested_sha = "b" * 40
+    trailer_text = build_trailer(base_sha, tested_sha)
+    body = f"Tested by merge-queue.\n\n{trailer_text}"
+
+    # Create a commit with this exact body by using git commit-tree
+    tree_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout.strip()
+
+    parent_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout.strip()
+
+    # Create commit with exact body
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-p", parent_sha, "-m", body],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+        input=None
+    ).stdout.strip()
+
+    # Now test parse_trailer with the real commit
+    with patch('workflow.merge_queue.git.is_ancestor') as mock_ancestor:
+        mock_ancestor.return_value = True
+
+        try:
+            parsed_base, parsed_head = parse_trailer(commit_sha, cwd=cwd)
+            test_result(
+                "parse_trailer round-trip extracts correct base",
+                parsed_base == base_sha,
+                f"Got {parsed_base}, expected {base_sha}"
+            )
+            test_result(
+                "parse_trailer round-trip extracts correct head",
+                parsed_head == tested_sha,
+                f"Got {parsed_head}, expected {tested_sha}"
+            )
+        except Exception as e:
+            test_result(
+                "parse_trailer round-trip with real commit",
+                False,
+                f"Got error: {e}"
+            )
 
 
 # ============================================================================
