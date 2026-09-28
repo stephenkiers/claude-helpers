@@ -21,7 +21,7 @@ import tempfile
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -44,6 +44,7 @@ from workflow.merge_queue import (
     _cmd_bootstrap,
     _cmd_reverify,
     _cmd_status,
+    _locked_flow,
 )
 
 # Import git module for testing git.run_git_command_input
@@ -1411,6 +1412,77 @@ with tempfile.TemporaryDirectory() as tmpdir:
                 False,
                 f"Got error: {e}"
             )
+
+
+# ============================================================================
+# SECTION 11: _locked_flow early-KICKBACK invariant regression
+# ============================================================================
+print("[Section 11] _locked_flow early-KICKBACK invariant regression")
+
+# Regression: MergeResult.__post_init__ enforces "KICKBACK requires orig_head" at
+# construction time. Several _locked_flow() early-return paths used to construct a
+# KICKBACK MergeResult before orig_head had been computed, raising ValueError instead
+# of returning the kickback (silently surfacing as INTERNAL_ERROR to the caller).
+print("  [Test 11.1] _locked_flow returns KICKBACK (not ValueError) when tree is dirty")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+        mock_git.return_value = "f" * 40 + "\n"
+        with patch('workflow.merge_queue._is_tree_clean') as mock_clean:
+            mock_clean.return_value = False
+            try:
+                result = _locked_flow(
+                    pr=1,
+                    branch="feature-x",
+                    worktree=str(cwd),
+                    config=MergeQueueConfig(base="main", steps=[Step(cmd="echo test")]),
+                    merge_lock_fd=-1,
+                    inherit_lock_fd=None,
+                )
+                test_result(
+                    "_locked_flow dirty-tree kickback does not raise",
+                    result.outcome == MergeOutcome.KICKBACK and result.orig_head == "f" * 40,
+                    f"Got outcome={result.outcome}, orig_head={result.orig_head}"
+                )
+            except ValueError as e:
+                test_result(
+                    "_locked_flow dirty-tree kickback does not raise",
+                    False,
+                    f"Raised ValueError: {e}"
+                )
+
+print("  [Test 11.2] _locked_flow returns KICKBACK (not ValueError) when config is invalid")
+with tempfile.TemporaryDirectory() as tmpdir:
+    cwd = Path(tmpdir)
+    with patch('workflow.merge_queue.Runner.run_git') as mock_git:
+        mock_git.return_value = "e" * 40 + "\n"
+        with patch('workflow.merge_queue._is_tree_clean') as mock_clean:
+            mock_clean.return_value = True
+            with patch('workflow.merge_queue._has_rebase_or_merge_in_progress') as mock_rebase:
+                mock_rebase.return_value = False
+                with patch('workflow.merge_queue.load_and_validate_config') as mock_load:
+                    mock_load.side_effect = ValueError("bad config")
+                    try:
+                        result = _locked_flow(
+                            pr=1,
+                            branch="feature-x",
+                            worktree=str(cwd),
+                            config=MergeQueueConfig(base="main", steps=[Step(cmd="echo test")]),
+                            merge_lock_fd=-1,
+                            inherit_lock_fd=None,
+                            config_path=Path(tmpdir) / "merge-queue.json",
+                        )
+                        test_result(
+                            "_locked_flow config-invalid kickback does not raise",
+                            result.outcome == MergeOutcome.KICKBACK and result.orig_head == "e" * 40,
+                            f"Got outcome={result.outcome}, orig_head={result.orig_head}"
+                        )
+                    except ValueError as e:
+                        test_result(
+                            "_locked_flow config-invalid kickback does not raise",
+                            False,
+                            f"Raised ValueError: {e}"
+                        )
 
 
 # ============================================================================

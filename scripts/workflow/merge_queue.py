@@ -1204,6 +1204,12 @@ def _locked_flow(
     """
     cwd = Path(worktree).resolve()
 
+    # Captured up front so every KICKBACK constructed below (even before the fetch/rev-parse
+    # section further down) satisfies MergeResult's outcome invariant (KICKBACK requires
+    # orig_head). If HEAD itself can't be resolved, that's a genuine internal error, not a
+    # kickback, so let it propagate to run_one's outer handler.
+    orig_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+
     try:
         # Re-check tree is clean and no rebase/merge
         if not _is_tree_clean(cwd):
@@ -1212,6 +1218,7 @@ def _locked_flow(
                 pr=pr,
                 branch=branch,
                 worktree=worktree,
+                orig_head=orig_head,
                 reason="Worktree tree is not clean (re-check in lock)",
             )
 
@@ -1221,6 +1228,7 @@ def _locked_flow(
                 pr=pr,
                 branch=branch,
                 worktree=worktree,
+                orig_head=orig_head,
                 reason="Rebase or merge is in progress; run appropriate abort command",
             )
 
@@ -1235,6 +1243,7 @@ def _locked_flow(
                 pr=pr,
                 branch=branch,
                 worktree=worktree,
+                orig_head=orig_head,
                 reason=f"Config changed or invalid: {e}",
             )
 
@@ -1251,6 +1260,7 @@ def _locked_flow(
                     pr=pr,
                     branch=branch,
                     worktree=worktree,
+                    orig_head=orig_head,
                     reason="PR is no longer OPEN",
                 )
             if pr_data.get("baseRefName") != config.base:
@@ -1259,6 +1269,7 @@ def _locked_flow(
                     pr=pr,
                     branch=branch,
                     worktree=worktree,
+                    orig_head=orig_head,
                     reason="PR base has changed",
                 )
             if pr_data.get("headRefName") != branch:
@@ -1267,31 +1278,32 @@ def _locked_flow(
                     pr=pr,
                     branch=branch,
                     worktree=worktree,
+                    orig_head=orig_head,
                     reason="PR branch has changed",
                 )
 
             # Check push-completeness: headRefOid must match local HEAD
             head_oid = pr_data.get("headRefOid")
-            if head_oid:
-                current_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
-                if head_oid != current_head:
-                    return MergeResult(
-                        outcome=MergeOutcome.KICKBACK,
-                        pr=pr,
-                        branch=branch,
-                        worktree=worktree,
-                        reason=f"Local branch is not in sync with pushed branch; push to update (local: {current_head[:8]}, pushed: {head_oid[:8]})",
-                    )
+            if head_oid and head_oid != orig_head:
+                return MergeResult(
+                    outcome=MergeOutcome.KICKBACK,
+                    pr=pr,
+                    branch=branch,
+                    worktree=worktree,
+                    orig_head=orig_head,
+                    reason=f"Local branch is not in sync with pushed branch; push to update (local: {orig_head[:8]}, pushed: {head_oid[:8]})",
+                )
         except Exception as e:
             return MergeResult(
                 outcome=MergeOutcome.KICKBACK,
                 pr=pr,
                 branch=branch,
                 worktree=worktree,
+                orig_head=orig_head,
                 reason=f"Failed to re-validate PR: {e}",
             )
 
-        # Fetch and record lease_sha, base_sha, orig_head
+        # Fetch and record lease_sha, base_sha
         try:
             Runner.run_git(["fetch", "origin"], cwd=cwd)
         except Exception as e:
@@ -1300,19 +1312,20 @@ def _locked_flow(
                 pr=pr,
                 branch=branch,
                 worktree=worktree,
+                orig_head=orig_head,
                 reason=f"Failed to fetch: {e}",
             )
 
         try:
             lease_sha = Runner.run_git(["rev-parse", f"origin/{branch}"], cwd=cwd).strip()
             base_sha = Runner.run_git(["rev-parse", f"origin/{config.base}"], cwd=cwd).strip()
-            orig_head = Runner.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
         except Exception as e:
             return MergeResult(
                 outcome=MergeOutcome.KICKBACK,
                 pr=pr,
                 branch=branch,
                 worktree=worktree,
+                orig_head=orig_head,
                 reason=f"Failed to parse shas: {e}",
             )
 
