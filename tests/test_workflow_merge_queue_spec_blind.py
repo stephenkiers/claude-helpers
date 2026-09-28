@@ -28,6 +28,7 @@ from _test_harness import Harness
 # Import the module under test
 from workflow.merge_queue import (
     MergeQueueConfig,
+    Step,
     load_and_validate_config,
     build_trailer,
     parse_trailer,
@@ -81,7 +82,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
             )
             test_result(
                 "Config has expected steps",
-                len(cfg.steps) == 1 and cfg.steps[0] == "echo test",
+                len(cfg.steps) == 1 and isinstance(cfg.steps[0], Step) and cfg.steps[0].cmd == "echo test",
                 f"steps={cfg.steps}"
             )
         except Exception as e:
@@ -506,6 +507,7 @@ try:
         pr=123,
         branch="test-branch",
         worktree="/path/to/worktree",
+        tested_sha="a" * 40,  # MERGED outcome requires tested_sha
     )
     test_result(
         "MergeResult constructor accepts MergeOutcome",
@@ -667,7 +669,7 @@ print("[Section 7] Config Dataclass Methods")
 print("  [Test 7.1] MergeQueueConfig.to_dict() serializes to dict")
 cfg = MergeQueueConfig(
     base="main",
-    steps=["echo test"],
+    steps=[Step(cmd="echo test")],
     cleanup=False,
     scratch_setup=[],
     inherit_lock_fd=False,
@@ -776,9 +778,10 @@ with tempfile.TemporaryDirectory() as tmpdir:
                                 mock_config_path.return_value = Path("/fake/config.json")
                                 mock_load_config.return_value = MergeQueueConfig(
                                     base="main",
-                                    steps=["echo test"]
+                                    steps=[Step(cmd="echo test")]
                                 )
-                                mock_verify.return_value = True
+                                # Mock returns tuple: (success, is_infra_error)
+                                mock_verify.return_value = (True, False)
 
                                 # Call _cmd_bootstrap
                                 result = _cmd_bootstrap([])
@@ -911,7 +914,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
 print("  [Test 9.2] resolve_config_path validates worktrees layout (regression)")
 with tempfile.TemporaryDirectory() as tmpdir:
     # Create the /setup-repo layout: <container>/worktrees/<worktree>/
-    # git.get_git_common_dir() returns container/worktrees/.git (the shared git dir)
+    # git.get_git_common_dir() for a worktree returns that worktree's own .git dir,
+    # i.e. container/worktrees/<name>/.git
     container = Path(tmpdir) / "myrepo"
     worktrees_dir = container / "worktrees"
     worktrees_dir.mkdir(parents=True, exist_ok=True)
@@ -924,8 +928,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
     config_file = container / "merge-queue.json"
     config_file.write_text(json.dumps({"base": "main", "steps": ["echo test"]}))
 
-    # The git-common-dir for worktrees layout points to worktrees/.git
-    git_common_dir = worktrees_dir / ".git"
+    # The git-common-dir for a worktree is its own .git dir, one level below
+    # worktrees/<name>, not worktrees/.git directly.
+    git_common_dir = worktree / ".git"
     git_common_dir.mkdir(exist_ok=True)
 
     # Mock git.get_git_common_dir to return the shared git dir (validates bug #4 fix)
