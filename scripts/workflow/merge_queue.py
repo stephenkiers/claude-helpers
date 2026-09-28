@@ -83,34 +83,37 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
     """
     if config_flag:
         resolved = Path(config_flag).resolve()
-        # Check that override is outside the PR worktree (under git-common-dir)
+        # Check that override is outside the PR worktree (under git-common-dir).
+        # Fails closed: if the boundary can't be verified, refuse rather than
+        # silently trusting a path that might be inside the PR worktree.
         try:
             git_common_dir = Path(git.get_git_common_dir()).resolve()
-            if str(resolved).startswith(str(git_common_dir)):
-                raise RuntimeError(
-                    f"--config path is inside the PR worktree; must be outside: {resolved}\n"
-                    f"Set MERGE_QUEUE_CONFIG or place config at <repo>/merge-queue.json"
-                )
-        except RuntimeError:
-            raise
-        except Exception:
-            pass  # Can't verify; allow it
+        except Exception as e:
+            raise RuntimeError(
+                f"--config trust-boundary check failed: could not resolve git-common-dir: {e}"
+            ) from e
+        if str(resolved).startswith(str(git_common_dir)):
+            raise RuntimeError(
+                f"--config path is inside the PR worktree; must be outside: {resolved}\n"
+                f"Set MERGE_QUEUE_CONFIG or place config at <repo>/merge-queue.json"
+            )
         return resolved
 
     if env_path := os.environ.get("MERGE_QUEUE_CONFIG"):
         resolved = Path(env_path).resolve()
-        # Check that override is outside the PR worktree (under git-common-dir)
+        # Check that override is outside the PR worktree (under git-common-dir).
+        # Fails closed: see rationale above.
         try:
             git_common_dir = Path(git.get_git_common_dir()).resolve()
-            if str(resolved).startswith(str(git_common_dir)):
-                raise RuntimeError(
-                    f"MERGE_QUEUE_CONFIG path is inside the PR worktree; must be outside: {resolved}\n"
-                    f"Place config at <repo>/merge-queue.json or override with absolute path outside PR"
-                )
-        except RuntimeError:
-            raise
-        except Exception:
-            pass  # Can't verify; allow it
+        except Exception as e:
+            raise RuntimeError(
+                f"MERGE_QUEUE_CONFIG trust-boundary check failed: could not resolve git-common-dir: {e}"
+            ) from e
+        if str(resolved).startswith(str(git_common_dir)):
+            raise RuntimeError(
+                f"MERGE_QUEUE_CONFIG path is inside the PR worktree; must be outside: {resolved}\n"
+                f"Place config at <repo>/merge-queue.json or override with absolute path outside PR"
+            )
         return resolved
 
     try:
@@ -1433,7 +1436,7 @@ def _locked_flow(
                 step.cmd,
                 cwd,
                 log_path,
-                timeout_secs=step.timeout_secs,
+                timeout_secs=step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs,
                 inherit_lock_fd=inherit_lock_fd,
             )
 
@@ -1727,7 +1730,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bo
         # Run setup commands
         for setup_cmd in config.scratch_setup:
             log_path = state_dir / "logs" / "setup.log"
-            outcome = run_step(setup_cmd, scratch_dir, log_path)
+            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs)
             if not outcome.success:
                 # Setup failed; this is a gate failure, not infra error
                 return (False, False)
@@ -1735,7 +1738,8 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig) -> Tuple[bo
         # Run gate steps
         for i, step in enumerate(config.steps):
             log_path = state_dir / "logs" / f"base-verify-step-{i}.log"
-            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=step.timeout_secs)
+            timeout_secs = step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs
+            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs)
             if not outcome.success:
                 # Gate step failed; this is a gate failure, not infra error
                 return (False, False)
