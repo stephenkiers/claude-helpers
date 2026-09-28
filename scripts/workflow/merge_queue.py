@@ -1286,7 +1286,7 @@ def _locked_flow(
 
         # Sync local branch (best-effort)
         try:
-            Runner.run_git(["branch", "-f", branch, "@{u}"], cwd=cwd)
+            Runner.run_git(["branch", "-f", Runner.validate_branch(branch), "@{u}"], cwd=cwd)
         except Exception:
             pass
 
@@ -1442,9 +1442,12 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
     # Poll for headRefOid match
     max_attempts = 60
     converged = False
+    pr_title = f"PR #{pr}"
     for _ in range(max_attempts):
         try:
-            pr_data = git.pr_view_json(str(pr), ["headRefOid", "mergeable"], cwd=cwd)
+            pr_data = git.pr_view_json(str(pr), ["headRefOid", "mergeable", "title"], cwd=cwd)
+            if pr_data and pr_data.get("title"):
+                pr_title = str(pr_data["title"])
             if pr_data and pr_data.get("headRefOid") == tested_sha and pr_data.get("mergeable") != "UNKNOWN":
                 converged = True
                 break
@@ -1467,7 +1470,7 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
                 "--squash",
                 f"--match-head-commit={tested_sha}",
                 "--subject",
-                f"PR #{pr}",
+                f"{pr_title} (#{pr})",
                 "--body",
                 trailer,
             ],

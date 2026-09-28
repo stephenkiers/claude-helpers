@@ -39,11 +39,22 @@ analysis; the queue should catch it automatically.
    with the exact issue. The result is written to `result.json`. Subsequent PRs in the queue proceed
    immediately (not blocked by an earlier failure).
 
-6. **Force-push carve-out:** The queue's only force-push is `--force-with-lease=<branch>:<tested_sha>`
-   with an explicit refspec `<tested_sha>:refs/heads/<branch>`, audited in a single function with no
-   other push call site in the queue module and no bare `--force` or `+`-prefixed refspecs. This is
-   the **only authorized force-push** — it happens only after the full gate passes, and it is never a
-   bare `--force` or inherited from `git config`.
+6. **Force-push carve-out:** The queue's only force-push is `--force-with-lease=<branch>:<lease_sha>`
+   (the lease pins the branch's *pre-rebase* tip, so the push is rejected if the remote moved
+   underneath it) with an explicit refspec `<tested_sha>:refs/heads/<branch>` for what's actually
+   pushed, audited in a single function (`force_push_tested()`) with no other push call site in the
+   queue module and no bare `--force` or `+`-prefixed refspecs. This is the **only authorized
+   force-push** — it happens only after the full gate passes, and it is never a bare `--force` or
+   inherited from `git config`.
+
+7. **Parallel mutation seam:** This module's `Runner.run_git`/`Runner.run_gh` are a separate, self-audited
+   choke point for merge-queue mutations — they do not go through `scripts/workflow/mutations.py`'s
+   `check_mutation_allowed()` allowlist (ADR-0013). This is intentional: the queue's mutating calls
+   (rebase, the pinned force-push, `gh pr merge` with queue-specific flags, the best-effort local
+   branch sync) are shaped differently from what that allowlist covers, and `force_push_tested()`
+   already provides an equivalent, narrower audit for the one call that matters most. Anyone editing
+   this module should keep both funnels in mind rather than assume ADR-0013's allowlist covers this
+   code.
 
 ## Configuration
 
