@@ -2,7 +2,7 @@
 name: queued-merge
 description: Merge a PR through the local merge queue, testing it against the exact base it lands on. The queue serializes PRs and merges them one at a time in arrival order. Run from the worktree you want to merge, or from the main worktree with a PR number.
 argument-hint: [PR number]
-allowed-tools: Read, Bash(git worktree:*), Bash(git rev-parse:*), Bash(git status:*), Bash(gh pr view:*), Bash(printf:*), Bash(jq:*), Bash(grep:*), Bash(tail:*), Bash(cat:*), Bash(test:*), Bash(ls:*), Bash(rm:*)
+allowed-tools: Read, Bash(git symbolic-ref:*), Bash(git rev-parse:*), Bash(git worktree:*), Bash(gh pr view:*), Bash(printf:*), Bash(jq:*), Bash(cat:*), Bash(python3:*), Bash(test:*)
 model: haiku
 ---
 
@@ -91,11 +91,20 @@ MAIN_WORKTREE=$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname)
 CURRENT_WORKTREE=$(pwd)
 
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
-  # Running from main worktree; find the PR worktree
-  # Try to find a worktree with the PR branch name
-  PR_WORKTREE=$(git worktree list --porcelain 2>/dev/null | grep "branch $PR_HEAD" | awk '{print $1}' | head -1)
+  # Running from main worktree; find the PR worktree using absolute paths and porcelain parsing
+  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" git worktree list --path-format=absolute --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
+import sys
+import os
+pr_head = os.environ.get('PR_HEAD', '')
+for line in sys.stdin:
+  parts = line.split()
+  if len(parts) >= 4 and parts[2] == 'branch' and parts[3] == pr_head:
+    print(parts[0])
+    break
+PYTHON_EOF
+)
   
-  if [ -z "$PR_WORKTREE" ]; then
+  if [ $? -ne 0 ] || [ -z "$PR_WORKTREE" ]; then
     echo "ERROR: PR #$PR_NUM worktree not found. Create a worktree for branch '$PR_HEAD' first."
     exit 3
   fi
@@ -112,7 +121,11 @@ echo "Worktree: $PR_WORKTREE"
 Launch the merge queue as a background process so the session can be re-invoked on exit. The queue
 will handle serialization, testing, and retry internally.
 
-**Start this in the background** so the command doesn't block:
+**Invoke the block below with the Bash tool's `run_in_background: true`.** The merge queue's
+enqueue operation may take several minutes as it tests the PR against the exact base it will land
+on — long enough to hit a foreground Bash call's timeout ceiling even though the enqueue is still
+proceeding fine. A backgrounded call has no such ceiling; wait for its completion notification,
+then move to Phase 4, which reads the result from disk.
 
 ```bash
 echo "Enqueuing PR #$PR_NUM in the local merge queue..."
@@ -131,10 +144,8 @@ fi
 
 # Run the merge queue in the PR worktree (background)
 cd "$PR_WORKTREE"
-"$MERGE_QUEUE_SCRIPT" enqueue --no-claude 2>&1
+"$MERGE_QUEUE_SCRIPT" enqueue --no-claude --pr "$PR_NUM" 2>&1
 ```
-
-**When the background process completes**, move to Phase 4.
 
 ### Phase 4 — Read result and report
 
@@ -150,8 +161,17 @@ if [ ! -f "$STATE_DIR/result.json" ]; then
   exit 1
 fi
 
-# Extract outcome and details
+# Extract and verify the result JSON
 RESULT_JSON=$(cat "$STATE_DIR/result.json" 2>/dev/null)
+
+# Verify the .pr field matches the resolved PR number
+RESULT_PR=$(printf '%s' "$RESULT_JSON" | jq -r '.pr // ""' 2>/dev/null)
+if [ "$RESULT_PR" != "$PR_NUM" ]; then
+  echo "ERROR: result.json PR mismatch (expected $PR_NUM, found $RESULT_PR) — result may be from a different PR"
+  exit 1
+fi
+
+# Extract outcome and details (assume normalized casing from the writer)
 OUTCOME=$(printf '%s' "$RESULT_JSON" | jq -r '.outcome // "UNKNOWN"' 2>/dev/null)
 REASON=$(printf '%s' "$RESULT_JSON" | jq -r '.reason // ""' 2>/dev/null)
 DETAILS=$(printf '%s' "$RESULT_JSON" | jq -r '.details // ""' 2>/dev/null)
