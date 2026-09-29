@@ -15,6 +15,7 @@ Subcommands:
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -358,6 +359,28 @@ def ensure_state_dir() -> Path:
     (state_dir / "results").mkdir(mode=0o700, exist_ok=True)
 
     return state_dir
+
+
+def get_scratch_dir() -> Path:
+    """
+    Get the scratch worktree directory.
+
+    Deliberately placed outside the repo's own directory tree, unlike the rest of
+    state_dir (which lives under git-common-dir). The scratch dir hosts a real
+    checked-out git worktree, and ancestor-directory-walking tools run inside it
+    (Cargo workspace discovery, relative sibling-repo path dependencies) walk
+    upward from the scratch checkout looking for enclosing manifests/dirs. If
+    scratch is nested anywhere under the repo's own checkout tree (e.g. under
+    git-common-dir, which sits inside the main worktree), that walk escapes the
+    scratch checkout and re-enters the enclosing repo, misresolving against the
+    wrong copy. Keying by a hash of git-common-dir keeps one stable, reusable
+    scratch location per repo across invocations.
+    """
+    git_common_dir = Path(git.get_git_common_dir()).resolve()
+    digest = hashlib.sha256(str(git_common_dir).encode()).hexdigest()[:16]
+    scratch_root = Path.home() / ".claude" / "merge-queue-scratch" / digest
+    scratch_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    return scratch_root / "scratch"
 
 
 def get_merge_lock_path() -> Path:
@@ -2127,7 +2150,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
     - INFRA_ERROR: infrastructure error (worktree creation, clone, etc. failed)
     """
     state_dir = ensure_state_dir()
-    scratch_dir = state_dir / "scratch"
+    scratch_dir = get_scratch_dir()
 
     try:
         # Create or update scratch worktree

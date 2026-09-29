@@ -102,7 +102,15 @@ itself fails closed — raising rather than silently allowing the override throu
 - **`cleanup`** (required, boolean): If `true`, run cleanup via `cleanup.py` after a successful
   merge (from the base worktree, with the configured `base` branch, not `main`).
 - **`scratch_setup`** (optional, list of strings): One-time setup commands to run when the scratch
-  worktree is created (e.g., `git fetch origin main:main`).
+  worktree is created (e.g., `git fetch origin main:main`). The scratch worktree lives at a fixed,
+  repo-keyed path outside any checkout's own directory tree (`~/.claude/merge-queue-scratch/<hash>/scratch`,
+  see `get_scratch_dir()`) so ancestor-directory-walking tools (Cargo workspace discovery, `go.work`)
+  never escape it into an enclosing repo checkout. That location's depth relative to sibling
+  directories will not generally match a real worktree's depth, though, so a project with a relative
+  path dependency on a sibling repo (`../../../sibling-repo/crate`) will resolve it incorrectly
+  inside scratch even though it resolves fine in a real worktree. Use `scratch_setup` to paper over
+  that mismatch with a symlink, e.g. `ln -sfn /abs/path/to/sibling-repo .git/sibling-repo` plus
+  adjusting the dependency's path, or a `[patch]`/path override scoped to the scratch checkout.
 - **`inherit_lock_fd`** (optional, boolean, default `false`): If `true`, pass the `merge.lock` fd
   to step child processes (for repos where real-app E2E needs to hold the lock across steps).
 - **`allow_unverified`** (optional, list of 40-hex SHAs): Shas of commits on the base branch that
