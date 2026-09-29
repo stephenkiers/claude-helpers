@@ -24,12 +24,32 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass, field, asdict, fields, replace
+from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Sequence
 
 from . import git
+
+
+# ============================================================================
+# Module-level utilities
+# ============================================================================
+
+# Compiled regex for validating 40-character hexadecimal SHA
+SHA40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _is_valid_sha40(sha: str) -> bool:
+    """Check if sha is a valid 40-hex string."""
+    return SHA40_PATTERN.fullmatch(sha) is not None
+
+
+# Module-level constants (with rationale comments)
+POLL_SLEEP_INTERVAL = 1.0  # Poll for lower tickets and PR convergence once per second
+GRACE_PERIOD_BEFORE_KILL = 5.0  # Grace period (seconds) before SIGKILL after SIGTERM
+SCAN_BASE_MAX_DEPTH = 100  # Maximum depth to scan in base commit history for poison checks
+PRUNE_OLD_RESULTS_LIMIT = 100  # Keep the most recent N result files to prevent unbounded growth
 
 
 # ============================================================================
@@ -60,14 +80,44 @@ class MergeQueueConfig:
     pr_merge_poll_secs: int = 60  # Timeout for polling PR metadata before merge (default 60s at ~1s intervals)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for JSON serialization."""
-        return asdict(self)
+        """Convert to dict for JSON serialization, converting Step objects to dicts."""
+        result = asdict(self)
+        # Ensure steps are represented as dicts for JSON
+        if "steps" in result:
+            steps_list = []
+            for step in result["steps"]:
+                if isinstance(step, dict):
+                    steps_list.append(step)
+                elif isinstance(step, Step):
+                    steps_list.append(asdict(step))
+                else:
+                    steps_list.append(step)
+            result["steps"] = steps_list
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MergeQueueConfig":
-        """Construct from parsed JSON dict."""
+        """Construct from parsed JSON dict, normalizing steps to Step objects."""
         field_names = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in field_names})
+        filtered_data = {k: v for k, v in data.items() if k in field_names}
+
+        # Normalize steps from Union[str, Dict] to List[Step]
+        if "steps" in filtered_data and filtered_data["steps"]:
+            normalized_steps = []
+            for step_data in filtered_data["steps"]:
+                if isinstance(step_data, Step):
+                    # Already a Step object (from to_dict -> asdict -> Step)
+                    normalized_steps.append(step_data)
+                elif isinstance(step_data, str):
+                    normalized_steps.append(Step(cmd=step_data))
+                elif isinstance(step_data, dict):
+                    normalized_steps.append(Step(
+                        cmd=step_data["cmd"],
+                        timeout_secs=step_data.get("timeout_secs")
+                    ))
+            filtered_data["steps"] = normalized_steps
+
+        return cls(**filtered_data)
 
 
 def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
@@ -240,7 +290,7 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
         if not isinstance(data["allow_unverified"], list):
             raise ValueError("allow_unverified must be a list of 40-hex shas")
         for sha in data["allow_unverified"]:
-            if not isinstance(sha, str) or not re.match(r"^[0-9a-f]{40}$", sha):
+            if not isinstance(sha, str) or not _is_valid_sha40(sha):
                 raise ValueError(f"allow_unverified: invalid sha {sha} (must be 40-hex)")
 
     if "mutation_timeout_secs" in data:
@@ -270,6 +320,18 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
     data["steps"] = normalized_steps
 
     return MergeQueueConfig.from_dict(data)
+
+
+def _touch_record(path: Path) -> None:
+    """
+    Create an empty marker file at path (mode 0o600).
+    Safely opens and closes the fd to avoid leaks.
+    """
+    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o600)
+    try:
+        pass
+    finally:
+        os.close(fd)
 
 
 # ============================================================================
@@ -478,17 +540,17 @@ def wait_turn(ticket_num: int) -> int:
                     fcntl.flock(merge_lock_fd, fcntl.LOCK_UN)
                     # Release alloc.lock and go to blocking acquire
                     fcntl.flock(alloc_lock_fd, fcntl.LOCK_UN)
-                    os.close(alloc_lock_fd)
                     break
                 except BlockingIOError:
                     pass
 
             fcntl.flock(alloc_lock_fd, fcntl.LOCK_UN)
-            os.close(alloc_lock_fd)
         except (OSError, BlockingIOError):
             pass
+        finally:
+            os.close(alloc_lock_fd)
 
-        time.sleep(1.0)
+        time.sleep(POLL_SLEEP_INTERVAL)
 
     # Now block on merge.lock
     try:
@@ -742,9 +804,9 @@ class Runner:
         Raises RuntimeError on timeout; other errors are raised as-is.
         """
         # Validate shas are exactly 40 hex digits (anchored regex)
-        if not re.match(r"^[0-9a-f]{40}$", tested_sha.strip()):
+        if not _is_valid_sha40(tested_sha.strip()):
             raise ValueError(f"tested_sha is not 40-hex: {tested_sha}")
-        if not re.match(r"^[0-9a-f]{40}$", lease_sha.strip()):
+        if not _is_valid_sha40(lease_sha.strip()):
             raise ValueError(f"lease_sha is not 40-hex: {lease_sha}")
 
         branch = Runner.validate_branch(branch)
@@ -1002,14 +1064,14 @@ def prune_old_results(max_results: int = 100) -> None:
             key=lambda p: p.stat().st_mtime,
             reverse=True
         )
-    except (OSError, Exception):
+    except Exception:
         return
 
     # Delete files beyond the max_results threshold
     for old_file in result_files[max_results:]:
         try:
             old_file.unlink()
-        except (OSError, Exception):
+        except Exception:
             pass
 
 
@@ -1107,7 +1169,7 @@ def _check_result_json_kickback_state(local_head: str, cwd: Optional[Path] = Non
             return True
 
         return False
-    except (json.JSONDecodeError, OSError, Exception):
+    except Exception:
         return False
 
 
@@ -1530,7 +1592,7 @@ def _phase_verify_base(
     orig_head: str,
     base_sha: str,
     config: MergeQueueConfig,
-    inherit_lock_fd: Optional[int],
+    lock_fd_to_inherit: Optional[int],
     cwd: Path,
 ) -> Optional[MergeResult]:
     """
@@ -1557,11 +1619,11 @@ def _phase_verify_base(
         else:
             # Try to verify the base by running gate in scratch worktree
             # M9: Thread lock_fd_to_inherit through to _verify_base_in_scratch
-            verify_outcome = _verify_base_in_scratch(base_sha, config, lock_fd_to_inherit=inherit_lock_fd)
+            verify_outcome = _verify_base_in_scratch(base_sha, config, lock_fd_to_inherit=lock_fd_to_inherit)
             if verify_outcome == VerifyBaseOutcome.VERIFIED:
                 # Gate passed; write verified record
                 os.makedirs(verified_path.parent, exist_ok=True)
-                os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
+                _touch_record(verified_path)
                 return None
             elif verify_outcome == VerifyBaseOutcome.INFRA_ERROR:
                 # Infrastructure error during verification; return INTERNAL_ERROR
@@ -1577,7 +1639,7 @@ def _phase_verify_base(
                 # Gate failed; write failed record only on first failure
                 if not failed_path.exists():
                     os.makedirs(failed_path.parent, exist_ok=True)
-                    os.open(str(failed_path), os.O_CREAT | os.O_WRONLY, 0o600)
+                    _touch_record(failed_path)
 
                 return _kickback(
                     pr, branch, worktree, orig_head,
@@ -1612,7 +1674,7 @@ def _phase_rebase(
                 restore_failed = f"rebase --abort failed: {abort_err}"
                 return _kickback(
                     pr, branch, worktree, orig_head,
-                    "Rebase timed out (abort also failed)",
+                    f"Rebase timed out after {config.mutation_timeout_secs}s (abort also failed)",
                     restore_failed=restore_failed
                 )
             return _kickback(
@@ -1660,7 +1722,7 @@ def _phase_run_gate_and_assertions(
     worktree: str,
     orig_head: str,
     config: MergeQueueConfig,
-    inherit_lock_fd: Optional[int],
+    lock_fd_to_inherit: Optional[int],
     cwd: Path,
 ) -> Tuple[Optional[MergeResult], Optional[str]]:
     """
@@ -1687,7 +1749,7 @@ def _phase_run_gate_and_assertions(
             cwd,
             log_path,
             timeout_secs=step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs,
-            inherit_lock_fd=inherit_lock_fd,
+            lock_fd_to_inherit=lock_fd_to_inherit,
         )
 
         if not step_outcome.success:
@@ -1760,14 +1822,14 @@ def _phase_push(
                     # Push timed out and remote tip is not what we tested
                     return _kickback(
                         pr, branch, worktree, orig_head,
-                        "Push timed out; could not verify success",
+                        f"Push timed out after {config.mutation_timeout_secs}s; could not verify success",
                         tested_sha=tested_sha
                     )
             except Exception:
                 # Could not re-query; treat as timeout failure
                 return _kickback(
                     pr, branch, worktree, orig_head,
-                    f"Push timed out and could not re-query state: {e}",
+                    f"Push timed out after {config.mutation_timeout_secs}s and could not re-query state: {e}",
                     tested_sha=tested_sha
                 )
         else:
@@ -1909,7 +1971,7 @@ def _locked_flow(
     worktree: str,
     config: MergeQueueConfig,
     merge_lock_fd: int,
-    inherit_lock_fd: Optional[int],
+    lock_fd_to_inherit: Optional[int],
     config_path: Optional[Path] = None,
 ) -> MergeResult:
     """
@@ -1951,7 +2013,7 @@ def _locked_flow(
         assert lease_sha is not None and base_sha is not None
 
         # Phase 5: Verify base
-        result = _phase_verify_base(pr, branch, worktree, orig_head, base_sha, config, inherit_lock_fd, cwd)
+        result = _phase_verify_base(pr, branch, worktree, orig_head, base_sha, config, lock_fd_to_inherit, cwd)
         if result:
             return result
 
@@ -1961,7 +2023,7 @@ def _locked_flow(
             return result
 
         # Phase 7: Run gate and post-gate assertions
-        result, tested_sha = _phase_run_gate_and_assertions(pr, branch, worktree, orig_head, config, inherit_lock_fd, cwd)
+        result, tested_sha = _phase_run_gate_and_assertions(pr, branch, worktree, orig_head, config, lock_fd_to_inherit, cwd)
         if result:
             return result
         # tested_sha is guaranteed to be non-None here
@@ -2044,7 +2106,7 @@ def _no_remote_only_commits(branch: str, base: str, cwd: Optional[Path] = None) 
                         if result_data.get("tested_sha"):
                             if git.is_ancestor(result_data["tested_sha"], "HEAD", cwd=cwd):
                                 return True
-            except (json.JSONDecodeError, Exception):
+            except Exception:
                 pass
 
         return False
@@ -2116,7 +2178,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
         for setup_cmd in config.scratch_setup:
             log_path = state_dir / "logs" / "setup.log"
             # M9: Thread lock_fd_to_inherit through to run_step
-            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs, inherit_lock_fd=lock_fd_to_inherit)
+            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs, lock_fd_to_inherit=lock_fd_to_inherit)
             if not outcome.success:
                 # Setup failed; this is a gate failure, not infra error
                 return VerifyBaseOutcome.GATE_FAILED
@@ -2126,7 +2188,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
             log_path = state_dir / "logs" / f"base-verify-step-{i}.log"
             timeout_secs = step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs
             # M9: Thread lock_fd_to_inherit through to run_step
-            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs, inherit_lock_fd=lock_fd_to_inherit)
+            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs, lock_fd_to_inherit=lock_fd_to_inherit)
             if not outcome.success:
                 # Gate step failed; this is a gate failure, not infra error
                 return VerifyBaseOutcome.GATE_FAILED
@@ -2149,10 +2211,10 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
     This allows time for GitHub to compute mergeability and converge PR metadata.
     """
     # Poll for headRefOid match
-    max_attempts = config.pr_merge_poll_secs
+    deadline = time.monotonic() + config.pr_merge_poll_secs
     converged = False
     pr_title = f"PR #{pr}"
-    for _ in range(max_attempts):
+    while time.monotonic() < deadline:
         try:
             pr_data = git.pr_view_json(str(pr), ["headRefOid", "mergeable", "title"], cwd=cwd)
             if pr_data and pr_data.get("title"):
@@ -2163,7 +2225,7 @@ def _merge_pr(pr: int, tested_sha: str, base_sha: str, config: MergeQueueConfig,
         except (git.GitCommandError, json.JSONDecodeError):
             # GitHub API temporary error; retry
             pass
-        time.sleep(1.0)
+        time.sleep(POLL_SLEEP_INTERVAL)
 
     # If polling didn't converge, return poll timeout
     if not converged:
@@ -2447,7 +2509,7 @@ def _cmd_reverify(argv: List[str]) -> int:
         if args.sha:
             sha = args.sha
             # Validate sha format (40-hex)
-            if not re.match(r"^[0-9a-f]{40}$", sha):
+            if not _is_valid_sha40(sha):
                 print(f"Invalid SHA format: {sha} (must be 40 hex digits)", file=sys.stderr)
                 return 3
         else:
@@ -2521,7 +2583,7 @@ def _cmd_bootstrap(argv: List[str]) -> int:
                 state_dir = ensure_state_dir()
                 verified_path = state_dir / "base-verified" / base_sha
                 os.makedirs(verified_path.parent, exist_ok=True)
-                os.open(str(verified_path), os.O_CREAT | os.O_WRONLY, 0o600)
+                _touch_record(verified_path)
                 print(f"Success: base {base_sha[:8]} is verified")
                 return 0
             elif verify_outcome == VerifyBaseOutcome.INFRA_ERROR:

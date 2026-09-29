@@ -783,7 +783,7 @@ try:
     )
     test_result(
         "from_dict preserves steps",
-        cfg.steps == ["make test"],
+        cfg.steps == [Step(cmd="make test")],
         f"Got {cfg.steps}"
     )
     test_result(
@@ -806,7 +806,7 @@ try:
     cfg = MergeQueueConfig.from_dict(test_dict_with_unknown)
     test_result(
         "from_dict ignores unknown keys",
-        cfg.base == "main" and cfg.steps == ["echo test"],
+        cfg.base == "main" and cfg.steps == [Step(cmd="echo test")],
         f"Got base={cfg.base}, steps={cfg.steps}"
     )
 except Exception as e:
@@ -1385,8 +1385,37 @@ with tempfile.TemporaryDirectory() as tmpdir:
                 f"Got error: {e}"
             )
 
-# Test 10.13: parse_trailer round-trip with real body shape from _merge_pr
-print("  [Test 10.13] parse_trailer round-trip with real commit body")
+# Test 10.13: Config.from_dict(to_dict(cfg)) round-trip
+print("  [Test 10.13] Config.from_dict(to_dict(cfg)) round-trip")
+with tempfile.TemporaryDirectory() as tmpdir:
+    config_path = Path(tmpdir) / "merge-queue.json"
+    config_data = {
+        "base": "main",
+        "steps": [
+            "echo simple",
+            {"cmd": "echo with-timeout", "timeout_secs": 100},
+        ],
+    }
+    config_path.write_text(json.dumps(config_data))
+
+    with patch('workflow.merge_queue.git.get_default_branch') as mock_branch:
+        mock_branch.return_value = ("main", None)
+
+        try:
+            cfg1 = load_and_validate_config(config_path)
+            # Round-trip: to_dict -> from_dict
+            cfg2 = MergeQueueConfig.from_dict(cfg1.to_dict())
+            # Verify equality
+            test_result(
+                "Config round-trip preserves structure",
+                cfg1 == cfg2,
+                f"cfg1={cfg1}, cfg2={cfg2}"
+            )
+        except Exception as e:
+            test_result("Config round-trip", False, str(e))
+
+# Test 10.14: parse_trailer round-trip with real body shape from _merge_pr
+print("  [Test 10.14] parse_trailer round-trip with real commit body")
 with tempfile.TemporaryDirectory() as tmpdir:
     # Initialize a real git repo
     cwd = Path(tmpdir)
@@ -1504,7 +1533,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
                     worktree=str(cwd),
                     config=MergeQueueConfig(base="main", steps=[Step(cmd="echo test")]),
                     merge_lock_fd=-1,
-                    inherit_lock_fd=None,
+                    lock_fd_to_inherit=None,
                 )
                 test_result(
                     "_locked_flow dirty-tree kickback does not raise",
@@ -1536,7 +1565,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
                             worktree=str(cwd),
                             config=MergeQueueConfig(base="main", steps=[Step(cmd="echo test")]),
                             merge_lock_fd=-1,
-                            inherit_lock_fd=None,
+                            lock_fd_to_inherit=None,
                             config_path=Path(tmpdir) / "merge-queue.json",
                         )
                         test_result(
@@ -1663,7 +1692,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
             cwd=Path(tmpdir),
             log_path=log_path,
             timeout_secs=10,
-            inherit_lock_fd=None
+            lock_fd_to_inherit=None
         )
         test_result(
             "run_step returns failure when command fails",
@@ -1756,7 +1785,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
                                             worktree=str(cwd),
                                             config=config,
                                             merge_lock_fd=-1,
-                                            inherit_lock_fd=None,
+                                            lock_fd_to_inherit=None,
                                         )
                                         test_result(
                                             "_locked_flow happy path returns MERGED",
