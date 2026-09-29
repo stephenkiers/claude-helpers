@@ -71,6 +71,10 @@ to North Star Nick).
   a leaner planning alternative alongside v2, combining v1's cheap main-thread orchestration with v2's genuine per-expert isolation
   and a mandatory consistency check; two effort levels (2 = baseline + consistency check, 3 = + independent auditor);
   Sonnet main-thread shell + per-step Opus dispatches for judgment work; invocation-ID-suffixed paths fix v2's collision bug
+- [ADR-0021: Local merge queue](0021-local-merge-queue.md) — serialized per-repo merge queue testing every PR against the
+  exact base it lands on, with unverified-main detection and force-push carve-out; status is Accepted (partial) — documents
+  planned features not yet implemented (Claude hand-off, resume subcommand, cleanup consumption, fetch retry); amends ADR-0013
+  with a mutation-allowlist exception note
 
 ## Format
 

@@ -56,7 +56,8 @@ def _run(
     args: List[str],
     cwd: Optional[Path] = None,
     timeout: int = DEFAULT_TIMEOUT,
-    check: bool = True
+    check: bool = True,
+    input_data: Optional[str] = None,
 ) -> str:
     """
     Run a git/gh command with argument array. Returns stdout, raises on
@@ -67,6 +68,7 @@ def _run(
         result = subprocess.run(
             [executable] + args,
             cwd=cwd,
+            input=input_data,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -91,6 +93,20 @@ def run_git_command(
     Run a git command with argument array. Returns stdout, raises on error if check=True.
     """
     return _run("git", args, cwd=cwd, timeout=timeout, check=check)
+
+
+def run_git_command_input(
+    args: List[str],
+    input_data: str,
+    cwd: Optional[Path] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    check: bool = True
+) -> str:
+    """
+    Run a git command with argument array, piping input_data to stdin.
+    Returns stdout, raises on error if check=True.
+    """
+    return _run("git", args, cwd=cwd, timeout=timeout, check=check, input_data=input_data)
 
 
 def run_gh_command(
@@ -163,6 +179,11 @@ def get_git_dir(cwd: Optional[Path] = None) -> str:
 def get_git_common_dir(cwd: Optional[Path] = None) -> str:
     """Get git rev-parse --git-common-dir output."""
     return run_git_command(["rev-parse", "--git-common-dir"], cwd=cwd)
+
+
+def get_repository_root(cwd: Optional[Path] = None) -> str:
+    """Get the repository root directory (git rev-parse --show-toplevel)."""
+    return run_git_command(["rev-parse", "--show-toplevel"], cwd=cwd)
 
 
 def is_linked_worktree(cwd: Optional[Path] = None) -> bool:
