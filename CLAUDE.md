@@ -69,6 +69,7 @@ See the ADRs for the full rationale:
 - [ADR-0006 Reviewer output-format carve-outs](docs/adr/0006-reviewer-output-format-carve-outs.md)
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
   ends in triage, not synthesis; see the amendment for what was removed in chore/29.
+- [ADR-0021 Local merge queue](docs/adr/0021-local-merge-queue.md) — serialized per-repo merge queue for testing every PR against the exact base it lands on, with unverified-main detection and the force-push carve-out.
 
 ## Triage: the review ends with decisions, not findings
 
@@ -188,6 +189,7 @@ separate from the reviewer-context cascade.
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
 - `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
+- `/queued-merge` — merge an open PR through the local merge queue when a `merge-queue.json` config exists. The queue serializes PRs and merges them one at a time in arrival order, testing each against the exact base it will land on, with unverified-main detection. See [ADR-0021](docs/adr/0021-local-merge-queue.md) for the force-push carve-out (the queue's only authorized force-push, audited and constrained, happens only after the full gate passes).
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
 - `/verify-queue` — drain pending "needs measurement" and "needs you" rulings from expert-review claude-action-plans; batched per-repo queue at `<repo>/worktrees/verify-queue.jsonl` drains open items via sync, measurement, and disposition
 - `/fork-planning` — fork a planning session
@@ -271,6 +273,23 @@ independently discovered in `/track-and-start`: its CLI JSON output consumption 
 `printf '%s'` (the `printf '%s' "$JSON_VAR" | jq` pattern), but the disk-cache-merge idiom
 (reading `.claude/github-cache.json` from disk and merging it) needed fixing. This note exists
 so newly-written bash blocks don't regress the printf pattern.
+
+## Force-push carve-out
+
+Four commands are authorized to use `--force-with-lease` (never bare `--force`) in this repo's
+tooling, each with its own audit and confirmation gate:
+
+1. **Merge queue** — `--force-with-lease=<branch>:<lease_sha>` with explicit refspec
+   `<tested_sha>:refs/heads/<branch>`, audited in a single function (`force_push_tested()`), runs
+   only after the full gate has passed. See [ADR-0021 Decision 6](docs/adr/0021-local-merge-queue.md).
+2. **`/shipit`** — stacked-branch `--force-with-lease` push (for rebased stacked branches), confirmed
+   after the local CI gate passes. See `commands/shipit.md` "Sync stacked children" section.
+3. **`/stack-sync`** — per-child `--force-with-lease` push, gated behind the project's check gate
+   inside the canonical Restack-a-child block. See `commands/stack-sync.md`.
+4. **`/expert-rebase`** — per-branch `--force-with-lease` push (or `--force-with-lease --force-if-includes`
+   for stacked branches), confirmation-gated for the branch being rebased. See `commands/expert-rebase.md`.
+
+All use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
 
 ## Inspecting check-gate failures
 

@@ -10,6 +10,8 @@ model: haiku
 
 Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Auto-detect the PR when run from the worktree you want to merge, or accept a PR number or worktree path explicitly when run from the main worktree.
 
+**Note:** If a merge-queue configuration exists for this repo, use `/queued-merge` instead. The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on.
+
 **Why `model: haiku`:** every conditional branch here is a literal check against command
 output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
 mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004) — and the one
