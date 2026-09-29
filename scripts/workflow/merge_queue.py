@@ -1673,6 +1673,20 @@ def _phase_verify_base(
     return None
 
 
+def _restore_worktree_to_orig_head(cwd: Path, orig_head: str) -> None:
+    """
+    Reset the worktree's branch back to orig_head after a post-rebase kickback.
+
+    Best-effort: a failure here shouldn't mask the underlying kickback reason, and the
+    worst case (local branch left rewritten but unpushed) is exactly the pre-fix
+    behavior, not a regression.
+    """
+    try:
+        Runner.run_git(["reset", "--hard", orig_head], cwd=cwd)
+    except Exception:
+        pass
+
+
 def _phase_rebase(
     pr: int,
     branch: str,
@@ -2048,6 +2062,11 @@ def _locked_flow(
         # Phase 7: Run gate and post-gate assertions
         result, tested_sha = _phase_run_gate_and_assertions(pr, branch, worktree, orig_head, config, lock_fd_to_inherit, cwd)
         if result:
+            # Rebase (phase 6) already moved local HEAD to tested_sha, but nothing was
+            # ever pushed. Restore the worktree to orig_head so it matches origin/<branch>
+            # again; otherwise the next enqueue's lease check (phase 4) sees local HEAD
+            # diverged from remote and misreports it as "base moved".
+            _restore_worktree_to_orig_head(cwd, orig_head)
             return result
         # tested_sha is guaranteed to be non-None here
         assert tested_sha is not None
@@ -2055,6 +2074,9 @@ def _locked_flow(
         # Phase 8: Push
         result = _phase_push(pr, branch, worktree, orig_head, tested_sha, lease_sha, config, cwd)
         if result:
+            # Push never landed (rejected/failed/unconfirmed-timeout); same restore
+            # rationale as phase 7 above.
+            _restore_worktree_to_orig_head(cwd, orig_head)
             return result
 
         # Phase 9: Verify base unchanged
