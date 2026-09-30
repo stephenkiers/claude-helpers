@@ -107,6 +107,10 @@ def main() -> None:
         "arguments", nargs="?", default=None,
         help="PR number or worktree path (defaults to detecting from the current directory)"
     )
+    merge_plan_parser.add_argument(
+        "--cwd", default=None,
+        help="Working directory for PR/worktree resolution (defaults to current directory)"
+    )
 
     merge_apply_parser = merge_subparsers.add_parser("apply", help="Apply merge plan")
     merge_apply_parser.add_argument("plan", help="Plan JSON")
@@ -207,7 +211,21 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "merge":
         if args.merge_action == "plan":
-            _run_plan(merge.plan_merge, args.arguments)
+            # Custom handler for merge plan to support --cwd and exit 3 on queue refusal
+            plan_obj, error = merge.plan_merge(
+                args.arguments,
+                cwd=Path(args.cwd) if args.cwd else None
+            )
+            if error:
+                output = {"success": False, "error": str(error)}
+            else:
+                output = plan_obj.to_dict() if plan_obj else {"success": False}
+            print(json.dumps(output))
+            if error:
+                sys.exit(1)
+            # Check if queue guard refused
+            if plan_obj and plan_obj.queue.get("decision") == "refuse":
+                sys.exit(3)
         elif args.merge_action == "apply":
             plan_json = args.plan
             if plan_json == "-":

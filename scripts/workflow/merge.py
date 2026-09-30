@@ -14,9 +14,10 @@ import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Literal
 
 from . import git
+from . import merge_queue
 from .cache import read_repo_cache, write_cache
 from .safety import Unknown, fail_closed
 
@@ -24,6 +25,293 @@ from .safety import Unknown, fail_closed
 # Default timeout for 'just merge' execution (seconds).
 # Override with MERGE_APPLY_TIMEOUT_SECS environment variable.
 DEFAULT_MERGE_APPLY_TIMEOUT_SECS = 1800
+
+
+@dataclass
+class QueueDetection:
+    """Detection result for merge queue configuration."""
+    state: Literal["configured", "absent", "unknown"]
+    path: Optional[str] = None
+    source: Optional[Literal["flag", "env", "default"]] = None
+    reason: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return asdict(self)
+
+
+@dataclass
+class QueueGuardDecision:
+    """Decision result from the merge queue guard."""
+    decision: Literal["proceed", "refuse"]
+    detection: QueueDetection
+    pr_base: Optional[str] = None
+    queue_base: Optional[str] = None
+    message: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        d = asdict(self)
+        if isinstance(d.get("detection"), dict):
+            d["detection"] = d["detection"]
+        return d
+
+
+def detect_merge_queue(cwd: Path, config_flag: Optional[str] = None) -> QueueDetection:
+    """
+    Detect the merge queue configuration state for a given worktree.
+
+    Returns:
+    - QueueDetection with state="configured" if queue config is found and is a regular file
+    - QueueDetection with state="absent" if no queue config exists (normal for non-queue repos)
+    - QueueDetection with state="unknown" if there's an error or ambiguity
+
+    Decision table:
+    - Flag or env set, resolver OK, path.is_file() → configured (source flag or env)
+    - Flag or env set, path missing → unknown (message names the missing path)
+    - Flag or env set, resolver raises (e.g. trust-boundary) → unknown (exception text)
+    - No override, LayoutMismatchError → absent (reason "layout-not-queue-capable")
+    - No override, any other exception → unknown
+    - No override, default path is_file() → configured (source default)
+    - No override, default path does not exist → absent
+    - Path exists but is not regular file, or stat raises → unknown
+    - Catch-all: unexpected exceptions → unknown
+    """
+    try:
+        # Try to resolve config path with the queue's own resolver
+        try:
+            config_path = merge_queue.resolve_config_path(config_flag=config_flag, cwd=cwd)
+        except merge_queue.LayoutMismatchError:
+            # No override set and layout doesn't match worktrees/ structure
+            if config_flag or os.environ.get("MERGE_QUEUE_CONFIG"):
+                # If an override was set, re-raise as unknown
+                raise
+            # No override + layout mismatch = absent (layout-not-queue-capable)
+            return QueueDetection(
+                state="absent",
+                reason="layout-not-queue-capable"
+            )
+        except Exception as e:
+            # Resolver raised an exception (could be flag/env related or git failure)
+            if config_flag:
+                return QueueDetection(
+                    state="unknown",
+                    reason=str(e)
+                )
+            elif os.environ.get("MERGE_QUEUE_CONFIG"):
+                env_val = os.environ.get("MERGE_QUEUE_CONFIG")
+                return QueueDetection(
+                    state="unknown",
+                    reason=f"MERGE_QUEUE_CONFIG is set to {env_val} but {str(e)}"
+                )
+            else:
+                return QueueDetection(
+                    state="unknown",
+                    reason=str(e)
+                )
+
+        # At this point, config_path was successfully resolved
+        # Determine the source
+        source: Literal["flag", "env", "default"]
+        if config_flag:
+            source = "flag"
+        elif os.environ.get("MERGE_QUEUE_CONFIG"):
+            source = "env"
+        else:
+            source = "default"
+
+        # Check if the resolved path exists and is a regular file
+        if not config_path.exists():
+            if config_flag:
+                return QueueDetection(
+                    state="unknown",
+                    path=str(config_path),
+                    source=source,
+                    reason=f"--config is set to {config_path} but no file exists there"
+                )
+            elif os.environ.get("MERGE_QUEUE_CONFIG"):
+                env_val = os.environ.get("MERGE_QUEUE_CONFIG")
+                return QueueDetection(
+                    state="unknown",
+                    path=str(config_path),
+                    source=source,
+                    reason=f"MERGE_QUEUE_CONFIG is set to {env_val} but no file exists there"
+                )
+            else:
+                # Default path doesn't exist = absent
+                return QueueDetection(
+                    state="absent"
+                )
+
+        # Path exists; check if it's a regular file
+        try:
+            if not config_path.is_file():
+                return QueueDetection(
+                    state="unknown",
+                    path=str(config_path),
+                    source=source,
+                    reason=f"Config path exists but is not a regular file: {config_path}"
+                )
+        except (OSError, PermissionError) as e:
+            return QueueDetection(
+                state="unknown",
+                path=str(config_path),
+                source=source,
+                reason=f"Could not check config file: {e}"
+            )
+
+        # Config is configured
+        return QueueDetection(
+            state="configured",
+            path=str(config_path),
+            source=source
+        )
+
+    except Exception as e:
+        # Catch-all: any unexpected exception → unknown
+        return QueueDetection(
+            state="unknown",
+            reason=f"Unexpected error in queue detection: {e}"
+        )
+
+
+def queue_guard(pr_number: int, target_worktree: Path) -> QueueGuardDecision:
+    """
+    Guard against merging PRs that belong to the local merge queue.
+
+    Returns QueueGuardDecision with:
+    - decision="proceed" if no queue is configured or PR targets a different base
+    - decision="refuse" if queue is configured and PR targets the queue's base
+
+    On refuse, message names the state, path, source (or reason for unknown) and
+    includes `/queued-merge <PR>`.
+    """
+    # Detect the queue configuration
+    detection = detect_merge_queue(target_worktree)
+
+    # If queue is absent, always proceed (no queue in this repo)
+    if detection.state == "absent":
+        return QueueGuardDecision(
+            decision="proceed",
+            detection=detection
+        )
+
+    # For configured/unknown, fetch the PR's base branch
+    try:
+        pr_data = git.pr_view_json(str(pr_number), ["baseRefName"], cwd=target_worktree)
+        pr_base = pr_data.get("baseRefName") if pr_data else None
+    except Exception:
+        pr_base = None
+
+    # For unknown state or if we can't determine pr_base, fail closed (refuse)
+    if detection.state == "unknown":
+        if not pr_base:
+            message = (
+                f"Queue configuration is unknown (reason: {detection.reason}). "
+                f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling. "
+                f"Path: {detection.path or 'not determined'}, Source: {detection.source or 'unknown'}\n"
+                f"Use `/queued-merge {pr_number}` to merge through the queue."
+            )
+            return QueueGuardDecision(
+                decision="refuse",
+                detection=detection,
+                pr_base=pr_base,
+                queue_base=None,
+                message=message
+            )
+        # If pr_base is known, proceed (unknown config with different target is safe)
+        # But still fail closed if we can't determine queue_base
+        queue_base = None
+        message = (
+            f"Queue configuration is unknown (reason: {detection.reason}). "
+            f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling. "
+            f"Path: {detection.path or 'not determined'}, Source: {detection.source or 'unknown'}\n"
+            f"Use `/queued-merge {pr_number}` to merge through the queue."
+        )
+        return QueueGuardDecision(
+            decision="refuse",
+            detection=detection,
+            pr_base=pr_base,
+            queue_base=queue_base,
+            message=message
+        )
+
+    # For configured state, read queue_base from config
+    queue_base: Optional[str] = None
+    if detection.state == "configured" and detection.path:
+        try:
+            with open(detection.path) as f:
+                config_data = json.load(f)
+                queue_base = config_data.get("base")
+                if not isinstance(queue_base, str):
+                    queue_base = None
+        except Exception:
+            queue_base = None
+
+    # If we couldn't get queue_base from config, fall back to default branch
+    if queue_base is None and detection.state == "configured":
+        try:
+            queue_base, _ = git.get_default_branch(cwd=target_worktree)
+        except Exception:
+            queue_base = None
+
+    # If we still can't determine queue_base and config is configured, fail closed
+    if queue_base is None:
+        message = (
+            f"Queue is configured (path: {detection.path}, source: {detection.source}) "
+            f"but queue base could not be determined. "
+            f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling.\n"
+            f"Use `/queued-merge {pr_number}` to merge through the queue."
+        )
+        return QueueGuardDecision(
+            decision="refuse",
+            detection=detection,
+            pr_base=pr_base,
+            queue_base=queue_base,
+            message=message
+        )
+
+    # Compare pr_base with queue_base
+    if not pr_base:
+        # Can't determine pr_base, fail closed
+        message = (
+            f"Queue is configured (path: {detection.path}, source: {detection.source}, base: {queue_base}) "
+            f"but PR base could not be determined. "
+            f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling.\n"
+            f"Use `/queued-merge {pr_number}` to merge through the queue."
+        )
+        return QueueGuardDecision(
+            decision="refuse",
+            detection=detection,
+            pr_base=pr_base,
+            queue_base=queue_base,
+            message=message
+        )
+
+    # Both bases are known; check if they match
+    if pr_base == queue_base:
+        # PR targets the queue's base; refuse
+        message = (
+            f"This PR targets {pr_base}, which is the merge queue's base branch. "
+            f"Queue is configured (path: {detection.path}, source: {detection.source}).\n"
+            f"Use `/queued-merge {pr_number}` to merge through the queue."
+        )
+        return QueueGuardDecision(
+            decision="refuse",
+            detection=detection,
+            pr_base=pr_base,
+            queue_base=queue_base,
+            message=message
+        )
+
+    # PR targets a different base (e.g., stacked PR); proceed
+    return QueueGuardDecision(
+        decision="proceed",
+        detection=detection,
+        pr_base=pr_base,
+        queue_base=queue_base,
+        message=f"PR targets {pr_base}, which is not the queue's base ({queue_base}); proceeding with merge"
+    )
 
 
 def merge_lock_path(target_worktree: str) -> Path:
@@ -54,6 +342,7 @@ class MergePlan:
     head_ref: str
     target_worktree: str
     blocking_failures: List[str] = field(default_factory=list)
+    queue: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -139,6 +428,14 @@ def plan_merge(
             target_worktree=target_worktree
         )
 
+        # Call the queue guard early for UX (refuse before the push gate)
+        guard_decision = queue_guard(pr_number, Path(target_worktree))
+        plan.queue = guard_decision.to_dict()
+
+        # If refused, return early without running the push gate
+        if guard_decision.decision == "refuse":
+            return plan, None
+
         blocking_failures = _run_push_gate(target_worktree, head_ref, cwd)
         plan.blocking_failures = blocking_failures
 
@@ -181,6 +478,16 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
             result.error = Unknown(f"Push gate failed: {'; '.join(plan.blocking_failures)}")
             return result, result.error
 
+        # Check the queue guard live (authoritative gate, ignoring plan.queue)
+        guard_decision = queue_guard(plan.pr_number, Path(plan.target_worktree))
+        if guard_decision.decision == "refuse":
+            result.error = Unknown(guard_decision.message)
+            result.pr_merged = False
+            return result, result.error
+
+        # Set effective_cwd for gh/git calls targeting the target worktree
+        effective_cwd = cwd or Path(plan.target_worktree)
+
         lock_file = merge_lock_path(plan.target_worktree)
 
         try:
@@ -213,7 +520,7 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
                 merge_succeeded = True
             else:
                 result.error = Unknown(f"'just merge' failed: {detail}")
-                _release_lock_if_still_open(lock_file, plan, cwd)
+                _release_lock_if_still_open(lock_file, plan, effective_cwd)
                 return result, result.error
 
         if not merge_succeeded:
@@ -231,12 +538,12 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         if not merge_succeeded:
             if merge_gate_used == "":
                 merge_gate_used = "gh pr merge (no gate)"
-            success, detail = _run_gh_pr_merge(plan.pr_number, cwd)
+            success, detail = _run_gh_pr_merge(plan.pr_number, effective_cwd)
             if success:
                 merge_succeeded = True
             else:
                 result.error = Unknown(f"gh pr merge failed: {detail}")
-                _release_lock_if_still_open(lock_file, plan, cwd)
+                _release_lock_if_still_open(lock_file, plan, effective_cwd)
                 return result, result.error
 
         if merge_succeeded:
