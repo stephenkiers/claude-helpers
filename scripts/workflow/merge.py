@@ -51,10 +51,7 @@ class QueueGuardDecision:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization."""
-        d = asdict(self)
-        if isinstance(d.get("detection"), dict):
-            d["detection"] = d["detection"]
-        return d
+        return asdict(self)
 
 
 def detect_merge_queue(cwd: Path, config_flag: Optional[str] = None) -> QueueDetection:
@@ -179,138 +176,84 @@ def queue_guard(pr_number: int, target_worktree: Path) -> QueueGuardDecision:
     """
     Guard against merging PRs that belong to the local merge queue.
 
-    Returns QueueGuardDecision with:
-    - decision="proceed" if no queue is configured or PR targets a different base
-    - decision="refuse" if queue is configured and PR targets the queue's base
+    - absent → proceed, with no gh call (repos without a queue see no change).
+    - configured → queue base is the config's `base` key; unknown → the default branch
+      (ADR-0021 requires config.base to equal the default branch).
+    - PR base == queue base → refuse; PR base != queue base → proceed (stacked PRs etc.).
+    - PR base or queue base undeterminable → refuse (fail closed).
 
-    On refuse, message names the state, path, source (or reason for unknown) and
-    includes `/queued-merge <PR>`.
+    On refuse, `message` names the state, path and source (or the reason for unknown)
+    and points at `/queued-merge <PR>`.
     """
-    # Detect the queue configuration
     detection = detect_merge_queue(target_worktree)
 
-    # If queue is absent, always proceed (no queue in this repo)
     if detection.state == "absent":
-        return QueueGuardDecision(
-            decision="proceed",
-            detection=detection
-        )
+        return QueueGuardDecision(decision="proceed", detection=detection)
 
-    # For configured/unknown, fetch the PR's base branch
+    pr_base: Optional[str] = None
     try:
         pr_data = git.pr_view_json(str(pr_number), ["baseRefName"], cwd=target_worktree)
-        pr_base = pr_data.get("baseRefName") if pr_data else None
+        raw_pr_base = pr_data.get("baseRefName") if pr_data else None
+        pr_base = raw_pr_base if isinstance(raw_pr_base, str) and raw_pr_base else None
     except Exception:
         pr_base = None
 
-    # For unknown state or if we can't determine pr_base, fail closed (refuse)
-    if detection.state == "unknown":
-        if not pr_base:
-            message = (
-                f"Queue configuration is unknown (reason: {detection.reason}). "
-                f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling. "
-                f"Path: {detection.path or 'not determined'}, Source: {detection.source or 'unknown'}\n"
-                f"Use `/queued-merge {pr_number}` to merge through the queue."
-            )
-            return QueueGuardDecision(
-                decision="refuse",
-                detection=detection,
-                pr_base=pr_base,
-                queue_base=None,
-                message=message
-            )
-        # If pr_base is known, proceed (unknown config with different target is safe)
-        # But still fail closed if we can't determine queue_base
-        queue_base = None
-        message = (
-            f"Queue configuration is unknown (reason: {detection.reason}). "
-            f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling. "
-            f"Path: {detection.path or 'not determined'}, Source: {detection.source or 'unknown'}\n"
-            f"Use `/queued-merge {pr_number}` to merge through the queue."
-        )
-        return QueueGuardDecision(
-            decision="refuse",
-            detection=detection,
-            pr_base=pr_base,
-            queue_base=queue_base,
-            message=message
-        )
-
-    # For configured state, read queue_base from config
     queue_base: Optional[str] = None
     if detection.state == "configured" and detection.path:
         try:
-            with open(detection.path) as f:
-                config_data = json.load(f)
-                queue_base = config_data.get("base")
-                if not isinstance(queue_base, str):
-                    queue_base = None
+            config_data = json.loads(Path(detection.path).read_text())
+            raw_base = config_data.get("base") if isinstance(config_data, dict) else None
+            queue_base = raw_base if isinstance(raw_base, str) and raw_base else None
         except Exception:
             queue_base = None
-
-    # If we couldn't get queue_base from config, fall back to default branch
-    if queue_base is None and detection.state == "configured":
+    if queue_base is None:
         try:
             queue_base, _ = git.get_default_branch(cwd=target_worktree)
         except Exception:
             queue_base = None
 
-    # If we still can't determine queue_base and config is configured, fail closed
-    if queue_base is None:
-        message = (
-            f"Queue is configured (path: {detection.path}, source: {detection.source}) "
-            f"but queue base could not be determined. "
-            f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling.\n"
-            f"Use `/queued-merge {pr_number}` to merge through the queue."
+    if detection.state == "configured":
+        state_desc = f"A merge queue is configured (path: {detection.path}, source: {detection.source})."
+    else:
+        state_desc = f"Merge queue configuration state is unknown: {detection.reason}"
+    recovery = ""
+    if detection.state == "unknown":
+        recovery = (
+            "\nIf the queue is broken, fix the config, or merge manually with "
+            f"`gh pr merge {pr_number}` outside this tooling (there is no bypass flag)."
         )
+
+    if pr_base is None or queue_base is None:
+        missing = "PR base" if pr_base is None else "queue base"
         return QueueGuardDecision(
             decision="refuse",
             detection=detection,
             pr_base=pr_base,
             queue_base=queue_base,
-            message=message
+            message=(
+                f"{state_desc} Refusing because the {missing} could not be determined.\n"
+                f"Use `/queued-merge {pr_number}` to merge through the queue.{recovery}"
+            ),
         )
 
-    # Compare pr_base with queue_base
-    if not pr_base:
-        # Can't determine pr_base, fail closed
-        message = (
-            f"Queue is configured (path: {detection.path}, source: {detection.source}, base: {queue_base}) "
-            f"but PR base could not be determined. "
-            f"Recovery: fix the config or run `gh pr merge {pr_number}` manually outside the tooling.\n"
-            f"Use `/queued-merge {pr_number}` to merge through the queue."
-        )
-        return QueueGuardDecision(
-            decision="refuse",
-            detection=detection,
-            pr_base=pr_base,
-            queue_base=queue_base,
-            message=message
-        )
-
-    # Both bases are known; check if they match
     if pr_base == queue_base:
-        # PR targets the queue's base; refuse
-        message = (
-            f"This PR targets {pr_base}, which is the merge queue's base branch. "
-            f"Queue is configured (path: {detection.path}, source: {detection.source}).\n"
-            f"Use `/queued-merge {pr_number}` to merge through the queue."
-        )
         return QueueGuardDecision(
             decision="refuse",
             detection=detection,
             pr_base=pr_base,
             queue_base=queue_base,
-            message=message
+            message=(
+                f"{state_desc} This PR targets {pr_base}, the merge queue's base branch.\n"
+                f"Use `/queued-merge {pr_number}` to merge through the queue.{recovery}"
+            ),
         )
 
-    # PR targets a different base (e.g., stacked PR); proceed
     return QueueGuardDecision(
         decision="proceed",
         detection=detection,
         pr_base=pr_base,
         queue_base=queue_base,
-        message=f"PR targets {pr_base}, which is not the queue's base ({queue_base}); proceeding with merge"
+        message=f"The merge queue does not take PRs targeting {pr_base} (queue base: {queue_base}); proceeding.",
     )
 
 

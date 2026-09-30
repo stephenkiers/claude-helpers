@@ -44,7 +44,8 @@ if [ -e "$ARGUMENTS" ]; then
   ARGUMENTS="$(readlink -f "$ARGUMENTS")"
 fi
 
-# Capture the current working directory before resolving claude-helpers (which moves cwd)
+# Capture the caller's directory: the CLI below runs with the claude-helpers checkout as cwd (so a
+# PR worktree's own scripts/ package cannot shadow it), and --cwd hands the real caller dir back.
 CALLER_DIR="$(pwd -P)"
 
 # Call plan_merge to resolve PR/worktree and run push gate
@@ -142,7 +143,8 @@ The merge gate's own subprocess timeout defaults to 1800s and is configurable pe
 
 **Queue re-check:** If a merge-queue configuration is active, `merge apply` performs a live check before
 acquiring the merge lock. If the PR's target branch has moved to the queue's base between Phase 1 and Phase 3,
-or if the queue config has changed, the merge is refused with a non-zero exit and the queue message is printed to stderr.
+or if the queue config has changed, the merge is refused before any lock or gate runs: a non-zero apply exit,
+with the queue message in `apply_result.json`'s `.error` (printed by the failure branch below).
 
 **Before running this block, substitute the literal PR number** (from the `PR #$PR_NUM` output above) in the assignment below.
 
@@ -181,6 +183,7 @@ case "$APPLY_RESULT_CODE" in
 esac
 if [ "$APPLY_RESULT_CODE" != "0" ]; then
   echo "ERROR: Merge apply failed (exit code: $APPLY_RESULT_CODE)"
+  jq -r '.error // empty' "$MC_STATE_DIR/apply_result.json" 2>/dev/null
   cat "$MC_STATE_DIR/apply_result.stderr" >&2
   exit 1
 fi
