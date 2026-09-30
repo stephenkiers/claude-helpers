@@ -325,7 +325,9 @@ absolute-path resolution.
   `Merge-Gate:` trailer and `tested-base` ancestry to prevent out-of-order merges via the GitHub UI.
 - **Retire or shrink merge.py:** the existing `merge.py` (O_EXCL lock, 1800s timeout, `capture_output`)
   provides non-serialized merging for single-developer workflows and testing; the queue is the
-  serialized production path. This ADR's amendments do not modify `merge.py` behavior.
+  serialized production path. The `/merge-and-cleanup` enforcement amendment adds the queue guard
+  (`detect_merge_queue()` / `queue_guard()`) to `merge.py`, so it now refuses PRs on the queue's base;
+  its non-queue merge path is otherwise unchanged.
 - **Machine-wide E2E lock:** a project may need a machine-wide lock order (queue lock → E2E lock) to
   prevent step orphans when `inherit_lock_fd` is false. Set `inherit_lock_fd: true` per repo as a
   temporary measure.
