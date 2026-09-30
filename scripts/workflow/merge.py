@@ -428,8 +428,10 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
             result.pr_merged = False
             return result, result.error
 
-        # Set effective_cwd for gh/git calls targeting the target worktree
-        effective_cwd = cwd or Path(plan.target_worktree)
+        # gh/git calls always target the plan's worktree, never the caller's cwd: the CLI runs
+        # from the claude-helpers checkout, and `gh pr merge <N>` resolves <N> against the repo
+        # of whatever directory it runs in. `cwd` is accepted for signature compatibility only.
+        effective_cwd = Path(plan.target_worktree)
 
         lock_file = merge_lock_path(plan.target_worktree)
 
@@ -505,14 +507,14 @@ def apply_merge(plan_json: str, cwd: Optional[Path] = None) -> Tuple[MergeResult
         return MergeResult(success=False, error=Unknown(f"apply_merge failed: {e}")), None
 
 
-def _release_lock_if_still_open(lock_file: Path, plan: MergePlan, cwd: Optional[Path]) -> None:
+def _release_lock_if_still_open(lock_file: Path, plan: MergePlan, cwd: Path) -> None:
     """
     Remove the merge lock after a failed merge attempt, but only if the PR is
     confirmed still OPEN. If state can't be confirmed (or the PR merged despite the
     error), the lock stays as the "already merged" guard.
     """
     try:
-        pr_data = git.pr_view_json(str(plan.pr_number), ["state"], cwd=Path(plan.target_worktree))
+        pr_data = git.pr_view_json(str(plan.pr_number), ["state"], cwd=cwd)
         if pr_data and pr_data.get("state") == "OPEN":
             lock_file.unlink(missing_ok=True)
     except Exception:
