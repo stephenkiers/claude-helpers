@@ -1434,9 +1434,13 @@ mechanism is unrelated to real telemetry: this command now is instrumented with 
 `round1-join` and `integration-gate` stages (see [#160](https://github.com/stephenkiers/claude-helpers/issues/160);
 the fanout and round4 phases were deliberately left uninstrumented), and subagent
 `agent.begin`/`agent.end` events are captured by hooks regardless of anything in this doc. Render
-`round1-join`'s line verbatim in the final summary. At the end, run
-`usage-check --seam final` one more time and include both its `USAGE-GATE:` line and its
-`USAGE-GATE-SEAMS:` line verbatim. Extract the per-agent accounted/unaccounted tally
+`round1-join`'s line verbatim in the final summary. At the end, run the final seam one more time
+(`usage-check` is a subcommand of `run-metrics.py`, not a standalone script — there is no
+`~/.claude/scripts/usage-check`):
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam final
+```
+and include both its `USAGE-GATE:` line and its `USAGE-GATE-SEAMS:` line verbatim. Extract the per-agent accounted/unaccounted tally
 (the `agents=N/M` field) from the final seam output and include it here; note once that upstream
 `token_confidence` is always hardcoded as `"low"` (a blanket disclaimer on the mechanism, not a
 signal about any specific transcript's trustworthiness).
