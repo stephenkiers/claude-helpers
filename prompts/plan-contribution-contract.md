@@ -72,14 +72,33 @@ Each open question follows this exact format:
 
 ```markdown
 - **[Question]**
-  - _Why it matters_: [What this decision affects in the plan — be specific about consequences]
+  - _Why it matters_: [What this decision affects in the plan — be specific about consequences, in terms a reader who has forgotten the ticket can follow]
+  - _Options_: [Every credible answer, each with its argument — see "Options" below]
   - _Recommendation_: [Your suggested answer, based on your domain expertise — NOT a decision, the human still decides]
   - _Confounders_: [Things that could make your recommendation wrong — other constraints, trade-offs, or context your domain doesn't have. "None" if straightforward.]
   - _Source_: [silent | ambiguous] — why this is a question, not a decision
 ```
 
-All four fields are required. Do not skip `_Confounders_` — this is where you name the limits of
+All five fields are required. Do not skip `_Confounders_` — this is where you name the limits of
 your own domain expertise and surface the trade-offs others must consider.
+
+#### Options
+
+The human deciding this is often switching in from other work and has lost the context. For each
+question, give 2-4 mutually exclusive options (always include "leave as-is / do the minimum" when
+it is genuinely viable), each with its own argument — this is the part they actually read:
+
+```markdown
+  - _Options_:
+    - **A. [Option name]** — [one line: what it means concretely]
+      - Pro: [strongest argument for, with evidence or file:line where you have it]
+      - Con: [strongest argument against / what it costs]
+    - **B. [Option name]** — ...
+```
+
+Rules: arguments must be real (evidence, consequence, cost), not filler — a Pro or Con you cannot
+support is omitted, not padded. The option you recommend must appear in `_Options_`, and
+`_Recommendation_` says which one and why it beats the others in one sentence.
 
 #### Source Classification
 
@@ -194,7 +213,7 @@ Before returning your receipt:
 - [ ] Requirements are specific and actionable (not "make it secure")
 - [ ] Each risk includes a consequence, not just a name
 - [ ] Recommended Approach is 2-3 sentences, not a full design doc
-- [ ] Every open question has all four fields: Why it matters, Recommendation, Confounders, Source
+- [ ] Every open question has all five fields: Why it matters, Options (each with Pro/Con), Recommendation, Confounders, Source
 - [ ] Confounders are honest — they name where your domain advice could be wrong
 - [ ] Open questions follow "Ask, Don't Assume" — they're not hidden assumptions
 - [ ] No open question is duplicated in your contribution
