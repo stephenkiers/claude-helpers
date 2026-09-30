@@ -366,43 +366,53 @@ motivation/problem it solves, ≤15 words>.` Derive it from `context.md`'s Goal;
 state a why, write `WHY: not stated in ticket` rather than inventing one. For a description-only
 (no issue) run, omit the `#<n>`. Write the same line at the top of `decisions.md`.
 
-1. **Expert round-up** — for each selected domain expert (Step 2's order), a block condensed from
-   their `{expert}-contribution.md`, capped at roughly 10-12 lines:
+1. **Expert round-up** — for each selected domain expert (Step 2's order), a short block condensed
+   from their `{expert}-contribution.md`, capped at roughly 6 lines. It orients; the arguments live
+   in the decision briefs below, so do **not** repeat questions here:
    ```markdown
    ### [Name] — [one-line domain]
    **Take**: [Recommended Approach, compressed to 1-2 sentences]
-   **Flagged**: [the single most important requirement or risk, 1 line, with a file:line ref if the
-   contribution cites one — skip the rest]
-   **Tradeoff**: [the one-line cost of the recommendation — what it gives up, or what a cheaper
-   alternative would look like. This is the expert's own stated tradeoff/confounder, not one you
-   invent — if the contribution doesn't state one, write "None stated" rather than fabricating one]
-   **Questions**: [each open question as one line: "Question — recommends X, but Y"; drop the
-   Why-it-matters/Source prose, keep only the question + the expert's recommendation + the one-line
-   confounder if it changes the answer]
+   **Flagged**: [the single most important requirement or risk, 1 line, with a file:line ref if cited]
+   **Tradeoff**: [the expert's own stated cost of their recommendation, or "None stated" — never invent one]
    ```
-   This is a condensation, not a re-summary in your own words — keep the expert's actual
-   recommendations, evidence, and question wording, just drop the surrounding prose.
-
-   **Carl gets his own template, always last, not the domain-expert one above** — his value is
-   contrastive (what the panel missed or under-costed), so flattening him into the same four fields
-   erases exactly what makes him worth reading:
+   Carl, always last, gets his own contrastive template (his value is what the panel missed):
    ```markdown
    ### Contrarian Carl — cost and unverified premises
-   **What others covered**: [1 line — the ground the panel already has]
-   **What they missed or under-costed**: [1-2 lines — the gap Carl is adding, not restating]
-   **Assumption being questioned**: [the specific unverified premise, named plainly, e.g. "treating
-   the probe as a pure read"]
-   **Smaller alternative**: [if Carl proposes a cheaper adequate design, state it in 1 line; else
-   "None — panel's scope holds"]
-   **Questions**: [same one-line format as above]
+   **What others covered**: [1 line]
+   **What they missed or under-costed**: [1-2 lines]
+   **Assumption being questioned**: [the specific unverified premise, named plainly]
+   **Smaller alternative**: [1 line, or "None — panel's scope holds"]
    ```
-   Capped at roughly 10-12 lines total, same as the domain-expert template above.
-2. **Decision index** — *after* the round-up, a compact synthesis of recommendations,
-   disagreements, and scope options across experts.
+2. **Decision briefs** — the main event, after the round-up. Merge every expert's open questions
+   (and Carl's) into one list, pairing questions that overlap (label those as disagreements when
+   experts recommend differently). Order: material/blocking first. One brief per question, written
+   for a reader who has lost all context — never a bare topic name or a one-line recommendation:
+   ```markdown
+   #### Q[n]. [The question, phrased as a question]
+   **Why it matters**: [2-3 sentences: what in the plan or the product this changes, and what goes
+   wrong or gets expensive if it's decided badly. Self-contained — no "as discussed above".]
+   **Raised by**: [expert(s)] · **Type**: [silent | ambiguous | disagreement]
+
+   | Option | For | Against |
+   |---|---|---|
+   | **A. [name]** — [what it means concretely] | [strongest argument(s), by whom] | [strongest cost(s), by whom] |
+   | **B. [name]** | ... | ... |
+
+   **Recommended**: [option] — [one sentence why it beats the others, and who recommends it]. [If
+   experts split, say who backs which option.] **Could be wrong if**: [the confounder that flips it]
+   ```
+   Take options, pros, and cons from the experts' `_Options_` fields, condensed but with the actual
+   arguments preserved — do not replace an argument with a label. If a contribution lacks `_Options_`
+   for a question, derive the options from its Recommendation/Confounders and note "options
+   reconstructed" rather than inventing new arguments. Questions with no disagreement and a clear
+   recommendation still get a brief, but may use a two-line form (Why it matters + Recommended
+   option with its main con) if truly uncontested.
+3. **Decision index** — last, a compact table (Topic · Q# · Disagreement · Recommended default) as
+   a quick-scan summary that points back into the briefs. It is an index, not a substitute for them.
 
 Use `AskUserQuestion` for 2-4-option questions; markdown + conversation for open-ended ones or themes with >4 questions. Wait for answers.
 
-Write `{SESSION_DIR}/decisions.md` with the same condensed round-up plus the decision index and
+Write `{SESSION_DIR}/decisions.md` with the same round-up, decision briefs, and decision index, plus
 checkpoint results, so a user re-reading the session later gets the same report shown in chat — not
 the full unabridged contribution files, which remain on disk in `{expert}-contribution.md` for
 anyone who wants the full source.
