@@ -271,13 +271,61 @@ The implementation is **partial**: the following features are **documented but n
 - **ADR-0013 mutation-allowlist exception:** The queue's mutations (`Runner.run_git`/`Runner.run_gh`)
   bypass ADR-0013's `check_mutation_allowed()` allowlist per Decision 7. This exception is now
   documented in both ADR-0021 (Decision 7) and ADR-0013 Amendment (as a formal note).
+- **`/merge-and-cleanup` enforcement:** The command refuses PRs that target a merge queue's base
+  branch, with a live check at plan time (for UX) and again at apply time (authoritative gate).
+  Base-scoped refusal (Q2) allows stacked PRs targeting other branches to merge normally. The CLI
+  hardens against shadowing by running in the claude-helpers checkout. See Amendment above.
+
+## Amendment: `/merge-and-cleanup` enforcement
+
+The `/merge-and-cleanup` command now refuses PRs that target a merge queue's configured base
+branch. When a queue config resolves and the PR's base equals the queue base, the command exits
+with code 3 and instructs the user to use `/queued-merge` instead. PRs targeting other branches
+(stacked children, release branches) proceed normally through the existing merge gate.
+
+**Enforcement point:** A typed `detect_merge_queue()` function in `merge.py` runs a live check against
+the queue resolver (`resolve_config_path()`), re-run inside `apply_merge()` before the lock to catch
+PRs retargeted after the plan phase. No cache is stored; detection happens fresh on each run.
+
+**Configuration precedence (Q3):** The order is `--config` > `MERGE_QUEUE_CONFIG` > default `<container>/merge-queue.json`.
+- An override (flag or env) that is set but points to a missing file → refuse, naming the override source.
+- Any resolver error when an override is active (including trust-boundary rejection) → refuse with the error.
+- No override + `LayoutMismatchError` (non-`worktrees/` layout) → proceed (queue absent, repo not queue-capable).
+- No override + any other resolver error → refuse.
+- No override + default config file present → proceed (queue configured).
+- No override + default missing → proceed (queue absent).
+
+This reads as: the guard and `/queued-merge` have identical visibility into the queue state,
+ensuring no cross-tool disagreement (Decisions Q1 and Q3).
+
+**Base scoping (Q2):** Refusal is conditional on `PR.base == queue.base`. Stacked PRs that target
+a parent branch (or any non-base branch) fall through to the normal merge gate, so stacked workflows
+are not disrupted. The base is re-read live in `apply_merge()` to catch retargets.
+
+**Threat model:** This enforcement stops *accidental* bypass by our own tooling (a developer
+running `/merge-and-cleanup` when they should run `/queued-merge`). It does not stop deliberate
+bypass (editing the PR, running raw `gh pr merge`, exporting a dead-path env var, moving the
+config file). Those are detected afterwards by ADR-0021's Bypass Limit metric (untrailered commit
+count), and server-side rulesets remain the only layer that enforces the queue universally.
+Detection sees env + default only, not another command's `--config` flag.
+
+**No bypass flag (Q4):** If the queue is broken or misconfigured, the recovery path is:
+1. Fix the config or env var, then retry `/merge-and-cleanup`.
+2. If the queue is unrepairable, manually run `gh pr merge` outside the tooling. ADR-0021's
+   Bypass Limit metric (`git log --grep=Merge-Gate <default-branch>`) records the untrailered commit.
+
+**CLI hardening (Q5):** Both `/merge-and-cleanup`'s CLI calls run with the claude-helpers checkout
+as the process `cwd`, so a PR worktree's `scripts/workflow/cli.py` cannot shadow the guard. The
+`merge plan` command takes a `--cwd` flag to specify the caller's directory for auto-detect and
+absolute-path resolution.
 
 ## Follow-ups
 
 - **GitHub ruleset:** after two clean weeks of local queuing, add a GitHub ruleset requiring the
   `Merge-Gate:` trailer and `tested-base` ancestry to prevent out-of-order merges via the GitHub UI.
 - **Retire or shrink merge.py:** the existing `merge.py` (O_EXCL lock, 1800s timeout, `capture_output`)
-  can be retired or simplified once the queue is stable; this PR deliberately does not modify it.
+  provides non-serialized merging for single-developer workflows and testing; the queue is the
+  serialized production path. This ADR's amendments do not modify `merge.py` behavior.
 - **Machine-wide E2E lock:** a project may need a machine-wide lock order (queue lock → E2E lock) to
   prevent step orphans when `inherit_lock_fd` is false. Set `inherit_lock_fd: true` per repo as a
   temporary measure.

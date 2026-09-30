@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the worktree you want to merge (auto-detects PR), or from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup or /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: [PR number | worktree path]
-allowed-tools: Read, Skill, Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
+allowed-tools: Read, Skill, Bash(cd:*), Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
@@ -10,11 +10,12 @@ model: haiku
 
 Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Auto-detect the PR when run from the worktree you want to merge, or accept a PR number or worktree path explicitly when run from the main worktree.
 
-**Note:** If a merge-queue configuration exists for this repo, use `/queued-merge` instead. The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on.
+**Note:** When a merge-queue configuration exists and the PR targets the queue's configured base branch, this command refuses with exit code 3 and prints `/queued-merge <PR>` — use that command instead. PRs targeting any other base (including stacked children and release branches) merge normally. The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on. There is no bypass flag; if the queue is broken, fix the config or merge manually with `gh pr merge` outside this command (the untrailered-commit metric will record it).
 
 **Why `model: haiku`:** every conditional branch here is a literal check against command
 output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
-mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004) — and the one
+mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004). The queue decision
+is resolved by a literal exit-code check (exit code 3 = refuse, else = plan accordingly). The one
 irreversible action (the actual merge) sits behind the push gate's single hard-fail stop, which
 bounds the blast radius of a misjudgment to "the command halts," not "the wrong thing merges."
 
@@ -43,14 +44,23 @@ if [ -e "$ARGUMENTS" ]; then
   ARGUMENTS="$(readlink -f "$ARGUMENTS")"
 fi
 
+# Capture the current working directory before resolving claude-helpers (which moves cwd)
+CALLER_DIR="$(pwd -P)"
+
 # Call plan_merge to resolve PR/worktree and run push gate
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge plan "$ARGUMENTS")
+PLAN_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge plan --cwd "$CALLER_DIR" "$ARGUMENTS")
 PLAN_RESULT=$?
+
+if [ $PLAN_RESULT -eq 3 ]; then
+  printf '%s' "$PLAN_JSON" | jq -r '.queue.message'
+  exit 3
+fi
 
 if [ $PLAN_RESULT -ne 0 ]; then
   echo "ERROR: Failed to plan merge for '$ARGUMENTS'"
+  printf '%s' "$PLAN_JSON" | jq -r '.error // empty'
   exit 1
 fi
 
@@ -130,6 +140,10 @@ which reads the result from disk (`$MC_STATE_DIR/apply_result.json` and `$MC_STA
 The merge gate's own subprocess timeout defaults to 1800s and is configurable per-repo by exporting
 `MERGE_APPLY_TIMEOUT_SECS` (a positive integer, in seconds; anything else falls back to the default).
 
+**Queue re-check:** If a merge-queue configuration is active, `merge apply` performs a live check before
+acquiring the merge lock. If the PR's target branch has moved to the queue's base between Phase 1 and Phase 3,
+or if the queue config has changed, the merge is refused with a non-zero exit and the queue message is printed to stderr.
+
 **Before running this block, substitute the literal PR number** (from the `PR #$PR_NUM` output above) in the assignment below.
 
 ```bash
@@ -156,7 +170,7 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: c
 # Write the result to disk instead of only holding it in this call's stdout — Phase 4 is a
 # separate (foreground) Bash call made after this backgrounded one completes, so it reads
 # this file rather than depending on variables from this shell.
-printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply - \
+printf '%s' "$PLAN_JSON" | (cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge apply -) \
   > "$MC_STATE_DIR/apply_result.json" 2> "$MC_STATE_DIR/apply_result.stderr"
 echo $? > "$MC_STATE_DIR/apply_exit_code"
 
