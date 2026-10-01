@@ -27,7 +27,7 @@ The merge queue handles:
 
 ### Phase 1 — Resolve PR and worktree
 
-Auto-detect the PR from the current worktree (when no argument given), or accept a PR number from `$ARGUMENTS`. Validate the PR is OPEN and is targeted at the default branch (stacked PRs are refused).
+Auto-detect the PR from the current worktree (when no argument given), or accept a PR number from `$ARGUMENTS`. Validate the PR is OPEN and is targeted at the default branch (stacked PRs are refused). Record the start time for staleness checking in Phase 4.
 
 ```bash
 # Resolve $ARGUMENTS to a PR number, or use auto-detection
@@ -48,6 +48,10 @@ if [ -z "$ARGUMENTS" ] || [ "$ARGUMENTS" = "" ]; then
 else
   # Explicit PR number from arguments
   PR_NUM="$ARGUMENTS"
+  # Validate PR_NUM as integer
+  case "$PR_NUM" in
+    ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 3 ;;
+  esac
 fi
 
 # Validate PR is OPEN and targeted at default branch
@@ -76,20 +80,52 @@ fi
 
 echo "PR #$PR_NUM: $PR_TITLE"
 echo "Branch: $PR_HEAD (base: $PR_BASE)"
+
+# Record the start time for the Phase 4 staleness guard. Variables don't persist across
+# Bash blocks, so this must be a file, keyed by PR number.
+jq -n 'now' > "/tmp/queued-merge.pr-${PR_NUM}.start_time" 2>/dev/null || true
 ```
 
 ### Phase 2 — Find the worktree
 
-Resolve the worktree path. If run from the main worktree, the PR worktree must exist and be locatable.
+Resolve the worktree path. If run from the main worktree, the PR worktree must exist and be locatable. Derive `PR_HEAD` and `PR_NUM` from the same sources as Phase 1, since variables don't persist across Bash blocks.
 
 ```bash
 # Determine which worktree to use
 # If running from the main worktree, we need to find the PR worktree
 # If running from a linked worktree, use the current one
 
-CURRENT_WORKTREE=$(pwd)
-# Get the git common dir (shared .git directory for all worktrees)
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+# Re-derive PR_NUM and PR_HEAD from fresh git state (variables don't persist across Bash blocks)
+# $ARGUMENTS takes precedence over branch derivation
+if [ -n "$ARGUMENTS" ] && [ "$ARGUMENTS" != "" ]; then
+  PR_NUM="$ARGUMENTS"
+  # Validate PR_NUM as integer
+  case "$PR_NUM" in
+    ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 3 ;;
+  esac
+  PR_HEAD=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName' 2>/dev/null)
+  if [ -z "$PR_HEAD" ]; then
+    echo "ERROR: PR #$PR_NUM not found"
+    exit 3
+  fi
+else
+  # Auto-detect PR from current branch
+  CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
+  if [ -z "$CURRENT_BRANCH" ]; then
+    echo "ERROR: auto-detection requires a symbolic ref (attached branch); detached HEAD found"
+    exit 3
+  fi
+  PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null)
+  if [ -z "$PR_NUM" ]; then
+    echo "ERROR: no PR found for branch '$CURRENT_BRANCH'"
+    exit 3
+  fi
+  PR_HEAD="$CURRENT_BRANCH"
+fi
+
+CURRENT_WORKTREE=$(pwd -P)
+# Get the git common dir (shared .git directory for all worktrees) as absolute path
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 if [ -z "$GIT_COMMON_DIR" ]; then
   echo "ERROR: could not determine git common dir"
   exit 1
@@ -98,27 +134,35 @@ fi
 # Determine the main worktree path
 # For linked worktrees, git-common-dir is <main>/.git
 # For bare repos or non-worktree setups, git-common-dir is .git
-if [ -d "$GIT_COMMON_DIR/worktrees" ]; then
-  # This is a worktree layout; main worktree is the parent of git-common-dir
-  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
-else
-  # Bare repo or single-worktree; main worktree is the directory containing git-common-dir
-  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
-fi
+MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
 
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   # Running from main worktree; find the PR worktree using git worktree list
-  PR_WORKTREE=$(git worktree list --path-format=absolute --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
+  PR_WORKTREE=$(git worktree list --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
 import sys
 import os
 pr_head = os.environ.get('PR_HEAD', '')
-for line in sys.stdin:
-  line = line.rstrip('\n')
-  parts = line.split(None, 3)  # Split on whitespace, max 4 parts
-  # porcelain format: <path> <detached|bare> [branch <branch_name>] [detached]
-  if len(parts) >= 3 and parts[1] == 'branch' and len(parts) > 2 and parts[2] == pr_head:
-    print(parts[0])
-    break
+lines = sys.stdin.read().strip().split('\n')
+
+current_record = {}
+for line in lines:
+  if not line.strip():
+    # End of record
+    if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
+      print(current_record['worktree'])
+      sys.exit(0)
+    current_record = {}
+  else:
+    parts = line.split(None, 1)
+    if len(parts) >= 2:
+      if parts[0] == 'worktree':
+        current_record['worktree'] = parts[1]
+      elif parts[0] == 'branch':
+        current_record['branch'] = parts[1]
+
+# Check final record
+if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
+  print(current_record['worktree'])
 PYTHON_EOF
 )
   
@@ -147,22 +191,31 @@ then move to Phase 4, which reads the result from disk.
 
 ```bash
 # Re-derive PR_NUM and PR_HEAD from fresh git state (variables don't persist across Bash blocks)
-CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
-if [ -z "$CURRENT_BRANCH" ]; then
-  # Fall back to PR detection via arguments (if Phase 1 passed an explicit PR)
-  if [ -n "$ARGUMENTS" ]; then
-    PR_NUM="$ARGUMENTS"
-  else
-    echo "ERROR: could not derive PR number; branch is detached and no --pr argument given"
+# $ARGUMENTS takes precedence over branch derivation
+if [ -n "$ARGUMENTS" ] && [ "$ARGUMENTS" != "" ]; then
+  PR_NUM="$ARGUMENTS"
+  # Validate PR_NUM as integer
+  case "$PR_NUM" in
+    ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 3 ;;
+  esac
+  PR_HEAD=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName' 2>/dev/null)
+  if [ -z "$PR_HEAD" ]; then
+    echo "ERROR: PR #$PR_NUM not found"
     exit 3
   fi
 else
   # Auto-detect PR from current branch
+  CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
+  if [ -z "$CURRENT_BRANCH" ]; then
+    echo "ERROR: auto-detection requires a symbolic ref (attached branch); detached HEAD found"
+    exit 3
+  fi
   PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null)
   if [ -z "$PR_NUM" ]; then
     echo "ERROR: no PR found for branch '$CURRENT_BRANCH'"
     exit 3
   fi
+  PR_HEAD="$CURRENT_BRANCH"
 fi
 
 echo "Enqueuing PR #$PR_NUM in the local merge queue..."
@@ -180,27 +233,37 @@ else
 fi
 
 # Determine worktree path (current directory for linked worktree, or derived for main worktree)
-CURRENT_WORKTREE=$(pwd)
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
-if [ -d "$GIT_COMMON_DIR/worktrees" ]; then
-  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
-else
-  MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
-fi
+CURRENT_WORKTREE=$(pwd -P)
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
 
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   # Running from main; need to cd to the PR worktree
-  PR_WORKTREE=$(git worktree list --path-format=absolute --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
+  PR_WORKTREE=$(git worktree list --porcelain 2>/dev/null | PR_HEAD="$PR_HEAD" python3 << 'PYTHON_EOF'
 import sys
 import os
-pr_num = os.environ.get('PR_NUM', '')
-for line in sys.stdin:
-  line = line.rstrip('\n')
-  parts = line.split(None, 3)
-  # Match worktree containing the PR branch
-  if len(parts) >= 3 and parts[1] == 'branch':
-    print(parts[0])
-    break
+pr_head = os.environ.get('PR_HEAD', '')
+lines = sys.stdin.read().strip().split('\n')
+
+current_record = {}
+for line in lines:
+  if not line.strip():
+    # End of record
+    if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
+      print(current_record['worktree'])
+      sys.exit(0)
+    current_record = {}
+  else:
+    parts = line.split(None, 1)
+    if len(parts) >= 2:
+      if parts[0] == 'worktree':
+        current_record['worktree'] = parts[1]
+      elif parts[0] == 'branch':
+        current_record['branch'] = parts[1]
+
+# Check final record
+if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
+  print(current_record['worktree'])
 PYTHON_EOF
 )
   if [ -z "$PR_WORKTREE" ]; then
@@ -219,20 +282,23 @@ fi
 
 ### Phase 4 — Read result and report
 
-After the merge queue finishes (when you see the completion notification), read `result.json` from
-the git state directory and report the outcome.
+After the merge queue finishes (when you see the completion notification), read the result from the git state directory and report the outcome. The result is checked for freshness (must not predate the start time recorded in Phase 1).
 
 ```bash
 # Re-derive PR_NUM from current state (variables don't persist across Bash blocks)
-CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
-if [ -z "$CURRENT_BRANCH" ]; then
-  if [ -n "$ARGUMENTS" ]; then
-    PR_NUM="$ARGUMENTS"
-  else
+# $ARGUMENTS takes precedence over branch derivation
+if [ -n "$ARGUMENTS" ] && [ "$ARGUMENTS" != "" ]; then
+  PR_NUM="$ARGUMENTS"
+  # Validate PR_NUM as integer
+  case "$PR_NUM" in
+    ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 1 ;;
+  esac
+else
+  CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
+  if [ -z "$CURRENT_BRANCH" ]; then
     echo "ERROR: could not derive PR number"
     exit 1
   fi
-else
   PR_NUM=$(gh pr view "$CURRENT_BRANCH" --json number -q '.number' 2>/dev/null)
   if [ -z "$PR_NUM" ]; then
     echo "ERROR: could not resolve PR number for branch '$CURRENT_BRANCH'"
@@ -240,34 +306,40 @@ else
   fi
 fi
 
-# The result.json lives in the git state dir
-# M6: Read from per-PR result slot (result-<pr>.json) rather than shared result.json
+# The result.json lives in the git state dir; read from per-PR result slot (result-<pr>.json) only
 STATE_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/merge-queue"
-
-# Try per-PR result file first (M6)
 PER_PR_RESULT_FILE="$STATE_DIR/result-$PR_NUM.json"
-SHARED_RESULT_FILE="$STATE_DIR/result.json"
 
-RESULT_FILE=""
-if [ -f "$PER_PR_RESULT_FILE" ]; then
-  RESULT_FILE="$PER_PR_RESULT_FILE"
-elif [ -f "$SHARED_RESULT_FILE" ]; then
-  # Fallback to shared result.json for backward compatibility
-  RESULT_FILE="$SHARED_RESULT_FILE"
-fi
-
-if [ -z "$RESULT_FILE" ]; then
-  echo "ERROR: result file not found (tried $PER_PR_RESULT_FILE and $SHARED_RESULT_FILE)"
+if [ ! -f "$PER_PR_RESULT_FILE" ]; then
+  echo "ERROR: result file not found at $PER_PR_RESULT_FILE"
   exit 1
 fi
 
 # Extract and verify the result JSON
-RESULT_JSON=$(cat "$RESULT_FILE" 2>/dev/null)
+RESULT_JSON=$(cat "$PER_PR_RESULT_FILE" 2>/dev/null)
 
 # Verify the .pr field matches the resolved PR number
 RESULT_PR=$(printf '%s' "$RESULT_JSON" | jq -r '.pr // ""' 2>/dev/null)
 if [ "$RESULT_PR" != "$PR_NUM" ]; then
   echo "ERROR: result PR mismatch (expected $PR_NUM, found $RESULT_PR) — result may be from a different PR"
+  exit 1
+fi
+
+# Check result freshness against the start time recorded in Phase 1 (read from the
+# per-PR scratch file, since variables don't persist across Bash blocks).
+START_TIME_FILE="/tmp/queued-merge.pr-${PR_NUM}.start_time"
+START_TIME=$(cat "$START_TIME_FILE" 2>/dev/null)
+RESULT_TIMESTAMP=$(printf '%s' "$RESULT_JSON" | jq -r '.timestamp // .enqueued_at // empty' 2>/dev/null)
+if [ -n "$RESULT_TIMESTAMP" ] && [ -n "$START_TIME" ]; then
+  FRESHNESS_CHECK=$(jq -n --argjson result_ts "$RESULT_TIMESTAMP" --argjson start_time "$START_TIME" \
+    'if ($result_ts | tonumber) < ($start_time | tonumber) then "stale" else "fresh" end' 2>/dev/null)
+  [ -n "$FRESHNESS_CHECK" ] || FRESHNESS_CHECK="missing"
+else
+  FRESHNESS_CHECK="missing"
+fi
+
+if [ "$FRESHNESS_CHECK" != "fresh" ]; then
+  echo "ERROR: result file at $PER_PR_RESULT_FILE predates this run (or no start time was recorded) — treating as missing, not as this run's outcome"
   exit 1
 fi
 

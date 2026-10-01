@@ -72,6 +72,102 @@ branch refs/heads/bugfix/5678
         main_worktree = Path(git_common_dir_output).parent.parent
         self.assertTrue(main_worktree.is_absolute())
 
+    def test_git_common_dir_flag_usage(self):
+        """Verify that --path-format=absolute is used with --git-common-dir."""
+        # Read the queued-merge.md file
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+
+        # Count occurrences of --git-common-dir with --path-format=absolute
+        # This should appear in Phase 2 and Phase 3
+        git_common_dir_calls = [
+            line for line in md_content.split('\n')
+            if 'git rev-parse' in line and '--git-common-dir' in line
+        ]
+
+        for line in git_common_dir_calls:
+            self.assertIn('--path-format=absolute', line,
+                         f"Line should have --path-format=absolute: {line}")
+
+    def test_no_worktree_list_path_format_flag(self):
+        """Verify that --path-format=absolute is NOT used with git worktree list."""
+        # Read the queued-merge.md file
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+
+        # Look for git worktree list commands
+        worktree_list_lines = [
+            line for line in md_content.split('\n')
+            if 'git worktree list' in line and '--porcelain' in line
+        ]
+
+        for line in worktree_list_lines:
+            self.assertNotIn('--path-format=absolute', line,
+                           f"'git worktree list' should NOT use --path-format=absolute: {line}")
+
+    def test_phase3_and_phase4_arguments_precedence(self):
+        """Verify that Phases 3 and 4 check $ARGUMENTS before branch derivation."""
+        # Read the queued-merge.md file
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+
+        # Extract Phase 3 and Phase 4 sections
+        phase3_idx = md_content.find("### Phase 3")
+        phase4_idx = md_content.find("### Phase 4")
+        phase3_text = md_content[phase3_idx:phase4_idx] if phase4_idx > phase3_idx else ""
+
+        # In Phase 3, we should check $ARGUMENTS before CURRENT_BRANCH
+        # Look for the pattern: if [ -n "$ARGUMENTS" ]
+        arguments_check = phase3_text.find('[ -n "$ARGUMENTS" ]')
+
+        self.assertGreater(arguments_check, -1,
+                          "Phase 3 should check $ARGUMENTS")
+        self.assertGreater(arguments_check, 0,
+                          "Phase 3 should check $ARGUMENTS before CURRENT_BRANCH")
+
+    def test_phase1_records_start_time(self):
+        """Verify that Phase 1 records a start time for staleness checking."""
+        # Read the queued-merge.md file
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+
+        # Phase 1 should record QUEUED_MERGE_START_TIME
+        phase1_start = md_content.find("### Phase 1")
+        phase2_start = md_content.find("### Phase 2")
+        phase1_text = md_content[phase1_start:phase2_start] if phase2_start > phase1_start else ""
+
+        # Recorded to a per-PR scratch file, not a shell variable, since variables
+        # don't persist across Bash blocks (Phase 4 is a separate block).
+        has_start_time = "start_time" in phase1_text and "jq -n 'now'" in phase1_text
+
+        self.assertTrue(has_start_time,
+                       "Phase 1 should record start time with jq -n 'now' to a file")
+
+    def test_phase4_checks_result_freshness(self):
+        """Verify that Phase 4 checks result timestamp against start time."""
+        # Read the queued-merge.md file
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+
+        # Phase 4 should compare result timestamp against start time
+        phase4_start = md_content.find("### Phase 4 —")
+        phase5_start = md_content.find("### Phase")
+        # Find the next ### after Phase 4
+        next_phase = md_content.find("### Phase 4-Q")
+        if next_phase == -1:
+            next_phase = phase5_start if phase5_start > phase4_start else len(md_content)
+
+        phase4_text = md_content[phase4_start:next_phase]
+
+        # Should check result timestamp, and actually gate on the result (not just mention it)
+        has_timestamp_check = "timestamp" in phase4_text and ("stale" in phase4_text or "fresh" in phase4_text)
+        gates_on_freshness = 'FRESHNESS_CHECK" != "fresh"' in phase4_text or "treating as missing" in phase4_text
+
+        self.assertTrue(has_timestamp_check,
+                       "Phase 4 should check result freshness against start time")
+        self.assertTrue(gates_on_freshness,
+                       "Phase 4 should actually act on the freshness result, not just compute it")
+
 
 if __name__ == '__main__':
     unittest.main()

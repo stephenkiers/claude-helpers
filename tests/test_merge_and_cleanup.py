@@ -20,6 +20,8 @@ Run with: python3 tests/test_merge_and_cleanup.py
 
 import re
 import shlex
+import json
+import subprocess
 from _test_harness import REPO_ROOT, Harness
 
 COMMANDS_DIR = REPO_ROOT / "commands"
@@ -281,6 +283,381 @@ if resolve_idx >= 0 and phase3_idx >= 0:
     t("Phase 0 & 1 byte-offset < Phase 3 byte-offset",
       resolve_idx < phase3_idx,
       "PR/worktree resolution and the push gate must come before the merge gate")
+
+print()
+
+# ============================================================================
+# TEST 8: Q1 Predicate presence and literal jq evaluation
+# ============================================================================
+print("[Test 8] Q1 predicate text is present and evaluates correctly")
+
+# Extract the predicate text from Phase 1
+predicate_text = '.queue.decision=="refuse" and .queue.detection.state=="configured" and .queue.pr_base!=null and .queue.pr_base==.queue.queue_base'
+has_predicate = predicate_text in MERGE
+t("Q1 predicate text is present in Phase 0 & 1",
+  has_predicate,
+  f"expected predicate text: {predicate_text}")
+
+# Try to evaluate the predicate with jq against sample payloads
+
+def test_predicate_with_payload(description, payload, expected_result):
+    """Test the predicate against a payload; expected_result is True/False."""
+    try:
+        # Use jq to evaluate: true = route, false = refuse without route
+        result = subprocess.run(
+            ["jq", "-e", predicate_text],
+            input=json.dumps(payload).encode(),
+            capture_output=True,
+            timeout=5
+        )
+        actual = result.returncode == 0  # jq -e exits 0 if expr is truthy
+        passed = actual == expected_result
+        t(f"Predicate evaluation: {description}",
+          passed,
+          f"expected {expected_result}, jq returned {actual}")
+        return passed
+    except Exception as e:
+        t(f"Predicate evaluation: {description}",
+          False,
+          f"jq evaluation failed: {e}")
+        return False
+
+# Test case (a): configured + matching bases → route (predicate true)
+test_predicate_with_payload(
+    "configured + pr_base==queue_base → route",
+    {
+        "queue": {
+            "decision": "refuse",
+            "detection": {"state": "configured"},
+            "pr_base": "main",
+            "queue_base": "main"
+        }
+    },
+    True  # Should route
+)
+
+# Test case (b): unknown state + matching bases → refuse (predicate false)
+test_predicate_with_payload(
+    "unknown state (predicate false)",
+    {
+        "queue": {
+            "decision": "refuse",
+            "detection": {"state": "unknown"},
+            "pr_base": "main",
+            "queue_base": "main"
+        }
+    },
+    False  # Should refuse
+)
+
+# Test case (c): configured + pr_base=None → refuse (predicate false)
+test_predicate_with_payload(
+    "configured but pr_base=null (predicate false)",
+    {
+        "queue": {
+            "decision": "refuse",
+            "detection": {"state": "configured"},
+            "pr_base": None,
+            "queue_base": "main"
+        }
+    },
+    False  # Should refuse
+)
+
+# Test case (d): configured + queue_base=None → refuse (predicate false)
+test_predicate_with_payload(
+    "configured but queue_base=null (predicate false)",
+    {
+        "queue": {
+            "decision": "refuse",
+            "detection": {"state": "configured"},
+            "pr_base": "main",
+            "queue_base": None
+        }
+    },
+    False  # Should refuse
+)
+
+print()
+
+# ============================================================================
+# TEST 9: Predicate-false path prints message and exits 3
+# ============================================================================
+print("[Test 9] Predicate-false path prints .queue.message and exits 3")
+
+# Look for the pattern where predicate is false, we print the message, and exit 3
+pattern = r'printf.*\.queue\.message.*exit 3'
+has_refuse_path = bool(re.search(pattern, MERGE, re.MULTILINE | re.DOTALL))
+t("Predicate-false path prints .queue.message and exits 3",
+  has_refuse_path,
+  "expected pattern that prints .queue.message and exits 3 on predicate false")
+
+print()
+
+# ============================================================================
+# TEST 10: Route marker and start-time writes before Phase 2Q
+# ============================================================================
+print("[Test 10] Route marker + start-time writes appear before Phase 2Q instruction")
+
+# Find byte indices for critical sections
+phase1_route_write_idx = MERGE.find('printf \'queue\\n\' > "$MC_STATE_DIR/route"')
+phase2b_route_write_idx = MERGE.find('printf \'queue\\n\' > "$MC_STATE_DIR/route"', phase1_route_write_idx + 1 if phase1_route_write_idx >= 0 else 0)
+phase2q_idx = get_byte_index(MERGE, "Phase 2Q")
+phase3_idx = get_byte_index(MERGE, "Phase 3")
+
+t("Phase 1 or 2b writes route marker",
+  phase1_route_write_idx >= 0 or phase2b_route_write_idx >= 0,
+  "expected route marker write in Phase 1 or Phase 2b")
+
+if phase2q_idx >= 0:
+    earliest_write = min(p for p in [phase1_route_write_idx, phase2b_route_write_idx] if p >= 0)
+    t("Route marker write appears before Phase 2Q",
+      earliest_write < phase2q_idx if earliest_write >= 0 else False,
+      f"write at {earliest_write}, Phase 2Q at {phase2q_idx}")
+
+print()
+
+# ============================================================================
+# TEST 11: Phase 2b does NOT have pre-skill rm -rf (only on Stop branch)
+# ============================================================================
+print("[Test 11] Phase 2b 'Set up' branch does not rm -rf state dir before Skill invocation")
+
+# Extract the Phase 2b section (look for "### Phase 2b" through next "### Phase")
+phase2b_start = get_byte_index(MERGE, "Phase 2b")
+if phase2b_start >= 0:
+    # Find the next phase heading
+    next_phase_match = re.search(r"^###", MERGE[phase2b_start + 10:], re.MULTILINE)
+    phase2b_end = phase2b_start + 10 + next_phase_match.start() if next_phase_match else len(MERGE)
+    phase2b_text = MERGE[phase2b_start:phase2b_end]
+
+    # Check for "Set up" and "Stop" branches
+    has_set_up_branch = "Set up" in phase2b_text or "Set up," in phase2b_text
+    has_stop_branch = "Stop" in phase2b_text
+
+    # Look for rm -rf in a code block that's marked "Set up" but before a Skill invocation
+    # This is a simplified check: if we find "rm -rf" and "Skill" in Phase 2b with rm before Skill, that's bad
+    rm_idx_in_2b = phase2b_text.find('rm -rf "$MC_STATE_DIR"')
+    skill_idx_in_2b = phase2b_text.find('queued-merge')  # Skill invocation indicator
+
+    if rm_idx_in_2b >= 0 and skill_idx_in_2b >= 0:
+        # If rm comes before Skill in the Set-Up branch, that's a violation
+        # But if it's in the Stop branch (after "Stop" keyword), it's fine
+        stop_idx = phase2b_text.find("**Stop**")
+        if stop_idx >= 0 and rm_idx_in_2b < stop_idx:
+            t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+              False,
+              "found rm -rf before Skill instruction in Set-Up branch")
+        else:
+            t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+              True,
+              "")
+    else:
+        t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+          True,
+          "no rm -rf found before Skill in Phase 2b")
+else:
+    t("Phase 2b section exists",
+      False,
+      "Phase 2b not found")
+
+print()
+
+# ============================================================================
+# TEST 12: Phase 2Q contains explicit "return here and run Phase 4-Q" instruction
+# ============================================================================
+print("[Test 12] Phase 2Q contains explicit return/Phase 4-Q instruction")
+
+has_phase2q = "Phase 2Q" in MERGE
+t("Phase 2Q section exists",
+  has_phase2q,
+  "expected '### Phase 2Q' heading")
+
+if has_phase2q:
+    phase2q_idx = get_byte_index(MERGE, "Phase 2Q")
+    phase3_idx = get_byte_index(MERGE, "Phase 3")
+    phase2q_text = MERGE[phase2q_idx:phase3_idx] if phase3_idx > phase2q_idx else MERGE[phase2q_idx:]
+
+    has_return_instruction = "return here" in phase2q_text.lower() and "phase 4-q" in phase2q_text.lower()
+    t("Phase 2Q contains 'return here and run Phase 4-Q' instruction",
+      has_return_instruction,
+      "expected explicit instruction to return and run Phase 4-Q")
+
+print()
+
+# ============================================================================
+# TEST 13: Phase 4-Q: MERGED check precedes cleanup Skill invocation
+# ============================================================================
+print("[Test 13] Phase 4-Q: MERGED check precedes cleanup Skill invocation")
+
+has_phase4q = "Phase 4-Q" in MERGE
+t("Phase 4-Q section exists",
+  has_phase4q,
+  "expected '### Phase 4-Q' heading")
+
+if has_phase4q:
+    phase4q_idx = get_byte_index(MERGE, "Phase 4-Q")
+    phase5_idx = get_byte_index(MERGE, "Phase 5")
+    phase4q_text = MERGE[phase4q_idx:phase5_idx] if phase5_idx > phase4q_idx else MERGE[phase4q_idx:]
+
+    # Look for FINAL_STATE check and cleanup Skill within Phase 4-Q
+    has_final_state = 'FINAL_STATE=$(gh pr view' in phase4q_text
+    has_cleanup_skill = 'cleanup` skill' in phase4q_text
+
+    t("Phase 4-Q has FINAL_STATE MERGED check",
+      has_final_state,
+      "expected FINAL_STATE=$(gh pr view ...) check in Phase 4-Q")
+
+    if has_final_state and has_cleanup_skill:
+        merged_idx = phase4q_text.find('FINAL_STATE=$(gh pr view')
+        cleanup_idx = phase4q_text.find('cleanup` skill')
+        t("Phase 4-Q MERGED check precedes cleanup Skill",
+          merged_idx < cleanup_idx,
+          f"MERGED at {merged_idx}, cleanup at {cleanup_idx}")
+
+print()
+
+# ============================================================================
+# TEST 14: Phase 4-Q requires route=queue; original Phase 4 has apply_exit_code check
+# ============================================================================
+print("[Test 14] Phase 4-Q requires route=queue; Phase 4 still has apply_exit_code check")
+
+phase4q_idx = get_byte_index(MERGE, "Phase 4-Q")
+phase4_idx = get_byte_index(MERGE, "Phase 4 —")
+phase5_idx = get_byte_index(MERGE, "Phase 5")
+
+if phase4q_idx >= 0:
+    phase4q_text = MERGE[phase4q_idx:phase5_idx] if phase5_idx > phase4q_idx else MERGE[phase4q_idx:]
+    has_route_check = "route" in phase4q_text and "queue" in phase4q_text
+    t("Phase 4-Q requires route file to contain 'queue'",
+      has_route_check,
+      "expected route file check in Phase 4-Q")
+
+if phase4_idx >= 0 and phase4q_idx >= 0:
+    phase4_text = MERGE[phase4_idx:phase4q_idx]
+    has_apply_check = "apply_exit_code" in phase4_text
+    t("Original Phase 4 still contains apply_exit_code check",
+      has_apply_check,
+      "expected apply_exit_code guard in Phase 4 (not removed)")
+
+print()
+
+# ============================================================================
+# TEST 15: No result file deletion
+# ============================================================================
+print("[Test 15] No deletion of result.json or result-*.json")
+
+rm_lines = [ln for line_num, blk in extract_bash_blocks(MERGE)
+            for ln in blk.split("\n")
+            if re.search(r"\brm\b", ln) and not ln.strip().startswith("#")]
+
+# Check specifically for queue result files (not apply_result.json which is a merge result)
+# Queue result files are: result.json or result-<PR>.json from the merge-queue state dir
+deletes_queue_result = [ln for ln in rm_lines if re.search(r'(merge-queue.*result|result-\d+\.json|/result\.json)', ln)]
+t("No queue result.json or result-*.json files are deleted",
+  len(deletes_queue_result) == 0,
+  f"found rm lines targeting queue result files: {deletes_queue_result}")
+
+print()
+
+# ============================================================================
+# TEST 16: No `date` command in bash blocks
+# ============================================================================
+print("[Test 16] No `date` command used in any bash block")
+
+has_date = any(re.search(r'\bdate\b', blk) for line_num, blk in extract_bash_blocks(MERGE))
+t("No 'date' command in bash blocks (using jq -n 'now' instead)",
+  not has_date,
+  "found 'date' command in bash blocks")
+
+print()
+
+# ============================================================================
+# TEST 17: allowed-tools includes Step 4 additions, still includes scripts.workflow.cli
+# ============================================================================
+print("[Test 17] allowed-tools includes queue-route tools and workflow CLI")
+
+required_tools = [
+    "Bash(cat:*)",
+    "Bash(python3:*)",
+    "Bash(command:*)",
+    "Bash(gh repo view:*)",
+    "Bash(*merge-queue*)",
+    "scripts.workflow.cli"
+]
+
+for tool in required_tools:
+    has_tool = tool in allowed_tools
+    t(f"allowed-tools includes '{tool}'",
+      has_tool,
+      f"missing from allowed-tools: {tool}")
+
+has_no_git_push = "Bash(git push" not in allowed_tools
+t("allowed-tools does NOT include Bash(git push:*)",
+  has_no_git_push,
+  "should not have git push in allowed-tools")
+
+print()
+
+# ============================================================================
+# TEST 18: Summary examples contain QUEUE row
+# ============================================================================
+print("[Test 18] Summary examples show QUEUE row for routed PRs")
+
+phase5_idx = get_byte_index(MERGE, "Phase 5")
+files_idx = MERGE.find("## Files")
+phase5_text = MERGE[phase5_idx:files_idx] if files_idx > phase5_idx else MERGE[phase5_idx:]
+
+has_queue_row = "QUEUE" in phase5_text and "✓" in phase5_text
+t("Summary examples include QUEUE row",
+  has_queue_row,
+  "expected QUEUE row in Phase 5 examples")
+
+print()
+
+# ============================================================================
+# TEST 19: Old refuse note text is gone
+# ============================================================================
+print("[Test 19] Old 'refuses ... and prints /queued-merge' text is gone")
+
+old_text_patterns = [
+    r'refuses.*exit code 3.*prints.*\/queued-merge',
+    r'exit code 3.*prints.*\/queued-merge.*PR',
+    r'print.*\/queued-merge <PR>',
+]
+
+found_old = any(re.search(pattern, MERGE, re.IGNORECASE) for pattern in old_text_patterns)
+t("Old refuse note text is removed",
+  not found_old,
+  "old note about printing /queued-merge <PR> should be gone")
+
+print()
+
+# ============================================================================
+# TEST 20: 'Skip if route=queue' line appears at top of BOTH Phase 3 AND Phase 4
+# ============================================================================
+print("[Test 20] 'Skip if route is queue' guard appears in both Phase 3 and Phase 4")
+
+phase3_idx = get_byte_index(MERGE, "Phase 3 —")
+phase4_idx = get_byte_index(MERGE, "Phase 4 —")
+phase4q_idx = get_byte_index(MERGE, "Phase 4-Q")
+phase5_idx = get_byte_index(MERGE, "Phase 5")
+
+skip_guard_text = re.compile(r'skip.*route.*queue', re.IGNORECASE)
+
+if phase3_idx >= 0 and phase4_idx >= 0:
+    phase3_text = MERGE[phase3_idx:phase4_idx]
+    phase4_text = MERGE[phase4_idx:phase4q_idx] if phase4q_idx > phase4_idx else MERGE[phase4_idx:phase5_idx]
+
+    has_skip_3 = skip_guard_text.search(phase3_text) is not None
+    has_skip_4 = skip_guard_text.search(phase4_text) is not None
+
+    t("Phase 3 has 'skip if route=queue' guard",
+      has_skip_3,
+      "expected skip guard at top of Phase 3")
+
+    t("Phase 4 has 'skip if route=queue' guard",
+      has_skip_4,
+      "expected skip guard at top of Phase 4")
 
 print()
 

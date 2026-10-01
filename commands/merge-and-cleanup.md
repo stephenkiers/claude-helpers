@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the worktree you want to merge (auto-detects PR), or from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup or /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: [PR number | worktree path]
-allowed-tools: Read, Skill, AskUserQuestion, Bash(cd:*), Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
+allowed-tools: Read, Skill, AskUserQuestion, Bash(cd:*), Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(cat:*), Bash(python3:*), Bash(command:*), Bash(gh repo view:*), Bash(*merge-queue*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
@@ -10,12 +10,13 @@ model: haiku
 
 Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Auto-detect the PR when run from the worktree you want to merge, or accept a PR number or worktree path explicitly when run from the main worktree.
 
-**Note:** When a merge-queue configuration exists and the PR targets the queue's configured base branch, this command does not merge it directly: the plan step exits 3 and the command pivots to `/queued-merge <PR>` by invoking the `queued-merge` skill. PRs targeting any other base (including stacked children and release branches) merge normally. The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on. There is no bypass flag (`merge apply` still refuses queue-owned PRs as the authoritative gate); if the queue is broken, fix the config or merge manually with `gh pr merge` outside this command (the untrailered-commit metric will record it).
+**Note:** When a merge-queue configuration exists and the PR targets the queue's configured base branch, this command routes through `/queued-merge` automatically (after running Phase 1's push gate), then invokes `/cleanup` on successful merge. PRs targeting any other base (including stacked children and release branches) merge normally via the direct route (Phases 3–4). The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on. If the queue configuration is unknown, undetermined, or broken, the command refuses with exit code 3; there is no bypass flag.
 
 **Why `model: haiku`:** every conditional branch here is a literal check against command
 output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
-mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004). The queue decision
-is resolved by a literal exit-code check (exit code 3 = pivot to `/queued-merge`, else = plan accordingly). The one
+mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004). Phase 1 returns exit code 3 when
+two conditions hold: `plan_merge` signals a queue-decision (third return value) AND the Q1 routing predicate
+(`.queue.decision=="refuse" and .queue.detection.state=="configured" and .queue.pr_base!=null and .queue.pr_base==.queue.queue_base`) evaluates to true — the latter means "route to queue". When the predicate is false (any other refuse cause), the command refuses without routing. The one
 irreversible action (the actual merge) sits behind the push gate's single hard-fail stop, which
 bounds the blast radius of a misjudgment to "the command halts," not "the wrong thing merges."
 
@@ -55,9 +56,17 @@ PLAN_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3
 PLAN_RESULT=$?
 
 if [ $PLAN_RESULT -eq 3 ]; then
-  printf '%s' "$PLAN_JSON" | jq -r '.queue.message'
-  echo "QUEUE_PIVOT: pivoting to /queued-merge"
-  exit 3
+  # Exit code 3 can mean: (a) refuse + check predicate to route, or (b) refuse without routing
+  # Q1 Predicate: .queue.decision=="refuse" and .queue.detection.state=="configured" and .queue.pr_base!=null and .queue.pr_base==.queue.queue_base
+  if printf '%s' "$PLAN_JSON" | jq -e '.queue.decision=="refuse" and .queue.detection.state=="configured" and .queue.pr_base!=null and .queue.pr_base==.queue.queue_base' 2>/dev/null >/dev/null; then
+    # Predicate is true — route to queue
+    ROUTE="queue"
+    # Fall through to extract PR_NUM/HEAD_REF/WT (already populated by plan_merge on refuse)
+  else
+    # Predicate is false — refuse without routing
+    printf '%s' "$PLAN_JSON" | jq -r '.queue.message'
+    exit 3
+  fi
 fi
 
 if [ $PLAN_RESULT -ne 0 ]; then
@@ -70,6 +79,11 @@ fi
 PR_NUM=$(printf '%s' "$PLAN_JSON" | jq -r '.pr_number')
 HEAD_REF=$(printf '%s' "$PLAN_JSON" | jq -r '.head_ref')
 WT=$(printf '%s' "$PLAN_JSON" | jq -r '.target_worktree')
+
+# Validate PR_NUM as integer
+case "$PR_NUM" in
+  ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 1 ;;
+esac
 
 # Check for push gate failures (blocking_failures is a list)
 BLOCKING=$(printf '%s' "$PLAN_JSON" | jq -r '.blocking_failures[]' 2>/dev/null)
@@ -118,11 +132,18 @@ if [ ! -O "$MC_STATE_DIR" ]; then
 fi
 
 # Clear stale result files from any previous incomplete run for this PR.
-rm -f "$MC_STATE_DIR/apply_result.json" "$MC_STATE_DIR/apply_result.stderr" "$MC_STATE_DIR/apply_exit_code"
+rm -f "$MC_STATE_DIR/apply_result.json" "$MC_STATE_DIR/apply_result.stderr" "$MC_STATE_DIR/apply_exit_code" "$MC_STATE_DIR/route" "$MC_STATE_DIR/queue_started_at"
 echo "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
 echo "$PR_NUM" > "$MC_STATE_DIR/pr_num"
 echo "$WT" > "$MC_STATE_DIR/wt"
 echo "State dir: $MC_STATE_DIR"
+
+# If routing to queue, write markers and print notice
+if [ "${ROUTE:-}" = "queue" ]; then
+  printf 'queue\n' > "$MC_STATE_DIR/route"
+  jq -n now > "$MC_STATE_DIR/queue_started_at"
+  echo "QUEUE_ROUTE: PR #$PR_NUM targets the queue base ($(printf '%s' "$PLAN_JSON" | jq -r '.queue.queue_base')) — routing through /queued-merge. This may wait behind other PRs already in the queue."
+fi
 
 # No queue configured but the layout is queue-capable → Phase 2b offers to set one up.
 if [ "$(printf '%s' "$PLAN_JSON" | jq -r '.queue.detection.state')" = "absent" ] \
@@ -179,16 +200,30 @@ if [ "$(printf '%s' "$INIT_JSON" | jq -r '.written // false')" != "true" ]; then
 fi
 echo "✓ Merge queue configured at $(printf '%s' "$INIT_JSON" | jq -r '.path')"
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
-rm -rf "$MC_STATE_DIR"
+printf 'queue\n' > "$MC_STATE_DIR/route"
+jq -n now > "$MC_STATE_DIR/queue_started_at"
+echo "QUEUE_ROUTE: PR #$PR_NUM targets the queue base — routing through /queued-merge. This may wait behind other PRs already in the queue."
 ```
 
 Then invoke the `queued-merge` skill via the `Skill` tool with the PR number as its argument, and
-stop — this command does not run Phase 3 or 4 for that PR; `/queued-merge` owns the merge from here.
+continue to Phase 2Q.
 
 On **Stop**, remove the state directory with the same two-line `MC_STATE_DIR=…; rm -rf "$MC_STATE_DIR"` used above, and end with
-the halted summary. On **Merge without a queue**, continue to Phase 3.
+the halted summary. On **Merge without a queue**, continue to Phase 3 (set `ROUTE=""` explicitly and continue).
+
+### Phase 2Q — Route through the queue
+
+**Only run this phase if Phase 1 printed `QUEUE_ROUTE:` or Phase 2b printed `QUEUE_ROUTE:`.**
+
+When either Phase prints that marker, the PR has been enqueued and ownership passes to `/queued-merge`. Invoke it via the `Skill` tool with the PR number as its argument:
+
+> `/queued-merge` ends with "report the outcome and exit" — that is the end of *its* instructions, not this command's. After it prints its outcome (whatever it is, including an error or no result), **return here and run Phase 4-Q**. The resume marker at `/tmp/merge-and-cleanup.pr-<N>/route` is how you know you're mid-route.
+
+After `/queued-merge` completes and prints its outcome, proceed to **Phase 4-Q** (do NOT run Phase 3; skip directly to Phase 4-Q).
 
 ### Phase 3 — Run the merge gate
+
+**Skip this phase entirely if Phase 1 wrote `QUEUE_ROUTE:` marker** (check `/tmp/merge-and-cleanup.pr-<N>/route` for the string `queue`).
 
 Auto-detected, no config key (repo-cache.json is gitignored and per-worktree, so a `commands.merge` key would not persist to new worktrees — this mirrors the design in `prompts/shipit-reference.md`). Resolution order:
 
@@ -266,7 +301,9 @@ fi
 
 ### Phase 4 — Hand off to `/cleanup`
 
-Confirm the merge actually landed, then invoke `/cleanup` via the Skill tool. Pre-verify the path expands to exactly one directory.
+**Skip this phase entirely if Phase 1 or 2b wrote `QUEUE_ROUTE:` marker** (this means Phase 2Q ran and you're waiting for Phase 4-Q instead). Check `/tmp/merge-and-cleanup.pr-<N>/route` for the string `queue`.
+
+Confirm the merge actually landed, then invoke `/cleanup` via the Skill tool. Pre-verify the path expands to exactly one directory. This phase is used only for the direct (non-queue) merge route.
 
 **Only start this phase after the Phase 3 background call's completion notification arrives.** This is
 a separate Bash call from Phase 3, so substitute the literal PR number (from the `PR #$PR_NUM` output in Phase 1)
@@ -347,28 +384,165 @@ rm -rf "$MC_STATE_DIR"
 echo "✓ State directory removed"
 ```
 
+### Phase 4-Q — Verify the queued merge, then hand off to `/cleanup`
+
+**Only run this phase if Phase 2Q ran** (i.e., `/queued-merge` was invoked and completed). Re-derive state from disk, verify the merge landed, then invoke `/cleanup`.
+
+```bash
+PR_NUM=<PR number from Phase 1>   # substitute the literal number; this is a new Bash call
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+
+# Validate PR_NUM as integer
+case "$PR_NUM" in
+  ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 1 ;;
+esac
+
+# Cross-check: verify the state dir exists and pr_num matches (same as Phase 4)
+if [ ! -d "$MC_STATE_DIR" ]; then
+  echo "ERROR: State directory $MC_STATE_DIR not found — Phase 1 may not have run" >&2
+  exit 1
+fi
+if [ "$(cat "$MC_STATE_DIR/pr_num" 2>/dev/null)" != "$PR_NUM" ]; then
+  echo "ERROR: PR number mismatch in state directory (expected $PR_NUM, found $(cat "$MC_STATE_DIR/pr_num" 2>/dev/null))" >&2
+  exit 1
+fi
+
+# Verify we're on the queue route (this distinguishes Phase 4-Q from Phase 4)
+ROUTE_FILE="$MC_STATE_DIR/route"
+if [ ! -f "$ROUTE_FILE" ] || [ "$(cat "$ROUTE_FILE")" != "queue" ]; then
+  echo "ERROR: route file does not indicate queue routing — this phase should not have run"
+  exit 1
+fi
+
+WT="$(cat "$MC_STATE_DIR/wt")"
+
+# Read result for reporting only; check timestamps for freshness against the start time
+# Phase 1/2b recorded, so a leftover result from a prior run for this PR isn't misreported
+# as this run's outcome.
+STATE_DIR="$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)/merge-queue"
+RESULT_FILE="$STATE_DIR/result-$PR_NUM.json"
+QUEUE_STARTED_AT="$(cat "$MC_STATE_DIR/queue_started_at" 2>/dev/null)"
+RESULT_JSON=""
+RESULT_OUTCOME=""
+RESULT_REASON=""
+
+if [ -f "$RESULT_FILE" ]; then
+  RESULT_JSON=$(cat "$RESULT_FILE" 2>/dev/null)
+  RESULT_TIMESTAMP=$(printf '%s' "$RESULT_JSON" | jq -r '.timestamp // .enqueued_at // empty' 2>/dev/null)
+  FRESH="missing"
+  if [ -n "$RESULT_TIMESTAMP" ] && [ -n "$QUEUE_STARTED_AT" ]; then
+    FRESH=$(jq -n --argjson result_ts "$RESULT_TIMESTAMP" --argjson start_time "$QUEUE_STARTED_AT" \
+      'if ($result_ts | tonumber) < ($start_time | tonumber) then "stale" else "fresh" end' 2>/dev/null)
+    [ -n "$FRESH" ] || FRESH="missing"
+  fi
+  if [ "$FRESH" = "fresh" ]; then
+    RESULT_OUTCOME=$(printf '%s' "$RESULT_JSON" | jq -r '.outcome // empty' 2>/dev/null)
+    RESULT_REASON=$(printf '%s' "$RESULT_JSON" | jq -r '.reason // empty' 2>/dev/null)
+  fi
+fi
+
+# Live gate: MERGED is the sole authority
+FINAL_STATE=$(gh pr view "$PR_NUM" --json state -q '.state' 2>/dev/null)
+if [ "$FINAL_STATE" != "MERGED" ]; then
+  # Merge did not land — report result and exit non-zero
+  if [ -n "$RESULT_OUTCOME" ]; then
+    echo "Result from queue:"
+    echo "  Outcome: $RESULT_OUTCOME"
+    if [ -n "$RESULT_REASON" ]; then
+      echo "  Reason: $RESULT_REASON"
+    fi
+  else
+    echo "No fresh queue result for this run (result file missing or unparsable)"
+  fi
+  echo ""
+  echo "Worktree and branch left intact: $WT"
+  if [ "$RESULT_OUTCOME" = "kickback" ]; then
+    echo ""
+    echo "RECOMMENDATION: fix the issues, push, then re-run /merge-and-cleanup $PR_NUM"
+    exit 2
+  elif [ "$RESULT_OUTCOME" = "pushed_not_merged" ]; then
+    exit 2
+  elif [ "$RESULT_OUTCOME" = "refused" ]; then
+    exit 3
+  else
+    # missing/unparsable or unknown outcome
+    exit 1
+  fi
+fi
+
+# Merge landed on GitHub — verify worktree path is unambiguous, then invoke /cleanup
+MATCH_LIST=$(ls -d "${WT}"*/ 2>/dev/null)
+MATCH_COUNT=$(echo "$MATCH_LIST" | grep -c .)
+
+if [ "$MATCH_COUNT" -ne 1 ]; then
+  echo "ERROR: Worktree path '$WT' is ambiguous for /cleanup's glob resolution (matches: $MATCH_LIST)"
+  exit 1
+fi
+
+if [ -n "$RESULT_OUTCOME" ] && [ "$RESULT_OUTCOME" != "merged" ]; then
+  echo "Note: GitHub reports PR #$PR_NUM as MERGED, but queue result was: $RESULT_OUTCOME"
+fi
+
+echo "✓ PR #$PR_NUM is merged; invoking /cleanup with: $WT"
+```
+
+**Now actually invoke the `cleanup` skill via the `Skill` tool**, passing `$WT` (the absolute worktree path, no trailing slash) as its argument. Only proceed after the bash block above exits 0. **If `/cleanup` succeeds**, run this cleanup block:
+
+```bash
+# Clean up state directory now that /cleanup has succeeded
+PR_NUM=<PR number from Phase 1>   # substitute the literal number; this is a new Bash call
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+rm -rf "$MC_STATE_DIR"
+echo "✓ State directory removed"
+```
+
+**If `/cleanup` fails** after the queue route, the merge is already irreversible on GitHub but cleanup is idempotent. Print the recovery command and stop:
+```
+/cleanup <abs-path>
+```
+
 ### Phase 5 — Summary
 
-Example output (with PR 1022 as the illustrative example):
+Example output for a merged PR via the direct route (PR 1020):
 
 ```
-PR #1022    ✓ merged via `just merge` (E2E gate passed)
+PR #1020    ✓ merged via `just merge` (E2E gate passed)
 WORKTREE    ✓ removed  /path/to/1020-…
 BRANCH      ✓ deleted  chore/1020-…
 MAIN        ✓ fast-forwarded to <sha>  |  checks: pass
 ```
 
-Use ⛔ for a halted phase; omit phases that never ran. Example of a halted run (push gate failure on PR 1022 — nothing past Phase 2 ran):
+Example of a queue-routed PR (PR 1022) that merged successfully:
 
 ```
-PR #1022    ✓ resolved to branch chore/1020-something
-WORKTREE    ✓ resolved  /path/to/1020-something
-PUSH GATE   ⛔ halted — 2 unpushed commits in /path/to/1020-something
-            RECOMMENDATION: git -C /path/to/1020-something push
+PR #1022    ✓ routed to merge queue (base: main)
+QUEUE       ✓ merged (tested against <sha>)
+WORKTREE    ✓ removed  /path/to/1022-…
+BRANCH      ✓ deleted  feature/1022-…
+MAIN        ✓ fast-forwarded to <sha>  |  checks: pass
+```
+
+Example of a queue-routed PR (PR 1023) that was kicked back:
+
+```
+PR #1023    ✓ routed to merge queue (base: main)
+QUEUE       ⛔ kickback — conflict with main
+WORKTREE    — left intact at /path/to/1023-something (tested commit: <sha>)
+            RECOMMENDATION: fix, push, re-run /merge-and-cleanup 1023
+```
+
+Use ⛔ for a halted phase; omit phases that never ran. Example of a halted run (push gate failure on PR 1024 — nothing past Phase 1 ran):
+
+```
+PR #1024    ✓ resolved to branch chore/1024-something
+WORKTREE    ✓ resolved  /path/to/1024-something
+PUSH GATE   ⛔ halted — 2 unpushed commits in /path/to/1024-something
+            RECOMMENDATION: git -C /path/to/1024-something push
 ```
 
 ## Files
 
 - `commands/merge-and-cleanup.md` — this command
+- `commands/queued-merge.md` — invoked via Skill on the queue route (modified in #232 for main-worktree resolution)
 - `tests/test_merge_and_cleanup.py` — its test file (written by a separate pass)
 - Reused, not modified: `commands/cleanup.md`, `prompts/worktree-reference.md`
