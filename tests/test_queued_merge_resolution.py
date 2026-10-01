@@ -7,12 +7,89 @@ Verifies:
 - Absolute --git-common-dir paths
 """
 
+import re
+import shlex
+import subprocess
 import unittest
 from pathlib import Path
+
+CANNED_PORCELAIN = """worktree /main
+detached
+
+worktree /pr-1234
+branch refs/heads/feature/1234
+
+worktree /pr-1234-alt
+branch refs/heads/bugfix/5678
+"""
+
+
+def _extract_worktree_list_invocation(md_content: str, phase_heading: str) -> str:
+    """Pull the literal `WORKTREE_LIST_OUTPUT=$(git worktree list ...)` / `PR_WORKTREE=$(...
+    PYTHON_EOF\n)` snippet out of a given phase's section, exactly as the doc would execute
+    it — so a test against it exercises the real shell lines, not a reimplementation of their
+    logic. The porcelain output is captured to a variable first and passed to python3 via an
+    env var, not piped directly into the heredoc'd python3 (a `<<` heredoc replaces a
+    command's stdin entirely, so piped input would be silently discarded)."""
+    phase_start = md_content.find(phase_heading)
+    assert phase_start != -1, f"heading not found: {phase_heading}"
+    rest = md_content[phase_start:]
+    match = re.search(
+        r"WORKTREE_LIST_OUTPUT=\$\(git worktree list --porcelain.*?\nPYTHON_EOF\n\)",
+        rest,
+        re.DOTALL,
+    )
+    assert match, f"worktree-list invocation not found under {phase_heading}"
+    return match.group(0)
 
 
 class TestQueuedMergeResolution(unittest.TestCase):
     """Test the fixed porcelain parser and argument handling in queued-merge.md."""
+
+    def _run_worktree_list_invocation(self, snippet: str, pr_head: str) -> str:
+        """Execute the extracted snippet for real in bash, with `git worktree list`
+        shadowed to emit canned porcelain and PR_HEAD set as a plain (unexported)
+        shell variable — exactly like Phase 2/3's real `PR_HEAD=$(gh pr view ...)`
+        assignment. This is what actually catches a missing `PR_HEAD="$PR_HEAD"`
+        env-prefix on the python3 invocation: an unexported PR_HEAD isn't visible to
+        a subprocess unless explicitly passed."""
+        script = f"""
+set -e
+git() {{
+  if [ "$1" = "worktree" ] && [ "$2" = "list" ]; then
+    printf '%s' {shlex.quote(CANNED_PORCELAIN)}
+  else
+    command git "$@"
+  fi
+}}
+PR_HEAD={shlex.quote(pr_head)}
+{snippet}
+printf '%s' "$PR_WORKTREE"
+"""
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=10
+        )
+        return result.stdout
+
+    def test_phase2_worktree_list_invocation_passes_pr_head(self):
+        """Phase 2's real invocation must actually resolve the worktree for the
+        PR_HEAD it just derived — regression test for the missing
+        `PR_HEAD="$PR_HEAD"` env prefix (the python3 heredoc read an empty
+        PR_HEAD because the plain assignment above it isn't exported)."""
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+        snippet = _extract_worktree_list_invocation(md_content, "### Phase 2")
+        found = self._run_worktree_list_invocation(snippet, "feature/1234")
+        self.assertEqual(found, "/pr-1234")
+
+    def test_phase3_worktree_list_invocation_passes_pr_head(self):
+        """Same regression test for Phase 3's invocation, which already had the
+        correct env prefix — keeps it from silently regressing."""
+        md_path = Path(__file__).parent.parent / "commands" / "queued-merge.md"
+        md_content = md_path.read_text()
+        snippet = _extract_worktree_list_invocation(md_content, "### Phase 3")
+        found = self._run_worktree_list_invocation(snippet, "feature/1234")
+        self.assertEqual(found, "/pr-1234")
 
     def test_porcelain_parser_matches_pr_head(self):
         """Extract Phase 2's Python parser and verify it matches worktree by branch."""

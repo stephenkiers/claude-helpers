@@ -137,20 +137,24 @@ fi
 MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
 
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
-  # Running from main worktree; find the PR worktree using git worktree list
-  PR_WORKTREE=$(git worktree list --porcelain 2>/dev/null | python3 << 'PYTHON_EOF'
-import sys
+  # Running from main worktree; find the PR worktree using git worktree list.
+  # Captured to a variable first, not piped directly into python3: a `<<` heredoc
+  # replaces a command's stdin entirely, so piped input would be silently discarded
+  # and sys.stdin.read() inside the heredoc would always see an empty string.
+  WORKTREE_LIST_OUTPUT=$(git worktree list --porcelain 2>/dev/null)
+  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" WORKTREE_LIST="$WORKTREE_LIST_OUTPUT" python3 << 'PYTHON_EOF'
 import os
 pr_head = os.environ.get('PR_HEAD', '')
-lines = sys.stdin.read().strip().split('\n')
+lines = os.environ.get('WORKTREE_LIST', '').strip().split('\n')
 
 current_record = {}
+found = None
 for line in lines:
   if not line.strip():
     # End of record
     if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-      print(current_record['worktree'])
-      sys.exit(0)
+      found = current_record['worktree']
+      break
     current_record = {}
   else:
     parts = line.split(None, 1)
@@ -160,9 +164,12 @@ for line in lines:
       elif parts[0] == 'branch':
         current_record['branch'] = parts[1]
 
-# Check final record
-if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-  print(current_record['worktree'])
+# Check final record, in case the porcelain output doesn't end with a blank line
+if found is None and current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
+  found = current_record['worktree']
+
+if found:
+  print(found)
 PYTHON_EOF
 )
   
@@ -238,20 +245,24 @@ GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/nu
 MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
 
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
-  # Running from main; need to cd to the PR worktree
-  PR_WORKTREE=$(git worktree list --porcelain 2>/dev/null | PR_HEAD="$PR_HEAD" python3 << 'PYTHON_EOF'
-import sys
+  # Running from main; need to cd to the PR worktree.
+  # Captured to a variable first, not piped directly into python3: a `<<` heredoc
+  # replaces a command's stdin entirely, so piped input would be silently discarded
+  # and sys.stdin.read() inside the heredoc would always see an empty string.
+  WORKTREE_LIST_OUTPUT=$(git worktree list --porcelain 2>/dev/null)
+  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" WORKTREE_LIST="$WORKTREE_LIST_OUTPUT" python3 << 'PYTHON_EOF'
 import os
 pr_head = os.environ.get('PR_HEAD', '')
-lines = sys.stdin.read().strip().split('\n')
+lines = os.environ.get('WORKTREE_LIST', '').strip().split('\n')
 
 current_record = {}
+found = None
 for line in lines:
   if not line.strip():
     # End of record
     if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-      print(current_record['worktree'])
-      sys.exit(0)
+      found = current_record['worktree']
+      break
     current_record = {}
   else:
     parts = line.split(None, 1)
@@ -261,9 +272,12 @@ for line in lines:
       elif parts[0] == 'branch':
         current_record['branch'] = parts[1]
 
-# Check final record
-if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-  print(current_record['worktree'])
+# Check final record, in case the porcelain output doesn't end with a blank line
+if found is None and current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
+  found = current_record['worktree']
+
+if found:
+  print(found)
 PYTHON_EOF
 )
   if [ -z "$PR_WORKTREE" ]; then
