@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the worktree you want to merge (auto-detects PR), or from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup or /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: [PR number | worktree path]
-allowed-tools: Read, Skill, Bash(cd:*), Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
+allowed-tools: Read, Skill, AskUserQuestion, Bash(cd:*), Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
@@ -122,7 +122,63 @@ echo "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
 echo "$PR_NUM" > "$MC_STATE_DIR/pr_num"
 echo "$WT" > "$MC_STATE_DIR/wt"
 echo "State dir: $MC_STATE_DIR"
+
+# No queue configured but the layout is queue-capable → Phase 2b offers to set one up.
+if [ "$(printf '%s' "$PLAN_JSON" | jq -r '.queue.detection.state')" = "absent" ] \
+   && [ "$(printf '%s' "$PLAN_JSON" | jq -r '.queue.detection.path // empty')" != "" ]; then
+  echo "QUEUE_SETUP_OFFER: no merge queue configured (would live at $(printf '%s' "$PLAN_JSON" | jq -r '.queue.detection.path'))"
+fi
 ```
+
+### Phase 2b — Offer merge-queue setup (only when Phase 1 printed `QUEUE_SETUP_OFFER`)
+
+Skip this phase entirely unless Phase 1 printed a `QUEUE_SETUP_OFFER:` line. An `absent` detection
+with no path (a flat clone, reason `layout-not-queue-capable`) cannot host the default config, so no
+offer is made there.
+
+First get the proposed config — a dry run, writes nothing. Substitute the literal worktree path from
+Phase 1's `Resolved worktree:` line:
+
+```bash
+WT=<worktree path resolved in Phase 1>   # substitute the literal path; this is a new Bash call
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge queue-init --cwd "$WT")
+```
+
+Then ask with `AskUserQuestion` (header `Merge queue`), showing the proposed `config` JSON and
+`path` from that output in the first option's `preview`:
+
+1. **Set up merge queue, then use /queued-merge** — writes the config shown, then merges this PR through the queue (the first enqueue also verifies the current base by running the gate once — expect it to take about twice as long).
+2. **Merge without a queue this time** — continue to Phase 3 unchanged.
+3. **Stop** — merge nothing.
+
+If the dry run's `steps` is empty (no repo-cache `check` command and no justfile `check` recipe),
+say so in the question and ask the user for the gate command via the "Other" answer; never invent one.
+If the user answers "Other" with a different gate command, pass it as `--step` (repeatable) below.
+
+On **Set up**, write the config. `queue-init --write` validates with the queue's own validator and
+is create-only — it never overwrites an existing config:
+
+```bash
+WT=<worktree path resolved in Phase 1>   # substitute the literal path
+PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+# Append `--step "<cmd>"` per user-supplied gate command, if any.
+INIT_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli merge queue-init --cwd "$WT" --write)
+if [ "$(printf '%s' "$INIT_JSON" | jq -r '.written // false')" != "true" ]; then
+  echo "ERROR: merge-queue setup failed: $(printf '%s' "$INIT_JSON" | jq -r '.error // "unknown"')"
+  exit 1
+fi
+echo "✓ Merge queue configured at $(printf '%s' "$INIT_JSON" | jq -r '.path')"
+MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+rm -rf "$MC_STATE_DIR"
+```
+
+Then invoke the `queued-merge` skill via the `Skill` tool with the PR number as its argument, and
+stop — this command does not run Phase 3 or 4 for that PR; `/queued-merge` owns the merge from here.
+
+On **Stop**, remove the state directory with the same two-line `MC_STATE_DIR=…; rm -rf "$MC_STATE_DIR"` used above, and end with
+the halted summary. On **Merge without a queue**, continue to Phase 3.
 
 ### Phase 3 — Run the merge gate
 

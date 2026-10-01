@@ -70,7 +70,8 @@ def detect_merge_queue(cwd: Path, config_flag: Optional[str] = None) -> QueueDet
     - No override, LayoutMismatchError → absent (reason "layout-not-queue-capable")
     - No override, any other exception → unknown
     - No override, default path is_file() → configured (source default)
-    - No override, default path does not exist → absent
+    - No override, default path does not exist → absent (path = where the config would go,
+      reason "no-config")
     - Path exists but is not regular file, or stat raises → unknown
     - Catch-all: unexpected exceptions → unknown
     """
@@ -135,9 +136,13 @@ def detect_merge_queue(cwd: Path, config_flag: Optional[str] = None) -> QueueDet
                     reason=f"MERGE_QUEUE_CONFIG is set to {env_val} but no file exists there"
                 )
             else:
-                # Default path doesn't exist = absent
+                # Default path doesn't exist = absent. Carry the would-be path so
+                # /merge-and-cleanup can offer to create the config there.
                 return QueueDetection(
-                    state="absent"
+                    state="absent",
+                    path=str(config_path),
+                    source=source,
+                    reason="no-config"
                 )
 
         # Path exists; check if it's a regular file
@@ -255,6 +260,102 @@ def queue_guard(pr_number: int, target_worktree: Path) -> QueueGuardDecision:
         queue_base=queue_base,
         message=f"The merge queue does not take PRs targeting {pr_base} (queue base: {queue_base}); proceeding.",
     )
+
+
+def _propose_queue_steps(target_worktree: Path) -> Tuple[List[str], Optional[str]]:
+    """
+    Pick gate steps for a new queue config from what the repo already runs.
+
+    Prefers repo-cache `commands.check`, then a justfile `check` recipe. Never proposes
+    `just merge`: that recipe may itself merge the PR, which the queue does on its own.
+    Returns (steps, source) — ([], None) when nothing is detectable.
+    """
+    cache_file = target_worktree / ".claude" / "repo-cache.json"
+    if cache_file.exists():
+        cache_data, err = read_repo_cache(cache_file)
+        if not err and cache_data:
+            check_cmd = cache_data.commands.get("check")
+            if isinstance(check_cmd, str) and check_cmd.strip():
+                return [check_cmd.strip()], "repo-cache"
+    justfile = target_worktree / "justfile"
+    if justfile.exists():
+        try:
+            summary = subprocess.run(
+                ["just", "-f", str(justfile), "--summary"],
+                cwd=str(target_worktree), capture_output=True, text=True, timeout=5
+            )
+            if summary.returncode == 0 and "check" in summary.stdout.split():
+                return ["just check"], "justfile"
+        except Exception:
+            pass
+    return [], None
+
+
+def queue_init(
+    target_worktree: Path,
+    steps: Optional[List[str]] = None,
+    write: bool = False,
+) -> Dict[str, Any]:
+    """
+    Propose (and, with write=True, create) a merge-queue config for a repo whose
+    queue detection is "absent" with a known default path.
+
+    The proposal is {base: <default branch>, steps, cleanup: true}. Explicit `steps`
+    override the detected ones. The config is validated with the queue's own
+    validator before anything is written, and the write is create-only (O_EXCL):
+    an existing config is never overwritten.
+
+    Raises RuntimeError when the repo is not queue-capable, a config already exists,
+    no steps are available, or validation fails.
+    """
+    detection = detect_merge_queue(target_worktree)
+    if detection.state != "absent" or not detection.path:
+        if detection.state == "configured":
+            raise RuntimeError(f"A merge-queue config already exists at {detection.path}")
+        raise RuntimeError(
+            f"Cannot set up a merge queue here (state: {detection.state}, "
+            f"reason: {detection.reason or 'none'})"
+        )
+    config_path = Path(detection.path)
+
+    chosen: List[str]
+    steps_source: Optional[str]
+    if steps:
+        chosen, steps_source = [s for s in steps if s.strip()], "explicit"
+    else:
+        chosen, steps_source = _propose_queue_steps(target_worktree)
+
+    default_branch, err = git.get_default_branch(cwd=target_worktree)
+    if err or not default_branch:
+        raise RuntimeError(f"Could not determine default branch: {err}")
+
+    config: Dict[str, Any] = {"base": default_branch, "steps": chosen, "cleanup": True}
+    result: Dict[str, Any] = {
+        "path": str(config_path),
+        "config": config,
+        "steps_source": steps_source,
+        "written": False,
+    }
+    if not chosen:
+        if write:
+            raise RuntimeError("No gate steps detected; pass --step <cmd> explicitly")
+        return result
+
+    try:
+        merge_queue.validate_config_data(config, cwd=target_worktree)
+    except ValueError as e:
+        raise RuntimeError(f"Proposed config is invalid: {e}") from e
+
+    if write:
+        try:
+            fd = os.open(str(config_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            raise RuntimeError(f"A merge-queue config already exists at {config_path}")
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+        result["written"] = True
+    return result
 
 
 def merge_lock_path(target_worktree: str) -> Path:

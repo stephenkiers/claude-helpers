@@ -264,8 +264,18 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in config: {e}")
 
+    return validate_config_data(data)
+
+
+def validate_config_data(data: Any, cwd: Optional[Path] = None) -> MergeQueueConfig:
+    """
+    Validate an already-parsed config object against the strict schema
+    (see load_and_validate_config). `cwd` selects the repository whose default
+    branch `base` must equal; None means the process cwd.
+    """
     if not isinstance(data, dict):
         raise ValueError("Config must be a JSON object (dict), not a list or primitive value")
+    data = dict(data)
 
     known_keys = {"base", "steps", "cleanup", "scratch_setup", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs"}
     unknown = set(data.keys()) - known_keys
@@ -321,7 +331,7 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
     if "pr_merge_poll_secs" in data:
         _validate_positive_int(data["pr_merge_poll_secs"], "pr_merge_poll_secs")
 
-    default_branch, err = git.get_default_branch()
+    default_branch, err = git.get_default_branch(cwd=cwd) if cwd is not None else git.get_default_branch()
     if err or not default_branch:
         raise RuntimeError(f"Could not determine default branch: {err}")
     if data["base"] != default_branch:

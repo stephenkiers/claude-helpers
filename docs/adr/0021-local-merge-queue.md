@@ -298,6 +298,14 @@ PRs retargeted after the plan phase. No cache is stored; detection happens fresh
 This reads as: the guard and `/queued-merge` have identical visibility into the queue state,
 ensuring no cross-tool disagreement (Decisions Q1 and Q3).
 
+**Setup offer on absent:** When detection is `absent` with a known default path (queue-capable
+layout, no config yet), `/merge-and-cleanup` offers — via one `AskUserQuestion`, never silently — to
+create `<container>/merge-queue.json` and hand the PR to `/queued-merge`. The proposal comes from
+`cli merge queue-init` (`{base: <default branch>, steps: [<repo-cache check | just check>], cleanup:
+true}`; never `just merge`, which may merge on its own), is validated with the queue's own
+`validate_config_data()`, and is written create-only so an existing config is never overwritten.
+Declining merges as before. A non-`worktrees/` layout gets no offer.
+
 **Base scoping (Q2):** Refusal is conditional on `PR.base == queue.base`. Stacked PRs that target
 a parent branch (or any non-base branch) fall through to the normal merge gate, so stacked workflows
 are not disrupted. The base is re-read live in `apply_merge()` to catch retargets.
