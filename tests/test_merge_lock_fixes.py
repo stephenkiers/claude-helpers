@@ -24,12 +24,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from workflow.merge import apply_merge, merge_lock_path, MergePlan
 from workflow.cleanup import apply_cleanup, CleanupPlan
 from workflow.safety import Unknown
+from workflow.merge import QueueDetection, QueueGuardDecision
 from _test_harness import Harness
 
 
 if __name__ == "__main__":
     fake_home = tempfile.mkdtemp()
     os.environ["HOME"] = fake_home
+
+    # These suites predate the merge-queue guard and use non-git fake worktrees, which the
+    # guard (correctly) reads as "unknown" and refuses. Pin it to "no queue" for the whole
+    # run; the guard itself is covered by its own suite.
+    mock.patch(
+        "workflow.merge.queue_guard",
+        return_value=QueueGuardDecision(decision="proceed", detection=QueueDetection(state="absent")),
+    ).start()
 
     try:
         h = Harness("MERGE LOCK FIXES TEST SUITE")

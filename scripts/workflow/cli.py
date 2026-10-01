@@ -9,6 +9,7 @@ Usage:
   python3 -m scripts.workflow.cli cleanup apply <plan_json_or_->
   python3 -m scripts.workflow.cli merge plan <arguments>
   python3 -m scripts.workflow.cli merge apply <plan_json>
+  python3 -m scripts.workflow.cli merge queue-init --cwd <worktree> [--step <cmd>]... [--write]
   python3 -m scripts.workflow.cli track plan --mode github --plan-file <path> --title <title> [--assignee <a>]
   python3 -m scripts.workflow.cli track apply <plan_json_or_->
 """
@@ -107,9 +108,27 @@ def main() -> None:
         "arguments", nargs="?", default=None,
         help="PR number or worktree path (defaults to detecting from the current directory)"
     )
+    merge_plan_parser.add_argument(
+        "--cwd", default=None,
+        help="Working directory for PR/worktree resolution (defaults to current directory)"
+    )
 
     merge_apply_parser = merge_subparsers.add_parser("apply", help="Apply merge plan")
     merge_apply_parser.add_argument("plan", help="Plan JSON")
+
+    merge_queue_init_parser = merge_subparsers.add_parser(
+        "queue-init", help="Propose (or with --write, create) a merge-queue config"
+    )
+    merge_queue_init_parser.add_argument(
+        "--cwd", required=True, help="Worktree of the repo to set up"
+    )
+    merge_queue_init_parser.add_argument(
+        "--step", action="append", default=None,
+        help="Gate step command (repeatable); overrides the detected steps"
+    )
+    merge_queue_init_parser.add_argument(
+        "--write", action="store_true", help="Create the config (never overwrites)"
+    )
 
     shipit_parser = subparsers.add_parser("shipit", help="Commit, push, and create/update PR")
     shipit_subparsers = shipit_parser.add_subparsers(dest="shipit_action")
@@ -207,12 +226,33 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "merge":
         if args.merge_action == "plan":
-            _run_plan(merge.plan_merge, args.arguments)
+            # Custom handler for merge plan to support --cwd and exit 3 on queue refusal
+            plan_obj, error = merge.plan_merge(
+                args.arguments,
+                cwd=Path(args.cwd) if args.cwd else None
+            )
+            if error:
+                output = {"success": False, "error": str(error)}
+            else:
+                output = plan_obj.to_dict() if plan_obj else {"success": False}
+            print(json.dumps(output))
+            if error:
+                sys.exit(1)
+            # Check if queue guard refused
+            if plan_obj and plan_obj.queue.get("decision") == "refuse":
+                sys.exit(3)
         elif args.merge_action == "apply":
             plan_json = args.plan
             if plan_json == "-":
                 plan_json = sys.stdin.read()
             _run_apply(merge.apply_merge, plan_json)
+        elif args.merge_action == "queue-init":
+            try:
+                init_result = merge.queue_init(Path(args.cwd), steps=args.step, write=args.write)
+            except RuntimeError as e:
+                print(json.dumps({"success": False, "error": str(e)}))
+                sys.exit(1)
+            print(json.dumps(init_result))
         else:
             merge_parser.print_help()
             sys.exit(1)

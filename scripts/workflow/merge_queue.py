@@ -34,6 +34,15 @@ from . import git
 
 
 # ============================================================================
+# Exceptions
+# ============================================================================
+
+class LayoutMismatchError(RuntimeError):
+    """Raised when the git layout does not match the worktrees/ structure."""
+    pass
+
+
+# ============================================================================
 # Module-level utilities
 # ============================================================================
 
@@ -121,7 +130,7 @@ class MergeQueueConfig:
         return cls(**filtered_data)
 
 
-def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
+def _check_outside_worktree(resolved: Path, source_label: str, cwd: Optional[Path] = None) -> Path:
     """
     Verify `resolved` is outside the PR worktree.
 
@@ -131,8 +140,13 @@ def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
     trusting a path that might be inside the PR worktree.
     """
     try:
-        git_common_dir = Path(git.get_git_common_dir()).resolve()
-        show_toplevel = Path(git.get_repository_root()).resolve()
+        git_common_dir_str = git.get_git_common_dir(cwd=cwd)
+        # If git-common-dir returns a relative path, resolve it against cwd
+        if not Path(git_common_dir_str).is_absolute():
+            git_common_dir = ((cwd or Path.cwd()).resolve() / git_common_dir_str).resolve()
+        else:
+            git_common_dir = Path(git_common_dir_str).resolve()
+        show_toplevel = Path(git.get_repository_root(cwd=cwd)).resolve()
     except Exception as e:
         raise RuntimeError(
             f"{source_label} trust-boundary check failed: could not resolve git directories: {e}"
@@ -162,7 +176,7 @@ def _check_outside_worktree(resolved: Path, source_label: str) -> Path:
     return resolved
 
 
-def resolve_config_path(config_flag: Optional[str] = None) -> Path:
+def resolve_config_path(config_flag: Optional[str] = None, cwd: Optional[Path] = None) -> Path:
     """
     Resolve the merge-queue config location.
 
@@ -175,13 +189,18 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
     Raises if the layout doesn't match and no override is provided.
     """
     if config_flag:
-        return _check_outside_worktree(Path(config_flag).resolve(), "--config")
+        return _check_outside_worktree(Path(config_flag).resolve(), "--config", cwd=cwd)
 
     if env_path := os.environ.get("MERGE_QUEUE_CONFIG"):
-        return _check_outside_worktree(Path(env_path).resolve(), "MERGE_QUEUE_CONFIG")
+        return _check_outside_worktree(Path(env_path).resolve(), "MERGE_QUEUE_CONFIG", cwd=cwd)
 
     try:
-        git_common_dir = Path(git.get_git_common_dir()).resolve()
+        git_common_dir_str = git.get_git_common_dir(cwd=cwd)
+        # If git-common-dir returns a relative path, resolve it against cwd
+        if not Path(git_common_dir_str).is_absolute():
+            git_common_dir = ((cwd or Path.cwd()).resolve() / git_common_dir_str).resolve()
+        else:
+            git_common_dir = Path(git_common_dir_str).resolve()
     except Exception as e:
         raise RuntimeError(
             f"Could not determine default config location: {e}\n"
@@ -197,12 +216,14 @@ def resolve_config_path(config_flag: Optional[str] = None) -> Path:
         #   git_common_dir.parent.parent = <repo>/worktrees
         #   git_common_dir.parent.parent.parent = <repo>
         if git_common_dir.parent.parent.name != "worktrees":
-            raise RuntimeError(
+            raise LayoutMismatchError(
                 "Layout does not match: git path does not show 'worktrees' at expected location\n"
                 "Use --config <path> or set MERGE_QUEUE_CONFIG"
             )
         container = git_common_dir.parent.parent.parent
         return container / "merge-queue.json"
+    except LayoutMismatchError:
+        raise
     except RuntimeError:
         raise
     except Exception as e:
@@ -243,8 +264,18 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in config: {e}")
 
+    return validate_config_data(data)
+
+
+def validate_config_data(data: Any, cwd: Optional[Path] = None) -> MergeQueueConfig:
+    """
+    Validate an already-parsed config object against the strict schema
+    (see load_and_validate_config). `cwd` selects the repository whose default
+    branch `base` must equal; None means the process cwd.
+    """
     if not isinstance(data, dict):
         raise ValueError("Config must be a JSON object (dict), not a list or primitive value")
+    data = dict(data)
 
     known_keys = {"base", "steps", "cleanup", "scratch_setup", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs"}
     unknown = set(data.keys()) - known_keys
@@ -300,7 +331,7 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
     if "pr_merge_poll_secs" in data:
         _validate_positive_int(data["pr_merge_poll_secs"], "pr_merge_poll_secs")
 
-    default_branch, err = git.get_default_branch()
+    default_branch, err = git.get_default_branch(cwd=cwd) if cwd is not None else git.get_default_branch()
     if err or not default_branch:
         raise RuntimeError(f"Could not determine default branch: {err}")
     if data["base"] != default_branch:
