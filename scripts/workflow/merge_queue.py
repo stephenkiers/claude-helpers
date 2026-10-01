@@ -61,6 +61,10 @@ GRACE_PERIOD_BEFORE_KILL = 5.0  # Grace period (seconds) before SIGKILL after SI
 SCAN_BASE_MAX_DEPTH = 100  # Maximum depth to scan in base commit history for poison checks
 PRUNE_OLD_RESULTS_LIMIT = 100  # Keep the most recent N result files to prevent unbounded growth
 
+# Per-worktree direnv vars that would point scratch-dir steps at the invoking PR worktree's
+# docker project and database instead of the scratch checkout's own.
+STEP_ENV_STRIPPED_VARS = ("COMPOSE_PROJECT_NAME", "DATABASE_URL")
+
 
 # ============================================================================
 # Step Definition (normalized from Union[str, Dict])
@@ -721,6 +725,7 @@ def run_step(
             "stderr": subprocess.STDOUT,
             "stdin": subprocess.DEVNULL,
             "close_fds": True,
+            "env": {k: v for k, v in os.environ.items() if k not in STEP_ENV_STRIPPED_VARS},
         }
         if lock_fd_to_inherit is not None:
             popen_kwargs["pass_fds"] = (lock_fd_to_inherit,)
