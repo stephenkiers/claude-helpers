@@ -3,7 +3,7 @@
 Test suite for merge-queue setup offered by /merge-and-cleanup when no queue is configured.
 
 - detect_merge_queue() absent-with-default-path carries the would-be config path
-- queue_init() dry run proposes {base, steps, cleanup} without writing
+- queue_init() dry run proposes {base, steps} without writing
 - queue_init() step detection: repo-cache check > justfile check; never `just merge`
 - queue_init(write=True) validates, creates the file, and never overwrites
 - queue_init() refuses when the layout is not queue-capable or a config exists
@@ -57,7 +57,7 @@ if __name__ == "__main__":
              mock.patch("workflow.git.get_default_branch", return_value=("main", None)):
             r = queue_init(wt)
         t("dry run: config proposed",
-          r["config"] == {"base": "main", "steps": ["make ci"], "cleanup": True}, str(r))
+          r["config"] == {"base": "main", "steps": ["make ci"]}, str(r))
         t("dry run: steps_source repo-cache", r["steps_source"] == "repo-cache", str(r))
         t("dry run: nothing written", not cfg.exists() and r["written"] is False)
 
@@ -98,7 +98,7 @@ if __name__ == "__main__":
             t("write: written flag", r["written"] is True, str(r))
             on_disk = json.loads(cfg.read_text())
             t("write: on-disk config",
-              on_disk == {"base": "main", "steps": ["just test"], "cleanup": True}, str(on_disk))
+              on_disk == {"base": "main", "steps": ["just test"]}, str(on_disk))
             cfg.write_text('{"sentinel": true}')
             try:
                 queue_init(wt, steps=["just test"], write=True)

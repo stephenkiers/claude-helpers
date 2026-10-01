@@ -300,7 +300,7 @@ def queue_init(
     Propose (and, with write=True, create) a merge-queue config for a repo whose
     queue detection is "absent" with a known default path.
 
-    The proposal is {base: <default branch>, steps, cleanup: true}. Explicit `steps`
+    The proposal is {base: <default branch>, steps}. Explicit `steps`
     override the detected ones. The config is validated with the queue's own
     validator before anything is written, and the write is create-only (O_EXCL):
     an existing config is never overwritten.
@@ -329,7 +329,7 @@ def queue_init(
     if err or not default_branch:
         raise RuntimeError(f"Could not determine default branch: {err}")
 
-    config: Dict[str, Any] = {"base": default_branch, "steps": chosen, "cleanup": True}
+    config: Dict[str, Any] = {"base": default_branch, "steps": chosen}
     result: Dict[str, Any] = {
         "path": str(config_path),
         "config": config,

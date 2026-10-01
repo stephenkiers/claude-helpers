@@ -83,7 +83,6 @@ itself fails closed — raising rather than silently allowing the override throu
     "just test",
     {"cmd": "just build", "timeout_secs": 300}
   ],
-  "cleanup": true,
   "scratch_setup": [
     "git fetch origin main:main"
   ],
@@ -103,8 +102,7 @@ itself fails closed — raising rather than silently allowing the override throu
 - **`steps`** (required, non-empty list): Gate steps to run. Each step is either a string (shell
   command) or an object `{cmd: string, timeout_secs: positive int}`. Steps run in order; the first
   failure kicks back the PR.
-- **`cleanup`** (required, boolean): If `true`, run cleanup via `cleanup.py` after a successful
-  merge (from the base worktree, with the configured `base` branch, not `main`).
+- **`cleanup`** (optional, boolean, **ignored**): Accepted for backward compatibility with configs written before #232; the queue never runs cleanup. Worktree cleanup after a queued merge is owned by `/merge-and-cleanup`'s route (#232).
 - **`scratch_setup`** (optional, list of strings): One-time setup commands to run when the scratch
   worktree is created (e.g., `git fetch origin main:main`). The scratch worktree lives at a fixed,
   repo-keyed path outside any checkout's own directory tree (`~/.claude/merge-queue-scratch/<hash>/scratch`,
@@ -255,8 +253,6 @@ The implementation is **partial**: the following features are **documented but n
   `resume [--pr N]` but returns non-zero (unimplemented). (needs a tracking issue)
 - **`--no-claude` flag for enqueue:** Reserved for future use; accepted by the CLI but currently ignored.
   (needs a tracking issue once Claude integration is designed)
-- **Cleanup consumption:** The config's `cleanup` field is validated but never read or acted upon; the
-  actual cleanup integration is planned but not implemented. (needs a tracking issue)
 - **Bounded git-fetch retry on cleanup:** Residual 3 describes a bounded (3-attempt) `git fetch` ref-lock
   retry with backoff during cleanup. The current implementation does not retry on cleanup-phase fetch
   failures. (needs a tracking issue)
@@ -277,22 +273,33 @@ The implementation is **partial**: the following features are **documented but n
 - **ADR-0013 mutation-allowlist exception:** The queue's mutations (`Runner.run_git`/`Runner.run_gh`)
   bypass ADR-0013's `check_mutation_allowed()` allowlist per Decision 7. This exception is now
   documented in both ADR-0021 (Decision 7) and ADR-0013 Amendment (as a formal note).
-- **`/merge-and-cleanup` enforcement:** The command pivots to `/queued-merge` for PRs that target a merge queue's base
-  branch, with a live check at plan time (for UX) and again at apply time (authoritative gate).
-  Base-scoped refusal (Q2) allows stacked PRs targeting other branches to merge normally. The CLI
-  hardens against shadowing by running in the claude-helpers checkout. See Amendment above.
+- **`/merge-and-cleanup` routing:** When a PR targets a merge queue's base branch, the command routes
+  it through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports
+  it MERGED. Base-scoped routing allows stacked PRs targeting other branches to merge normally. The CLI
+  hardens against shadowing by running in the claude-helpers checkout. See Amendment below.
 
-## Amendment: `/merge-and-cleanup` enforcement
+## Amendment: `/merge-and-cleanup` enforcement and routing (#229, superseded by #232)
 
-The `/merge-and-cleanup` command no longer merges PRs that target a merge queue's configured base
-branch. When a queue config resolves and the PR's base equals the queue base, the plan step exits
-with code 3 and the command pivots by invoking `/queued-merge` for the same PR (it no longer stops
-and asks the user to re-run). `merge apply` still refuses queue-owned PRs as the authoritative gate. PRs targeting other branches
-(stacked children, release branches) proceed normally through the existing merge gate.
+**Superseded in part by #232 (2026-10-01):** enforcement is now routing, not refusal.
 
-**Enforcement point:** A typed `detect_merge_queue()` function in `merge.py` runs a live check against
+The original `/merge-and-cleanup` command refused PRs that target a merge queue's configured base
+branch. When a queue config resolves and the PR's base equals the queue base, the command exits
+with code 3 and instructs the user to use `/queued-merge` instead. This refusal was written by #229
+to prevent accidental out-of-order merges. #232 advances this to active routing: a queue-owned PR
+is now merged via `/queued-merge` and then cleaned up automatically with `/cleanup`, all in one
+command invocation, instead of refusing and requiring manual dispatch.
+
+**Enforcement point and routing predicate:** A typed `detect_merge_queue()` function in `merge.py` runs a live check against
 the queue resolver (`resolve_config_path()`), re-run inside `apply_merge()` before the lock to catch
-PRs retargeted after the plan phase. No cache is stored; detection happens fresh on each run.
+PRs retargeted after the plan phase. No cache is stored; detection happens fresh on each run. When
+the predicate `.queue.decision=="refuse" and .queue.detection.state=="configured" and .queue.pr_base!=null and .queue.pr_base==.queue.queue_base`
+is true, the PR routes through `/queued-merge` and Phase 4-Q cleanup; otherwise, refusal branch defaults (unknown state, base undetermined) are unchanged.
+
+**Refusal cases (unchanged):**
+- `unknown` state: queue configuration state cannot be determined. The message names the reason and points to the recovery path (fix the config, retry).
+- Base undetermined: PR base or queue base could not be derived. Both error cases fail closed and refuse with a message pointing to the recovery.
+
+**Configured but invalid config (known behavior change):** A configured-but-invalid `merge-queue.json` (bad keys, empty steps, unreadable) surfaces downstream as `merge-queue enqueue` returning a config error (exit 3) with **no result file written** (`merge_queue.py:2474-2479`). Phase 4-Q reports this as "no fresh queue result" rather than the upstream config-error message. This fails closed (no cleanup happens), but the user loses the specific config-error message in favor of a generic "no fresh result" diagnostic. This is a known, accepted behavior change from #229's immediate refusal.
 
 **Configuration precedence (Q3):** The order is `--config` > `MERGE_QUEUE_CONFIG` > default `<container>/merge-queue.json`.
 - An override (flag or env) that is set but points to a missing file → refuse, naming the override source.
@@ -308,16 +315,16 @@ ensuring no cross-tool disagreement (Decisions Q1 and Q3).
 **Setup offer on absent:** When detection is `absent` with a known default path (queue-capable
 layout, no config yet), `/merge-and-cleanup` offers — via one `AskUserQuestion`, never silently — to
 create `<container>/merge-queue.json` and hand the PR to `/queued-merge`. The proposal comes from
-`cli merge queue-init` (`{base: <default branch>, steps: [<repo-cache check | just check>], cleanup:
-true}`; never `just merge`, which may merge on its own), is validated with the queue's own
+`cli merge queue-init` (`{base: <default branch>, steps: [<repo-cache check | just check>]}`; never `just merge`, which may merge on its own), is validated with the queue's own
 `validate_config_data()`, and is written create-only so an existing config is never overwritten.
+After a successful create, the PR is handed to `/queued-merge` and the same route-and-cleanup tail applies (#232).
 Declining merges as before. A non-`worktrees/` layout gets no offer.
 
-**Base scoping (Q2):** Refusal is conditional on `PR.base == queue.base`. Stacked PRs that target
+**Base scoping (Q2):** Routing (and the original refusal) is conditional on `PR.base == queue.base`. Stacked PRs that target
 a parent branch (or any non-base branch) fall through to the normal merge gate, so stacked workflows
 are not disrupted. The base is re-read live in `apply_merge()` to catch retargets.
 
-**Threat model:** This enforcement stops *accidental* bypass by our own tooling (a developer
+**Threat model:** This enforcement/routing removes the accidental-bypass path entirely, because a queue-owned PR is never merged outside the queue. A queue-owned PR is now merged via the route, not refused. The deliberate-bypass text stays: this enforcement stops *accidental* bypass by our own tooling (a developer
 running `/merge-and-cleanup` when they should run `/queued-merge`). It does not stop deliberate
 bypass (editing the PR, running raw `gh pr merge`, exporting a dead-path env var, moving the
 config file). Those are detected afterwards by ADR-0021's Bypass Limit metric (untrailered commit
@@ -329,10 +336,14 @@ Detection sees env + default only, not another command's `--config` flag.
 2. If the queue is unrepairable, manually run `gh pr merge` outside the tooling. ADR-0021's
    Bypass Limit metric (`git log --grep=Merge-Gate <default-branch>`) records the untrailered commit.
 
+A queue-owned PR is now merged via the route, not refused, so `/merge-and-cleanup` handles the route invocation.
+
 **CLI hardening (Q5):** Both `/merge-and-cleanup`'s CLI calls run with the claude-helpers checkout
 as the process `cwd`, so a PR worktree's `scripts/workflow/cli.py` cannot shadow the guard. The
 `merge plan` command takes a `--cwd` flag to specify the caller's directory for auto-detect and
 absolute-path resolution.
+
+**Residual blocking (Q7):** A routed invocation blocks for as long as the queue takes to drain. The `/merge-and-cleanup` invocation may wait behind other PRs already in the queue.
 
 ## Follow-ups
 
