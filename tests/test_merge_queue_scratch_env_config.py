@@ -89,7 +89,7 @@ if __name__ == "__main__":
             except ValueError as e:
                 test_result(
                     "scratch_env_strip non-list rejected",
-                    "scratch_env_strip" in str(e) and "list" in str(e).lower(),
+                    "scratch_env_strip must be a list of non-empty strings" in str(e),
                     f"Error message: {e}",
                 )
             except Exception as e:
@@ -120,7 +120,7 @@ if __name__ == "__main__":
             except ValueError as e:
                 test_result(
                     "scratch_env_strip empty entry rejected",
-                    "scratch_env_strip" in str(e) and "non-empty" in str(e).lower(),
+                    "scratch_env_strip must be a list of non-empty strings" in str(e),
                     f"Error message: {e}",
                 )
             except Exception as e:
@@ -206,7 +206,7 @@ if __name__ == "__main__":
             except ValueError as e:
                 test_result(
                     "scratch_env non-dict rejected",
-                    "scratch_env" in str(e) and ("object" in str(e).lower() or "dict" in str(e).lower()),
+                    "scratch_env must be an object mapping variable names to string values" in str(e),
                     f"Error message: {e}",
                 )
             except Exception as e:
@@ -237,7 +237,7 @@ if __name__ == "__main__":
             except ValueError as e:
                 test_result(
                     "scratch_env non-string value rejected",
-                    "scratch_env" in str(e) and "string" in str(e).lower(),
+                    "scratch_env must be an object mapping variable names to string values" in str(e),
                     f"Error message: {e}",
                 )
             except Exception as e:
@@ -269,7 +269,7 @@ if __name__ == "__main__":
                 # Empty keys are rejected as part of scratch_env validation
                 test_result(
                     "scratch_env empty key rejected",
-                    "scratch_env" in str(e),
+                    "scratch_env must be an object mapping variable names to string values" in str(e),
                     f"Error message: {e}",
                 )
             except Exception as e:
@@ -464,15 +464,12 @@ if __name__ == "__main__":
     # Test 5.1: run_step with explicit minimal env uses it verbatim
     print("  [Test 5.1] run_step with minimal explicit env uses it verbatim")
     with tempfile.TemporaryDirectory() as tmp:
-        # Set up an environment with variables that should NOT be visible
-        os.environ["NOT_IN_ENV"] = "should_not_appear"
-        os.environ["PATH"] = "/bin:/usr/bin"
+        # Set up an environment with a variable that should NOT be visible
+        with patch.dict(os.environ, {"NOT_IN_ENV": "should_not_appear"}):
+            log = Path(tmp) / "step.log"
+            # Pass only PATH in the env (needed for /bin/echo to work)
+            step_env = {"PATH": "/bin:/usr/bin"}
 
-        log = Path(tmp) / "step.log"
-        # Pass only PATH in the env (needed for /bin/echo to work)
-        step_env = {"PATH": "/bin:/usr/bin"}
-
-        try:
             outcome = run_step('/bin/echo "$NOT_IN_ENV|$PATH"', Path(tmp), log, env=step_env)
             log_content = log.read_text().strip()
             test_result(
@@ -483,12 +480,9 @@ if __name__ == "__main__":
             # NOT_IN_ENV should be empty in the output, but PATH should work
             test_result(
                 "run_step uses explicit env verbatim (var not in env is empty)",
-                "|/bin:/usr/bin" in log_content,
+                log_content == "|/bin:/usr/bin",
                 f"log content: {log_content!r}",
             )
-        finally:
-            # Clean up
-            os.environ.pop("NOT_IN_ENV", None)
 
     # ================================================================
     # SECTION 6: from_dict/to_dict round-trip

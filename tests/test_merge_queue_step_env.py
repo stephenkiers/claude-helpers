@@ -110,33 +110,40 @@ with tempfile.TemporaryDirectory() as tmp:
         with patch("workflow.merge_queue.Runner.run_git", return_value="dummy_sha\n"):
             with patch("workflow.merge_queue.ensure_state_dir", return_value=Path(tmp) / "state"):
                 with patch("workflow.merge_queue._is_tree_clean", return_value=True):
-                    try:
-                        result, tested_sha = _phase_run_gate_and_assertions(
-                            pr=1,
-                            branch="test-branch",
-                            worktree=str(pr_worktree),
-                            orig_head="orig_sha",
-                            config=config,
-                            lock_fd_to_inherit=None,
-                            cwd=pr_worktree,
-                        )
-                        test_result(
-                            "(d) _phase_run_gate_and_assertions completes",
-                            True,
-                            f"result={result}, tested_sha={tested_sha}",
-                        )
-                    except Exception:
-                        # If the function fails after calling run_step, we catch and continue
-                        pass
+                    result, tested_sha = _phase_run_gate_and_assertions(
+                        pr=1,
+                        branch="test-branch",
+                        worktree=str(pr_worktree),
+                        orig_head="orig_sha",
+                        config=config,
+                        lock_fd_to_inherit=None,
+                        cwd=pr_worktree,
+                    )
+                    test_result(
+                        "(d) _phase_run_gate_and_assertions completes",
+                        True,
+                        f"result={result}, tested_sha={tested_sha}",
+                    )
 
-                    # Check that run_step was called and either has no env kwarg or env is None
-                    if run_step_mock.call_count > 0:
-                        first_call = run_step_mock.call_args_list[0]
-                        env_kwarg = first_call.kwargs.get("env")
+                    # Check that run_step was called at least once
+                    test_result(
+                        "(d) run_step called at least once",
+                        run_step_mock.call_count >= 1,
+                        f"call_count={run_step_mock.call_count}",
+                    )
+
+                    # Check that all calls have no env kwarg or env is None, and env not passed positionally
+                    for call_idx, call in enumerate(run_step_mock.call_args_list):
+                        env_kwarg = call.kwargs.get("env")
                         test_result(
-                            "(d) First run_step call has no env or env is None",
+                            f"(d) Call {call_idx+1} has no env or env is None",
                             env_kwarg is None,
                             f"env={env_kwarg}",
+                        )
+                        test_result(
+                            f"(d) Call {call_idx+1} env not passed positionally",
+                            len(call.args) < 6,
+                            f"args length={len(call.args)}",
                         )
 
 # Verify constant and default values
