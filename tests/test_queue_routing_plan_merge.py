@@ -44,9 +44,9 @@ if __name__ == "__main__":
         print("[Section 1] Queue routing decision path")
 
         # ================================================================
-        # Test 1: queue_guard routes when conditions met
+        # Test 1: queue_guard refuses when PR targets queue base
         # ================================================================
-        print("  [Test 1] queue_guard decision='route' when PR base == queue base")
+        print("  [Test 1] queue_guard decision='refuse' when PR base == queue base")
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             pr_wt = tmpdir / "pr_wt"
@@ -54,11 +54,11 @@ if __name__ == "__main__":
 
             with mock.patch("workflow.merge.queue_guard") as mock_guard:
                 mock_guard.return_value = QueueGuardDecision(
-                    decision="route",  # NEW: The routing decision
+                    decision="refuse",  # Queue-routed PRs get 'refuse'; routing happens in shell layer
                     detection=QueueDetection(state="configured"),
                     pr_base="main",
                     queue_base="main",
-                    message=""
+                    message="Use /queued-merge"
                 )
                 with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
                     mock_resolve.return_value = (42, "feature", str(pr_wt))
@@ -67,17 +67,17 @@ if __name__ == "__main__":
                         plan, err = plan_merge(str(pr_wt))
 
                         test_result(
-                            "plan_merge: queue.decision='route' on guard route decision",
-                            plan and plan.queue.get("decision") == "route",
+                            "plan_merge: queue.decision='refuse' when targeting queue base",
+                            plan and plan.queue.get("decision") == "refuse",
                             f"decision={plan.queue.get('decision') if plan else None}"
                         )
 
         print()
 
         # ================================================================
-        # Test 2: Push gate runs before early return for routed PRs
+        # Test 2: Push gate runs before early return for refused PRs
         # ================================================================
-        print("  [Test 2] Push gate called before early return for queue-routed PR")
+        print("  [Test 2] Push gate called before early return for queue-bound PR")
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             pr_wt = tmpdir / "pr_wt"
@@ -85,11 +85,11 @@ if __name__ == "__main__":
 
             with mock.patch("workflow.merge.queue_guard") as mock_guard:
                 mock_guard.return_value = QueueGuardDecision(
-                    decision="route",
+                    decision="refuse",
                     detection=QueueDetection(state="configured"),
                     pr_base="main",
                     queue_base="main",
-                    message=""
+                    message="Use /queued-merge"
                 )
                 with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
                     mock_resolve.return_value = (42, "feature", str(pr_wt))
@@ -106,9 +106,9 @@ if __name__ == "__main__":
         print()
 
         # ================================================================
-        # Test 3: Push gate failures surface in plan for routed PRs
+        # Test 3: Push gate failures surface in plan for refused PRs
         # ================================================================
-        print("  [Test 3] Push gate blocking_failures captured in plan for routed PR")
+        print("  [Test 3] Push gate blocking_failures captured in plan for queue-bound PR")
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             pr_wt = tmpdir / "pr_wt"
@@ -118,11 +118,11 @@ if __name__ == "__main__":
 
             with mock.patch("workflow.merge.queue_guard") as mock_guard:
                 mock_guard.return_value = QueueGuardDecision(
-                    decision="route",
+                    decision="refuse",
                     detection=QueueDetection(state="configured"),
                     pr_base="main",
                     queue_base="main",
-                    message=""
+                    message="Use /queued-merge"
                 )
                 with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
                     mock_resolve.return_value = (42, "feature", str(pr_wt))
@@ -146,9 +146,9 @@ if __name__ == "__main__":
         print()
 
         # ================================================================
-        # Test 4: Push gate is called BEFORE early return check
+        # Test 4: Push gate is called BEFORE queue-guard check
         # ================================================================
-        print("  [Test 4] Push gate runs before deciding early return")
+        print("  [Test 4] Push gate runs before queue-guard decision")
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             pr_wt = tmpdir / "pr_wt"
@@ -163,11 +163,11 @@ if __name__ == "__main__":
             def mock_guard_fn(*args, **kwargs):
                 call_order.append("queue_guard")
                 return QueueGuardDecision(
-                    decision="route",
+                    decision="refuse",
                     detection=QueueDetection(state="configured"),
                     pr_base="main",
                     queue_base="main",
-                    message=""
+                    message="Use /queued-merge"
                 )
 
             with mock.patch("workflow.merge.queue_guard", side_effect=mock_guard_fn):
@@ -187,9 +187,9 @@ if __name__ == "__main__":
         print()
 
         # ================================================================
-        # Test 5: Queue routing returns early with plan containing route decision
+        # Test 5: Queue refusal returns early with plan containing refuse decision
         # ================================================================
-        print("  [Test 5] plan_merge returns plan with queue.decision='route'")
+        print("  [Test 5] plan_merge returns plan with queue.decision='refuse'")
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             pr_wt = tmpdir / "pr_wt"
@@ -197,11 +197,11 @@ if __name__ == "__main__":
 
             with mock.patch("workflow.merge.queue_guard") as mock_guard:
                 mock_guard.return_value = QueueGuardDecision(
-                    decision="route",
+                    decision="refuse",
                     detection=QueueDetection(state="configured"),
                     pr_base="main",
                     queue_base="main",
-                    message=""
+                    message="Use /queued-merge"
                 )
                 with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
                     mock_resolve.return_value = (42, "feature", str(pr_wt))
@@ -211,9 +211,9 @@ if __name__ == "__main__":
                         plan, err = plan_merge(str(pr_wt))
 
                         has_plan = plan is not None
-                        has_queue_decision = plan and plan.queue.get("decision") is not None if has_plan else False
+                        has_queue_decision = plan and plan.queue.get("decision") == "refuse" if has_plan else False
                         test_result(
-                            "plan_merge returns plan with queue decision",
+                            "plan_merge returns plan with queue refuse decision",
                             has_plan and has_queue_decision,
                             f"plan={plan}, queue.decision={plan.queue.get('decision') if plan else None}"
                         )

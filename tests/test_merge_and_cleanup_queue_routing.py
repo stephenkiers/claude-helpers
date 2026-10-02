@@ -142,17 +142,15 @@ print("[Test 4] Phase 3 skips execution when route=queue")
 
 phase3_text = extract_phase_block(MERGE, "Phase 3 —")
 if phase3_text:
-    # Look for skip pattern at the top of Phase 3
-    skip_pattern = r"if\s*\[\s*[\"'\`]?\$\{?ROUTE[\"'\`]?\}?\s*[=!=-]*\s*[\"'\`]?queue[\"'\`]?\s*\].*?fi"
-    has_route_check = bool(re.search(skip_pattern, phase3_text, re.IGNORECASE | re.DOTALL))
-
-    if not has_route_check:
-        # Try simpler pattern
-        has_route_check = bool(re.search(r'route.*queue', phase3_text, re.IGNORECASE))
+    # Look for skip guard that checks route file for "queue" value
+    # Pattern: if [ -f "$ROUTE_FILE" ] && [ "$(cat "$ROUTE_FILE")" = "queue" ]
+    skip_pattern = r'if\s*\[\s*-f\s*["\']?\$ROUTE_FILE'
+    queue_check_pattern = r'cat\s*["\']?\$ROUTE_FILE.*=.*queue'
+    has_route_check = bool(re.search(skip_pattern, phase3_text)) and bool(re.search(queue_check_pattern, phase3_text, re.DOTALL))
 
     t("Phase 3 has skip guard for route=queue",
       has_route_check,
-      "expected skip pattern checking if route is 'queue'")
+      "expected pattern checking if route file contains 'queue' value")
 else:
     t("Phase 3 section found", False, "could not extract Phase 3 section")
 
@@ -165,17 +163,15 @@ print("[Test 5] Phase 4 direct-route section has route file guard")
 
 phase4_text = extract_phase_block(MERGE, "Phase 4 —")
 if phase4_text:
-    # Look for route guard at top of Phase 4
-    skip_pattern = r"if\s*\[\s*[\"'\`]?\$\{?ROUTE[\"'\`]?\}?\s*[=!=-]*\s*[\"'\`]?queue[\"'\`]?\s*\]"
-    has_route_check = bool(re.search(skip_pattern, phase4_text, re.IGNORECASE))
-
-    if not has_route_check:
-        # Try simpler pattern
-        has_route_check = bool(re.search(r'route.*queue', phase4_text, re.IGNORECASE))
+    # Look for route guard that checks route file for "queue" value
+    # Pattern: if [ -f "$ROUTE_FILE" ] && [ "$(cat "$ROUTE_FILE")" = "queue" ]; then exit 1; fi
+    skip_pattern = r'if\s*\[\s*-f\s*["\']?\$ROUTE_FILE'
+    queue_check_pattern = r'cat\s*["\']?\$ROUTE_FILE.*=.*queue'
+    has_route_check = bool(re.search(skip_pattern, phase4_text)) and bool(re.search(queue_check_pattern, phase4_text, re.DOTALL))
 
     t("Phase 4 direct-route has skip guard for route=queue",
       has_route_check,
-      "expected skip pattern checking if route is 'queue'")
+      "expected pattern checking if route file contains 'queue' value")
 else:
     t("Phase 4 direct-route section found", False, "could not extract Phase 4 section")
 
@@ -271,17 +267,64 @@ print("[Test 10] Queue-route marker is cleaned up after Phase 4-Q")
 
 phase4q_text = extract_phase_block(MERGE, "Phase 4-Q")
 if phase4q_text:
-    # Look for cleanup of the route file
-    has_cleanup = 'rm' in phase4q_text.lower() and ('route' in phase4q_text.lower() or '$MC_STATE_DIR' in phase4q_text)
+    # Look for cleanup that removes the entire state directory (which includes route file)
+    # Pattern: rm -rf "$MC_STATE_DIR"
+    cleanup_pattern = r'rm\s+-rf\s+"\$MC_STATE_DIR"'
+    has_cleanup = bool(re.search(cleanup_pattern, phase4q_text))
     t("Phase 4-Q cleans up route marker file",
       has_cleanup,
-      "Phase 4-Q should remove the route marker file after use")
+      "Phase 4-Q should remove the entire state directory with: rm -rf \"$MC_STATE_DIR\"")
 else:
-    # Route cleanup might be in Phase 5 or elsewhere
-    has_cleanup = 'rm' in MERGE and 'route' in MERGE
-    t("Route marker file is cleaned up somewhere",
-      has_cleanup,
-      "route marker file should be removed after queue-routed PR is handled")
+    # If Phase 4-Q section extraction fails, test cannot be meaningfully run
+    t("Phase 4-Q section found", False, "could not extract Phase 4-Q section")
+
+print()
+
+# ============================================================================
+# TEST 11: Phase 1 Q1 routing predicate is properly structured
+# ============================================================================
+print("[Test 11] Phase 1 Q1 routing predicate correctly gates routing decision")
+
+phase1_block = None
+bash_blocks = extract_bash_blocks(MERGE)
+for line_num, block in bash_blocks:
+    if "PLAN_RESULT=$?" in block and "Q1 Predicate" in MERGE:
+        phase1_block = block
+        break
+
+# Check the LIVE jq -e predicate invocation (not just its doc comment — a comment can drift
+# from the code it describes, which is a doc-drift bug distinct from a logic bug).
+live_predicate_match = re.search(
+    r"jq -e '\.queue\.decision==\"refuse\" and \.queue\.detection\.state==\"configured\" and "
+    r"\.queue\.pr_base!=null and \.queue\.pr_base==\.queue\.queue_base'",
+    phase1_block or "",
+)
+
+if live_predicate_match:
+    t("Phase 1 Q1 predicate (live jq invocation) has all routing conditions",
+      True,
+      "")
+else:
+    t("Phase 1 Q1 predicate (live jq invocation) has all routing conditions",
+      False,
+      "expected the live 'jq -e' invocation to check decision==\"refuse\" AND state==\"configured\" "
+      "AND pr_base!=null AND pr_base==queue_base — not just the doc comment describing it")
+
+print()
+
+# ============================================================================
+# TEST 12: Phase 1 PLAN_RESULT==3 boundary is pinned (not inverted, not off-by-one)
+# ============================================================================
+print("[Test 12] Phase 1 routing boundary is exactly 'PLAN_RESULT -eq 3'")
+
+if phase1_block:
+    has_exact_boundary = "if [ $PLAN_RESULT -eq 3 ]; then" in phase1_block
+    t("Phase 1 uses exact 'if [ $PLAN_RESULT -eq 3 ]; then' boundary",
+      has_exact_boundary,
+      "expected the literal boundary check 'if [ $PLAN_RESULT -eq 3 ]; then' in Phase 1 "
+      "(catches inversion to -ne, or drift to another comparison/value)")
+else:
+    t("Phase 1 block found", False, "could not extract Phase 1 bash block")
 
 print()
 

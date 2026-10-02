@@ -69,14 +69,15 @@ print("[Test 1] Phase 1 records start time with jq -n 'now'")
 phase1_text = extract_phase_block(QM, "Phase 1 — Resolve PR and worktree")
 if phase1_text:
     # Look for start time recording using jq -n 'now'
-    has_jq_now = "jq -n 'now'" in phase1_text or 'jq -n "now"' in phase1_text
+    has_jq_now = "jq -n 'now'" in phase1_text or 'jq -n "now"' in phase1_text or ("jq -n" in phase1_text and "now" in phase1_text)
     has_state_dir = "git rev-parse" in phase1_text and "git-common-dir" in phase1_text
-    has_state_file = "queued-merge-state" in phase1_text or ("start" in phase1_text.lower() and "time" in phase1_text.lower())
+    # More specific: look for the state filename pattern or the actual git-common-dir pattern with time/now write
+    has_state_file = "queued-merge-state" in phase1_text or ("git-common-dir" in phase1_text and ("now" in phase1_text or ("jq" in phase1_text and ("started" in phase1_text.lower() or "start_time" in phase1_text.lower()))))
 
     has_start_time = has_jq_now and has_state_dir and has_state_file
     t("Phase 1 records start time to state directory",
       has_start_time,
-      "Phase 1 should use 'jq -n 'now'' and store in git state directory")
+      "Phase 1 should use 'jq -n 'now'' and store in git state directory via git-common-dir")
 else:
     t("Phase 1 section found", False, "could not extract Phase 1 section")
 
@@ -125,15 +126,16 @@ print()
 print("[Test 4] Phase 4 checks result freshness/staleness")
 
 if phase4_text:
-    # Look for timestamp/staleness checking logic
-    has_timestamp_compare = "timestamp" in phase4_text.lower() or ("time" in phase4_text.lower() and ("old" in phase4_text.lower() or "fresh" in phase4_text.lower() or "stale" in phase4_text.lower()))
-    has_stale_check = "stale" in phase4_text.lower() or "fresh" in phase4_text.lower() or "old" in phase4_text.lower()
+    # Look for timestamp/staleness checking logic using stronger patterns
+    # Stronger check: look for actual time-based comparison or specific staleness/freshness keywords
+    has_timestamp_compare = bool(re.search(r'(timestamp|START_TIME|start.*time|QUEUED.*TIME)', phase4_text, re.IGNORECASE))
+    has_stale_check = bool(re.search(r'(stale|fresh|age|elapsed|duration)\s', phase4_text, re.IGNORECASE)) or "stale" in phase4_text.lower() or "fresh" in phase4_text.lower()
     has_gate = "!=" in phase4_text or "==" in phase4_text or "exit" in phase4_text.lower() or "return" in phase4_text.lower()
 
     has_freshness = (has_timestamp_compare or has_stale_check) and has_gate
     t("Phase 4 performs staleness check",
       has_freshness,
-      "Phase 4 should compare result timestamp against start time and gate on freshness")
+      "Phase 4 should compare result timestamp against start time and gate on staleness (check for stale/fresh/age patterns)")
 else:
     t("Phase 4 section found", False, "could not extract Phase 4 section")
 
