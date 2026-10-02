@@ -191,6 +191,7 @@ def resolve_config_path(config_flag: Optional[str] = None, cwd: Optional[Path] =
     1. --config <path> flag
     2. MERGE_QUEUE_CONFIG env var
     3. Default: <container>/merge-queue.json where <container> is parent of worktrees/
+       (also the parent of .bare/ for a bare-repo + worktrees/ layout)
 
     For flags and env vars: error if they resolve inside a PR worktree (trust boundary).
     Raises if the layout doesn't match and no override is provided.
@@ -222,6 +223,10 @@ def resolve_config_path(config_flag: Optional[str] = None, cwd: Optional[Path] =
         #   git_common_dir.parent        = <repo>/worktrees/main
         #   git_common_dir.parent.parent = <repo>/worktrees
         #   git_common_dir.parent.parent.parent = <repo>
+        # Bare-repo layout: <repo>/.bare (data) + <repo>/.git gitfile + <repo>/worktrees/*.
+        # Every worktree's git-common-dir is <repo>/.bare, so the container is its parent.
+        if git_common_dir.name == ".bare" and (git_common_dir.parent / "worktrees").is_dir():
+            return git_common_dir.parent / "merge-queue.json"
         if git_common_dir.parent.parent.name != "worktrees":
             raise LayoutMismatchError(
                 "Layout does not match: git path does not show 'worktrees' at expected location\n"
