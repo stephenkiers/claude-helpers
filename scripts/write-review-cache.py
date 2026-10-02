@@ -32,7 +32,7 @@ before overwriting.
 Exit codes:
     0 - written and verified readable back via the same schema the readers expect
     1 - write failure (I/O, permission, schema mismatch on verification)
-    2 - bad arguments (empty branch/commit)
+    2 - bad arguments (empty branch/commit, or missing --critical/--high/--medium/--low flags)
 """
 
 import argparse
