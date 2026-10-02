@@ -341,8 +341,8 @@ if __name__ == "__main__":
         print()
         print("[Section 3] plan_merge early refusal and exit code 3")
 
-        # Test 16: queue guard refuses → plan.queue.decision == refuse, no push gate
-        print("  [Test 16] queue refuse → plan has queue.decision=refuse, no push gate")
+        # Test 16: queue guard refuses → plan.queue.decision == refuse, push gate runs first
+        print("  [Test 16] queue refuse → plan has queue.decision=refuse, push gate called (Directive 2)")
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             pr_wt = tmpdir / "pr_wt"
@@ -359,11 +359,12 @@ if __name__ == "__main__":
                 with mock.patch("workflow.merge._resolve_pr_from_worktree") as mock_resolve:
                     mock_resolve.return_value = (42, "feature", str(pr_wt))
                     with mock.patch("workflow.merge._run_push_gate") as mock_gate:
+                        mock_gate.return_value = []  # No blocking failures
                         plan, err = plan_merge(str(pr_wt))
 
                         test_result(
                             "plan_merge: queue.decision=refuse on guard refusal",
-                            plan and plan.queue.get("decision") == "refuse" and not mock_gate.called,
+                            plan and plan.queue.get("decision") == "refuse" and mock_gate.called,
                             f"decision={plan.queue.get('decision') if plan else None}, push_gate called={mock_gate.called}"
                         )
 

@@ -282,25 +282,25 @@ if __name__ == "__main__":
         r'if \[ "\$\(cat "\$MC_STATE_DIR/pr_num".*?\)" != "\$PR_NUM" \]; then',
         merge_cmd_content)
     test_result(
-        "pr_num cross-check compares against $PR_NUM at both read sites",
-        len(pr_num_checks) == 2,
-        f"expected 2 pr_num cross-checks (Phase 3 and Phase 4), found {len(pr_num_checks)}")
+        "pr_num cross-check compares against $PR_NUM at all read sites",
+        len(pr_num_checks) == 3,
+        f"expected 3 pr_num cross-checks (Phase 3, Phase 4, Phase 4-Q), found {len(pr_num_checks)}")
 
     mismatch_exits = merge_cmd_content.count("ERROR: PR number mismatch in state directory")
     test_result(
         "each pr_num mismatch fails loudly",
-        mismatch_exits == 2,
-        f"expected 2 loud mismatch errors, found {mismatch_exits}")
+        mismatch_exits == 3,
+        f"expected 3 loud mismatch errors (Phase 3, Phase 4, Phase 4-Q), found {mismatch_exits}")
 
     print()
-    print("[Section 12] merge-and-cleanup.md guards apply_exit_code at BOTH read sites")
+    print("[Section 12] merge-and-cleanup.md guards apply_exit_code at Phase 3 and Phase 4 (Phase 4-Q routes around it)")
 
     guards = extract_exit_code_guards(merge_cmd_content)
     test_result(
         "an apply_exit_code guard is extractable from Phase 3 and Phase 4",
         len(guards) == 2,
-        f"expected 2 extractable guards, found {len(guards)} -- the guard's shape may have "
-        f"changed, which would silently disable Sections 16-20")
+        f"expected 2 extractable guards (Phase 3 and Phase 4; Phase 4-Q branches around the check), "
+        f"found {len(guards)} -- the guard's shape may have changed, which would silently disable Sections 16-20")
 
     print()
     print("[Section 13] merge-and-cleanup.md removes the state dir, and only the state dir")

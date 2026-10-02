@@ -300,7 +300,7 @@ def queue_init(
     Propose (and, with write=True, create) a merge-queue config for a repo whose
     queue detection is "absent" with a known default path.
 
-    The proposal is {base: <default branch>, steps, cleanup: true}. Explicit `steps`
+    The proposal is {base: <default branch>, steps}. Explicit `steps`
     override the detected ones. The config is validated with the queue's own
     validator before anything is written, and the write is create-only (O_EXCL):
     an existing config is never overwritten.
@@ -329,7 +329,7 @@ def queue_init(
     if err or not default_branch:
         raise RuntimeError(f"Could not determine default branch: {err}")
 
-    config: Dict[str, Any] = {"base": default_branch, "steps": chosen, "cleanup": True}
+    config: Dict[str, Any] = {"base": default_branch, "steps": chosen}
     result: Dict[str, Any] = {
         "path": str(config_path),
         "config": config,
@@ -472,16 +472,18 @@ def plan_merge(
             target_worktree=target_worktree
         )
 
-        # Call the queue guard early for UX (refuse before the push gate)
+        # Run the push gate first (must run for all routes, including queue-refused PRs,
+        # to ensure blocking_failures is populated before any early return)
+        blocking_failures = _run_push_gate(target_worktree, head_ref, cwd)
+        plan.blocking_failures = blocking_failures
+
+        # Call the queue guard early for UX (refuse before returning success)
         guard_decision = queue_guard(pr_number, Path(target_worktree))
         plan.queue = guard_decision.to_dict()
 
-        # If refused, return early without running the push gate
+        # If refused (and push gate passed), return with queue info for routing decision
         if guard_decision.decision == "refuse":
             return plan, None
-
-        blocking_failures = _run_push_gate(target_worktree, head_ref, cwd)
-        plan.blocking_failures = blocking_failures
 
         return plan, None
 
