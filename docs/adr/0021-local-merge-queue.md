@@ -277,16 +277,17 @@ The implementation is **partial**: the following features are **documented but n
 - **ADR-0013 mutation-allowlist exception:** The queue's mutations (`Runner.run_git`/`Runner.run_gh`)
   bypass ADR-0013's `check_mutation_allowed()` allowlist per Decision 7. This exception is now
   documented in both ADR-0021 (Decision 7) and ADR-0013 Amendment (as a formal note).
-- **`/merge-and-cleanup` enforcement:** The command refuses PRs that target a merge queue's base
+- **`/merge-and-cleanup` enforcement:** The command pivots to `/queued-merge` for PRs that target a merge queue's base
   branch, with a live check at plan time (for UX) and again at apply time (authoritative gate).
   Base-scoped refusal (Q2) allows stacked PRs targeting other branches to merge normally. The CLI
   hardens against shadowing by running in the claude-helpers checkout. See Amendment above.
 
 ## Amendment: `/merge-and-cleanup` enforcement
 
-The `/merge-and-cleanup` command now refuses PRs that target a merge queue's configured base
-branch. When a queue config resolves and the PR's base equals the queue base, the command exits
-with code 3 and instructs the user to use `/queued-merge` instead. PRs targeting other branches
+The `/merge-and-cleanup` command no longer merges PRs that target a merge queue's configured base
+branch. When a queue config resolves and the PR's base equals the queue base, the plan step exits
+with code 3 and the command pivots by invoking `/queued-merge` for the same PR (it no longer stops
+and asks the user to re-run). `merge apply` still refuses queue-owned PRs as the authoritative gate. PRs targeting other branches
 (stacked children, release branches) proceed normally through the existing merge gate.
 
 **Enforcement point:** A typed `detect_merge_queue()` function in `merge.py` runs a live check against
