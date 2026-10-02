@@ -10,12 +10,12 @@ model: haiku
 
 Merge a PR through the repo's merge gate (discovered automatically), then clean up its worktree and branch. Auto-detect the PR when run from the worktree you want to merge, or accept a PR number or worktree path explicitly when run from the main worktree.
 
-**Note:** When a merge-queue configuration exists and the PR targets the queue's configured base branch, this command refuses with exit code 3 and prints `/queued-merge <PR>` — use that command instead. PRs targeting any other base (including stacked children and release branches) merge normally. The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on. There is no bypass flag; if the queue is broken, fix the config or merge manually with `gh pr merge` outside this command (the untrailered-commit metric will record it).
+**Note:** When a merge-queue configuration exists and the PR targets the queue's configured base branch, this command does not merge it directly: the plan step exits 3 and the command pivots to `/queued-merge <PR>` by invoking the `queued-merge` skill. PRs targeting any other base (including stacked children and release branches) merge normally. The merge queue provides ordered serialization and unverified-main detection, testing each PR against the exact base it will land on. There is no bypass flag (`merge apply` still refuses queue-owned PRs as the authoritative gate); if the queue is broken, fix the config or merge manually with `gh pr merge` outside this command (the untrailered-commit metric will record it).
 
 **Why `model: haiku`:** every conditional branch here is a literal check against command
 output (file exists, JSON field present, exit code, byte-for-byte string match) — the same
 mechanical-judgment shape as this repo's other Haiku-pinned roles (ADR-0004). The queue decision
-is resolved by a literal exit-code check (exit code 3 = refuse, else = plan accordingly). The one
+is resolved by a literal exit-code check (exit code 3 = pivot to `/queued-merge`, else = plan accordingly). The one
 irreversible action (the actual merge) sits behind the push gate's single hard-fail stop, which
 bounds the blast radius of a misjudgment to "the command halts," not "the wrong thing merges."
 
@@ -56,6 +56,7 @@ PLAN_RESULT=$?
 
 if [ $PLAN_RESULT -eq 3 ]; then
   printf '%s' "$PLAN_JSON" | jq -r '.queue.message'
+  echo "QUEUE_PIVOT: pivoting to /queued-merge"
   exit 3
 fi
 
@@ -129,6 +130,13 @@ if [ "$(printf '%s' "$PLAN_JSON" | jq -r '.queue.detection.state')" = "absent" ]
   echo "QUEUE_SETUP_OFFER: no merge queue configured (would live at $(printf '%s' "$PLAN_JSON" | jq -r '.queue.detection.path'))"
 fi
 ```
+
+### Phase 1b — Pivot to the queue (only when Phase 1 printed `QUEUE_PIVOT`)
+
+If Phase 1 exited 3 with a `QUEUE_PIVOT:` line, a merge queue owns this PR's base branch. Do not
+treat it as an error and do not run Phase 2b/3/4: invoke the `queued-merge` skill via the `Skill`
+tool with the PR number (or the original argument, if it was a PR number) as its argument, and stop.
+No state directory was written, so there is nothing to clean up. Any other non-zero exit is a real failure.
 
 ### Phase 2b — Offer merge-queue setup (only when Phase 1 printed `QUEUE_SETUP_OFFER`)
 
