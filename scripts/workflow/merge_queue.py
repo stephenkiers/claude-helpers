@@ -61,6 +61,11 @@ GRACE_PERIOD_BEFORE_KILL = 5.0  # Grace period (seconds) before SIGKILL after SI
 SCAN_BASE_MAX_DEPTH = 100  # Maximum depth to scan in base commit history for poison checks
 PRUNE_OLD_RESULTS_LIMIT = 100  # Keep the most recent N result files to prevent unbounded growth
 
+# Per-worktree direnv variables removed — not replaced — from the env of steps run in the
+# scratch checkout. The default for merge-queue.json's `scratch_env_strip`. A step that needs
+# a Compose project or database must set its own (`-p`, top-level `name:`, or inline assignment).
+SCRATCH_ENV_STRIPPED_VARS = ("COMPOSE_PROJECT_NAME", "DATABASE_URL")
+
 
 # ============================================================================
 # Step Definition (normalized from Union[str, Dict])
@@ -88,6 +93,8 @@ class MergeQueueConfig:
     allow_unverified: List[str] = field(default_factory=list)
     mutation_timeout_secs: int = 300  # Timeout for long-running git mutations (default 5 min)
     pr_merge_poll_secs: int = 60  # Timeout for polling PR metadata before merge (default 60s at ~1s intervals)
+    scratch_env_strip: List[str] = field(default_factory=lambda: list(SCRATCH_ENV_STRIPPED_VARS))
+    scratch_env: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization, converting Step objects to dicts."""
@@ -250,6 +257,8 @@ def load_and_validate_config(config_path: Path) -> MergeQueueConfig:
     - steps: non-empty list of non-empty strings or {cmd: str, timeout_secs?: int}
     - cleanup: bool
     - scratch_setup: list of strings (optional)
+    - scratch_env_strip: list of non-empty strings (optional)
+    - scratch_env: object mapping strings to strings (optional)
     - inherit_lock_fd: bool (optional, default false)
     - allow_unverified: list of 40-hex shas (optional)
 
@@ -277,7 +286,7 @@ def validate_config_data(data: Any, cwd: Optional[Path] = None) -> MergeQueueCon
         raise ValueError("Config must be a JSON object (dict), not a list or primitive value")
     data = dict(data)
 
-    known_keys = {"base", "steps", "cleanup", "scratch_setup", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs"}
+    known_keys = {"base", "steps", "cleanup", "scratch_setup", "scratch_env_strip", "scratch_env", "inherit_lock_fd", "allow_unverified", "mutation_timeout_secs", "pr_merge_poll_secs"}
     unknown = set(data.keys()) - known_keys
     if unknown:
         raise ValueError(f"Unknown config keys: {unknown}")
@@ -314,6 +323,22 @@ def validate_config_data(data: Any, cwd: Optional[Path] = None) -> MergeQueueCon
         for cmd in data["scratch_setup"]:
             if not isinstance(cmd, str) or not cmd:
                 raise ValueError("scratch_setup: each command must be a non-empty string")
+
+    if "scratch_env_strip" in data:
+        if not isinstance(data["scratch_env_strip"], list):
+            raise ValueError("scratch_env_strip must be a list of non-empty strings")
+        for var in data["scratch_env_strip"]:
+            if not isinstance(var, str) or not var:
+                raise ValueError("scratch_env_strip must be a list of non-empty strings")
+
+    if "scratch_env" in data:
+        if not isinstance(data["scratch_env"], dict):
+            raise ValueError("scratch_env must be an object mapping variable names to string values")
+        for key, value in data["scratch_env"].items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("scratch_env must be an object mapping variable names to string values")
+            if not isinstance(value, str):
+                raise ValueError("scratch_env must be an object mapping variable names to string values")
 
     if "inherit_lock_fd" in data and not isinstance(data["inherit_lock_fd"], bool):
         raise ValueError("inherit_lock_fd must be a boolean")
@@ -683,6 +708,7 @@ def run_step(
     log_path: Path,
     timeout_secs: Optional[int] = None,
     lock_fd_to_inherit: Optional[int] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> StepOutcome:
     """
     Run a step via subprocess.Popen with a new session.
@@ -692,6 +718,10 @@ def run_step(
     In finally: killpg(SIGTERM), wait 5s grace, then killpg(SIGKILL).
 
     If timeout_secs is set, kill the group on expiry and return timed_out=True.
+    `env`, when given, is used verbatim as the child's environment; when None the child inherits
+    this process's environment. Scratch-checkout callers pass `_scratch_step_env(config)`, which
+    removes the `scratch_env_strip` variables (default `COMPOSE_PROJECT_NAME`, `DATABASE_URL`)
+    without replacement.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -722,6 +752,8 @@ def run_step(
             "stdin": subprocess.DEVNULL,
             "close_fds": True,
         }
+        if env is not None:
+            popen_kwargs["env"] = env
         if lock_fd_to_inherit is not None:
             popen_kwargs["pass_fds"] = (lock_fd_to_inherit,)
 
@@ -2190,6 +2222,17 @@ def _no_remote_only_commits(branch: str, base: str, cwd: Optional[Path] = None) 
         return False
 
 
+def _scratch_step_env(config: MergeQueueConfig) -> Dict[str, str]:
+    """Environment for steps run in the scratch checkout: the current process env minus
+    config.scratch_env_strip, then config.scratch_env laid on top. The stripped variables are
+    removed and NOT replaced — a step that needs a Compose project or a database must set its
+    own (docker compose -p, a top-level `name:` in the compose file, an inline VAR=... assignment,
+    or `scratch_env`)."""
+    env = {k: v for k, v in os.environ.items() if k not in set(config.scratch_env_strip)}
+    env.update(config.scratch_env)
+    return env
+
+
 def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_inherit: Optional[int] = None) -> VerifyBaseOutcome:
     """
     Verify the base by running the main gate in a scratch worktree.
@@ -2204,6 +2247,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
     """
     state_dir = ensure_state_dir()
     scratch_dir = get_scratch_dir()
+    step_env = _scratch_step_env(config)
 
     try:
         # Create or update scratch worktree
@@ -2254,7 +2298,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
         for setup_cmd in config.scratch_setup:
             log_path = state_dir / "logs" / "setup.log"
             # M9: Thread lock_fd_to_inherit through to run_step
-            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs, lock_fd_to_inherit=lock_fd_to_inherit)
+            outcome = run_step(setup_cmd, scratch_dir, log_path, timeout_secs=config.mutation_timeout_secs, lock_fd_to_inherit=lock_fd_to_inherit, env=step_env)
             if not outcome.success:
                 # Setup failed; this is a gate failure, not infra error
                 return VerifyBaseOutcome.GATE_FAILED
@@ -2264,7 +2308,7 @@ def _verify_base_in_scratch(base_sha: str, config: MergeQueueConfig, lock_fd_to_
             log_path = state_dir / "logs" / f"base-verify-step-{i}.log"
             timeout_secs = step.timeout_secs if step.timeout_secs is not None else config.mutation_timeout_secs
             # M9: Thread lock_fd_to_inherit through to run_step
-            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs, lock_fd_to_inherit=lock_fd_to_inherit)
+            outcome = run_step(step.cmd, scratch_dir, log_path, timeout_secs=timeout_secs, lock_fd_to_inherit=lock_fd_to_inherit, env=step_env)
             if not outcome.success:
                 # Gate step failed; this is a gate failure, not infra error
                 return VerifyBaseOutcome.GATE_FAILED

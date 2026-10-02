@@ -85,6 +85,8 @@ itself fails closed — raising rather than silently allowing the override throu
   "scratch_setup": [
     "git fetch origin main:main"
   ],
+  "scratch_env_strip": ["COMPOSE_PROJECT_NAME", "DATABASE_URL"],
+  "scratch_env": {},
   "inherit_lock_fd": false,
   "allow_unverified": [
     "abc123def456...(40-hex SHA)..."
@@ -111,6 +113,8 @@ itself fails closed — raising rather than silently allowing the override throu
   inside scratch even though it resolves fine in a real worktree. Use `scratch_setup` to paper over
   that mismatch with a symlink, e.g. `ln -sfn /abs/path/to/sibling-repo .git/sibling-repo` plus
   adjusting the dependency's path, or a `[patch]`/path override scoped to the scratch checkout.
+- **`scratch_env_strip`** (optional, list of strings, default `["COMPOSE_PROJECT_NAME", "DATABASE_URL"]`): Environment variables removed — not replaced — from steps run in the scratch checkout (`scratch_setup` and the base-verification gate). These are per-worktree direnv values that would otherwise point the scratch run at the invoking worktree's Compose project or database. Steps run in the PR worktree itself inherit the process environment unchanged. A scratch step that needs a Compose project or database must set its own (`docker compose -p`, a top-level `name:`, an inline `VAR=value cmd`, or `scratch_env`).
+- **`scratch_env`** (optional, object of string → string, default `{}`): Variables laid on top of the scratch step environment after `scratch_env_strip` is applied. Opt-in only; the queue never injects a `COMPOSE_PROJECT_NAME` by itself.
 - **`inherit_lock_fd`** (optional, boolean, default `false`): If `true`, pass the `merge.lock` fd
   to step child processes (for repos where real-app E2E needs to hold the lock across steps).
 - **`allow_unverified`** (optional, list of 40-hex SHAs): Shas of commits on the base branch that
