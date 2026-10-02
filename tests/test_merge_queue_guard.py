@@ -568,6 +568,28 @@ if __name__ == "__main__":
                 f"state={detection.state}, reason={detection.reason}"
             )
 
+        # Bare-repo layout: <container>/.bare + <container>/.git gitfile + <container>/worktrees/*
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir).resolve()
+            container = tmpdir / "repo"
+            seed = tmpdir / "seed"
+            seed.mkdir()
+            _git("init", "-q", "-b", "main", cwd=seed)
+            _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init", cwd=seed)
+            container.mkdir()
+            _git("clone", "-q", "--bare", str(seed), str(container / ".bare"), cwd=tmpdir)
+            (container / ".git").write_text("gitdir: ./.bare\n")
+            feature_wt = container / "worktrees" / "feature"
+            _git("worktree", "add", "-q", "-b", "feature", str(feature_wt), "main", cwd=container)
+            os.environ.pop("MERGE_QUEUE_CONFIG", None)
+
+            resolved = resolve_config_path(cwd=feature_wt)
+            test_result(
+                "resolve_config_path (bare layout): container config from linked worktree cwd",
+                Path(resolved).resolve() == (container / "merge-queue.json").resolve(),
+                f"resolved={resolved}"
+            )
+
         # Test 22: LayoutMismatchError is defined and raised
         print("  [Test 22] LayoutMismatchError exists as a RuntimeError subclass")
         try:

@@ -63,7 +63,9 @@ The queue reads a local per-machine config file at one of these locations (in or
 - `--config <path>` command-line flag
 - `MERGE_QUEUE_CONFIG` environment variable
 - Default: `<container>/merge-queue.json`, where `<container>` is the parent of the `worktrees/`
-  directory (resolved via `git rev-parse --path-format=absolute --git-common-dir`)
+  directory (resolved via `git rev-parse --path-format=absolute --git-common-dir`). A bare-repo
+  layout (`<container>/.bare` + `<container>/worktrees/`) is also recognized: the container is the
+  parent of `.bare/`.
 
 If the layout doesn't match a `worktrees/` ancestor, the queue fails closed with a message naming
 both override mechanisms. The config is **never** read from `origin/<base>` or the PR worktree —
