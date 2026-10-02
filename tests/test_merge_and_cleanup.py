@@ -385,23 +385,39 @@ print()
 # ============================================================================
 print("[Test 9] Predicate-false path prints .queue.message and exits 3")
 
-# Look for the pattern where predicate is false, we print the message, and exit 3
-pattern = r'printf.*\.queue\.message.*exit 3'
-has_refuse_path = bool(re.search(pattern, MERGE, re.MULTILINE | re.DOTALL))
-t("Predicate-false path prints .queue.message and exits 3",
-  has_refuse_path,
-  "expected pattern that prints .queue.message and exits 3 on predicate false")
+# Scope the search to Phase 0 & 1 section only, and bound the regex distance
+phase0_idx = get_byte_index(MERGE, "Phase 0")
+phase2b_idx = get_byte_index(MERGE, "Phase 2b")
+if phase0_idx >= 0 and phase2b_idx >= 0:
+    phase0_text = MERGE[phase0_idx:phase2b_idx]
+    # Look for the pattern where predicate is false, we print the message, and exit 3
+    # The pattern should appear in the else clause of the predicate check
+    # Bound the distance: look for printf and exit 3 within ~5 lines of each other
+    pattern = r'printf\s+[\'"]%s[\'"].*?\.queue\.message.*?exit\s+3'
+    has_refuse_path = bool(re.search(pattern, phase0_text, re.DOTALL))
+    t("Predicate-false path prints .queue.message and exits 3",
+      has_refuse_path,
+      "expected pattern that prints .queue.message and exits 3 on predicate false in Phase 0 & 1")
+else:
+    t("Predicate-false path prints .queue.message and exits 3",
+      False,
+      "Phase 0 or Phase 2b heading not found")
 
 print()
 
 # ============================================================================
-# TEST 10: Route marker and start-time writes before Phase 2Q
+# TEST 10: Route marker and start-time writes appear before Phase 2Q
 # ============================================================================
 print("[Test 10] Route marker + start-time writes appear before Phase 2Q instruction")
 
 # Find byte indices for critical sections
 phase1_route_write_idx = MERGE.find('printf \'queue\\n\' > "$MC_STATE_DIR/route"')
 phase2b_route_write_idx = MERGE.find('printf \'queue\\n\' > "$MC_STATE_DIR/route"', phase1_route_write_idx + 1 if phase1_route_write_idx >= 0 else 0)
+
+# Also find the start-time write (should be: jq -n now > "$MC_STATE_DIR/queue_started_at")
+phase1_starttime_write_idx = MERGE.find('jq -n now > "$MC_STATE_DIR/queue_started_at"')
+phase2b_starttime_write_idx = MERGE.find('jq -n now > "$MC_STATE_DIR/queue_started_at"', phase1_starttime_write_idx + 1 if phase1_starttime_write_idx >= 0 else 0)
+
 phase2q_idx = get_byte_index(MERGE, "Phase 2Q")
 phase3_idx = get_byte_index(MERGE, "Phase 3")
 
@@ -409,11 +425,23 @@ t("Phase 1 or 2b writes route marker",
   phase1_route_write_idx >= 0 or phase2b_route_write_idx >= 0,
   "expected route marker write in Phase 1 or Phase 2b")
 
+t("Phase 1 or 2b writes start-time marker",
+  phase1_starttime_write_idx >= 0 or phase2b_starttime_write_idx >= 0,
+  "expected start-time write (jq -n now) in Phase 1 or Phase 2b")
+
 if phase2q_idx >= 0:
-    earliest_write = min(p for p in [phase1_route_write_idx, phase2b_route_write_idx] if p >= 0)
-    t("Route marker write appears before Phase 2Q",
-      earliest_write < phase2q_idx if earliest_write >= 0 else False,
-      f"write at {earliest_write}, Phase 2Q at {phase2q_idx}")
+    route_earliest = min(p for p in [phase1_route_write_idx, phase2b_route_write_idx] if p >= 0) if (phase1_route_write_idx >= 0 or phase2b_route_write_idx >= 0) else -1
+    starttime_earliest = min(p for p in [phase1_starttime_write_idx, phase2b_starttime_write_idx] if p >= 0) if (phase1_starttime_write_idx >= 0 or phase2b_starttime_write_idx >= 0) else -1
+
+    if route_earliest >= 0:
+        t("Route marker write appears before Phase 2Q",
+          route_earliest < phase2q_idx,
+          f"write at {route_earliest}, Phase 2Q at {phase2q_idx}")
+
+    if starttime_earliest >= 0:
+        t("Start-time write appears before Phase 2Q",
+          starttime_earliest < phase2q_idx,
+          f"write at {starttime_earliest}, Phase 2Q at {phase2q_idx}")
 
 print()
 
@@ -424,41 +452,53 @@ print("[Test 11] Phase 2b 'Set up' branch does not rm -rf state dir before Skill
 
 # Extract the Phase 2b section (look for "### Phase 2b" through next "### Phase")
 phase2b_start = get_byte_index(MERGE, "Phase 2b")
-if phase2b_start >= 0:
-    # Find the next phase heading
-    next_phase_match = re.search(r"^###", MERGE[phase2b_start + 10:], re.MULTILINE)
-    phase2b_end = phase2b_start + 10 + next_phase_match.start() if next_phase_match else len(MERGE)
-    phase2b_text = MERGE[phase2b_start:phase2b_end]
-
-    # Check for "Set up" and "Stop" branches
-    has_set_up_branch = "Set up" in phase2b_text or "Set up," in phase2b_text
-    has_stop_branch = "Stop" in phase2b_text
-
-    # Look for rm -rf in a code block that's marked "Set up" but before a Skill invocation
-    # This is a simplified check: if we find "rm -rf" and "Skill" in Phase 2b with rm before Skill, that's bad
-    rm_idx_in_2b = phase2b_text.find('rm -rf "$MC_STATE_DIR"')
-    skill_idx_in_2b = phase2b_text.find('queued-merge')  # Skill invocation indicator
-
-    if rm_idx_in_2b >= 0 and skill_idx_in_2b >= 0:
-        # If rm comes before Skill in the Set-Up branch, that's a violation
-        # But if it's in the Stop branch (after "Stop" keyword), it's fine
-        stop_idx = phase2b_text.find("**Stop**")
-        if stop_idx >= 0 and rm_idx_in_2b < stop_idx:
-            t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
-              False,
-              "found rm -rf before Skill instruction in Set-Up branch")
-        else:
-            t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
-              True,
-              "")
-    else:
-        t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
-          True,
-          "no rm -rf found before Skill in Phase 2b")
-else:
+if phase2b_start < 0:
     t("Phase 2b section exists",
       False,
       "Phase 2b not found")
+else:
+    # Find the next phase heading
+    next_phase_match = re.search(r"^### Phase", MERGE[phase2b_start + 10:], re.MULTILINE)
+    phase2b_end = phase2b_start + 10 + next_phase_match.start() if next_phase_match else len(MERGE)
+    phase2b_text = MERGE[phase2b_start:phase2b_end]
+
+    # Check for both required markers; fail loudly if missing
+    rm_idx_in_2b = phase2b_text.find('rm -rf "$MC_STATE_DIR"')
+    skill_idx_in_2b = phase2b_text.find('queued-merge')  # Skill invocation indicator
+
+    if rm_idx_in_2b < 0:
+        t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+          False,
+          "marker 'rm -rf \"$MC_STATE_DIR\"' not found in Phase 2b")
+    elif skill_idx_in_2b < 0:
+        t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+          False,
+          "marker 'queued-merge' (Skill invocation) not found in Phase 2b")
+    else:
+        # Both markers present; now check the ordering invariant
+        # Look for "Set up" branch start and "Stop" branch start
+        set_up_idx = phase2b_text.find("**Set up**")
+        stop_idx = phase2b_text.find("**Stop**")
+
+        if set_up_idx < 0 or stop_idx < 0:
+            t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+              False,
+              "could not find **Set up** or **Stop** branch markers in Phase 2b")
+        else:
+            # The rm -rf in the Set-up branch (between Set up and Stop) should NOT come before Skill
+            # The rm -rf in the Stop branch (after Stop) is allowed
+            set_up_section = phase2b_text[set_up_idx:stop_idx]
+            rm_in_set_up = set_up_section.find('rm -rf "$MC_STATE_DIR"')
+            skill_in_set_up = set_up_section.find('queued-merge')
+
+            if rm_in_set_up >= 0 and skill_in_set_up >= 0 and rm_in_set_up < skill_in_set_up:
+                t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+                  False,
+                  "found rm -rf before Skill instruction in Set-Up branch")
+            else:
+                t("Phase 2b 'Set up' does not rm -rf before Skill invocation",
+                  True,
+                  "")
 
 print()
 
@@ -527,10 +567,13 @@ phase5_idx = get_byte_index(MERGE, "Phase 5")
 
 if phase4q_idx >= 0:
     phase4q_text = MERGE[phase4q_idx:phase5_idx] if phase5_idx > phase4q_idx else MERGE[phase4q_idx:]
-    has_route_check = "route" in phase4q_text and "queue" in phase4q_text
+    # Anchor to the specific route-check pattern, not just "both words appear"
+    # Look for the actual route file check: "if [ ! -f "$ROUTE_FILE" ] || [ "$(cat "$ROUTE_FILE")" != "queue" ]"
+    has_route_check = bool(re.search(r'\[\s*!\s*-f\s*"\$ROUTE_FILE"\s*\].*\$\(cat\s*"\$ROUTE_FILE"\)', phase4q_text, re.DOTALL)) or \
+                      bool(re.search(r'cat\s*"\$ROUTE_FILE".*queue', phase4q_text, re.DOTALL))
     t("Phase 4-Q requires route file to contain 'queue'",
       has_route_check,
-      "expected route file check in Phase 4-Q")
+      "expected specific route file check in Phase 4-Q (file existence + content='queue')")
 
 if phase4_idx >= 0 and phase4q_idx >= 0:
     phase4_text = MERGE[phase4_idx:phase4q_idx]
