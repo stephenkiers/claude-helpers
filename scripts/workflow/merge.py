@@ -472,16 +472,18 @@ def plan_merge(
             target_worktree=target_worktree
         )
 
-        # Call the queue guard early for UX (refuse before the push gate)
+        # Run the push gate first (must run for all routes, including queue-refused PRs,
+        # to ensure blocking_failures is populated before any early return)
+        blocking_failures = _run_push_gate(target_worktree, head_ref, cwd)
+        plan.blocking_failures = blocking_failures
+
+        # Call the queue guard early for UX (refuse before returning success)
         guard_decision = queue_guard(pr_number, Path(target_worktree))
         plan.queue = guard_decision.to_dict()
 
-        # If refused, return early without running the push gate
+        # If refused (and push gate passed), return with queue info for routing decision
         if guard_decision.decision == "refuse":
             return plan, None
-
-        blocking_failures = _run_push_gate(target_worktree, head_ref, cwd)
-        plan.blocking_failures = blocking_failures
 
         return plan, None
 

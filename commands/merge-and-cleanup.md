@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the worktree you want to merge (auto-detects PR), or from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup or /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: [PR number | worktree path]
-allowed-tools: Read, Skill, AskUserQuestion, Bash(cd:*), Bash(git worktree:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git rev-list:*), Bash(git log:*), Bash(git fetch:*), Bash(gh pr view:*), Bash(gh pr merge:*), Bash(just:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(head:*), Bash(awk:*), Bash(cut:*), Bash(tr:*), Bash(mv:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(cat:*), Bash(python3:*), Bash(command:*), Bash(gh repo view:*), Bash(*merge-queue*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
+allowed-tools: Read, Skill, AskUserQuestion, Bash(cd:*), Bash(git rev-parse:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(cat:*), Bash(python3:*), Bash(command:*), Bash(*merge-queue*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
@@ -67,9 +67,7 @@ if [ $PLAN_RESULT -eq 3 ]; then
     printf '%s' "$PLAN_JSON" | jq -r '.queue.message'
     exit 3
   fi
-fi
-
-if [ $PLAN_RESULT -ne 0 ]; then
+elif [ $PLAN_RESULT -ne 0 ]; then
   echo "ERROR: Failed to plan merge for '$ARGUMENTS'"
   printf '%s' "$PLAN_JSON" | jq -r '.error // empty'
   exit 1
@@ -132,6 +130,19 @@ if [ ! -O "$MC_STATE_DIR" ]; then
 fi
 
 # Clear stale result files from any previous incomplete run for this PR.
+# But first, check if another invocation is still running (PID-liveness guard).
+PID_LOCK_FILE="$MC_STATE_DIR/pid_lock"
+if [ -f "$PID_LOCK_FILE" ]; then
+  PRIOR_PID=$(cat "$PID_LOCK_FILE" 2>/dev/null)
+  if [ -n "$PRIOR_PID" ] && kill -0 "$PRIOR_PID" 2>/dev/null; then
+    echo "ERROR: Another merge-and-cleanup invocation (PID $PRIOR_PID) is still running for PR #$PR_NUM"
+    echo "Wait for it to complete, or if it is hung, terminate it first with: kill $PRIOR_PID"
+    exit 1
+  fi
+fi
+# Write this invocation's PID for future exclusivity checks
+printf '%s\n' "$$" > "$PID_LOCK_FILE"
+
 rm -f "$MC_STATE_DIR/apply_result.json" "$MC_STATE_DIR/apply_result.stderr" "$MC_STATE_DIR/apply_exit_code" "$MC_STATE_DIR/route" "$MC_STATE_DIR/queue_started_at"
 echo "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
 echo "$PR_NUM" > "$MC_STATE_DIR/pr_num"
@@ -253,6 +264,23 @@ echo "=== Phase 3: Merge Gate (backgrounded — may take several minutes) ==="
 PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
 
+# Re-verify we own the state directory (same guard as Phase 1, in case ownership changed)
+if [ -L "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is a symlink — refusing to use it as a state directory" >&2
+  exit 1
+fi
+if [ ! -O "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is not owned by the current user — refusing to use it" >&2
+  exit 1
+fi
+
+# Verify we're NOT on the queue route (Phase 3 is only for direct merges)
+ROUTE_FILE="$MC_STATE_DIR/route"
+if [ -f "$ROUTE_FILE" ] && [ "$(cat "$ROUTE_FILE")" = "queue" ]; then
+  echo "ERROR: route file indicates queue routing — this phase should not run (skip to Phase 2Q/4-Q)"
+  exit 1
+fi
+
 # Cross-check: verify the state dir exists and pr_num matches
 if [ ! -d "$MC_STATE_DIR" ]; then
   echo "ERROR: State directory $MC_STATE_DIR not found — Phase 1 may not have run" >&2
@@ -314,6 +342,23 @@ echo "=== Phase 4: Cleanup ==="
 
 PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
 MC_STATE_DIR="/tmp/merge-and-cleanup.pr-${PR_NUM}"
+
+# Re-verify we own the state directory (same guard as Phase 1, in case ownership changed)
+if [ -L "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is a symlink — refusing to use it as a state directory" >&2
+  exit 1
+fi
+if [ ! -O "$MC_STATE_DIR" ]; then
+  echo "ERROR: $MC_STATE_DIR is not owned by the current user — refusing to use it" >&2
+  exit 1
+fi
+
+# Verify we're NOT on the queue route (Phase 4 is only for direct merges; Phase 4-Q handles queue)
+ROUTE_FILE="$MC_STATE_DIR/route"
+if [ -f "$ROUTE_FILE" ] && [ "$(cat "$ROUTE_FILE")" = "queue" ]; then
+  echo "ERROR: route file indicates queue routing — this phase should not run (skip to Phase 4-Q)"
+  exit 1
+fi
 
 # Cross-check: verify the state dir exists and pr_num matches
 if [ ! -d "$MC_STATE_DIR" ]; then
@@ -443,7 +488,26 @@ fi
 
 # Live gate: MERGED is the sole authority
 FINAL_STATE=$(gh pr view "$PR_NUM" --json state -q '.state' 2>/dev/null)
-if [ "$FINAL_STATE" != "MERGED" ]; then
+GH_EXIT=$?
+
+if [ $GH_EXIT -ne 0 ]; then
+  # gh command failed — likely a network issue or PR inaccessible
+  echo "ERROR: could not verify PR state (gh pr view failed with exit $GH_EXIT)"
+  if [ -n "$RESULT_OUTCOME" ]; then
+    echo "Queue reported: $RESULT_OUTCOME"
+    if [ -n "$RESULT_REASON" ]; then
+      echo "Reason: $RESULT_REASON"
+    fi
+  fi
+  exit 1
+fi
+
+if [ "$FINAL_STATE" = "MERGED" ]; then
+  # Merge landed successfully — note outcome if different from expected
+  if [ -n "$RESULT_OUTCOME" ] && [ "$RESULT_OUTCOME" != "merged" ]; then
+    echo "Note: GitHub reports PR #$PR_NUM as MERGED, but queue result was: $RESULT_OUTCOME"
+  fi
+else
   # Merge did not land — report result and exit non-zero
   if [ -n "$RESULT_OUTCOME" ]; then
     echo "Result from queue:"
@@ -461,6 +525,10 @@ if [ "$FINAL_STATE" != "MERGED" ]; then
     echo "RECOMMENDATION: fix the issues, push, then re-run /merge-and-cleanup $PR_NUM"
     exit 2
   elif [ "$RESULT_OUTCOME" = "pushed_not_merged" ]; then
+    if [ -n "$RESULT_REASON" ]; then
+      echo ""
+      echo "RECOMMENDATION: $RESULT_REASON"
+    fi
     exit 2
   elif [ "$RESULT_OUTCOME" = "refused" ]; then
     exit 3
@@ -477,10 +545,6 @@ MATCH_COUNT=$(echo "$MATCH_LIST" | grep -c .)
 if [ "$MATCH_COUNT" -ne 1 ]; then
   echo "ERROR: Worktree path '$WT' is ambiguous for /cleanup's glob resolution (matches: $MATCH_LIST)"
   exit 1
-fi
-
-if [ -n "$RESULT_OUTCOME" ] && [ "$RESULT_OUTCOME" != "merged" ]; then
-  echo "Note: GitHub reports PR #$PR_NUM as MERGED, but queue result was: $RESULT_OUTCOME"
 fi
 
 echo "✓ PR #$PR_NUM is merged; invoking /cleanup with: $WT"

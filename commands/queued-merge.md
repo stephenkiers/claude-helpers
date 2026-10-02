@@ -83,7 +83,17 @@ echo "Branch: $PR_HEAD (base: $PR_BASE)"
 
 # Record the start time for the Phase 4 staleness guard. Variables don't persist across
 # Bash blocks, so this must be a file, keyed by PR number.
-jq -n 'now' > "/tmp/queued-merge.pr-${PR_NUM}.start_time" 2>/dev/null || true
+# Use the git state directory (ownership-checked) instead of /tmp to avoid symlink/TOCTOU attacks.
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ -z "$GIT_COMMON_DIR" ]; then
+  echo "ERROR: could not determine git common dir"
+  exit 1
+fi
+QUEUED_MERGE_STATE_DIR="$GIT_COMMON_DIR/queued-merge-state"
+mkdir -p "$QUEUED_MERGE_STATE_DIR" 2>/dev/null || true
+START_TIME_FILE="$QUEUED_MERGE_STATE_DIR/start-time-pr-${PR_NUM}"
+rm -f "$START_TIME_FILE"
+jq -n 'now' > "$START_TIME_FILE" 2>/dev/null || true
 ```
 
 ### Phase 2 — Find the worktree
@@ -139,39 +149,10 @@ MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   # Running from main worktree; find the PR worktree using git worktree list.
   # Captured to a variable first, not piped directly into python3: a `<<` heredoc
-  # replaces a command's stdin entirely, so piped input would be silently discarded
-  # and sys.stdin.read() inside the heredoc would always see an empty string.
+  # replaces a command's stdin entirely, so piped input would be silently discarded.
   WORKTREE_LIST_OUTPUT=$(git worktree list --porcelain 2>/dev/null)
-  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" WORKTREE_LIST="$WORKTREE_LIST_OUTPUT" python3 << 'PYTHON_EOF'
-import os
-pr_head = os.environ.get('PR_HEAD', '')
-lines = os.environ.get('WORKTREE_LIST', '').strip().split('\n')
-
-current_record = {}
-found = None
-for line in lines:
-  if not line.strip():
-    # End of record
-    if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-      found = current_record['worktree']
-      break
-    current_record = {}
-  else:
-    parts = line.split(None, 1)
-    if len(parts) >= 2:
-      if parts[0] == 'worktree':
-        current_record['worktree'] = parts[1]
-      elif parts[0] == 'branch':
-        current_record['branch'] = parts[1]
-
-# Check final record, in case the porcelain output doesn't end with a blank line
-if found is None and current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-  found = current_record['worktree']
-
-if found:
-  print(found)
-PYTHON_EOF
-)
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" WORKTREE_LIST="$WORKTREE_LIST_OUTPUT" python3 "$CLAUDE_HELPERS_DIR/scripts/workflow/resolve_pr_worktree.py")
   
   if [ $? -ne 0 ] || [ -z "$PR_WORKTREE" ]; then
     echo "ERROR: PR #$PR_NUM worktree not found. Create a worktree for branch '$PR_HEAD' first."
@@ -247,40 +228,12 @@ MAIN_WORKTREE=$(dirname "$GIT_COMMON_DIR")
 if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   # Running from main; need to cd to the PR worktree.
   # Captured to a variable first, not piped directly into python3: a `<<` heredoc
-  # replaces a command's stdin entirely, so piped input would be silently discarded
-  # and sys.stdin.read() inside the heredoc would always see an empty string.
+  # replaces a command's stdin entirely, so piped input would be silently discarded.
   WORKTREE_LIST_OUTPUT=$(git worktree list --porcelain 2>/dev/null)
-  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" WORKTREE_LIST="$WORKTREE_LIST_OUTPUT" python3 << 'PYTHON_EOF'
-import os
-pr_head = os.environ.get('PR_HEAD', '')
-lines = os.environ.get('WORKTREE_LIST', '').strip().split('\n')
-
-current_record = {}
-found = None
-for line in lines:
-  if not line.strip():
-    # End of record
-    if current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-      found = current_record['worktree']
-      break
-    current_record = {}
-  else:
-    parts = line.split(None, 1)
-    if len(parts) >= 2:
-      if parts[0] == 'worktree':
-        current_record['worktree'] = parts[1]
-      elif parts[0] == 'branch':
-        current_record['branch'] = parts[1]
-
-# Check final record, in case the porcelain output doesn't end with a blank line
-if found is None and current_record and current_record.get('branch') == f'refs/heads/{pr_head}':
-  found = current_record['worktree']
-
-if found:
-  print(found)
-PYTHON_EOF
-)
-  if [ -z "$PR_WORKTREE" ]; then
+  source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+  PR_WORKTREE=$(PR_HEAD="$PR_HEAD" WORKTREE_LIST="$WORKTREE_LIST_OUTPUT" python3 "$CLAUDE_HELPERS_DIR/scripts/workflow/resolve_pr_worktree.py")
+  
+  if [ $? -ne 0 ] || [ -z "$PR_WORKTREE" ]; then
     echo "ERROR: could not find PR worktree"
     exit 3
   fi
@@ -305,7 +258,7 @@ if [ -n "$ARGUMENTS" ] && [ "$ARGUMENTS" != "" ]; then
   PR_NUM="$ARGUMENTS"
   # Validate PR_NUM as integer
   case "$PR_NUM" in
-    ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 1 ;;
+    ''|*[!0-9]*) echo "ERROR: PR number must be an integer"; exit 3 ;;
   esac
 else
   CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null) || CURRENT_BRANCH=""
@@ -340,8 +293,10 @@ if [ "$RESULT_PR" != "$PR_NUM" ]; then
 fi
 
 # Check result freshness against the start time recorded in Phase 1 (read from the
-# per-PR scratch file, since variables don't persist across Bash blocks).
-START_TIME_FILE="/tmp/queued-merge.pr-${PR_NUM}.start_time"
+# per-PR scratch file in git state directory, since variables don't persist across Bash blocks).
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+QUEUED_MERGE_STATE_DIR="$GIT_COMMON_DIR/queued-merge-state"
+START_TIME_FILE="$QUEUED_MERGE_STATE_DIR/start-time-pr-${PR_NUM}"
 START_TIME=$(cat "$START_TIME_FILE" 2>/dev/null)
 RESULT_TIMESTAMP=$(printf '%s' "$RESULT_JSON" | jq -r '.timestamp // .enqueued_at // empty' 2>/dev/null)
 if [ -n "$RESULT_TIMESTAMP" ] && [ -n "$START_TIME" ]; then
@@ -408,7 +363,12 @@ case "$OUTCOME" in
     exit 1
     ;;
 esac
-```
+
+# Clean up the start-time scratch file (Phase 4 has consumed it)
+GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+QUEUED_MERGE_STATE_DIR="$GIT_COMMON_DIR/queued-merge-state"
+START_TIME_FILE="$QUEUED_MERGE_STATE_DIR/start-time-pr-${PR_NUM}"
+rm -f "$START_TIME_FILE"
 
 ## Exit Codes
 

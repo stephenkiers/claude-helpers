@@ -661,4 +661,35 @@ if phase3_idx >= 0 and phase4_idx >= 0:
 
 print()
 
+# ============================================================================
+# TEST 21: Phase 1 queue-route branch is reachable (if/elif check)
+# ============================================================================
+print("[Test 21] Phase 1 queue-route branch is reachable when PLAN_RESULT==3 and predicate is true")
+
+# Find the first bash block that contains PLAN_RESULT (this is Phase 1)
+phase1_block = None
+for line_num, block in bash_blocks:
+    if "PLAN_RESULT=$?" in block:
+        phase1_block = block
+        break
+
+if phase1_block:
+    # Verify the if/elif structure (elif, not separate if)
+    has_elif = "elif [ $PLAN_RESULT -ne 0 ]; then" in phase1_block
+    t("Phase 1 uses 'elif' to make PLAN_RESULT checks mutually exclusive",
+      has_elif,
+      "expected 'elif [ $PLAN_RESULT -ne 0 ]' to make queue-route check exclusive")
+
+    # Verify the queue route marker write happens in Phase 1
+    has_queue_route_marker = 'printf \'queue\\n\' > "$MC_STATE_DIR/route"' in phase1_block
+    t("Phase 1 writes queue route marker when routing to queue",
+      has_queue_route_marker,
+      "expected route marker write in Phase 1 for queue-routed PRs")
+else:
+    t("Phase 1 block extracted",
+      False,
+      "could not extract Phase 1 bash block")
+
+print()
+
 h.summarize_and_exit()
