@@ -11,7 +11,6 @@ Run with: python3 tests/test_queue_routing_plan_merge.py
 """
 
 import sys
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -21,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.merge import (
     plan_merge,
-    queue_guard,
     QueueDetection,
     QueueGuardDecision,
 )

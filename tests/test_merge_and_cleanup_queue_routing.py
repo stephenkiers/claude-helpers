@@ -12,9 +12,6 @@ Run with: python3 tests/test_merge_and_cleanup_queue_routing.py
 """
 
 import re
-import subprocess
-import tempfile
-from pathlib import Path
 from _test_harness import REPO_ROOT, Harness
 
 COMMANDS_DIR = REPO_ROOT / "commands"

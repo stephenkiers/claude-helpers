@@ -16,7 +16,6 @@ Run with: python3 tests/test_queued_merge_queue_routing.py
 """
 
 import re
-from pathlib import Path
 from _test_harness import REPO_ROOT, Harness
 
 COMMANDS_DIR = REPO_ROOT / "commands"
