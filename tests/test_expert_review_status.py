@@ -493,5 +493,175 @@ if __name__ == "__main__":
         )
 
     print()
+    print("[Section 9] Missing 'branch' in a lastRun/reviewDir entry warns on stderr")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = create_temp_git_repo()
+        try:
+            claude_dir = repo / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            cache_file = claude_dir / "github-cache.json"
+
+            # Malformed entry: has lastRun/reviewDir but no 'branch' key at all.
+            cache_data = {
+                "schema_version": "1.0",
+                "branch": "main",
+                "review": {
+                    "commit": "abc1234",
+                    "lastRun": "2026-01-01T12:00:00",
+                    "reviewDir": "~/.claude/reviews/test/diff-abc1234-20260101T120000",
+                    "reviewers": ["uncle-bob"],
+                    "panelModel": "sonnet",
+                    "findings": {"critical": 0, "high": 0, "medium": 0, "low": 0}
+                }
+            }
+            cache_file.write_text(json.dumps(cache_data))
+
+            result = run_status_script(repo, ["--json"])
+
+            test_result(
+                "Missing-branch entry prints a warning on stderr",
+                "missing" in result.stderr.lower() and "branch" in result.stderr.lower(),
+                f"stderr: {result.stderr}"
+            )
+
+            data = json.loads(result.stdout)
+            test_result(
+                "Missing-branch entry: stdout still parses as valid JSON",
+                isinstance(data, dict)
+            )
+            test_result(
+                "Missing-branch entry → reviewed: false",
+                data.get("reviewed") is False
+            )
+        finally:
+            import shutil
+            shutil.rmtree(repo, ignore_errors=True)
+
+    print()
+    print("[Section 9b] Explicit 'branch': None with lastRun/reviewDir warns on stderr")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = create_temp_git_repo()
+        try:
+            claude_dir = repo / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            cache_file = claude_dir / "github-cache.json"
+
+            # Malformed entry: has lastRun/reviewDir but 'branch' is explicitly None.
+            cache_data = {
+                "schema_version": "1.0",
+                "branch": "main",
+                "review": {
+                    "branch": None,
+                    "commit": "abc1234",
+                    "lastRun": "2026-01-01T12:00:00",
+                    "reviewDir": "~/.claude/reviews/test/diff-abc1234-20260101T120000",
+                    "reviewers": ["uncle-bob"],
+                    "panelModel": "sonnet",
+                    "findings": {"critical": 0, "high": 0, "medium": 0, "low": 0}
+                }
+            }
+            cache_file.write_text(json.dumps(cache_data))
+
+            result = run_status_script(repo, ["--json"])
+
+            test_result(
+                "Explicit null branch prints a warning on stderr",
+                "missing" in result.stderr.lower() and "branch" in result.stderr.lower(),
+                f"stderr: {result.stderr}"
+            )
+
+            data = json.loads(result.stdout)
+            test_result(
+                "Explicit null branch: stdout still parses as valid JSON",
+                isinstance(data, dict)
+            )
+            test_result(
+                "Explicit null branch → reviewed: false",
+                data.get("reviewed") is False
+            )
+        finally:
+            import shutil
+            shutil.rmtree(repo, ignore_errors=True)
+
+    print()
+    print("[Section 10] Well-formed entry (branch present) → no warning on stderr")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = create_temp_git_repo()
+        try:
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            current_branch = branch_result.stdout.strip()
+
+            claude_dir = repo / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            cache_file = claude_dir / "github-cache.json"
+            cache_data = {
+                "schema_version": "1.0",
+                "branch": "main",
+                "review": {
+                    "branch": current_branch,
+                    "commit": "abc1234",
+                    "lastRun": "2026-01-01T12:00:00",
+                    "reviewDir": "~/.claude/reviews/test/diff-abc1234-20260101T120000",
+                    "reviewers": ["uncle-bob"],
+                    "panelModel": "sonnet",
+                    "findings": {"critical": 0, "high": 0, "medium": 0, "low": 0}
+                }
+            }
+            cache_file.write_text(json.dumps(cache_data))
+
+            result = run_status_script(repo, ["--json"])
+
+            test_result(
+                "Well-formed entry prints no warning on stderr",
+                result.stderr == "",
+                f"stderr: {result.stderr}"
+            )
+        finally:
+            import shutil
+            shutil.rmtree(repo, ignore_errors=True)
+
+    print()
+    print("[Section 11] Empty review dict ({}) → no warning on stderr")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = create_temp_git_repo()
+        try:
+            claude_dir = repo / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            cache_file = claude_dir / "github-cache.json"
+            cache_data = {
+                "schema_version": "1.0",
+                "branch": "main",
+                "review": {}
+            }
+            cache_file.write_text(json.dumps(cache_data))
+
+            result = run_status_script(repo, ["--json"])
+
+            test_result(
+                "Empty review dict prints no warning on stderr",
+                result.stderr == "",
+                f"stderr: {result.stderr}"
+            )
+
+            data = json.loads(result.stdout)
+            test_result(
+                "Empty review dict → reviewed: false",
+                data.get("reviewed") is False
+            )
+        finally:
+            import shutil
+            shutil.rmtree(repo, ignore_errors=True)
+
+    print()
 
     h.summarize_and_exit()

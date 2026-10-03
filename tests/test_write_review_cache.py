@@ -369,4 +369,35 @@ if __name__ == "__main__":
             f"Got: {review.get('reviewers')}"
         )
 
+    print()
+    print("[Section 7] Missing severity flag is rejected, not silently defaulted")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache_path = Path(tmpdir) / "github-cache.json"
+
+        # Omit --critical entirely
+        result = run_script(
+            cache_path,
+            [
+                "--commit", "abc1234",
+                "--branch", "fix-bug",
+                "--review-dir", "/tmp/review-dir",
+                "--high", "0",
+                "--medium", "0",
+                "--low", "0",
+            ]
+        )
+
+        test_result(
+            "Script rejects a missing --critical flag",
+            result.returncode == 2,
+            f"returncode: {result.returncode}, stderr: {result.stderr}"
+        )
+
+        test_result(
+            "Error message mentions critical",
+            "critical" in result.stderr.lower(),
+            f"stderr: {result.stderr}"
+        )
+
     h.summarize_and_exit()

@@ -37,9 +37,9 @@ class GitHubCacheData:
     """Schema for .claude/github-cache.json.
 
     NOTE: This cache also contains a 'review' key (a dict with branch, commit, lastRun, etc.)
-    that is read by scripts/expert-review-status.py. That script has its own hand-rolled parser
-    (avoiding a scripts/workflow/ dependency). Future schema changes to the 'review' key must
-    be applied to scripts/expert-review-status.py as well.
+    written by scripts/write-review-cache.py and read by scripts/expert-review-status.py. Both
+    scripts have their own hand-rolled parsing (avoiding a scripts/workflow/ dependency).
+    Future schema changes to the 'review' key must be applied to both of those scripts as well.
     """
     schema_version: str = GITHUB_CACHE_SCHEMA_VERSION
     branch: str = ""
