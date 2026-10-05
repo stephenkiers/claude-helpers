@@ -34,6 +34,16 @@ SECRET_PATTERN = re.compile(
     r"(?i)((?:token|key|password|authorization|secret|api[_-]?key|bearer)[=:\s]+(?:bearer\s+)?)([^\s,'\"\n]+)",
     re.IGNORECASE | re.MULTILINE,
 )
+# Pattern for JSON-shaped secrets with quoted keys, e.g., "password": "secret123"
+JSON_SECRET_PATTERN = re.compile(
+    r'(?i)("[^"]*(?:password|token|key|secret|api[_-]?key|authorization)"\s*:\s*)"?([^\s,\n"]+)"?',
+    re.IGNORECASE | re.MULTILINE,
+)
+# Pattern for bare token shapes: GitHub tokens and AWS access keys
+BARE_TOKEN_PATTERN = re.compile(
+    r"((?:ghp_|ghs_|ghu_|github_pat_)[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})",
+    re.MULTILINE,
+)
 
 
 def _redact(text: str) -> str:
@@ -41,11 +51,18 @@ def _redact(text: str) -> str:
     Redact common secret/token/key patterns from text.
 
     Matches patterns like 'token=VALUE', 'Authorization: Bearer VALUE', 'password=VALUE',
-    case-insensitive. Returns text with matched values replaced by '<redacted>'.
-    Never raises.
+    JSON-shaped secrets like '"password": "secret123"', and bare token shapes like GitHub
+    tokens (ghp_, ghs_, ghu_, github_pat_) and AWS access keys (AKIA...).
+    All matched values are replaced by '<redacted>'. Case-insensitive. Never raises.
     """
     try:
-        return SECRET_PATTERN.sub(r"\1<redacted>", text)
+        # Apply keyword-based pattern (token=value, password: value, etc.)
+        text = SECRET_PATTERN.sub(r"\1<redacted>", text)
+        # Apply JSON-shaped pattern ("password": "value", etc.)
+        text = JSON_SECRET_PATTERN.sub(r"\1<redacted>", text)
+        # Apply bare token shape pattern (GitHub tokens, AWS keys, etc.)
+        text = BARE_TOKEN_PATTERN.sub(r"<redacted>", text)
+        return text
     except Exception:
         return text
 
@@ -66,8 +83,9 @@ def make_log_dir() -> Optional[Path]:
             glob.glob(pattern),
             key=lambda p: Path(p).stat().st_mtime,
         )
-        # Keep the most recent LOG_DIR_RETENTION_COUNT dirs
-        to_delete = old_dirs[:-LOG_DIR_RETENTION_COUNT]
+        # Keep the most recent LOG_DIR_RETENTION_COUNT - 1 dirs, so after creating the new one,
+        # total count is LOG_DIR_RETENTION_COUNT (e.g., 19 old + 1 new = 20)
+        to_delete = old_dirs[:-(LOG_DIR_RETENTION_COUNT - 1)]
         for dir_path in to_delete:
             shutil.rmtree(dir_path, ignore_errors=True)
     except Exception:
@@ -132,7 +150,7 @@ def environment_snapshot(main_worktree: Optional[Path]) -> str:
         parts.append("--- main HEAD ---\n" + _redact(_run_best_effort(["git", "rev-parse", "HEAD"], main_worktree)))
         parts.append("--- git status --porcelain ---\n" + _redact(_run_best_effort(["git", "status", "--porcelain"], main_worktree)))
         ps_out = _run_best_effort(["ps", "-axo", "pid,etime,comm"])
-        procs = [ln for ln in ps_out.splitlines() if SNAPSHOT_PROCESS_PATTERN.search(ln)]
+        procs = [_redact(ln) for ln in ps_out.splitlines() if SNAPSHOT_PROCESS_PATTERN.search(ln)]
         parts.append("--- concurrent cargo/rustc/just processes ---\n" + "\n".join(procs) + "\n")
         try:
             usage = shutil.disk_usage(str(main_worktree) if main_worktree else ".")

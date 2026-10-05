@@ -25,10 +25,7 @@ Run with: python3 tests/test_workflow_check_diagnostics_spec_blind.py
 """
 
 import sys
-import os
-import time
 import tempfile
-import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 from unittest import mock
@@ -161,6 +158,46 @@ if __name__ == "__main__":
             "_redact redacts in mixed content",
             "token=" in result and "secret" not in result and "normal text" in result,
             f"Expected selective redaction, got '{result}'"
+        )
+
+        # Test JSON-shaped secrets with quoted keys
+        result = diag._redact('{"password": "mysecret123"}')
+        test_result(
+            "_redact redacts JSON password pattern",
+            "password" in result and "mysecret123" not in result,
+            f"Expected JSON password to be redacted, got '{result}'"
+        )
+
+        # Test JSON-shaped api_key pattern
+        result = diag._redact('{"api_key": "abc123def456"}')
+        test_result(
+            "_redact redacts JSON api_key pattern",
+            "api_key" in result and "abc123def456" not in result,
+            f"Expected JSON api_key to be redacted, got '{result}'"
+        )
+
+        # Test bare GitHub token (ghp_ prefix)
+        result = diag._redact("ghp_abc123def456xyz789")
+        test_result(
+            "_redact redacts bare GitHub token ghp_",
+            "ghp_" not in result or "<redacted>" in result,
+            f"Expected GitHub token to be redacted, got '{result}'"
+        )
+
+        # Test bare GitHub token (ghs_ prefix)
+        result = diag._redact("ghs_xyz789abc123def456")
+        test_result(
+            "_redact redacts bare GitHub token ghs_",
+            "ghs_" not in result or "<redacted>" in result,
+            f"Expected GitHub token to be redacted, got '{result}'"
+        )
+
+        # Test AWS access key ID (AKIA prefix)
+        result = diag._redact("AKIA1234567890ABCDEF")
+        test_result(
+            "_redact redacts AWS access key ID",
+            "AKIA" not in result or "<redacted>" in result,
+            f"Expected AWS key to be redacted, got '{result}'"
         )
 
     print()
