@@ -35,6 +35,13 @@ def make_log_dir() -> Optional[Path]:
         return None
 
 
+def remove_log_dir(log_dir: Optional[Path]) -> None:
+    """Delete a log directory once every check passed; best-effort, never raises."""
+    if log_dir is None:
+        return
+    shutil.rmtree(log_dir, ignore_errors=True)
+
+
 def build_failure_excerpt(stdout: str, stderr: str) -> str:
     """
     Short, size-bounded excerpt of combined output: lines matching

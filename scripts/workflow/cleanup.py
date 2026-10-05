@@ -278,6 +278,10 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
                     )
                     result.validation_failures.append(f"Check command failed: {cmd}: {detail}{log_suffix}")
 
+        # Logs are only useful for post-mortems: keep them when any check failed or timed out.
+        if result.validation_passed:
+            diagnostics.remove_log_dir(log_dir)
+
         # Re-validate HEAD SHA immediately before mutation
         try:
             current_head_sha_recheck = git.get_head_sha(cwd=Path(plan.target_worktree))

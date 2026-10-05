@@ -107,8 +107,26 @@ if __name__ == "__main__":
             test_result("log has full stdout and snapshot", "failures:" in logged and "SNAP" in logged)
             shutil.rmtree(Path(log_path).parent, ignore_errors=True)
 
-        res = run_cleanup(CheckResult(success=True, returncode=0, stdout="ok"))
+        created_dirs = []
+        real_make = diag.make_log_dir
+
+        def tracking_make():
+            d = real_make()
+            created_dirs.append(d)
+            return d
+
+        with mock.patch.object(diag, "make_log_dir", side_effect=tracking_make):
+            res = run_cleanup(CheckResult(success=True, returncode=0, stdout="ok"))
         test_result("passing check still passes", res.validation_passed is True and not res.validation_failures)
+        test_result("log dir is removed when all checks pass",
+                    len(created_dirs) == 1 and created_dirs[0] is not None and not created_dirs[0].exists())
+
+        with mock.patch.object(diag, "make_log_dir", side_effect=tracking_make):
+            res = run_cleanup(CheckResult(success=False, returncode=1, stdout="x FAILED"))
+        kept = created_dirs[-1]
+        test_result("log dir is kept when a check fails", kept is not None and kept.exists())
+        if kept:
+            shutil.rmtree(kept, ignore_errors=True)
     except SystemExit:
         raise
     except Exception as e:  # pragma: no cover - surfaces setup problems as a failure
