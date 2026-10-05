@@ -26,6 +26,15 @@ if __name__ == "__main__":
     tmp_root = Path(tempfile.mkdtemp(prefix="diag-test-"))
 
     try:
+        # --- _redact function ---
+        test_result("_redact redacts token=VALUE", diag._redact("token=secret123") == "token=<redacted>")
+        test_result("_redact redacts password=VALUE", diag._redact("password=mypass") == "password=<redacted>")
+        test_result("_redact redacts Authorization: Bearer", diag._redact("Authorization: Bearer abc123def") == "Authorization: Bearer <redacted>")
+        test_result("_redact case-insensitive TOKEN", diag._redact("TOKEN=xyz") == "TOKEN=<redacted>")
+        test_result("_redact preserves normal text", diag._redact("normal output") == "normal output")
+        test_result("_redact handles api_key", diag._redact("api_key=secret") == "api_key=<redacted>")
+        test_result("_redact handles key: syntax", diag._redact("key: myvalue") == "key: <redacted>")
+
         # --- execute_check captures stdout ---
         r = execute_check("echo out-line; echo err-line >&2; exit 3", cwd=tmp_root)
         test_result("execute_check captures stdout", "out-line" in r.stdout, r.stdout)
@@ -45,6 +54,11 @@ if __name__ == "__main__":
         ex = diag.build_failure_excerpt("error: " + "x" * 10000, "")
         test_result("excerpt is size bounded", len(ex) <= diag.EXCERPT_MAX_CHARS + 20, str(len(ex)))
         test_result("excerpt of empty output is empty", diag.build_failure_excerpt("", "") == "")
+
+        # --- excerpt redacts secrets ---
+        stdout_with_secret = "test FAILED token=secret123abc"
+        ex = diag.build_failure_excerpt(stdout_with_secret, "")
+        test_result("excerpt redacts secrets in output", "secret123abc" not in ex and "<redacted>" in ex, ex)
 
         # --- log writing ---
         log_dir = tmp_root / "logs"
@@ -66,6 +80,16 @@ if __name__ == "__main__":
         test_result("unwritable log_dir yields None, no raise",
                     diag.write_check_log(tmp_root / "missing", 0, "x", fail, datetime.now(timezone.utc), 0, None) is None)
 
+        # --- log writing redacts secrets ---
+        log_dir_secret = tmp_root / "logs_secret"
+        log_dir_secret.mkdir()
+        secret_fail = CheckResult(success=False, returncode=1, stdout="output token=mysecret", stderr="error password=pass123")
+        with mock.patch.object(diag, "environment_snapshot", return_value="SNAP"):
+            p = diag.write_check_log(log_dir_secret, 0, "check", secret_fail, datetime.now(timezone.utc), 1.0, tmp_root)
+            logged_text = p.read_text() if p else ""
+            test_result("log file redacts secrets from stdout/stderr",
+                        "mysecret" not in logged_text and "pass123" not in logged_text and "<redacted>" in logged_text, logged_text)
+
         # --- snapshot never raises ---
         with mock.patch("subprocess.run", side_effect=OSError("boom")), \
                 mock.patch("shutil.disk_usage", side_effect=OSError("nodisk")):
@@ -74,6 +98,38 @@ if __name__ == "__main__":
         s = diag.environment_snapshot(tmp_root)
         test_result("snapshot has expected sections",
                     all(k in s for k in ("main HEAD", "git status --porcelain", "cargo/rustc/just", "free disk")), s)
+
+        # --- make_log_dir with pruning ---
+        # Create multiple old log dirs and verify pruning keeps only the most recent N
+        temp_root = Path(tempfile.gettempdir())
+        # Clean up any existing test dirs first
+        import glob as glob_module
+        for old_dir in glob_module.glob(str(temp_root / f"{diag.LOG_DIR_PREFIX}test-*")):
+            shutil.rmtree(old_dir, ignore_errors=True)
+
+        # Create more dirs than the retention count
+        created_test_dirs = []
+        for i in range(diag.LOG_DIR_RETENTION_COUNT + 5):
+            test_dir = Path(tempfile.mkdtemp(prefix=f"{diag.LOG_DIR_PREFIX}test-"))
+            created_test_dirs.append(test_dir)
+
+        # Verify all were created
+        test_result("created test dirs", len(created_test_dirs) == diag.LOG_DIR_RETENTION_COUNT + 5)
+
+        # Now call make_log_dir, which should prune old ones
+        new_dir = diag.make_log_dir()
+        test_result("make_log_dir returns a valid path", new_dir is not None and new_dir.exists())
+
+        # Check that only the most recent retention_count + 1 (for the new one we just created) exist
+        remaining = [d for d in created_test_dirs if d.exists()]
+        # After pruning and creating a new dir, we should have at most LOG_DIR_RETENTION_COUNT old + 1 new
+        test_result("pruning keeps retention-bounded log dirs", len(remaining) <= diag.LOG_DIR_RETENTION_COUNT)
+
+        # Clean up test dirs
+        for d in created_test_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+        if new_dir:
+            shutil.rmtree(new_dir, ignore_errors=True)
 
         # --- apply_cleanup wiring ---
         import json

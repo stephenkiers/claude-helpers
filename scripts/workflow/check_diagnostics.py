@@ -8,6 +8,7 @@ environment on failure. Everything here is best-effort and never raises: diagnos
 or change a check result.
 """
 
+import glob
 import re
 import shutil
 import subprocess
@@ -25,10 +26,54 @@ EXCERPT_MAX_MATCH_LINES = 40
 EXCERPT_LINE_PATTERN = re.compile(r"FAILED|panicked|failures:|error")
 SNAPSHOT_PROCESS_PATTERN = re.compile(r"\b(cargo|rustc|just)\b")
 SNAPSHOT_CMD_TIMEOUT_SECS = 10
+LOG_DIR_RETENTION_COUNT = 20
+# Pattern to match common secret/token/key forms: token=VALUE, Authorization: Bearer VALUE, etc.
+# Case-insensitive to catch variations like Token, TOKEN, token, etc.
+# Handles "Bearer" as part of the key specification (e.g., "Authorization: Bearer TOKEN").
+SECRET_PATTERN = re.compile(
+    r"(?i)((?:token|key|password|authorization|secret|api[_-]?key|bearer)[=:\s]+(?:bearer\s+)?)([^\s,'\"\n]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _redact(text: str) -> str:
+    """
+    Redact common secret/token/key patterns from text.
+
+    Matches patterns like 'token=VALUE', 'Authorization: Bearer VALUE', 'password=VALUE',
+    case-insensitive. Returns text with matched values replaced by '<redacted>'.
+    Never raises.
+    """
+    try:
+        return SECRET_PATTERN.sub(r"\1<redacted>", text)
+    except Exception:
+        return text
 
 
 def make_log_dir() -> Optional[Path]:
-    """Create a fresh per-run log directory under the system temp dir; None on failure."""
+    """
+    Create a fresh per-run log directory under the system temp dir; None on failure.
+
+    Before creating a new dir, performs best-effort age-based pruning: deletes old
+    cleanup-checks-* dirs (keeping the most recent LOG_DIR_RETENTION_COUNT). Pruning
+    failures never block directory creation.
+    """
+    # Prune old log dirs (best-effort)
+    try:
+        temp_root = tempfile.gettempdir()
+        pattern = str(Path(temp_root) / f"{LOG_DIR_PREFIX}*")
+        old_dirs = sorted(
+            glob.glob(pattern),
+            key=lambda p: Path(p).stat().st_mtime,
+        )
+        # Keep the most recent LOG_DIR_RETENTION_COUNT dirs
+        to_delete = old_dirs[:-LOG_DIR_RETENTION_COUNT]
+        for dir_path in to_delete:
+            shutil.rmtree(dir_path, ignore_errors=True)
+    except Exception:
+        # Pruning failures do not block creating the new dir
+        pass
+
     try:
         return Path(tempfile.mkdtemp(prefix=LOG_DIR_PREFIX))
     except Exception:
@@ -46,10 +91,14 @@ def build_failure_excerpt(stdout: str, stderr: str) -> str:
     """
     Short, size-bounded excerpt of combined output: lines matching
     FAILED|panicked|failures:|error if any (first EXCERPT_MAX_MATCH_LINES), otherwise the last
-    EXCERPT_TAIL_LINES lines. Truncated to EXCERPT_MAX_CHARS. Never raises.
+    EXCERPT_TAIL_LINES lines. Truncated to EXCERPT_MAX_CHARS. Redacts secrets before returning.
+    Never raises.
     """
     try:
-        lines = [ln.rstrip() for ln in f"{stdout or ''}\n{stderr or ''}".splitlines() if ln.strip()]
+        combined = f"{stdout or ''}\n{stderr or ''}"
+        # Redact secrets before processing
+        combined = _redact(combined)
+        lines = [ln.rstrip() for ln in combined.splitlines() if ln.strip()]
         matched = [ln for ln in lines if EXCERPT_LINE_PATTERN.search(ln)]
         chosen = matched[:EXCERPT_MAX_MATCH_LINES] if matched else lines[-EXCERPT_TAIL_LINES:]
         excerpt = "\n".join(chosen)
@@ -61,6 +110,7 @@ def build_failure_excerpt(stdout: str, stderr: str) -> str:
 
 
 def _run_best_effort(argv: List[str], cwd: Optional[Path] = None) -> str:
+    """Run a command and return its combined stdout/stderr; never raises; returns '<unavailable: {err}>' on failure."""
     try:
         proc = subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, timeout=SNAPSHOT_CMD_TIMEOUT_SECS,
@@ -71,12 +121,17 @@ def _run_best_effort(argv: List[str], cwd: Optional[Path] = None) -> str:
 
 
 def environment_snapshot(main_worktree: Optional[Path]) -> str:
-    """Best-effort snapshot: main HEAD SHA, git status, cargo/rustc/just processes, free disk."""
+    """
+    Best-effort snapshot: main HEAD SHA, git status, cargo/rustc/just processes, free disk.
+
+    When main_worktree is None, git commands run with no explicit cwd (current working directory)
+    and disk usage is checked against ".".
+    """
     parts = []
     try:
-        parts.append("--- main HEAD ---\n" + _run_best_effort(["git", "rev-parse", "HEAD"], main_worktree))
-        parts.append("--- git status --porcelain ---\n" + _run_best_effort(["git", "status", "--porcelain"], main_worktree))
-        ps_out = _run_best_effort(["ps", "-axo", "pid,etime,command"])
+        parts.append("--- main HEAD ---\n" + _redact(_run_best_effort(["git", "rev-parse", "HEAD"], main_worktree)))
+        parts.append("--- git status --porcelain ---\n" + _redact(_run_best_effort(["git", "status", "--porcelain"], main_worktree)))
+        ps_out = _run_best_effort(["ps", "-axo", "pid,etime,comm"])
         procs = [ln for ln in ps_out.splitlines() if SNAPSHOT_PROCESS_PATTERN.search(ln)]
         parts.append("--- concurrent cargo/rustc/just processes ---\n" + "\n".join(procs) + "\n")
         try:
@@ -103,6 +158,9 @@ def write_check_log(
     Write the full output of one check run to <log_dir>/check-<index>.log. Environment snapshot is
     appended only when the check failed. Returns the log path, or None if it could not be written.
     Never raises.
+
+    The index parameter must be unique within a given log_dir, since it is used to build the
+    filename check-<index>.log. Callers pass the loop index, so this precondition holds naturally.
     """
     if log_dir is None:
         return None
@@ -116,7 +174,10 @@ def write_check_log(
             f"success: {result.success}\n"
             f"error: {result.error}\n"
         )
-        body = f"\n=== stdout ===\n{result.stdout or ''}\n=== stderr ===\n{result.stderr or ''}\n"
+        # Redact secrets from stdout and stderr before writing to disk
+        redacted_stdout = _redact(result.stdout or "")
+        redacted_stderr = _redact(result.stderr or "")
+        body = f"\n=== stdout ===\n{redacted_stdout}\n=== stderr ===\n{redacted_stderr}\n"
         snapshot = ""
         if not result.success:
             snapshot = "\n=== environment snapshot ===\n" + environment_snapshot(main_worktree)
