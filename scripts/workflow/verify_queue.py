@@ -44,6 +44,17 @@ class Ruling:
         return f"{repo_key}/{self.review_id}::{self.slug}"
 
 
+class ParsePlanResult(list):  # type: ignore[type-arg]
+    """List of Ruling objects with skipped_headings count.
+
+    Subclasses list for backward compatibility: iterating over this object
+    yields Ruling objects, and the skipped_headings count is accessible as an attribute.
+    """
+    def __init__(self, rulings: List[Ruling], skipped_headings: int = 0):
+        super().__init__(rulings)
+        self.skipped_headings: int = skipped_headings
+
+
 @dataclass
 class SyncResult:
     queue: str
@@ -52,6 +63,7 @@ class SyncResult:
     added: List[str] = field(default_factory=list)
     already_queued: List[str] = field(default_factory=list)
     open_total: int = 0
+    skipped_headings: int = 0
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -62,6 +74,7 @@ class SyncResult:
             "added": self.added,
             "already_queued": self.already_queued,
             "open_total": self.open_total,
+            "skipped_headings": self.skipped_headings,
         }
 
 
@@ -82,16 +95,27 @@ def review_matches_branch(review_id: str, branch: str) -> bool:
     return m is not None and review_id[: m.start()] == branch_slug(branch)
 
 
-def parse_plan(text: str, review_id: str, plan_path: str) -> List[Ruling]:
-    """Extract rulings whose STATUS is still pending-* from one claude-action-plan.md."""
+def parse_plan(text: str, review_id: str, plan_path: str) -> ParsePlanResult:
+    """Extract rulings whose STATUS is still pending-* from one claude-action-plan.md.
+
+    Returns a ParsePlanResult (list-like object containing Ruling objects) with
+    a skipped_headings attribute counting headings that were parsed but didn't have
+    both title and status.
+    """
     rulings: List[Ruling] = []
     title: Optional[str] = None
     status: Optional[str] = None
     command = ""
     seen: Dict[str, int] = {}
+    skipped_headings: int = 0
+    heading_seen: bool = False
 
     def flush() -> None:
+        nonlocal skipped_headings, heading_seen
+        if not heading_seen:
+            return
         if title is None or status is None:
+            skipped_headings += 1
             return
         slug = slugify(title)
         seen[slug] = seen.get(slug, 0) + 1
@@ -112,8 +136,10 @@ def parse_plan(text: str, review_id: str, plan_path: str) -> List[Ruling]:
         if heading:
             flush()
             title, status, command = None, None, ""
+            heading_seen = False
             if len(heading.group(1)) == 3:
                 title = _ITEM_NUMBER_RE.sub("", heading.group(2)).strip()
+                heading_seen = True
             continue
         if title is None:
             continue
@@ -125,16 +151,16 @@ def parse_plan(text: str, review_id: str, plan_path: str) -> List[Ruling]:
         if c and not command:
             command = c.group(1).strip().strip("`").strip()
     flush()
-    return rulings
+    return ParsePlanResult(rulings, skipped_headings)
 
 
-def resolve_repo_key(cwd: Optional[Path] = None) -> str:
+def resolve_repo_key(cwd: Optional[Path] = None) -> Optional[str]:
     """owner-name from gh, falling back to the project root's directory name."""
     identity, _ = project.detect_repo_identity(cwd=cwd)
     if identity:
         return f"{identity[0]}-{identity[1]}"
     root = worktrees.detect_project_root(cwd=cwd)
-    return Path(root).name if root else ""
+    return Path(root).name if root else None
 
 
 def resolve_queue_path(cwd: Optional[Path] = None) -> Optional[Path]:
@@ -170,10 +196,10 @@ def sync(
     """
     Enqueue pending rulings (idempotent). With `branch`, only that branch's reviews are scanned;
     without it, every review for the repo is. Raises RuntimeError if the repo key or queue path
-    cannot be resolved.
+    cannot be resolved. Raises OSError if I/O operations fail (mkdir, file write, fsync).
     """
     key = repo_key or resolve_repo_key(cwd)
-    if not key:
+    if key is None:
         raise RuntimeError("could not determine repo key")
     queue_path = queue or resolve_queue_path(cwd)
     if queue_path is None:
@@ -190,29 +216,41 @@ def sync(
             existing = _read_rows(queue_path)
             known = {r.get("id") for r in existing}
 
+            # Buffer rows to add in memory; write all at once after scanning completes.
+            rows_to_add: List[Dict[str, object]] = []
+
             plans = sorted(root.glob(f"*/{PLAN_FILENAME}")) if root.is_dir() else []
             for plan in plans:
                 review_id = plan.parent.name
                 if branch and not review_matches_branch(review_id, branch):
                     continue
                 result.scanned_plans += 1
-                for ruling in parse_plan(plan.read_text(), review_id, str(plan)):
+                parse_result = parse_plan(plan.read_text(), review_id, str(plan))
+                result.skipped_headings += parse_result.skipped_headings
+                for ruling in parse_result:
                     rid = ruling.row_id(key)
                     if rid in known:
                         result.already_queued.append(rid)
                         continue
-                    row = {
+                    row: Dict[str, object] = {
                         "id": rid, "status": "open", "kind": ruling.kind,
                         "summary": ruling.summary, "command": ruling.command,
                         "plan": ruling.plan, "result": "",
                     }
-                    fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+                    rows_to_add.append(row)
                     known.add(rid)
                     result.added.append(rid)
+
+            # Write all rows at once, then flush and fsync.
+            for row in rows_to_add:
+                fh.write(json.dumps(row, separators=(",", ":")) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+
+            # Compute open_total from in-memory state (existing + newly added rows).
+            # Only count rows with status == "open".
+            result.open_total = sum(1 for r in existing if r.get("status") == "open") + len(rows_to_add)
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
 
-    result.open_total = sum(1 for r in _read_rows(queue_path) if r.get("status") == "open")
     return result
