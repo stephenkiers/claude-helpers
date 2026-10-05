@@ -88,68 +88,13 @@ if __name__ == "__main__":
     )
 
     if has_redact:
-        # Test token= pattern (lowercase)
-        result = diag._redact("token=abc123secret")
-        test_result(
-            "_redact redacts token=VALUE",
-            "token=" in result and "abc123secret" not in result,
-            f"Expected token value to be redacted, got '{result}'"
-        )
-
-        # Test password= pattern
-        result = diag._redact("password=mypassword123")
-        test_result(
-            "_redact redacts password=VALUE",
-            "password=" in result and "mypassword123" not in result,
-            f"Expected password value to be redacted, got '{result}'"
-        )
-
-        # Test Authorization: Bearer pattern
-        result = diag._redact("Authorization: Bearer xyz123token")
-        test_result(
-            "_redact redacts Authorization: Bearer",
-            "Authorization:" in result and "xyz123token" not in result,
-            f"Expected Bearer token to be redacted, got '{result}'"
-        )
-
-        # Test api_key= pattern
-        result = diag._redact("api_key=secret123")
-        test_result(
-            "_redact redacts api_key=VALUE",
-            "api_key=" in result and "secret123" not in result,
-            f"Expected api_key value to be redacted, got '{result}'"
-        )
-
-        # Test key: pattern
-        result = diag._redact("secret_key: mysecret456")
-        test_result(
-            "_redact redacts key: VALUE patterns",
-            "secret_key:" in result and "mysecret456" not in result,
-            f"Expected key value to be redacted, got '{result}'"
-        )
-
-        # Test case-insensitive TOKEN
-        result = diag._redact("TOKEN=xyz789")
-        test_result(
-            "_redact handles uppercase TOKEN",
-            "TOKEN=" in result and "xyz789" not in result,
-            f"Expected uppercase TOKEN to be redacted, got '{result}'"
-        )
-
-        # Test PASSWORD (uppercase)
+        # Test PASSWORD (uppercase) — basic token/password/key/Authorization patterns and
+        # normal-text preservation are already covered in test_workflow_check_diagnostics.py
         result = diag._redact("PASSWORD=secret789")
         test_result(
             "_redact handles uppercase PASSWORD",
             "PASSWORD=" in result and "secret789" not in result,
             f"Expected uppercase PASSWORD to be redacted, got '{result}'"
-        )
-
-        # Test normal text is preserved
-        result = diag._redact("normal output text")
-        test_result(
-            "_redact preserves normal text",
-            result == "normal output text",
-            f"Expected normal text unchanged, got '{result}'"
         )
 
         # Test mixed content
