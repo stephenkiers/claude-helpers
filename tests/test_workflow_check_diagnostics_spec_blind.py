@@ -363,13 +363,13 @@ if __name__ == "__main__":
                         log_content = Path(log_path).read_text()
                         test_result(
                             "write_check_log redacts stdout secrets",
-                            "token=secret123" not in log_content or "token=" in log_content,
+                            "token=secret123" not in log_content and "token=" in log_content,
                             "Secrets should be redacted in persisted output"
                         )
 
                         test_result(
                             "write_check_log redacts stderr secrets",
-                            "password=admin123" not in log_content or "password=" in log_content,
+                            "password=admin123" not in log_content and "password=" in log_content,
                             "Password should be redacted in persisted output"
                         )
 
