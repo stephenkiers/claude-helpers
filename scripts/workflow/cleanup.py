@@ -8,11 +8,14 @@ Ports the deterministic cleanup logic from /cleanup into a plan/apply pattern:
 
 import json
 import os
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from . import git
+from . import check_diagnostics as diagnostics
 from .cache import hash_cache_file, hash_file_content, read_github_cache
 from .safety import Unknown, fail_closed
 from .models import RepoCacheData
@@ -251,17 +254,33 @@ def apply_cleanup(plan_json: str, cwd: Optional[Path] = None) -> Tuple[CleanupRe
         from .checks import execute_check
 
         check_timeout = _get_cleanup_check_timeout()
-        for cmd in plan.check_commands:
+        log_dir = diagnostics.make_log_dir() if plan.check_commands else None
+        for index, cmd in enumerate(plan.check_commands):
+            started_at = datetime.now(timezone.utc)
+            started_mono = time.monotonic()
             check_result = execute_check(cmd, cwd=main_worktree_path, timeout=check_timeout)
+            duration_secs = time.monotonic() - started_mono
+            log_path = diagnostics.write_check_log(
+                log_dir, index, cmd, check_result, started_at, duration_secs, main_worktree_path,
+            )
+            log_suffix = f" (full log: {log_path})" if log_path else ""
             if not check_result.success:
                 result.validation_passed = False
                 if check_result.error and check_result.error.startswith(TIMEOUT_ERROR_PREFIX):
                     result.validation_failures.append(
-                        f"{CHECK_TIMEOUT_MESSAGE_PREFIX} after {check_timeout}s (inconclusive, not a pass/fail): {cmd}"
+                        f"{CHECK_TIMEOUT_MESSAGE_PREFIX} after {check_timeout}s (inconclusive, not a pass/fail): {cmd}{log_suffix}"
                     )
                 else:
-                    detail = check_result.error or check_result.stderr or f"exit code {check_result.returncode}"
-                    result.validation_failures.append(f"Check command failed: {cmd}: {detail}")
+                    detail = (
+                        check_result.error
+                        or diagnostics.build_failure_excerpt(check_result.stdout, check_result.stderr)
+                        or f"exit code {check_result.returncode}"
+                    )
+                    result.validation_failures.append(f"Check command failed: {cmd}: {detail}{log_suffix}")
+
+        # Logs are only useful for post-mortems: keep them when any check failed or timed out.
+        if result.validation_passed:
+            diagnostics.remove_log_dir(log_dir)
 
         # Re-validate HEAD SHA immediately before mutation
         try:
