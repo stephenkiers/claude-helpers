@@ -73,17 +73,17 @@ OBSERVATION_ONLY_NOTE = (
 
 ZERO_RUNS_CAVEAT = "(Caveat: a reviewer tagged review:named-only or secondary will show few or zero runs because they are not auto-routed; zero row is not evidence of no value.)"
 
-# Findings schema constants (must match prompts/amalgamator.md)
-FINDINGS_SCHEMA_VERSION = 1
-SEVERITIES = ("Critical", "High", "Medium", "Low")
-VERDICTS = ("CONFIRMED", "DOWNGRADED", "REJECTED")
-# Schema reference (not all fields are validated; see parse_findings for validation rules)
-FINDING_FIELDS = {"id", "severity", "raised_by", "supported_by", "verdict"}
-FORBIDDEN_KEYS = {"STATUS", "DECISION", "triage_bucket", "bucket"}
-
 # Type aliases for structured fields
 Severity = Literal["Critical", "High", "Medium", "Low"]
 Verdict = Literal["CONFIRMED", "DOWNGRADED", "REJECTED"]
+
+# Findings schema constants (must match prompts/amalgamator.md)
+FINDINGS_SCHEMA_VERSION = 1
+SEVERITIES: Tuple[Severity, ...] = ("Critical", "High", "Medium", "Low")
+VERDICTS: Tuple[Verdict, ...] = ("CONFIRMED", "DOWNGRADED", "REJECTED")
+# Schema reference (not all fields are validated; see parse_findings for validation rules)
+FINDING_FIELDS = {"id", "severity", "raised_by", "supported_by", "verdict"}
+FORBIDDEN_KEYS = {"STATUS", "DECISION", "triage_bucket", "bucket"}
 
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -244,7 +244,7 @@ class FindingsScoreResult(NamedTuple):
     reviewers_per_run: Dict[str, List[int]]
     verified_crit_high_per_run: Dict[str, List[int]]
     verified_value_per_run: Dict[str, List[int]]
-    strata: Dict[str, Dict[str, Dict[str, List[int]]]]
+    strata: Dict[str, Dict[str, StratumBucketMetrics]]
     solo_findings_per_reviewer: Dict[str, int]
     runs_with_unavailable_findings: int
     pod_lenses_per_run: Dict[str, List[int]]
@@ -1198,7 +1198,7 @@ def parse_findings(raw_data: Any) -> ParsedFindings:
         supported_by = finding.get("supported_by", [])
 
         # severity: case-insensitive match to SEVERITIES
-        severity_matched = None
+        severity_matched: Optional[Severity] = None
         for sev in SEVERITIES:
             if isinstance(severity, str) and severity.lower() == sev.lower():
                 severity_matched = sev
@@ -1448,7 +1448,7 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
     print()
 
 
-SEVERITY_VALUES = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+SEVERITY_VALUES: Dict[Severity, int] = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
 # Cross-check with SEVERITIES constant
 assert set(SEVERITY_VALUES.keys()) == set(SEVERITIES), "SEVERITY_VALUES must match SEVERITIES constant"
 
@@ -1507,7 +1507,7 @@ class ReportData(TypedDict, total=False):
     reviewers_per_run: Dict[str, List[int]]
     verified_crit_high_per_run: Dict[str, List[int]]
     verified_value_per_run: Dict[str, List[int]]
-    strata: Dict[str, Dict[str, Dict[str, List[int]]]]
+    strata: Dict[str, Dict[str, StratumBucketMetrics]]
     solo_findings_per_reviewer: Dict[str, int]
     regime_counts: Dict[str, int]
     n_included_runs: int
@@ -2004,7 +2004,7 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     reviewers_per_run: Dict[str, List[int]] = {}
     verified_crit_high_per_run: Dict[str, List[int]] = {}
     verified_value_per_run: Dict[str, List[int]] = {}
-    strata: Dict[str, Dict[str, Dict[str, List[int]]]] = {}
+    strata: Dict[str, Dict[str, StratumBucketMetrics]] = {}
     solo_findings_per_reviewer: Dict[str, int] = {}
     pod_lenses_per_run: Dict[str, List[int]] = {}
     runs_with_unavailable_findings = 0
@@ -2131,14 +2131,14 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
                 normalized_raised_by = raised_by if canonical_slugs and raised_by in canonical_slugs else raised_by
                 solo_findings_per_reviewer[normalized_raised_by] = solo_findings_per_reviewer.get(normalized_raised_by, 0) + 1
 
-            # For full-panel, also update main dicts (backward compat)
-            if effort_stratum == "full-panel":
-                verified_crit_high_per_run[bucket].append(crit_high_count)
-                verified_value_per_run[bucket].append(value_total)
-            # Only append crit_high/value to strata when reviewer_count is not None (consistent with reviewers)
-            if reviewer_count is not None:
-                strata[effort_stratum][bucket]["crit_high"].append(crit_high_count)
-                strata[effort_stratum][bucket]["value"].append(value_total)
+        # For full-panel, also update main dicts (backward compat)
+        if effort_stratum == "full-panel":
+            verified_crit_high_per_run[bucket].append(crit_high_count)
+            verified_value_per_run[bucket].append(value_total)
+        # Only append crit_high/value to strata when reviewer_count is not None (consistent with reviewers)
+        if reviewer_count is not None:
+            strata[effort_stratum][bucket]["crit_high"].append(crit_high_count)
+            strata[effort_stratum][bucket]["value"].append(value_total)
 
     return FindingsScoreResult(
         reviewers_per_run=reviewers_per_run,
