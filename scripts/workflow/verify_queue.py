@@ -196,7 +196,8 @@ def sync(
     """
     Enqueue pending rulings (idempotent). With `branch`, only that branch's reviews are scanned;
     without it, every review for the repo is. Raises RuntimeError if the repo key or queue path
-    cannot be resolved. Raises OSError if I/O operations fail (mkdir, file write, fsync).
+    cannot be resolved. Raises OSError if I/O operations fail (mkdir, file write, fsync), or
+    ValueError (e.g. UnicodeDecodeError) if a plan file's contents are not valid text.
     """
     key = repo_key or resolve_repo_key(cwd)
     if key is None:
@@ -241,9 +242,11 @@ def sync(
                     known.add(rid)
                     result.added.append(rid)
 
-            # Write all rows at once, then flush and fsync.
-            for row in rows_to_add:
-                fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+            # Serialize all rows into one string and issue a single write call, so a
+            # mid-write I/O error (e.g. disk full) can't leave a partial row appended.
+            if rows_to_add:
+                blob = "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows_to_add)
+                fh.write(blob)
             fh.flush()
             os.fsync(fh.fileno())
 
