@@ -11,8 +11,11 @@ The committed `routing-baseline.json` is a **sanitized, aggregate-only snapshot*
 To regenerate the baseline snapshot after a significant phase boundary:
 
 ```bash
-python3 scripts/reviewer-yield.py --snapshot docs/metrics/routing-baseline.json
+python3 scripts/reviewer-yield.py --snapshot docs/metrics/routing-baseline.json --until <next-phase-boundary-timestamp>
 ```
+
+The `--until` parameter (naive-local ISO format, e.g., `2026-09-23T00:51:00`) defines the corpus window boundary.
+Use the same `--until` value as the previous snapshot to maintain consistent windows, or choose a new one aligned with the next phase/epic boundary.
 
 ### Important Notes
 

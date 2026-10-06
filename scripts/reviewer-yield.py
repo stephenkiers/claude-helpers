@@ -25,6 +25,7 @@ deviation is already noted; do not duplicate.
 """
 
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -33,14 +34,36 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any, NamedTuple, Final
+from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any, NamedTuple, Final, Literal
 
-# Import transcript_discovery from the same directory via __file__ path
-_spec = importlib.util.spec_from_file_location("transcript_discovery", str(Path(__file__).resolve().parent / "transcript_discovery.py"))
-_transcript_discovery = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_transcript_discovery)
-resolve_session = _transcript_discovery.resolve_session
-Unresolved = _transcript_discovery.Unresolved
+# Lazy-load transcript_discovery at point-of-use (see _load_scorer_module pattern below)
+_transcript_discovery = None
+resolve_session = None
+
+
+def _load_transcript_discovery():
+    """
+    Load transcript_discovery module via importlib.
+    Returns (module, error_msg). If error, module is None and error_msg is a string.
+    """
+    global _transcript_discovery, resolve_session
+    if _transcript_discovery is not None:
+        return _transcript_discovery, None
+
+    discovery_path = Path(__file__).resolve().parent / "transcript_discovery.py"
+    if not discovery_path.exists():
+        return None, f"transcript_discovery.py not found at {discovery_path}"
+    try:
+        spec = importlib.util.spec_from_file_location("transcript_discovery", str(discovery_path))
+        if spec is None or spec.loader is None:
+            return None, f"Failed to load spec from {discovery_path}"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _transcript_discovery = module
+        resolve_session = module.resolve_session
+        return module, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 OBSERVATION_ONLY_NOTE = (
     "Observation-only in Phase 0 — not wired into `prompts/router.md`, "
@@ -54,8 +77,13 @@ ZERO_RUNS_CAVEAT = "(Caveat: a reviewer tagged review:named-only or secondary wi
 FINDINGS_SCHEMA_VERSION = 1
 SEVERITIES = ("Critical", "High", "Medium", "Low")
 VERDICTS = ("CONFIRMED", "DOWNGRADED", "REJECTED")
+# Schema reference (not all fields are validated; see parse_findings for validation rules)
 FINDING_FIELDS = {"id", "severity", "raised_by", "supported_by", "verdict"}
 FORBIDDEN_KEYS = {"STATUS", "DECISION", "triage_bucket", "bucket"}
+
+# Type aliases for structured fields
+Severity = Literal["Critical", "High", "Medium", "Low"]
+Verdict = Literal["CONFIRMED", "DOWNGRADED", "REJECTED"]
 
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -154,12 +182,30 @@ class YieldRow(TypedDict):
     unit_kind: str  # "reviewer" | "overhead"
 
 
-class ParsedFindings(TypedDict, total=False):
-    """Validated findings from a findings.json file."""
-    status: str  # "ok", "malformed", or "legacy-unversioned"
-    reason: str  # explanation if not "ok"
+class ParsedFindingsOk(TypedDict):
+    """Successfully parsed findings from a findings.json file."""
+    status: Literal["ok", "legacy-unversioned"]
     findings: List[Dict[str, Any]]  # validated findings
     skipped_findings: int  # count of invalid findings skipped
+
+
+class ParsedFindingsError(TypedDict):
+    """Malformed findings.json file."""
+    status: Literal["malformed"]
+    reason: str  # explanation of what was wrong
+    findings: List[Dict[str, Any]]  # empty list
+    skipped_findings: int  # count of invalid findings skipped
+
+
+# Union type for discriminated-union pattern (similar to SessionRef/Unresolved)
+ParsedFindings = ParsedFindingsOk | ParsedFindingsError
+
+
+class StratumBucketMetrics(TypedDict):
+    """Per-(stratum, bucket) metrics breakdown."""
+    reviewers: List[int]
+    crit_high: List[int]
+    value: List[int]
 
 
 class ReviewerStats(TypedDict):
@@ -558,6 +604,43 @@ def extract_reviewer_name(filename: str) -> Optional[str]:
     return None
 
 
+def get_canonical_reviewer_slugs() -> Set[str]:
+    """
+    Get the set of canonical reviewer slugs from reviewers/index.yaml.
+
+    Returns a set of canonical slugs (lowercase, hyphenated). On error, returns empty set.
+    """
+    slugs: Set[str] = set()
+
+    # Try repo path first (following symlink back through installed scripts)
+    repo_reviewers_index = Path(__file__).resolve().parent.parent / "reviewers" / "index.yaml"
+    fallback_index = Path.home() / ".claude" / "reviewers" / "index.yaml"
+
+    for index_path in [repo_reviewers_index, fallback_index]:
+        if not index_path.exists():
+            continue
+
+        try:
+            content = index_path.read_text()
+            # Parse with simple regex to extract slugs from "file: slug.yaml" lines
+            file_pattern = r'^\s+file:\s+([a-z\-]+)\.yaml$'
+
+            for line in content.split('\n'):
+                file_match = re.match(file_pattern, line)
+                if file_match:
+                    slug = file_match.group(1)
+                    slugs.add(slug)
+
+            if slugs:
+                return slugs
+        except OSError as e:
+            print(f"Warning: failed to read reviewers index {index_path}: {e}", file=sys.stderr)
+            continue
+
+    # No index found; return empty set (caller should handle gracefully)
+    return slugs
+
+
 def load_reviewer_display_names() -> Dict[str, str]:
     """
     Load slug → display-name map from reviewers/index.yaml.
@@ -750,8 +833,14 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     repo_key = get_repo_key(review_dir)
     run_id = get_review_run_id(review_dir)
 
+    # Load transcript_discovery module (lazy load at point-of-use)
+    discovery_module, load_error = _load_transcript_discovery()
+    if load_error:
+        print(f"Warning: failed to load transcript_discovery: {load_error}", file=sys.stderr)
+        return repo_key, [], "unavailable"
+
     # Resolve session (try origin.json, then path-scan)
-    session_ref = resolve_session(review_dir_path)
+    session_ref = discovery_module.resolve_session(review_dir_path)
     unavailable_reason = None
     if not session_ref.get("resolved", False):
         unavailable_reason = session_ref.get("reason", "origin-missing")
@@ -822,6 +911,10 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
         mention_count = count_reviewer_mentions(final_report, reviewer, display_names)
         escalation_count = count_reviewer_escalations(action_plan, reviewer, display_names)
 
+        # Determine tokens_status and reason based on actual subagent file presence
+        has_subagent_files = bool(subagent_files_by_reviewer.get(reviewer))
+        tokens_status_for_row = "measured" if has_subagent_files else "unavailable"
+
         row: YieldRow = {
             "run_id": run_id,
             "reviewer": reviewer,
@@ -832,13 +925,17 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
             "cache_creation_input_tokens": tokens["cache_creation_input_tokens"],
             "mention_count": mention_count,
             "escalation_count": escalation_count,
-            "tokens_status": "measured" if subagent_files_by_reviewer.get(reviewer) else "unavailable",
+            "tokens_status": tokens_status_for_row,
             "unit_kind": "reviewer",
         }
 
         # Add reason if unavailable
-        if row["tokens_status"] == "unavailable":
-            row["reason"] = unavailable_reason or "origin-missing"
+        if tokens_status_for_row == "unavailable":
+            # Use session-resolution reason if available, else indicate subagent not found
+            if unavailable_reason:
+                row["reason"] = unavailable_reason
+            else:
+                row["reason"] = "subagent-not-found"
 
         rows.append(row)
 
@@ -871,103 +968,123 @@ def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
     - If both old and new rows are unavailable, skip (idempotent).
     - If existing rows have any measured rows, skip (do not downgrade).
 
+    Acquires an exclusive lock on {yield_file}.lock throughout all read and write operations
+    to prevent row loss under concurrent access.
+
     Returns the path to the yield file on success, None on write failure (caller must handle).
     Unavailable rows carry a `reason` field for skip-and-count diagnostics.
     """
     yield_dir = Path.home() / ".claude" / "reviews" / repo_key
     yield_file = yield_dir / "reviewer-yield.jsonl"
+    lock_file_path = yield_dir / f"{yield_file.name}.lock"
 
     # Create directory if needed
     yield_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check for existing run_ids
-    existing_runs = load_existing_yield_data(yield_file)
-    run_ids_in_new = {row["run_id"] for row in rows}
+    # Acquire exclusive lock and hold it through all I/O
+    lock_f = None
+    try:
+        lock_f = open(lock_file_path, "a")
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
 
-    # Determine which run_ids need upgrade
-    rows_to_upgrade = {}
-    rows_to_append = []
+        # Check for existing run_ids (under lock)
+        existing_runs = load_existing_yield_data(yield_file)
+        run_ids_in_new = {row["run_id"] for row in rows}
 
-    for row in rows:
-        run_id = row["run_id"]
-        if run_id in existing_runs:
-            rows_to_upgrade[run_id] = row
-        else:
-            rows_to_append.append(row)
+        # Determine which run_ids need upgrade
+        rows_to_upgrade = {}
+        rows_to_append = []
 
-    # If any run_id exists, check upgrade conditions
-    if rows_to_upgrade:
-        # Check if we can upgrade (all existing rows for this run_id are unavailable)
-        should_upgrade = False
-        for run_id, new_row in rows_to_upgrade.items():
-            existing_rows = [r for r in existing_runs.values() if r.get("run_id") == run_id]
-            if new_row.get("tokens_status") == "measured":
-                # Check if all existing rows for this run_id are unavailable
-                if all(r.get("tokens_status") == "unavailable" for r in existing_rows):
-                    should_upgrade = True
-                    break
+        for row in rows:
+            run_id = row["run_id"]
+            if run_id in existing_runs:
+                rows_to_upgrade[run_id] = row
             else:
-                # New row is unavailable; skip
-                pass
+                rows_to_append.append(row)
 
-        if should_upgrade:
-            # Rewrite with upgraded rows
-            try:
-                # Read all rows
-                all_rows = []
-                if yield_file.exists():
+        # If any run_id exists, check upgrade conditions
+        if rows_to_upgrade:
+            # Check if we can upgrade (all existing rows for this run_id are unavailable)
+            should_upgrade = False
+            for run_id, new_row in rows_to_upgrade.items():
+                existing_rows = [r for r in existing_runs.values() if r.get("run_id") == run_id]
+                if new_row.get("tokens_status") == "measured":
+                    # Check if all existing rows for this run_id are unavailable
+                    if all(r.get("tokens_status") == "unavailable" for r in existing_rows):
+                        should_upgrade = True
+                        break
+                else:
+                    # New row is unavailable; skip
+                    pass
+
+            if should_upgrade:
+                # Rewrite with upgraded rows (under lock)
+                try:
+                    # Read all rows
+                    all_rows = []
+                    if yield_file.exists():
+                        try:
+                            with open(yield_file, "r") as f:
+                                for line in f:
+                                    if line.strip():
+                                        try:
+                                            all_rows.append(json.loads(line))
+                                        except ValueError:
+                                            continue
+                        except OSError as e:
+                            # Abort the upgrade; don't silently destroy accumulated data
+                            print(f"Error reading yield file during upgrade: {e}", file=sys.stderr)
+                            return None
+
+                    # Filter out the run_ids we're upgrading
+                    filtered_rows = [r for r in all_rows if r.get("run_id") not in rows_to_upgrade]
+
+                    # Add new rows (both upgraded and any new ones)
+                    all_rows = filtered_rows + list(rows_to_upgrade.values()) + rows_to_append
+
+                    # Write to temp file, then rename
+                    with tempfile.NamedTemporaryFile(mode='w', dir=yield_dir, delete=False, suffix='.jsonl') as tmp:
+                        for row in all_rows:
+                            tmp.write(json.dumps(row) + "\n")
+                        tmp.flush()
+                        os.fsync(tmp.fileno())
+                        tmp_path = tmp.name
+
+                    # Atomically replace
+                    os.replace(tmp_path, yield_file)
+                    return yield_file
+                except OSError as e:
+                    print(f"Error upgrading yield file: {e}", file=sys.stderr)
+                    # Clean up temp file if it exists
                     try:
-                        with open(yield_file, "r") as f:
-                            for line in f:
-                                if line.strip():
-                                    try:
-                                        all_rows.append(json.loads(line))
-                                    except ValueError:
-                                        continue
+                        if 'tmp_path' in locals():
+                            os.unlink(tmp_path)
                     except OSError:
                         pass
-
-                # Filter out the run_ids we're upgrading
-                filtered_rows = [r for r in all_rows if r.get("run_id") not in rows_to_upgrade]
-
-                # Add new rows (both upgraded and any new ones)
-                all_rows = filtered_rows + list(rows_to_upgrade.values()) + rows_to_append
-
-                # Write to temp file, then rename
-                with tempfile.NamedTemporaryFile(mode='w', dir=yield_dir, delete=False, suffix='.jsonl') as tmp:
-                    for row in all_rows:
-                        tmp.write(json.dumps(row) + "\n")
-                    tmp.flush()
-                    os.fsync(tmp.fileno())
-                    tmp_path = tmp.name
-
-                # Atomically replace
-                os.replace(tmp_path, yield_file)
+                    return None
+            else:
+                # Skip (either unavailable-to-unavailable or measured-to-measured)
+                print(f"Already logged (idempotent skip): {set(rows_to_upgrade.keys())}", file=sys.stderr)
                 return yield_file
-            except OSError as e:
-                print(f"Error upgrading yield file: {e}", file=sys.stderr)
-                # Clean up temp file if it exists
-                try:
-                    if 'tmp_path' in locals():
-                        os.unlink(tmp_path)
-                except OSError:
-                    pass
-                return None
-        else:
-            # Skip (either unavailable-to-unavailable or measured-to-measured)
-            print(f"Already logged (idempotent skip): {set(rows_to_upgrade.keys())}", file=sys.stderr)
-            return yield_file
 
-    # No upgrades needed; just append new rows
-    try:
-        with open(yield_file, "a") as f:
-            for row in rows:
-                f.write(json.dumps(row) + "\n")
-    except OSError as e:
-        print(f"Error writing yield file: {e}", file=sys.stderr)
-        return None
+        # No upgrades needed; just append new rows (under lock)
+        try:
+            with open(yield_file, "a") as f:
+                for row in rows:
+                    f.write(json.dumps(row) + "\n")
+        except OSError as e:
+            print(f"Error writing yield file: {e}", file=sys.stderr)
+            return None
 
-    return yield_file
+        return yield_file
+    finally:
+        # Release the lock
+        if lock_f is not None:
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+                lock_f.close()
+            except OSError:
+                pass
 
 
 def load_bucket_config() -> dict:
@@ -1037,22 +1154,22 @@ def parse_findings(raw_data: Any) -> ParsedFindings:
     - schema_version is present but not an int or not 1
     """
     if not isinstance(raw_data, dict):
-        return ParsedFindings(status="malformed", reason="top-level not an object", findings=[], skipped_findings=0)
+        return ParsedFindingsError(status="malformed", reason="top-level not an object", findings=[], skipped_findings=0)
 
     if "findings" not in raw_data:
-        return ParsedFindings(status="malformed", reason="findings key missing", findings=[], skipped_findings=0)
+        return ParsedFindingsError(status="malformed", reason="findings key missing", findings=[], skipped_findings=0)
 
     findings_list = raw_data.get("findings")
     if not isinstance(findings_list, list):
-        return ParsedFindings(status="malformed", reason="findings is not a list", findings=[], skipped_findings=0)
+        return ParsedFindingsError(status="malformed", reason="findings is not a list", findings=[], skipped_findings=0)
 
     # Check schema version
     schema_version = raw_data.get("schema_version")
     if schema_version is not None:
         if not isinstance(schema_version, int):
-            return ParsedFindings(status="malformed", reason="schema_version is not an int", findings=[], skipped_findings=0)
+            return ParsedFindingsError(status="malformed", reason="schema_version is not an int", findings=[], skipped_findings=0)
         if schema_version != FINDINGS_SCHEMA_VERSION:
-            return ParsedFindings(status="malformed", reason=f"unsupported schema_version {schema_version}", findings=[], skipped_findings=0)
+            return ParsedFindingsError(status="malformed", reason=f"unsupported schema_version {schema_version}", findings=[], skipped_findings=0)
     else:
         # Missing schema_version is tolerated but marked as legacy
         pass
@@ -1112,14 +1229,15 @@ def parse_findings(raw_data: Any) -> ParsedFindings:
         validated_findings.append(validated)
 
     status = "legacy-unversioned" if schema_version is None else "ok"
-    return ParsedFindings(status=status, findings=validated_findings, skipped_findings=skipped_count)
+    return ParsedFindingsOk(status=status, findings=validated_findings, skipped_findings=skipped_count)  # type: ignore
 
 
 def read_findings_json(review_dir: Path) -> Optional[ParsedFindings]:
     """
     Read and validate findings.json from review directory.
 
-    Returns ParsedFindings on success (parsed and validated), None if file is absent or unreadable.
+    Returns ParsedFindings on success (parsed and validated), or ParsedFindings with malformed status
+    on JSON syntax error. Returns None if file is absent or unreadable.
     """
     findings_file = review_dir / "findings.json"
     if not findings_file.exists():
@@ -1128,7 +1246,9 @@ def read_findings_json(review_dir: Path) -> Optional[ParsedFindings]:
     try:
         raw_data = json.loads(findings_file.read_text())
         return parse_findings(raw_data)
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError as e:
+        return ParsedFindingsError(status="malformed", reason=f"JSON syntax error: {e}", findings=[], skipped_findings=0)
+    except OSError:
         return None
 
 
@@ -1606,7 +1726,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
 
         # Read findings
         findings_data = read_findings_json(review_subdir)
-        if not findings_data:
+        if not findings_data or findings_data.get("status") == "malformed":
             runs_data["unattributable"].append(review_subdir.name)
             continue
 
@@ -1780,6 +1900,10 @@ def classify_effort_path(run_dir: Path) -> str:
        - any *-pass1.md -> "full-panel"
        - final-report.md exists with neither -> "scouts"
     4. else -> "unknown"
+
+    LIMITATION: Efforts 3/4/5 are not resolvable to distinct strata for ~771 of 772 historical runs
+    (only determinable for runs that created effort-scout.json). Most runs classify as "full-panel"
+    but cannot be distinguished as effort 3, 4, or 5.
     """
     # Check for review-metrics.json (effort 2)
     review_metrics = run_dir / "review-metrics.json"
@@ -1799,10 +1923,13 @@ def classify_effort_path(run_dir: Path) -> str:
             if isinstance(scout_data, dict) and "error" not in scout_data and "effort" in scout_data:
                 effort = scout_data.get("effort")
                 if effort == 2:
+                    # effort 2 = compact-lens pods
                     return "pods"
                 elif effort in (3, 4, 5):
+                    # efforts 3/4/5 = full-panel with varying selection logic
                     return "full-panel"
                 elif effort == 1:
+                    # effort 1 = parallel haiku scouts
                     return "scouts"
         except (json.JSONDecodeError, OSError):
             pass
@@ -1887,6 +2014,9 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     skipped_findings_total = 0
     excluded_by_effort_reason: Dict[str, int] = {}
 
+    # Load canonical reviewer slugs for normalization
+    canonical_slugs = get_canonical_reviewer_slugs()
+
     for review_subdir, regime, bucket in runs:
         include_in_findings = regime == "post-148-sam-gated"
 
@@ -1905,54 +2035,56 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
         elif review_format == "unknown":
             unknown_format_runs += 1
 
-        # Initialize bucket dicts if needed
-        if bucket not in reviewers_per_run:
-            reviewers_per_run[bucket] = []
-            verified_crit_high_per_run[bucket] = []
-            verified_value_per_run[bucket] = []
+        # Only process effort strata and exclusions for runs that are included in findings
+        if include_in_findings:
+            # Initialize bucket dicts if needed
+            if bucket not in reviewers_per_run:
+                reviewers_per_run[bucket] = []
+                verified_crit_high_per_run[bucket] = []
+                verified_value_per_run[bucket] = []
 
-        # Classify effort stratum
-        effort_stratum = classify_effort_path(review_subdir)
-        if effort_stratum not in strata:
-            strata[effort_stratum] = {}
-        if bucket not in strata[effort_stratum]:
-            strata[effort_stratum][bucket] = {"reviewers": [], "crit_high": [], "value": []}
+            # Classify effort stratum
+            effort_stratum = classify_effort_path(review_subdir)
+            if effort_stratum not in strata:
+                strata[effort_stratum] = {}
+            if bucket not in strata[effort_stratum]:
+                strata[effort_stratum][bucket] = {"reviewers": [], "crit_high": [], "value": []}
 
-        # Compute reviewer count for this stratum
-        if effort_stratum == "full-panel":
-            reviewer_count = len(list(review_subdir.glob("*-pass1.md")))
-        elif effort_stratum == "pods":
-            # Try to get lenses count from review-metrics.json
-            review_metrics = review_subdir / "review-metrics.json"
-            if review_metrics.exists():
-                try:
-                    metrics = json.loads(review_metrics.read_text())
-                    lenses = metrics.get("lenses")
-                    if isinstance(lenses, list):
-                        reviewer_count = len(lenses)
-                    else:
-                        # Unmeasured lenses
+            # Compute reviewer count for this stratum
+            if effort_stratum == "full-panel":
+                reviewer_count = len(list(review_subdir.glob("*-pass1.md")))
+            elif effort_stratum == "pods":
+                # Try to get lenses count from review-metrics.json
+                review_metrics = review_subdir / "review-metrics.json"
+                if review_metrics.exists():
+                    try:
+                        metrics = json.loads(review_metrics.read_text())
+                        lenses = metrics.get("lenses")
+                        if isinstance(lenses, list):
+                            reviewer_count = len(lenses)
+                        else:
+                            # Unmeasured lenses
+                            excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                            reviewer_count = None
+                    except (json.JSONDecodeError, OSError):
                         excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
                         reviewer_count = None
-                except (json.JSONDecodeError, OSError):
+                else:
                     excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
                     reviewer_count = None
+            elif effort_stratum == "scouts":
+                reviewer_count = 6
             else:
-                excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                # unknown
+                excluded_by_effort_reason["unknown-effort"] = excluded_by_effort_reason.get("unknown-effort", 0) + 1
                 reviewer_count = None
-        elif effort_stratum == "scouts":
-            reviewer_count = 6
-        else:
-            # unknown
-            excluded_by_effort_reason["unknown-effort"] = excluded_by_effort_reason.get("unknown-effort", 0) + 1
-            reviewer_count = None
 
-        # Only append to strata and full-panel metrics when include_in_findings
-        if include_in_findings and reviewer_count is not None:
-            # For full-panel, also update the main reviewers_per_run (backward compat)
-            if effort_stratum == "full-panel":
-                reviewers_per_run[bucket].append(reviewer_count)
-            strata[effort_stratum][bucket]["reviewers"].append(reviewer_count)
+            # Append to strata and full-panel metrics
+            if reviewer_count is not None:
+                # For full-panel, also update the main reviewers_per_run (backward compat)
+                if effort_stratum == "full-panel":
+                    reviewers_per_run[bucket].append(reviewer_count)
+                strata[effort_stratum][bucket]["reviewers"].append(reviewer_count)
 
         parsed = read_findings_json(review_subdir)
         if not parsed:
@@ -1992,15 +2124,21 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
             value_total += SEVERITY_VALUES.get(severity, 0)
 
             # Gate solo finding accumulation to full-panel runs only
+            # Normalize raised_by against canonical slugs to avoid duplicate entries
             if effort_stratum == "full-panel" and not supported_by and raised_by:
-                solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
+                # Normalize raised_by: if it matches a canonical slug exactly, use it;
+                # otherwise use the value as-is (may be from legacy/malformed data)
+                normalized_raised_by = raised_by if canonical_slugs and raised_by in canonical_slugs else raised_by
+                solo_findings_per_reviewer[normalized_raised_by] = solo_findings_per_reviewer.get(normalized_raised_by, 0) + 1
 
-        # For full-panel, also update main dicts (backward compat)
-        if effort_stratum == "full-panel":
-            verified_crit_high_per_run[bucket].append(crit_high_count)
-            verified_value_per_run[bucket].append(value_total)
-        strata[effort_stratum][bucket]["crit_high"].append(crit_high_count)
-        strata[effort_stratum][bucket]["value"].append(value_total)
+            # For full-panel, also update main dicts (backward compat)
+            if effort_stratum == "full-panel":
+                verified_crit_high_per_run[bucket].append(crit_high_count)
+                verified_value_per_run[bucket].append(value_total)
+            # Only append crit_high/value to strata when reviewer_count is not None (consistent with reviewers)
+            if reviewer_count is not None:
+                strata[effort_stratum][bucket]["crit_high"].append(crit_high_count)
+                strata[effort_stratum][bucket]["value"].append(value_total)
 
     return FindingsScoreResult(
         reviewers_per_run=reviewers_per_run,
@@ -2494,6 +2632,10 @@ def main():
         except ValueError:
             print(f"Error: failed to parse --until: {args.until} (expected naive local ISO like 2026-09-23T00:51:00)", file=sys.stderr)
             sys.exit(1)
+        # Reject timezone-aware datetimes; must be naive-local
+        if until_dt.tzinfo is not None:
+            print(f"Error: --until must be naive-local (no timezone); got {args.until} with tzinfo={until_dt.tzinfo}", file=sys.stderr)
+            sys.exit(1)
 
     if args.aggregate:
         # Aggregate mode: read from ~/.claude/reviews/{repo_key}/reviewer-yield.jsonl
@@ -2723,6 +2865,7 @@ def main():
                 "from": first_run_timestamp.isoformat() if first_run_timestamp else None,
                 "to": last_run_timestamp.isoformat() if last_run_timestamp else None,
                 "until_exclusive": args.until if args.until else None,
+                "corpus_window_timezone": "local-naive",
             },
             "bucket_config_version": bucket_config.get("config_version", 1),
             "n_repos": len([r for r in all_reports.values() if "error" not in r]),

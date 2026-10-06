@@ -145,7 +145,7 @@
     },
     "solo_findings_per_reviewer": {
       "fragile-feynman": 19,
-      "danielle-the-designer": 8,
+      "danielle-the-designer": 15,
       "vera-verifier": 36,
       "contrarian-carl": 26,
       "sam-system": 15,
@@ -164,7 +164,6 @@
       "penny-pincher": 2,
       "consistency-checker": 16,
       "ariadne": 12,
-      "danielle-designer": 7,
       "know-it-all-nigel": 22,
       "frontend-fred": 5,
       "business-beth": 2
