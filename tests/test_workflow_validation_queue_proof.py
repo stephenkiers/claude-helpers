@@ -66,7 +66,7 @@ if __name__ == "__main__":
         main_wt.mkdir()
 
         # Mock read_pr_result to return None (file not found)
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
             mock_read.return_value = None
 
             result = queue_proof(123, 1000.0, main_wt)
@@ -88,12 +88,12 @@ if __name__ == "__main__":
         merge_result = MergeResult(
             pr=999,  # Different from requested 123
             outcome=MergeOutcome.MERGED,
-            timestamp=1000.0,
+            branch="test-branch",
+            worktree="/tmp/test-wt",
             tested_sha="a" * 40,
-            merge_base="b" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
             mock_read.return_value = (merge_result, 1000.0)
 
             result = queue_proof(123, 1000.0, main_wt)
@@ -113,13 +113,13 @@ if __name__ == "__main__":
 
         merge_result = MergeResult(
             pr=123,
-            outcome=MergeOutcome.QUEUED,  # Not MERGED
-            timestamp=1000.0,
-            tested_sha="a" * 40,
-            merge_base="b" * 40,
+            outcome=MergeOutcome.KICKBACK,  # Not MERGED
+            branch="test-branch",
+            worktree="/tmp/test-wt",
+            orig_head="c" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
             mock_read.return_value = (merge_result, 1000.0)
 
             result = queue_proof(123, 1000.0, main_wt)
@@ -140,12 +140,12 @@ if __name__ == "__main__":
         merge_result = MergeResult(
             pr=123,
             outcome=MergeOutcome.MERGED,
-            timestamp=500.0,  # Before queue_started_at (1000.0)
+            branch="test-branch",
+            worktree="/tmp/test-wt",
             tested_sha="a" * 40,
-            merge_base="b" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
             mock_read.return_value = (merge_result, 500.0)
 
             result = queue_proof(123, 1000.0, main_wt)
@@ -166,12 +166,12 @@ if __name__ == "__main__":
         merge_result = MergeResult(
             pr=123,
             outcome=MergeOutcome.MERGED,
-            timestamp=1500.0,
+            branch="test-branch",
+            worktree="/tmp/test-wt",
             tested_sha="not-a-valid-sha",  # Invalid
-            merge_base="b" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
             mock_read.return_value = (merge_result, 1500.0)
 
             result = queue_proof(123, 1000.0, main_wt)
@@ -192,13 +192,13 @@ if __name__ == "__main__":
         merge_result = MergeResult(
             pr=123,
             outcome=MergeOutcome.MERGED,
-            timestamp=1500.0,
+            branch="test-branch",
+            worktree="/tmp/test-wt",
             tested_sha="a" * 40,
-            merge_base="b" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
-            with mock.patch("workflow.validation.tree_of") as mock_tree:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
+            with mock.patch("workflow.git.tree_of") as mock_tree:
                 mock_read.return_value = (merge_result, 1500.0)
                 mock_tree.return_value = None  # probe failed
 
@@ -220,13 +220,13 @@ if __name__ == "__main__":
         merge_result = MergeResult(
             pr=123,
             outcome=MergeOutcome.MERGED,
-            timestamp=1500.0,
+            branch="test-branch",
+            worktree="/tmp/test-wt",
             tested_sha="a" * 40,
-            merge_base="b" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
-            with mock.patch("workflow.validation.tree_of") as mock_tree:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
+            with mock.patch("workflow.git.tree_of") as mock_tree:
                 mock_read.return_value = (merge_result, 1500.0)
                 # First call returns tested tree, second returns HEAD tree
                 mock_tree.side_effect = ["tree_a", "tree_b"]
@@ -244,7 +244,7 @@ if __name__ == "__main__":
         main_wt = Path(tmpdir) / "main"
         main_wt.mkdir()
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
             mock_read.side_effect = RuntimeError("Unexpected error")
 
             result = queue_proof(123, 1000.0, main_wt)
@@ -265,20 +265,20 @@ if __name__ == "__main__":
         merge_result = MergeResult(
             pr=123,
             outcome=MergeOutcome.MERGED,
-            timestamp=1500.0,
+            branch="test-branch",
+            worktree="/tmp/test-wt",
             tested_sha="a" * 40,
-            merge_base="b" * 40,
         )
 
-        with mock.patch("workflow.validation.read_pr_result") as mock_read:
-            with mock.patch("workflow.validation.tree_of") as mock_tree:
-                with mock.patch("workflow.validation.resolve_config_path") as mock_config:
-                    with mock.patch("workflow.validation.load_and_validate_config") as mock_load:
+        with mock.patch("workflow.merge_queue.read_pr_result") as mock_read:
+            with mock.patch("workflow.git.tree_of") as mock_tree:
+                with mock.patch("workflow.merge_queue.resolve_config_path") as mock_config:
+                    with mock.patch("workflow.merge_queue.load_and_validate_config") as mock_load:
                         mock_read.return_value = (merge_result, 1500.0)
                         # Both calls return same tree
                         mock_tree.return_value = "same_tree_sha"
                         mock_config.return_value = Path("/fake/queue.json")
-                        mock_load.return_value = {"steps": ["lint", "test"]}
+                        mock_load.return_value = mock.Mock(steps=[mock.Mock(cmd="lint"), mock.Mock(cmd="test")])
 
                         result = queue_proof(123, 1000.0, main_wt)
                         test_result(

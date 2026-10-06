@@ -102,7 +102,7 @@ _INFRA_RULES: Tuple[InfraRule, ...] = (
     InfraRule(
         pattern=None,
         exit_codes=frozenset({126, 127}),
-        reason="command not found or not executable"
+        reason="exit 126/127: command not found or permission denied (stderr parsing needed to distinguish)"
     ),
 )
 
@@ -365,6 +365,11 @@ def _is_compose_repo(main_worktree: Path) -> bool:  # type: ignore[name-defined]
         except (subprocess.TimeoutExpired, Exception):
             pass
 
+        # Check for compose files at the worktree root
+        for pattern in ("compose*.yaml", "compose*.yml", "docker-compose*.yaml", "docker-compose*.yml"):
+            if any(main_worktree.glob(pattern)):
+                return True
+
         # Check for .envrc in main worktree or parent worktrees/
         if (main_worktree / ".envrc").exists():
             return True
@@ -394,6 +399,7 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
     proceeds, holding it until exit. If the lock is already held, yields an error string.
     """
     lock_file = None
+    lock_acquired = False
     try:
         try:
             git_common_dir = git.abs_git_common_dir(main_worktree)  # type: ignore[attr-defined]
@@ -412,6 +418,7 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
         try:
             lock_file = open(str(lock_path), "w")
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_acquired = True
             yield None
         except BlockingIOError:
             raise
@@ -424,7 +431,8 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
     finally:
         if lock_file:
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                if lock_acquired:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                 lock_file.close()
             except Exception:
                 pass
@@ -538,9 +546,14 @@ def run_validation(
             )
         else:
             finals.append(outcome_2)
-            failure_lines.append(
-                f"Check failed (attempt 2 also failed): {cmd}"
-            )
+            if outcome_2 == AttemptOutcome.FAIL:
+                failure_lines.append(
+                    f"Check command failed (attempt 2 also failed): {cmd}"
+                )
+            elif outcome_2 == AttemptOutcome.INCONCLUSIVE:
+                failure_lines.append(
+                    f"Check inconclusive ({outcome_reason_2}): {cmd}"
+                )
 
     verdict = aggregate(finals)
     reason = ""
