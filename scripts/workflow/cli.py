@@ -10,6 +10,7 @@ Usage:
   python3 -m scripts.workflow.cli merge plan <arguments>
   python3 -m scripts.workflow.cli merge apply <plan_json>
   python3 -m scripts.workflow.cli merge queue-init --cwd <worktree> [--step <cmd>]... [--write]
+  python3 -m scripts.workflow.cli verify-queue sync [--cwd <dir>] [--branch <name>]
   python3 -m scripts.workflow.cli track plan --mode github --plan-file <path> --title <title> [--assignee <a>]
   python3 -m scripts.workflow.cli track apply <plan_json_or_->
 """
@@ -21,7 +22,7 @@ import os
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
-from . import cleanup, merge, shipit, checks, track
+from . import cleanup, merge, shipit, checks, track, verify_queue
 from .models import RepoCacheData
 from .providers import GithubProvider, LocalProvider
 from .providers.base import Provider
@@ -128,6 +129,19 @@ def main() -> None:
     )
     merge_queue_init_parser.add_argument(
         "--write", action="store_true", help="Create the config (never overwrites)"
+    )
+
+    vq_parser = subparsers.add_parser("verify-queue", help="Verify-queue operations")
+    vq_subparsers = vq_parser.add_subparsers(dest="vq_action")
+    vq_sync_parser = vq_subparsers.add_parser(
+        "sync", help="Enqueue pending rulings from claude-action-plans (idempotent)"
+    )
+    vq_sync_parser.add_argument(
+        "--cwd", default=None, help="Directory inside the repo (defaults to current directory)"
+    )
+    vq_sync_parser.add_argument(
+        "--branch", default=None,
+        help="Only sync reviews of this branch (defaults to every review for the repo)"
     )
 
     shipit_parser = subparsers.add_parser("shipit", help="Commit, push, and create/update PR")
@@ -255,6 +269,19 @@ def main() -> None:
             print(json.dumps(init_result))
         else:
             merge_parser.print_help()
+            sys.exit(1)
+    elif args.command == "verify-queue":
+        if args.vq_action == "sync":
+            try:
+                sync_result = verify_queue.sync(
+                    cwd=Path(args.cwd) if args.cwd else None, branch=args.branch
+                )
+            except (RuntimeError, OSError) as e:
+                print(json.dumps({"success": False, "error": str(e)}))
+                sys.exit(1)
+            print(json.dumps(sync_result.to_dict()))
+        else:
+            vq_parser.print_help()
             sys.exit(1)
     elif args.command == "shipit":
         if args.shipit_action == "plan":

@@ -476,22 +476,25 @@ if [ "${#RAW_PR}" -gt 8000 ]; then
 fi
 ```
 
-Then **run the verify-queue Sync** against this repo (delegates row logic to `/verify-queue` command):
+Then **run the verify-queue sync** — a scripted CLI call, not prose for you to interpret. It scans
+this branch's reviews under `~/.claude/reviews/<repo-key>/`, appends any still-`pending-*` rulings to
+the per-repo queue (idempotent; ignores detached merge-queue scratch worktrees when locating the
+queue), and prints a JSON result. Never skip it, and never stop cleanup because it failed:
 
 ```bash
-# Sync pending Ruling: lines from issue/PR into the per-repo verify-queue.
-# The /verify-queue command owns the full sync/row logic; here we just invoke it
-# and track how many new rows were added.
-BEFORE=$(wc -l < "$VERIFY_QUEUE" 2>/dev/null || echo 0)
-# The actual sync invocation is delegated to the /verify-queue sync subcommand
-# (see commands/verify-queue.md for full sync behavior).
-# For this doc, assume: "run /verify-queue sync" adds pending Ruling: rows here.
-AFTER=$(wc -l < "$VERIFY_QUEUE" 2>/dev/null || echo 0)
-ADDED=$((AFTER - BEFORE))
-if [ "$ADDED" -gt 0 ]; then
-  echo "Enqueued $ADDED pending validations into $VERIFY_QUEUE"
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+SYNC_JSON=$(cd "$CLAUDE_HELPERS_DIR" && PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli verify-queue sync --cwd "$MAIN_WORKTREE" --branch "$CURRENT_BRANCH")
+if [ $? -ne 0 ] || [ "$(printf '%s' "$SYNC_JSON" | jq -r '.success // false')" != "true" ]; then
+  echo "⚠️ verify-queue sync FAILED — pending validations were NOT captured: $(printf '%s' "$SYNC_JSON" | jq -r '.error // "unknown"')"
+  ADDED=0
+else
+  VERIFY_QUEUE=$(printf '%s' "$SYNC_JSON" | jq -r '.queue')
+  ADDED=$(printf '%s' "$SYNC_JSON" | jq -r '.added | length')
+  echo "verify-queue sync: scanned $(printf '%s' "$SYNC_JSON" | jq -r '.scanned_plans') plan(s), added $ADDED, $(printf '%s' "$SYNC_JSON" | jq -r '.open_total') open in $VERIFY_QUEUE"
 fi
 ```
+
+Report the sync outcome (added count, or the failure line) in the final summary either way.
 
 ### 2b-iii. Batch Disposition (one non-blocking prompt)
 
