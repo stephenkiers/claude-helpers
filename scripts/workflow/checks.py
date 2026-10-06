@@ -12,7 +12,7 @@ import signal
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Mapping
 
 from .safety import Unknown, fail_closed
 
@@ -131,19 +131,28 @@ class CheckResults:
         }
 
 
-def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300) -> CheckResult:
+def execute_check(cmd: str, cwd: Optional[Path], timeout: int = 300, env: Optional[Mapping[str, str]] = None) -> CheckResult:
     """
     Execute a shell check command, capturing output. Never raises.
 
     Runs in its own process group so a timeout can kill the whole
     process tree (a check command that spawns children would otherwise
     orphan them on TimeoutExpired).
+
+    Args:
+        cmd: Shell command to execute.
+        cwd: Working directory for the command.
+        timeout: Timeout per command in seconds (default 300).
+        env: Optional environment variables for the subprocess. This is isolation, not a sandbox:
+             check commands run arbitrary repo code either way. With None, the process inherits
+             the caller env exactly as today.
     """
     try:
         proc = subprocess.Popen(
             cmd, shell=True, cwd=cwd, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,
+            env=env,
         )
         try:
             stdout, stderr = proc.communicate(timeout=timeout)

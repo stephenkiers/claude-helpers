@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Sequence
 
 from . import git
+from .git import abs_git_common_dir
 
 
 # ============================================================================
@@ -400,10 +401,24 @@ def _touch_record(path: Path) -> None:
 # State Dir and Ticket Ordering (Step 2)
 # ============================================================================
 
-def get_state_dir() -> Path:
-    """Get the merge-queue state directory."""
-    git_common_dir = Path(git.get_git_common_dir()).resolve()
-    state_dir = git_common_dir / "merge-queue"
+def get_state_dir(cwd: Optional[Path] = None) -> Path:
+    """
+    Get the merge-queue state directory.
+
+    Args:
+        cwd: Optional working directory. If provided, derives state dir from abs_git_common_dir(cwd).
+             If None (default), uses process cwd and the relative git-common-dir path (backward compatible).
+    """
+    if cwd is not None:
+        # Use abs_git_common_dir for explicit cwd (Step 2 helper, Q3)
+        common_dir = abs_git_common_dir(cwd)
+        if common_dir is None:
+            raise RuntimeError(f"Could not determine git common dir for {cwd}")
+        state_dir = common_dir / "merge-queue"
+    else:
+        # Backward compatible: process cwd behavior
+        git_common_dir = Path(git.get_git_common_dir()).resolve()
+        state_dir = git_common_dir / "merge-queue"
     return state_dir
 
 
@@ -1195,6 +1210,68 @@ def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
         except Exception:
             pass
     os.replace(str(temp_path), str(path))
+
+
+def read_pr_result(pr: int, cwd: Path) -> Optional[Tuple[MergeResult, float]]:
+    """
+    Read a per-PR merge result from result-<pr>.json.
+
+    Rebuilds MergeResult with MergeOutcome(value) so validate_outcome_invariants() runs.
+    Returns (MergeResult, timestamp) on success, None on any I/O, JSON, key, type, or ValueError.
+
+    Args:
+        pr: PR number to read.
+        cwd: Working directory to derive state dir from.
+    """
+    try:
+        state_dir = get_state_dir(cwd=cwd)
+        result_path = state_dir / f"result-{pr}.json"
+
+        if not result_path.exists():
+            return None
+
+        with open(result_path) as f:
+            data = json.load(f)
+
+        # Extract timestamp
+        timestamp = data.get("timestamp")
+        if timestamp is None:
+            return None
+        if not isinstance(timestamp, (int, float)):
+            return None
+
+        # Rebuild MergeResult with MergeOutcome(value) to trigger validation
+        try:
+            outcome_value = data.get("outcome")
+            if not isinstance(outcome_value, str):
+                return None
+
+            # Convert outcome string to enum
+            outcome = MergeOutcome(outcome_value)
+
+            # Extract fields, using defaults for optional ones
+            result = MergeResult(
+                outcome=outcome,
+                pr=data.get("pr"),
+                branch=data.get("branch"),
+                worktree=data.get("worktree"),
+                orig_head=data.get("orig_head"),
+                tested_sha=data.get("tested_sha"),
+                reason=data.get("reason", ""),
+                details=data.get("details"),
+                failing_step=data.get("failing_step"),
+                log_path=data.get("log_path"),
+                restore_failed=data.get("restore_failed"),
+                run_id=data.get("run_id", str(uuid.uuid4())),
+            )
+            return (result, float(timestamp))
+        except (ValueError, KeyError, TypeError):
+            # ValueError: bad enum value
+            # KeyError: missing required field
+            # TypeError: field type mismatch
+            return None
+    except (IOError, json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 
 def write_result_json(result: MergeResult, cwd: Optional[Path] = None) -> None:
