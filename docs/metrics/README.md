@@ -30,8 +30,10 @@ The baseline snapshot includes:
 
 - **Per-(stratum, bucket) metrics**: count of runs, reviewer counts, verified critical/high and value, token coverage with caveats.
 - **Exclusions**: runs excluded by regime, malformed findings (with reason histogram), unknown effort stratum, pod-lenses measurement gaps.
-- **Legacy findings**: count of runs with unversioned `findings.json` (pre-schema-version-1).
 - **Token coverage**: measured runs out of total runs, session-scope caveat for `$` join field.
+
+Note: a `findings.json` with a missing `schema_version` is tolerated and parsed as `legacy-unversioned`
+(internal status only), but this count is not currently surfaced as a separate snapshot field.
 
 ## #193 0c Deviation
 

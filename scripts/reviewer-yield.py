@@ -81,8 +81,6 @@ Verdict = Literal["CONFIRMED", "DOWNGRADED", "REJECTED"]
 FINDINGS_SCHEMA_VERSION = 1
 SEVERITIES: Tuple[Severity, ...] = ("Critical", "High", "Medium", "Low")
 VERDICTS: Tuple[Verdict, ...] = ("CONFIRMED", "DOWNGRADED", "REJECTED")
-# Schema reference (not all fields are validated; see parse_findings for validation rules)
-FINDING_FIELDS = {"id", "severity", "raised_by", "supported_by", "verdict"}
 FORBIDDEN_KEYS = {"STATUS", "DECISION", "triage_bucket", "bucket"}
 
 
@@ -639,6 +637,25 @@ def get_canonical_reviewer_slugs() -> Set[str]:
 
     # No index found; return empty set (caller should handle gracefully)
     return slugs
+
+
+def get_reviewer_alias_map() -> Dict[str, str]:
+    """
+    Map legacy/display-name-derived slugs (e.g. "danielle-the-designer", slugified
+    from the full "Danielle the Designer" display name) to their canonical
+    reviewers/index.yaml `file:` slug (e.g. "danielle-designer").
+
+    Historical findings data sometimes recorded `raised_by` as a slugified form of
+    the reviewer's full display name rather than the canonical file slug. Returns a
+    dict mapping alias slug -> canonical slug; on error (no index found) returns {}.
+    """
+    display_names = load_reviewer_display_names()
+    aliases: Dict[str, str] = {}
+    for slug, display_name in display_names.items():
+        alias_slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")
+        if alias_slug and alias_slug != slug:
+            aliases[alias_slug] = slug
+    return aliases
 
 
 def load_reviewer_display_names() -> Dict[str, str]:
@@ -2014,8 +2031,9 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     skipped_findings_total = 0
     excluded_by_effort_reason: Dict[str, int] = {}
 
-    # Load canonical reviewer slugs for normalization
+    # Load canonical reviewer slugs and legacy-alias map for raised_by normalization
     canonical_slugs = get_canonical_reviewer_slugs()
+    reviewer_alias_map = get_reviewer_alias_map()
 
     for review_subdir, regime, bucket in runs:
         include_in_findings = regime == "post-148-sam-gated"
@@ -2126,9 +2144,13 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
             # Gate solo finding accumulation to full-panel runs only
             # Normalize raised_by against canonical slugs to avoid duplicate entries
             if effort_stratum == "full-panel" and not supported_by and raised_by:
-                # Normalize raised_by: if it matches a canonical slug exactly, use it;
-                # otherwise use the value as-is (may be from legacy/malformed data)
-                normalized_raised_by = raised_by if canonical_slugs and raised_by in canonical_slugs else raised_by
+                # Normalize raised_by: pass canonical slugs through as-is; map a known
+                # legacy display-name-derived alias to its canonical slug; otherwise
+                # use the value as-is (unrecognized/malformed data).
+                if canonical_slugs and raised_by in canonical_slugs:
+                    normalized_raised_by = raised_by
+                else:
+                    normalized_raised_by = reviewer_alias_map.get(raised_by, raised_by)
                 solo_findings_per_reviewer[normalized_raised_by] = solo_findings_per_reviewer.get(normalized_raised_by, 0) + 1
 
         # For full-panel, also update main dicts (backward compat)
