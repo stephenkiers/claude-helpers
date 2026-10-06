@@ -1,0 +1,204 @@
+{
+  "snapshot_schema_version": 1,
+  "generated_at": "2026-09-24T21:21:04.812311+00:00",
+  "generating_command": "reviewer-yield.py --snapshot --until 2026-09-23T00:51:00",
+  "regime_filter": "post-148-sam-gated",
+  "corpus_window": {
+    "from": "2026-07-20T18:39:24",
+    "to": "2026-09-23T00:45:01",
+    "until_exclusive": "2026-09-23T00:51:00"
+  },
+  "bucket_config_version": 1,
+  "n_repos": 45,
+  "methodology": {
+    "formula": "crit*8 + high*4 + med*2 + low*1 (over CONFIRMED findings)",
+    "observation_only": true,
+    "observation_only_sentence": "Observation-only in Phase 0 \u2014 not wired into `prompts/router.md`, `reviewers/index.yaml` triggers, or model/effort selection; wiring it into any of those needs an ADR amendment first.",
+    "note": "No standalone scripts/routing-report.py \u2014 folded into reviewer-yield.py --report/--snapshot (#193 0c deviation)"
+  },
+  "aggregate": {
+    "total_runs_included": 81,
+    "total_runs_excluded": 767,
+    "total_runs_after_window": 26,
+    "regime_counts": {
+      "unknown": 54,
+      "judgment-router": 713,
+      "post-148-sam-gated": 81
+    },
+    "strata": {
+      "full-panel": {
+        "unknown": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "m": {
+          "n_runs": 20,
+          "avg_reviewers": 12,
+          "avg_crit_high": 1,
+          "avg_verified_value": 17
+        },
+        "l": {
+          "n_runs": 43,
+          "avg_reviewers": 16,
+          "avg_crit_high": 3,
+          "avg_verified_value": 42
+        },
+        "xs": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "s": {
+          "n_runs": 6,
+          "avg_reviewers": 7,
+          "avg_crit_high": 0,
+          "avg_verified_value": 6
+        }
+      },
+      "unknown": {
+        "unknown": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "l": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "xs": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "m": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "s": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        }
+      },
+      "scouts": {
+        "xs": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "unknown": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "l": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "s": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        }
+      },
+      "pods": {
+        "l": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": 0,
+          "avg_verified_value": 2
+        },
+        "s": {
+          "n_runs": 0,
+          "avg_reviewers": null,
+          "avg_crit_high": null,
+          "avg_verified_value": null
+        },
+        "m": {
+          "n_runs": 2,
+          "avg_reviewers": 9,
+          "avg_crit_high": 0,
+          "avg_verified_value": 0
+        },
+        "xs": {
+          "n_runs": 3,
+          "avg_reviewers": 9,
+          "avg_crit_high": 0,
+          "avg_verified_value": 5
+        }
+      }
+    },
+    "solo_findings_per_reviewer": {
+      "fragile-feynman": 19,
+      "danielle-the-designer": 15,
+      "vera-verifier": 36,
+      "contrarian-carl": 26,
+      "sam-system": 15,
+      "uncle-bob": 39,
+      "dependency-skeptic": 5,
+      "security-sage": 10,
+      "contract-chris": 28,
+      "curious-casey": 25,
+      "scope-creep-steve": 9,
+      "code-rot-cody": 9,
+      "north-star-nick": 17,
+      "rachel": 4,
+      "mozart": 4,
+      "eric-evans": 4,
+      "tara-typesafe": 16,
+      "penny-pincher": 2,
+      "consistency-checker": 16,
+      "ariadne": 12,
+      "know-it-all-nigel": 22,
+      "frontend-fred": 5,
+      "business-beth": 2
+    },
+    "excluded_by_reason": {
+      "malformed_findings": {
+        "top-level not an object": 6
+      },
+      "skipped_findings_total": 0,
+      "effort": {
+        "unknown-effort": 108,
+        "pods-unmeasured-lenses": 4
+      }
+    },
+    "tokens": {
+      "full-panel": {
+        "measured_runs": 2,
+        "total_runs": 714,
+        "status": "2 measured"
+      },
+      "pods": {
+        "measured_runs": 0,
+        "total_runs": 22,
+        "status": "not measured pre-#206 (unrecoverable by construction)"
+      },
+      "scouts": {
+        "measured_runs": 0,
+        "total_runs": 4,
+        "status": "not measured pre-#206 (unrecoverable by construction)"
+      },
+      "unknown": {
+        "measured_runs": 0,
+        "total_runs": 108,
+        "status": "not measured pre-#206 (unrecoverable by construction)"
+      }
+    }
+  }
+}

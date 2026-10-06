@@ -150,6 +150,8 @@ Write `{REVIEW_DIR}/findings.json` alongside `final-report.md`. Use this exact s
                "supported_by": ["security-sage"], "verdict": "CONFIRMED"}]}
 ```
 
+**Important:** The top-level structure must be a JSON object (a map with `{}`), never a bare array. For example, `[{...findings...}]` is invalid; it must be `{"schema_version": 1, "findings": [{...}]}`. The reader rejects bare-array files and counts them as malformed.
+
 Each finding object contains:
 - `id`: A unique identifier within this review (e.g., "F1", "F2").
 - `severity`: One of `"Critical"`, `"High"`, `"Medium"`, `"Low"` (capitalized form). Note: `final-report.md` renders severities uppercase (e.g., `HIGH`), so all consumers must compare case-insensitively — the two renderings are not two vocabularies.

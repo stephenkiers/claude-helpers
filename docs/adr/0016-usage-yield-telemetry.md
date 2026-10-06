@@ -153,3 +153,14 @@ One known, accepted consequence: the deprecated-but-functional `/expert-review-c
 themselves, so their runs will emit `stage.*` events with `command_id` resolving to `"unknown"`. This is
 accepted, not a defect — future readers of `diagnose` output shouldn't be confused by a nonzero count of
 unexplained `expert-reviewer`/`expert-scout` stages without a parent `command_id` for `expert-review`.
+
+## Amendment — Committed baseline snapshot for routing metrics
+
+**Observation-only artifact, not a decision input.**
+A committed baseline snapshot (`docs/metrics/routing-baseline.json`) is now generated manually at epic/phase
+boundaries via `reviewer-yield.py --snapshot`. The baseline is a cross-repository, sanitized aggregate —
+no repo names, paths, or per-run identifiers — containing per-(stratum, bucket) metrics (run counts, reviewer
+counts, verified findings, token coverage) and solo findings per reviewer. Like all output from `reviewer-yield.py`,
+the baseline remains **observation-only** (ADR-0016 carve-out: never fed into routing, model selection, or
+triage decisions). Regeneration is manual and deliberate, documented in `docs/metrics/README.md`, with explicit
+`--until` window specification to preserve corpus consistency across snapshots.

@@ -469,6 +469,94 @@ def test_read_pod_manifest_tolerance():
         harness.test_result("Valid pods/lenses parsed correctly", pods == ["arch"] and lenses == ["l1", "l2"])
 
 
+# Test classify_effort_path: decision tree branches
+def test_classify_effort_path_review_metrics_effort_2():
+    """classify_effort_path: review-metrics.json with effort key -> pods."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        (run_dir / "review-metrics.json").write_text(json.dumps({"effort": 2, "lenses": []}))
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: review-metrics.json effort=2 -> pods", result == "pods")
+
+
+def test_classify_effort_path_effort_scout_branches():
+    """classify_effort_path: effort-scout.json effort values -> correct strata."""
+    test_cases = [
+        (1, "scouts"),
+        (2, "pods"),
+        (3, "full-panel"),
+        (4, "full-panel"),
+        (5, "full-panel"),
+    ]
+
+    for effort, expected in test_cases:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            (run_dir / "effort-scout.json").write_text(json.dumps({"effort": effort, "data": "stub"}))
+            result = reviewer_yield.classify_effort_path(run_dir)
+            harness.test_result(f"classify_effort_path: effort-scout.json effort={effort} -> {expected}", result == expected)
+
+
+def test_classify_effort_path_file_signature():
+    """classify_effort_path: file signature detection (-pod.md, -pass1.md, final-report.md)."""
+    # Test -pod.md signature
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        (run_dir / "architecture-pod.md").write_text("# Pod\n")
+        (run_dir / "final-report.md").write_text("# Report\n")
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: *-pod.md -> pods", result == "pods")
+
+    # Test -pass1.md signature
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        (run_dir / "uncle-bob-pass1.md").write_text("# Pass1\n")
+        (run_dir / "final-report.md").write_text("# Report\n")
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: *-pass1.md -> full-panel", result == "full-panel")
+
+    # Test scouts signature: final-report.md with no pass files or pods
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        (run_dir / "final-report.md").write_text("# Report\n")
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: final-report.md only -> scouts", result == "scouts")
+
+
+def test_classify_effort_path_pod_pass1_precedence():
+    """classify_effort_path: -pod.md takes precedence when both pod and pass1 exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        # Create both pod and pass1 files
+        (run_dir / "architecture-pod.md").write_text("# Pod\n")
+        (run_dir / "uncle-bob-pass1.md").write_text("# Pass1\n")
+        (run_dir / "final-report.md").write_text("# Report\n")
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: -pod.md takes precedence over -pass1.md", result == "pods")
+
+
+def test_classify_effort_path_unknown():
+    """classify_effort_path: no recognized files -> unknown."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        # Empty directory (no files at all)
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: empty dir -> unknown", result == "unknown")
+
+
+def test_classify_effort_path_malformed_effort_scout():
+    """classify_effort_path: malformed effort-scout.json -> falls back to file signature."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = Path(tmpdir)
+        # Create malformed effort-scout.json
+        (run_dir / "effort-scout.json").write_text('{"error": "something went wrong"}')
+        # Add pass1 file for fallback
+        (run_dir / "uncle-bob-pass1.md").write_text("# Pass1\n")
+        (run_dir / "final-report.md").write_text("# Report\n")
+        result = reviewer_yield.classify_effort_path(run_dir)
+        harness.test_result("classify_effort_path: malformed effort-scout.json -> falls back to -pass1.md", result == "full-panel")
+
+
 # Run all tests
 test_token_parsing_multientry()
 test_token_parsing_missing_cache_fields()
@@ -485,5 +573,11 @@ test_report_json_markdown_consistency()
 test_checkpoint_filename_patterns_tripwire()
 test_solo_findings_exclude_pod_unknown()
 test_read_pod_manifest_tolerance()
+test_classify_effort_path_review_metrics_effort_2()
+test_classify_effort_path_effort_scout_branches()
+test_classify_effort_path_file_signature()
+test_classify_effort_path_pod_pass1_precedence()
+test_classify_effort_path_unknown()
+test_classify_effort_path_malformed_effort_scout()
 
 harness.summarize_and_exit()
