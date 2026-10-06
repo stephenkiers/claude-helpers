@@ -63,6 +63,83 @@ def main():
     )
 
     print()
+    print("[Section 2] Verdict validation field invariants")
+
+    # Scan commands and prompts for deprecated validation_passed usage
+    validation_passed_offenders = []
+    all_docs = sorted((REPO_ROOT / "commands").rglob("*.md")) + \
+              sorted((REPO_ROOT / "prompts").rglob("*.md"))
+
+    for doc in all_docs:
+        for lineno, line in enumerate(doc.read_text().splitlines(), start=1):
+            if "validation_passed" in line:
+                rel = doc.relative_to(REPO_ROOT)
+                validation_passed_offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+    h.test_result(
+        "no doc references deprecated validation_passed",
+        not validation_passed_offenders,
+        "\n      " + "\n      ".join(validation_passed_offenders) if validation_passed_offenders else "",
+    )
+
+    print()
+    print("[Section 3] Verdict field must use validation, not validation_passed")
+
+    # Check that validation-related lines don't use // true
+    validation_related_offenders = []
+    for doc in sorted((REPO_ROOT / "commands").rglob("*.md")):
+        content = doc.read_text()
+        for lineno, line in enumerate(content.splitlines(), start=1):
+            # Check for lines that reference validation and use // true
+            if ("validation" in line or "VALIDATION" in line) and "// true" in line:
+                rel = doc.relative_to(REPO_ROOT)
+                validation_related_offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+    h.test_result(
+        "no validation-related line uses // true (fail-closed)",
+        not validation_related_offenders,
+        "\n      " + "\n      ".join(validation_related_offenders) if validation_related_offenders else "",
+    )
+
+    print()
+    print("[Section 4] cleanup.md calls cleanup render-validation")
+
+    cleanup_doc = REPO_ROOT / "commands" / "cleanup.md"
+    if cleanup_doc.exists():
+        content = cleanup_doc.read_text()
+        has_render_validation = "cleanup render-validation" in content
+        h.test_result(
+            "cleanup.md calls cleanup render-validation",
+            has_render_validation,
+            "render-validation call not found" if not has_render_validation else "",
+        )
+    else:
+        h.test_result(
+            "cleanup.md exists",
+            False,
+            f"{cleanup_doc} not found",
+        )
+
+    print()
+    print("[Section 5] merge-and-cleanup.md Phase 4-Q passes --queue-started-at")
+
+    merge_cleanup_doc = REPO_ROOT / "commands" / "merge-and-cleanup.md"
+    if merge_cleanup_doc.exists():
+        content = merge_cleanup_doc.read_text()
+        has_queue_started_at = "--queue-started-at" in content
+        h.test_result(
+            "merge-and-cleanup.md Phase 4-Q references --queue-started-at",
+            has_queue_started_at,
+            "--queue-started-at not found" if not has_queue_started_at else "",
+        )
+    else:
+        h.test_result(
+            "merge-and-cleanup.md exists",
+            False,
+            f"{merge_cleanup_doc} not found",
+        )
+
+    print()
     h.summarize_and_exit()
 
 
