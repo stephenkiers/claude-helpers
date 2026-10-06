@@ -100,6 +100,18 @@ def main() -> None:
         "plan",
         help="Plan JSON or '-' to read from stdin"
     )
+    cleanup_apply_parser.add_argument(
+        "--queue-started-at",
+        type=float,
+        default=None,
+        help="Queue start timestamp for skip proof (optional)"
+    )
+
+    cleanup_render_parser = cleanup_subparsers.add_parser("render-validation", help="Render validation result")
+    cleanup_render_parser.add_argument(
+        "input",
+        help="Input JSON or '-' to read from stdin"
+    )
 
     merge_parser = subparsers.add_parser("merge", help="Merge a PR")
     merge_subparsers = merge_parser.add_subparsers(dest="merge_action")
@@ -234,7 +246,32 @@ def main() -> None:
             plan_json = args.plan
             if plan_json == "-":
                 plan_json = sys.stdin.read()
-            _run_apply(cleanup.apply_cleanup, plan_json)
+
+            def apply_cleanup_wrapper(pj: str) -> Tuple[Any, Any]:
+                return cleanup.apply_cleanup(pj, queue_started_at=args.queue_started_at)
+
+            _run_apply(apply_cleanup_wrapper, plan_json)
+        elif args.cleanup_action == "render-validation":
+            input_json = args.input
+            if input_json == "-":
+                input_json = sys.stdin.read()
+            try:
+                data = json.loads(input_json)
+                from . import validation
+                verdict = validation.ValidationVerdict.parse(data.get("validation"))
+                reason = data.get("validation_reason", "")
+                notes = data.get("notes", [])
+                steps = data.get("queue_tested_steps", [])
+                headline = validation.render_headline(verdict, reason, notes, steps)
+                print(headline)
+                for failure in data.get("validation_failures", []):
+                    # Indent each line of the failure
+                    for line in failure.split("\n"):
+                        print(f"  {line}")
+            except json.JSONDecodeError:
+                print("VALIDATION=fail — verdict unreadable (fail-closed)")
+            except Exception as e:
+                print(f"VALIDATION=fail — verdict unreadable (fail-closed): {e}")
         else:
             cleanup_parser.print_help()
             sys.exit(1)
