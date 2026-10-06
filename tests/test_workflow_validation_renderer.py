@@ -198,7 +198,7 @@ if __name__ == "__main__":
                 f"json.dumps() succeeds for {verdict.value}",
                 isinstance(json_str, str)
             )
-        except Exception as e:
+        except Exception:
             test_result(
                 f"json.dumps() succeeds for {verdict.value}",
                 False

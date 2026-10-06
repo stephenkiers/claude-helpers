@@ -6,7 +6,6 @@ Run with: python3 tests/test_workflow_validation_queue_started_at.py
 """
 
 import sys
-import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))

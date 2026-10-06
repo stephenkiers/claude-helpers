@@ -6,10 +6,8 @@ Run with: python3 tests/test_workflow_validation_env.py
 """
 
 import sys
-import os
 import json
 import tempfile
-import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -274,7 +272,7 @@ if __name__ == "__main__":
                     "Unexpected exception returns EnvDerivation (no raise)",
                     True
                 )
-            except Exception as e:
+            except Exception:
                 test_result(
                     "Unexpected exception returns EnvDerivation (no raise)",
                     False

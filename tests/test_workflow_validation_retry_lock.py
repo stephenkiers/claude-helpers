@@ -7,7 +7,6 @@ Run with: python3 tests/test_workflow_validation_retry_lock.py
 
 import sys
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 

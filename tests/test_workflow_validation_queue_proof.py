@@ -6,7 +6,6 @@ Run with: python3 tests/test_workflow_validation_queue_proof.py
 """
 
 import sys
-import json
 import tempfile
 from pathlib import Path
 from unittest import mock

@@ -25,7 +25,6 @@ from workflow.cleanup import (
 from workflow.safety import Unknown
 from workflow import validation, git
 from _test_harness import Harness
-from _git_fixture import GitFixture
 
 
 def _setup_test_isolation():
@@ -74,7 +73,6 @@ def _setup_test_isolation():
     git.abs_git_common_dir = mock_abs_git_common_dir
 
     # Patch pull_ff_only to succeed by default (can be overridden per-test)
-    original_pull_ff = git.pull_ff_only
     def mock_pull_ff_only(remote, branch, cwd=None):
         # Default to success for tests that don't override this
         return (True, None)
