@@ -345,6 +345,29 @@ absolute-path resolution.
 
 **Residual blocking (Q7):** A routed invocation blocks for as long as the queue takes to drain. The `/merge-and-cleanup` invocation may wait behind other PRs already in the queue.
 
+## Amendment: Post-merge validation env isolation (#241)
+
+**Status:** Accepted (2026-10-06). The queue-proven skip removes one safety net.
+
+Post-merge validation (`/cleanup` when a PR is merged) isolates the check environment using an
+**allowlist** of known variables (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, `TMPDIR`,
+`NVM_DIR`, `VOLTA_HOME`, `LC_*`) plus any variables exported by the main worktree's `.envrc`
+(via `direnv export`). All other variables are dropped. This is different from the queue's own
+scratch steps, which use a **denylist** (`SCRATCH_ENV_STRIPPED_VARS`): the queue's steps run
+under an unscrubbed PR-worktree environment with only a few unsafe vars removed, while post-merge
+validation must fail closed on unknown per-worktree vars that might poison the regression gate.
+
+When a queue-proven skip is taken (the landed tree is identical to the queue-tested tree), the
+skip inherits the queue gate's unscrubbed PR-worktree environment — validation is not re-run, so
+the environment isolation applied to the queue's steps does not carry through to the skip decision.
+This is the intended trade-off: the skip removes one safety net (revalidation under the isolated
+env) in exchange for avoiding redundant checks after a proved merge.
+
+A `direnv` that cannot be re-derived (blocked, missing, or times out) gives an `inconclusive`
+verdict for Compose repos and a plain scrubbed run with a diagnostic note for others. The
+allowlist never overrides a configured repo's own `.envrc`: variables it exports are applied on
+top of the base allowlist.
+
 ## Follow-ups
 
 - **GitHub ruleset:** after two clean weeks of local queuing, add a GitHub ruleset requiring the
