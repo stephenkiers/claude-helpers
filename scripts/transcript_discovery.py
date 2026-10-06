@@ -3,8 +3,9 @@
 Session discovery for expert-review transcripts: resolves session_id from transcript-origin.json
 or via path-scan fallback.
 
-Used by reviewer-yield.py and write-transcript-origin.py to attribute tokens and discover
-sessions when the origin file is missing or unavailable.
+Core exports (used by reviewer-yield.py and write-transcript-origin.py):
+- resolve_session: resolves session_id for a review directory
+- SessionRef, Unresolved: TypedDicts for successful and failed resolutions
 
 Resolution method: "origin" (from transcript-origin.json), "path-scan" (from sessionl jsonl
 grep), or "unavailable" (not found, ambiguous, or explicitly unavailable).
@@ -12,9 +13,10 @@ grep), or "unavailable" (not found, ambiguous, or explicitly unavailable).
 
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, TypedDict, Union
+from typing import List, TypedDict, Union
 
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -98,13 +100,14 @@ def resolve_session(review_dir: str) -> Union[SessionRef, Unresolved]:
         return Unresolved(session_id=None, resolution="ambiguous-path-scan", reason="ambiguous-path-scan", resolved=False)
 
 
-def _find_matching_sessions(review_dir_name: str) -> list:
+def _find_matching_sessions(review_dir_name: str) -> List[tuple]:
     """
     Search ~/.claude/projects/*/*.jsonl and subagent jsonl files for lines matching the
     review_dir basename. Return list of (session_id, project_dir) tuples.
 
-    Basename matches are unique because reviews use a timestamp + random suffix in their
-    directory name.
+    Basename matches are expected to be unique because reviews use a timestamp + random suffix
+    in their directory name, but collisions are handled by returning all matches (ambiguous
+    collisions are detected by the caller).
     """
     projects_root = Path.home() / ".claude" / "projects"
     if not projects_root.exists():
@@ -142,6 +145,8 @@ def _contains_review_dir(jsonl_file: Path, review_dir_name: str) -> bool:
                     continue
                 try:
                     entry = json.loads(line)
+                    if not isinstance(entry, dict):
+                        continue
                     # Check any path-like fields
                     for value in entry.values():
                         if isinstance(value, str) and review_dir_name in value:
@@ -150,83 +155,17 @@ def _contains_review_dir(jsonl_file: Path, review_dir_name: str) -> bool:
                             for v in value.values():
                                 if isinstance(v, str) and review_dir_name in v:
                                     return True
-                except (ValueError, KeyError):
+                        elif isinstance(value, list):
+                            for item in value:
+                                if isinstance(item, str) and review_dir_name in item:
+                                    return True
+                                elif isinstance(item, dict):
+                                    for v in item.values():
+                                        if isinstance(v, str) and review_dir_name in v:
+                                            return True
+                except json.JSONDecodeError:
                     continue
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"Warning: OSError reading {jsonl_file}: {e}", file=sys.stderr)
 
     return False
-
-
-def find_subagent_files_by_unit(review_dir: str, reviewer_slugs: list = None) -> dict:
-    """
-    Find subagent files for each unit type: reviewers, pods, specialists, merge.
-
-    For reviewers: match {reviewer}-pass1.md (existing behavior)
-    For pods: match {pod-id}-pod.md and specialist-*.md files
-    For specialists: match specialist-*.md files
-    For merge: match the merge agent's checkpoint file
-
-    Returns {slug: [Path, ...]} for reviewers, {pod-id: [Path, ...]} for pods, etc.
-    """
-    review_dir_path = Path(review_dir).expanduser().resolve()
-    review_dir_name = review_dir_path.name
-
-    result = {}
-
-    # Try to resolve session (for finding transcripts)
-    session_ref = resolve_session(review_dir)
-    if isinstance(session_ref, Unresolved):
-        return result
-
-    projects_root = Path.home() / ".claude" / "projects"
-    session_dir = projects_root / session_ref.get("project_dir") / session_ref.get("session_id") / "subagents"
-    if not session_dir.exists():
-        return result
-
-    # Find reviewer pass files (existing pattern)
-    reviewer_slugs = reviewer_slugs or []
-    for slug in reviewer_slugs:
-        result[slug] = []
-
-    for subagent_file in session_dir.glob("*.jsonl"):
-        if reviewer_slugs:
-            matched_reviewer = _subagent_reviewer_for_review_dir(subagent_file, review_dir_name, reviewer_slugs)
-            if matched_reviewer:
-                result[matched_reviewer].append(subagent_file)
-
-    return result
-
-
-def _subagent_reviewer_for_review_dir(jsonl_file: Path, review_dir_name: str, reviewer_slugs: list) -> Optional[str]:
-    """
-    Return the reviewer slug this subagent transcript belongs to, if it wrote that
-    reviewer's own checkpoint file into the given review directory.
-    """
-    try:
-        with open(jsonl_file, "r") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get("type") == "assistant":
-                        message = entry.get("message", {})
-                        content = message.get("content", [])
-                        if isinstance(content, list):
-                            for item in content:
-                                if isinstance(item, dict):
-                                    if item.get("type") == "tool_use" and item.get("name") == "Write":
-                                        file_path = item.get("input", {}).get("file_path", "")
-                                        if review_dir_name not in file_path:
-                                            continue
-                                        written_name = Path(file_path).name
-                                        for slug in reviewer_slugs:
-                                            if written_name.startswith(f"{slug}-"):
-                                                return slug
-                except ValueError:
-                    continue
-    except OSError:
-        pass
-
-    return None
