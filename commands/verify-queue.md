@@ -71,16 +71,24 @@ Each line is a JSON object with exactly these fields:
 ### Helper: `add_row` (dedup append)
 
 Appends a new row to the queue, but skips if an id already exists (making re-sync idempotent and
-allowing previously-ignored rows to stay ignored):
+allowing previously-ignored rows to stay ignored). Takes an exclusive `flock` on the queue file
+for the duration of the check-and-append to coordinate with the Python `sync()` path, which uses
+`fcntl.flock` on the same file inode.
 
 ```bash
 add_row() {
   local id="$1" status="$2" kind="$3" summary="$4" command="$5" plan="$6" result="$7"
   
+  # Open fd 200 against $QUEUE for exclusive lock (same inode as Python fcntl.flock)
+  exec 200<>"$QUEUE" || return 1
+  flock -x 200 || { exec 200>&-; return 1; }
+  
   # Skip if this id already exists in queue.
   # Fixed-string match (-qF): ids contain `/`, `::`, and can carry `.` (repo owner/name),
   # all of which are regex metacharacters — grep -F sidesteps the escaping entirely.
   if grep -qF "\"id\":\"$id\"" "$QUEUE"; then
+    flock -u 200
+    exec 200>&-
     return 0
   fi
   
@@ -95,26 +103,58 @@ add_row() {
     --arg result "$result" \
     '{id: $id, status: $status, kind: $kind, summary: $summary, command: $command, plan: $plan, result: $result}' \
     >> "$QUEUE"
+  local rc=$?
+  
+  flock -u 200
+  exec 200>&-
+  return $rc
 }
 ```
 
-### Helper: `set_status` (read-modify-write via temp file)
+### Helper: `set_status` (read-modify-write with in-place rewrite)
 
-Updates the status of a row (and optionally the result field) and writes the queue back:
+Updates the status of a row (and optionally the result field) and writes the queue back. Uses
+exclusive `flock` locking during read-modify-write to coordinate with concurrent Python writes;
+overwrites the queue file in place (rather than via atomic inode replacement) to keep the locked
+inode stable, ensuring that the Python side's `fcntl.flock` on the same inode sees all updates.
 
 ```bash
 set_status() {
   local id="$1" new_status="$2" new_result="${3:-}"
   
-  # Create temp file in same directory (ensures atomic rename)
-  TMP="$(mktemp "$(dirname "$QUEUE")/verify-queue.XXXXXX")"
+  # Open fd 200 against $QUEUE for exclusive lock (same inode as Python fcntl.flock)
+  exec 200<>"$QUEUE" || return 1
+  flock -x 200 || { exec 200>&-; return 1; }
   
-  jq -c \
+  # Create temp file in same directory (for jq output before in-place rewrite)
+  TMP="$(mktemp "$(dirname "$QUEUE")/verify-queue.XXXXXX")" || { flock -u 200; exec 200>&-; return 1; }
+  
+  # Read-modify-write: rewrite all rows, updating the matching one
+  if ! jq -c \
     --arg id "$id" \
     --arg status "$new_status" \
     --arg result "$new_result" \
     'if .id == $id then .status = $status | .result = $result else . end' \
-    "$QUEUE" > "$TMP" && mv "$TMP" "$QUEUE" || { rm -f "$TMP"; return 1; }
+    "$QUEUE" > "$TMP"; then
+    rm -f "$TMP"
+    flock -u 200
+    exec 200>&-
+    return 1
+  fi
+  
+  # Overwrite $QUEUE in place (instead of mv) while still holding lock.
+  # This keeps the inode stable so Python-side fcntl.flock on the same inode still sees updates.
+  if cat "$TMP" > "$QUEUE"; then
+    rm -f "$TMP"
+    flock -u 200
+    exec 200>&-
+    return 0
+  else
+    rm -f "$TMP"
+    flock -u 200
+    exec 200>&-
+    return 1
+  fi
 }
 ```
 
