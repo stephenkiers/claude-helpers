@@ -300,7 +300,7 @@ START_TIME_FILE="$QUEUED_MERGE_STATE_DIR/start-time-pr-${PR_NUM}"
 START_TIME=$(cat "$START_TIME_FILE" 2>/dev/null)
 RESULT_TIMESTAMP=$(printf '%s' "$RESULT_JSON" | jq -r '.timestamp // .enqueued_at // empty' 2>/dev/null)
 if [ -n "$RESULT_TIMESTAMP" ] && [ -n "$START_TIME" ]; then
-  FRESHNESS_CHECK=$(jq -n --argjson result_ts "$RESULT_TIMESTAMP" --argjson start_time "$START_TIME" \
+  FRESHNESS_CHECK=$(jq -rn --argjson result_ts "$RESULT_TIMESTAMP" --argjson start_time "$START_TIME" \
     'if ($result_ts | tonumber) < ($start_time | tonumber) then "stale" else "fresh" end' 2>/dev/null)
   [ -n "$FRESHNESS_CHECK" ] || FRESHNESS_CHECK="missing"
 else
