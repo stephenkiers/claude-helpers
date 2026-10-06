@@ -107,11 +107,13 @@ if __name__ == "__main__":
                 finding("f2", "High", "rachel", [], "DOWNGRADED")]
         (d / "findings.json").write_text(json.dumps({"schema_version": 1, "findings": rows}))
         data = ry.read_findings_json(d)
-        t("read_findings_json returns schema_version 1", data is not None and data.get("schema_version") == 1)
+        t("read_findings_json returns schema_version 1", data is not None and data.get("status") == "ok")
         t("read_findings_json preserves findings", data is not None and data["findings"] == rows)
         t("read_findings_json returns None when file missing", ry.read_findings_json(d / "nope") is None)
         (d / "findings.json").write_text("{not json")
-        t("read_findings_json returns None on malformed JSON", ry.read_findings_json(d) is None)
+        malformed = ry.read_findings_json(d)
+        t("read_findings_json returns malformed status on JSON syntax error",
+          malformed is not None and malformed.get("status") == "malformed", str(malformed))
 
     # ========================================================================
     print("\n[Section 2] reviewer-yield.py script executability")

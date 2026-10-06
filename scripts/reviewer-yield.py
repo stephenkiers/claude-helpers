@@ -18,17 +18,52 @@ in append_yield_data are surfaced to the caller for explicit error handling. Thi
 idempotency on read-after-read failures while ensuring the caller can distinguish write errors.
 JSON parse failures (ValueError/JSONDecodeError) trigger warnings; JSON structure errors
 (missing/unexpected keys) are silently skipped, allowing partial results from valid syntax.
+
+Note (#193 0c deviation): There is no standalone `scripts/routing-report.py` because the
+report was folded into `reviewer-yield.py --report` and `--snapshot` modes. Related #193 0c
+deviation is already noted; do not duplicate.
 """
 
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any, NamedTuple, Final
+from typing import Optional, Dict, List, Set, Tuple, TypedDict, Any, NamedTuple, Final, Literal
+
+# Lazy-load transcript_discovery at point-of-use (see _load_scorer_module pattern below)
+_transcript_discovery = None
+resolve_session = None
+
+
+def _load_transcript_discovery():
+    """
+    Load transcript_discovery module via importlib.
+    Returns (module, error_msg). If error, module is None and error_msg is a string.
+    """
+    global _transcript_discovery, resolve_session
+    if _transcript_discovery is not None:
+        return _transcript_discovery, None
+
+    discovery_path = Path(__file__).resolve().parent / "transcript_discovery.py"
+    if not discovery_path.exists():
+        return None, f"transcript_discovery.py not found at {discovery_path}"
+    try:
+        spec = importlib.util.spec_from_file_location("transcript_discovery", str(discovery_path))
+        if spec is None or spec.loader is None:
+            return None, f"Failed to load spec from {discovery_path}"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _transcript_discovery = module
+        resolve_session = module.resolve_session
+        return module, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 OBSERVATION_ONLY_NOTE = (
     "Observation-only in Phase 0 — not wired into `prompts/router.md`, "
@@ -37,6 +72,16 @@ OBSERVATION_ONLY_NOTE = (
 )
 
 ZERO_RUNS_CAVEAT = "(Caveat: a reviewer tagged review:named-only or secondary will show few or zero runs because they are not auto-routed; zero row is not evidence of no value.)"
+
+# Type aliases for structured fields
+Severity = Literal["Critical", "High", "Medium", "Low"]
+Verdict = Literal["CONFIRMED", "DOWNGRADED", "REJECTED"]
+
+# Findings schema constants (must match prompts/amalgamator.md)
+FINDINGS_SCHEMA_VERSION = 1
+SEVERITIES: Tuple[Severity, ...] = ("Critical", "High", "Medium", "Low")
+VERDICTS: Tuple[Verdict, ...] = ("CONFIRMED", "DOWNGRADED", "REJECTED")
+FORBIDDEN_KEYS = {"STATUS", "DECISION", "triage_bucket", "bucket"}
 
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -135,6 +180,32 @@ class YieldRow(TypedDict):
     unit_kind: str  # "reviewer" | "overhead"
 
 
+class ParsedFindingsOk(TypedDict):
+    """Successfully parsed findings from a findings.json file."""
+    status: Literal["ok", "legacy-unversioned"]
+    findings: List[Dict[str, Any]]  # validated findings
+    skipped_findings: int  # count of invalid findings skipped
+
+
+class ParsedFindingsError(TypedDict):
+    """Malformed findings.json file."""
+    status: Literal["malformed"]
+    reason: str  # explanation of what was wrong
+    findings: List[Dict[str, Any]]  # empty list
+    skipped_findings: int  # count of invalid findings skipped
+
+
+# Union type for discriminated-union pattern (similar to SessionRef/Unresolved)
+ParsedFindings = ParsedFindingsOk | ParsedFindingsError
+
+
+class StratumBucketMetrics(TypedDict):
+    """Per-(stratum, bucket) metrics breakdown."""
+    reviewers: List[int]
+    crit_high: List[int]
+    value: List[int]
+
+
 class ReviewerStats(TypedDict):
     """Aggregated stats for a reviewer across all runs."""
     total_input_tokens: int
@@ -171,11 +242,15 @@ class FindingsScoreResult(NamedTuple):
     reviewers_per_run: Dict[str, List[int]]
     verified_crit_high_per_run: Dict[str, List[int]]
     verified_value_per_run: Dict[str, List[int]]
+    strata: Dict[str, Dict[str, StratumBucketMetrics]]
     solo_findings_per_reviewer: Dict[str, int]
     runs_with_unavailable_findings: int
     pod_lenses_per_run: Dict[str, List[int]]
     pod_runs_unrecorded: int
     unknown_format_runs: int
+    malformed_findings_by_reason: Dict[str, int]
+    skipped_findings_total: int
+    excluded_by_effort_reason: Dict[str, int]
 
 
 def sanitize_project_dir_id(cwd: str) -> Optional[str]:
@@ -527,6 +602,62 @@ def extract_reviewer_name(filename: str) -> Optional[str]:
     return None
 
 
+def get_canonical_reviewer_slugs() -> Set[str]:
+    """
+    Get the set of canonical reviewer slugs from reviewers/index.yaml.
+
+    Returns a set of canonical slugs (lowercase, hyphenated). On error, returns empty set.
+    """
+    slugs: Set[str] = set()
+
+    # Try repo path first (following symlink back through installed scripts)
+    repo_reviewers_index = Path(__file__).resolve().parent.parent / "reviewers" / "index.yaml"
+    fallback_index = Path.home() / ".claude" / "reviewers" / "index.yaml"
+
+    for index_path in [repo_reviewers_index, fallback_index]:
+        if not index_path.exists():
+            continue
+
+        try:
+            content = index_path.read_text()
+            # Parse with simple regex to extract slugs from "file: slug.yaml" lines
+            file_pattern = r'^\s+file:\s+([a-z\-]+)\.yaml$'
+
+            for line in content.split('\n'):
+                file_match = re.match(file_pattern, line)
+                if file_match:
+                    slug = file_match.group(1)
+                    slugs.add(slug)
+
+            if slugs:
+                return slugs
+        except OSError as e:
+            print(f"Warning: failed to read reviewers index {index_path}: {e}", file=sys.stderr)
+            continue
+
+    # No index found; return empty set (caller should handle gracefully)
+    return slugs
+
+
+def get_reviewer_alias_map() -> Dict[str, str]:
+    """
+    Map legacy/display-name-derived slugs (e.g. "danielle-the-designer", slugified
+    from the full "Danielle the Designer" display name) to their canonical
+    reviewers/index.yaml `file:` slug (e.g. "danielle-designer").
+
+    Historical findings data sometimes recorded `raised_by` as a slugified form of
+    the reviewer's full display name rather than the canonical file slug. Returns a
+    dict mapping alias slug -> canonical slug; on error (no index found) returns {}.
+    """
+    display_names = load_reviewer_display_names()
+    aliases: Dict[str, str] = {}
+    for slug, display_name in display_names.items():
+        alias_slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-")
+        if alias_slug and alias_slug != slug:
+            aliases[alias_slug] = slug
+    return aliases
+
+
 def load_reviewer_display_names() -> Dict[str, str]:
     """
     Load slug → display-name map from reviewers/index.yaml.
@@ -701,6 +832,8 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     Only classic-format review dirs (`*-pass1.md` checkpoints) yield rows; pod/unknown dirs
     return empty results. The caller (main()) must classify via classify_review_format() first
     and print the pod/unknown notice — this function does not.
+
+    Unavailable rows carry a `reason` field: origin-missing, origin-unavailable, session-dir-missing, etc.
     """
     review_dir = Path(review_dir_path).expanduser().resolve()
 
@@ -717,12 +850,30 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
     repo_key = get_repo_key(review_dir)
     run_id = get_review_run_id(review_dir)
 
+    # Load transcript_discovery module (lazy load at point-of-use)
+    discovery_module, load_error = _load_transcript_discovery()
+    if load_error:
+        print(f"Warning: failed to load transcript_discovery: {load_error}", file=sys.stderr)
+        return repo_key, [], "unavailable"
+
+    # Resolve session (try origin.json, then path-scan)
+    session_ref = discovery_module.resolve_session(review_dir_path)
+    unavailable_reason = None
+    if not session_ref.get("resolved", False):
+        unavailable_reason = session_ref.get("reason", "origin-missing")
+        # Print warning for missing/unavailable session
+        print(f"Warning: Could not resolve session for {review_dir.name}: {unavailable_reason}", file=sys.stderr)
+
     # Find all reviewer pass files to identify reviewers
     reviewer_slugs = set()
     for file in review_dir.glob("*-pass1.md"):
         slug = extract_reviewer_name(file.name)
         if slug:
             reviewer_slugs.add(slug)
+
+    # If no pass files, return empty rows and exit 2 in main()
+    if not reviewer_slugs:
+        return repo_key, [], "unavailable"
 
     # Find, per reviewer, the subagent transcript(s) that actually wrote that
     # reviewer's own checkpoint file into this review dir (not sort-order pairing —
@@ -777,6 +928,10 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
         mention_count = count_reviewer_mentions(final_report, reviewer, display_names)
         escalation_count = count_reviewer_escalations(action_plan, reviewer, display_names)
 
+        # Determine tokens_status and reason based on actual subagent file presence
+        has_subagent_files = bool(subagent_files_by_reviewer.get(reviewer))
+        tokens_status_for_row = "measured" if has_subagent_files else "unavailable"
+
         row: YieldRow = {
             "run_id": run_id,
             "reviewer": reviewer,
@@ -787,9 +942,18 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
             "cache_creation_input_tokens": tokens["cache_creation_input_tokens"],
             "mention_count": mention_count,
             "escalation_count": escalation_count,
-            "tokens_status": "measured" if subagent_files_by_reviewer.get(reviewer) else "unavailable",
+            "tokens_status": tokens_status_for_row,
             "unit_kind": "reviewer",
         }
+
+        # Add reason if unavailable
+        if tokens_status_for_row == "unavailable":
+            # Use session-resolution reason if available, else indicate subagent not found
+            if unavailable_reason:
+                row["reason"] = unavailable_reason
+            else:
+                row["reason"] = "subagent-not-found"
+
         rows.append(row)
 
     # Add overhead row if questions-answered was found
@@ -814,35 +978,130 @@ def process_review_dir(review_dir_path: str) -> Tuple[Optional[str], List[YieldR
 
 def append_yield_data(repo_key: str, rows: List[YieldRow]) -> Optional[Path]:
     """
-    Append per-reviewer yield data to the leaderboard file, idempotently.
+    Append or upgrade per-reviewer yield data to the leaderboard file.
 
-    Checks if run_id already exists and skips if found.
+    Upgrade-on-measured semantics:
+    - If a run_id's existing rows are all unavailable and new rows are measured, rewrite with the new rows.
+    - If both old and new rows are unavailable, skip (idempotent).
+    - If existing rows have any measured rows, skip (do not downgrade).
+
+    Acquires an exclusive lock on {yield_file}.lock throughout all read and write operations
+    to prevent row loss under concurrent access.
+
     Returns the path to the yield file on success, None on write failure (caller must handle).
+    Unavailable rows carry a `reason` field for skip-and-count diagnostics.
     """
     yield_dir = Path.home() / ".claude" / "reviews" / repo_key
     yield_file = yield_dir / "reviewer-yield.jsonl"
+    lock_file_path = yield_dir / f"{yield_file.name}.lock"
 
     # Create directory if needed
     yield_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check for existing run_id
-    existing_runs = load_existing_yield_data(yield_file)
-    run_ids = {row["run_id"] for row in rows}
-
-    if any(run_id in existing_runs for run_id in run_ids):
-        print(f"Already logged (idempotent skip): {run_ids}", file=sys.stderr)
-        return yield_file
-
-    # Append new rows
+    # Acquire exclusive lock and hold it through all I/O
+    lock_f = None
     try:
-        with open(yield_file, "a") as f:
-            for row in rows:
-                f.write(json.dumps(row) + "\n")
-    except OSError as e:
-        print(f"Error writing yield file: {e}", file=sys.stderr)
-        return None
+        lock_f = open(lock_file_path, "a")
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
 
-    return yield_file
+        # Check for existing run_ids (under lock)
+        existing_runs = load_existing_yield_data(yield_file)
+        run_ids_in_new = {row["run_id"] for row in rows}
+
+        # Determine which run_ids need upgrade
+        rows_to_upgrade = {}
+        rows_to_append = []
+
+        for row in rows:
+            run_id = row["run_id"]
+            if run_id in existing_runs:
+                rows_to_upgrade[run_id] = row
+            else:
+                rows_to_append.append(row)
+
+        # If any run_id exists, check upgrade conditions
+        if rows_to_upgrade:
+            # Check if we can upgrade (all existing rows for this run_id are unavailable)
+            should_upgrade = False
+            for run_id, new_row in rows_to_upgrade.items():
+                existing_rows = [r for r in existing_runs.values() if r.get("run_id") == run_id]
+                if new_row.get("tokens_status") == "measured":
+                    # Check if all existing rows for this run_id are unavailable
+                    if all(r.get("tokens_status") == "unavailable" for r in existing_rows):
+                        should_upgrade = True
+                        break
+                else:
+                    # New row is unavailable; skip
+                    pass
+
+            if should_upgrade:
+                # Rewrite with upgraded rows (under lock)
+                try:
+                    # Read all rows
+                    all_rows = []
+                    if yield_file.exists():
+                        try:
+                            with open(yield_file, "r") as f:
+                                for line in f:
+                                    if line.strip():
+                                        try:
+                                            all_rows.append(json.loads(line))
+                                        except ValueError:
+                                            continue
+                        except OSError as e:
+                            # Abort the upgrade; don't silently destroy accumulated data
+                            print(f"Error reading yield file during upgrade: {e}", file=sys.stderr)
+                            return None
+
+                    # Filter out the run_ids we're upgrading
+                    filtered_rows = [r for r in all_rows if r.get("run_id") not in rows_to_upgrade]
+
+                    # Add new rows (both upgraded and any new ones)
+                    all_rows = filtered_rows + list(rows_to_upgrade.values()) + rows_to_append
+
+                    # Write to temp file, then rename
+                    with tempfile.NamedTemporaryFile(mode='w', dir=yield_dir, delete=False, suffix='.jsonl') as tmp:
+                        for row in all_rows:
+                            tmp.write(json.dumps(row) + "\n")
+                        tmp.flush()
+                        os.fsync(tmp.fileno())
+                        tmp_path = tmp.name
+
+                    # Atomically replace
+                    os.replace(tmp_path, yield_file)
+                    return yield_file
+                except OSError as e:
+                    print(f"Error upgrading yield file: {e}", file=sys.stderr)
+                    # Clean up temp file if it exists
+                    try:
+                        if 'tmp_path' in locals():
+                            os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    return None
+            else:
+                # Skip (either unavailable-to-unavailable or measured-to-measured)
+                print(f"Already logged (idempotent skip): {set(rows_to_upgrade.keys())}", file=sys.stderr)
+                return yield_file
+
+        # No upgrades needed; just append new rows (under lock)
+        try:
+            with open(yield_file, "a") as f:
+                for row in rows:
+                    f.write(json.dumps(row) + "\n")
+        except OSError as e:
+            print(f"Error writing yield file: {e}", file=sys.stderr)
+            return None
+
+        return yield_file
+    finally:
+        # Release the lock
+        if lock_f is not None:
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+                lock_f.close()
+            except OSError:
+                pass
 
 
 def load_bucket_config() -> dict:
@@ -896,15 +1155,117 @@ def count_changed_lines(review_dir: Path) -> Optional[int]:
         return None
 
 
-def read_findings_json(review_dir: Path) -> Optional[dict]:
-    """Read findings.json from review directory."""
+def parse_findings(raw_data: Any) -> ParsedFindings:
+    """
+    Validate and parse findings from a parsed JSON object.
+
+    Returns ParsedFindings with:
+    - status: "ok", "malformed", or "legacy-unversioned"
+    - reason: explanation if not "ok"
+    - findings: list of validated findings (normalized severity)
+    - skipped_findings: count of invalid findings that were skipped
+
+    A file is malformed when:
+    - top level is not a dict
+    - findings key is missing or not a list
+    - schema_version is present but not an int or not 1
+    """
+    if not isinstance(raw_data, dict):
+        return ParsedFindingsError(status="malformed", reason="top-level not an object", findings=[], skipped_findings=0)
+
+    if "findings" not in raw_data:
+        return ParsedFindingsError(status="malformed", reason="findings key missing", findings=[], skipped_findings=0)
+
+    findings_list = raw_data.get("findings")
+    if not isinstance(findings_list, list):
+        return ParsedFindingsError(status="malformed", reason="findings is not a list", findings=[], skipped_findings=0)
+
+    # Check schema version
+    schema_version = raw_data.get("schema_version")
+    if schema_version is not None:
+        if not isinstance(schema_version, int):
+            return ParsedFindingsError(status="malformed", reason="schema_version is not an int", findings=[], skipped_findings=0)
+        if schema_version != FINDINGS_SCHEMA_VERSION:
+            return ParsedFindingsError(status="malformed", reason=f"unsupported schema_version {schema_version}", findings=[], skipped_findings=0)
+    else:
+        # Missing schema_version is tolerated but marked as legacy
+        pass
+
+    # Validate each finding
+    validated_findings = []
+    skipped_count = 0
+    has_forbidden_key_warning = False
+
+    for finding in findings_list:
+        if not isinstance(finding, dict):
+            skipped_count += 1
+            continue
+
+        # Check for forbidden keys and warn once
+        for forbidden_key in FORBIDDEN_KEYS:
+            if forbidden_key in finding:
+                if not has_forbidden_key_warning:
+                    print(f"Warning: findings.json contains forbidden key '{forbidden_key}' (should be in claude-action-plan.md, not findings.json)", file=sys.stderr)
+                    has_forbidden_key_warning = True
+
+        # Validate required fields
+        severity = finding.get("severity", "")
+        verdict = finding.get("verdict", "")
+        raised_by = finding.get("raised_by", "")
+        supported_by = finding.get("supported_by", [])
+
+        # severity: case-insensitive match to SEVERITIES
+        severity_matched: Optional[Severity] = None
+        for sev in SEVERITIES:
+            if isinstance(severity, str) and severity.lower() == sev.lower():
+                severity_matched = sev
+                break
+
+        if not severity_matched:
+            skipped_count += 1
+            continue
+
+        # verdict: must be in VERDICTS
+        if verdict not in VERDICTS:
+            skipped_count += 1
+            continue
+
+        # raised_by: must be a string
+        if not isinstance(raised_by, str):
+            skipped_count += 1
+            continue
+
+        # supported_by: must be a list of strings
+        if not isinstance(supported_by, list) or not all(isinstance(s, str) for s in supported_by):
+            skipped_count += 1
+            continue
+
+        # Valid finding; normalize severity to capitalized form
+        validated = dict(finding)
+        validated["severity"] = severity_matched
+        validated_findings.append(validated)
+
+    status = "legacy-unversioned" if schema_version is None else "ok"
+    return ParsedFindingsOk(status=status, findings=validated_findings, skipped_findings=skipped_count)  # type: ignore
+
+
+def read_findings_json(review_dir: Path) -> Optional[ParsedFindings]:
+    """
+    Read and validate findings.json from review directory.
+
+    Returns ParsedFindings on success (parsed and validated), or ParsedFindings with malformed status
+    on JSON syntax error. Returns None if file is absent or unreadable.
+    """
     findings_file = review_dir / "findings.json"
     if not findings_file.exists():
         return None
 
     try:
-        return json.loads(findings_file.read_text())
-    except (OSError, json.JSONDecodeError):
+        raw_data = json.loads(findings_file.read_text())
+        return parse_findings(raw_data)
+    except json.JSONDecodeError as e:
+        return ParsedFindingsError(status="malformed", reason=f"JSON syntax error: {e}", findings=[], skipped_findings=0)
+    except OSError:
         return None
 
 
@@ -1104,7 +1465,9 @@ def print_aggregate_leaderboard(repo_key: str) -> None:
     print()
 
 
-SEVERITY_VALUES = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+SEVERITY_VALUES: Dict[Severity, int] = {"Critical": 8, "High": 4, "Medium": 2, "Low": 1}
+# Cross-check with SEVERITIES constant
+assert set(SEVERITY_VALUES.keys()) == set(SEVERITIES), "SEVERITY_VALUES must match SEVERITIES constant"
 
 
 def _verified_value_formula() -> str:
@@ -1151,6 +1514,7 @@ class TokensReport(TypedDict, total=False):
     avg_output_per_run: int
     status: str
     reason: str
+    by_stratum: Dict[str, Dict[str, Any]]
 
 
 class ReportData(TypedDict, total=False):
@@ -1160,6 +1524,7 @@ class ReportData(TypedDict, total=False):
     reviewers_per_run: Dict[str, List[int]]
     verified_crit_high_per_run: Dict[str, List[int]]
     verified_value_per_run: Dict[str, List[int]]
+    strata: Dict[str, Dict[str, StratumBucketMetrics]]
     solo_findings_per_reviewer: Dict[str, int]
     regime_counts: Dict[str, int]
     n_included_runs: int
@@ -1378,7 +1743,7 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
 
         # Read findings
         findings_data = read_findings_json(review_subdir)
-        if not findings_data:
+        if not findings_data or findings_data.get("status") == "malformed":
             runs_data["unattributable"].append(review_subdir.name)
             continue
 
@@ -1535,53 +1900,148 @@ def _compute_shadow_section(reports_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _classify_runs(reports_dir: Path, bucket_config: dict) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime]]:
-    """Return ([(run_dir, regime, bucket)], regime_counts, newest_timestamp) for all run dirs."""
+def classify_effort_path(run_dir: Path) -> str:
+    """
+    Classify a review run's effort path based on available files.
+
+    Returns: "full-panel", "pods", "scouts", or "unknown"
+
+    Decision tree (in order):
+    1. review-metrics.json with dict and "effort" key -> "pods"
+    2. effort-scout.json valid dict without "error" key:
+       - effort==2 -> "pods"
+       - effort in (3,4,5) -> "full-panel"
+       - effort==1 -> "scouts"
+    3. File signature:
+       - any *-pod.md -> "pods"
+       - any *-pass1.md -> "full-panel"
+       - final-report.md exists with neither -> "scouts"
+    4. else -> "unknown"
+
+    LIMITATION: Efforts 3/4/5 are not resolvable to distinct strata for ~771 of 772 historical runs
+    (only determinable for runs that created effort-scout.json). Most runs classify as "full-panel"
+    but cannot be distinguished as effort 3, 4, or 5.
+    """
+    # Check for review-metrics.json (effort 2)
+    review_metrics = run_dir / "review-metrics.json"
+    if review_metrics.exists():
+        try:
+            metrics = json.loads(review_metrics.read_text())
+            if isinstance(metrics, dict) and "effort" in metrics:
+                return "pods"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check for effort-scout.json (effort 1, 3, 4, 5)
+    effort_scout = run_dir / "effort-scout.json"
+    if effort_scout.exists():
+        try:
+            scout_data = json.loads(effort_scout.read_text())
+            if isinstance(scout_data, dict) and "error" not in scout_data and "effort" in scout_data:
+                effort = scout_data.get("effort")
+                if effort == 2:
+                    # effort 2 = compact-lens pods
+                    return "pods"
+                elif effort in (3, 4, 5):
+                    # efforts 3/4/5 = full-panel with varying selection logic
+                    return "full-panel"
+                elif effort == 1:
+                    # effort 1 = parallel haiku scouts
+                    return "scouts"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check file signature
+    has_pod = any(run_dir.glob("*-pod.md"))
+    has_pass1 = any(run_dir.glob("*-pass1.md"))
+    has_final = (run_dir / "final-report.md").exists()
+
+    if has_pod:
+        return "pods"
+    elif has_pass1:
+        return "full-panel"
+    elif has_final and not has_pass1 and not has_pod:
+        # Scouts: final-report but no pass1/pod files
+        return "scouts"
+
+    # Unknown
+    return "unknown"
+
+
+def _classify_runs(reports_dir: Path, bucket_config: dict, until: Optional[datetime] = None) -> Tuple[List[Tuple[Path, str, str]], Dict[str, int], Optional[datetime], int, Optional[datetime], Optional[datetime]]:
+    """
+    Return ([(run_dir, regime, bucket)], regime_counts, newest_timestamp, n_after_window, first_run_timestamp, last_run_timestamp) for all run dirs.
+
+    If until is provided, drops runs whose timestamp is >= until.
+    Returns n_after_window count of dropped runs, and first_run_timestamp/last_run_timestamp of included runs.
+    """
     runs: List[Tuple[Path, str, str]] = []
     regime_counts: Dict[str, int] = {}
     newest: Optional[datetime] = None
+    n_after_window: int = 0
+    first_run_timestamp: Optional[datetime] = None
+    last_run_timestamp: Optional[datetime] = None
+
     for review_subdir in sorted(reports_dir.iterdir()):
         if not review_subdir.is_dir():
             continue
         timestamp = parse_review_timestamp(review_subdir.name)
+
+        # Check if this run should be excluded by the until cutoff
+        if until is not None and timestamp is not None and timestamp >= until:
+            n_after_window += 1
+            continue
+
         if timestamp and (newest is None or timestamp > newest):
             newest = timestamp
         regime = classify_regime(timestamp)
         regime_counts[regime] = regime_counts.get(regime, 0) + 1
         bucket = classify_size_bucket(count_changed_lines(review_subdir), bucket_config)
         runs.append((review_subdir, regime, bucket))
-    return runs, regime_counts, newest
+
+        # Track min and max timestamps of included runs
+        if timestamp:
+            if first_run_timestamp is None or timestamp < first_run_timestamp:
+                first_run_timestamp = timestamp
+            if last_run_timestamp is None or timestamp > last_run_timestamp:
+                last_run_timestamp = timestamp
+
+    return runs, regime_counts, newest, n_after_window, first_run_timestamp, last_run_timestamp
 
 
 def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
     """
     Compute metrics across all runs: per-bucket reviewer counts, crit/high counts, value,
     solo findings, unavailable-findings count, pod lens counts, pod-unrecorded count,
-    and unknown-format count. Returns FindingsScoreResult NamedTuple.
+    unknown-format count, malformed-findings count, skipped-findings count, per-effort-stratum
+    breakdown (reviewers/crit_high/value by stratum+bucket), and effort-exclusion counters.
+
+    Returns FindingsScoreResult NamedTuple.
     """
     reviewers_per_run: Dict[str, List[int]] = {}
     verified_crit_high_per_run: Dict[str, List[int]] = {}
     verified_value_per_run: Dict[str, List[int]] = {}
+    strata: Dict[str, Dict[str, StratumBucketMetrics]] = {}
     solo_findings_per_reviewer: Dict[str, int] = {}
     pod_lenses_per_run: Dict[str, List[int]] = {}
     runs_with_unavailable_findings = 0
     pod_runs_unrecorded = 0
     unknown_format_runs = 0
+    malformed_findings_by_reason: Dict[str, int] = {}
+    skipped_findings_total = 0
+    excluded_by_effort_reason: Dict[str, int] = {}
+
+    # Load canonical reviewer slugs and legacy-alias map for raised_by normalization
+    canonical_slugs = get_canonical_reviewer_slugs()
+    reviewer_alias_map = get_reviewer_alias_map()
 
     for review_subdir, regime, bucket in runs:
         include_in_findings = regime == "post-148-sam-gated"
 
-        # Classify format
+        # Classify format (classic/pod/unknown) for pod-lens tracking (backward compat)
         review_format = classify_review_format(review_subdir)
 
-        if review_format == "classic":
-            if bucket not in reviewers_per_run:
-                reviewers_per_run[bucket] = []
-                verified_crit_high_per_run[bucket] = []
-                verified_value_per_run[bucket] = []
-
-            reviewers_per_run[bucket].append(len(list(review_subdir.glob("*-pass1.md"))))
-        elif review_format == "pod":
+        if review_format == "pod":
             if bucket not in pod_lenses_per_run:
                 pod_lenses_per_run[bucket] = []
 
@@ -1593,57 +2053,142 @@ def _score_findings(runs: List[Tuple[Path, str, str]]) -> FindingsScoreResult:
         elif review_format == "unknown":
             unknown_format_runs += 1
 
-        findings_data = read_findings_json(review_subdir)
-        if not findings_data and include_in_findings:
-            runs_with_unavailable_findings += 1
+        # Only process effort strata and exclusions for runs that are included in findings
+        if include_in_findings:
+            # Initialize bucket dicts if needed
+            if bucket not in reviewers_per_run:
+                reviewers_per_run[bucket] = []
+                verified_crit_high_per_run[bucket] = []
+                verified_value_per_run[bucket] = []
+
+            # Classify effort stratum
+            effort_stratum = classify_effort_path(review_subdir)
+            if effort_stratum not in strata:
+                strata[effort_stratum] = {}
+            if bucket not in strata[effort_stratum]:
+                strata[effort_stratum][bucket] = {"reviewers": [], "crit_high": [], "value": []}
+
+            # Compute reviewer count for this stratum
+            if effort_stratum == "full-panel":
+                reviewer_count = len(list(review_subdir.glob("*-pass1.md")))
+            elif effort_stratum == "pods":
+                # Try to get lenses count from review-metrics.json
+                review_metrics = review_subdir / "review-metrics.json"
+                if review_metrics.exists():
+                    try:
+                        metrics = json.loads(review_metrics.read_text())
+                        lenses = metrics.get("lenses")
+                        if isinstance(lenses, list):
+                            reviewer_count = len(lenses)
+                        else:
+                            # Unmeasured lenses
+                            excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                            reviewer_count = None
+                    except (json.JSONDecodeError, OSError):
+                        excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                        reviewer_count = None
+                else:
+                    excluded_by_effort_reason["pods-unmeasured-lenses"] = excluded_by_effort_reason.get("pods-unmeasured-lenses", 0) + 1
+                    reviewer_count = None
+            elif effort_stratum == "scouts":
+                reviewer_count = 6
+            else:
+                # unknown
+                excluded_by_effort_reason["unknown-effort"] = excluded_by_effort_reason.get("unknown-effort", 0) + 1
+                reviewer_count = None
+
+            # Append to strata and full-panel metrics
+            if reviewer_count is not None:
+                # For full-panel, also update the main reviewers_per_run (backward compat)
+                if effort_stratum == "full-panel":
+                    reviewers_per_run[bucket].append(reviewer_count)
+                strata[effort_stratum][bucket]["reviewers"].append(reviewer_count)
+
+        parsed = read_findings_json(review_subdir)
+        if not parsed:
+            if include_in_findings:
+                runs_with_unavailable_findings += 1
             continue
 
-        if findings_data and include_in_findings:
-            crit_high_count = 0
-            value_total = 0
+        if parsed.get("status") == "malformed":
+            reason = parsed.get("reason", "unknown")
+            malformed_findings_by_reason[reason] = malformed_findings_by_reason.get(reason, 0) + 1
+            if include_in_findings:
+                runs_with_unavailable_findings += 1
+            continue
 
-            for finding in findings_data.get("findings", []):
-                if finding.get("verdict") != "CONFIRMED":
-                    continue
+        # Valid (or legacy-unversioned) findings
+        findings_list = parsed.get("findings", [])
+        skipped_findings_total += parsed.get("skipped_findings", 0)
 
-                severity = finding.get("severity", "")
-                supported_by = finding.get("supported_by", [])
-                raised_by = finding.get("raised_by", "")
+        if not include_in_findings:
+            continue
 
-                if severity.lower() in ["critical", "high"]:
-                    crit_high_count += 1
+        crit_high_count = 0
+        value_total = 0
 
-                value_total += SEVERITY_VALUES.get(severity, 0)
+        for finding in findings_list:
+            if finding.get("verdict") != "CONFIRMED":
+                continue
 
-                # Gate solo finding accumulation to classic format only
-                if review_format == "classic" and not supported_by and raised_by:
-                    solo_findings_per_reviewer[raised_by] = solo_findings_per_reviewer.get(raised_by, 0) + 1
+            severity = finding.get("severity", "")
+            supported_by = finding.get("supported_by", [])
+            raised_by = finding.get("raised_by", "")
 
-            # Only add to classic findings if classic format
-            if review_format == "classic":
-                if bucket not in verified_crit_high_per_run:
-                    verified_crit_high_per_run[bucket] = []
-                    verified_value_per_run[bucket] = []
-                verified_crit_high_per_run[bucket].append(crit_high_count)
-                verified_value_per_run[bucket].append(value_total)
+            # Severity is already normalized (capitalized) by parse_findings
+            if severity in ["Critical", "High"]:
+                crit_high_count += 1
+
+            value_total += SEVERITY_VALUES.get(severity, 0)
+
+            # Gate solo finding accumulation to full-panel runs only
+            # Normalize raised_by against canonical slugs to avoid duplicate entries
+            if effort_stratum == "full-panel" and not supported_by and raised_by:
+                # Normalize raised_by: pass canonical slugs through as-is; map a known
+                # legacy display-name-derived alias to its canonical slug; otherwise
+                # use the value as-is (unrecognized/malformed data).
+                if canonical_slugs and raised_by in canonical_slugs:
+                    normalized_raised_by = raised_by
+                else:
+                    normalized_raised_by = reviewer_alias_map.get(raised_by, raised_by)
+                solo_findings_per_reviewer[normalized_raised_by] = solo_findings_per_reviewer.get(normalized_raised_by, 0) + 1
+
+        # For full-panel, also update main dicts (backward compat)
+        if effort_stratum == "full-panel":
+            verified_crit_high_per_run[bucket].append(crit_high_count)
+            verified_value_per_run[bucket].append(value_total)
+        # Only append crit_high/value to strata when reviewer_count is not None (consistent with reviewers)
+        if reviewer_count is not None:
+            strata[effort_stratum][bucket]["crit_high"].append(crit_high_count)
+            strata[effort_stratum][bucket]["value"].append(value_total)
 
     return FindingsScoreResult(
         reviewers_per_run=reviewers_per_run,
         verified_crit_high_per_run=verified_crit_high_per_run,
         verified_value_per_run=verified_value_per_run,
+        strata=strata,
         solo_findings_per_reviewer=solo_findings_per_reviewer,
         runs_with_unavailable_findings=runs_with_unavailable_findings,
         pod_lenses_per_run=pod_lenses_per_run,
         pod_runs_unrecorded=pod_runs_unrecorded,
         unknown_format_runs=unknown_format_runs,
+        malformed_findings_by_reason=malformed_findings_by_reason,
+        skipped_findings_total=skipped_findings_total,
+        excluded_by_effort_reason=excluded_by_effort_reason,
     )
 
 
 def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> TokensReport:
-    """Aggregate measured token rows from reviewer-yield.jsonl for the given runs."""
+    """Aggregate measured token rows from reviewer-yield.jsonl for the given runs, with per-stratum breakdown."""
     all_token_rows = []
     yield_file = reports_dir / "reviewer-yield.jsonl"
-    run_names = {r[0].name for r in runs}
+    run_names_to_strata: Dict[str, str] = {}  # Maps run_id to stratum
+
+    # Build map of run_id -> stratum
+    for run_dir, _, _ in runs:
+        run_names_to_strata[run_dir.name] = classify_effort_path(run_dir)
+
+    run_names = set(run_names_to_strata.keys())
     if yield_file.exists():
         try:
             with open(yield_file, "r") as f:
@@ -1659,6 +2204,24 @@ def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> T
             pass
 
     measured_rows = [r for r in all_token_rows if r.get("tokens_status") == "measured"]
+
+    # Build per-stratum breakdown
+    by_stratum: Dict[str, Dict[str, Any]] = {}
+    for stratum in set(run_names_to_strata.values()):
+        stratum_runs = {run_id for run_id, s in run_names_to_strata.items() if s == stratum}
+        stratum_measured = [r for r in measured_rows if r.get("run_id") in stratum_runs]
+
+        total_input = sum(r.get("input_tokens", 0) for r in stratum_measured)
+        total_output = sum(r.get("output_tokens", 0) for r in stratum_measured)
+        measured_run_count = len(set(r.get("run_id") for r in stratum_measured))
+
+        by_stratum[stratum] = {
+            "measured_runs": measured_run_count,
+            "total_runs": len(stratum_runs),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+        }
+
     if measured_rows:
         total_input = sum(r.get("input_tokens", 0) for r in measured_rows)
         total_output = sum(r.get("output_tokens", 0) for r in measured_rows)
@@ -1666,32 +2229,40 @@ def _aggregate_tokens(reports_dir: Path, runs: List[Tuple[Path, str, str]]) -> T
         total_cache_creation = sum(r.get("cache_creation_input_tokens", 0) for r in measured_rows)
         run_count = len(set(r.get("run_id") for r in measured_rows))
 
-        return {
+        result: TokensReport = {
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_cache_read_tokens": total_cache_read,
             "total_cache_creation_tokens": total_cache_creation,
             "avg_input_per_run": total_input // run_count if run_count > 0 else 0,
             "avg_output_per_run": total_output // run_count if run_count > 0 else 0,
+            "by_stratum": by_stratum,  # type: ignore
         }
-    return {
+        return result
+
+    result = {
         "status": "unavailable",
-        "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward"
+        "reason": "historical tokens unrecoverable by construction; measured prospectively from the transcript-origin.json fix onward",
+        "by_stratum": by_stratum,  # type: ignore
     }
+    return result
 
 
-def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
+def compute_report_data(repo_key: str, bucket_config: dict, until: Optional[datetime] = None) -> ReportData:
     """
     Compute report metrics across all runs for a repo.
 
     Returns dict with:
-    - reviewers_per_run: grouped by size bucket
-    - verified_crit_high_per_run: grouped by size bucket
-    - verified_value_per_run: crit*8 + high*4 + med*2 + low*1
+    - reviewers_per_run: grouped by size bucket (full-panel only, backward compat)
+    - verified_crit_high_per_run: grouped by size bucket (full-panel only)
+    - verified_value_per_run: crit*8 + high*4 + med*2 + low*1 (full-panel only)
+    - strata: {stratum: {bucket: {metric: [counts]}}} covering all strata
     - solo_findings_per_reviewer: empty supported_by findings
     - regime_counts: {regime: count} with n_included/n_excluded
-    - tokens: real numbers or {status, reason}
-    - methodology: bucket config, formula, observation note, etc.
+    - tokens: real numbers or {status, reason}, includes by_stratum breakdown
+    - methodology: bucket config, formula, observation note, etc., includes effort exclusions
+
+    If until is provided (as datetime), drops runs with timestamp >= until.
     """
     observation_only_note = OBSERVATION_ONLY_NOTE
 
@@ -1708,17 +2279,21 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     bucket_config = dict(bucket_config)
     config_source = "fallback" if bucket_config.pop("config_source", None) == "fallback" else "file"
 
-    runs, regime_counts, newest = _classify_runs(reports_dir, bucket_config)
+    runs, regime_counts, newest, n_after_window, first_run_timestamp, last_run_timestamp = _classify_runs(reports_dir, bucket_config, until)
     _warn_if_regime_stale(newest)
     (
         reviewers_per_run,
         verified_crit_high_per_run,
         verified_value_per_run,
+        strata,
         solo_findings_per_reviewer,
         runs_with_unavailable_findings,
         pod_lenses_per_run,
         pod_runs_unrecorded,
         unknown_format_runs,
+        malformed_findings_by_reason,
+        skipped_findings_total,
+        excluded_by_effort_reason,
     ) = _score_findings(runs)
     tokens_result = _aggregate_tokens(reports_dir, runs)
 
@@ -1729,11 +2304,20 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
     n_included = regime_counts.get("post-148-sam-gated", 0)
     n_excluded = sum(regime_counts.get(r, 0) for r in ["pre-router", "judgment-router", "unknown"])
 
-    return {
+    # Merge effort-reason counters into excluded_by_reason
+    excluded_by_reason: Dict[str, Any] = {
+        "malformed_findings": malformed_findings_by_reason,
+        "skipped_findings_total": skipped_findings_total,
+    }
+    if excluded_by_effort_reason:
+        excluded_by_reason["effort"] = excluded_by_effort_reason
+
+    report: ReportData = {
         "repo_key": repo_key,
         "reviewers_per_run": reviewers_per_run,
         "verified_crit_high_per_run": verified_crit_high_per_run,
         "verified_value_per_run": verified_value_per_run,
+        "strata": strata,  # type: ignore
         "solo_findings_per_reviewer": solo_findings_per_reviewer,
         "regime_counts": regime_counts,
         "n_included_runs": n_included,
@@ -1756,13 +2340,18 @@ def compute_report_data(repo_key: str, bucket_config: dict) -> ReportData:
                 "regimes": ["post-148-sam-gated"],
                 "n_included": n_included,
                 "n_excluded": n_excluded,
+                "n_after_window": n_after_window,
+                "first_run": first_run_timestamp.isoformat() if first_run_timestamp else None,
+                "last_run": last_run_timestamp.isoformat() if last_run_timestamp else None,
                 "runs_with_unavailable_findings": runs_with_unavailable_findings,
             },
+            "excluded_by_reason": excluded_by_reason,  # type: ignore
             "token_status_note": "unavailable for retrospective runs; measured prospectively from transcript-origin.json fix onward",
             "observation_only": True,
             "observation_only_sentence": observation_only_note,
         }
     }
+    return report
 
 
 def _avg(values: list) -> int:
@@ -1792,6 +2381,18 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- **Corpus:** {methodology.get('corpus_boundary', {}).get('n_included', 0)} included, {methodology.get('corpus_boundary', {}).get('n_excluded', 0)} excluded\n")
         output.append(f"- **Bucket Config Source:** {methodology.get('config_source', 'N/A')}\n")
         output.append(f"- **Runs With Unavailable Findings:** {methodology.get('corpus_boundary', {}).get('runs_with_unavailable_findings', 0)}\n")
+
+        excluded_by_reason = methodology.get('excluded_by_reason', {})
+        if excluded_by_reason:
+            malformed = excluded_by_reason.get('malformed_findings', {})
+            if malformed:
+                output.append("- **Malformed Findings by Reason:**\n")
+                for reason, count in malformed.items():
+                    output.append(f"  - {reason}: {count}\n")
+            skipped = excluded_by_reason.get('skipped_findings_total', 0)
+            if skipped:
+                output.append(f"- **Skipped Individual Findings:** {skipped}\n")
+
         output.append(f"- **Observation Only:** Yes — {methodology.get('observation_only_sentence', 'Phase 0 only')}\n\n")
 
     # Regime counts
@@ -1871,6 +2472,19 @@ def render_report_markdown(report_data: ReportData) -> str:
         output.append(f"- **Total Output Tokens:** {tokens.get('total_output_tokens', 0):,}\n")
         output.append(f"- **Avg Input per Run:** {tokens.get('avg_input_per_run', 0):,}\n")
         output.append(f"- **Avg Output per Run:** {tokens.get('avg_output_per_run', 0):,}\n")
+
+    # Per-stratum token coverage
+    by_stratum = tokens.get("by_stratum", {})
+    if by_stratum:
+        output.append("\n### Token Coverage by Effort Stratum\n")
+        for stratum in sorted(by_stratum.keys()):
+            stratum_data = by_stratum[stratum]
+            measured = stratum_data.get("measured_runs", 0)
+            total = stratum_data.get("total_runs", 0)
+            input_tokens = stratum_data.get("total_input_tokens", 0)
+            output_tokens = stratum_data.get("total_output_tokens", 0)
+            coverage = f"{measured}/{total}" if total > 0 else "0/0"
+            output.append(f"- **{stratum}**: {coverage} measured ({input_tokens:,} input, {output_tokens:,} output)\n")
     output.append("\n")
 
     # Shadow scorer section
@@ -1952,6 +2566,35 @@ def render_report_markdown(report_data: ReportData) -> str:
     else:
         output.append("*(Shadow section unavailable)*\n\n")
 
+    # Effort Strata
+    strata = report_data.get("strata", {})
+    if strata:
+        output.append("## Effort Strata\n")
+        for stratum in sorted(strata.keys()):
+            stratum_buckets = strata[stratum]
+            output.append(f"\n### {stratum}\n")
+
+            # Aggregate across buckets for this stratum
+            total_reviewers = []
+            total_crit_high = []
+            total_value = []
+            total_runs = 0
+
+            for bucket, metrics in stratum_buckets.items():
+                total_reviewers.extend(metrics.get("reviewers", []))
+                total_crit_high.extend(metrics.get("crit_high", []))
+                total_value.extend(metrics.get("value", []))
+                total_runs += len(metrics.get("reviewers", []))
+
+            if total_runs > 0:
+                output.append(f"- **Runs:** {total_runs}\n")
+                output.append(f"- **Avg Reviewers:** {_avg(total_reviewers)}\n")
+                output.append(f"- **Avg Crit/High Findings:** {_avg(total_crit_high)}\n")
+                output.append(f"- **Avg Value Points:** {_avg(total_value)}\n")
+            else:
+                output.append("- *(no runs with measured findings)*\n")
+        output.append("\n")
+
     return "".join(output)
 
 
@@ -1987,8 +2630,34 @@ def main():
         metavar="PATH",
         help="Write report JSON source-of-truth to PATH; stdout always prints Markdown rendering.",
     )
+    parser.add_argument(
+        "--snapshot",
+        metavar="PATH",
+        help="Generate cross-repo aggregate snapshot and write to PATH. Sanitized (no repo names/paths), aggregate-only metrics.",
+    )
+    parser.add_argument(
+        "--until",
+        metavar="ISO_DATETIME",
+        help="Exclude runs with timestamp >= until (naive local ISO like 2026-09-23T00:51:00). Valid only with --snapshot. On parse failure, error to stderr and exit 1.",
+    )
 
     args = parser.parse_args()
+
+    # Parse --until if provided
+    until_dt: Optional[datetime] = None
+    if args.until:
+        if not args.snapshot:
+            print("Error: --until is only valid with --snapshot", file=sys.stderr)
+            sys.exit(1)
+        try:
+            until_dt = datetime.fromisoformat(args.until)
+        except ValueError:
+            print(f"Error: failed to parse --until: {args.until} (expected naive local ISO like 2026-09-23T00:51:00)", file=sys.stderr)
+            sys.exit(1)
+        # Reject timezone-aware datetimes; must be naive-local
+        if until_dt.tzinfo is not None:
+            print(f"Error: --until must be naive-local (no timezone); got {args.until} with tzinfo={until_dt.tzinfo}", file=sys.stderr)
+            sys.exit(1)
 
     if args.aggregate:
         # Aggregate mode: read from ~/.claude/reviews/{repo_key}/reviewer-yield.jsonl
@@ -2052,6 +2721,197 @@ def main():
 
         return
 
+    if args.snapshot:
+        # Snapshot mode: cross-repo aggregate, sanitized
+        bucket_config = load_bucket_config()
+        reports_root = Path.home() / ".claude" / "reviews"
+        if not reports_root.exists():
+            print("No reviews found", file=sys.stderr)
+            sys.exit(1)
+
+        # Compute aggregates across all repos
+        all_reports = {}
+        total_runs_included = 0
+        total_runs_excluded = 0
+        total_runs_after_window = 0
+        aggregate_regime_counts: Dict[str, int] = {}
+        aggregate_strata: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        aggregate_excluded_by_reason: Dict[str, Any] = {"malformed_findings": {}, "effort": {}}
+        aggregate_skipped_findings_total = 0
+        aggregate_solo_findings: Dict[str, int] = {}
+        aggregate_tokens_by_stratum: Dict[str, Dict[str, int]] = {}
+        first_run_timestamp: Optional[datetime] = None
+        last_run_timestamp: Optional[datetime] = None
+
+        for repo_subdir in sorted(reports_root.iterdir()):
+            if not repo_subdir.is_dir():
+                continue
+            repo_key = repo_subdir.name
+            report = compute_report_data(repo_key, bucket_config, until_dt)
+            all_reports[repo_key] = report
+
+            # Skip repos with errors (no reviews)
+            if "error" in report:
+                continue
+
+            # Accumulate metrics
+            total_runs_included += report.get("n_included_runs", 0)
+            total_runs_excluded += report.get("n_excluded_runs", 0)
+
+            # Track corpus window timestamps
+            corpus = report.get("methodology", {}).get("corpus_boundary", {})
+            first_iso = corpus.get("first_run")
+            last_iso = corpus.get("last_run")
+            if first_iso:
+                first_dt = datetime.fromisoformat(first_iso)
+                if first_run_timestamp is None or first_dt < first_run_timestamp:
+                    first_run_timestamp = first_dt
+            if last_iso:
+                last_dt = datetime.fromisoformat(last_iso)
+                if last_run_timestamp is None or last_dt > last_run_timestamp:
+                    last_run_timestamp = last_dt
+
+            # Accumulate n_after_window
+            total_runs_after_window += corpus.get("n_after_window", 0)
+
+            # Accumulate regime counts
+            for regime, count in report.get("regime_counts", {}).items():
+                aggregate_regime_counts[regime] = aggregate_regime_counts.get(regime, 0) + count
+
+            # Accumulate strata
+            for stratum, buckets in report.get("strata", {}).items():
+                if stratum not in aggregate_strata:
+                    aggregate_strata[stratum] = {}
+                for bucket, metrics in buckets.items():
+                    if bucket not in aggregate_strata[stratum]:
+                        aggregate_strata[stratum][bucket] = {
+                            "n_runs": 0,
+                            "reviewers": [],
+                            "crit_high": [],
+                            "value": [],
+                        }
+                    aggregate_strata[stratum][bucket]["reviewers"].extend(metrics.get("reviewers", []))
+                    aggregate_strata[stratum][bucket]["crit_high"].extend(metrics.get("crit_high", []))
+                    aggregate_strata[stratum][bucket]["value"].extend(metrics.get("value", []))
+                    aggregate_strata[stratum][bucket]["n_runs"] += len(metrics.get("reviewers", []))
+
+            # Accumulate solo findings
+            for reviewer, count in report.get("solo_findings_per_reviewer", {}).items():
+                aggregate_solo_findings[reviewer] = aggregate_solo_findings.get(reviewer, 0) + count
+
+            # Accumulate excluded_by_reason
+            excluded = report.get("methodology", {}).get("excluded_by_reason", {})
+            for reason, count in excluded.get("malformed_findings", {}).items():
+                aggregate_excluded_by_reason["malformed_findings"][reason] = aggregate_excluded_by_reason["malformed_findings"].get(reason, 0) + count
+            aggregate_skipped_findings_total += excluded.get("skipped_findings_total", 0)
+            for reason, count in excluded.get("effort", {}).items():
+                aggregate_excluded_by_reason["effort"][reason] = aggregate_excluded_by_reason["effort"].get(reason, 0) + count
+
+            # Accumulate tokens by stratum
+            tokens = report.get("tokens", {})
+            by_stratum = tokens.get("by_stratum", {})
+            for stratum, token_data in by_stratum.items():
+                if stratum not in aggregate_tokens_by_stratum:
+                    aggregate_tokens_by_stratum[stratum] = {
+                        "measured_runs": 0,
+                        "total_runs": 0,
+                    }
+                aggregate_tokens_by_stratum[stratum]["measured_runs"] += token_data.get("measured_runs", 0)
+                aggregate_tokens_by_stratum[stratum]["total_runs"] += token_data.get("total_runs", 0)
+
+        # Compute aggregated strata with averages (pooled per-repo lists, then averaged)
+        sanitized_strata: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for stratum, buckets in aggregate_strata.items():
+            sanitized_strata[stratum] = {}
+            for bucket, data in buckets.items():
+                reviewers_list = data.get("reviewers", [])
+                crit_high_list = data.get("crit_high", [])
+                value_list = data.get("value", [])
+                n_runs = data.get("n_runs", 0)
+
+                sanitized_strata[stratum][bucket] = {
+                    "n_runs": n_runs,
+                    "avg_reviewers": round(_avg(reviewers_list), 3) if reviewers_list else None,
+                    "avg_crit_high": round(_avg(crit_high_list), 3) if crit_high_list else None,
+                    "avg_verified_value": round(_avg(value_list), 3) if value_list else None,
+                }
+
+        # Build token status strings per stratum
+        tokens_status_by_stratum: Dict[str, str] = {}
+        for stratum in sanitized_strata.keys():
+            stratum_token_data = aggregate_tokens_by_stratum.get(stratum, {})
+            measured_runs = stratum_token_data.get("measured_runs", 0)
+            if measured_runs == 0:
+                tokens_status_by_stratum[stratum] = "not measured pre-#206 (unrecoverable by construction)"
+            else:
+                tokens_status_by_stratum[stratum] = f"{measured_runs} measured"
+
+        # Build the aggregate with pooled token strata
+        aggregate_dict: Dict[str, Any] = {
+            "total_runs_included": total_runs_included,
+            "total_runs_excluded": total_runs_excluded,
+            "total_runs_after_window": total_runs_after_window,
+            "regime_counts": aggregate_regime_counts,
+            "strata": sanitized_strata,
+            "solo_findings_per_reviewer": aggregate_solo_findings,
+            "excluded_by_reason": {
+                "malformed_findings": aggregate_excluded_by_reason["malformed_findings"],
+                "skipped_findings_total": aggregate_skipped_findings_total,
+            },
+        }
+        if aggregate_excluded_by_reason["effort"]:
+            aggregate_dict["excluded_by_reason"]["effort"] = aggregate_excluded_by_reason["effort"]
+
+        # Add tokens by stratum with status strings
+        aggregate_dict["tokens"] = {}
+        for stratum in sorted(sanitized_strata.keys()):
+            stratum_token_data = aggregate_tokens_by_stratum.get(stratum, {})
+            aggregate_dict["tokens"][stratum] = {
+                "measured_runs": stratum_token_data.get("measured_runs", 0),
+                "total_runs": stratum_token_data.get("total_runs", 0),
+                "status": tokens_status_by_stratum.get(stratum, "unknown"),
+            }
+
+        # Build generating_command with exact flags
+        generating_command = "reviewer-yield.py --snapshot"
+        if args.until:
+            generating_command += f" --until {args.until}"
+
+        # Create sanitized cross-repo aggregate
+        snapshot_data = {
+            "snapshot_schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generating_command": generating_command,
+            "regime_filter": "post-148-sam-gated",
+            "corpus_window": {
+                "from": first_run_timestamp.isoformat() if first_run_timestamp else None,
+                "to": last_run_timestamp.isoformat() if last_run_timestamp else None,
+                "until_exclusive": args.until if args.until else None,
+                "corpus_window_timezone": "local-naive",
+            },
+            "bucket_config_version": bucket_config.get("config_version", 1),
+            "n_repos": len([r for r in all_reports.values() if "error" not in r]),
+            "methodology": {
+                "formula": _verified_value_formula(),
+                "observation_only": True,
+                "observation_only_sentence": OBSERVATION_ONLY_NOTE,
+                "note": "No standalone scripts/routing-report.py — folded into reviewer-yield.py --report/--snapshot (#193 0c deviation)",
+            },
+            "aggregate": aggregate_dict,
+        }
+
+        # Write snapshot to file
+        try:
+            snapshot_path = Path(args.snapshot).expanduser()
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot_path.write_text(json.dumps(snapshot_data, indent=2) + "\n")
+            print(f"Snapshot written to: {snapshot_path}", file=sys.stderr)
+        except OSError as e:
+            print(f"Error writing snapshot: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        return
+
     if not args.review_dir:
         # No positional and no --aggregate: this is for direct/manual invocation only,
         # such as testing or querying a specific repo directly (not part of normal flow)
@@ -2082,6 +2942,11 @@ def main():
 
     if repo_key is None:
         sys.exit(1)
+
+    # No-data case: no pass1 files means no reviewers
+    if not rows:
+        print("No reviewer data found; nothing logged", file=sys.stderr)
+        sys.exit(2)
 
     # Append to leaderboard (idempotent)
     yield_file = append_yield_data(repo_key, rows)

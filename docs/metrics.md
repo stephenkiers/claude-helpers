@@ -461,6 +461,10 @@ These thresholds were defined **before any baseline data exists**, per the issue
 
 Run `diagnose` regularly to track telemetry data quality over time.
 
+## Automatic Token Logging
+
+Token yield measurement happens automatically and observation-only: `/expert-review` runs automatic logging at the end of each invocation (non-PR mode only) via `reviewer-yield.py`, recording per-reviewer token counts and mention/escalation data from the subagent transcripts to `~/.claude/reviews/{repo}/reviewer-yield.jsonl`. This is **never read by any reviewer, router, or triage logic**, and a failure to log never changes the review outcome (the final step runs with `|| true`, suppressing all output). The leaderboard remains an optional, human-side reporting interface available via `/review-stats`. This measurement is **observation-only per ADR-0016** — it exists to answer "how much did each reviewer cost?" and "how much did they contribute?", never to gate decisions. Uncommitted, local-only state: `~/.claude/reviews/` never syncs.
+
 ### Interpreting a low match rate
 
 `diagnose` also splits unmatched `*.begin` events into **stale** (≥12h old — likely a session

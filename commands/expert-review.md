@@ -341,6 +341,10 @@ if [ $SETUP_STATUS -ne 0 ]; then
   exit 1
 fi
 eval "$SETUP_OUTPUT"
+
+# Write transcript-origin.json for bounded transcript discovery
+python3 "$HOME/.claude/scripts/write-transcript-origin.py" "$REVIEW_DIR" >/dev/null 2>&1 || true
+[ -s "$REVIEW_DIR/transcript-origin.json" ] || echo "WARNING: transcript-origin.json not written — tokens for this run will be unavailable" >&2
 ```
 
 This exports `REVIEW_DIR`, `WORKTREE_PATH`, `MAIN_WORKTREE`, `BRANCH_NAME`, `BASE_BRANCH`,
@@ -758,8 +762,21 @@ if [ "${PR_MODE:-false}" != true ]; then
 fi
 ```
 
+### Step 14: Automatic Token Logging
+
+**Non-PR mode only** (ADR-0009: never write to a repo you don't own).
+
+Run the token logger as a best-effort final step, before the happy-path command-end. Output is
+suppressed and failures are ignored, so a logging error never changes the review outcome:
+
+```bash
+if [ "${PR_MODE:-false}" != true ]; then
+  python3 "$HOME/.claude/scripts/reviewer-yield.py" "$REVIEW_DIR" >/dev/null 2>&1 || true
+fi
+```
+
 **Happy-path command-end (non-PR mode).** Emit `command-end` at the very end of the command, after
-Step 13's cache write:
+Step 14:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome success 2>/dev/null || true
 ```

@@ -168,9 +168,10 @@ separate from the reviewer-context cascade.
   lightweight `/expert-review --effort 2` second look per merged PR; reports Done/Missing/Deferred
   buckets. Read-only and advisory — never edits code or creates issues without confirmation. Takes
   an issue number, or auto-detects from `.claude/github-cache.json`.
-- `/review-stats` — scoped, read-only, opt-in reviewer-yield tracker (revived after chore/29 removed
-  the old suppressing ledger). No args aggregates the current repo's leaderboard; a review-dir path
-  logs and prints that run's per-reviewer breakdown. Never read by any reviewer prompt or triage
+- `/review-stats` — scoped, read-only, reviewer-yield tracker with automatic logging (revived after
+  chore/29 removed the old suppressing ledger). Token logging runs automatically at the end of each
+  `/expert-review` (non-PR mode only). No args aggregates the current repo's leaderboard; a review-dir
+  path logs and prints that run's per-reviewer breakdown. Never read by any reviewer prompt or triage
   logic. See `commands/review-stats.md` and `scripts/reviewer-yield.py`.
 
 **Hardening** (take a review persona, switch it to edit mode)
