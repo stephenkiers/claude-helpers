@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import (
-    Optional, Mapping, Dict, List, Tuple, FrozenSet, NamedTuple, Union, Sequence, Any, NoReturn
+    Optional, Mapping, Dict, List, Tuple, FrozenSet, NamedTuple, Union, Sequence, Any, NoReturn, Iterator
 )
 
 from . import checks, git, check_diagnostics, merge_queue
@@ -385,8 +385,8 @@ class ValidationRun:
     notes: List[str] = field(default_factory=list)
 
 
-@contextmanager  # type: ignore[misc]
-def validation_lock(main_worktree: Path):  # type: ignore[name-defined]
+@contextmanager
+def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
     """
     Context manager for non-blocking validation lock.
 
@@ -609,10 +609,11 @@ def queue_proof(
         if timestamp < queue_started_at:
             return CannotProve("result is stale (timestamp < queue start)")
 
-        if not _is_valid_sha40(merge_result.tested_sha):
+        sha = merge_result.tested_sha
+        if sha is None or not _is_valid_sha40(sha):
             return CannotProve("tested_sha is not a valid 40-hex SHA")
 
-        tested_tree = git.tree_of(merge_result.tested_sha, main_worktree)
+        tested_tree = git.tree_of(sha, main_worktree)
         if tested_tree is None:
             return CannotProve("tested_sha tree is not accessible")
 
@@ -626,10 +627,10 @@ def queue_proof(
         # Try to load queue config for steps
         steps: List[str] = []
         try:
-            config_path = merge_queue.resolve_config_path(main_worktree)
+            config_path = merge_queue.resolve_config_path(cwd=main_worktree)
             if config_path:
                 config = merge_queue.load_and_validate_config(config_path)
-                steps = config.get("steps", []) if isinstance(config, dict) else []
+                steps = [step.cmd for step in config.steps]
         except Exception:
             # Cannot load steps, but tree already proved; continue
             pass
