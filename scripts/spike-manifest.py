@@ -25,6 +25,7 @@ resume_point, list_spikes, resolve_spike, ManifestError, STAGES, STATUSES, STAGE
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -35,6 +36,8 @@ SCHEMA_VERSION = 1
 MANIFEST_NAME = "spike.json"
 MODELS = ("balanced", "opus")
 EFFORTS = (1, 2, 3, 4, 5)
+SLUG_RE = re.compile(r"[a-z0-9-]{1,50}")
+EXPERT_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 STAGES: Tuple[str, ...] = (
     "gather-context",
@@ -134,13 +137,16 @@ def _validate_manifest(data: Any, where: str) -> Dict[str, Any]:
 
     if not isinstance(data["question"], str):
         raise ManifestError(f"{where}: question must be a string")
-    if not isinstance(data["slug"], str):
-        raise ManifestError(f"{where}: slug must be a string")
+    if not isinstance(data["slug"], str) or not SLUG_RE.fullmatch(data["slug"]):
+        raise ManifestError(f"{where}: slug must match [a-z0-9-] (1-50 chars), got {data['slug']!r}")
     if not _is_int(data["effort"]) or data["effort"] not in EFFORTS:
         raise ManifestError(f"{where}: effort must be an int 1-5, got {data['effort']!r}")
     if data["models"] not in MODELS:
         raise ManifestError(f"{where}: models must be one of {MODELS}, got {data['models']!r}")
     _check_str_list(data["experts"], "experts")
+    for name in data["experts"]:
+        if not EXPERT_RE.fullmatch(name):
+            raise ManifestError(f"{where}: expert name {name!r} must match [a-z0-9][a-z0-9-]*")
     if not isinstance(data["created"], str):
         raise ManifestError(f"{where}: created must be a string")
     if not isinstance(data["updated"], str):
@@ -169,8 +175,32 @@ def _manifest_path(spike_dir: Any) -> Path:
     return Path(spike_dir) / MANIFEST_NAME
 
 
-def _write_atomic(spike_dir: Path, data: Dict[str, Any]) -> None:
-    """Write data as spike.json via temp file in the same dir + os.replace."""
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of a directory so a completed rename survives a crash."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _write_atomic(spike_dir: Path, data: Dict[str, Any], exclusive: bool = False) -> None:
+    """Write data as spike.json: temp file in the same dir, fsync, then rename into place.
+
+    exclusive=True uses os.link so an existing spike.json is never replaced (init's guarantee).
+    """
     target = spike_dir / MANIFEST_NAME
     try:
         fd, tmp_path = tempfile.mkstemp(dir=str(spike_dir), prefix=MANIFEST_NAME + ".")
@@ -180,13 +210,22 @@ def _write_atomic(spike_dir: Path, data: Dict[str, Any]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=True)
             f.write("\n")
-        os.replace(tmp_path, target)
+            f.flush()
+            os.fsync(f.fileno())
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp_path, 0o666 & ~umask)
+        if exclusive:
+            os.link(tmp_path, target)
+        else:
+            os.replace(tmp_path, target)
+        _fsync_dir(spike_dir)
+    except FileExistsError:
+        raise ManifestError(f"{target} already exists; refusing to overwrite")
     except OSError as e:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
         raise ManifestError(f"failed to write {target}: {e}")
+    finally:
+        _unlink_quiet(tmp_path)
 
 
 def init_manifest(
@@ -201,8 +240,8 @@ def init_manifest(
     """Create spike_dir (if needed) and a fresh spike.json with every stage pending."""
     if not isinstance(question, str) or not question.strip():
         raise ManifestError("question must be a non-empty string")
-    if not isinstance(slug, str) or not slug.strip():
-        raise ManifestError("slug must be a non-empty string")
+    if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+        raise ManifestError(f"slug must match [a-z0-9-] (1-50 chars), got {slug!r}")
     if not _is_int(effort) or effort not in EFFORTS:
         raise ManifestError(f"effort must be an int 1-5, got {effort!r}")
     if models not in MODELS:
@@ -211,8 +250,8 @@ def init_manifest(
         raise ManifestError("experts must be a sequence of names, not a string")
     expert_list = list(experts)
     for name in expert_list:
-        if not isinstance(name, str) or not name.strip():
-            raise ManifestError("expert names must be non-empty strings")
+        if not isinstance(name, str) or not EXPERT_RE.fullmatch(name):
+            raise ManifestError(f"expert name {name!r} must match [a-z0-9][a-z0-9-]*")
     if command_id is not None and (not isinstance(command_id, str) or not command_id.strip()):
         raise ManifestError("command_id must be a non-empty string when given")
 
@@ -237,14 +276,18 @@ def init_manifest(
         "command_ids": [command_id] if command_id is not None else [],
         "stages": {name: "pending" for name in STAGES},
     }
-    _write_atomic(spike_path, data)
+    _write_atomic(spike_path, data, exclusive=True)
     return data
 
 
 def load_manifest(spike_dir: Any) -> Dict[str, Any]:
     """Load and fully validate spike.json. Fails closed with ManifestError."""
     path = _manifest_path(spike_dir)
-    if not path.is_file():
+    try:
+        present = path.is_file()
+    except OSError as e:
+        raise ManifestError(f"cannot read {path}: {e}")
+    if not present:
         raise ManifestError(f"no {MANIFEST_NAME} in {spike_dir}")
     try:
         text = path.read_text(encoding="utf-8")
@@ -331,13 +374,20 @@ def resume_point(spike_dir: Any) -> Optional[str]:
 
 def _spike_subdirs(root: Path) -> List[Path]:
     """Immediate subdirectories of root that contain a spike.json, sorted by name."""
-    if not root.is_dir():
-        return []
-    return [
-        child
-        for child in sorted(root.iterdir())
-        if child.is_dir() and (child / MANIFEST_NAME).is_file()
-    ]
+    try:
+        if not root.is_dir():
+            return []
+        children = sorted(root.iterdir())
+    except OSError as e:
+        raise ManifestError(f"cannot list {root}: {e}")
+    found: List[Path] = []
+    for child in children:
+        try:
+            if child.is_dir() and (child / MANIFEST_NAME).is_file():
+                found.append(child)
+        except OSError:
+            found.append(child)  # unreadable entry: list_spikes reports it as malformed
+    return found
 
 
 def list_spikes(root: Any) -> List[Dict[str, Any]]:

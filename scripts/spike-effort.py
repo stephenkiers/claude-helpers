@@ -5,8 +5,10 @@ Usage: spike-effort.py <question-text-file> [--project-root DIR]
 
 Prints one JSON line: {"effort": N, "reason": "...", "source": "heuristic"|"fallback"}.
 Config cascade (key by key): built-in defaults < ~/.claude/spike-effort-heuristic.yaml
-< <project-root>/.claude/spike-effort-heuristic.yaml. Never fails the caller: on any
-error it prints the default effort 2 with the error in "reason" and source: "fallback".
+< <project-root>/.claude/spike-effort-heuristic.yaml. Never fails the caller: on a usage or
+question-file error it prints the default effort 2 with the error in "reason" and source:
+"fallback". A malformed config file or an invalid key warns on stderr and is ignored (the
+key keeps its prior value); the source stays "heuristic".
 Levels 1 and 5 are explicit-only and are never returned by this heuristic.
 """
 import copy
@@ -32,6 +34,7 @@ DEFAULTS: Dict[str, Any] = {
 CONFIG_NAME = "spike-effort-heuristic.yaml"
 VALID_DEFAULT_EFFORTS = (2, 3, 4)
 BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+PATH_RE = re.compile(r"/?[\w.\-]+(?:/[\w.\-]+)+")
 PATH_STRIP = "\"'()[]{}<>`.,;:!?"
 
 
@@ -43,14 +46,22 @@ def _load(path: Path) -> Dict[str, Any]:
         print("warning: PyYAML not available; using defaults", file=sys.stderr)
         return {}
     try:
-        data = yaml.safe_load(path.read_text())  # type: ignore[attr-defined]
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))  # type: ignore[attr-defined]
     except yaml.YAMLError as e:  # type: ignore[union-attr]
         print(f"warning: failed to parse {path}: {e}", file=sys.stderr)
         return {}
     except Exception as e:
         print(f"warning: failed to read {path}: {e}", file=sys.stderr)
         return {}
-    return data if isinstance(data, dict) else {}
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        print(
+            f"warning: {path}: top level must be a mapping, got {type(data).__name__}; ignoring file",
+            file=sys.stderr,
+        )
+        return {}
+    return data
 
 
 def _is_pos_int(v: Any) -> bool:
@@ -72,6 +83,9 @@ def load_config(project_root: Any = None, home: Any = None) -> Dict[str, Any]:
         if not p.is_file():
             continue
         data = _load(p)
+        for key in data:
+            if key not in DEFAULTS:
+                print(f"warning: {p}: unknown key {key!r}; ignored", file=sys.stderr)
         if "default_effort" in data:
             v = data["default_effort"]
             if type(v) is int and v in VALID_DEFAULT_EFFORTS:
@@ -87,7 +101,18 @@ def load_config(project_root: Any = None, home: Any = None) -> Dict[str, Any]:
                 continue
             v = data[key]
             if isinstance(v, list):
-                cfg[key] = [str(k).strip() for k in v if str(k).strip()]
+                kept: List[str] = []
+                for k in v:
+                    if not isinstance(k, str):
+                        print(
+                            f"warning: {p}: {key} entry {k!r} is not a string; skipped",
+                            file=sys.stderr,
+                        )
+                        continue
+                    entry = " ".join(k.split())
+                    if entry:
+                        kept.append(entry)
+                cfg[key] = kept
             else:
                 print(
                     f"warning: {p}: {key} must be a list, got {type(v).__name__}={v!r}; "
@@ -110,10 +135,10 @@ def load_config(project_root: Any = None, home: Any = None) -> Dict[str, Any]:
 
 
 def _cue_regex(entry: str) -> "re.Pattern[str]":
-    """Word-boundary start match; the exact cue 'vs' must match as a whole word."""
+    """Word-start match (whitespace runs in a phrase match any whitespace); 'vs' must match as a whole word."""
     if entry.lower() == "vs":
         return re.compile(r"\bvs\b", re.I)
-    return re.compile(r"\b" + re.escape(entry), re.I)
+    return re.compile(r"(?<!\w)" + r"\s+".join(re.escape(w) for w in entry.split()), re.I)
 
 
 def _matched_signals(text: str, cfg: Dict[str, Any]) -> List[str]:
@@ -130,20 +155,34 @@ def _matched_signals(text: str, cfg: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _is_path_like(tok: str) -> bool:
+    """A path has at least three segments, or a file extension on its last segment.
+
+    "read/write" and "I/O" are prose, not paths; "scripts/foo.py" and "src/a/b" are paths.
+    """
+    if not PATH_RE.fullmatch(tok):
+        return False
+    segs = [s for s in tok.split("/") if s]
+    return len(segs) >= 3 or "." in segs[-1]
+
+
 def _subsystem_tokens(text: str) -> List[str]:
-    """Distinct backticked identifiers and path-like tokens (case-sensitive dedupe)."""
+    """Distinct backticked identifiers and path-like tokens (case-sensitive dedupe).
+
+    Backtick spans count only when they are a single token (no whitespace); URLs never count.
+    """
     seen: Set[str] = set()
     out: List[str] = []
     for m in BACKTICK_RE.finditer(text):
         tok = m.group(1)
-        if tok.strip() and tok not in seen:
+        if not tok.strip() or any(c.isspace() for c in tok) or "://" in tok:
+            continue
+        if tok not in seen:
             seen.add(tok)
             out.append(tok)
     for raw in text.split():
-        if "://" in raw:
-            continue
         tok = raw.strip(PATH_STRIP)
-        if "://" in tok or "/" not in tok or not any(c.isalnum() for c in tok):
+        if not _is_path_like(tok):
             continue
         if tok not in seen:
             seen.add(tok)
@@ -197,7 +236,7 @@ def main(argv: list) -> None:
         if len(args) != 1:
             _fallback("usage: spike-effort.py <question-text-file> [--project-root DIR]")
             return
-        text = Path(args[0]).read_text()
+        text = Path(args[0]).read_text(encoding="utf-8")
         effort, reason = decide(text, load_config(root))
         print(json.dumps({"effort": effort, "reason": reason, "source": "heuristic"}))
     except Exception as e:  # never block the spike on the heuristic

@@ -14,8 +14,10 @@
 # Rules, in order (the first rule that fires decides):
 #   1. Two or more distinct signals (decision_cues + risk_keywords that match) -> effort 4.
 #   2. Question longer than long_question_chars (strictly greater than) -> effort 4.
-#   3. Names at least subsystem_min distinct subsystems (backticked identifiers or path-like
-#      tokens such as scripts/foo.py) -> effort 4.
+#   3. Names at least subsystem_min distinct subsystems -> effort 4. A subsystem is a backticked
+#      single token (no spaces, e.g. `Scheduler`) or a path-like token with at least three
+#      segments or a file extension (e.g. scripts/foo.py, src/a/b). URLs and prose slashes such
+#      as read/write or I/O do not count.
 #   4. Exactly one signal -> effort 3.
 #   5. Otherwise -> default_effort.
 #
@@ -35,7 +37,8 @@
 #   Same matching rules as decision_cues. The list replaces the default when set.
 #
 # An entry that appears in both lists (for example "migrate") counts as one signal, not two.
-# Blank entries are dropped.
+# Blank entries are dropped. Non-string entries (for example a bare YAML "-" or a number) are
+# skipped with a warning on stderr.
 
 default_effort: 2
 
