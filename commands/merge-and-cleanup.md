@@ -144,7 +144,7 @@ fi
 printf '%s\n' "$$" > "$PID_LOCK_FILE"
 
 rm -f "$MC_STATE_DIR/apply_result.json" "$MC_STATE_DIR/apply_result.stderr" "$MC_STATE_DIR/apply_exit_code" "$MC_STATE_DIR/route" "$MC_STATE_DIR/queue_started_at"
-echo "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
+printf '%s' "$PLAN_JSON" > "$MC_STATE_DIR/plan.json"
 echo "$PR_NUM" > "$MC_STATE_DIR/pr_num"
 echo "$WT" > "$MC_STATE_DIR/wt"
 echo "State dir: $MC_STATE_DIR"
@@ -476,7 +476,7 @@ if [ -f "$RESULT_FILE" ]; then
   RESULT_TIMESTAMP=$(printf '%s' "$RESULT_JSON" | jq -r '.timestamp // .enqueued_at // empty' 2>/dev/null)
   FRESH="missing"
   if [ -n "$RESULT_TIMESTAMP" ] && [ -n "$QUEUE_STARTED_AT" ]; then
-    FRESH=$(jq -n --argjson result_ts "$RESULT_TIMESTAMP" --argjson start_time "$QUEUE_STARTED_AT" \
+    FRESH=$(jq -rn --argjson result_ts "$RESULT_TIMESTAMP" --argjson start_time "$QUEUE_STARTED_AT" \
       'if ($result_ts | tonumber) < ($start_time | tonumber) then "stale" else "fresh" end' 2>/dev/null)
     [ -n "$FRESH" ] || FRESH="missing"
   fi
