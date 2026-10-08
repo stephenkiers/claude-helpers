@@ -744,6 +744,68 @@ def t_cli_list_empty_root_is_empty_array():
     assert json.loads(r.stdout) == [], "stdout %r" % r.stdout
 
 
+# ---------------------------------------------------------------- expected artifacts / symlinks
+
+def _survey_spike(root):
+    d = _new_spike(root)
+    for s in EXPECTED_STAGES[:2]:
+        _write_artifacts(d, s)
+        sm.mark_stage(d, s, "done")
+    for q in ("q1", "q2"):
+        _write(d / "survey" / (q + ".md"), "notes\n<!-- survey-end -->\n")
+    sm.mark_stage(d, "codebase-survey", "done")
+    return d
+
+
+def t_lost_expected_artifact_reopens_stage():
+    with tempfile.TemporaryDirectory() as root:
+        d = _survey_spike(root)
+        sm.expect_artifacts(d, "codebase-survey", ["survey/q1.md", "survey/q2.md"])
+        assert sm.resume_point(d) == "refine-questions", "intact survey resume %r" % sm.resume_point(d)
+        (d / "survey" / "q2.md").unlink()
+        rp = sm.resume_point(d)
+        missing = sm.missing_artifacts(d, "codebase-survey", ["survey/q1.md", "survey/q2.md"])
+    assert rp == "codebase-survey", "lost q2 resume_point %r, expected codebase-survey" % (rp,)
+    assert missing == ["survey/q2.md"], "missing %r" % (missing,)
+
+
+def t_expect_rejects_unsafe_paths():
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root)
+        for bad in ("../x.md", "/etc/passwd", ""):
+            try:
+                sm.expect_artifacts(d, "codebase-survey", [bad])
+            except sm.ManifestError:
+                continue
+            raise AssertionError("expect accepted unsafe path %r" % bad)
+        try:
+            sm.expect_artifacts(d, "nope", ["a.md"])
+        except sm.ManifestError:
+            return
+    raise AssertionError("expect accepted unknown stage")
+
+
+def t_symlinked_artifact_does_not_satisfy():
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root)
+        outside = Path(root) / "outside.md"
+        outside.write_text("content\n")
+        (d / "synthesis.md").symlink_to(outside)
+        missing = sm.missing_artifacts(d, "synthesize")
+    assert missing == ["synthesis.md"], "symlink satisfied artifact: %r" % (missing,)
+
+
+def t_cli_expect_roundtrip():
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root)
+        r = _cli(["expect", "--dir", str(d), "--stage", "codebase-survey",
+                  "--path", "survey/q1.md", "--path", "survey/q2.md"])
+        shown = json.loads((d / "spike.json").read_text())
+    assert r.returncode == 0, "expect exit %d: %s" % (r.returncode, r.stderr)
+    assert shown["expected_artifacts"] == {"codebase-survey": ["survey/q1.md", "survey/q2.md"]}, \
+        "stored %r" % (shown.get("expected_artifacts"),)
+
+
 TESTS = [
     ("STAGES exact order", t_stages_exact_order),
     ("STATUSES exact set", t_statuses_exact_set),
@@ -802,6 +864,10 @@ TESTS = [
     ("CLI show on malformed manifest exits 2", t_cli_show_malformed_exits_2),
     ("CLI resolve no match exits 2", t_cli_resolve_no_match_exits_2),
     ("CLI list on empty root prints []", t_cli_list_empty_root_is_empty_array),
+    ("lost expected artifact reopens stage", t_lost_expected_artifact_reopens_stage),
+    ("expect rejects unsafe paths and stages", t_expect_rejects_unsafe_paths),
+    ("symlinked artifact does not satisfy stage", t_symlinked_artifact_does_not_satisfy),
+    ("CLI expect stores paths", t_cli_expect_roundtrip),
 ]
 
 

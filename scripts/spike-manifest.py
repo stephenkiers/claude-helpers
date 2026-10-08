@@ -5,6 +5,7 @@ Usage:
     spike-manifest.py init --dir D --question Q --slug S --effort N
                            [--models balanced|opus] [--expert NAME ...] [--command-id ID]
     spike-manifest.py mark --dir D --stage X --status S
+    spike-manifest.py expect --dir D --stage X --path REL [--path REL ...]
     spike-manifest.py show --dir D
     spike-manifest.py list --root R
     spike-manifest.py resolve --root R --ref REF
@@ -18,8 +19,8 @@ partially-valid dict. Writes are atomic (temp file in the same directory + os.re
 Resume points are derived from artifacts on disk, not from the status field alone.
 
 Importable API (tests load this file with importlib, since the name is hyphenated):
-init_manifest, load_manifest, mark_stage, add_command_id, missing_artifacts,
-resume_point, list_spikes, resolve_spike, ManifestError, STAGES, STATUSES, STAGE_ARTIFACTS.
+init_manifest, load_manifest, mark_stage, add_command_id, expect_artifacts,
+missing_artifacts, resume_point, list_spikes, resolve_spike, ManifestError, STAGES, STATUSES, STAGE_ARTIFACTS.
 """
 
 import argparse
@@ -71,6 +72,10 @@ MANIFEST_KEYS = frozenset(
     }
 )
 
+# Optional manifest key: stage -> relative artifact paths that must exist for the stage to count
+# as complete (e.g. one survey file per sub-question). Absent until `expect` records it.
+OPTIONAL_KEYS = frozenset({"expected_artifacts"})
+
 # stage -> list of (relative path or glob, sentinel or None).
 # A sentinel counts as present when the file's last non-blank line, stripped, equals it.
 STAGE_ARTIFACTS: Dict[str, List[Tuple[str, Optional[str]]]] = {
@@ -117,6 +122,13 @@ def _check_str_list(value: Any, field: str) -> None:
         raise ManifestError(f"{field} must be a list of strings")
 
 
+def _check_relative_path(rel: str, where: str) -> None:
+    """Raise ManifestError unless rel is a non-empty relative path with no '..' or absolute parts."""
+    parts = Path(rel).parts
+    if not rel.strip() or Path(rel).is_absolute() or ".." in parts or not parts:
+        raise ManifestError(f"{where}: artifact path {rel!r} must be relative and stay inside the spike dir")
+
+
 def _validate_manifest(data: Any, where: str) -> Dict[str, Any]:
     """Return data if it is a fully-valid manifest; otherwise raise ManifestError."""
     if not isinstance(data, dict):
@@ -131,7 +143,7 @@ def _validate_manifest(data: Any, where: str) -> Dict[str, Any]:
     missing = sorted(MANIFEST_KEYS - set(data))
     if missing:
         raise ManifestError(f"{where}: missing keys: {', '.join(missing)}")
-    extra = sorted(set(data) - MANIFEST_KEYS)
+    extra = sorted(set(data) - MANIFEST_KEYS - OPTIONAL_KEYS)
     if extra:
         raise ManifestError(f"{where}: unexpected keys: {', '.join(extra)}")
 
@@ -152,6 +164,17 @@ def _validate_manifest(data: Any, where: str) -> Dict[str, Any]:
     if not isinstance(data["updated"], str):
         raise ManifestError(f"{where}: updated must be a string")
     _check_str_list(data["command_ids"], "command_ids")
+
+    if "expected_artifacts" in data:
+        expected = data["expected_artifacts"]
+        if not isinstance(expected, dict):
+            raise ManifestError(f"{where}: expected_artifacts must be an object")
+        for stage_name, paths in expected.items():
+            if stage_name not in STAGE_ARTIFACTS:
+                raise ManifestError(f"{where}: expected_artifacts has unknown stage {stage_name!r}")
+            _check_str_list(paths, f"expected_artifacts[{stage_name}]")
+            for rel in paths:
+                _check_relative_path(rel, where)
 
     stages = data["stages"]
     if not isinstance(stages, dict):
@@ -325,6 +348,35 @@ def add_command_id(spike_dir: Any, command_id: str) -> Dict[str, Any]:
     return data
 
 
+def expect_artifacts(spike_dir: Any, stage: str, paths: Iterable[str]) -> Dict[str, Any]:
+    """Record the artifact paths stage must produce; resume treats any missing one as incomplete."""
+    if stage not in STAGE_ARTIFACTS:
+        raise ManifestError(f"unknown stage {stage!r}")
+    if isinstance(paths, str):
+        raise ManifestError("paths must be a sequence of relative paths, not a string")
+    path_list = sorted(set(paths))
+    for rel in path_list:
+        if not isinstance(rel, str):
+            raise ManifestError(f"artifact path {rel!r} must be a string")
+        _check_relative_path(rel, "expect")
+    data = load_manifest(spike_dir)
+    data.setdefault("expected_artifacts", {})[stage] = path_list
+    data["updated"] = _now()
+    _write_atomic(Path(spike_dir), data)
+    return data
+
+
+def _is_safe_file(root: Path, path: Path) -> bool:
+    """True for a regular file that is not a symlink and does not resolve outside root."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _content_ok(path: Path, sentinel: Optional[str]) -> bool:
     """True when the file is readable, non-blank, and (if given) ends with the sentinel line."""
     try:
@@ -337,15 +389,19 @@ def _content_ok(path: Path, sentinel: Optional[str]) -> bool:
     return bool(lines) and lines[-1] == sentinel
 
 
-def missing_artifacts(spike_dir: Any, stage: str) -> List[str]:
-    """Relative paths/globs of expectations for stage that are not satisfied on disk."""
+def missing_artifacts(spike_dir: Any, stage: str, expected: Iterable[str] = ()) -> List[str]:
+    """Relative paths/globs of expectations for stage that are not satisfied on disk.
+
+    expected: extra relative paths recorded via expect_artifacts; each must be a safe,
+    non-blank file. Symlinks never satisfy an expectation.
+    """
     if stage not in STAGE_ARTIFACTS:
         raise ManifestError(f"unknown stage {stage!r}")
     root = Path(spike_dir)
     missing: List[str] = []
     for pattern, sentinel in STAGE_ARTIFACTS[stage]:
         if any(ch in pattern for ch in "*?["):
-            matches = sorted(p for p in root.glob(pattern) if p.is_file())
+            matches = sorted(p for p in root.glob(pattern) if _is_safe_file(root, p))
             if not matches:
                 missing.append(pattern)
                 continue
@@ -354,8 +410,13 @@ def missing_artifacts(spike_dir: Any, stage: str) -> List[str]:
                     missing.append(match.relative_to(root).as_posix())
         else:
             target = root / pattern
-            if not target.is_file() or not _content_ok(target, sentinel):
+            if not _is_safe_file(root, target) or not _content_ok(target, sentinel):
                 missing.append(pattern)
+    for rel in expected:
+        target = root / rel
+        if not _is_safe_file(root, target) or not _content_ok(target, None):
+            if rel not in missing:
+                missing.append(rel)
     return missing
 
 
@@ -366,7 +427,8 @@ def resume_point(spike_dir: Any) -> Optional[str]:
         status = data["stages"][stage]
         if status == "skipped":
             continue
-        if status == "done" and not missing_artifacts(spike_dir, stage):
+        expected = data.get("expected_artifacts", {}).get(stage, [])
+        if status == "done" and not missing_artifacts(spike_dir, stage, expected):
             continue
         return stage
     return None
@@ -471,6 +533,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mark.add_argument("--stage", required=True)
     p_mark.add_argument("--status", required=True)
 
+    p_expect = sub.add_parser("expect", help="record artifact paths a stage must produce")
+    p_expect.add_argument("--dir", required=True)
+    p_expect.add_argument("--stage", required=True)
+    p_expect.add_argument("--path", action="append", default=None, dest="paths")
+
     p_show = sub.add_parser("show", help="print the manifest plus resume_point")
     p_show.add_argument("--dir", required=True)
 
@@ -500,6 +567,8 @@ def _run(args: argparse.Namespace) -> Any:
         )
     if args.command == "mark":
         return mark_stage(args.dir, args.stage, args.status)
+    if args.command == "expect":
+        return expect_artifacts(args.dir, args.stage, args.paths or [])
     if args.command == "show":
         data = load_manifest(args.dir)
         data["resume_point"] = resume_point(args.dir)
