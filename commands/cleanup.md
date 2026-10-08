@@ -144,31 +144,40 @@ TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin 
 
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
-# Extract optional --queue-started-at=<n> before glob resolution
-ARG="$ARGUMENTS"
+# Extract optional --queue-started-at=<n> or --queue-started-at <n> before glob resolution
+# Tokenize $ARGUMENTS to handle both forms: --queue-started-at=N and --queue-started-at N
+ARG=""
 QSA=""
-if [ -n "$ARG" ]; then
-  # Check if ARG contains --queue-started-at=
-  case "$ARG" in
+
+# Split ARGUMENTS into an array and process each token
+set -- $ARGUMENTS
+while [ $# -gt 0 ]; do
+  token="$1"
+  shift
+  case "$token" in
     --queue-started-at=*)
-      QSA="${ARG#--queue-started-at=}"
-      ARG=""
+      QSA="${token#--queue-started-at=}"
       ;;
-    *\ --queue-started-at=*)
-      # Handle case where --queue-started-at appears after a worktree path (unlikely but safe)
-      QSA=$(printf '%s' "$ARG" | sed -n 's/.*--queue-started-at=\([^ ]*\).*/\1/p')
-      ARG=$(printf '%s' "$ARG" | sed 's/ *--queue-started-at=[^ ]*//')
+    --queue-started-at)
+      # Next token is the value
+      if [ $# -gt 0 ]; then
+        QSA="$1"
+        shift
+      fi
+      ;;
+    *)
+      # Non-flag token — accumulate for glob resolution
+      if [ -z "$ARG" ]; then
+        ARG="$token"
+      else
+        ARG="$ARG $token"
+      fi
       ;;
   esac
-fi
+done
 
-# Validate --queue-started-at if present
-if [ -n "$QSA" ]; then
-  if ! python3 -c "import sys; f=float('$QSA'); sys.exit(0 if f >= 0 and f == f and f != float('inf') and f != float('-inf') else 1)" 2>/dev/null; then
-    echo "WARNING: Invalid --queue-started-at='$QSA' (must be a finite non-negative number); dropping it"
-    QSA=""
-  fi
-fi
+# Validate --queue-started-at if present; the Python CLI will also validate
+# Skip validation here — let the Python CLI validate and reject via argparse
 
 if [ -n "$ARG" ]; then
   # --- Argument provided: resolve glob to find target ---
@@ -952,11 +961,14 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --o
 | Issue/PR text unavailable (`gh` fails, no issue) | Note it and continue — don't block on a read failure |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
 | PR merged — regression gate | Pull main ff-only, run checks from `repo-cache.json` in a scrubbed allowlist environment (300s default timeout, override via `CLEANUP_CHECK_TIMEOUT_SECS`); report one of: `pass`, `fail` (REGRESSION on main), `inconclusive` (infra/timeout/lock/env issue), or `skipped` (queue-proven equivalence) |
-| Validation pass | Report `VALIDATION=pass — merged main is green`, continue cleanup anyway |
-| Validation fail | Report `VALIDATION=fail — REGRESSION on main; investigate separately.` with failure details, continue cleanup anyway |
-| Validation inconclusive | Report `VALIDATION=inconclusive — <reason>` (timeout, lock held, env unavailable, fingerprint probe failure, etc.), continue cleanup anyway |
-| Validation skipped (queue-proven) | Report `VALIDATION=skipped — landed tree identical to queue-tested tree`, print tested steps, continue cleanup anyway |
-| Validation skipped (no checks or not merged) | Report `VALIDATION=pass` with a note ("no checks configured" or "validation not run"), continue cleanup anyway |
+| Validation pass | Report `VALIDATION=pass — merged main is green`, **remove worktree and continue** |
+| Validation fail | Report `VALIDATION=fail — REGRESSION on main; investigate separately.` with failure details, **remove worktree and continue** |
+| Validation inconclusive (timeout, fingerprint failure) | Report `VALIDATION=inconclusive — <reason>`, **remove worktree and continue** |
+| Validation inconclusive (lock held) | Report error, **HALT cleanup** — worktree retained, `success: false` in result JSON |
+| Validation inconclusive (ff-pull failure) | Report error, **HALT cleanup** — worktree retained, `success: false` in result JSON |
+| Validation inconclusive (env-derivation-inconclusive in Compose) | Report error, **HALT cleanup** — worktree retained, `success: false` in result JSON |
+| Validation skipped (queue-proven) | Report `VALIDATION=skipped — landed tree identical to queue-tested tree`, print tested steps, **remove worktree and continue** |
+| Validation skipped (no checks or not merged) | Report `VALIDATION=pass` with a note ("no checks configured" or "validation not run"), **remove worktree and continue** |
 | Stacked children detected | Auto-execute restack via /stack-sync when the Skill harness is available and `STACK_SYNC_MANUAL` is unset; the fully-substituted restack runbook is always emitted (abort = deferral, not a dead end); on the emit-only path the user runs it manually |
 | No stacked children | Continue to worktree removal (unchanged flow) |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
@@ -1011,10 +1023,17 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   plus any variables exported by the main worktree's `.envrc` (via `direnv export`); all other
   variables are dropped. For Compose repos with direnv unavailable or blocked, validation returns
   inconclusive. If the repo-cache doesn't exist, validation is skipped with a note (run `/shipit`
-  once to write it). Failures are reported but never block cleanup. The check commands default to
-  a 300s timeout; set `CLEANUP_CHECK_TIMEOUT_SECS` (per-repo) to override for a check command
-  that legitimately takes longer. Timeouts, lock contention, or env derivation failures are
-  reported as `inconclusive` rather than a confirmed regression.
+  once to write it). Most validation verdicts are reported but do not block cleanup — the worktree
+  is always removed regardless of validation outcome. However, three specific validation failures
+  **halt cleanup** (no worktree removal, `success: false` in result JSON): (1) lock-held
+  (another process holds the merge lock), (2) ff-pull-failure (the main branch pull failed),
+  and (3) env-derivation-inconclusive (direnv cannot be re-derived in Compose repos). These three
+  paths return with an explicit error and leave the worktree intact for the user to retry after
+  fixing the underlying issue. Queue-proven skips (landed tree identical to queue-tested tree)
+  also fall through to worktree removal without revalidation. The check commands default to a 300s
+  timeout; set `CLEANUP_CHECK_TIMEOUT_SECS` (per-repo) to override for a check command that
+  legitimately takes longer. Verified or failing validation verdicts (non-halt outcomes) are
+  reported as `inconclusive` rather than a confirmed regression when timeouts occur.
 - **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
   child branches and restacks them via `/stack-sync` when the Skill harness is available
   (`claude` on PATH) and `STACK_SYNC_MANUAL` is not `1`. The fully-substituted restack
