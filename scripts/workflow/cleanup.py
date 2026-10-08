@@ -94,7 +94,22 @@ class CleanupPlan:
 
 @dataclass
 class CleanupResult:
-    """Result of applying a cleanup plan."""
+    """
+    Result of applying a cleanup plan.
+
+    Fields:
+        success: True if worktree was removed and branch was deleted.
+        worktree_removed: True if the target worktree was successfully removed.
+        branch_deleted: True if the branch was successfully deleted.
+        validation: Three-state validation verdict (PASS, SKIPPED, INCONCLUSIVE).
+        validation_reason: Human-readable reason for validation verdict.
+        queue_tested_steps: List of queue proof steps (populated only when verdict is SKIPPED).
+        validation_failures: Errors encountered during validation or worktree cleanup.
+        notes: Non-fatal observations (e.g., dirty-tree retry). Separate from failures.
+        tree: For SKIPPED verdict, the commit SHA that was queue-proven (populated by queue_proof).
+        error: Set when validation returns without completing due to an error (lock contention,
+                stale plan, ff-pull failure, or env-derivation failure).
+    """
     success: bool
     worktree_removed: bool = False
     branch_deleted: bool = False
@@ -106,6 +121,7 @@ class CleanupResult:
     # worktree removal that had to be retried with --force). Kept separate from
     # validation_failures so a recovered step is not reported as a failure.
     notes: List[str] = field(default_factory=list)
+    tree: Optional[str] = None
     error: Optional[Unknown] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -116,6 +132,7 @@ class CleanupResult:
         d["validation"] = self.validation.value
         # Add deprecated field for backwards compatibility
         d["validation_passed"] = self.validation in (ValidationVerdict.PASS, ValidationVerdict.SKIPPED)
+        # tree is already in d via asdict; leave it as-is (None or str)
         return d
 
 
@@ -200,6 +217,145 @@ def plan_cleanup(
         return None, Unknown(f"plan_cleanup failed: {e}")
 
 
+def _check_plan_fresh(plan: CleanupPlan, target_worktree: Path) -> Optional[Unknown]:
+    """
+    Verify that a plan is still fresh before running validation.
+
+    Checks:
+    1. Worktree still exists and is a directory
+    2. Branch hasn't changed
+    3. HEAD SHA hasn't changed
+    4. Cache hash hasn't changed
+
+    Returns None if all checks pass; returns Unknown(...) if any check fails.
+    """
+    try:
+        if not target_worktree.exists():
+            return Unknown(f"Target worktree does not exist: {plan.target_worktree}")
+
+        if not target_worktree.is_dir():
+            return Unknown(f"Target path is not a directory: {plan.target_worktree}")
+
+        current_branch = git.get_current_branch(cwd=target_worktree)
+        if current_branch != plan.current_branch:
+            return Unknown(f"Branch changed: was {plan.current_branch}, now {current_branch}")
+
+        current_head_sha = git.get_head_sha(cwd=target_worktree)
+        if current_head_sha != plan.expected_head_sha:
+            return Unknown("HEAD SHA changed (plan is stale)")
+
+        cache_hash = hash_cache_file(Path(plan.target_worktree) / ".claude" / "repo-cache.json")
+        if cache_hash != plan.cache_hash:
+            return Unknown("Cache has changed (plan is stale)")
+
+        return None
+
+    except Exception as e:
+        return Unknown(f"Freshness validation failed: {e}")
+
+
+def _validate_main(
+    plan: CleanupPlan,
+    main_worktree_path: Path
+) -> Tuple[Optional[Unknown], Optional[str]]:
+    """
+    Perform main-worktree validation: acquire lock and pull ff-only.
+
+    Returns (error, lock_reason) where:
+    - (None, None): both succeeded
+    - (Unknown(...), None): lock succeeded but pull failed
+    - (None, reason_str): lock failed with reason
+    """
+    # Try to acquire lock
+    lock_result = validation.validation_lock(main_worktree_path)
+    try:
+        context_manager = lock_result.__enter__()
+        if context_manager is not None:
+            # Lock failed
+            return None, context_manager
+
+        # Lock succeeded; now try to pull
+        try:
+            success, err = git.pull_ff_only("origin", "main", cwd=main_worktree_path)
+            if not success:
+                reason = f"could not fast-forward main: {err.reason if err else 'unknown error'}"
+                lock_result.__exit__(None, None, None)
+                return Unknown(reason), None
+        except Exception as e:
+            reason = f"could not fast-forward main: {e}"
+            lock_result.__exit__(None, None, None)
+            return Unknown(reason), None
+
+        return None, None
+
+    except Exception as e:
+        lock_result.__exit__(None, None, None)
+        return Unknown(f"Main worktree validation error: {e}"), None
+
+
+def _remove_worktree_and_branch(
+    plan: CleanupPlan,
+    result: CleanupResult,
+    cwd: Optional[Path] = None
+) -> None:
+    """
+    Remove worktree and delete branch (after validation lock is released).
+
+    Mutates result in-place: sets worktree_removed, branch_deleted,
+    validation_failures, and notes.
+    """
+    # Worktree removal
+    try:
+        success, err = git.remove_worktree(Path(plan.target_worktree), force=False, cwd=cwd)
+        if success:
+            result.worktree_removed = True
+        elif err:
+            # Escalate to --force only for a dirty tree
+            reason_lower = (err.reason or "").lower()
+            is_dirty_tree_failure = (
+                "dirty" in reason_lower
+                or "modified or untracked" in reason_lower
+                or "use --force" in reason_lower
+            )
+            first_failure = f"Worktree removal failed: {err.reason}"
+            if is_dirty_tree_failure:
+                try:
+                    success, retry_err = git.remove_worktree(Path(plan.target_worktree), force=True, cwd=cwd)
+                    if success:
+                        result.worktree_removed = True
+                        result.notes.append(f"{first_failure} — retried with --force, succeeded")
+                    else:
+                        result.validation_failures.append(first_failure)
+                        if retry_err:
+                            result.validation_failures.append(f"Forced worktree removal failed: {retry_err.reason}")
+                except Exception as e:
+                    result.validation_failures.append(first_failure)
+                    result.validation_failures.append(f"Forced worktree removal error: {e}")
+            else:
+                result.validation_failures.append(first_failure)
+    except Exception as e:
+        result.validation_failures.append(f"Worktree removal error: {e}")
+
+    if result.worktree_removed:
+        try:
+            merge_lock_path(str(plan.target_worktree)).unlink(missing_ok=True)
+        except Exception as e:
+            result.validation_failures.append(f"Merge lock cleanup failed (non-fatal): {e}")
+
+    # Branch deletion
+    force_delete = plan.pr_state == "MERGED"
+    try:
+        success, err = git.delete_branch(plan.current_branch, force=force_delete, cwd=cwd)
+        if success:
+            result.branch_deleted = True
+        elif err:
+            result.validation_failures.append(f"Branch deletion failed: {err.reason}")
+    except Exception as e:
+        result.validation_failures.append(f"Branch deletion error: {e}")
+
+    result.success = result.worktree_removed and result.branch_deleted
+
+
 @fail_closed
 def apply_cleanup(
     plan_json: str,
@@ -224,49 +380,25 @@ def apply_cleanup(
 
         result = CleanupResult(success=False)
 
-        try:
-            target_worktree = Path(plan.target_worktree)
-            if not target_worktree.exists():
-                result.validation = ValidationVerdict.INCONCLUSIVE
-                result.validation_reason = "validation not run: target worktree no longer exists"
-                result.error = Unknown(f"Target worktree does not exist: {plan.target_worktree}")
-                return result, result.error
-
-            current_branch = git.get_current_branch(cwd=target_worktree)
-            if current_branch != plan.current_branch:
-                result.validation = ValidationVerdict.INCONCLUSIVE
-                result.validation_reason = "validation not run: branch changed"
-                result.error = Unknown(f"Branch changed: was {plan.current_branch}, now {current_branch}")
-                return result, result.error
-
-            current_head_sha = git.get_head_sha(cwd=target_worktree)
-            if current_head_sha != plan.expected_head_sha:
-                result.validation = ValidationVerdict.INCONCLUSIVE
-                result.validation_reason = "validation not run: HEAD SHA changed"
-                result.error = Unknown("HEAD SHA changed (plan is stale)")
-                return result, result.error
-
-            cache_hash = hash_cache_file(Path(plan.target_worktree) / ".claude" / "repo-cache.json")
-            if cache_hash != plan.cache_hash:
-                result.validation = ValidationVerdict.INCONCLUSIVE
-                result.validation_reason = "validation not run: cache changed"
-                result.error = Unknown("Cache has changed (plan is stale)")
-                return result, result.error
-
-        except Exception as e:
+        # Check freshness before anything else
+        target_worktree = Path(plan.target_worktree)
+        freshness_err = _check_plan_fresh(plan, target_worktree)
+        if freshness_err:
             result.validation = ValidationVerdict.INCONCLUSIVE
-            result.validation_reason = "validation not run: freshness check failed"
-            result.error = Unknown(f"Freshness validation failed: {e}")
+            result.validation_reason = f"validation not run: {freshness_err}"
+            result.error = freshness_err
             return result, result.error
 
         main_worktree_path = cwd or Path.cwd()
 
-        # Enter validation lock
+        # Enter validation lock, pull main, and run validation.
+        # SKIPPED verdict (queue proof) does NOT return early; it falls through to mutation.
         with validation.validation_lock(main_worktree_path) as lock_result:
             if lock_result is not None:
                 # Lock failed
                 result.validation = ValidationVerdict.INCONCLUSIVE
                 result.validation_reason = lock_result
+                result.error = Unknown(f"Validation lock failed: {lock_result}")
                 return result, None
 
             # Try to pull main
@@ -275,67 +407,70 @@ def apply_cleanup(
                 if not success:
                     result.validation = ValidationVerdict.INCONCLUSIVE
                     result.validation_reason = f"could not fast-forward main: {err.reason if err else 'unknown error'}"
+                    result.error = Unknown(result.validation_reason)
                     return result, None
             except Exception as e:
                 result.validation = ValidationVerdict.INCONCLUSIVE
                 result.validation_reason = f"could not fast-forward main: {e}"
+                result.error = Unknown(result.validation_reason)
                 return result, None
 
             # Try queue proof if context is available
+            queue_proved = False
             if queue_started_at is not None and plan.pr_number is not None:
                 proof_result = validation.queue_proof(plan.pr_number, queue_started_at, main_worktree_path)
                 if isinstance(proof_result, validation.Proved):
                     result.validation = ValidationVerdict.SKIPPED
                     result.validation_reason = proof_result.tree
+                    result.tree = proof_result.tree
                     result.queue_tested_steps = proof_result.steps
-                    # Proof succeeded; skip validation checks
-                    return result, None
+                    queue_proved = True
+                    # Proof succeeded; skip validation checks but continue to mutation
                 else:
                     # CannotProve; continue to run validation
                     result.notes.append(f"queue proof unavailable: {proof_result.reason}; running validation")
 
-            # Build validation environment
-            check_timeout = _get_cleanup_check_timeout()
-            log_dir = diagnostics.make_log_dir() if plan.check_commands else None
+            # If queue proof succeeded, skip the rest of validation
+            if not queue_proved:
+                # Build validation environment
+                check_timeout = _get_cleanup_check_timeout()
+                log_dir = diagnostics.make_log_dir() if plan.check_commands else None
 
-            env_derivation = validation.build_validation_env(main_worktree_path, dict(os.environ))
-            if env_derivation.inconclusive_reason:
-                result.validation = ValidationVerdict.INCONCLUSIVE
-                result.validation_reason = env_derivation.inconclusive_reason
+                env_derivation = validation.build_validation_env(main_worktree_path, dict(os.environ))
+                if env_derivation.inconclusive_reason:
+                    result.validation = ValidationVerdict.INCONCLUSIVE
+                    result.validation_reason = env_derivation.inconclusive_reason
+                    result.notes.extend(env_derivation.notes)
+                    result.error = Unknown(result.validation_reason)
+                    return result, None
+
                 result.notes.extend(env_derivation.notes)
-                return result, None
 
-            result.notes.extend(env_derivation.notes)
+                # Run validation
+                val_run = validation.run_validation(
+                    plan.check_commands,
+                    main_worktree_path,
+                    env_derivation.env,
+                    check_timeout,
+                    log_dir,
+                    env_derivation.dropped_names
+                )
 
-            # Run validation
-            val_run = validation.run_validation(
-                plan.check_commands,
-                main_worktree_path,
-                env_derivation.env,
-                check_timeout,
-                log_dir,
-                env_derivation.dropped_names
-            )
+                result.validation = val_run.verdict
+                result.validation_reason = val_run.reason
+                result.validation_failures.extend(val_run.failures)
+                result.notes.extend(val_run.notes)
 
-            result.validation = val_run.verdict
-            result.validation_reason = val_run.reason
-            result.validation_failures.extend(val_run.failures)
-            result.notes.extend(val_run.notes)
-
-            # Keep logs only if not all checks passed on attempt 1
-            if val_run.verdict != ValidationVerdict.PASS:
-                # Keep the log dir; it has useful diagnostics
-                pass
-            else:
-                # All passed; remove log dir
-                try:
-                    diagnostics.remove_log_dir(log_dir)
-                except Exception as e:
-                    result.notes.append(f"failed to remove log dir: {e}")
+                # Logs are only useful for post-mortems: keep them when any check failed or timed out.
+                if val_run.verdict == ValidationVerdict.PASS:
+                    try:
+                        diagnostics.remove_log_dir(log_dir)
+                    except Exception as e:
+                        result.notes.append(f"failed to remove log dir: {e}")
 
         # Re-validate HEAD SHA immediately before mutation
         try:
-            current_head_sha_recheck = git.get_head_sha(cwd=Path(plan.target_worktree))
+            current_head_sha_recheck = git.get_head_sha(cwd=target_worktree)
             if current_head_sha_recheck != plan.expected_head_sha:
                 result.validation = ValidationVerdict.INCONCLUSIVE
                 result.validation_reason = "plan went stale during validation"
@@ -347,59 +482,9 @@ def apply_cleanup(
             result.error = Unknown(f"Freshness re-validation before mutation failed: {e}")
             return result, result.error
 
-        # Now proceed with worktree removal (after validation lock is released)
-        try:
-            success, err = git.remove_worktree(Path(plan.target_worktree), force=False, cwd=cwd)
-            if success:
-                result.worktree_removed = True
-            elif err:
-                # Escalate to --force only for a dirty tree — deliberately NOT for any
-                # failure (a "Permission denied" must not be retried destructively).
-                reason_lower = (err.reason or "").lower()
-                is_dirty_tree_failure = (
-                    "dirty" in reason_lower
-                    or "modified or untracked" in reason_lower
-                    or "use --force" in reason_lower
-                )
-                first_failure = f"Worktree removal failed: {err.reason}"
-                if is_dirty_tree_failure:
-                    try:
-                        success, retry_err = git.remove_worktree(Path(plan.target_worktree), force=True, cwd=cwd)
-                        if success:
-                            # Only a note: the safe attempt being refused is expected
-                            # here (that is what --force is for), so recording it as a
-                            # validation *failure* would report a clean cleanup as failed.
-                            result.worktree_removed = True
-                            result.notes.append(f"{first_failure} — retried with --force, succeeded")
-                        else:
-                            result.validation_failures.append(first_failure)
-                            if retry_err:
-                                result.validation_failures.append(f"Forced worktree removal failed: {retry_err.reason}")
-                    except Exception as e:
-                        result.validation_failures.append(first_failure)
-                        result.validation_failures.append(f"Forced worktree removal error: {e}")
-                else:
-                    result.validation_failures.append(first_failure)
-        except Exception as e:
-            result.validation_failures.append(f"Worktree removal error: {e}")
+        # Now proceed with worktree removal and branch deletion (after validation lock is released)
+        _remove_worktree_and_branch(plan, result, cwd=cwd)
 
-        if result.worktree_removed:
-            try:
-                merge_lock_path(str(plan.target_worktree)).unlink(missing_ok=True)
-            except Exception as e:
-                result.validation_failures.append(f"Merge lock cleanup failed (non-fatal): {e}")
-
-        force_delete = plan.pr_state == "MERGED"
-        try:
-            success, err = git.delete_branch(plan.current_branch, force=force_delete, cwd=cwd)
-            if success:
-                result.branch_deleted = True
-            elif err:
-                result.validation_failures.append(f"Branch deletion failed: {err.reason}")
-        except Exception as e:
-            result.validation_failures.append(f"Branch deletion error: {e}")
-
-        result.success = result.worktree_removed and result.branch_deleted
         return result, None
 
     except json.JSONDecodeError as e:

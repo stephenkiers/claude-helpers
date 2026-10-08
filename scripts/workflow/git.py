@@ -9,6 +9,7 @@ import os
 import sys
 import subprocess
 import json
+import hashlib
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any, Union, NamedTuple
 from .safety import Unknown, fail_closed
@@ -186,7 +187,19 @@ def get_git_common_dir(cwd: Optional[Path] = None) -> str:
 # ============================================================================
 
 class Fingerprint(NamedTuple):
-    """Snapshot of tracked-file state in a worktree."""
+    """
+    Snapshot of tracked-file state in a worktree.
+
+    Blind to untracked and ignored files (--untracked-files=no means only tracked
+    files are included in the status check).
+
+    Fields:
+        head: Current HEAD SHA
+        status: Raw output of git status --porcelain=v1 -z --untracked-files=no
+        diff_sha: SHA256 of git diff --no-ext-diff HEAD
+
+    Note: POSIX git only (uses --no-optional-locks and --end-of-options).
+    """
     head: str  # Current HEAD SHA
     status: bytes  # Raw output of git status --porcelain=v1 -z --untracked-files=no
     diff_sha: str  # SHA256 of git diff --no-ext-diff HEAD
@@ -238,7 +251,6 @@ def tracked_fingerprint(cwd: Path) -> Optional[Fingerprint]:
             check=True
         )
         # Hash the diff output
-        import hashlib
         diff_sha = hashlib.sha256(diff_output.encode("utf-8")).hexdigest()
 
         return Fingerprint(head=head_sha, status=status_bytes, diff_sha=diff_sha)

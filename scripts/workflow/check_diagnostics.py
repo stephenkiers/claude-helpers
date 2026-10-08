@@ -220,7 +220,7 @@ def write_check_log(
                 if dropped_env_names:
                     snapshot += f"dropped variables: {', '.join(dropped_env_names)}\n"
                 if env_used is not None:
-                    # Show only a count and keys for redaction purposes
+                    # Show only a count for redaction purposes
                     snapshot += f"kept {len(env_used)} environment variables\n"
         path.write_text(header + body + snapshot, encoding="utf-8", errors="replace")
         return path

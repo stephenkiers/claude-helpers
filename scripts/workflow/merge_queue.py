@@ -1233,6 +1233,10 @@ def read_pr_result(pr: int, cwd: Path) -> Optional[Tuple[MergeResult, float]]:
         with open(result_path) as f:
             data = json.load(f)
 
+        # Guard: data must be a dict
+        if not isinstance(data, dict):
+            return None
+
         # Extract timestamp
         timestamp = data.get("timestamp")
         if timestamp is None:
@@ -1270,7 +1274,7 @@ def read_pr_result(pr: int, cwd: Path) -> Optional[Tuple[MergeResult, float]]:
             # KeyError: missing required field
             # TypeError: field type mismatch
             return None
-    except (IOError, json.JSONDecodeError, ValueError, TypeError):
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
         return None
 
 
