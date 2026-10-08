@@ -16,7 +16,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 DEFAULTS: Dict[str, Any] = {
     "default_effort": 2,
@@ -68,15 +68,15 @@ def _is_pos_int(v: Any) -> bool:
     return type(v) is int and v > 0
 
 
-def load_config(project_root: Any = None, home: Any = None) -> Dict[str, Any]:
+def load_config(project_root: Optional[str] = None, home: Optional[str] = None) -> Dict[str, Any]:
     """Load config with cascade: defaults < user-level < project-level.
 
     Validates: default_effort is int in (2, 3, 4); thresholds are positive ints;
     cue/keyword lists are lists. Warns on invalid values and keeps the prior value.
     """
     cfg = copy.deepcopy(DEFAULTS)
-    home = Path(home) if home else Path.home()
-    paths = [home / ".claude" / CONFIG_NAME]
+    home_path: Path = Path(home) if home else Path.home()
+    paths: List[Path] = [home_path / ".claude" / CONFIG_NAME]
     if project_root:
         paths.append(Path(project_root) / ".claude" / CONFIG_NAME)
     for p in paths:
@@ -112,7 +112,15 @@ def load_config(project_root: Any = None, home: Any = None) -> Dict[str, Any]:
                     entry = " ".join(k.split())
                     if entry:
                         kept.append(entry)
-                cfg[key] = kept
+                if kept or not v:
+                    # Accept if we have valid entries, or if input was empty
+                    cfg[key] = kept
+                else:
+                    # Input was non-empty but all entries were invalid/blank
+                    print(
+                        f"warning: {p}: {key} has no valid entries; keeping previous value",
+                        file=sys.stderr,
+                    )
             else:
                 print(
                     f"warning: {p}: {key} must be a list, got {type(v).__name__}={v!r}; "
@@ -158,11 +166,17 @@ def _matched_signals(text: str, cfg: Dict[str, Any]) -> List[str]:
 def _is_path_like(tok: str) -> bool:
     """A path has at least three segments, or a file extension on its last segment.
 
+    At least one segment must contain a letter to avoid false positives: purely numeric
+    tokens like "1.5/2" or "3/4" (versions, fractions, ratios) should not escalate effort.
+
     "read/write" and "I/O" are prose, not paths; "scripts/foo.py" and "src/a/b" are paths.
     """
     if not PATH_RE.fullmatch(tok):
         return False
     segs = [s for s in tok.split("/") if s]
+    # At least one segment must contain a letter (not purely numeric)
+    if not any(any(c.isalpha() for c in seg) for seg in segs):
+        return False
     return len(segs) >= 3 or "." in segs[-1]
 
 
@@ -209,22 +223,24 @@ def decide(text: str, cfg: Dict[str, Any]) -> Tuple[int, str]:
             len(subs), cfg["subsystem_min"], ", ".join(subs[:5]),
         )
     if len(signals) == 1:
-        return 3, "single signal: '%s'" % signals[0]
+        return max(3, cfg["default_effort"]), "single signal: '%s'" % signals[0]
     return cfg["default_effort"], "no cues matched; %d chars" % len(text)
 
 
-def _fallback(reason: str) -> None:
-    print(json.dumps({"effort": 2, "reason": "heuristic unavailable (%s)" % reason, "source": "fallback"}))
+def _fallback(reason: str, cfg: Optional[Dict[str, Any]] = None) -> None:
+    effort = cfg.get("default_effort", 2) if cfg else 2
+    print(json.dumps({"effort": effort, "reason": "heuristic unavailable (%s)" % reason, "source": "fallback"}))
 
 
-def main(argv: list) -> None:
+def main(argv: List[str]) -> None:
     """Main entry point. Parse args, decide effort, print JSON result.
 
-    Never raises or returns non-zero; always prints valid JSON with source
-    "heuristic" (on success) or "fallback" (on error).
+    Always prints valid JSON with source "heuristic" (on success) or "fallback" (on error).
+    Never returns non-zero.
     """
     args = argv[1:]
     root = None
+    cfg = None
     try:
         if "--project-root" in args:
             i = args.index("--project-root")
@@ -236,11 +252,13 @@ def main(argv: list) -> None:
         if len(args) != 1:
             _fallback("usage: spike-effort.py <question-text-file> [--project-root DIR]")
             return
+        cfg = load_config(root)
         text = Path(args[0]).read_text(encoding="utf-8")
-        effort, reason = decide(text, load_config(root))
+        effort, reason = decide(text, cfg)
         print(json.dumps({"effort": effort, "reason": reason, "source": "heuristic"}))
     except Exception as e:  # never block the spike on the heuristic
-        _fallback(str(e))
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        _fallback(str(e), cfg)
 
 
 if __name__ == "__main__":

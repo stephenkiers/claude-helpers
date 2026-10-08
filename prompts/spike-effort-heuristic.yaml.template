@@ -4,6 +4,11 @@
 # Project-level copy at: .claude/spike-effort-heuristic.yaml (overrides user-level, key by key)
 # All entries are optional; omit what you want the defaults for.
 #
+# NOTE: When you copy this template, the lists below are frozen. If the built-in defaults
+# change in a future version of spike-effort.py, your copied lists will not automatically
+# update. To stay in sync with future defaults, remove the lists from your copy and let
+# the heuristic use the built-ins, or periodically review this template for changes.
+#
 # Without this file, /expert-spike uses the built-in defaults below. The heuristic only runs when
 # --effort is NOT passed; explicit --effort always skips it. It is deterministic (no model call):
 # scripts/spike-effort.py reads the question text and picks effort 2, 3, or 4.
