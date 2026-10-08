@@ -547,7 +547,7 @@ def missing_artifacts(spike_dir: Union[str, os.PathLike], stage: str, expected: 
                     if not _is_safe_file(root, target) or not _content_ok(target, sentinel):
                         missing.append(expert_pattern)
 
-    return missing
+    return list(dict.fromkeys(missing))
 
 
 def resume_point_from(data: Dict[str, Any], spike_dir: Union[str, os.PathLike]) -> Optional[str]:
