@@ -84,7 +84,7 @@ v3 uses `agents/expert-reviewer.md`'s existing hybrid dispatch mode (persona + c
 ### Trade-offs
 
 - **No router**: The main thread picks 3 experts directly. This is a judgment call, not a data-driven decision. For familiar domains, this is fine; for novel architectures, it might miss a relevant expert. Mitigation: v3 is opt-in; users can still use v1 or v2 for high-uncertainty plans.
-- **No digest subagent**: The main thread reads contributions once and builds the decision index inline. This is less scalable than v2's digest subagent if the panel size grows beyond 3 experts. Mitigation: the 3-expert cap is intentional.
+- **No digest subagent**: The main thread reads contributions once and builds the decision index inline. This is less scalable than v2's digest subagent if the panel size grows beyond 3 experts. Mitigation: the cap is intentional — 3 experts at effort 2, 4 at effort 3 (amended: planning quality is upstream of everything, so the higher-effort tier buys one extra lens).
 - **No alignment pass**: Only effort 3 (or escalations) get an independent auditor. Effort 2 users rely on main-thread consistency check + user judgment. This is a deliberate cost optimization; it's trade off for users comfortable with lower cost.
 
 ### Non-blocking Future Work
