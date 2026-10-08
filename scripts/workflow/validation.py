@@ -5,11 +5,15 @@ The env scrub is isolation, not a sandbox. Check commands still run arbitrary re
 (they receive the main worktree as cwd). The scrub limits the inherited env to a fixed
 allowlist plus direnv-exported keys, protecting against poisoned caller env (e.g.
 DATABASE_URL=postgres://attacker, COMPOSE_PROJECT_NAME=wrong-project).
+
+Note: validation_lock uses os.open with O_NOFOLLOW, which is POSIX-only.
 """
 
 import re
 import json
+import os
 import fcntl
+import math
 import shutil
 import subprocess
 import time
@@ -19,7 +23,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import (
-    Optional, Mapping, Dict, List, Tuple, FrozenSet, NamedTuple, Union, Sequence, Any, NoReturn, Iterator
+    Optional, Mapping, Dict, List, Tuple, FrozenSet, NamedTuple, Union, Sequence, Any, NoReturn, Iterator, Callable
 )
 
 from . import checks, git, check_diagnostics, merge_queue
@@ -37,8 +41,8 @@ class ValidationVerdict(str, Enum):
         """
         Parse a validation verdict from an object.
 
-        Fail-closed: unknown values, None, non-strings, wrong case, and missing keys
-        all map to FAIL.
+        Lenient: accepts any case (lowercases before lookup). Unknown values,
+        None, non-strings, and missing keys all map to FAIL.
         """
         if not isinstance(raw, str):
             return ValidationVerdict.FAIL
@@ -57,12 +61,15 @@ class AttemptOutcome(Enum):
 
 class InfraRule(NamedTuple):
     """Rule for classifying infra/environment errors."""
-    pattern: Optional[re.Pattern[str]]
+    pattern: Optional["re.Pattern[str]"]
     exit_codes: FrozenSet[int]
     reason: str
 
 
 # Pre-compiled infra rules table.
+# WARNING: ELSPROBLEMS and "Cannot find module" rules can hide transient regressions,
+# since npm/module issues may mask real failures. 126/127 (command not found) similarly
+# cannot distinguish permission denied from missing command without parsing stderr.
 _INFRA_RULES: Tuple[InfraRule, ...] = (
     InfraRule(
         pattern=re.compile(r"^Cannot connect to the Docker daemon", re.MULTILINE),
@@ -133,7 +140,7 @@ def classify(result: checks.CheckResult) -> Tuple[AttemptOutcome, str]:
             return AttemptOutcome.INCONCLUSIVE, rule.reason
 
     # Check pattern table
-    combined_output = (result.stdout or "") + (result.stderr or "")
+    combined_output = "\n".join([result.stdout or "", result.stderr or ""])
     for rule in _INFRA_RULES:
         if rule.pattern and rule.pattern.search(combined_output):
             return AttemptOutcome.INCONCLUSIVE, rule.reason
@@ -142,15 +149,21 @@ def classify(result: checks.CheckResult) -> Tuple[AttemptOutcome, str]:
     return AttemptOutcome.FAIL, ""
 
 
-def aggregate(finals: Sequence[AttemptOutcome]) -> ValidationVerdict:
+def aggregate(finals: Sequence[Union[AttemptOutcome, Tuple[AttemptOutcome, str]]]) -> ValidationVerdict:
     """
     Aggregate multiple attempt outcomes into a single verdict.
 
     Precedence: FAIL > INCONCLUSIVE > PASS. SKIPPED is never produced here.
+    Accepts both bare outcomes and (outcome, reason) tuples.
     """
-    if any(outcome == AttemptOutcome.FAIL for outcome in finals):
+    # Extract just the outcomes from tuples
+    outcomes = [
+        (outcome if isinstance(outcome, AttemptOutcome) else outcome[0])
+        for outcome in finals
+    ]
+    if any(outcome == AttemptOutcome.FAIL for outcome in outcomes):
         return ValidationVerdict.FAIL
-    if any(outcome == AttemptOutcome.INCONCLUSIVE for outcome in finals):
+    if any(outcome == AttemptOutcome.INCONCLUSIVE for outcome in outcomes):
         return ValidationVerdict.INCONCLUSIVE
     return ValidationVerdict.PASS
 
@@ -169,6 +182,32 @@ class EnvDerivation:
     notes: List[str]
 
 
+def _fallback(
+    is_compose: bool,
+    inconclusive_msg: str,
+    note_msg: str,
+    base_env: Dict[str, str],
+    dropped_names: List[str],
+    notes: List[str]
+) -> EnvDerivation:
+    """Helper to return a fallback EnvDerivation when env derivation fails."""
+    if is_compose:
+        return EnvDerivation(
+            env=None,
+            dropped_names=dropped_names,
+            inconclusive_reason=inconclusive_msg,
+            notes=notes
+        )
+    else:
+        notes.append(note_msg)
+        return EnvDerivation(
+            env=base_env,
+            dropped_names=dropped_names,
+            inconclusive_reason=None,
+            notes=notes
+        )
+
+
 def build_validation_env(
     main_worktree: Path,
     caller_env: Mapping[str, str]
@@ -178,14 +217,15 @@ def build_validation_env(
 
     Returns EnvDerivation. Never raises; exceptions are captured as inconclusive reasons or notes.
     """
-    # Base allowlist
+    # Base allowlist: core vars + common toolchain vars
     allowlist_keys = {
         "PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "TMPDIR",
-        "NVM_DIR", "VOLTA_HOME"
+        "NVM_DIR", "VOLTA_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "CARGO_HOME",
+        "GO_HOME", "GOROOT", "GOPATH", "JAVA_HOME", "NODE_OPTIONS"
     }
-    # Add all LC_* keys
+    # Add all LC_* and npm_config_* keys
     for key in caller_env:
-        if key.startswith("LC_"):
+        if key.startswith("LC_") or key.startswith("npm_config_"):
             allowlist_keys.add(key)
 
     # Track dropped vars (names only)
@@ -207,15 +247,13 @@ def build_validation_env(
         # Try to run direnv export json
         direnv_path = shutil.which("direnv", path=base_env.get("PATH", ""))
         if not direnv_path:
-            if is_compose_repo:
-                inconclusive_reason = "env could not be re-derived: direnv not found"
-            else:
-                notes.append("direnv not found; using plain scrubbed env")
-            return EnvDerivation(
-                env=base_env if not inconclusive_reason else None,
-                dropped_names=dropped_names,
-                inconclusive_reason=inconclusive_reason,
-                notes=notes
+            return _fallback(
+                is_compose_repo,
+                "env could not be re-derived: direnv not found",
+                "direnv not found; using plain scrubbed env",
+                base_env,
+                dropped_names,
+                notes
             )
 
         # Build direnv subprocess env (base allowlist + XDG vars for direnv only)
@@ -234,54 +272,46 @@ def build_validation_env(
                 timeout=30
             )
         except subprocess.TimeoutExpired:
-            if is_compose_repo:
-                inconclusive_reason = "env could not be re-derived: direnv export failed or timed out (timeout)"
-            else:
-                notes.append("direnv export timed out; using plain scrubbed env")
-            return EnvDerivation(
-                env=base_env if not inconclusive_reason else None,
-                dropped_names=dropped_names,
-                inconclusive_reason=inconclusive_reason,
-                notes=notes
+            return _fallback(
+                is_compose_repo,
+                "env could not be re-derived: direnv export failed or timed out (timeout)",
+                "direnv export timed out; using plain scrubbed env",
+                base_env,
+                dropped_names,
+                notes
             )
 
         if proc.returncode != 0:
-            if is_compose_repo:
-                inconclusive_reason = "env could not be re-derived: direnv reports .envrc blocked"
-            else:
-                notes.append(f"direnv export failed (exit {proc.returncode}); using plain scrubbed env")
-            return EnvDerivation(
-                env=base_env if not inconclusive_reason else None,
-                dropped_names=dropped_names,
-                inconclusive_reason=inconclusive_reason,
-                notes=notes
+            return _fallback(
+                is_compose_repo,
+                "env could not be re-derived: direnv reports .envrc blocked",
+                f"direnv export failed (exit {proc.returncode}); using plain scrubbed env",
+                base_env,
+                dropped_names,
+                notes
             )
 
         # Parse direnv export JSON
         try:
             direnv_export = json.loads(proc.stdout)
         except json.JSONDecodeError:
-            if is_compose_repo:
-                inconclusive_reason = "env could not be re-derived: direnv export failed or timed out (unparsable)"
-            else:
-                notes.append("direnv export was not valid JSON; using plain scrubbed env")
-            return EnvDerivation(
-                env=base_env if not inconclusive_reason else None,
-                dropped_names=dropped_names,
-                inconclusive_reason=inconclusive_reason,
-                notes=notes
+            return _fallback(
+                is_compose_repo,
+                "env could not be re-derived: direnv export failed or timed out (unparsable)",
+                "direnv export was not valid JSON; using plain scrubbed env",
+                base_env,
+                dropped_names,
+                notes
             )
 
         if not isinstance(direnv_export, dict):
-            if is_compose_repo:
-                inconclusive_reason = "env could not be re-derived: direnv export was not a JSON object"
-            else:
-                notes.append("direnv export was not a JSON object; using plain scrubbed env")
-            return EnvDerivation(
-                env=base_env if not inconclusive_reason else None,
-                dropped_names=dropped_names,
-                inconclusive_reason=inconclusive_reason,
-                notes=notes
+            return _fallback(
+                is_compose_repo,
+                "env could not be re-derived: direnv export was not a JSON object",
+                "direnv export was not a JSON object; using plain scrubbed env",
+                base_env,
+                dropped_names,
+                notes
             )
 
         # Apply direnv export on top of base
@@ -294,15 +324,13 @@ def build_validation_env(
                 result_env[key] = value
             else:
                 # Non-string value (other than null) is unparsable
-                if is_compose_repo:
-                    inconclusive_reason = "env could not be re-derived: direnv export contains non-string value"
-                else:
-                    notes.append("direnv export contained non-string value; using plain scrubbed env")
-                return EnvDerivation(
-                    env=base_env if not inconclusive_reason else None,
-                    dropped_names=dropped_names,
-                    inconclusive_reason=inconclusive_reason,
-                    notes=notes
+                return _fallback(
+                    is_compose_repo,
+                    "env could not be re-derived: direnv export contains non-string value",
+                    "direnv export contained non-string value; using plain scrubbed env",
+                    base_env,
+                    dropped_names,
+                    notes
                 )
 
         # Compose guard: COMPOSE_PROJECT_NAME must be set and not equal to basename("main")
@@ -346,10 +374,10 @@ def build_validation_env(
         )
 
 
-def _is_compose_repo(main_worktree: Path) -> bool:  # type: ignore[name-defined]
-    """Check if the worktree is a Compose repo (has compose files or .envrc)."""
+def _is_compose_repo(main_worktree: Path) -> bool:
+    """Check if the worktree is a Compose repo (has compose files)."""
     try:
-        # Check for compose files via git ls-files
+        # Check for compose files via git ls-files (compose.yaml/yml only)
         try:
             proc = subprocess.run(
                 ["git", "ls-files"],
@@ -360,21 +388,15 @@ def _is_compose_repo(main_worktree: Path) -> bool:  # type: ignore[name-defined]
             )
             if proc.returncode == 0:
                 ls_files = proc.stdout
-                if re.search(r"compose.*\.ya?ml|docker-compose.*\.ya?ml", ls_files, re.IGNORECASE):
+                if re.search(r"compose\.ya?ml", ls_files, re.IGNORECASE):
                     return True
         except (subprocess.TimeoutExpired, Exception):
             pass
 
-        # Check for compose files at the worktree root
-        for pattern in ("compose*.yaml", "compose*.yml", "docker-compose*.yaml", "docker-compose*.yml"):
+        # Check for compose files at the worktree root (compose.yaml/yml only)
+        for pattern in ("compose.yaml", "compose.yml"):
             if any(main_worktree.glob(pattern)):
                 return True
-
-        # Check for .envrc in main worktree or parent worktrees/
-        if (main_worktree / ".envrc").exists():
-            return True
-        if (main_worktree.parent / ".envrc").exists():
-            return True
 
         return False
     except Exception:
@@ -400,14 +422,18 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
     """
     lock_file = None
     lock_acquired = False
+    error: Optional[str] = None
+
     try:
         try:
-            git_common_dir = git.abs_git_common_dir(main_worktree)  # type: ignore[attr-defined]
+            git_common_dir = git.abs_git_common_dir(main_worktree)
             if git_common_dir is None:
-                yield "could not determine git-common-dir"
-                return
+                error = "could not determine git-common-dir"
         except Exception as e:
-            yield f"could not determine git-common-dir: {e}"
+            error = f"could not determine git-common-dir: {e}"
+
+        if error:
+            yield error
             return
 
         lock_path = git_common_dir / "cleanup-validation.lock"
@@ -416,26 +442,29 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            lock_file = open(str(lock_path), "w")
+            # Use os.open with O_NOFOLLOW for security (POSIX-only)
+            fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+            lock_file = os.fdopen(fd, "w")
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             lock_acquired = True
-            yield None
         except BlockingIOError:
-            raise
+            error = "another cleanup is validating main"
         except OSError as e:
-            yield f"could not acquire validation lock: {e}"
-    except BlockingIOError:
-        yield "another cleanup is validating main"
+            error = f"could not acquire validation lock: {e}"
+
+        try:
+            yield error
+        finally:
+            if lock_file:
+                try:
+                    if lock_acquired:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    lock_file.close()
+                except Exception:
+                    pass
     except Exception as e:
+        # Unexpected exception not caught above
         yield f"could not acquire validation lock: {e}"
-    finally:
-        if lock_file:
-            try:
-                if lock_acquired:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                lock_file.close()
-            except Exception:
-                pass
 
 
 def run_validation(
@@ -445,7 +474,7 @@ def run_validation(
     timeout: int,
     log_dir: Optional[Path],
     dropped_names: List[str],
-    execute: Optional[Any] = None
+    execute: Optional[Callable] = None
 ) -> ValidationRun:
     """
     Run validation checks with per-check retry and fingerprint guarding.
@@ -473,7 +502,7 @@ def run_validation(
             notes=["no checks configured"]
         )
 
-    finals: List[AttemptOutcome] = []
+    finals: List[Tuple[AttemptOutcome, str]] = []  # Track (outcome, reason) pairs
     failure_lines: List[str] = []
     note_lines: List[str] = []
 
@@ -496,32 +525,55 @@ def run_validation(
             note_lines.append(f"failed to write attempt 1 log for check {index}: {e}")
 
         if outcome == AttemptOutcome.PASS:
-            finals.append(AttemptOutcome.PASS)
+            # Check main moved during PASS (don't retry)
+            fp_after = git.tracked_fingerprint(main_worktree)
+            if fp_before is not None and fp_after is not None:
+                if fp_before.head != fp_after.head:
+                    finals.append((AttemptOutcome.INCONCLUSIVE, "main moved during validation"))
+                    failure_lines.append(
+                        f"Check inconclusive (main moved during validation): {cmd}"
+                    )
+                    continue
+            finals.append((AttemptOutcome.PASS, ""))
             continue
 
-        # Check if we can retry
+        # Check if we can retry (don't retry timeouts)
+        if outcome_reason and outcome_reason.startswith("check timed out"):
+            finals.append((outcome, outcome_reason))
+            failure_lines.append(
+                f"Check inconclusive ({outcome_reason}): {cmd}"
+            )
+            continue
+
         fp_after = git.tracked_fingerprint(main_worktree)
 
         if fp_before is None or fp_after is None:
-            finals.append(AttemptOutcome.INCONCLUSIVE)
+            finals.append((AttemptOutcome.INCONCLUSIVE, "could not fingerprint main worktree"))
             failure_lines.append(
                 f"Check inconclusive (could not fingerprint main worktree): {cmd}"
             )
             continue
 
         if fp_before.head != fp_after.head:
-            finals.append(AttemptOutcome.INCONCLUSIVE)
+            finals.append((AttemptOutcome.INCONCLUSIVE, "main moved during validation"))
             failure_lines.append(
                 f"Check inconclusive (main moved during validation): {cmd}"
             )
             continue
 
         if fp_before.status != fp_after.status or fp_before.diff_sha != fp_after.diff_sha:
-            finals.append(AttemptOutcome.FAIL)
-            modified_paths = _extract_modified_paths(fp_before, fp_after)
-            failure_lines.append(
-                f"Check failed (attempt 1 modified the main worktree: {', '.join(modified_paths)}): {cmd}"
-            )
+            # Attempt 1 modified the worktree; preserve INCONCLUSIVE if it was already inconclusive
+            if outcome == AttemptOutcome.INCONCLUSIVE:
+                finals.append((outcome, outcome_reason))
+                failure_lines.append(
+                    f"Check inconclusive ({outcome_reason}): {cmd}"
+                )
+            else:
+                finals.append((AttemptOutcome.FAIL, "attempt 1 modified the main worktree"))
+                modified_paths = _extract_modified_paths(fp_before, fp_after)
+                failure_lines.append(
+                    f"Check failed (attempt 1 modified the main worktree: {', '.join(modified_paths)}): {cmd}"
+                )
             continue
 
         # Attempt 2
@@ -539,13 +591,25 @@ def run_validation(
         except Exception as e:
             note_lines.append(f"failed to write attempt 2 log for check {index}: {e}")
 
+        # Check fingerprints after attempt 2
+        fp_after_2 = git.tracked_fingerprint(main_worktree)
+
         if outcome_2 == AttemptOutcome.PASS:
-            finals.append(AttemptOutcome.PASS)
+            # Check if attempt 2 modified the worktree (side effects)
+            if fp_after is not None and fp_after_2 is not None:
+                if fp_after.status != fp_after_2.status or fp_after.diff_sha != fp_after_2.diff_sha:
+                    # Attempt 2 had side effects; downgrade to INCONCLUSIVE
+                    finals.append((AttemptOutcome.INCONCLUSIVE, "attempt 2 had side effects"))
+                    failure_lines.append(
+                        f"Check inconclusive (attempt 2 had side effects): {cmd}"
+                    )
+                    continue
+            finals.append((AttemptOutcome.PASS, ""))
             note_lines.append(
                 f"check {index} flaky: failed on attempt 1 ({outcome_reason}) and passed on retry"
             )
         else:
-            finals.append(outcome_2)
+            finals.append((outcome_2, outcome_reason_2))
             if outcome_2 == AttemptOutcome.FAIL:
                 failure_lines.append(
                     f"Check command failed (attempt 2 also failed): {cmd}"
@@ -558,13 +622,14 @@ def run_validation(
     verdict = aggregate(finals)
     reason = ""
     if verdict == ValidationVerdict.INCONCLUSIVE:
-        # Use first inconclusive reason found
-        for line in failure_lines:
-            if "inconclusive" in line.lower():
-                reason = line.split("Check inconclusive (")[1].split("):")[0] if "Check inconclusive (" in line else ""
+        # Use first inconclusive reason found (from tracked pairs)
+        for outcome, outcome_reason in finals:
+            if outcome == AttemptOutcome.INCONCLUSIVE and outcome_reason:
+                reason = outcome_reason
                 break
     elif verdict == ValidationVerdict.FAIL:
-        reason = f"{sum(1 for o in finals if o == AttemptOutcome.FAIL)} check(s) failed"
+        fail_count = sum(1 for o, _ in finals if o == AttemptOutcome.FAIL)
+        reason = f"{fail_count} check(s) failed"
 
     return ValidationRun(
         verdict=verdict,
@@ -574,10 +639,10 @@ def run_validation(
     )
 
 
-def _extract_modified_paths(fp_before: git.Fingerprint, fp_after: git.Fingerprint) -> List[str]:
+def _extract_modified_paths(fp_before: "git.Fingerprint", fp_after: "git.Fingerprint") -> List[str]:
     """Extract the paths of modified tracked files from fingerprints."""
-    # This is a simple stub; a full implementation would parse git status output
-    # For now, return a generic message
+    # Fingerprints don't contain individual paths; return a generic message.
+    # Full implementation would require parsing git status output in git.py.
     return ["tracked files"]
 
 
@@ -604,6 +669,10 @@ def queue_proof(
     """
     if pr is None or queue_started_at is None:
         return CannotProve("no queue context")
+
+    # Check queue_started_at is a valid finite positive number
+    if not isinstance(queue_started_at, (int, float)) or math.isnan(queue_started_at) or math.isinf(queue_started_at) or queue_started_at < 0:
+        return CannotProve("queue_started_at is not a valid positive finite timestamp")
 
     try:
         result = merge_queue.read_pr_result(pr, main_worktree)
@@ -637,7 +706,7 @@ def queue_proof(
         if tested_tree != main_tree:
             return CannotProve(f"tree mismatch: tested {tested_tree[:8]}..., main {main_tree[:8]}...")
 
-        # Try to load queue config for steps
+        # Load queue config steps
         steps: List[str] = []
         try:
             config_path = merge_queue.resolve_config_path(cwd=main_worktree)
@@ -645,8 +714,18 @@ def queue_proof(
                 config = merge_queue.load_and_validate_config(config_path)
                 steps = [step.cmd for step in config.steps]
         except Exception:
-            # Cannot load steps, but tree already proved; continue
-            pass
+            # Cannot load steps; fail closed (cannot prove without knowing what was tested)
+            return CannotProve("could not load queue config steps")
+
+        # Require that queue steps cover repo-cache checks.
+        # Try to get the repo-cache check commands and verify superset coverage.
+        try:
+            repo_cache_checks = _get_repo_cache_checks(main_worktree)
+            if repo_cache_checks and not _steps_cover_checks(steps, repo_cache_checks):
+                return CannotProve("queue steps do not cover all repo-cache checks")
+        except Exception:
+            # If we can't determine repo-cache checks, fail closed
+            return CannotProve("could not verify queue steps cover repo-cache checks")
 
         return Proved(tree=main_tree, steps=steps)
 
@@ -657,6 +736,42 @@ def queue_proof(
 def _is_valid_sha40(s: str) -> bool:
     """Check if a string is a valid 40-character hex SHA."""
     return len(s) == 40 and all(c in "0123456789abcdef" for c in s.lower())
+
+
+def _get_repo_cache_checks(main_worktree: Path) -> Optional[List[str]]:
+    """
+    Load check commands from .claude/repo-cache.json (check field).
+    Returns None if not found or not parseable.
+    """
+    try:
+        cache_path = main_worktree / ".claude" / "repo-cache.json"
+        if not cache_path.exists():
+            return None
+        with open(cache_path, "r") as f:
+            cache = json.load(f)
+        # Extract check commands from the cache
+        checks = cache.get("commands", {}).get("check")
+        if isinstance(checks, str):
+            return [checks]
+        elif isinstance(checks, list):
+            return checks
+        return None
+    except Exception:
+        return None
+
+
+def _steps_cover_checks(steps: List[str], checks: List[str]) -> bool:
+    """
+    Check if queue steps cover all repo-cache checks.
+    Returns True if all checks appear (literally) in the steps list.
+    Conservative: fail closed if comparison cannot be done reliably.
+    """
+    if not checks:
+        return True  # No checks to cover
+    # Simple literal matching: all checks must appear in steps
+    steps_set = set(steps)
+    checks_set = set(checks)
+    return checks_set.issubset(steps_set)
 
 
 def render_headline(
@@ -671,6 +786,8 @@ def render_headline(
     Returns the VALIDATION=... line ready to print.
     """
     if verdict == ValidationVerdict.PASS:
+        if any("no checks configured" in note for note in notes):
+            return "VALIDATION=pass — no checks configured"
         flaky_note = any("flaky" in note.lower() for note in notes)
         line = "VALIDATION=pass — merged main is green"
         if flaky_note:
