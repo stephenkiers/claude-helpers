@@ -183,7 +183,7 @@ if __name__ == "__main__":
                 )
 
     print()
-    print("[Section 5] .envrc presence triggers Compose behavior")
+    print("[Section 5] .envrc alone is not a Compose signal; compose file + direnv error is inconclusive")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         main_wt = Path(tmpdir) / "main"
@@ -191,6 +191,7 @@ if __name__ == "__main__":
 
         envrc_file = main_wt / ".envrc"
         envrc_file.write_text('export VAR=value\n')
+        (main_wt / "compose.yaml").write_text("services: {}\n")
 
         caller_env = {"PATH": "/usr/bin", "HOME": "/home/user"}
 
@@ -207,7 +208,7 @@ if __name__ == "__main__":
                 derivation = build_validation_env(main_wt, caller_env)
 
                 test_result(
-                    ".envrc with direnv error gives inconclusive",
+                    "compose repo with .envrc and direnv error gives inconclusive",
                     derivation.inconclusive_reason is not None and "direnv" in derivation.inconclusive_reason
                 )
 
