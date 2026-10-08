@@ -1301,19 +1301,19 @@ def _content_chars(message: dict) -> int:
     for block in content:
         if not isinstance(block, dict):
             continue
-        if "text" in block:
+        block_type = block.get("type")
+        if block_type == "text":
             text_value = block.get("text")
             if isinstance(text_value, str):
                 total += len(text_value)
-        elif "thinking" in block:
+        elif block_type == "thinking":
             thinking_value = block.get("thinking")
             if isinstance(thinking_value, str):
                 total += len(thinking_value)
-        elif "tool_use" in block:
-            tool_use = block.get("tool_use")
-            if isinstance(tool_use, dict) and "input" in tool_use:
+        elif block_type == "tool_use":
+            if "input" in block:
                 try:
-                    input_json = json.dumps(tool_use["input"])
+                    input_json = json.dumps(block["input"])
                     total += len(input_json)
                 except (TypeError, ValueError):
                     pass

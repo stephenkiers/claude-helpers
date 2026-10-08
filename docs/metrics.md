@@ -443,19 +443,19 @@ The tool emits a JSON object to stdout with:
 
 ### Known Caveat
 
-Per-message `output_tokens` in Claude Code transcript JSONL may reflect mid-stream placeholders; the specific failure mode is subagent messages whose last line is a `stop_reason: null` placeholder rather than the actual completion data. The tool flags this via `"token_confidence": "low"` (see [ADR-0016](docs/adr/0016-usage-yield-telemetry.md) for the token-confidence caveat). When a session-level `cost-state` line is present in the transcript, it is the more trustworthy aggregate (measured to match `/usage` output within rounding) and is included verbatim under `cost_state` in the output. See the `### Transcript token completeness` subsection below for the measurement and calibration details, and check the three `unfinalized_*` fields to quantify the pattern in a specific transcript.
+Per-message `output_tokens` in Claude Code transcript JSONL may reflect mid-stream placeholders; the specific failure mode is subagent messages whose last line is a `stop_reason: null` placeholder rather than the actual completion data. The tool flags this via `"token_confidence": "low"` (see [ADR-0016](adr/0016-usage-yield-telemetry.md) for the token-confidence caveat). When a session-level `cost-state` line is present in the transcript, it is the more trustworthy aggregate (measured to match `/usage` output within rounding) and is included verbatim under `cost_state` in the output. See the `### Transcript token completeness` subsection below for the measurement and calibration details, and check the three `unfinalized_*` fields to quantify the pattern in a specific transcript.
 
 ### Transcript token completeness
 
-#### (a) What was measured and why
+#### What was measured and why
 
 `/usage` reported 55–75% more output tokens than the session's transcripts summed whenever subagents ran (issue #218). An offline probe over frozen transcripts established the cause before any parser change.
 
-#### (b) Probe method (a documented query pattern, enough to re-run)
+#### Probe method
 
 For each transcript file (main `<session>.jsonl` and each `<session>/subagents/*.jsonl`), group `type == "assistant"` lines by `message.id`. Per id record: number of lines, last/max/min `usage.output_tokens`, the last line's `stop_reason` (distinguishing absent key from explicit `null`), content chars summed across all of the id's lines by block type (`text`, `thinking`, `tool_use` input as `len(json.dumps(input))`), `message.model`, and whether the id is the last in its file. Compare each session's transcript output sum against the session's `cost-state` line (`modelUsage.<model>.outputTokens`, summed) and against the `/save-usage` record in `~/.claude/telemetry/usage-log.jsonl`. The probe script itself was a throwaway and is not committed.
 
-#### (c) Findings, as a table
+#### Findings
 
 Measured on 2026-10-08 over Claude Code versions 2.1.278, 2.1.280, 2.1.281, 2.1.285 (transcripts dated 2026-09-22/23), n = 96 sessions with a main transcript (94 with subagent files, all 96 with a `cost-state` line), plus a second sample of 116 main / 241 subagent files from this repo's own project dir:
 
@@ -470,20 +470,20 @@ Measured on 2026-10-08 over Claude Code versions 2.1.278, 2.1.280, 2.1.281, 2.1.
 | cache-read gap (`cost-state` − transcript) ÷ `cost-state` | — | median 9.9% |
 | `/usage` output ÷ `cost-state` `outputTokens` | — | median 0.997; 91 of 95 within ±5% |
 
-Then state the interpretation in prose:
+Interpretation:
 
 - **Cause.** A subagent message that ends on a `tool_use` block frequently never receives its final streaming usage line: the transcript keeps the first-chunk placeholder (`stop_reason: null`, `output_tokens` of 1–5) as the message's last line. Main-session transcripts almost never show this. No transcript line ever carried a larger `output_tokens` for the same id, so there is no recoverable on-disk value and "max per id" selection was dropped.
 - **Per-model reconcile.** Missing output sits entirely under models that subagents used (haiku 77.8% missing, opus 82–96% missing, sonnet 56% missing where sonnet served both main and subagents). No model appears in `cost-state` without transcript lines (the `[1m]` suffix in `cost-state` keys is the same model under the 1M-context label). There was no residue to attribute to harness-internal calls; that candidate was not observed.
 - **Harness limit (stated, not corrected).** Transcripts therefore under-record subagent output tokens by roughly two thirds on the measured versions. `agent.end` events and anything summed from transcript `output_tokens` inherit this. Nothing in this repo estimates the missing tokens into `tokens`; the parser only reports the three `unfinalized_*` counts so the pattern is checkable per transcript.
 - **Calibration caveat.** Finalized subagent ids run about 1.1 content chars per billed output token because thinking blocks are stored with their text redacted while `thinking_tokens` are still billed. The per-session calibration above is a labelled, versioned observation only, never a correction. The paid single-Agent measurement (plan Step 4) was not run: the offline residual (−6.9%) was under the pre-registered 15% gate.
 
-#### (d) Which aggregate is authoritative
+#### Which aggregate is authoritative
 
 The `cost-state` line's `modelUsage.<model>.outputTokens` matches the `/usage` panel's per-model output within rounding (the 4 of 95 outliers were sessions whose `/usage` was saved mid-session). It is the authoritative on-disk denominator. `thinkingTokens` is a sub-count of `outputTokens`, not an addition to it.
 
-#### (e) Meaning of the new fields + re-check query
+#### The unfinalized_* fields and how to re-check
 
-Define the three keys: a missing key means "not measured" (output from pre-change code). Give a copy-pasteable re-check for drift after a harness upgrade, since no automatic consumer reads these fields:
+`unfinalized_messages` — count of deduplicated message ids whose last transcript line has `message.stop_reason` explicitly `null`; an absent key does not count. `unfinalized_output_tokens_recorded` — the `output_tokens` the transcript actually recorded on those ids, already included in `tokens.output`. `unfinalized_content_chars` — content chars accumulated across all lines of those ids: `text` chars + `thinking` chars + `len(json.dumps(input))` of each `tool_use` block. A missing key means the transcript was parsed by code that predates these fields: treat it as *not measured*, not as zero. No automatic consumer reads these fields; re-check for drift after a harness upgrade with:
 
 ```
 S=~/.claude/projects/<project>/<session-id>
@@ -493,7 +493,7 @@ for f in "$S.jsonl" "$S"/subagents/*.jsonl; do
 done
 ```
 
-Explain the reading: a subagent file with `unfinalized_messages` near half of `turns` shows the pattern is still present; near 0 across subagent files means the harness has started finalizing usage and the caveat should be re-measured.
+Reading the output: a subagent file with `unfinalized_messages` near half of `turns` shows the pattern is still present; near 0 across subagent files means the harness has started finalizing usage and the caveat should be re-measured.
 
 ## Telemetry Health Check
 
