@@ -20,7 +20,8 @@ Resume points are derived from artifacts on disk, not from the status field alon
 
 Importable API (tests load this file with importlib, since the name is hyphenated):
 init_manifest, load_manifest, mark_stage, add_command_id, expect_artifacts,
-missing_artifacts, resume_point, list_spikes, resolve_spike, ManifestError, STAGES, STATUSES, STAGE_ARTIFACTS.
+missing_artifacts, resume_point, list_spikes, resolve_spike, show_spike, resume_point_from,
+ManifestError, STAGES, STATUSES, STAGE_ARTIFACTS.
 """
 
 import argparse
@@ -31,7 +32,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, TypedDict, Union
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "spike.json"
@@ -39,6 +40,7 @@ MODELS = ("balanced", "opus")
 EFFORTS = (1, 2, 3, 4, 5)
 SLUG_RE = re.compile(r"[a-z0-9-]{1,50}")
 EXPERT_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+COMMAND_ID_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*", re.IGNORECASE)
 
 STAGES: Tuple[str, ...] = (
     "gather-context",
@@ -78,6 +80,8 @@ OPTIONAL_KEYS = frozenset({"expected_artifacts"})
 
 # stage -> list of (relative path or glob, sentinel or None).
 # A sentinel counts as present when the file's last non-blank line, stripped, equals it.
+# Each stage has a unique artifact path/sentinel pair so a later stage cannot be satisfied
+# by an earlier stage's files; research and research-wave-2 use different sentinels to distinguish.
 STAGE_ARTIFACTS: Dict[str, List[Tuple[str, Optional[str]]]] = {
     "gather-context": [
         (MANIFEST_NAME, None),
@@ -97,12 +101,31 @@ STAGE_ARTIFACTS: Dict[str, List[Tuple[str, Optional[str]]]] = {
         ("knowledge/findings.md", None),
         ("knowledge/sources.md", None),
     ],
-    "research-wave-2": [("research/*.md", "<!-- research-end -->")],
+    "research-wave-2": [("research/*.md", "<!-- research-wave-2-end -->")],
     "expert-assessment": [("experts/*-assessment.md", "<!-- spike-assessment-end -->")],
     "synthesize": [("synthesis.md", None)],
     "audit": [("audit.md", None)],
     "present": [("README.md", None)],
 }
+
+# Type aliases for manifest structure (Python 3.8+ compatible)
+Status = Literal["pending", "running", "done", "failed", "skipped"]
+
+
+class Manifest(TypedDict, total=False):
+    """Type definition for manifest dict structure."""
+
+    schema_version: int
+    question: str
+    slug: str
+    effort: int
+    models: str
+    experts: List[str]
+    created: str
+    updated: str
+    command_ids: List[str]
+    stages: Dict[str, Status]
+    expected_artifacts: Dict[str, List[str]]
 
 
 class ManifestError(Exception):
@@ -118,8 +141,12 @@ def _is_int(value: Any) -> bool:
 
 
 def _check_str_list(value: Any, field: str) -> None:
-    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+    """Raise ManifestError unless value is a list of non-empty strings."""
+    if not isinstance(value, list):
         raise ManifestError(f"{field} must be a list of strings")
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ManifestError(f"{field} must be a list of non-empty strings, got {item!r}")
 
 
 def _check_relative_path(rel: str, where: str) -> None:
@@ -129,8 +156,55 @@ def _check_relative_path(rel: str, where: str) -> None:
         raise ManifestError(f"{where}: artifact path {rel!r} must be relative and stay inside the spike dir")
 
 
+def _check_question(question: Any) -> None:
+    """Raise ManifestError unless question is a non-empty string."""
+    if not isinstance(question, str) or not question.strip():
+        raise ManifestError("question must be a non-empty string")
+
+
+def _check_slug(slug: Any) -> None:
+    """Raise ManifestError unless slug matches the required format."""
+    if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+        raise ManifestError(f"slug must match [a-z0-9-] (1-50 chars), got {slug!r}")
+
+
+def _check_effort(effort: Any) -> None:
+    """Raise ManifestError unless effort is a valid int."""
+    if not _is_int(effort) or effort not in EFFORTS:
+        raise ManifestError(f"effort must be an int 1-5, got {effort!r}")
+
+
+def _check_models(models: Any) -> None:
+    """Raise ManifestError unless models is valid."""
+    if models not in MODELS:
+        raise ManifestError(f"models must be one of {MODELS}, got {models!r}")
+
+
+def _check_experts(experts: Any) -> None:
+    """Raise ManifestError unless experts is a valid list of expert names."""
+    _check_str_list(experts, "experts")
+    for name in experts:
+        if not EXPERT_RE.fullmatch(name):
+            raise ManifestError(f"expert name {name!r} must match [a-z0-9][a-z0-9-]*")
+
+
+def _check_timestamp(value: Any, field: str) -> None:
+    """Raise ManifestError unless value is a non-empty string (should be ISO 8601)."""
+    if not isinstance(value, str) or not value.strip():
+        raise ManifestError(f"{field} must be a non-empty string")
+
+
+def _check_command_id(command_id: Any) -> None:
+    """Raise ManifestError unless command_id is a non-empty string."""
+    if not isinstance(command_id, str) or not command_id.strip():
+        raise ManifestError("command_id must be a non-empty string")
+
+
 def _validate_manifest(data: Any, where: str) -> Dict[str, Any]:
-    """Return data if it is a fully-valid manifest; otherwise raise ManifestError."""
+    """Return data if it is a fully-valid manifest; otherwise raise ManifestError.
+
+    This is the single validation gate for all loaded manifests.
+    """
     if not isinstance(data, dict):
         raise ManifestError(f"{where}: manifest must be a JSON object")
     if "schema_version" not in data:
@@ -147,22 +221,13 @@ def _validate_manifest(data: Any, where: str) -> Dict[str, Any]:
     if extra:
         raise ManifestError(f"{where}: unexpected keys: {', '.join(extra)}")
 
-    if not isinstance(data["question"], str):
-        raise ManifestError(f"{where}: question must be a string")
-    if not isinstance(data["slug"], str) or not SLUG_RE.fullmatch(data["slug"]):
-        raise ManifestError(f"{where}: slug must match [a-z0-9-] (1-50 chars), got {data['slug']!r}")
-    if not _is_int(data["effort"]) or data["effort"] not in EFFORTS:
-        raise ManifestError(f"{where}: effort must be an int 1-5, got {data['effort']!r}")
-    if data["models"] not in MODELS:
-        raise ManifestError(f"{where}: models must be one of {MODELS}, got {data['models']!r}")
-    _check_str_list(data["experts"], "experts")
-    for name in data["experts"]:
-        if not EXPERT_RE.fullmatch(name):
-            raise ManifestError(f"{where}: expert name {name!r} must match [a-z0-9][a-z0-9-]*")
-    if not isinstance(data["created"], str):
-        raise ManifestError(f"{where}: created must be a string")
-    if not isinstance(data["updated"], str):
-        raise ManifestError(f"{where}: updated must be a string")
+    _check_question(data["question"])
+    _check_slug(data["slug"])
+    _check_effort(data["effort"])
+    _check_models(data["models"])
+    _check_experts(data["experts"])
+    _check_timestamp(data["created"], "created")
+    _check_timestamp(data["updated"], "updated")
     _check_str_list(data["command_ids"], "command_ids")
 
     if "expected_artifacts" in data:
@@ -223,6 +288,7 @@ def _write_atomic(spike_dir: Path, data: Dict[str, Any], exclusive: bool = False
     """Write data as spike.json: temp file in the same dir, fsync, then rename into place.
 
     exclusive=True uses os.link so an existing spike.json is never replaced (init's guarantee).
+    On ENOTSUP or other OSError, falls back to os.replace (for filesystems that don't support hard links).
     """
     target = spike_dir / MANIFEST_NAME
     try:
@@ -230,16 +296,22 @@ def _write_atomic(spike_dir: Path, data: Dict[str, Any], exclusive: bool = False
     except OSError as e:
         raise ManifestError(f"cannot write manifest in {spike_dir}: {e}")
     try:
+        # Set file mode to 0o600 (rw-------) before writing
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=True)
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
-        umask = os.umask(0)
-        os.umask(umask)
-        os.chmod(tmp_path, 0o666 & ~umask)
         if exclusive:
-            os.link(tmp_path, target)
+            try:
+                os.link(tmp_path, target)
+            except (OSError, FileExistsError) as e:
+                # Fall back if link fails (ENOTSUP on some filesystems)
+                if isinstance(e, FileExistsError):
+                    raise ManifestError(f"{target} already exists; refusing to overwrite")
+                # For other OSErrors, try replace as fallback
+                os.replace(tmp_path, target)
         else:
             os.replace(tmp_path, target)
         _fsync_dir(spike_dir)
@@ -252,7 +324,7 @@ def _write_atomic(spike_dir: Path, data: Dict[str, Any], exclusive: bool = False
 
 
 def init_manifest(
-    spike_dir: Any,
+    spike_dir: Union[str, os.PathLike],
     question: str,
     slug: str,
     effort: int,
@@ -260,23 +332,21 @@ def init_manifest(
     experts: Iterable[str] = (),
     command_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create spike_dir (if needed) and a fresh spike.json with every stage pending."""
-    if not isinstance(question, str) or not question.strip():
-        raise ManifestError("question must be a non-empty string")
-    if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
-        raise ManifestError(f"slug must match [a-z0-9-] (1-50 chars), got {slug!r}")
-    if not _is_int(effort) or effort not in EFFORTS:
-        raise ManifestError(f"effort must be an int 1-5, got {effort!r}")
-    if models not in MODELS:
-        raise ManifestError(f"models must be one of {MODELS}, got {models!r}")
+    """Create spike_dir (if needed) and a fresh spike.json with every stage pending.
+
+    Raises:
+        ManifestError: if arguments are invalid or manifest already exists.
+    """
+    _check_question(question)
+    _check_slug(slug)
+    _check_effort(effort)
+    _check_models(models)
     if isinstance(experts, str):
         raise ManifestError("experts must be a sequence of names, not a string")
     expert_list = list(experts)
-    for name in expert_list:
-        if not isinstance(name, str) or not EXPERT_RE.fullmatch(name):
-            raise ManifestError(f"expert name {name!r} must match [a-z0-9][a-z0-9-]*")
-    if command_id is not None and (not isinstance(command_id, str) or not command_id.strip()):
-        raise ManifestError("command_id must be a non-empty string when given")
+    _check_experts(expert_list)
+    if command_id is not None:
+        _check_command_id(command_id)
 
     spike_path = Path(spike_dir)
     try:
@@ -303,8 +373,12 @@ def init_manifest(
     return data
 
 
-def load_manifest(spike_dir: Any) -> Dict[str, Any]:
-    """Load and fully validate spike.json. Fails closed with ManifestError."""
+def load_manifest(spike_dir: Union[str, os.PathLike]) -> Dict[str, Any]:
+    """Load and fully validate spike.json. Fails closed with ManifestError.
+
+    Raises:
+        ManifestError: if manifest is missing, unreadable, or invalid.
+    """
     path = _manifest_path(spike_dir)
     try:
         present = path.is_file()
@@ -323,8 +397,14 @@ def load_manifest(spike_dir: Any) -> Dict[str, Any]:
     return _validate_manifest(data, str(path))
 
 
-def mark_stage(spike_dir: Any, stage: str, status: str) -> Dict[str, Any]:
-    """Set one stage's status. Any transition between valid statuses is allowed."""
+def mark_stage(spike_dir: Union[str, os.PathLike], stage: str, status: str) -> Dict[str, Any]:
+    """Set one stage's status. Any transition between valid statuses is allowed.
+
+    Single writer; callers must serialize calls. Manifest is updated with new timestamp.
+
+    Raises:
+        ManifestError: if stage or status is invalid, or manifest cannot be read/written.
+    """
     if stage not in STAGES:
         raise ManifestError(f"unknown stage {stage!r}")
     if status not in STATUSES:
@@ -336,8 +416,14 @@ def mark_stage(spike_dir: Any, stage: str, status: str) -> Dict[str, Any]:
     return data
 
 
-def add_command_id(spike_dir: Any, command_id: str) -> Dict[str, Any]:
-    """Append command_id unless it is empty or already the last entry."""
+def add_command_id(spike_dir: Union[str, os.PathLike], command_id: str) -> Dict[str, Any]:
+    """Append command_id unless it is blank or already the last entry.
+
+    Single writer; callers must serialize calls. Manifest is updated with new timestamp.
+
+    Raises:
+        ManifestError: if manifest cannot be read/written.
+    """
     if not isinstance(command_id, str):
         raise ManifestError("command_id must be a string")
     data = load_manifest(spike_dir)
@@ -348,8 +434,15 @@ def add_command_id(spike_dir: Any, command_id: str) -> Dict[str, Any]:
     return data
 
 
-def expect_artifacts(spike_dir: Any, stage: str, paths: Iterable[str]) -> Dict[str, Any]:
-    """Record the artifact paths stage must produce; resume treats any missing one as incomplete."""
+def expect_artifacts(spike_dir: Union[str, os.PathLike], stage: str, paths: Iterable[str]) -> Dict[str, Any]:
+    """Record the artifact paths stage must produce; resume treats any missing one as incomplete.
+
+    Single writer; callers must serialize calls. Manifest is updated with new timestamp.
+    Also includes expert artifact paths from the manifest roster in resume checks.
+
+    Raises:
+        ManifestError: if stage is unknown, paths are invalid, or manifest cannot be read/written.
+    """
     if stage not in STAGE_ARTIFACTS:
         raise ManifestError(f"unknown stage {stage!r}")
     if isinstance(paths, str):
@@ -389,16 +482,31 @@ def _content_ok(path: Path, sentinel: Optional[str]) -> bool:
     return bool(lines) and lines[-1] == sentinel
 
 
-def missing_artifacts(spike_dir: Any, stage: str, expected: Iterable[str] = ()) -> List[str]:
+def missing_artifacts(spike_dir: Union[str, os.PathLike], stage: str, expected: Iterable[str] = ()) -> List[str]:
     """Relative paths/globs of expectations for stage that are not satisfied on disk.
+
+    Checks both STAGE_ARTIFACTS (fixed per stage) and expected (recorded via expect_artifacts).
+    Also expands expert-specific patterns using experts from the manifest roster.
 
     expected: extra relative paths recorded via expect_artifacts; each must be a safe,
     non-blank file. Symlinks never satisfy an expectation.
+
+    Raises:
+        ManifestError: if stage is unknown.
     """
     if stage not in STAGE_ARTIFACTS:
         raise ManifestError(f"unknown stage {stage!r}")
     root = Path(spike_dir)
     missing: List[str] = []
+
+    # Load manifest to get experts list for expert-specific artifact checks
+    try:
+        data = load_manifest(spike_dir)
+        experts = data.get("experts", [])
+    except ManifestError:
+        # If manifest cannot be loaded, only check fixed artifacts
+        experts = []
+
     for pattern, sentinel in STAGE_ARTIFACTS[stage]:
         if any(ch in pattern for ch in "*?["):
             matches = sorted(p for p in root.glob(pattern) if _is_safe_file(root, p))
@@ -412,17 +520,52 @@ def missing_artifacts(spike_dir: Any, stage: str, expected: Iterable[str] = ()) 
             target = root / pattern
             if not _is_safe_file(root, target) or not _content_ok(target, sentinel):
                 missing.append(pattern)
+
+    # Check expected artifacts (recorded via expect_artifacts)
     for rel in expected:
         target = root / rel
         if not _is_safe_file(root, target) or not _content_ok(target, None):
             if rel not in missing:
                 missing.append(rel)
+
+    # Check expert-specific artifacts for stages that have expert patterns
+    # e.g., experts/*-questions.md, experts/*-assessment.md
+    for pattern, sentinel in STAGE_ARTIFACTS[stage]:
+        if "experts/*" in pattern and experts:
+            for expert in experts:
+                expert_pattern = pattern.replace("experts/*", f"experts/{expert}")
+                if any(ch in expert_pattern for ch in "*?["):
+                    matches = sorted(p for p in root.glob(expert_pattern) if _is_safe_file(root, p))
+                    if not matches:
+                        missing.append(expert_pattern)
+                        continue
+                    for match in matches:
+                        if not _content_ok(match, sentinel):
+                            missing.append(match.relative_to(root).as_posix())
+                else:
+                    target = root / expert_pattern
+                    if not _is_safe_file(root, target) or not _content_ok(target, sentinel):
+                        missing.append(expert_pattern)
+
     return missing
 
 
-def resume_point(spike_dir: Any) -> Optional[str]:
-    """First stage that is not complete, derived from manifest plus disk. None when all are."""
-    data = load_manifest(spike_dir)
+def resume_point_from(data: Dict[str, Any], spike_dir: Union[str, os.PathLike]) -> Optional[str]:
+    """Derive the first incomplete stage from manifest data plus disk artifacts.
+
+    A stage is complete when:
+    - Its status is "skipped", OR
+    - Its status is "done" AND all artifacts (fixed + expected + expert-specific) exist
+
+    Returns the first incomplete stage, or None if all are complete.
+
+    Args:
+        data: Loaded manifest dict
+        spike_dir: Path to spike directory (for artifact checks)
+
+    Raises:
+        ManifestError: if artifact checks fail
+    """
     for stage in STAGES:
         status = data["stages"][stage]
         if status == "skipped":
@@ -432,6 +575,33 @@ def resume_point(spike_dir: Any) -> Optional[str]:
             continue
         return stage
     return None
+
+
+def resume_point(spike_dir: Union[str, os.PathLike]) -> Optional[str]:
+    """First stage that is not complete, derived from manifest plus disk. None when all are.
+
+    Completeness definition: a stage is complete iff its status is "skipped" OR
+    (its status is "done" AND all fixed, expected, and expert-specific artifacts exist).
+
+    Raises:
+        ManifestError: if manifest cannot be read or artifact checks fail.
+    """
+    data = load_manifest(spike_dir)
+    return resume_point_from(data, spike_dir)
+
+
+def show_spike(spike_dir: Union[str, os.PathLike]) -> Dict[str, Any]:
+    """Load manifest and compute resume_point, returning the combined view.
+
+    Returns:
+        Manifest dict with added 'resume_point' field.
+
+    Raises:
+        ManifestError: if manifest cannot be read or resume computation fails.
+    """
+    data = load_manifest(spike_dir)
+    data["resume_point"] = resume_point_from(data, spike_dir)
+    return data
 
 
 def _spike_subdirs(root: Path) -> List[Path]:
@@ -459,8 +629,8 @@ def list_spikes(root: Any) -> List[Dict[str, Any]]:
     for child in _spike_subdirs(Path(root)):
         base: Dict[str, Any] = {"dir": str(child.resolve()), "name": child.name}
         try:
-            data = load_manifest(child)
-            rp = resume_point(child)
+            data = show_spike(child)
+            rp = data["resume_point"]
         except ManifestError as e:
             malformed.append(
                 dict(
@@ -495,13 +665,38 @@ def list_spikes(root: Any) -> List[Dict[str, Any]]:
 
 
 def resolve_spike(root: Any, ref: str) -> str:
-    """Resolve a --resume reference to an absolute spike dir. Fails closed on ambiguity."""
+    """Resolve a --resume reference to an absolute spike dir. Fails closed on ambiguity.
+
+    Resolution order (first match wins):
+    1. If ref is absolute, ~/..., or contains a path separator: treat as direct path,
+       expand ~, resolve symlinks, and verify it contains spike.json
+    2. If ref is a simple name, try exact match under root
+    3. If ref is a unique prefix, match it under root
+    4. Otherwise, raise ManifestError (not found or ambiguous)
+
+    Raises:
+        ManifestError: if ref is empty, no match found, or multiple matches exist.
+    """
     if not isinstance(ref, str) or not ref.strip():
         raise ManifestError("resume reference must be a non-empty string")
-    direct = Path(ref).expanduser()
-    if direct.is_dir() and (direct / MANIFEST_NAME).is_file():
-        return str(direct.resolve())
-    candidates = _spike_subdirs(Path(root))
+
+    # Check if ref should be treated as a direct path
+    # (absolute, starts with ~, or contains a separator)
+    has_sep = os.sep in ref or (os.altsep and os.altsep in ref)
+    if ref.startswith("~") or ref.startswith("/") or has_sep:
+        try:
+            direct = Path(ref).expanduser()
+            if direct.is_dir() and (direct / MANIFEST_NAME).is_file():
+                return str(direct.resolve())
+        except (OSError, RuntimeError) as e:
+            raise ManifestError(f"cannot resolve direct path {ref!r}: {e}")
+        raise ManifestError(f"direct path {ref!r} does not contain {MANIFEST_NAME}")
+
+    # ref is a simple name; try prefix match under root
+    try:
+        candidates = _spike_subdirs(Path(root))
+    except ManifestError:
+        raise ManifestError(f"cannot list spikes under {root}")
     for child in candidates:
         if child.name == ref:
             return str(child.resolve())
@@ -570,9 +765,7 @@ def _run(args: argparse.Namespace) -> Any:
     if args.command == "expect":
         return expect_artifacts(args.dir, args.stage, args.paths or [])
     if args.command == "show":
-        data = load_manifest(args.dir)
-        data["resume_point"] = resume_point(args.dir)
-        return data
+        return show_spike(args.dir)
     if args.command == "list":
         return list_spikes(args.root)
     if args.command == "resolve":
