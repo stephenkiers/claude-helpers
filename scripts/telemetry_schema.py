@@ -1286,12 +1286,51 @@ def prune_stale_state(state_dir: Path = None, current_session_id: Optional[str] 
         print(f"telemetry: state dir access failed: {e}", file=sys.stderr)
 
 
+def _content_chars(message: dict) -> int:
+    """Count content chars from a message dict.
+
+    Returns the sum of chars in all content blocks: text blocks add len(text),
+    thinking blocks add len(thinking), tool_use blocks add len(json.dumps(input)).
+    Malformed shapes and non-serializable inputs return 0 without raising.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return 0
+
+    total = 0
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if "text" in block:
+            text_value = block.get("text")
+            if isinstance(text_value, str):
+                total += len(text_value)
+        elif "thinking" in block:
+            thinking_value = block.get("thinking")
+            if isinstance(thinking_value, str):
+                total += len(thinking_value)
+        elif "tool_use" in block:
+            tool_use = block.get("tool_use")
+            if isinstance(tool_use, dict) and "input" in tool_use:
+                try:
+                    input_json = json.dumps(tool_use["input"])
+                    total += len(input_json)
+                except (TypeError, ValueError):
+                    pass
+    return total
+
+
 def parse_transcript_tokens(path: Path) -> dict:
     """Parse a Claude Code transcript JSONL and extract usage metrics.
 
     Returns a dict with keys: tokens (dict with input/output/cache_read/cache_creation),
     turns (int), lines_parsed (int), lines_skipped (int), cost_state (dict or None),
-    first_assistant_event (dict or None).
+    first_assistant_event (dict or None), unfinalized_messages (int),
+    unfinalized_output_tokens_recorded (int), unfinalized_content_chars (int).
+
+    Unfinalized messages are those whose last line has stop_reason explicitly set to null
+    (an absent stop_reason key does not count). The three unfinalized_* fields are
+    observational counts only; tokens dict is unchanged and no estimate is applied.
 
     Raises OSError or FileNotFoundError if the file cannot be read.
     For parse errors, the exception is raised (caller decides how to handle).
@@ -1304,6 +1343,7 @@ def parse_transcript_tokens(path: Path) -> dict:
     lines_parsed = 0
     lines_skipped = 0
     seen_message_ids = {}  # message_id -> event dict (keeps last)
+    content_chars_by_id = {}  # message_id -> accumulated content chars
     cost_state = None
     first_assistant_event = None
 
@@ -1328,6 +1368,10 @@ def parse_transcript_tokens(path: Path) -> dict:
                         msg_id = msg.get("id")
                         if msg_id:
                             seen_message_ids[msg_id] = event
+                            # Accumulate content chars across all lines of this message
+                            if msg_id not in content_chars_by_id:
+                                content_chars_by_id[msg_id] = 0
+                            content_chars_by_id[msg_id] += _content_chars(msg)
             except (json.JSONDecodeError, ValueError):
                 lines_skipped += 1
 
@@ -1377,6 +1421,21 @@ def parse_transcript_tokens(path: Path) -> dict:
 
     turns = len(seen_message_ids)
 
+    # Compute unfinalized fields: an id is unfinalized iff stop_reason is explicitly None
+    unfinalized_messages = 0
+    unfinalized_output_tokens_recorded = 0
+    unfinalized_content_chars = 0
+
+    for msg_id, event in seen_message_ids.items():
+        msg = event.get("message", {})
+        if "stop_reason" in msg and msg["stop_reason"] is None:
+            unfinalized_messages += 1
+            usage = msg.get("usage", {})
+            output_tokens = usage.get("output_tokens", 0)
+            if isinstance(output_tokens, int):
+                unfinalized_output_tokens_recorded += output_tokens
+            unfinalized_content_chars += content_chars_by_id.get(msg_id, 0)
+
     return {
         "tokens": {
             "input": total_input,
@@ -1389,6 +1448,9 @@ def parse_transcript_tokens(path: Path) -> dict:
         "lines_skipped": lines_skipped,
         "cost_state": cost_state,
         "first_assistant_event": first_assistant_event,
+        "unfinalized_messages": unfinalized_messages,
+        "unfinalized_output_tokens_recorded": unfinalized_output_tokens_recorded,
+        "unfinalized_content_chars": unfinalized_content_chars,
     }
 
 
