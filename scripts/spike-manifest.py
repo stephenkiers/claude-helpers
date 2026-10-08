@@ -81,7 +81,7 @@ OPTIONAL_KEYS = frozenset({"expected_artifacts"})
 # stage -> list of (relative path or glob, sentinel or None).
 # A sentinel counts as present when the file's last non-blank line, stripped, equals it.
 # Each stage has a unique artifact path/sentinel pair so a later stage cannot be satisfied
-# by an earlier stage's files; research and research-wave-2 use different sentinels to distinguish.
+# by an earlier stage's files; research-wave-2 lives in research/wave-2/ so the two stages' globs never overlap.
 STAGE_ARTIFACTS: Dict[str, List[Tuple[str, Optional[str]]]] = {
     "gather-context": [
         (MANIFEST_NAME, None),
@@ -101,7 +101,7 @@ STAGE_ARTIFACTS: Dict[str, List[Tuple[str, Optional[str]]]] = {
         ("knowledge/findings.md", None),
         ("knowledge/sources.md", None),
     ],
-    "research-wave-2": [("research/*.md", "<!-- research-wave-2-end -->")],
+    "research-wave-2": [("research/wave-2/*.md", "<!-- research-wave-2-end -->")],
     "expert-assessment": [("experts/*-assessment.md", "<!-- spike-assessment-end -->")],
     "synthesize": [("synthesis.md", None)],
     "audit": [("audit.md", None)],

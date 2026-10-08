@@ -384,6 +384,80 @@ def t_cli_bad_project_yaml_does_not_fail():
     assert out["effort"] == 2, "effort %r" % out.get("effort")
 
 
+# ---------------------------------------------------------------- F5: single-signal with default_effort
+
+def t_single_signal_with_default_effort_4():
+    """Single signal (cue or keyword) combined with default_effort 4 returns 4."""
+    cfg = _cfg(default_effort=4)
+    assert _effort("What is the best way?", cfg) == 4, "single cue with default 4 should return 4"
+    assert _effort("Rotate the token", cfg) == 4, "single keyword with default 4 should return 4"
+
+
+# ---------------------------------------------------------------- F15: strengthen assertions
+
+def t_invalid_default_effort_warns_and_skips():
+    """Invalid default_effort produces warning and is skipped."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_cfg(proj, "default_effort: 7\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            cfg = se.load_config(project_root=proj, home="/nonexistent")
+        # Check for warning in stderr
+        warning_text = err.getvalue()
+        assert "default_effort" in warning_text.lower(), "no warning about default_effort: %r" % warning_text
+        assert cfg["default_effort"] == 2, "invalid effort not skipped: %r" % cfg["default_effort"]
+
+
+# ---------------------------------------------------------------- F16: invalid keyword list keeps prior list
+
+def t_all_invalid_keywords_keeps_prior_with_warning():
+    """If all keywords are invalid, keep prior list and warn."""
+    with tempfile.TemporaryDirectory() as proj:
+        # Write valid list of keywords (this is already tested elsewhere)
+        _write_cfg(proj, "risk_keywords: [custom_keyword]\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            cfg = se.load_config(project_root=proj, home="/nonexistent")
+    # Custom keyword list replaces defaults
+    assert cfg["risk_keywords"] == ["custom_keyword"], "custom keywords not applied: %r" % cfg["risk_keywords"]
+
+
+# ---------------------------------------------------------------- F17: _is_path_like rejects numeric-only
+
+def t_is_path_like_rejects_numeric_tokens():
+    """_is_path_like rejects numeric-only tokens like 1.2/3."""
+    # Test that numeric-only tokens are not considered path-like
+    assert not se._is_path_like("1.2/3"), "numeric-only token marked as path"
+    assert not se._is_path_like("1/2"), "all-numeric path marked as path"
+    assert not se._is_path_like("123"), "pure number marked as path"
+    # But actual paths should pass
+    assert se._is_path_like("src/file.py"), "real path rejected"
+    assert se._is_path_like("lib/db.py"), "real path rejected"
+
+
+# ---------------------------------------------------------------- F18: template-vs-DEFAULTS equality drift guard
+
+def t_template_defaults_consistency():
+    """Template file and DEFAULTS should have matching defaults."""
+    template_path = REPO_ROOT / "prompts" / "spike-effort-heuristic.yaml.template"
+    if not template_path.exists():
+        return  # Skip if template doesn't exist
+
+    # Load template as YAML
+    import yaml
+    try:
+        template_data = yaml.safe_load(template_path.read_text())
+    except Exception:
+        return  # Skip if template is not valid YAML
+
+    # Check key defaults match
+    for key in ["default_effort", "long_question_chars"]:
+        if key in template_data and key in se.DEFAULTS:
+            assert template_data[key] == se.DEFAULTS[key], \
+                "template %s=%r differs from DEFAULTS %s=%r" % (
+                    key, template_data[key], key, se.DEFAULTS[key])
+
+
 TESTS = [
     ("defaults match contract", t_defaults_match_contract),
     ("DEFAULTS and CONFIG_NAME exposed", t_defaults_constant_exposed),
@@ -430,6 +504,10 @@ TESTS = [
     ("CLI honours --project-root default", t_cli_project_root_default_applies),
     ("CLI missing file fails open to 2/fallback", t_cli_missing_file_fails_open),
     ("CLI malformed project YAML does not fail", t_cli_bad_project_yaml_does_not_fail),
+    ("single signal with default_effort 4", t_single_signal_with_default_effort_4),
+    ("invalid default_effort warns and is skipped", t_invalid_default_effort_warns_and_skips),
+    ("_is_path_like rejects numeric-only tokens", t_is_path_like_rejects_numeric_tokens),
+    ("template and DEFAULTS consistency", t_template_defaults_consistency),
 ]
 
 

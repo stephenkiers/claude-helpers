@@ -34,7 +34,7 @@ SENTINEL_STAGES = {
     "codebase-survey": ("survey/q1.md", "<!-- survey-end -->"),
     "expert-questions": ("experts/alice-questions.md", "<!-- spike-questions-end -->"),
     "research": ("research/q1-1.md", "<!-- research-end -->"),
-    "research-wave-2": ("research/q2-1.md", "<!-- research-end -->"),
+    "research-wave-2": ("research/wave-2/q2-1.md", "<!-- research-wave-2-end -->"),
     "expert-assessment": ("experts/alice-assessment.md", "<!-- spike-assessment-end -->"),
 }
 PLAIN_STAGES = {
@@ -806,6 +806,182 @@ def t_cli_expect_roundtrip():
         "stored %r" % (shown.get("expected_artifacts"),)
 
 
+# ---------------------------------------------------------------- F1: research vs wave-2 separation
+
+def t_research_and_wave2_complete_independently():
+    """Both research stages can be complete at once: their globs never overlap."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root)
+        _write(d / "research" / "q1.md", "body\n<!-- research-end -->\n")
+        assert not sm.missing_artifacts(d, "research")
+        assert sm.missing_artifacts(d, "research-wave-2"), "wave-2 satisfied by research files"
+        _write(d / "research" / "wave-2" / "q2.md", "body\n<!-- research-wave-2-end -->\n")
+        assert not sm.missing_artifacts(d, "research-wave-2")
+        assert not sm.missing_artifacts(d, "research"), "wave-2 file broke the research stage"
+
+
+def t_no_two_stages_share_sentinel_pattern():
+    """Sentinel-bearing globs must be unique: a shared glob would let one stage's files
+    fail (or satisfy) another stage's sentinel check."""
+    seen = {}
+    for stage, arts in sm.STAGE_ARTIFACTS.items():
+        for pattern, sentinel in arts:
+            if sentinel is None:
+                continue
+            assert pattern not in seen, "%s and %s share %s" % (stage, seen[pattern], pattern)
+            seen[pattern] = stage
+
+
+# ---------------------------------------------------------------- F3: roster-driven expert artifact tests
+
+def t_missing_artifacts_expert_pattern_empty_roster():
+    """Expert-specific artifacts require at least one expert in roster."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root, experts=[])  # no experts
+        # expert-questions stage needs experts/*-questions.md
+        missing = sm.missing_artifacts(d, "expert-questions")
+        assert missing, "expert stage incomplete with empty roster: %r" % missing
+
+
+def t_missing_artifacts_expert_pattern_partial_roster():
+    """Expert-specific artifacts require files for each expert in roster."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root, experts=["alice", "bob"])
+        # Write only alice's questions
+        _write(d / "experts" / "alice-questions.md", "q\n<!-- spike-questions-end -->\n")
+        missing = sm.missing_artifacts(d, "expert-questions")
+        # Should report bob's missing
+        assert any("bob" in m for m in missing), "bob-questions not reported missing: %r" % missing
+
+
+def t_missing_artifacts_expert_pattern_complete():
+    """Expert-specific artifacts complete when all roster experts have files."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root, experts=["alice", "bob"])
+        for name in ("alice", "bob"):
+            _write(d / "experts" / f"{name}-questions.md", "q\n<!-- spike-questions-end -->\n")
+        missing = sm.missing_artifacts(d, "expert-questions")
+        assert not missing, "expert stage incomplete with all experts: %r" % missing
+
+
+def t_missing_artifacts_stray_expert_files_ok():
+    """Extra expert files beyond roster don't cause issues."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root, experts=["alice"])
+        # Write alice's questions AND a stray charlie's questions
+        for name in ("alice", "charlie"):
+            _write(d / "experts" / f"{name}-questions.md", "q\n<!-- spike-questions-end -->\n")
+        missing = sm.missing_artifacts(d, "expert-questions")
+        assert not missing, "stray expert file caused issues: %r" % missing
+
+
+# ---------------------------------------------------------------- F6: init validation table-driven
+
+def t_init_rejects_invalid_inputs():
+    """Table-driven validation for init arguments."""
+    cases = [
+        ("empty question", {"question": ""}, sm.ManifestError),
+        ("whitespace question", {"question": "   "}, sm.ManifestError),
+        ("question not string", {"question": 42}, sm.ManifestError),
+        ("invalid slug chars", {"slug": "A B"}, sm.ManifestError),
+        ("slug too long", {"slug": "x"*51}, sm.ManifestError),
+        ("empty slug", {"slug": ""}, sm.ManifestError),
+        ("effort 0", {"effort": 0}, sm.ManifestError),
+        ("effort 6", {"effort": 6}, sm.ManifestError),
+        ("effort string", {"effort": "3"}, sm.ManifestError),
+        ("invalid models", {"models": "haiku"}, sm.ManifestError),
+        ("expert name with space", {"experts": ["alice smith"]}, sm.ManifestError),
+        ("empty expert name", {"experts": [""]}, sm.ManifestError),
+    ]
+
+    failures = []
+    for label, invalid_kw, exc_type in cases:
+        with tempfile.TemporaryDirectory() as root:
+            d = Path(root) / "test"
+            d.mkdir()
+            try:
+                kw = {"question": "Q?", "slug": "slug", "effort": 2}
+                kw.update(invalid_kw)
+                sm.init_manifest(d, **kw)
+            except exc_type:
+                continue
+            except Exception as e:
+                failures.append("%s: raised %s instead of %s" % (label, type(e).__name__, exc_type.__name__))
+                continue
+            failures.append("%s: did not raise %s" % (label, exc_type.__name__))
+
+    assert not failures, "; ".join(failures)
+
+
+# ---------------------------------------------------------------- F14: atomic writes with exclusive flag
+
+def t_write_atomic_exclusive_true_on_existing_fails():
+    """_write_atomic with exclusive=True fails if file exists."""
+    with tempfile.TemporaryDirectory() as root:
+        d = Path(root)
+        sm.init_manifest(d, "Q", "s", 2)  # creates spike.json
+        try:
+            sm.init_manifest(d, "Q2", "s2", 3)  # should fail on re-init
+        except sm.ManifestError:
+            return
+        raise AssertionError("re-init with exclusive=True did not raise ManifestError")
+
+
+def t_write_atomic_temp_cleanup_on_error():
+    """_write_atomic cleans up temp file if replace fails."""
+    real_replace = os.replace
+    call_count = [0]
+
+    def boom(src, dst, *a, **kw):
+        call_count[0] += 1
+        raise OSError("simulated error")
+
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root)
+        temp_files_before = list(d.glob("*.tmp"))
+        os.replace = boom
+        try:
+            try:
+                sm.mark_stage(d, "decompose", "running")
+            except Exception:
+                pass
+        finally:
+            os.replace = real_replace
+
+        temp_files_after = list(d.glob("*.tmp"))
+        assert len(temp_files_before) == len(temp_files_after), \
+            "temp file not cleaned up: before=%d after=%d" % (len(temp_files_before), len(temp_files_after))
+
+
+# ---------------------------------------------------------------- F20: resume_point_from and show_spike
+
+def t_resume_point_from_with_data():
+    """resume_point_from derives point from manifest data and disk artifacts."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root)
+        data = sm.load_manifest(d)
+        # Fresh manifest should point to gather-context
+        rp = sm.resume_point_from(data, d)
+        assert rp == "gather-context", "fresh resume_point_from %r" % (rp,)
+
+        # Mark gather-context done with artifacts
+        _write_artifacts(d, "gather-context")
+        sm.mark_stage(d, "gather-context", "done")
+        data = sm.load_manifest(d)
+        rp = sm.resume_point_from(data, d)
+        assert rp == "decompose", "resume_point_from after first stage %r" % (rp,)
+
+
+def t_show_spike_outputs_manifest():
+    """show_spike outputs manifest as JSON."""
+    with tempfile.TemporaryDirectory() as root:
+        d = _new_spike(root, question="Test?", slug="test")
+        shown = sm.show_spike(d)
+        assert isinstance(shown, dict), "show_spike returned %s" % type(shown).__name__
+        assert shown["question"] == "Test?", "shown question %r" % shown.get("question")
+        assert shown["slug"] == "test", "shown slug %r" % shown.get("slug")
+
+
 TESTS = [
     ("STAGES exact order", t_stages_exact_order),
     ("STATUSES exact set", t_statuses_exact_set),
@@ -868,6 +1044,17 @@ TESTS = [
     ("expect rejects unsafe paths and stages", t_expect_rejects_unsafe_paths),
     ("symlinked artifact does not satisfy stage", t_symlinked_artifact_does_not_satisfy),
     ("CLI expect stores paths", t_cli_expect_roundtrip),
+    ("research and wave-2 complete independently", t_research_and_wave2_complete_independently),
+    ("no two stages share artifact/sentinel pair", t_no_two_stages_share_sentinel_pattern),
+    ("expert pattern with empty roster", t_missing_artifacts_expert_pattern_empty_roster),
+    ("expert pattern with partial roster", t_missing_artifacts_expert_pattern_partial_roster),
+    ("expert pattern with complete roster", t_missing_artifacts_expert_pattern_complete),
+    ("stray expert files don't cause issues", t_missing_artifacts_stray_expert_files_ok),
+    ("init rejects invalid inputs", t_init_rejects_invalid_inputs),
+    ("write_atomic exclusive=True on existing fails", t_write_atomic_exclusive_true_on_existing_fails),
+    ("write_atomic cleans up temp file on error", t_write_atomic_temp_cleanup_on_error),
+    ("resume_point_from with data", t_resume_point_from_with_data),
+    ("show_spike outputs manifest", t_show_spike_outputs_manifest),
 ]
 
 
