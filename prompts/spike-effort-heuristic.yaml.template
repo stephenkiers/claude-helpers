@@ -1,0 +1,69 @@
+# .claude/spike-effort-heuristic.yaml — tunable heuristic for auto-sizing /expert-spike effort
+#
+# Copy this file to: ~/.claude/spike-effort-heuristic.yaml
+# Project-level copy at: .claude/spike-effort-heuristic.yaml (overrides user-level, key by key)
+# All entries are optional; omit what you want the defaults for.
+#
+# Without this file, /expert-spike uses the built-in defaults below. The heuristic only runs when
+# --effort is NOT passed; explicit --effort always skips it. It is deterministic (no model call):
+# scripts/spike-effort.py reads the question text and picks effort 2, 3, or 4.
+#
+# Levels 1 and 5 are explicit-only: the heuristic never picks them. Pass --effort 1 or --effort 5
+# yourself when you want them.
+#
+# Rules, in order (the first rule that fires decides):
+#   1. Two or more distinct signals (decision_cues + risk_keywords that match) -> effort 4.
+#   2. Question longer than long_question_chars (strictly greater than) -> effort 4.
+#   3. Names at least subsystem_min distinct subsystems (backticked identifiers or path-like
+#      tokens such as scripts/foo.py) -> effort 4.
+#   4. Exactly one signal -> effort 3.
+#   5. Otherwise -> default_effort.
+#
+# default_effort: 2 | 3 | 4 — used when no rule fires (default 2)
+#   Must be an int in [2, 4]. 1 and 5 are rejected here.
+#
+# long_question_chars: positive int: question length above which it counts as large (default 600)
+#
+# subsystem_min: positive int: distinct subsystem tokens at or above which the question counts as
+#   spanning several subsystems (default 2)
+#
+# decision_cues: case-insensitive word-boundary matches for decision-shaped phrasing.
+#   Matching is by word-boundary start, so "compare" matches "compared". The entry "vs" must match
+#   as a whole word, so "vsync" does not match. The list replaces the default when set.
+#
+# risk_keywords: case-insensitive word-boundary matches for risk-shaped subject matter.
+#   Same matching rules as decision_cues. The list replaces the default when set.
+#
+# An entry that appears in both lists (for example "migrate") counts as one signal, not two.
+# Blank entries are dropped.
+
+default_effort: 2
+
+long_question_chars: 600
+
+subsystem_min: 2
+
+decision_cues:
+  - best way
+  - should we
+  - compare
+  - vs
+  - migrate
+  - replace
+  - architecture
+  - strategy
+
+risk_keywords:
+  - auth
+  - payment
+  - migration
+  - migrate
+  - schema
+  - security
+  - secret
+  - token
+  - crypto
+  - permission
+  - password
+  - concurrency
+  - irreversible
