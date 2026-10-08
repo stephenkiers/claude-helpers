@@ -423,25 +423,19 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
     lock_file = None
     lock_acquired = False
     error: Optional[str] = None
+    git_common_dir = None
 
     try:
-        try:
-            git_common_dir = git.abs_git_common_dir(main_worktree)
-            if git_common_dir is None:
-                error = "could not determine git-common-dir"
-        except Exception as e:
-            error = f"could not determine git-common-dir: {e}"
+        git_common_dir = git.abs_git_common_dir(main_worktree)
+        if git_common_dir is None:
+            error = "could not determine git-common-dir"
+    except Exception as e:
+        error = f"could not determine git-common-dir: {e}"
 
-        if error:
-            yield error
-            return
-
+    if error is None and git_common_dir is not None:
         lock_path = git_common_dir / "cleanup-validation.lock"
-
-        # Ensure directory exists
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-
         try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
             # Use os.open with O_NOFOLLOW for security (POSIX-only)
             fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
             lock_file = os.fdopen(fd, "w")
@@ -452,19 +446,17 @@ def validation_lock(main_worktree: Path) -> Iterator[Optional[str]]:
         except OSError as e:
             error = f"could not acquire validation lock: {e}"
 
-        try:
-            yield error
-        finally:
-            if lock_file:
-                try:
-                    if lock_acquired:
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                    lock_file.close()
-                except Exception:
-                    pass
-    except Exception as e:
-        # Unexpected exception not caught above
-        yield f"could not acquire validation lock: {e}"
+    # Single yield, outside any except: exceptions from the body propagate unmasked.
+    try:
+        yield error
+    finally:
+        if lock_file:
+            try:
+                if lock_acquired:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+            except Exception:
+                pass
 
 
 def run_validation(

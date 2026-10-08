@@ -311,11 +311,7 @@ def main() -> None:
                 if "queue_tested_steps" in data and not isinstance(data["queue_tested_steps"], list):
                     data["queue_tested_steps"] = []
 
-                # Only render if validation was actually run (reason is not "validation not run")
                 reason = data.get("validation_reason", "")
-                if reason == "validation not run":
-                    # Skip rendering for unrun validations
-                    sys.exit(0)
 
                 verdict = validation.ValidationVerdict.parse(data.get("validation"))
                 notes = data.get("notes", [])

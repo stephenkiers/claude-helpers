@@ -149,32 +149,28 @@ MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cu
 ARG=""
 QSA=""
 
-# Split ARGUMENTS into an array and process each token
-set -- $ARGUMENTS
-while [ $# -gt 0 ]; do
-  token="$1"
-  shift
-  case "$token" in
-    --queue-started-at=*)
-      QSA="${token#--queue-started-at=}"
-      ;;
-    --queue-started-at)
-      # Next token is the value
-      if [ $# -gt 0 ]; then
-        QSA="$1"
-        shift
-      fi
-      ;;
-    *)
-      # Non-flag token — accumulate for glob resolution
-      if [ -z "$ARG" ]; then
-        ARG="$token"
-      else
-        ARG="$ARG $token"
-      fi
-      ;;
-  esac
-done
+# Tokenize with python3 so splitting is identical in bash and zsh and globs are never
+# expanded by the shell (the glob is resolved below). Output: first line = QSA, rest = ARG.
+PARSED=$(python3 -c '
+import shlex, sys
+toks = shlex.split(sys.argv[1]) if sys.argv[1].strip() else []
+qsa, rest, i = "", [], 0
+while i < len(toks):
+    t = toks[i]
+    if t.startswith("--queue-started-at="):
+        qsa = t.split("=", 1)[1]
+    elif t == "--queue-started-at":
+        if i + 1 < len(toks):
+            i += 1
+            qsa = toks[i]
+    else:
+        rest.append(t)
+    i += 1
+print(qsa)
+print(" ".join(rest))
+' "$ARGUMENTS")
+QSA=$(printf '%s\n' "$PARSED" | sed -n '1p')
+ARG=$(printf '%s\n' "$PARSED" | sed -n '2p')
 
 # Validate --queue-started-at if present; the Python CLI will also validate
 # Skip validation here — let the Python CLI validate and reject via argparse

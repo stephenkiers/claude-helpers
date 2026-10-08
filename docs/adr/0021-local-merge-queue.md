@@ -382,9 +382,8 @@ queue-tested tree. The skip decision (returning `VALIDATION=skipped` with a `Pro
 requires **both** conditions:
 
 1. **Tree equality:** The tree at `origin/<base>` (freshly fetched) is identical to the
-   tree that passed the queue gate (checked via content-addressable fingerprint). The fingerprint
-   is an unordered set of `(path, content-hash)` pairs for all **tracked** files (not untracked
-   or `.gitignore`d files). This is the primary proof of equivalence.
+   tree that passed the queue gate (compared by git tree SHA, which covers tracked content only).
+   This is the primary proof of equivalence.
 
 2. **Queue-steps superset:** The queue gate's configured `steps` must be a superset of the
    checks read from `.claude/repo-cache.json` in the main worktree. That is, every check command
@@ -394,22 +393,20 @@ requires **both** conditions:
 
 **`--queue-started-at` hand-off:** The queue records the wall-clock Unix timestamp when the PR
 entered the queue and passes it to `/cleanup` via the `--queue-started-at` command-line argument.
-The cleanup command uses this timestamp as the threshold for the **freshness check** — the repo
-cache (`repo-cache.json`) is considered stale if it was written before the queue timestamp, which
-would indicate a check was added after the PR was queued. Cleanup validates this ordering by
-checking `repo-cache.ctime` against the queue start time.
+Cleanup passes it to the queue-result reader (`read_pr_result`) as a timestamp gate, so only a
+queue result recorded for this queue run is accepted as proof. There is no separate check of
+`repo-cache.json` file times; the steps-superset condition above is what covers checks added
+after the PR was queued.
 
-**Residual blind spot (F16):** The fingerprint used for tree equality only covers **tracked
-files** (under git control). It does not include untracked files or `.gitignore`d files, which
-means a PR whose queue-tested tree matched but whose untracked/ignored artifacts differ will
-still be skipped. This is an acceptable gap because (1) ignored files should not affect
-correctness, and (2) detecting changes to untracked files would require the queue to build the
-full tree snapshot, not just the tracked-file fingerprint. Projects with test artifacts or
-build outputs in `.gitignore` can run the full validation instead of relying on the skip by
-setting a custom `CLEANUP_SKIP_PROOF` env var (reserved for future use).
+**Residual blind spot (F16):** The tree-equality proof covers tracked content only. Untracked or
+`.gitignore`d files are not part of it, so a PR whose tracked tree matched the queue-tested tree is
+skipped even if ignored artifacts differ. This is accepted: ignored files should not affect
+correctness, and detecting them would require the queue to snapshot the full working tree. (This is
+distinct from the post-merge dirty-main fingerprint in `git.py`, which guards against a validation
+run mutating main.) There is currently no opt-out env var.
 
 **Built vs. Planned:** Queue-proof skip is now built and working. The skip compares fingerprints,
-checks the steps-superset condition, and validates freshness via `--queue-started-at`. Cleanup
+checks the steps-superset condition, and gates the queue result on `--queue-started-at`. Cleanup
 returns `VALIDATION=skipped` (a passing verdict) when both conditions are met and the skip is
 taken; otherwise, it proceeds with validation as usual.
 

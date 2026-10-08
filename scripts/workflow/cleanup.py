@@ -254,45 +254,6 @@ def _check_plan_fresh(plan: CleanupPlan, target_worktree: Path) -> Optional[Unkn
         return Unknown(f"Freshness validation failed: {e}")
 
 
-def _validate_main(
-    plan: CleanupPlan,
-    main_worktree_path: Path
-) -> Tuple[Optional[Unknown], Optional[str]]:
-    """
-    Perform main-worktree validation: acquire lock and pull ff-only.
-
-    Returns (error, lock_reason) where:
-    - (None, None): both succeeded
-    - (Unknown(...), None): lock succeeded but pull failed
-    - (None, reason_str): lock failed with reason
-    """
-    # Try to acquire lock
-    lock_result = validation.validation_lock(main_worktree_path)
-    try:
-        context_manager = lock_result.__enter__()
-        if context_manager is not None:
-            # Lock failed
-            return None, context_manager
-
-        # Lock succeeded; now try to pull
-        try:
-            success, err = git.pull_ff_only("origin", "main", cwd=main_worktree_path)
-            if not success:
-                reason = f"could not fast-forward main: {err.reason if err else 'unknown error'}"
-                lock_result.__exit__(None, None, None)
-                return Unknown(reason), None
-        except Exception as e:
-            reason = f"could not fast-forward main: {e}"
-            lock_result.__exit__(None, None, None)
-            return Unknown(reason), None
-
-        return None, None
-
-    except Exception as e:
-        lock_result.__exit__(None, None, None)
-        return Unknown(f"Main worktree validation error: {e}"), None
-
-
 def _remove_worktree_and_branch(
     plan: CleanupPlan,
     result: CleanupResult,
