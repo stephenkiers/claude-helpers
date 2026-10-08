@@ -537,14 +537,7 @@ def run_validation(
             finals.append((AttemptOutcome.PASS, ""))
             continue
 
-        # Check if we can retry (don't retry timeouts)
-        if outcome_reason and outcome_reason.startswith("check timed out"):
-            finals.append((outcome, outcome_reason))
-            failure_lines.append(
-                f"Check inconclusive ({outcome_reason}): {cmd}"
-            )
-            continue
-
+        # Timeouts are still retried: the existing timeout contract tests pin this behavior.
         fp_after = git.tracked_fingerprint(main_worktree)
 
         if fp_before is None or fp_after is None:
