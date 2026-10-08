@@ -77,6 +77,10 @@ likely source of drift, since those have the most model-specific variation).
    <session-id>` mode that backfills `usage-log.jsonl` without a paste. Needs a decision before
    implementation, not during it.
 
+## Constraint: transcripts under-record subagent output (measured)
+
+Transcripts cannot reproduce `/usage` output dollars when subagents run — on Claude Code 2.1.278–2.1.285 the transcript sum captured a median 35% of the session's output tokens (gap 64.7%), because subagent messages ending on `tool_use` keep a `stop_reason: null` placeholder as their last usage line. Any transcript-derived cost must either read the session's `cost-state` line (authoritative, matches `/usage` within rounding) or label output cost as a lower bound. Point to `docs/metrics.md` "Transcript token completeness" for the measurement and the `unfinalized_*` fields.
+
 ## Open questions to resolve before implementing
 
 - Does a transcript's per-turn `usage` block reliably carry the model name, or does the model
