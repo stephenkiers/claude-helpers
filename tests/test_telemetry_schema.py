@@ -11,6 +11,7 @@ Run with: python3 tests/test_telemetry_schema.py
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -1666,6 +1667,278 @@ def test_parse_transcript_tokens_unknown_on_missing_key():
         return True, ""
 
 
+def test_parse_transcript_tokens_unfinalized_id_detected():
+    """parse_transcript_tokens detects unfinalized ids with stop_reason=None."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        thinking_text = "this is thinking"
+        text_text = "this is text"
+        tool_input = {"command": "ls -la", "description": "list"}
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_u", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": [{"type": "thinking", "thinking": thinking_text, "signature": "sig"}]}},
+            {"type": "assistant", "message": {"id": "msg_u", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": [{"type": "text", "text": text_text}]}},
+            {"type": "assistant", "message": {"id": "msg_u", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "tool_use", "id": "t", "name": "n", "input": tool_input}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if result.get("unfinalized_messages") != 1:
+            return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 5:
+            return False, f"expected unfinalized_output_tokens=5, got {result.get('unfinalized_output_tokens_recorded')}"
+
+        expected_chars = len(thinking_text) + len(text_text) + len(json.dumps(tool_input))
+        if result.get("unfinalized_content_chars") != expected_chars:
+            return False, f"expected unfinalized_content_chars={expected_chars}, got {result.get('unfinalized_content_chars')}"
+
+        if result["tokens"]["output"] != 5:
+            return False, f"expected tokens.output=5, got {result['tokens']['output']}"
+        if result["turns"] != 1:
+            return False, f"expected turns=1, got {result['turns']}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_finalized_id_not_counted():
+    """parse_transcript_tokens does not count finalized ids (stop_reason != None)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        thinking_text = "thinking"
+        text_text = "text"
+        tool_input = {"command": "ls", "description": "list"}
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_f", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": [{"type": "thinking", "thinking": thinking_text, "signature": "sig"}]}},
+            {"type": "assistant", "message": {"id": "msg_f", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": [{"type": "text", "text": text_text}]}},
+            {"type": "assistant", "message": {"id": "msg_f", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "t", "name": "n", "input": tool_input}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if result.get("unfinalized_messages") != 0:
+            return False, f"expected unfinalized_messages=0, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 0:
+            return False, f"expected unfinalized_output_tokens=0, got {result.get('unfinalized_output_tokens_recorded')}"
+        if result.get("unfinalized_content_chars") != 0:
+            return False, f"expected unfinalized_content_chars=0, got {result.get('unfinalized_content_chars')}"
+        if result["tokens"]["output"] != 5:
+            return False, f"expected tokens.output=5, got {result['tokens']['output']}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_mixed_file():
+    """parse_transcript_tokens handles mixed finalized and unfinalized ids."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        finalized_text = "finalized"
+        tool_input = {"action": "execute"}
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_final", "usage": {"input_tokens": 100, "output_tokens": 40}, "stop_reason": "end_turn", "content": [{"type": "text", "text": finalized_text}]}},
+            {"type": "assistant", "message": {"id": "msg_unfin", "usage": {"input_tokens": 50, "output_tokens": 3}, "stop_reason": None, "content": [{"type": "tool_use", "id": "t2", "name": "cmd", "input": tool_input}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if result.get("unfinalized_messages") != 1:
+            return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 3:
+            return False, f"expected unfinalized_output_tokens=3, got {result.get('unfinalized_output_tokens_recorded')}"
+        if result.get("unfinalized_content_chars") != len(json.dumps(tool_input)):
+            return False, f"expected unfinalized_content_chars={len(json.dumps(tool_input))}, got {result.get('unfinalized_content_chars')}"
+        if result["tokens"]["output"] != 43:
+            return False, f"expected tokens.output=43, got {result['tokens']['output']}"
+        if result["turns"] != 2:
+            return False, f"expected turns=2, got {result['turns']}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_absent_stop_reason_not_counted():
+    """parse_transcript_tokens does not count ids without stop_reason key."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        text_content = "content"
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_no_key", "usage": {"input_tokens": 50, "output_tokens": 25}, "content": [{"type": "text", "text": text_content}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if result.get("unfinalized_messages") != 0:
+            return False, f"expected unfinalized_messages=0, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 0:
+            return False, f"expected unfinalized_output_tokens=0, got {result.get('unfinalized_output_tokens_recorded')}"
+        if result.get("unfinalized_content_chars") != 0:
+            return False, f"expected unfinalized_content_chars=0, got {result.get('unfinalized_content_chars')}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_fields_always_present():
+    """parse_transcript_tokens always returns the three new fields as 0 or values."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+
+        lines = [
+            {"type": "user", "message": {"id": "u1", "content": "test"}},
+            {"type": "cost-state", "modelUsage": {}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if "unfinalized_messages" not in result:
+            return False, "unfinalized_messages not in result"
+        if "unfinalized_output_tokens_recorded" not in result:
+            return False, "unfinalized_output_tokens_recorded not in result"
+        if "unfinalized_content_chars" not in result:
+            return False, "unfinalized_content_chars not in result"
+
+        if result.get("unfinalized_messages") != 0:
+            return False, f"expected unfinalized_messages=0, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 0:
+            return False, f"expected unfinalized_output_tokens_recorded=0, got {result.get('unfinalized_output_tokens_recorded')}"
+        if result.get("unfinalized_content_chars") != 0:
+            return False, f"expected unfinalized_content_chars=0, got {result.get('unfinalized_content_chars')}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_malformed_content_no_raise():
+    """parse_transcript_tokens does not raise on malformed content blocks."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": "a plain string"}},
+            {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [42, "str"]}},
+            {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "tool_use", "id": "t", "name": "n"}]}},
+            {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "text", "text": 123}]}},
+            {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "text", "text": "ok"}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        try:
+            result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        except Exception as e:
+            return False, f"should not raise, but raised {type(e).__name__}: {e}"
+
+        if result.get("unfinalized_messages") != 1:
+            return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_content_chars") != 2:
+            return False, f"expected unfinalized_content_chars=2 (only 'ok'), got {result.get('unfinalized_content_chars')}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_return_contract_unchanged():
+    """parse_transcript_tokens preserves all previously existing fields."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}},
+            {"type": "assistant", "message": {"id": "msg_2", "usage": {"input_tokens": 75, "output_tokens": 25}}},
+            {"type": "cost-state", "modelUsage": {"inputTokens": 175, "outputTokens": 35}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if "tokens" not in result:
+            return False, "tokens not in result"
+        if "turns" not in result:
+            return False, "turns not in result"
+        if "lines_parsed" not in result:
+            return False, "lines_parsed not in result"
+        if "lines_skipped" not in result:
+            return False, "lines_skipped not in result"
+        if "cost_state" not in result:
+            return False, "cost_state not in result"
+        if "first_assistant_event" not in result:
+            return False, "first_assistant_event not in result"
+
+        if result["turns"] != 2:
+            return False, f"expected turns=2, got {result['turns']}"
+        if result["tokens"]["input"] != 175:
+            return False, f"expected tokens.input=175, got {result['tokens']['input']}"
+        if result["tokens"]["output"] != 35:
+            return False, f"expected tokens.output=35, got {result['tokens']['output']}"
+
+        return True, ""
+
+
+def test_transcript_metrics_cli_emits_keys():
+    """CLI parse command emits the three unfinalized keys in JSON output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        thinking_text = "thinking content"
+        text_text = "text content"
+        tool_input = {"command": "test", "arg": "value"}
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 20, "output_tokens": 8}, "content": [{"type": "thinking", "thinking": thinking_text, "signature": "sig"}]}},
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 20, "output_tokens": 8}, "content": [{"type": "text", "text": text_text}]}},
+            {"type": "assistant", "message": {"id": "msg_1", "usage": {"input_tokens": 20, "output_tokens": 8}, "stop_reason": None, "content": [{"type": "tool_use", "id": "t3", "name": "cmd", "input": tool_input}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "claude-transcript-metrics.py"
+        proc = subprocess.run([sys.executable, str(script_path), "parse", "--transcript", str(transcript_path)], capture_output=True, text=True)
+
+        if proc.returncode != 0:
+            return False, f"CLI failed with returncode {proc.returncode}: {proc.stderr}"
+
+        try:
+            output = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            return False, f"CLI output is not valid JSON: {e} :: {proc.stdout}"
+
+        if "unfinalized_messages" not in output:
+            return False, f"unfinalized_messages not in output: {output}"
+        if "unfinalized_output_tokens_recorded" not in output:
+            return False, f"unfinalized_output_tokens_recorded not in output: {output}"
+        if "unfinalized_content_chars" not in output:
+            return False, f"unfinalized_content_chars not in output: {output}"
+        if "token_confidence" not in output:
+            return False, f"token_confidence not in output: {output}"
+
+        expected_chars = len(thinking_text) + len(text_text) + len(json.dumps(tool_input))
+        if output.get("unfinalized_messages") != 1:
+            return False, f"expected unfinalized_messages=1, got {output.get('unfinalized_messages')}"
+        if output.get("unfinalized_output_tokens_recorded") != 8:
+            return False, f"expected unfinalized_output_tokens_recorded=8, got {output.get('unfinalized_output_tokens_recorded')}"
+        if output.get("unfinalized_content_chars") != expected_chars:
+            return False, f"expected unfinalized_content_chars={expected_chars}, got {output.get('unfinalized_content_chars')}"
+        if output.get("token_confidence") != "low":
+            return False, f"expected token_confidence='low', got {output.get('token_confidence')}"
+
+        return True, ""
+
+
 def test_counted_tokens_sums_three_keys():
     """counted_tokens sums input, output, cache_creation."""
     tokens = {"input": 100, "output": 50, "cache_creation": 30, "cache_read": 999}
@@ -2511,6 +2784,30 @@ if __name__ == "__main__":
 
     passed, msg = test_parse_transcript_tokens_unknown_on_missing_key()
     test_result("parse_transcript_tokens returns 'unknown' for missing keys", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_unfinalized_id_detected()
+    test_result("parse_transcript_tokens detects unfinalized ids", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_finalized_id_not_counted()
+    test_result("parse_transcript_tokens does not count finalized ids", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_mixed_file()
+    test_result("parse_transcript_tokens handles mixed finalized/unfinalized", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_absent_stop_reason_not_counted()
+    test_result("parse_transcript_tokens does not count missing stop_reason", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_fields_always_present()
+    test_result("parse_transcript_tokens always returns the three new fields", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_malformed_content_no_raise()
+    test_result("parse_transcript_tokens does not raise on malformed content", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_return_contract_unchanged()
+    test_result("parse_transcript_tokens preserves pre-existing return fields", passed, msg)
+
+    passed, msg = test_transcript_metrics_cli_emits_keys()
+    test_result("CLI parse command emits the three unfinalized keys", passed, msg)
 
     passed, msg = test_counted_tokens_sums_three_keys()
     test_result("counted_tokens sums input+output+cache_creation", passed, msg)
