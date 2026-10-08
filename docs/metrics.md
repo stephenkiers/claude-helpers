@@ -438,7 +438,7 @@ The tool emits a JSON object to stdout with:
 - `token_confidence` — confidence level for token counts (`"low"` if per-message counts are unreliable)
 - `unfinalized_messages` — count of deduplicated message ids whose last transcript line has `message.stop_reason` explicitly `null`
 - `unfinalized_output_tokens_recorded` — the `output_tokens` the transcript actually recorded on those ids
-- `unfinalized_content_chars` — content chars accumulated across all lines of those ids: `text` chars + `thinking` chars + `len(json.dumps(tool_use.input))`
+- `unfinalized_content_chars` — content chars accumulated across all lines of those ids: `text` chars + `thinking` chars + `len(json.dumps(input))` of each `tool_use` block
 - `cost_state` — (if present in transcript) the verbatim `cost-state` line from transcript JSONL
 
 ### Known Caveat

@@ -1851,6 +1851,31 @@ def test_parse_transcript_tokens_malformed_content_no_raise():
         return True, ""
 
 
+def test_parse_transcript_tokens_bool_output_tokens_not_summed():
+    """parse_transcript_tokens ignores bool output_tokens on unfinalized ids."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_b", "usage": {"input_tokens": 1, "output_tokens": True}, "stop_reason": None, "content": []}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        try:
+            result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        except Exception as e:
+            return False, f"should not raise, but raised {type(e).__name__}: {e}"
+
+        if result.get("unfinalized_messages") != 1:
+            return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 0:
+            return False, f"expected unfinalized_output_tokens_recorded=0, got {result.get('unfinalized_output_tokens_recorded')}"
+
+        return True, ""
+
+
 def test_parse_transcript_tokens_return_contract_unchanged():
     """parse_transcript_tokens preserves all previously existing fields."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -2802,6 +2827,9 @@ if __name__ == "__main__":
 
     passed, msg = test_parse_transcript_tokens_malformed_content_no_raise()
     test_result("parse_transcript_tokens does not raise on malformed content", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_bool_output_tokens_not_summed()
+    test_result("parse_transcript_tokens ignores bool output_tokens on unfinalized ids", passed, msg)
 
     passed, msg = test_parse_transcript_tokens_return_contract_unchanged()
     test_result("parse_transcript_tokens preserves pre-existing return fields", passed, msg)

@@ -1315,7 +1315,7 @@ def _content_chars(message: dict) -> int:
                 try:
                     input_json = json.dumps(block["input"])
                     total += len(input_json)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, RecursionError):
                     pass
     return total
 
@@ -1432,7 +1432,7 @@ def parse_transcript_tokens(path: Path) -> dict:
             unfinalized_messages += 1
             usage = msg.get("usage", {})
             output_tokens = usage.get("output_tokens", 0)
-            if isinstance(output_tokens, int):
+            if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
                 unfinalized_output_tokens_recorded += output_tokens
             unfinalized_content_chars += content_chars_by_id.get(msg_id, 0)
 
