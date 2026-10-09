@@ -13,7 +13,7 @@ Epic: #245 (`/expert-flow`). Ticket: #246. Plan: `~/.claude/plans/expert-flow-sp
 | Harness | `claude --version` = 2.1.296 (Claude Code) |
 | Date (UTC) | 2026-10-09 |
 | Driver model | Sonnet 5.5 (`claude-sonnet-5-5`), main-thread session |
-| Step / probe agent models | step: `general-purpose` (inherits); probes: `general-purpose` with `model: haiku` (deviation: see below) |
+| Step / probe agent models | step: `general-purpose` (inherits); probes: `general-purpose` with `model: haiku` (see deviations) |
 | `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | unset in the driver shell (documented default 20); not lowered |
 | Harness location | `~/spike-246/` only (no pushed harness branch); user-level installs listed in the inventory |
 | Effort-2 spend ceiling (Open Item 1) | **None, by user decision** ("no token / max cost … lots of room"). Cost is observed and reported, not enforced. Manual abort if the run exceeds about 2x expected duration. |
@@ -89,6 +89,59 @@ seconds (set at 5 s), or if a permission dialog appeared. Invalid runs are repea
   attempts, tool-unavailable errors, improvised choices and Bash permission dialogs; static grep of the
   `--issue` path finds no reachable `AskUserQuestion`. `IN_PLAN_MODE=0` pinned.
 
+### Evidence standard
+
+Evidence is inline: nonces, timestamps, agent ids, transcript paths, harness version, date. Completion is
+decided from artifacts on disk, never from an agent's self-report. Decisive transcript excerpts are
+quoted inline because transcripts may be purged.
+
+## Side-effect inventory
+
+| Item | Where | Created (UTC 2026-10-09) | Removed |
+|---|---|---|---|
+| Stub commands `spike-246-stub{,-t2b,-t2c,-t3,-t3b}.md` | `~/.claude/commands/` | 20:12:11 to 20:15:16 | stale ones during run; rest 20:25:37 |
+| Probe agent `spike-246-probe.md` (bypassPermissions) | `~/.claude/agents/` | Step 3 | removed same step (never discovered mid-session) |
+| Review worktree + branch `spike/246-review-target` | `~/spike-246/review-wt` | 20:21:13 | 20:25:37 |
+| Scratch issue #261 (body replaced, plan comment) | GitHub | 20:24:13 | comment deleted 20:25:30; closed 20:25:32 (issues cannot be deleted) |
+| Worktree + branch `feature/261-scratch-plan-p` | `worktrees/261-scratch-plan-p` | Q4 run | 20:25:37 |
+| Review dir `spike-246-review-target-a1a28e3-20261009T132127-31836` | `~/.claude/reviews/stephenkiers-claude-helpers/` | Q2 real run | 20:26:43 |
+| Scratch root | `~/spike-246/` | start | removed after evidence was quoted here |
+
+Not inspected: any reviewer-yield or review-cache entry the nested `/expert-review` run may have appended. Treat as an unremoved side effect. Background agents: user confirmed none remain.
+
+### Deviations from the plan
+
+- Probe agent: the auto-mode classifier blocked creating a `bypassPermissions` agent definition. After user approval it was created, but custom agent types are not discovered mid-session, so probes were `general-purpose` with `model: haiku`.
+- A command body is served from its first load, so edits are ignored: one command name per trial (`t2c`, `t3`). Trial 2 (stale cache) and trial 3's first attempt ("Unknown skill", not yet registered) were invalid and doubled as Q3-neg and Q1-neg controls.
+- Q2 stub run 1 was invalid (stamp taken in a prior call: 38 to 46 s start lag; 14 of 19 probe files invalid JSON). Run 2 (`q2-bg2`) is the scored run.
+- **Start-lag ruling (user, 2026-10-09, "finish this up"):** run 2's max start lag was 6.13 s, over the pre-registered 5 s invalid-run threshold. The run is accepted as scored and not repeated. Rationale: every Q2 observation (19 overlapping probes, 60.4 s outlive, 19 re-invocations, one hand-back) is far from any threshold, so a rerun cannot change the verdict. Recorded as a deliberate deviation from the strict rule.
+
+## Q1: subagent invokes a slash command via `Skill`
+
+### Evidence
+**Verdict: PASS (3/3).** Valid trials t1, t2c, t3. Each stub wrote `q1-nonce` equal to `N_cmd` (present only in the command body), and after resume `q1-complete` held both nonces:
+
+| Trial | N_cmd | N_ans |
+|---|---|---|
+| t1 | cmd-a94b821b | ans-7ea8e2ff |
+| t2c | cmd-8e60dfa8 | ans-1da50a08 |
+| t3 | cmd-c894d9cf | ans-73cac065 |
+
+Transcript audits found a `Skill` tool_use for the stub and no Read/Grep/Glob of the command file. Q1-neg: invoking the unregistered `spike-246-stub-t3` returned "Unknown skill" and produced no nonce file.
+
+## Q2: nested subagents and the join barrier
+
+### Evidence
+**Verdict: WORKS (stub fan-out) and PASS (real path). No kill.**
+
+Stub fan-out (`q2-bg2`): the step launched background depth-2 probes (`launch_ts` 1791577165.492, `endturn_ts` 1791577167.719; 19 valid probe JSONs). 19 started and 3 were rejected with an explicit error at the cap (the step itself counts toward the 20, so a step can launch 19). Peak overlap 19; children outlived the step's end-turn by 60.4 s; the step was re-invoked by 19 completion notifications; exactly one hand-back reached the orchestrator, after the barrier closed. Max probe start lag 6.13 s (over the 5 s threshold; accepted, see deviations).
+
+At-cap behavior (scored separately): explicit rejection, not queueing or silent drop.
+
+Real path: `/expert-review --effort 2` invoked via `Skill` inside a step agent against `spike/246-review-target`. The review dir held pod checkpoints, `final-report.md`, `claude-action-plan.md` and `findings.json`, all with mtimes after the step started; 7 depth-2 agents ran; no prompt attempts; one hand-back. Cost was not observable (null metrics; step usage 83.5k tokens). Nested `Skill`, `Agent` and background launches all work inside a `general-purpose` subagent.
+
+## Q3: `SendMessage` resume after a sentinel
+
 ### Evidence
 **Verdict: PASS (3/3).** The resumed agent (same agent id, via `SendMessage`) wrote both `N_ctx` (conversation only) and `N_ans` (answers file) to `q3-resume`:
 
@@ -98,35 +151,35 @@ seconds (set at 5 s), or if a permission dialog appeared. Invalid runs are repea
 | t2c | ctx-43da06dd | ans-1da50a08 |
 | t3 | ctx-9b27c1e5 | ans-73cac065 |
 
-Q3-neg: a resume sent before the answers file existed (trial 2, chained command aborted) reported the file missing and did not fabricate `N_ans`. Step 8 skipped (nothing ambiguous). Lesson: verify the answers file exists before sending the resume.
+Q3-neg: a resume sent before the answers file existed (a chained driver command aborted) reported the file missing and did not fabricate `N_ans`. Step 8 skipped (nothing ambiguous). Lesson: verify the answers file exists before sending the resume.
 
 ## Q4: zero-prompt `/track-and-start --issue N --plan-file P`
 
 ### Evidence
-**Verdict: PASS on the pre-registered criteria.** Scratch issue #261: the step ran `/track-and-start --issue 261 --plan-file ~/spike-246/plan-P.md` with `IN_PLAN_MODE=0`; the body was replaced with plan P, the old body archived as a "Superseded Plan" comment, worktree `feature/261-scratch-plan-p` created. Step notes: no `AskUserQuestion` attempts, no permission dialogs, no improvised choices. Static check: `commands/track-and-start.md` line 757 skips Duplicate Detection when `$ISSUE_FLAG` is set, and the "Pivot to existing" flow has no reachable prompt.
+**Verdict: PASS on the pre-registered criteria.** Scratch issue #261: the step ran `/track-and-start --issue 261 --plan-file <plan-P>` with `IN_PLAN_MODE=0`; the body was replaced with plan P, the old body archived as a "Superseded Plan" comment, worktree `feature/261-scratch-plan-p` created. Step notes: no `AskUserQuestion` attempts, no permission dialogs, no improvised choices. Static check: `commands/track-and-start.md` line 757 skips Duplicate Detection when `$ISSUE_FLAG` is set, and the "Pivot to existing" flow has no reachable prompt.
 
-Caveat: the `track plan/apply` CLI has no existing-issue option (it would create a new issue), so the step did the pivot and `git worktree add` by hand. Fix item below.
+Caveat: the `track plan/apply` CLI has no existing-issue option (it would create a new issue), so the step did the pivot and `git worktree add` by hand. Tracked as #262.
 
 ## Engine decision
 
 Applying the D1 table mechanically: Q1 pass, Q3 pass, Q2 *works*, Q4 pass-with-caveat. No kill condition fired.
 
-**Engine: subagent-per-step (primary). `claude --bg` fallback is not needed.** Conditional on harness 2.1.296 and the effort-2 path observed; the 5 s start-lag flag on the Q2 stub run does not touch this decision.
+**Engine: subagent-per-step (primary). The `claude --bg` fallback is not needed.** Conditional on harness 2.1.296 and the effort-2 path observed. #251 is written against subagent-per-step.
 
 ## Confirmed / contradicted proposal sentences
 
 - Confirmed: subagents can invoke slash commands via `Skill` (Q1).
-- Confirmed: `SendMessage` resumes a step agent with its context intact and the same agent id (Q3).
+- Confirmed: `SendMessage` resumes a step agent with context intact and the same agent id (Q3).
 - Confirmed: nested `Agent` and background launches work, and children outlive the step's end-turn (Q2).
-- Confirmed with refinement: the concurrency cap of 20 includes the step agent itself, so a step can launch 19 children; overflow is rejected with an explicit error, not queued.
-- New fact: background children's completion notifications re-invoke the **step**, and one hand-back reaches the orchestrator after the barrier closes.
-- New fact: a new command registers for `Skill` only after a turn boundary, and its body is served from its first load; custom agent types are not discovered mid-session.
-- Contradicted/not observed: nothing in the proposal was contradicted outright.
+- Confirmed with refinement: the concurrency cap of 20 includes the step agent, so a step can launch 19 children; overflow is rejected with an explicit error, not queued.
+- New: background children's completion notifications re-invoke the **step**, and one hand-back reaches the orchestrator after the barrier closes.
+- New: a new command registers for `Skill` only after a turn boundary and its body is served from first load; custom agent types are not discovered mid-session.
+- Contradicted: nothing in the proposal was contradicted outright.
 
 ## Follow-ups
 
 - Proposal §2/§11 edit (kill-rule wording and confirmed or contradicted facts)
-- ADR-0022 records the engine decision (not written here)
-- `/track-and-start` fix item: `track plan/apply` CLI needs an existing-issue option so `--issue N` pivots without hand-edits
-- #245 constraint: a step launches at most 19 children; batch larger fan-outs. Re-run the stub fan-out (or rule on the 6.13 s lag) if strictness matters
+- ADR-0022 records the engine decision; written in #251 per the epic, citing this file
+- `/track-and-start` CLI existing-issue pivot: #262
+- #245 constraint: a step launches at most 19 children; batch larger fan-outs
 - Deferred Phase-1 probes (idle duration, cancellation, lowered cap, recursive depth, stale/duplicate/send-after-finish matrix)
