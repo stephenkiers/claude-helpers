@@ -164,3 +164,17 @@ counts, verified findings, token coverage) and solo findings per reviewer. Like 
 the baseline remains **observation-only** (ADR-0016 carve-out: never fed into routing, model selection, or
 triage decisions). Regeneration is manual and deliberate, documented in `docs/metrics/README.md`, with explicit
 `--until` window specification to preserve corpus consistency across snapshots.
+
+## Amendment — Harness-internal SubagentStop firings (agent.internal_stop)
+
+**New event type and classification rule.**
+A new event type `agent.internal_stop` classifies SubagentStop firings that are harness-internal model calls with no matching spawn event. These are identified by two signals: (1) transcript status `path_not_a_file` in the session meta file lookup, AND (2) no matching `agent.begin` entry for that `agent_id` in the session meta. This two-signal approach is necessary because `agent_type` is not a reliable signal — many legitimate spawned agents are untyped (carry blank or unknown `agent_type`), so label-based classification would incorrectly flag real agents as internal.
+
+**Skipped from usage accounting.**
+Classified internal firings emit `agent.internal_stop` events (carrying session_id, timestamp, agent_id, agent_type, and default metric fields, but no tokens, token_confidence, or outcome) and are never written to the session-state `usage.agents` dict. They do not participate in token counting or the usage gate. This is distinct from `path_not_a_file` status on a **recorded** agent in `usage.agents`, which represents a real spawned agent whose transcript was simply missing.
+
+**`agent.begin` is authoritative for spawn counts.**
+When analyzing agent-spawn data, count from `agent.begin` events, not `agent.end`. Before the cutoff date (the merge timestamp of the PR that introduced `agent.internal_stop`), `agent.end` rows with `agent_type in ("", "unknown")` are untyped and include harness-internal firings; after the cutoff, these firings emit `agent.internal_stop` instead.
+
+**No history rewrite.**
+The ~58k pre-fix blank `agent.end` rows in existing logs are not rewritten (the log is append-only). Queries spanning pre- and post-cutoff periods will observe the transition directly. The jq token-sum pattern (summing input + output + cache_creation from `agent.end` events) is unaffected because the blank rows carried only `unknown` tokens, contributing nothing to the sum.
