@@ -1833,6 +1833,8 @@ def test_parse_transcript_tokens_malformed_content_no_raise():
             {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "tool_use", "id": "t", "name": "n"}]}},
             {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "text", "text": 123}]}},
             {"type": "assistant", "message": {"id": "msg_m", "usage": {"input_tokens": 10, "output_tokens": 5}, "stop_reason": None, "content": [{"type": "text", "text": "ok"}]}},
+            # Non-dict usage on an unfinalized id must be tolerated as {} (no AttributeError).
+            {"type": "assistant", "message": {"id": "msg_lu", "usage": [], "stop_reason": None, "content": [{"type": "text", "text": "zzz"}]}},
         ]
         with open(transcript_path, "w") as f:
             for line in lines:
@@ -1843,10 +1845,12 @@ def test_parse_transcript_tokens_malformed_content_no_raise():
         except Exception as e:
             return False, f"should not raise, but raised {type(e).__name__}: {e}"
 
-        if result.get("unfinalized_messages") != 1:
-            return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
-        if result.get("unfinalized_content_chars") != 2:
-            return False, f"expected unfinalized_content_chars=2 (only 'ok'), got {result.get('unfinalized_content_chars')}"
+        if result.get("unfinalized_messages") != 2:
+            return False, f"expected unfinalized_messages=2, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_content_chars") != 5:
+            return False, f"expected unfinalized_content_chars=5 (2 from 'ok' + 3 from 'zzz'), got {result.get('unfinalized_content_chars')}"
+        if result["tokens"]["output"] != 5:
+            return False, f"expected tokens.output=5 (list usage on msg_lu contributes nothing), got {result['tokens']['output']}"
 
         return True, ""
 
@@ -1872,6 +1876,10 @@ def test_parse_transcript_tokens_bool_output_tokens_not_summed():
             return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
         if result.get("unfinalized_output_tokens_recorded") != 0:
             return False, f"expected unfinalized_output_tokens_recorded=0, got {result.get('unfinalized_output_tokens_recorded')}"
+        # The headline tokens loop sums output_tokens with plain +=, so bool True counts as 1 there.
+        # This is deliberate and unchanged; only the unfinalized accounting rejects bool.
+        if result["tokens"]["output"] != 1:
+            return False, f"expected tokens.output=1 (headline loop sums True as int), got {result['tokens']['output']}"
 
         return True, ""
 
@@ -1912,6 +1920,104 @@ def test_parse_transcript_tokens_return_contract_unchanged():
             return False, f"expected tokens.output=35, got {result['tokens']['output']}"
 
         return True, ""
+
+
+def test_parse_transcript_tokens_null_then_finalized_not_counted():
+    """An id is unfinalized only if its LAST line has stop_reason=None; earlier nulls don't count."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_nf", "usage": {"input_tokens": 1, "output_tokens": 3}, "stop_reason": None, "content": [{"type": "text", "text": "a"}]}},
+            {"type": "assistant", "message": {"id": "msg_nf", "usage": {"input_tokens": 1, "output_tokens": 3}, "stop_reason": None, "content": [{"type": "text", "text": "bb"}]}},
+            {"type": "assistant", "message": {"id": "msg_nf", "usage": {"input_tokens": 1, "output_tokens": 3}, "stop_reason": "end_turn", "content": [{"type": "text", "text": "ccc"}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if result.get("unfinalized_messages") != 0:
+            return False, f"expected unfinalized_messages=0, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 0:
+            return False, f"expected unfinalized_output_tokens_recorded=0, got {result.get('unfinalized_output_tokens_recorded')}"
+        if result.get("unfinalized_content_chars") != 0:
+            return False, f"expected unfinalized_content_chars=0, got {result.get('unfinalized_content_chars')}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_finalized_then_null_counted():
+    """An id whose LAST line has stop_reason=None is unfinalized; chars sum ALL of its lines."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+
+        lines = [
+            {"type": "assistant", "message": {"id": "msg_fn", "usage": {"input_tokens": 1, "output_tokens": 0}, "stop_reason": "end_turn", "content": [{"type": "text", "text": "xx"}]}},
+            {"type": "assistant", "message": {"id": "msg_fn", "usage": {"input_tokens": 1, "output_tokens": 7}, "stop_reason": None, "content": [{"type": "text", "text": "yyy"}]}},
+        ]
+        with open(transcript_path, "w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+        result = telemetry_schema.parse_transcript_tokens(transcript_path)
+
+        if result.get("unfinalized_messages") != 1:
+            return False, f"expected unfinalized_messages=1, got {result.get('unfinalized_messages')}"
+        if result.get("unfinalized_output_tokens_recorded") != 7:
+            return False, f"expected unfinalized_output_tokens_recorded=7, got {result.get('unfinalized_output_tokens_recorded')}"
+        if result.get("unfinalized_content_chars") != 5:
+            return False, f"expected unfinalized_content_chars=5 (2 + 3 across all lines), got {result.get('unfinalized_content_chars')}"
+
+        return True, ""
+
+
+def test_parse_transcript_tokens_all_unparseable_raises():
+    """parse_transcript_tokens raises ValueError when no line is parseable JSON."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+
+        with open(transcript_path, "w") as f:
+            f.write("not json {\n")
+            f.write("{{{\n")
+            f.write("}\n")
+
+        try:
+            telemetry_schema.parse_transcript_tokens(transcript_path)
+        except ValueError:
+            return True, ""
+        except Exception as e:
+            return False, f"expected ValueError, got {type(e).__name__}: {e}"
+
+        return False, "expected ValueError for all-unparseable file, but parse_transcript_tokens returned normally"
+
+
+def test_content_chars_direct_contract():
+    """_content_chars never raises; malformed blocks contribute 0 and the rest are summed."""
+    expected_mixed = 2 + len(json.dumps({"k": "v"}))
+    cases = [
+        ({"content": "a string"}, 0, "non-list content (string)"),
+        ({"content": None}, 0, "non-list content (None)"),
+        ({}, 0, "missing content key"),
+        ({"content": [{"type": "tool_use", "id": "t", "name": "n", "input": {"s": set()}}]}, 0,
+         "tool_use input not JSON-serializable"),
+        ({"content": [
+            {"type": "text", "text": "ab"},
+            42,
+            {"type": "thinking", "thinking": 5},
+            {"type": "tool_use", "id": "t", "name": "n", "input": {"k": "v"}},
+        ]}, expected_mixed, "malformed blocks mixed with well-formed blocks"),
+    ]
+    for message, expected, label in cases:
+        try:
+            got = telemetry_schema._content_chars(message)
+        except Exception as e:
+            return False, f"{label}: raised {type(e).__name__}: {e}"
+        if got != expected:
+            return False, f"{label}: expected {expected}, got {got}"
+
+    return True, ""
 
 
 def test_transcript_metrics_cli_emits_keys():
@@ -2833,6 +2939,18 @@ if __name__ == "__main__":
 
     passed, msg = test_parse_transcript_tokens_return_contract_unchanged()
     test_result("parse_transcript_tokens preserves pre-existing return fields", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_null_then_finalized_not_counted()
+    test_result("parse_transcript_tokens: earlier null lines do not mark a finalized id unfinalized", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_finalized_then_null_counted()
+    test_result("parse_transcript_tokens: last-line null marks id unfinalized, chars sum all lines", passed, msg)
+
+    passed, msg = test_parse_transcript_tokens_all_unparseable_raises()
+    test_result("parse_transcript_tokens raises ValueError on all-unparseable input", passed, msg)
+
+    passed, msg = test_content_chars_direct_contract()
+    test_result("_content_chars direct never-raise contract", passed, msg)
 
     passed, msg = test_transcript_metrics_cli_emits_keys()
     test_result("CLI parse command emits the three unfinalized keys", passed, msg)
