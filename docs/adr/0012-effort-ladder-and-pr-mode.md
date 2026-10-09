@@ -166,6 +166,9 @@ router to exclude him; only effort 3 had a special case that forced him in.
 - **Consistency Checker** — pinned haiku mechanical pattern pass on full diff.
 - **Contrarian Carl** — runs last, seeing all other findings; the only reviewer whose seating overrides
   heuristics and routing.
+- **North Star Nick** — added 2026-10-09 (ADR-0003's amendment of that date): strategic
+  alignment on the full diff, fed by three Haiku North Star scouts and the in-flight snapshot. Like the three above, this applies on the
+  Step 4–10 path (efforts 3–5); the effort 1 and 2 paths are unchanged.
 
 This refinement maintains the cost-monotonicity principle: you pay for what you get, not for expensive seats
 that add no incremental finding on a given diff.

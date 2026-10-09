@@ -179,17 +179,20 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
 
 **Always-run set (never routed, pre-seated):**
 - Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
-- Contrarian Carl (runs last, always).
+- Contrarian Carl (runs last, always),
+- North Star Nick (consistency with the project's direction; a normal Pass 1 seat on `PANEL_MODEL` that
+  reads the full diff, because alignment with the ADRs, the repo's docs, and in-flight work is a property of
+  the whole change — ADR-0003's 2026-10-09 amendment).
 
 **Sam System** is not pre-seated at any effort level — he runs only if the router selects him (or,
 at effort 3's independent routed-pair path, only if the router's top-2 includes him). The stage
 structure remains unchanged (summarize → route → pass1 → contrarian → qa → pass2 → amalgamate)
 regardless of whether he runs.
 
-The router is told these three are pre-seated and to treat them as included for the decision table.
+The router is told these four are pre-seated and to treat them as included for the decision table.
 
 **Named reviewers:** If the user named specific reviewers (Step 3, `NAMED_SELECTION=true`), skip the
-router entirely — the user's selection *is* the decision, and all three always-run reviewers still
+router entirely — the user's selection *is* the decision, and all four always-run reviewers still
 participate. Step 6 branches on `NAMED_SELECTION`: named/always-run reviewers all read
 `{REVIEW_DIR}/full-diff.patch` directly instead of line ranges into it (there is no router output to
 offset into). This costs each named reviewer a full-patch read instead of a bounded one — acceptable,
@@ -211,7 +214,7 @@ input:
   for r in $NAMED_REVIEWERS; do
     echo "| $r | Yes | Named by user |"
   done
-  for r in code-rot-cody consistency-checker contrarian-carl; do
+  for r in code-rot-cody consistency-checker contrarian-carl north-star-nick; do
     if ! echo "$NAMED_REVIEWERS" | grep -qw "$r"; then
       echo "| $r | Yes | Always-run |"
     fi
@@ -275,7 +278,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage pass1 >/dev/n
 
 **If `NAMED_SELECTION=true`:** the router did not run; Step 5 synthesized a minimal
 `tagged-sections.md` as a routing record (see above). The selected reviewers are exactly the user's
-named reviewers plus the always-run three; every one of them reads `{REVIEW_DIR}/full-diff.patch`
+named reviewers plus the always-run four; every one of them reads `{REVIEW_DIR}/full-diff.patch`
 in full rather than a line-range offset into it.
 
 **Otherwise:** read `tagged-sections.md` and parse which reviewers were selected by the router.
@@ -337,6 +340,37 @@ Then supply inline **only what you alone know** — none of it is on disk for th
 - The **Technical Summary** from `technical-summary.md`
 - `PROJECT_CONTEXT`, project modifiers, `DETECTED_LANGUAGES`, and the strict delta-scope rule below
 - `{REVIEW_DIR}` and their output path
+
+**North Star Nick's inputs: in-flight snapshot + three Haiku scouts.** The project's direction is
+not one document — it is spread across the ADRs, the repo's root docs, and the open issues, epics,
+and pull requests. Reviewer subagents have no `gh` access and cannot read all of that per run, so
+before launching Pass 1 gather it for him. First write the snapshot once:
+
+```bash
+python3 "$HOME/.claude/scripts/in-flight-snapshot.py" --repo-dir "${WORKTREE_PATH:-.}" \
+  --out "$REVIEW_DIR/in-flight.md" --bodies-out "$REVIEW_DIR/in-flight-issues.md" 2>/dev/null || true
+```
+
+The script is fail-open (an unreachable `gh` becomes an `unavailable:` line, never a failed run).
+Then launch **three** `subagent_type: "expert-scout"` agents in ONE message (pinned Haiku by the
+agent definition, independent of `PANEL_MODEL`), one per lens — `adrs`, `docs`, `in-flight`. Each
+prompt is only:
+
+```
+Read ~/.claude/prompts/north-star-scout.md for your full mandate.
+Lens: {adrs|docs|in-flight}
+Subject (review): {REVIEW_DIR}/technical-summary.md and {REVIEW_DIR}/diff-index.md
+Repo root: {WORKTREE_PATH or the orchestrator's cwd}
+DIR: {REVIEW_DIR}
+Output path: {REVIEW_DIR}/north-star-{lens}.md
+```
+
+Join on file-exists + the `north-star-scout | …` receipt; retry a failed scout once, then proceed
+without it — a missing brief never blocks the review. In `north-star-nick`'s Pass 1 prompt — and no
+other reviewer's — list the paths that exist (`north-star-adrs.md`, `north-star-docs.md`,
+`north-star-in-flight.md`, `in-flight.md`), name any that are missing as missing, and tell him to
+read `{REVIEW_DIR}/full-diff.patch` in full rather than line ranges, like the other always-run
+reviewers.
 
 **The file is the contract (rule #2 above) — never ask a subagent to return its report.** Instruct
 each reviewer to Write its full review to `{REVIEW_DIR}/{reviewer}-pass1.md` in the framework's

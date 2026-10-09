@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, get_args
 
 SCORER_VERSION = "1"
-ALWAYS_RUN_SLUGS = frozenset(["contrarian-carl", "code-rot-cody", "consistency-checker"])
+ALWAYS_RUN_SLUGS = frozenset(["contrarian-carl", "code-rot-cody", "consistency-checker", "north-star-nick"])
 
 Tier = Literal["Must", "Candidate", "Exclude", "Always"]
 ReasonKind = Literal["strong", "weak", "path", "shape", "hard_requires", "always"]

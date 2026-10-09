@@ -9,6 +9,8 @@ strategicDocuments:
   adrIndex: docs/adr/README.md
   adrDirectory: docs/adr/
   # No separate issues index / product plan — this is a personal config repo, not a product.
+  # The direction is organic: ADRs + root docs + open issues/epics/PRs. Three Haiku scouts
+  # (prompts/north-star-scout.md) sweep those per run; scripts/in-flight-snapshot.py feeds them.
 
 currentPhase: >
   Public open-source release. The repo is published as an opinionated, fork-and-adapt config.

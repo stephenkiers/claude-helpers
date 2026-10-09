@@ -484,13 +484,13 @@ STAGE_END_ARGS=(--stage resolve-scope --outcome success --effort "$EFFORT")
 [ -n "${PANEL_MODEL:-}" ] && STAGE_END_ARGS+=(--model "$PANEL_MODEL")
 STAGE_END_ARGS+=(--mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)")
 if [ "${NAMED_SELECTION:-false}" = true ]; then
-  # Count explicitly-named reviewers plus whichever of the three always-run reviewers
-  # (code-rot-cody, consistency-checker, contrarian-carl) are NOT already named — a named
-  # reviewer that happens to be one of the always-run three must not be counted twice
+  # Count explicitly-named reviewers plus whichever of the four always-run reviewers
+  # (code-rot-cody, consistency-checker, contrarian-carl, north-star-nick) are NOT already named — a named
+  # reviewer that happens to be one of the always-run four must not be counted twice
   # (mirrors the dedup in prompts/expert-review-panel.md's panel-decision table builder).
   NAMED_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
   EXTRA_ALWAYS_RUN_COUNT=0
-  for r in code-rot-cody consistency-checker contrarian-carl; do
+  for r in code-rot-cody consistency-checker contrarian-carl north-star-nick; do
     echo "$NAMED_REVIEWERS" | grep -qw "$r" || EXTRA_ALWAYS_RUN_COUNT=$((EXTRA_ALWAYS_RUN_COUNT + 1))
   done
   REVIEWER_COUNT=$((NAMED_COUNT + EXTRA_ALWAYS_RUN_COUNT))
@@ -703,7 +703,7 @@ CRITICAL_COUNT=$(sev_count critical) && HIGH_COUNT=$(sev_count high) && \
   { echo "ERROR: could not derive severity counts from findings.json" >&2; false; }
 
 # Collect reviewers that actually ran by checking for pass1 files and known always-run reviewers.
-# Always-run reviewers (code-rot-cody, consistency-checker, contrarian-carl) are included if
+# Always-run reviewers (code-rot-cody, consistency-checker, contrarian-carl, north-star-nick) are included if
 # their pass files exist; conditionally-routed reviewers are included only if they have pass files.
 REVIEWERS=()
 for pass1_file in "$REVIEW_DIR"/*-pass1.md; do
