@@ -48,6 +48,32 @@ SPIKES_ROOT="${PROJECT_ROOT}/spikes"
 
 Never build the spikes path from parent-directory hops. If `PROJECT_ROOT` equals the main worktree (plain checkout, no stacking), warn once: "The spikes directory will be created at `${PROJECT_ROOT}/spikes`. To exclude it from `git status`, add `spikes/` to `.git/info/exclude`."
 
+### Argument Validation
+
+Read the invocation arguments and classify the tokens yourself; never place raw argument text in a shell command. Only validated tokens enter shell variables. Every rejection below is a pre-stage exit: `command-begin`, then `command-end --command expert-spike --outcome failure --failure-class guard_block` (user-facing label `bad-flag`), then `exit 1`.
+
+```bash
+case "$EFFORT" in ""|1|2|3|4|5) ;; *) BAD_FLAG=yes ;; esac
+case "${MODELS:-balanced}" in balanced|opus) MODELS="${MODELS:-balanced}" ;; *) BAD_FLAG=yes ;; esac
+[ "${PAUSE:-}" = "yes" ] || PAUSE=""
+
+EXPERT_FLAGS=()
+for NAME in "${EXPERTS[@]}"; do
+  printf '%s' "$NAME" | grep -Eq '^[a-z0-9][a-z0-9-]*$' && grep -Eq "^[[:space:]]+file: ${NAME}\.yaml$" "$HOME/.claude/reviewers/index.yaml" || BAD_FLAG=yes
+  EXPERT_FLAGS+=(--expert "$NAME")
+done
+
+[ -z "${RESUME_REF:-}" ] || printf '%s' "$RESUME_REF" | grep -Eq '^[A-Za-z0-9._~/-]+$' || BAD_FLAG=yes
+
+if [ -n "${BAD_FLAG:-}" ]; then
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-spike --mode local 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-spike --outcome failure --failure-class guard_block 2>/dev/null || true
+  exit 1
+fi
+```
+
+`--list` and `--resume` are mutually exclusive with each other and with a question, `--effort`, `--models`, and named experts (the manifest is authoritative on resume); any such conflict takes the same `guard_block` exit.
+
 ### Routing
 
 #### `--list`
@@ -114,8 +140,7 @@ if [ "$STAGE_STATUS" = "running" ] && [ $((NOW - UPDATED)) -lt 900 ]; then
   exit 0
 fi
 
-# Ask user to continue, restart, or stop
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-spike --mode local 2>/dev/null || true
+# Ask user to continue, restart, or stop (no command-begin yet: it is emitted once, after the decision)
 
 # Call the AskUserQuestion tool ("Resume from the resume point (default) / Restart from decompose / Stop"),
 # then set CHOICE to continue, restart, or stop from the answer; default to continue.
@@ -129,6 +154,7 @@ case "$CHOICE" in
     REPLAY_FROM="decompose"
     ;;
   stop)
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-spike --mode local 2>/dev/null || true
     python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-spike --outcome interrupted 2>/dev/null || true
     exit 0
     ;;
@@ -236,7 +262,7 @@ Every stage follows this shape: `stage-begin`, `mark running`, work, verify arti
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage gather-context 2>/dev/null || true
 
-if ! python3 "$HOME/.claude/scripts/spike-manifest.py" init --dir "$SPIKE_DIR" --question "$(cat "$SPIKE_DIR/question.md")" --slug "$SLUG" --effort "$EFFORT" --models "$MODELS" ${CMD_ID:+--command-id "$CMD_ID"} >/dev/null 2>&1; then
+if ! python3 "$HOME/.claude/scripts/spike-manifest.py" init --dir "$SPIKE_DIR" --question "$(cat "$SPIKE_DIR/question.md")" --slug "$SLUG" --effort "$EFFORT" --models "$MODELS" "${EXPERT_FLAGS[@]}" ${CMD_ID:+--command-id "$CMD_ID"} >/dev/null 2>&1; then
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-spike --outcome failure --failure-class other 2>/dev/null || true
   exit 1
