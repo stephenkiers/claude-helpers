@@ -144,7 +144,37 @@ TELEMETRY_STAGE_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin 
 
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
-ARG="$ARGUMENTS"
+# Extract optional --queue-started-at=<n> or --queue-started-at <n> before glob resolution
+# Tokenize $ARGUMENTS to handle both forms: --queue-started-at=N and --queue-started-at N
+ARG=""
+QSA=""
+
+# Tokenize with python3 so splitting is identical in bash and zsh and globs are never
+# expanded by the shell (the glob is resolved below). Output: first line = QSA, rest = ARG.
+PARSED=$(python3 -c '
+import shlex, sys
+toks = shlex.split(sys.argv[1]) if sys.argv[1].strip() else []
+qsa, rest, i = "", [], 0
+while i < len(toks):
+    t = toks[i]
+    if t.startswith("--queue-started-at="):
+        qsa = t.split("=", 1)[1]
+    elif t == "--queue-started-at":
+        if i + 1 < len(toks):
+            i += 1
+            qsa = toks[i]
+    else:
+        rest.append(t)
+    i += 1
+print(qsa)
+print(" ".join(rest))
+' "$ARGUMENTS")
+QSA=$(printf '%s\n' "$PARSED" | sed -n '1p')
+ARG=$(printf '%s\n' "$PARSED" | sed -n '2p')
+
+# Validate --queue-started-at if present; the Python CLI will also validate
+# Skip validation here — let the Python CLI validate and reject via argparse
+
 if [ -n "$ARG" ]; then
   # --- Argument provided: resolve glob to find target ---
   PATTERN="$ARG"
@@ -573,36 +603,38 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage apply-cleanup
 
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
-APPLY_RESULT=$(printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup apply -)
+# Build cleanup apply command with optional --queue-started-at
+CLEANUP_CMD="python3 -m scripts.workflow.cli cleanup apply"
+if [ -n "$QSA" ]; then
+  CLEANUP_CMD="$CLEANUP_CMD --queue-started-at $QSA"
+fi
+CLEANUP_CMD="$CLEANUP_CMD -"
+
+APPLY_RESULT=$(printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" $CLEANUP_CMD)
 APPLY_RESULT_CODE=$?
 
 if [ $APPLY_RESULT_CODE -ne 0 ]; then
   echo "ERROR: Failed to apply cleanup"
+  printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage apply-cleanup --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
-# Extract validation status from result
-VALIDATION_STATUS=$(printf '%s' "$APPLY_RESULT" | jq -r '.validation_passed // true')
-if [ "$VALIDATION_STATUS" = "true" ]; then
-  echo "VALIDATION=pass — merged main is green"
-else
-  # A timed-out check is inconclusive, not a confirmed regression — distinguish the two
-  # so a SIGKILLed check command doesn't read as "main is broken".
-  # Only report "inconclusive" when *every* failure is a timeout. If any non-timeout
-  # failure is present, escalate to the "REGRESSION on main" headline.
-  HAS_NON_TIMEOUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out") | not)] | length > 0')
-  TIMED_OUT=$(printf '%s' "$APPLY_RESULT" | jq -r '[.validation_failures[]? | select(startswith("Check command timed out"))] | length > 0')
-  if [ "$HAS_NON_TIMEOUT" = "true" ]; then
-    echo "VALIDATION=fail — REGRESSION on main; investigate separately."
-  elif [ "$TIMED_OUT" = "true" ]; then
-    echo "VALIDATION=fail — inconclusive: check command timed out (not a confirmed regression)."
-  else
-    echo "VALIDATION=fail — REGRESSION on main; investigate separately."
-  fi
-  printf '%s' "$APPLY_RESULT" | jq -r '.validation_failures[]? | "  " + .'
-  echo "Cleanup will continue (PR already merged, worktree removed)."
-fi
+# Render validation result
+VALIDATION_OUTPUT=$(printf '%s' "$APPLY_RESULT" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup render-validation -)
+
+# Print validation output
+printf '%s\n' "$VALIDATION_OUTPUT"
+
+# Only print "Cleanup will continue" message if validation is not pass or skipped
+FIRST_LINE=$(printf '%s' "$VALIDATION_OUTPUT" | head -1)
+case "$FIRST_LINE" in
+  VALIDATION=pass*|VALIDATION=skipped*)
+    ;;
+  *)
+    echo "Cleanup will continue (PR already merged, worktree removed)."
+    ;;
+esac
 
 # Non-fatal notes: steps that succeeded but took a recovery path worth reporting
 # (e.g. a worktree removal that had to be retried with --force). These are NOT
@@ -924,11 +956,15 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command cleanup --o
 | Review left pending `Ruling:` lines | Synced into the per-repo verify-queue by 2b-iii; drain later with `/verify-queue` |
 | Issue/PR text unavailable (`gh` fails, no issue) | Note it and continue — don't block on a read failure |
 | PR not merged (OPEN/CLOSED/NONE) | Warn, ask for confirmation before proceeding |
-| PR merged — regression gate | Pull main ff-only, run `/shipit`'s `repo-cache.json` check commands (300s default timeout, override via `CLEANUP_CHECK_TIMEOUT_SECS`) |
-| Validation fails after merge | Warn loudly (REGRESSION on main), continue cleanup anyway |
-| Validation check times out | Report as inconclusive (not a confirmed regression), continue cleanup anyway |
-| Validation skipped — no `repo-cache.json` | Can't know the checks; note it and continue (run `/shipit` once to write the cache) |
-| Validation skipped (PR not merged) | Nothing integrated into main — skip with a note |
+| PR merged — regression gate | Pull main ff-only, run checks from `repo-cache.json` in a scrubbed allowlist environment (300s default timeout, override via `CLEANUP_CHECK_TIMEOUT_SECS`); report one of: `pass`, `fail` (REGRESSION on main), `inconclusive` (infra/timeout/lock/env issue), or `skipped` (queue-proven equivalence) |
+| Validation pass | Report `VALIDATION=pass — merged main is green`, **remove worktree and continue** |
+| Validation fail | Report `VALIDATION=fail — REGRESSION on main; investigate separately.` with failure details, **remove worktree and continue** |
+| Validation inconclusive (timeout, fingerprint failure) | Report `VALIDATION=inconclusive — <reason>`, **remove worktree and continue** |
+| Validation inconclusive (lock held) | Report error, **HALT cleanup** — worktree retained, `success: false` in result JSON |
+| Validation inconclusive (ff-pull failure) | Report error, **HALT cleanup** — worktree retained, `success: false` in result JSON |
+| Validation inconclusive (env-derivation-inconclusive in Compose) | Report error, **HALT cleanup** — worktree retained, `success: false` in result JSON |
+| Validation skipped (queue-proven) | Report `VALIDATION=skipped — landed tree identical to queue-tested tree`, print tested steps, **remove worktree and continue** |
+| Validation skipped (no checks or not merged) | Report `VALIDATION=pass` with a note ("no checks configured" or "validation not run"), **remove worktree and continue** |
 | Stacked children detected | Auto-execute restack via /stack-sync when the Skill harness is available and `STACK_SYNC_MANUAL` is unset; the fully-substituted restack runbook is always emitted (abort = deferral, not a dead end); on the emit-only path the user runs it manually |
 | No stacked children | Continue to worktree removal (unchanged flow) |
 | Worktree removal fails | Report error, suggest manual `git worktree remove --force` |
@@ -978,12 +1014,22 @@ Once the path exists again, the first command MUST cd to a valid permanent path 
   natural checkpoint for that context, but worktree removal is never blocked by the queue.
 - When the PR is merged, cleanup pulls `main` (ff-only) and runs the same checks
   `/shipit` runs — read from `.claude/repo-cache.json` — as a regression gate on
-  integrated `main`. If that cache doesn't exist, validation is skipped with a note
-  (run `/shipit` once to write it). Failures are reported but never block cleanup.
-  The check commands default to a 300s timeout; set `CLEANUP_CHECK_TIMEOUT_SECS` (per-repo)
-  to override for a check command that legitimately takes longer. A timeout is reported as
-  inconclusive rather than a confirmed regression, since the check was killed mid-run and
-  never produced a real pass/fail verdict.
+  integrated `main`. Each check runs in a scrubbed environment: a fixed allowlist of variables
+  (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, `TMPDIR`, `NVM_DIR`, `VOLTA_HOME`, `LC_*`)
+  plus any variables exported by the main worktree's `.envrc` (via `direnv export`); all other
+  variables are dropped. For Compose repos with direnv unavailable or blocked, validation returns
+  inconclusive. If the repo-cache doesn't exist, validation is skipped with a note (run `/shipit`
+  once to write it). Most validation verdicts are reported but do not block cleanup — the worktree
+  is always removed regardless of validation outcome. However, three specific validation failures
+  **halt cleanup** (no worktree removal, `success: false` in result JSON): (1) lock-held
+  (another process holds the merge lock), (2) ff-pull-failure (the main branch pull failed),
+  and (3) env-derivation-inconclusive (direnv cannot be re-derived in Compose repos). These three
+  paths return with an explicit error and leave the worktree intact for the user to retry after
+  fixing the underlying issue. Queue-proven skips (landed tree identical to queue-tested tree)
+  also fall through to worktree removal without revalidation. The check commands default to a 300s
+  timeout; set `CLEANUP_CHECK_TIMEOUT_SECS` (per-repo) to override for a check command that
+  legitimately takes longer. Verified or failing validation verdicts (non-halt outcomes) are
+  reported as `inconclusive` rather than a confirmed regression when timeouts occur.
 - **Stack detection:** If the merged PR was the base of a stacked chain, `/cleanup` detects
   child branches and restacks them via `/stack-sync` when the Skill harness is available
   (`claude` on PATH) and `STACK_SYNC_MANUAL` is not `1`. The fully-substituted restack

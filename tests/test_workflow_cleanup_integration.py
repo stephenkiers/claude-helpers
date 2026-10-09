@@ -12,15 +12,37 @@ import sys
 import os
 import json
 from pathlib import Path
+from contextlib import contextmanager
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.cleanup import apply_cleanup, CleanupPlan
+from workflow import validation, git
 from _test_harness import Harness
 from _git_fixture import GitFixture
 
 
+def _setup_test_isolation():
+    """
+    Patch validation probes to work with local git fixtures that don't have origin.
+    """
+    # Patch pull_ff_only to succeed by default (for fixtures without origin remote)
+    def mock_pull_ff_only(remote, branch, cwd=None):
+        # Allow success for integration tests using local fixtures
+        return (True, None)
+
+    git.pull_ff_only = mock_pull_ff_only
+
+    # Patch validation_lock to skip actual locking
+    @contextmanager
+    def mock_validation_lock(main_worktree: Path):
+        yield None
+
+    validation.validation_lock = mock_validation_lock
+
+
 if __name__ == "__main__":
+    _setup_test_isolation()
     h = Harness("WORKFLOW CLEANUP INTEGRATION TEST SUITE")
     test_result = h.test_result
 

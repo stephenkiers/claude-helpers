@@ -29,6 +29,35 @@ from .providers.base import Provider
 from . import worktrees
 
 
+def _validate_queue_started_at(value: str) -> float:
+    """
+    Validate --queue-started-at as a finite non-negative float.
+
+    Args:
+        value: string representation of the timestamp
+
+    Returns:
+        float value if valid
+
+    Raises:
+        argparse.ArgumentTypeError: if value is invalid
+    """
+    try:
+        f = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--queue-started-at must be a number, not '{value}'")
+
+    # Check for nan and infinity
+    if f != f:  # NaN check (NaN != NaN is true)
+        raise argparse.ArgumentTypeError("--queue-started-at must be finite (not NaN)")
+    if f == float('inf') or f == float('-inf'):
+        raise argparse.ArgumentTypeError("--queue-started-at must be finite (not inf)")
+    if f < 0:
+        raise argparse.ArgumentTypeError("--queue-started-at must be non-negative")
+
+    return f
+
+
 def _run_plan(plan_fn: Callable[[Any], Tuple[Any, Any]], arg: Any) -> None:
     """
     Execute a plan function and handle output/exit codes.
@@ -51,6 +80,13 @@ def _run_apply(apply_fn: Callable[[str], Tuple[Any, Any]], plan_json: str) -> No
     """
     Execute an apply function and handle output/exit codes.
 
+    Exit code contract (D4):
+    - Exit 0: apply succeeded (result.error is None or falsy)
+    - Exit 1: apply failed (result.error is truthy or apply_fn returned an error)
+
+    The full output is built before printing, ensuring all diagnostics are visible
+    regardless of exit code.
+
     Args:
         apply_fn: function that returns (result, error)
         plan_json: JSON string plan to apply
@@ -58,7 +94,8 @@ def _run_apply(apply_fn: Callable[[str], Tuple[Any, Any]], plan_json: str) -> No
     result, error = apply_fn(plan_json)
     if error:
         result.error = error
-    print(json.dumps(result.to_dict()))
+    output = result.to_dict()
+    print(json.dumps(output))
     if error or result.error:
         sys.exit(1)
 
@@ -95,10 +132,25 @@ def main() -> None:
     cleanup_plan_parser = cleanup_subparsers.add_parser("plan", help="Plan cleanup")
     cleanup_plan_parser.add_argument("target", help="Target worktree path")
 
-    cleanup_apply_parser = cleanup_subparsers.add_parser("apply", help="Apply cleanup plan")
+    cleanup_apply_parser = cleanup_subparsers.add_parser(
+        "apply",
+        help="Apply cleanup plan (exit 0 on success, exit 1 on failure; all output printed before exit)"
+    )
     cleanup_apply_parser.add_argument(
         "plan",
         help="Plan JSON or '-' to read from stdin"
+    )
+    cleanup_apply_parser.add_argument(
+        "--queue-started-at",
+        type=_validate_queue_started_at,
+        default=None,
+        help="Queue start timestamp for skip proof (optional)"
+    )
+
+    cleanup_render_parser = cleanup_subparsers.add_parser("render-validation", help="Render validation result")
+    cleanup_render_parser.add_argument(
+        "input",
+        help="Input JSON or '-' to read from stdin"
     )
 
     merge_parser = subparsers.add_parser("merge", help="Merge a PR")
@@ -234,7 +286,46 @@ def main() -> None:
             plan_json = args.plan
             if plan_json == "-":
                 plan_json = sys.stdin.read()
-            _run_apply(cleanup.apply_cleanup, plan_json)
+
+            def apply_cleanup_wrapper(pj: str) -> Tuple[Any, Any]:
+                return cleanup.apply_cleanup(pj, queue_started_at=args.queue_started_at)
+
+            _run_apply(apply_cleanup_wrapper, plan_json)
+        elif args.cleanup_action == "render-validation":
+            input_json = args.input
+            if input_json == "-":
+                input_json = sys.stdin.read()
+            try:
+                data = json.loads(input_json)
+
+                # Validate input shape: must be a dict
+                if not isinstance(data, dict):
+                    print("VALIDATION=fail — verdict unreadable (fail-closed)")
+                    sys.exit(1)
+
+                from . import validation
+
+                # Coerce notes and steps to lists if present
+                if "notes" in data and not isinstance(data["notes"], list):
+                    data["notes"] = []
+                if "queue_tested_steps" in data and not isinstance(data["queue_tested_steps"], list):
+                    data["queue_tested_steps"] = []
+
+                reason = data.get("validation_reason", "")
+
+                verdict = validation.ValidationVerdict.parse(data.get("validation"))
+                notes = data.get("notes", [])
+                steps = data.get("queue_tested_steps", [])
+                headline = validation.render_headline(verdict, reason, notes, steps)
+                print(headline)
+                for failure in data.get("validation_failures", []):
+                    # Indent each line of the failure
+                    for line in failure.split("\n"):
+                        print(f"  {line}")
+            except json.JSONDecodeError:
+                print("VALIDATION=fail — verdict unreadable (fail-closed)")
+            except Exception as e:
+                print(f"VALIDATION=fail — verdict unreadable (fail-closed): {e}")
         else:
             cleanup_parser.print_help()
             sys.exit(1)

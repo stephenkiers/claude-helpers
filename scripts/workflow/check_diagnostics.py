@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Mapping, Sequence
 
 from .checks import CheckResult
 
@@ -171,19 +171,34 @@ def write_check_log(
     started_at: datetime,
     duration_secs: float,
     main_worktree: Optional[Path],
+    attempt: int = 1,
+    env_used: Optional[Mapping[str, str]] = None,
+    dropped_env_names: Sequence[str] = (),
 ) -> Optional[Path]:
     """
-    Write the full output of one check run to <log_dir>/check-<index>.log. Environment snapshot is
-    appended only when the check failed. Returns the log path, or None if it could not be written.
-    Never raises.
+    Write the full output of one check run to <log_dir>/check-<index>-attempt-<attempt>.log.
+    Environment snapshot is appended only when the check failed. Returns the log path, or None
+    if it could not be written. Never raises.
 
-    The index parameter must be unique within a given log_dir, since it is used to build the
-    filename check-<index>.log. Callers pass the loop index, so this precondition holds naturally.
+    The index parameter must be unique within a given log_dir across all attempts; attempt
+    differentiates between retries of the same check. The filename is check-<index>-attempt-<attempt>.log.
+
+    Args:
+        log_dir: Log directory or None (returns None if None).
+        index: Unique per-check index within the log_dir.
+        cmd: The executed command.
+        result: CheckResult from execute_check.
+        started_at: Timestamp when the check started.
+        duration_secs: Elapsed time in seconds.
+        main_worktree: Path to main worktree (for snapshot), or None.
+        attempt: Attempt number (default 1).
+        env_used: Optional mapping of env variables actually passed to the subprocess (for diagnostics).
+        dropped_env_names: Sequence of env variable names that were dropped (names only, never values).
     """
     if log_dir is None:
         return None
     try:
-        path = log_dir / f"check-{index}.log"
+        path = log_dir / f"check-{index}-attempt-{attempt}.log"
         header = (
             f"command: {cmd}\n"
             f"started: {started_at.astimezone(timezone.utc).isoformat()}\n"
@@ -199,6 +214,14 @@ def write_check_log(
         snapshot = ""
         if not result.success:
             snapshot = "\n=== environment snapshot ===\n" + environment_snapshot(main_worktree)
+            # Add env scrub information if provided
+            if env_used is not None or dropped_env_names:
+                snapshot += "\n=== environment scrub ===\n"
+                if dropped_env_names:
+                    snapshot += f"dropped variables: {', '.join(dropped_env_names)}\n"
+                if env_used is not None:
+                    # Show only a count for redaction purposes
+                    snapshot += f"kept {len(env_used)} environment variables\n"
         path.write_text(header + body + snapshot, encoding="utf-8", errors="replace")
         return path
     except Exception:

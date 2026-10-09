@@ -548,9 +548,19 @@ if [ "$MATCH_COUNT" -ne 1 ]; then
 fi
 
 echo "✓ PR #$PR_NUM is merged; invoking /cleanup with: $WT"
+
+# Validate QUEUE_STARTED_AT if present and prepare cleanup arguments
+CLEANUP_ARG="$WT"
+if [ -n "$QUEUE_STARTED_AT" ]; then
+  if python3 -c "import sys; f=float('$QUEUE_STARTED_AT'); sys.exit(0 if f >= 0 and f == f and f != float('inf') and f != float('-inf') else 1)" 2>/dev/null; then
+    CLEANUP_ARG="--queue-started-at=$QUEUE_STARTED_AT $WT"
+  else
+    echo "WARNING: Invalid QUEUE_STARTED_AT='$QUEUE_STARTED_AT' (must be a finite non-negative number); passing $WT alone to /cleanup (no skip)"
+  fi
+fi
 ```
 
-**Now actually invoke the `cleanup` skill via the `Skill` tool**, passing `$WT` (the absolute worktree path, no trailing slash) as its argument. Only proceed after the bash block above exits 0. **If `/cleanup` succeeds**, run this cleanup block:
+**Now actually invoke the `cleanup` skill via the `Skill` tool**, passing the arguments prepared above (either `$WT` alone, or `--queue-started-at=<n> $WT`). Only proceed after the bash block above exits 0. **If `/cleanup` succeeds**, run this cleanup block:
 
 ```bash
 # Clean up state directory now that /cleanup has succeeded
