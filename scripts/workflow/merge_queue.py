@@ -1253,12 +1253,21 @@ def read_pr_result(pr: int, cwd: Path) -> Optional[Tuple[MergeResult, float]]:
             # Convert outcome string to enum
             outcome = MergeOutcome(outcome_value)
 
+            # Required fields must be present with the right types (bool is an int subclass)
+            pr_value = data.get("pr")
+            branch_value = data.get("branch")
+            worktree_value = data.get("worktree")
+            if not isinstance(pr_value, int) or isinstance(pr_value, bool):
+                return None
+            if not isinstance(branch_value, str) or not isinstance(worktree_value, str):
+                return None
+
             # Extract fields, using defaults for optional ones
             result = MergeResult(
                 outcome=outcome,
-                pr=data.get("pr"),
-                branch=data.get("branch"),
-                worktree=data.get("worktree"),
+                pr=pr_value,
+                branch=branch_value,
+                worktree=worktree_value,
                 orig_head=data.get("orig_head"),
                 tested_sha=data.get("tested_sha"),
                 reason=data.get("reason", ""),
