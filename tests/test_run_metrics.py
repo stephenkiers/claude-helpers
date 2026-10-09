@@ -4300,14 +4300,14 @@ def test_t4_internal_classification_no_begin_missing_transcript():
 
         # Should have no tokens key
         if "tokens" in internal_stop:
-            return False, f"agent.internal_stop should not have tokens key"
+            return False, "agent.internal_stop should not have tokens key"
 
         # Check that usage.agents was not updated
         for sf in Path(state_dir).glob("*.session.json"):
             state = json.loads(sf.read_text())
             agents = state.get("usage", {}).get("agents", {})
             if "a4-internal" in agents:
-                return False, f"usage.agents should not have entry for internal_stop agent"
+                return False, "usage.agents should not have entry for internal_stop agent"
 
         return True, ""
 
@@ -4360,14 +4360,14 @@ def test_t5_missed_subagentstart_real_transcript():
         if not agent_ends:
             return False, "should have agent.end for real transcript"
         if internal_stops:
-            return False, f"should not have agent.internal_stop for real transcript"
+            return False, "should not have agent.internal_stop for real transcript"
 
         # Check that usage was recorded
         for sf in Path(state_dir).glob("*.session.json"):
             state = json.loads(sf.read_text())
             agents = state.get("usage", {}).get("agents", {})
             if "a5-real" not in agents:
-                return False, f"usage.agents should have entry for real agent with transcript"
+                return False, "usage.agents should have entry for real agent with transcript"
 
         return True, ""
 
@@ -4392,7 +4392,7 @@ def test_t6_begin_present_transcript_missing():
             stdin_text=begin_payload,
         )
         if code1 != 0:
-            return False, f"agent-begin failed"
+            return False, "agent-begin failed"
 
         log_path.unlink()
 

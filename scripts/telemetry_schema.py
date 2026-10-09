@@ -1712,6 +1712,94 @@ def read_usage_state(path: Path, session_id: str) -> dict:
     }
 
 
+def _mutate_agent_usage(state: dict, session_id: str, agent_id: str, tokens: dict, token_confidence: Optional[str], status: str, recorded_at: str, result: dict) -> dict:
+    """Shared mutate body for record_agent_usage and record_agent_end_classified.
+
+    Mutates state to record agent usage, pop begin-timestamp, and guard session_id mismatch.
+    Stores began_at in result dict for caller to retrieve.
+
+    Called by both record_agent_usage and record_agent_end_classified; the latter applies
+    is_internal classification before calling this helper.
+    """
+    agents_begin_map = state.get("agents", {})
+    if not isinstance(agents_begin_map, dict):
+        agents_begin_map = {}
+
+    usage = state.get("usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+
+    usage_session_id = usage.get("session_id")
+    if usage_session_id is None:
+        usage["session_id"] = session_id
+    session_mismatch = bool(usage_session_id and usage_session_id != session_id)
+
+    begin_entry = agents_begin_map.pop(agent_id, None)
+    began_at = None
+    if isinstance(begin_entry, dict) and begin_entry.get("session_id") == session_id:
+        began_at = begin_entry.get("began_at")
+    result["began_at"] = began_at
+
+    if session_mismatch:
+        agents_dict = usage.get("agents", {})
+        if not isinstance(agents_dict, dict):
+            agents_dict = {}
+        agents_dict[agent_id] = {
+            "session_id": session_id,
+            "status": "session-mismatch",
+            "counted_tokens": None,
+            "tokens": tokens,
+            "token_confidence": token_confidence,
+            "recorded_at": recorded_at,
+        }
+        usage["agents"] = agents_dict
+    elif agent_id == UNKNOWN:
+        agents_dict = usage.get("agents", {})
+        if not isinstance(agents_dict, dict):
+            agents_dict = {}
+        agents_dict[agent_id] = {
+            "session_id": session_id,
+            "status": status,
+            "counted_tokens": counted_tokens(tokens) if status == "counted" else None,
+            "tokens": tokens,
+            "token_confidence": token_confidence,
+            "recorded_at": recorded_at,
+        }
+        usage["agents"] = agents_dict
+        if status == "counted":
+            counted = counted_tokens(tokens)
+            if counted is not None:
+                current_unaccounted = usage.get("unaccounted_no_agent_id_tokens", 0)
+                usage["unaccounted_no_agent_id_tokens"] = current_unaccounted + counted
+    else:
+        agents_dict = usage.get("agents", {})
+        if not isinstance(agents_dict, dict):
+            agents_dict = {}
+
+        if agent_id in agents_dict:
+            usage["agents"] = agents_dict
+        else:
+            counted = counted_tokens(tokens) if status == "counted" else None
+            agents_dict[agent_id] = {
+                "session_id": session_id,
+                "status": status,
+                "counted_tokens": counted,
+                "tokens": tokens,
+                "token_confidence": token_confidence,
+                "recorded_at": recorded_at,
+            }
+            usage["agents"] = agents_dict
+            if status == "counted" and counted is not None:
+                current_counted = usage.get("counted_tokens", 0)
+                usage["counted_tokens"] = current_counted + counted
+            elif status in UNPARSEABLE_STATUSES or status == "session-mismatch" or counted is None:
+                pass
+
+    state["agents"] = agents_begin_map
+    state["usage"] = usage
+    return state
+
+
 def record_agent_usage(
     path: Path, session_id: str, agent_id: str, *, tokens: dict, token_confidence: Optional[str], status: str, recorded_at: str
 ) -> Optional[str]:
@@ -1733,83 +1821,7 @@ def record_agent_usage(
     result = {}
 
     def mutate(state: dict) -> dict:
-        agents_begin_map = state.get("agents", {})
-        if not isinstance(agents_begin_map, dict):
-            agents_begin_map = {}
-
-        usage = state.get("usage", {})
-        if not isinstance(usage, dict):
-            usage = {}
-
-        usage_session_id = usage.get("session_id")
-        if usage_session_id is None:
-            usage["session_id"] = session_id
-        session_mismatch = bool(usage_session_id and usage_session_id != session_id)
-
-        begin_entry = agents_begin_map.pop(agent_id, None)
-        began_at = None
-        if isinstance(begin_entry, dict) and begin_entry.get("session_id") == session_id:
-            began_at = begin_entry.get("began_at")
-        result["began_at"] = began_at
-
-        if session_mismatch:
-            agents_dict = usage.get("agents", {})
-            if not isinstance(agents_dict, dict):
-                agents_dict = {}
-            agents_dict[agent_id] = {
-                "session_id": session_id,
-                "status": "session-mismatch",
-                "counted_tokens": None,
-                "tokens": tokens,
-                "token_confidence": token_confidence,
-                "recorded_at": recorded_at,
-            }
-            usage["agents"] = agents_dict
-        elif agent_id == UNKNOWN:
-            agents_dict = usage.get("agents", {})
-            if not isinstance(agents_dict, dict):
-                agents_dict = {}
-            agents_dict[agent_id] = {
-                "session_id": session_id,
-                "status": status,
-                "counted_tokens": counted_tokens(tokens) if status == "counted" else None,
-                "tokens": tokens,
-                "token_confidence": token_confidence,
-                "recorded_at": recorded_at,
-            }
-            usage["agents"] = agents_dict
-            if status == "counted":
-                counted = counted_tokens(tokens)
-                if counted is not None:
-                    current_unaccounted = usage.get("unaccounted_no_agent_id_tokens", 0)
-                    usage["unaccounted_no_agent_id_tokens"] = current_unaccounted + counted
-        else:
-            agents_dict = usage.get("agents", {})
-            if not isinstance(agents_dict, dict):
-                agents_dict = {}
-
-            if agent_id in agents_dict:
-                usage["agents"] = agents_dict
-            else:
-                counted = counted_tokens(tokens) if status == "counted" else None
-                agents_dict[agent_id] = {
-                    "session_id": session_id,
-                    "status": status,
-                    "counted_tokens": counted,
-                    "tokens": tokens,
-                    "token_confidence": token_confidence,
-                    "recorded_at": recorded_at,
-                }
-                usage["agents"] = agents_dict
-                if status == "counted" and counted is not None:
-                    current_counted = usage.get("counted_tokens", 0)
-                    usage["counted_tokens"] = current_counted + counted
-                elif status in UNPARSEABLE_STATUSES or status == "session-mismatch" or counted is None:
-                    pass
-
-        state["agents"] = agents_begin_map
-        state["usage"] = usage
-        return state
+        return _mutate_agent_usage(state, session_id, agent_id, tokens, token_confidence, status, recorded_at, result)
 
     load_and_update_state(path, mutate)
     return result.get("began_at")
@@ -1846,80 +1858,8 @@ def record_agent_end_classified(
             result["began_at"] = None
             return state
 
-        # Otherwise, run the existing record_agent_usage logic
-        usage = state.get("usage", {})
-        if not isinstance(usage, dict):
-            usage = {}
-
-        usage_session_id = usage.get("session_id")
-        if usage_session_id is None:
-            usage["session_id"] = session_id
-        session_mismatch = bool(usage_session_id and usage_session_id != session_id)
-
-        begin_entry = agents_begin_map.pop(agent_id, None)
-        began_at = None
-        if isinstance(begin_entry, dict) and begin_entry.get("session_id") == session_id:
-            began_at = begin_entry.get("began_at")
-        result["began_at"] = began_at
-
-        if session_mismatch:
-            agents_dict = usage.get("agents", {})
-            if not isinstance(agents_dict, dict):
-                agents_dict = {}
-            agents_dict[agent_id] = {
-                "session_id": session_id,
-                "status": "session-mismatch",
-                "counted_tokens": None,
-                "tokens": tokens,
-                "token_confidence": token_confidence,
-                "recorded_at": recorded_at,
-            }
-            usage["agents"] = agents_dict
-        elif agent_id == UNKNOWN:
-            agents_dict = usage.get("agents", {})
-            if not isinstance(agents_dict, dict):
-                agents_dict = {}
-            agents_dict[agent_id] = {
-                "session_id": session_id,
-                "status": status,
-                "counted_tokens": counted_tokens(tokens) if status == "counted" else None,
-                "tokens": tokens,
-                "token_confidence": token_confidence,
-                "recorded_at": recorded_at,
-            }
-            usage["agents"] = agents_dict
-            if status == "counted":
-                counted = counted_tokens(tokens)
-                if counted is not None:
-                    current_unaccounted = usage.get("unaccounted_no_agent_id_tokens", 0)
-                    usage["unaccounted_no_agent_id_tokens"] = current_unaccounted + counted
-        else:
-            agents_dict = usage.get("agents", {})
-            if not isinstance(agents_dict, dict):
-                agents_dict = {}
-
-            if agent_id in agents_dict:
-                usage["agents"] = agents_dict
-            else:
-                counted = counted_tokens(tokens) if status == "counted" else None
-                agents_dict[agent_id] = {
-                    "session_id": session_id,
-                    "status": status,
-                    "counted_tokens": counted,
-                    "tokens": tokens,
-                    "token_confidence": token_confidence,
-                    "recorded_at": recorded_at,
-                }
-                usage["agents"] = agents_dict
-                if status == "counted" and counted is not None:
-                    current_counted = usage.get("counted_tokens", 0)
-                    usage["counted_tokens"] = current_counted + counted
-                elif status in UNPARSEABLE_STATUSES or status == "session-mismatch" or counted is None:
-                    pass
-
-        state["agents"] = agents_begin_map
-        state["usage"] = usage
-        return state
+        # Otherwise, delegate to shared mutate body
+        return _mutate_agent_usage(state, session_id, agent_id, tokens, token_confidence, status, recorded_at, result)
 
     load_and_update_state(path, mutate)
     return AgentEndResult(result.get("began_at"), result.get("internal", False))

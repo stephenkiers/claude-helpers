@@ -8,7 +8,7 @@ The privacy boundary is hard: telemetry records only metadata (repo name, comman
 
 ## Event Model
 
-Telemetry consists of 8 event types, forming a 4-level hierarchy via correlation IDs:
+Telemetry consists of 9 event types, forming a 4-level hierarchy via correlation IDs:
 
 ### Event Types
 
@@ -757,17 +757,25 @@ Session meta files created before the cutoff date may carry inflated `floor_coun
 
 The historical ~58k blank `agent.end` rows in earlier logs are not rewritten (the log is append-only); the fix applies only to new events forward. Queries over logs spanning both pre- and post-cutoff periods will see the transition: before the cutoff date (<PR 1 merge timestamp — filled in by the follow-up PR>), internal firings appear as `agent.end` rows with `agent_type` blank or normalized to `"unknown"`; after the cutoff, they emit `agent.internal_stop` instead.
 
+#### Duplicate agent.end calls per agent_id
+
+If `agent-end` is invoked twice for the same `agent_id` (unexpected but defended against), the first call will find a matching `agent.begin` entry and emit `agent.end`; the second call will find no begin entry and emit `agent.internal_stop`. This behavior is conservative: the second occurrence is treated as harness-internal because the begin entry was already consumed by the first call, and re-calling the same agent_id is not expected in normal operation. If duplicate calls occur, they should be investigated as a process issue rather than interpreted as real subagent spawns.
+
 ### Query Pattern: Token Totals by Session
 
 To sum input + output + cache_creation tokens across all agents for a session (the metric used by the usage gate):
 
 ```bash
 jq -r 'select(.event_type == "agent.end" and .tokens != null) |
-  [(.tokens.input // 0) + (.tokens.output // 0) + (.tokens.cache_creation // 0)] |
+  [
+    (if (.tokens.input | type) == "number" then .tokens.input else 0 end) +
+    (if (.tokens.output | type) == "number" then .tokens.output else 0 end) +
+    (if (.tokens.cache_creation | type) == "number" then .tokens.cache_creation else 0 end)
+  ] |
   add' \
   ~/.claude/telemetry/events.jsonl | awk '{sum += $1} END {print "Total tokens (input+output+cache_creation): " sum}'
 ```
 
-This pattern excludes cache_read (which can be large and is not counted by the gate) and sums only agent.end events (for which token data is available). Adapt `$event_type` or `.event_type` filters to answer other questions (e.g., per-command, per-model, per-outcome).
+This pattern coerces non-numeric token values (such as the string `"unknown"` from pre-cutoff blank rows) to zero, excludes cache_read (which can be large and is not counted by the gate), and sums only agent.end events (for which token data is available). Adapt `$event_type` or `.event_type` filters to answer other questions (e.g., per-command, per-model, per-outcome).
 
-**Note on pre-cutoff data:** Before the fix (before the cutoff date above), this example would have summed zeros from the ~58k blank-`agent.end` rows (all had `tokens: unknown`), so the result is unaffected — the historical blank rows contributed no tokens to the sum, and the fix does not change this behavior.
+**Note on pre-cutoff data:** Before the fix (before the cutoff date above), pre-cutoff blank-`agent.end` rows had `tokens: {"input": "unknown", "output": "unknown", ...}`. The corrected query coerces these string values to 0, so the result correctly sums zero tokens from the ~58k blank rows — the historical blank rows contributed no tokens to the sum, and the fix does not change this behavior.
