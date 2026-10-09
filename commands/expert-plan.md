@@ -7,7 +7,7 @@ model: sonnet
 
 # Expert Plan
 
-Focused isolated-expert planning: effort 2 (default, 3 experts + consistency check) or 3 (+ independent auditor).
+Focused isolated-expert planning: effort 2 (default, 3 experts + consistency check) or 3 (4 experts + independent auditor).
 
 **This command was formerly known as `/expert-plan-v3`** and is now the default planning entry point. The
 original `/expert-plan` (v1) and `/expert-plan-v2` are kept as `/expert-plan-deprecated` and
@@ -34,7 +34,7 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 ## Arguments
 
-- `--effort <2|3>`: effort level. Effort 2: 3 focused experts + consistency check, no independent auditor. Effort 3: baseline + independent auditor. Effort 1, 4, and 5 are not supported — v3 does not implement them. If `--effort` is omitted, a deterministic heuristic (`scripts/plan-effort.py`, configured by `~/.claude/plan-effort-heuristic.yaml` or project `.claude/plan-effort-heuristic.yaml`; template `prompts/plan-effort-heuristic.yaml.template`) picks 2 or 3 from the ticket: any risk keyword or a large ticket → 3, else `default_effort` (2). No model call. An explicit `--effort` always skips it.
+- `--effort <2|3>`: effort level. Effort 2: 3 focused experts + consistency check, no independent auditor. Effort 3: 4 focused experts (one extra lens) + independent auditor. Effort 1, 4, and 5 are not supported — v3 does not implement them. If `--effort` is omitted, a deterministic heuristic (`scripts/plan-effort.py`, configured by `~/.claude/plan-effort-heuristic.yaml` or project `.claude/plan-effort-heuristic.yaml`; template `prompts/plan-effort-heuristic.yaml.template`) picks 2 or 3 from the ticket: any risk keyword or a large ticket → 3, else `default_effort` (2). No model call. An explicit `--effort` always skips it.
 
 - `--models <balanced|opus>`: model tier for dispatched contributors and roles. Balanced (default): contributors Sonnet-by-default-unless-marked-difficult, Carl/Synthesize-and-check/Auditor always Opus. Opus: all subagents escalated to Opus. The main-thread orchestration shell remains Sonnet (fixed by frontmatter).
 
@@ -273,7 +273,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage select-expert
 
 ### Step 2: Select Panel (Main Thread, No Router Subagent)
 
-Read `~/.claude/reviewers/index.yaml` directly and consider only entries tagged with `plan` in their `contexts`. Extract only `name`, `file`, and `useWhen` for those entries. Using a coverage checklist as a mental rubric — user-visible behavior, domain/data assumptions, contracts/types, trust/side effects, integration, failure behavior — pick 3 experts for effort 2. Carl is always added, always last, never counted as a domain specialist.
+Read `~/.claude/reviewers/index.yaml` directly and consider only entries tagged with `plan` in their `contexts`. Extract only `name`, `file`, and `useWhen` for those entries. Using a coverage checklist as a mental rubric — user-visible behavior, domain/data assumptions, contracts/types, trust/side effects, integration, failure behavior — pick 3 experts for effort 2 and 4 for effort 3 (the extra seat widens coverage on the highest-risk tickets). Carl is always added, always last, never counted as a domain specialist.
 
 **Note on `plan: named-only` reviewers**: Fiona and Dana are marked `plan: named-only` in the index and remain reachable when explicitly named by the user; see "Contexts and resolution precedence" in `reviewers/README.md` for the full rule.
 
@@ -284,7 +284,7 @@ For any contributor whose task looks like novel architecture, concurrency, secur
 Write `{SESSION_DIR}/selected-experts.md` (expert, concern, model, reason). Example structure:
 
 ```markdown
-# Selected Panel (Effort 2)
+# Selected Panel (Effort 2: 3 experts; Effort 3 adds a 4th)
 
 ## Experts
 
