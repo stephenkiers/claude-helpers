@@ -27,7 +27,7 @@ def cmd_parse(args):
 
     # Use shared parser to extract tokens and metadata
     try:
-        parse_result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        parse_result: telemetry_schema.TranscriptParseResult = telemetry_schema.parse_transcript_tokens(transcript_path)
     except (OSError, FileNotFoundError) as e:
         print(f"Error: could not read transcript: {e}", file=sys.stderr)
         sys.exit(1)
@@ -38,6 +38,9 @@ def cmd_parse(args):
     tokens = parse_result["tokens"]
     cost_state = parse_result["cost_state"]
     first_assistant_event = parse_result["first_assistant_event"]
+    unfinalized_messages = parse_result["unfinalized_messages"]
+    unfinalized_output_tokens_recorded = parse_result["unfinalized_output_tokens_recorded"]
+    unfinalized_content_chars = parse_result["unfinalized_content_chars"]
 
     # Extract session_id and agent_id from args or from first event
     session_id = args.session_id if args.session_id else telemetry_schema.UNKNOWN
@@ -57,6 +60,9 @@ def cmd_parse(args):
         "turns": turns,
         "tokens": tokens,
         "token_confidence": "low",
+        "unfinalized_messages": unfinalized_messages,
+        "unfinalized_output_tokens_recorded": unfinalized_output_tokens_recorded,
+        "unfinalized_content_chars": unfinalized_content_chars,
     }
 
     if cost_state is not None:

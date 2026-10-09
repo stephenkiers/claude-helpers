@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, NamedTuple, Optional, TypedDict, Union, get_args
+from typing import Dict, Literal, NamedTuple, Optional, TypedDict, Union, get_args
 
 
 class CommandStateEntry(TypedDict, total=False):
@@ -1286,14 +1286,81 @@ def prune_stale_state(state_dir: Path = None, current_session_id: Optional[str] 
         print(f"telemetry: state dir access failed: {e}", file=sys.stderr)
 
 
-def parse_transcript_tokens(path: Path) -> dict:
+def _content_chars(message: dict) -> int:
+    """Count content chars from a message dict.
+
+    Precondition: message must be a dict. Returns the sum of chars across its content
+    blocks: text blocks add len(text), thinking blocks add len(thinking), tool_use blocks
+    add len(json.dumps(input)). Non-list content returns 0. Malformed blocks (non-dict
+    blocks, wrong-typed text/thinking, missing or non-serializable tool_use input)
+    contribute 0 and the remaining blocks are still summed. Never raises for a dict argument.
+
+    Units are mixed: tool_use input is measured as len(json.dumps(input)) with json.dumps
+    defaults (ASCII-escaped, default separators), while text/thinking are raw codepoint
+    counts. The documented 1.11 chars-per-token calibration assumes exactly this unit.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return 0
+
+    total = 0
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text_value = block.get("text")
+            if isinstance(text_value, str):
+                total += len(text_value)
+        elif block_type == "thinking":
+            thinking_value = block.get("thinking")
+            if isinstance(thinking_value, str):
+                total += len(thinking_value)
+        elif block_type == "tool_use":
+            if "input" in block:
+                try:
+                    # ASCII-escaped, default separators; keeps the mixed-unit contract documented above
+                    input_json = json.dumps(block["input"])
+                    total += len(input_json)
+                except (TypeError, ValueError, RecursionError):
+                    pass
+    return total
+
+
+class TranscriptParseResult(TypedDict):
+    """Return contract of parse_transcript_tokens (nine keys).
+
+    tokens values are ints, or the UNKNOWN string when no usage field was seen.
+    """
+    tokens: Dict[str, Union[int, str]]
+    turns: int
+    lines_parsed: int
+    lines_skipped: int
+    cost_state: Optional[dict]
+    first_assistant_event: Optional[dict]
+    unfinalized_messages: int
+    unfinalized_output_tokens_recorded: int
+    unfinalized_content_chars: int
+
+
+def parse_transcript_tokens(path: Path) -> TranscriptParseResult:
     """Parse a Claude Code transcript JSONL and extract usage metrics.
 
-    Returns a dict with keys: tokens (dict with input/output/cache_read/cache_creation),
+    Returns a TranscriptParseResult with keys: tokens (dict with input/output/cache_read/cache_creation),
     turns (int), lines_parsed (int), lines_skipped (int), cost_state (dict or None),
-    first_assistant_event (dict or None).
+    first_assistant_event (dict or None), unfinalized_messages (int),
+    unfinalized_output_tokens_recorded (int), unfinalized_content_chars (int).
 
-    Raises OSError or FileNotFoundError if the file cannot be read.
+    Unfinalized messages are those whose last line has stop_reason explicitly set to null
+    (an absent stop_reason key does not count). The three unfinalized_* fields are
+    observational counts only; tokens dict is unchanged and no estimate is applied.
+    unfinalized_content_chars assumes per-line deltas: each transcript line of a message id
+    is assumed to carry only the block(s) streamed on that line, and content chars are summed
+    across an id's lines. A harness change to cumulative-per-line content would inflate
+    unfinalized_content_chars.
+
+    Raises OSError or FileNotFoundError if the file cannot be read, and ValueError if the file
+    has lines but none parse as JSON.
     For parse errors, the exception is raised (caller decides how to handle).
 
     Distinguishes between *malformed* (raises an exception) and *well-formed but empty*
@@ -1303,7 +1370,8 @@ def parse_transcript_tokens(path: Path) -> dict:
     path = Path(path)
     lines_parsed = 0
     lines_skipped = 0
-    seen_message_ids = {}  # message_id -> event dict (keeps last)
+    seen_message_ids: Dict[str, dict] = {}  # message_id -> event dict (keeps last)
+    content_chars_by_id: Dict[str, int] = {}  # message_id -> accumulated content chars
     cost_state = None
     first_assistant_event = None
 
@@ -1328,6 +1396,8 @@ def parse_transcript_tokens(path: Path) -> dict:
                         msg_id = msg.get("id")
                         if msg_id:
                             seen_message_ids[msg_id] = event
+                            # Accumulate content chars across all lines of this message
+                            content_chars_by_id[msg_id] = content_chars_by_id.get(msg_id, 0) + _content_chars(msg)
             except (json.JSONDecodeError, ValueError):
                 lines_skipped += 1
 
@@ -1377,6 +1447,26 @@ def parse_transcript_tokens(path: Path) -> dict:
 
     turns = len(seen_message_ids)
 
+    # Compute unfinalized fields: an id is unfinalized iff stop_reason is explicitly None
+    unfinalized_messages = 0
+    unfinalized_output_tokens_recorded = 0
+    unfinalized_content_chars = 0
+
+    for msg_id, event in seen_message_ids.items():
+        msg = event.get("message", {})
+        if "stop_reason" in msg and msg["stop_reason"] is None:
+            unfinalized_messages += 1
+            usage = msg.get("usage", {})
+            if not isinstance(usage, dict):
+                usage = {}
+            output_tokens = usage.get("output_tokens", 0)
+            # The headline tokens loop above raises on null or numeric usage, and on usage whose
+            # output_tokens is non-numeric (the parse_raised signal); it silently skips list usage.
+            # This loop is observational and must never raise on any usage shape.
+            if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+                unfinalized_output_tokens_recorded += output_tokens
+            unfinalized_content_chars += content_chars_by_id.get(msg_id, 0)
+
     return {
         "tokens": {
             "input": total_input,
@@ -1389,6 +1479,9 @@ def parse_transcript_tokens(path: Path) -> dict:
         "lines_skipped": lines_skipped,
         "cost_state": cost_state,
         "first_assistant_event": first_assistant_event,
+        "unfinalized_messages": unfinalized_messages,
+        "unfinalized_output_tokens_recorded": unfinalized_output_tokens_recorded,
+        "unfinalized_content_chars": unfinalized_content_chars,
     }
 
 
