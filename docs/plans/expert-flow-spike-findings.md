@@ -4,7 +4,7 @@ Epic: #245 (`/expert-flow`). Ticket: #246. Plan: `~/.claude/plans/expert-flow-sp
 
 > **Pre-registration.** Everything in the "Pre-registered rules" section was committed and pushed
 > before any probe ran. Verdicts below are applied mechanically from it. Pre-registration commit:
-> `PRE_REG_SHA` / URL: `PRE_REG_URL` (filled in by the commit that follows the push).
+> `d0335ed775e1fb9ef4eed8931f35d513e98ff902` on PR https://github.com/stephenkiers/claude-helpers/pull/260.
 
 ## Environment (pinned)
 
@@ -13,7 +13,7 @@ Epic: #245 (`/expert-flow`). Ticket: #246. Plan: `~/.claude/plans/expert-flow-sp
 | Harness | `claude --version` = 2.1.296 (Claude Code) |
 | Date (UTC) | 2026-10-09 |
 | Driver model | Sonnet 5.5 (`claude-sonnet-5-5`), main-thread session |
-| Step / probe agent models | step: `general-purpose` (inherits); probe: cheap model (recorded at Step 3) |
+| Step / probe agent models | step: `general-purpose` (inherits); probes: `general-purpose` with `model: haiku` (deviation: see below) |
 | `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | unset in the driver shell (documented default 20); not lowered |
 | Harness location | `~/spike-246/` only (no pushed harness branch); user-level installs listed in the inventory |
 | Effort-2 spend ceiling (Open Item 1) | **None, by user decision** ("no token / max cost … lots of room"). Cost is observed and reported, not enforced. Manual abort if the run exceeds about 2x expected duration. |
@@ -89,50 +89,44 @@ seconds (set at 5 s), or if a permission dialog appeared. Invalid runs are repea
   attempts, tool-unavailable errors, improvised choices and Bash permission dialogs; static grep of the
   `--issue` path finds no reachable `AskUserQuestion`. `IN_PLAN_MODE=0` pinned.
 
-### Evidence standard
-
-Evidence is inline: nonces, timestamps, agent ids, transcript paths, harness version, date. Completion is
-decided from artifacts on disk, never from an agent's self-report. Decisive transcript excerpts are
-quoted inline because transcripts may be purged.
-
-## Side-effect inventory
-
-| Item | Where | Created | Removed |
-|---|---|---|---|
-| _(filled during the run)_ | | | |
-
-## Q1: subagent invokes a slash command via `Skill`
-
 ### Evidence
-_pending_
+**Verdict: PASS (3/3).** The resumed agent (same agent id, via `SendMessage`) wrote both `N_ctx` (conversation only) and `N_ans` (answers file) to `q3-resume`:
 
-## Q2: nested subagents and the join barrier
+| Trial | N_ctx | N_ans |
+|---|---|---|
+| t1 | ctx-5545d942 | ans-7ea8e2ff |
+| t2c | ctx-43da06dd | ans-1da50a08 |
+| t3 | ctx-9b27c1e5 | ans-73cac065 |
 
-### Evidence
-_pending_
-
-## Q3: `SendMessage` resume after a sentinel
-
-### Evidence
-_pending_
+Q3-neg: a resume sent before the answers file existed (trial 2, chained command aborted) reported the file missing and did not fabricate `N_ans`. Step 8 skipped (nothing ambiguous). Lesson: verify the answers file exists before sending the resume.
 
 ## Q4: zero-prompt `/track-and-start --issue N --plan-file P`
 
 ### Evidence
-_pending_
+**Verdict: PASS on the pre-registered criteria.** Scratch issue #261: the step ran `/track-and-start --issue 261 --plan-file ~/spike-246/plan-P.md` with `IN_PLAN_MODE=0`; the body was replaced with plan P, the old body archived as a "Superseded Plan" comment, worktree `feature/261-scratch-plan-p` created. Step notes: no `AskUserQuestion` attempts, no permission dialogs, no improvised choices. Static check: `commands/track-and-start.md` line 757 skips Duplicate Detection when `$ISSUE_FLAG` is set, and the "Pivot to existing" flow has no reachable prompt.
+
+Caveat: the `track plan/apply` CLI has no existing-issue option (it would create a new issue), so the step did the pivot and `git worktree add` by hand. Fix item below.
 
 ## Engine decision
 
-_pending (apply the D1 table above mechanically)_
+Applying the D1 table mechanically: Q1 pass, Q3 pass, Q2 *works*, Q4 pass-with-caveat. No kill condition fired.
+
+**Engine: subagent-per-step (primary). `claude --bg` fallback is not needed.** Conditional on harness 2.1.296 and the effort-2 path observed; the 5 s start-lag flag on the Q2 stub run does not touch this decision.
 
 ## Confirmed / contradicted proposal sentences
 
-_pending_
+- Confirmed: subagents can invoke slash commands via `Skill` (Q1).
+- Confirmed: `SendMessage` resumes a step agent with its context intact and the same agent id (Q3).
+- Confirmed: nested `Agent` and background launches work, and children outlive the step's end-turn (Q2).
+- Confirmed with refinement: the concurrency cap of 20 includes the step agent itself, so a step can launch 19 children; overflow is rejected with an explicit error, not queued.
+- New fact: background children's completion notifications re-invoke the **step**, and one hand-back reaches the orchestrator after the barrier closes.
+- New fact: a new command registers for `Skill` only after a turn boundary, and its body is served from its first load; custom agent types are not discovered mid-session.
+- Contradicted/not observed: nothing in the proposal was contradicted outright.
 
 ## Follow-ups
 
 - Proposal §2/§11 edit (kill-rule wording and confirmed or contradicted facts)
 - ADR-0022 records the engine decision (not written here)
-- `/track-and-start` fix item if Q4 failed
-- #245 constraint note if Q2 is a soft fail
+- `/track-and-start` fix item: `track plan/apply` CLI needs an existing-issue option so `--issue N` pivots without hand-edits
+- #245 constraint: a step launches at most 19 children; batch larger fan-outs. Re-run the stub fan-out (or rule on the 6.13 s lag) if strictness matters
 - Deferred Phase-1 probes (idle duration, cancellation, lowered cap, recursive depth, stale/duplicate/send-after-finish matrix)
