@@ -277,6 +277,11 @@ The implementation is **partial**: the following features are **documented but n
   it through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports
   it MERGED. Base-scoped routing allows stacked PRs targeting other branches to merge normally. The CLI
   hardens against shadowing by running in the claude-helpers checkout. See Amendment below.
+- **Queue-proof skip:** Post-merge validation skips when the landed tree is provably identical to the
+  queue-tested tree AND the queue's steps are a superset of the repo-cache checks. The skip requires
+  tree-equality fingerprinting and queue-steps-superset validation. The `--queue-started-at` argument
+  hand-offs the queue timestamp to cleanup for freshness checking. Fingerprint covers tracked files only
+  (residual blind spot documented in the amendment).
 
 ## Amendment: `/merge-and-cleanup` enforcement and routing (#229, superseded by #232)
 
@@ -344,6 +349,87 @@ as the process `cwd`, so a PR worktree's `scripts/workflow/cli.py` cannot shadow
 absolute-path resolution.
 
 **Residual blocking (Q7):** A routed invocation blocks for as long as the queue takes to drain. The `/merge-and-cleanup` invocation may wait behind other PRs already in the queue.
+
+## Amendment: Post-merge validation env isolation (#241)
+
+**Status:** Accepted (2026-10-06). The queue-proven skip removes one safety net.
+
+Post-merge validation (`/cleanup` when a PR is merged) isolates the check environment using an
+**allowlist** of known variables (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, `TMPDIR`,
+`NVM_DIR`, `VOLTA_HOME`, `LC_*`) plus any variables exported by the main worktree's `.envrc`
+(via `direnv export`). All other variables are dropped. This is different from the queue's own
+scratch steps, which use a **denylist** (`SCRATCH_ENV_STRIPPED_VARS`): the queue's steps run
+under an unscrubbed PR-worktree environment with only a few unsafe vars removed, while post-merge
+validation must fail closed on unknown per-worktree vars that might poison the regression gate.
+
+When a queue-proven skip is taken (the landed tree is identical to the queue-tested tree), the
+skip inherits the queue gate's unscrubbed PR-worktree environment — validation is not re-run, so
+the environment isolation applied to the queue's steps does not carry through to the skip decision.
+This is the intended trade-off: the skip removes one safety net (revalidation under the isolated
+env) in exchange for avoiding redundant checks after a proved merge.
+
+A `direnv` that cannot be re-derived (blocked, missing, or times out) gives an `inconclusive`
+verdict for Compose repos and a plain scrubbed run with a diagnostic note for others. The
+allowlist never overrides a configured repo's own `.envrc`: variables it exports are applied on
+top of the base allowlist.
+
+## Amendment: Queue-proof skip criteria and --queue-started-at hand-off
+
+**Status:** Accepted (2026-10-08).
+
+Post-merge `/cleanup` can skip validation when the landed tree is provably identical to the
+queue-tested tree. The skip decision (returning `VALIDATION=skipped` with a `Proved` verdict)
+requires **both** conditions:
+
+1. **Tree equality:** The tree at `origin/<base>` (freshly fetched) is identical to the
+   tree that passed the queue gate (compared by git tree SHA, which covers tracked content only).
+   This is the primary proof of equivalence.
+
+2. **Queue-steps superset:** The queue gate's configured `steps` must be a superset of the
+   checks read from `.claude/repo-cache.json` in the main worktree. That is, every check command
+   the PR is validated against in post-merge validation must have already been run (and passed)
+   by the queue. This ensures that skipping validation does not dodge a new check that was added
+   between enqueue and cleanup.
+
+**`--queue-started-at` hand-off:** The queue records the wall-clock Unix timestamp when the PR
+entered the queue and passes it to `/cleanup` via the `--queue-started-at` command-line argument.
+Cleanup passes it to the queue-result reader (`read_pr_result`) as a timestamp gate, so only a
+queue result recorded for this queue run is accepted as proof. There is no separate check of
+`repo-cache.json` file times; the steps-superset condition above is what covers checks added
+after the PR was queued.
+
+**Residual blind spot (F16):** The tree-equality proof covers tracked content only. Untracked or
+`.gitignore`d files are not part of it, so a PR whose tracked tree matched the queue-tested tree is
+skipped even if ignored artifacts differ. This is accepted: ignored files should not affect
+correctness, and detecting them would require the queue to snapshot the full working tree. (This is
+distinct from the post-merge dirty-main fingerprint in `git.py`, which guards against a validation
+run mutating main.) There is currently no opt-out env var.
+
+**Built vs. Planned:** Queue-proof skip is now built and working. The skip compares fingerprints,
+checks the steps-superset condition, and gates the queue result on `--queue-started-at`. Cleanup
+returns `VALIDATION=skipped` (a passing verdict) when both conditions are met and the skip is
+taken; otherwise, it proceeds with validation as usual.
+
+**Status:** Accepted (2026-10-06). The queue-proven skip removes one safety net.
+
+Post-merge validation (`/cleanup` when a PR is merged) isolates the check environment using an
+**allowlist** of known variables (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, `TMPDIR`,
+`NVM_DIR`, `VOLTA_HOME`, `LC_*`) plus any variables exported by the main worktree's `.envrc`
+(via `direnv export`). All other variables are dropped. This is different from the queue's own
+scratch steps, which use a **denylist** (`SCRATCH_ENV_STRIPPED_VARS`): the queue's steps run
+under an unscrubbed PR-worktree environment with only a few unsafe vars removed, while post-merge
+validation must fail closed on unknown per-worktree vars that might poison the regression gate.
+
+When a queue-proven skip is taken (the landed tree is identical to the queue-tested tree), the
+skip inherits the queue gate's unscrubbed PR-worktree environment — validation is not re-run, so
+the environment isolation applied to the queue's steps does not carry through to the skip decision.
+This is the intended trade-off: the skip removes one safety net (revalidation under the isolated
+env) in exchange for avoiding redundant checks after a proved merge.
+
+A `direnv` that cannot be re-derived (blocked, missing, or times out) gives an `inconclusive`
+verdict for Compose repos and a plain scrubbed run with a diagnostic note for others. The
+allowlist never overrides a configured repo's own `.envrc`: variables it exports are applied on
+top of the base allowlist.
 
 ## Follow-ups
 

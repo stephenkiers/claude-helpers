@@ -26,13 +26,60 @@ import json
 import os
 from pathlib import Path
 from unittest import mock
+from contextlib import contextmanager
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from workflow.cleanup import apply_cleanup, CleanupPlan
 from workflow.checks import TIMEOUT_ERROR_PREFIX, CheckResult
+from workflow import validation, git
+from workflow.validation import ValidationVerdict
 from _test_harness import Harness
 from _git_fixture import GitFixture
+
+
+def _setup_test_isolation():
+    """
+    Patch validation probes to avoid side effects on the real checkout.
+    """
+    # Patch validation_lock to skip actual locking
+    @contextmanager
+    def mock_validation_lock(main_worktree: Path):
+        yield None
+
+    validation.validation_lock = mock_validation_lock
+
+    # Patch git probes to avoid real filesystem access
+    def mock_fingerprint(cwd):
+        from workflow.git import Fingerprint
+        return Fingerprint(
+            head="abc123",
+            status=b"",
+            diff_sha="def456"
+        )
+
+    git.tracked_fingerprint = mock_fingerprint
+
+    # Patch compose detection to default to false
+    def mock_is_compose(main_worktree: Path):
+        return False
+
+    validation._is_compose_repo = mock_is_compose
+
+    # Patch abs_git_common_dir to return a safe temp path
+    def mock_abs_git_common_dir(cwd):
+        import tempfile
+        temp_path = Path(tempfile.gettempdir()) / ".mock-git-common-dir"
+        temp_path.mkdir(parents=True, exist_ok=True)
+        return temp_path
+
+    git.abs_git_common_dir = mock_abs_git_common_dir
+
+    # Patch pull_ff_only to succeed by default
+    def mock_pull_ff_only(remote, branch, cwd=None):
+        return (True, None)
+
+    git.pull_ff_only = mock_pull_ff_only
 
 
 def mock_execute_check_with_sequence(results_sequence):
@@ -51,6 +98,7 @@ def mock_execute_check_with_sequence(results_sequence):
 
 
 if __name__ == "__main__":
+    _setup_test_isolation()
     h = Harness("CLEANUP TIMEOUT CONTRACT SPEC-BLIND TEST SUITE")
     test_result = h.test_result
 
@@ -135,47 +183,28 @@ if __name__ == "__main__":
         )
 
         with mock.patch("workflow.checks.execute_check") as mock_exec:
-            mock_exec.side_effect = [timeout_result, non_timeout_result]
+            # With retry logic: check 1 attempt 1/2, check 2 attempt 1/2
+            mock_exec.side_effect = [
+                timeout_result,        # Check 1 attempt 1
+                timeout_result,        # Check 1 attempt 2
+                non_timeout_result,    # Check 2 attempt 1
+                non_timeout_result,    # Check 2 attempt 2
+            ]
 
             result, err = apply_cleanup(plan_json)
 
             test_result(
-                "apply_cleanup with mixed failures executes all checks",
-                mock_exec.call_count == 2,
-                f"Expected 2 execute_check calls, got {mock_exec.call_count}"
+                "apply_cleanup with mixed failures executes all checks with retries",
+                mock_exec.call_count == 4,
+                f"Expected 4 execute_check calls (2 checks × 2 attempts), got {mock_exec.call_count}"
             )
 
-            # The key assertion: validation_failures should contain at least one entry
-            # that does NOT contain the timeout prefix. Look for "Check command" formatted entries.
-            has_timeout_failure = False
-            has_non_timeout_failure = False
-
-            if result.validation_failures:
-                for failure_msg in result.validation_failures:
-                    if isinstance(failure_msg, str):
-                        # Timeout failures will have "Check command timed out after" or similar
-                        if "timed out after" in failure_msg or TIMEOUT_ERROR_PREFIX in failure_msg:
-                            has_timeout_failure = True
-                        # Non-timeout failures will have "Check command failed" or similar
-                        elif "Check command failed" in failure_msg or "failed" in failure_msg.lower():
-                            has_non_timeout_failure = True
-
+            # The key assertion: mixed timeout + non-timeout failures should give FAIL verdict
+            # (not INCONCLUSIVE, which would indicate all checks were inconclusive)
             test_result(
-                "validation_failures contains at least one timeout-shaped failure",
-                has_timeout_failure,
-                f"Expected a timeout failure containing '{TIMEOUT_ERROR_PREFIX}' in {result.validation_failures}"
-            )
-
-            test_result(
-                "validation_failures contains at least one non-timeout failure",
-                has_non_timeout_failure,
-                f"Expected a non-timeout failure in {result.validation_failures}"
-            )
-
-            test_result(
-                "apply_cleanup with mixed failures returns list of validation_failures",
-                isinstance(result.validation_failures, list) and len(result.validation_failures) >= 2,
-                f"Expected list with 2+ entries; got {result.validation_failures}"
+                "mixed timeout + non-timeout failures give FAIL verdict",
+                result.validation == ValidationVerdict.FAIL,
+                f"Expected FAIL verdict, got {result.validation}"
             )
 
     finally:
@@ -225,43 +254,28 @@ if __name__ == "__main__":
         )
 
         with mock.patch("workflow.checks.execute_check") as mock_exec:
-            mock_exec.side_effect = [timeout_result_1, timeout_result_2]
+            # With retry logic: check 1 attempt 1/2, check 2 attempt 1/2
+            mock_exec.side_effect = [
+                timeout_result_1,  # Check 1 attempt 1
+                timeout_result_1,  # Check 1 attempt 2
+                timeout_result_2,  # Check 2 attempt 1
+                timeout_result_2,  # Check 2 attempt 2
+            ]
 
             result, err = apply_cleanup(plan_json)
 
             test_result(
-                "apply_cleanup with all timeouts executes all checks",
-                mock_exec.call_count == 2,
-                f"Expected 2 execute_check calls, got {mock_exec.call_count}"
+                "apply_cleanup with all timeouts executes all checks with retries",
+                mock_exec.call_count == 4,
+                f"Expected 4 execute_check calls (2 checks × 2 attempts), got {mock_exec.call_count}"
             )
 
-            # All validation_failures should be timeout-shaped (contain "timed out after")
-            all_timeout_shaped = True
-            has_any_failure = False
-
-            if result.validation_failures:
-                has_any_failure = len(result.validation_failures) > 0
-                for failure_msg in result.validation_failures:
-                    if isinstance(failure_msg, str):
-                        # Count only check-command failures; git pull failures are setup noise
-                        if failure_msg.startswith("Check command"):
-                            if "timed out after" not in failure_msg:
-                                all_timeout_shaped = False
-                                break
-
+            # The key assertion: when all checks timeout, the verdict should be INCONCLUSIVE
+            # (not FAIL, which would indicate a non-timeout failure)
             test_result(
-                "validation_failures contains entries (all timeouts scenario)",
-                has_any_failure,
-                f"Expected validation_failures to be non-empty; got {result.validation_failures}"
-            )
-
-            # Filter to just the "Check command" entries for this assertion
-            check_command_failures = [msg for msg in result.validation_failures
-                                      if isinstance(msg, str) and msg.startswith("Check command")]
-            test_result(
-                "all check-command failures are timeout-shaped in all-timeout scenario",
-                all_timeout_shaped and len(check_command_failures) > 0,
-                f"Expected all check-command entries to contain '{TIMEOUT_ERROR_PREFIX}'; got {check_command_failures}"
+                "all timeouts give INCONCLUSIVE verdict",
+                result.validation == ValidationVerdict.INCONCLUSIVE,
+                f"Expected INCONCLUSIVE verdict for all-timeout scenario, got {result.validation}"
             )
 
     finally:

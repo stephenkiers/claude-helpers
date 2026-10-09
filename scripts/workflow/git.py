@@ -9,8 +9,9 @@ import os
 import sys
 import subprocess
 import json
+import hashlib
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any, Union
+from typing import List, Optional, Tuple, Dict, Any, Union, NamedTuple
 from .safety import Unknown, fail_closed
 
 
@@ -179,6 +180,100 @@ def get_git_dir(cwd: Optional[Path] = None) -> str:
 def get_git_common_dir(cwd: Optional[Path] = None) -> str:
     """Get git rev-parse --git-common-dir output."""
     return run_git_command(["rev-parse", "--git-common-dir"], cwd=cwd)
+
+
+# ============================================================================
+# Probe Helpers (Step 2, Q4, D8)
+# ============================================================================
+
+class Fingerprint(NamedTuple):
+    """
+    Snapshot of tracked-file state in a worktree.
+
+    Blind to untracked and ignored files (--untracked-files=no means only tracked
+    files are included in the status check).
+
+    Fields:
+        head: Current HEAD SHA
+        status: Raw output of git status --porcelain=v1 -z --untracked-files=no
+        diff_sha: SHA256 of git diff --no-ext-diff HEAD
+
+    Note: POSIX git only (uses --no-optional-locks and --end-of-options).
+    """
+    head: str  # Current HEAD SHA
+    status: bytes  # Raw output of git status --porcelain=v1 -z --untracked-files=no
+    diff_sha: str  # SHA256 of git diff --no-ext-diff HEAD
+
+
+def tree_of(rev: str, cwd: Path) -> Optional[str]:
+    """
+    Get the tree object SHA of a revision using --no-optional-locks and --end-of-options.
+
+    Returns the tree SHA (40-hex), or None on any error.
+    """
+    try:
+        return run_git_command(
+            ["--no-optional-locks", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{tree}}"],
+            cwd=cwd,
+            check=True
+        )
+    except Exception:
+        return None
+
+
+def tracked_fingerprint(cwd: Path) -> Optional[Fingerprint]:
+    """
+    Capture HEAD, tracked file status, and diff hash for retry guard detection.
+
+    Uses --no-optional-locks and --end-of-options per D8.
+    Returns None on any error (probe failure means no retry and inconclusive verdict).
+    """
+    try:
+        # Get HEAD SHA
+        head_sha = run_git_command(
+            ["--no-optional-locks", "rev-parse", "--verify", "--end-of-options", "HEAD"],
+            cwd=cwd,
+            check=True
+        )
+
+        # Get tracked file status (porcelain v1 with -z, excluding untracked)
+        status_output = run_git_command(
+            ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=no", "--end-of-options"],
+            cwd=cwd,
+            check=True
+        )
+        status_bytes = status_output.encode("utf-8")
+
+        # Get diff of tracked changes
+        diff_output = run_git_command(
+            ["--no-optional-locks", "diff", "--no-ext-diff", "--end-of-options", "HEAD"],
+            cwd=cwd,
+            check=True
+        )
+        # Hash the diff output
+        diff_sha = hashlib.sha256(diff_output.encode("utf-8")).hexdigest()
+
+        return Fingerprint(head=head_sha, status=status_bytes, diff_sha=diff_sha)
+    except Exception:
+        return None
+
+
+def abs_git_common_dir(cwd: Path) -> Optional[Path]:
+    """
+    Get the absolute path to the git common directory using --path-format=absolute.
+
+    Uses the form that Phase 4-Q already uses (merge-and-cleanup.md:467).
+    Returns None on any error.
+    """
+    try:
+        output = run_git_command(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=cwd,
+            check=True
+        )
+        return Path(output)
+    except Exception:
+        return None
 
 
 def get_repository_root(cwd: Optional[Path] = None) -> str:

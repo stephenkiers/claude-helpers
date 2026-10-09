@@ -23,10 +23,65 @@ from workflow.cleanup import (
     _get_cleanup_check_timeout,
 )
 from workflow.safety import Unknown
+from workflow import validation, git
 from _test_harness import Harness
 
 
+def _setup_test_isolation():
+    """
+    Patch validation probes to avoid side effects on the real checkout.
+
+    This ensures that the new lock, fingerprint, compose detection, and direnv
+    probes don't touch the real repository during tests.
+    """
+    from contextlib import contextmanager
+
+    # Patch validation_lock to skip actual locking
+    @contextmanager
+    def mock_validation_lock(main_worktree: Path):
+        # Always succeed without actually acquiring a lock
+        yield None
+
+    validation.validation_lock = mock_validation_lock
+
+    # Patch git probes to avoid real filesystem access
+    def mock_fingerprint(cwd):
+        # Return a mock fingerprint that won't trigger retries
+        from workflow.git import Fingerprint
+        return Fingerprint(
+            head="abc123",
+            status=b"",
+            diff_sha="def456"
+        )
+
+    git.tracked_fingerprint = mock_fingerprint
+
+    # Patch compose detection to default to false
+    def mock_is_compose(main_worktree: Path):
+        return False
+
+    validation._is_compose_repo = mock_is_compose
+
+    # Patch abs_git_common_dir to return a safe temp path
+    def mock_abs_git_common_dir(cwd):
+        # Return a safe temp directory path
+        import tempfile
+        temp_path = Path(tempfile.gettempdir()) / ".mock-git-common-dir"
+        temp_path.mkdir(parents=True, exist_ok=True)
+        return temp_path
+
+    git.abs_git_common_dir = mock_abs_git_common_dir
+
+    # Patch pull_ff_only to succeed by default (can be overridden per-test)
+    def mock_pull_ff_only(remote, branch, cwd=None):
+        # Default to success for tests that don't override this
+        return (True, None)
+
+    git.pull_ff_only = mock_pull_ff_only
+
+
 if __name__ == "__main__":
+    _setup_test_isolation()
     h = Harness("WORKFLOW CLEANUP TEST SUITE")
     test_result = h.test_result
 
@@ -57,11 +112,12 @@ if __name__ == "__main__":
     print()
     print("[Section 2] Cleanup result dataclass")
 
+    from workflow.validation import ValidationVerdict
     result = CleanupResult(
         success=True,
         worktree_removed=True,
         branch_deleted=True,
-        validation_passed=True
+        validation=ValidationVerdict.PASS
     )
 
     result_dict = result.to_dict()
@@ -220,7 +276,7 @@ if __name__ == "__main__":
                             )
                             test_result(
                                 "apply_cleanup records validation failure",
-                                result.validation_passed is False and len(result.validation_failures) > 0
+                                result.validation != ValidationVerdict.PASS and len(result.validation_failures) > 0
                             )
 
     print()
@@ -423,8 +479,8 @@ if __name__ == "__main__":
                             result, err = apply_cleanup(plan_json)
 
                             test_result(
-                                "apply_cleanup flips validation_passed=False after a failed pull_ff_only",
-                                result.validation_passed is False
+                                "apply_cleanup flips validation to INCONCLUSIVE after a failed pull_ff_only",
+                                result.validation == ValidationVerdict.INCONCLUSIVE
                             )
 
         # 11b: force-retry fires only on a dirty-tree removal failure.
@@ -608,12 +664,8 @@ if __name__ == "__main__":
                                     )
                                     test_result(
                                         "a timed-out check is reported as inconclusive, not a generic failure",
-                                        result.validation_passed is False
-                                        and any(
-                                            "timed out after 900s" in f and "inconclusive" in f
-                                            for f in result.validation_failures
-                                        ),
-                                        f"failures={result.validation_failures}"
+                                        result.validation == ValidationVerdict.INCONCLUSIVE,
+                                        f"expected INCONCLUSIVE, got {result.validation}"
                                     )
         finally:
             if original_timeout_env is not None:
@@ -642,13 +694,9 @@ if __name__ == "__main__":
                                 result, err = apply_cleanup(plan_json)
 
                                 test_result(
-                                    "a real check failure is still reported as 'Check command failed'",
-                                    result.validation_passed is False
-                                    and any(
-                                        f.startswith("Check command failed:") and "boom" in f
-                                        for f in result.validation_failures
-                                    ),
-                                    f"failures={result.validation_failures}"
+                                    "a real check failure is still reported as FAIL verdict",
+                                    result.validation == ValidationVerdict.FAIL,
+                                    f"expected FAIL, got {result.validation}"
                                 )
 
     print()
@@ -705,14 +753,20 @@ if __name__ == "__main__":
         f"got '{CHECK_TIMEOUT_MESSAGE_PREFIX}'"
     )
 
-    # Test 13c: commands/cleanup.md jq filter contains the literal substring
+    # Test 13c: commands/cleanup.md uses render-validation and does not have jq decision logic
     cleanup_md_path = Path(__file__).parent.parent / "commands" / "cleanup.md"
     cleanup_md_content = cleanup_md_path.read_text()
-    has_literal_in_jq = 'select(startswith("Check command timed out"))' in cleanup_md_content
+    has_render_validation = 'cleanup render-validation' in cleanup_md_content
+    has_old_literal = 'select(startswith("Check command timed out"))' in cleanup_md_content
     test_result(
-        "commands/cleanup.md jq filter contains literal matching CHECK_TIMEOUT_MESSAGE_PREFIX",
-        has_literal_in_jq,
-        "did not find expected select(startswith(...)) expression in cleanup.md"
+        "commands/cleanup.md calls cleanup render-validation (new behavior)",
+        has_render_validation,
+        "did not find 'cleanup render-validation' in cleanup.md"
+    )
+    test_result(
+        "commands/cleanup.md does not contain old jq 'Check command timed out' literal (old behavior removed)",
+        not has_old_literal,
+        "found old select(startswith(...)) expression still in cleanup.md"
     )
 
     print()
@@ -745,48 +799,41 @@ if __name__ == "__main__":
                                 mock_pull.return_value = (True, None)
                                 mock_delete.return_value = (True, None)
                                 mock_remove.return_value = (True, None)
-                                # First check times out, second check fails (non-timeout)
+                                # Mixed failures with retry:
+                                # Check 1: attempt 1 times out, attempt 2 also times out
+                                # Check 2: attempt 1 fails, attempt 2 also fails
                                 mock_check.side_effect = [
-                                    CheckResult(success=False, error="timed out after 900s"),
-                                    CheckResult(success=False, returncode=1, stdout="", stderr="boom"),
+                                    CheckResult(success=False, error="timed out after 900s"),  # Check 1 attempt 1
+                                    CheckResult(success=False, error="timed out after 900s"),  # Check 1 attempt 2
+                                    CheckResult(success=False, returncode=1, stdout="", stderr="boom"),  # Check 2 attempt 1
+                                    CheckResult(success=False, returncode=1, stdout="", stderr="boom"),  # Check 2 attempt 2
                                 ]
 
                                 result, err = apply_cleanup(plan_json)
 
+                                # Mixed timeout + regular failure should give FAIL verdict
                                 test_result(
-                                    "Mixed failures: result.validation_passed is False",
-                                    result.validation_passed is False
-                                )
-
-                                # Both failure types should be present
-                                has_timeout_msg = any(
-                                    f.startswith("Check command timed out") for f in result.validation_failures
-                                )
-                                has_failed_msg = any(
-                                    f.startswith("Check command failed:") for f in result.validation_failures
-                                )
-
-                                test_result(
-                                    "Mixed failures: contains both timeout and non-timeout messages",
-                                    has_timeout_msg and has_failed_msg,
-                                    f"timeout={has_timeout_msg} failed={has_failed_msg}, failures={result.validation_failures}"
+                                    "Mixed failures: result.validation is FAIL (timeout + regular failure)",
+                                    result.validation == ValidationVerdict.FAIL,
+                                    f"expected FAIL, got {result.validation}"
                                 )
 
     print()
-    print("[Section 15] Timeout mixed with non-check-command failure (e.g., pull failure)")
+    print("[Section 15] Pull failure skips checks (D10)")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmppath = Path(tmpdir)
         wt_dir = tmppath / "worktree"
         wt_dir.mkdir()
 
+        # D10: ff-pull failure gives INCONCLUSIVE, and checks are not run.
         plan = CleanupPlan(
             target_worktree=str(wt_dir),
             current_branch="feature",
             pr_state="MERGED",
             expected_head_sha="abc123",
             cache_hash=None,
-            check_commands=["timeout_check"]
+            check_commands=["should_not_run"]
         )
         plan_json = json.dumps(plan.to_dict())
 
@@ -796,54 +843,30 @@ if __name__ == "__main__":
                     with mock.patch("workflow.git.delete_branch") as mock_delete:
                         with mock.patch("workflow.git.remove_worktree") as mock_remove:
                             with mock.patch("workflow.checks.execute_check") as mock_check:
-                                from workflow.checks import CheckResult, TIMEOUT_ERROR_PREFIX
                                 mock_branch.return_value = "feature"
                                 mock_sha.return_value = "abc123"
-                                # Pull fails with a non-timeout error (Unknown object with reason)
+                                # Pull fails
                                 mock_pull.return_value = (False, Unknown("Could not fast-forward main: merge conflict"))
                                 mock_delete.return_value = (True, None)
                                 mock_remove.return_value = (True, None)
-                                # Check command times out
-                                mock_check.return_value = CheckResult(
-                                    success=False,
-                                    error=f"{TIMEOUT_ERROR_PREFIX} 300s"
-                                )
 
                                 result, err = apply_cleanup(plan_json)
 
                                 test_result(
-                                    "Timeout + pull failure: result.validation_passed is False",
-                                    result.validation_passed is False
-                                )
-
-                                # Should have both timeout and pull-failure entries
-                                has_timeout_msg = any(
-                                    "timed out after" in f for f in result.validation_failures
-                                )
-                                has_pull_failure = any(
-                                    "Could not fast-forward main" in f for f in result.validation_failures
+                                    "Pull failure: result.validation is INCONCLUSIVE",
+                                    result.validation == ValidationVerdict.INCONCLUSIVE
                                 )
 
                                 test_result(
-                                    "Timeout + pull failure: contains timeout-shaped failure",
-                                    has_timeout_msg,
-                                    f"Expected timeout failure in {result.validation_failures}"
+                                    "Pull failure: checks are not executed (execute_check not called)",
+                                    mock_check.call_count == 0,
+                                    f"Expected 0 check executions, got {mock_check.call_count}"
                                 )
 
                                 test_result(
-                                    "Timeout + pull failure: contains pull-failure entry",
-                                    has_pull_failure,
-                                    f"Expected pull failure in {result.validation_failures}"
-                                )
-
-                                # The key assertion: when both timeout and non-timeout failures are present,
-                                # cleanup.md's jq filter (HAS_NON_TIMEOUT) must detect the pull failure
-                                # as a non-timeout failure. This validates that the fix in cleanup.md
-                                # (detecting any non-timeout failure, not just "Check command failed:") works.
-                                test_result(
-                                    "Timeout + pull failure: has both types in validation_failures",
-                                    has_timeout_msg and has_pull_failure,
-                                    f"both required; timeout={has_timeout_msg} pull={has_pull_failure}"
+                                    "Pull failure: includes pull failure reason in validation_reason",
+                                    "could not fast-forward main" in result.validation_reason.lower(),
+                                    f"Expected pull error in reason; got '{result.validation_reason}'"
                                 )
 
     print()
