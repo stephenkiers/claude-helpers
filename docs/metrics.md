@@ -462,7 +462,7 @@ Measured on 2026-10-08 over Claude Code versions 2.1.278, 2.1.280, 2.1.281, 2.1.
 | Reading | Repo project-dir sample | Ticket sample (n = 96) |
 |---|---|---|
 | ids where `last < max` `output_tokens` | 0 of 3,689 main · 0 of 2,419 subagent | 0 of 9,038 main · 0 of 21,826 subagent |
-| ids whose final `stop_reason` is `null` | main 0.1% · subagent 30.5% pooled (2.1.267–274: ~1%; 2.1.278–295: 65–88%) (median recorded output 5 tokens) | main 0.1% · subagent 61.8% (median recorded output 2 tokens) |
+| ids whose final `stop_reason` is `null` | main 0.1% · subagent 30.5% pooled (median recorded output 5 tokens; by era, 2.1.267–274: ~1%; 2.1.278–295: 65–88%) | main 0.1% · subagent 61.8% (median recorded output 2 tokens) |
 | ids whose `stop_reason` key is absent | 0 | 0 |
 | final block of unfinalized ids | `tool_use` 95% | `tool_use` 99.8% |
 | output gap: (`cost-state` − transcript sum) ÷ `cost-state` | — | median 64.7% (min 0.3%, max 82.7%) |
@@ -474,7 +474,7 @@ Interpretation:
 
 - **Cause.** A subagent message that ends on a `tool_use` block frequently never receives its final streaming usage line: the transcript keeps the first-chunk placeholder (`stop_reason: null`, `output_tokens` of 1–5) as the message's last line. Main-session transcripts almost never show this. No transcript line ever carried a larger `output_tokens` for the same id, so there is no recoverable on-disk value and "max per id" selection was dropped.
 - **Per-model reconcile.** Missing output sits entirely under models that subagents used (haiku 77.8% missing, opus 82–96% missing, sonnet 56% missing where sonnet served both main and subagents). No model appears in `cost-state` without transcript lines (the `[1m]` suffix in `cost-state` keys is the same model under the 1M-context label). There was no residue to attribute to harness-internal calls; that candidate was not observed.
-- **Harness limit (stated, not corrected).** Transcripts therefore under-record subagent output tokens by roughly two thirds on the measured versions. `agent.end` events and anything summed from transcript `output_tokens` inherit this (`scripts/reviewer-yield.py`, the engine behind `/review-stats`, is such a consumer: its per-reviewer cost is a lower bound). Nothing in this repo estimates the missing tokens into `tokens`; the parser only reports the three `unfinalized_*` counts so the pattern is checkable per transcript.
+- **Harness limit (stated, not corrected).** Transcripts therefore under-record subagent output tokens by roughly two thirds on the 2.1.278–295 sample (the 2.1.267–274 era is near zero, about 1% unfinalized). `agent.end` events and anything summed from transcript `output_tokens` inherit this (`scripts/reviewer-yield.py`, the engine behind `/review-stats`, is such a consumer: its per-reviewer cost is a lower bound). Nothing in this repo estimates the missing tokens into `tokens`; the parser only reports the three `unfinalized_*` counts so the pattern is checkable per transcript.
 - **Calibration caveat.** Finalized subagent ids run about 1.1 content chars per billed output token because thinking blocks are stored with their text redacted while `thinking_tokens` are still billed. The per-session calibration above is a labelled, versioned observation only, never a correction. The paid single-Agent measurement (per the plan in issue #218, Step 4) was not run: the offline residual (−6.9%) was under the pre-registered 15% gate (distinct from the 15% `unknown_pct` health-check threshold; gate denominator: unexplained output as a share of `cost-state` output in the median session).
 
 #### Which aggregate is authoritative
@@ -487,7 +487,7 @@ The `cost-state` line's `modelUsage.<model>.outputTokens` matches the `/usage` p
 
 ```
 S=~/.claude/projects/<project>/<session-id>
-for f in "$S.jsonl" "$S"/subagents/*.jsonl; do
+for f in "$S.jsonl" "$S"/subagents/*.jsonl(N); do  # zsh: (N) = nullglob; under bash drop "(N)" and run `shopt -s nullglob` first
   [ -f "$f" ] || continue
   python3 scripts/claude-transcript-metrics.py parse --transcript "$f" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["transcript"].rsplit("/",1)[-1], d["turns"], d["unfinalized_messages"], d["unfinalized_output_tokens_recorded"], d["unfinalized_content_chars"])'

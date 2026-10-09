@@ -1359,7 +1359,8 @@ def parse_transcript_tokens(path: Path) -> TranscriptParseResult:
     across an id's lines. A harness change to cumulative-per-line content would inflate
     unfinalized_content_chars.
 
-    Raises OSError or FileNotFoundError if the file cannot be read.
+    Raises OSError or FileNotFoundError if the file cannot be read, and ValueError if the file
+    has lines but none parse as JSON.
     For parse errors, the exception is raised (caller decides how to handle).
 
     Distinguishes between *malformed* (raises an exception) and *well-formed but empty*
@@ -1459,8 +1460,9 @@ def parse_transcript_tokens(path: Path) -> TranscriptParseResult:
             if not isinstance(usage, dict):
                 usage = {}
             output_tokens = usage.get("output_tokens", 0)
-            # The headline tokens loop above raises on malformed usage by design (that is the
-            # parse_raised signal); this loop is observational and must never raise.
+            # The headline tokens loop above raises on null or numeric usage, and on usage whose
+            # output_tokens is non-numeric (the parse_raised signal); it silently skips list usage.
+            # This loop is observational and must never raise on any usage shape.
             if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
                 unfinalized_output_tokens_recorded += output_tokens
             unfinalized_content_chars += content_chars_by_id.get(msg_id, 0)
