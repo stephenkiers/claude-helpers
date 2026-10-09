@@ -27,7 +27,7 @@ def cmd_parse(args):
 
     # Use shared parser to extract tokens and metadata
     try:
-        parse_result = telemetry_schema.parse_transcript_tokens(transcript_path)
+        parse_result: telemetry_schema.TranscriptParseResult = telemetry_schema.parse_transcript_tokens(transcript_path)
     except (OSError, FileNotFoundError) as e:
         print(f"Error: could not read transcript: {e}", file=sys.stderr)
         sys.exit(1)

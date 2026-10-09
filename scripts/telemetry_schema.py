@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, NamedTuple, Optional, TypedDict, Union, get_args
+from typing import Dict, Literal, NamedTuple, Optional, TypedDict, Union, get_args
 
 
 class CommandStateEntry(TypedDict, total=False):
@@ -1289,9 +1289,15 @@ def prune_stale_state(state_dir: Path = None, current_session_id: Optional[str] 
 def _content_chars(message: dict) -> int:
     """Count content chars from a message dict.
 
-    Returns the sum of chars in all content blocks: text blocks add len(text),
-    thinking blocks add len(thinking), tool_use blocks add len(json.dumps(input)).
-    Malformed shapes and non-serializable inputs return 0 without raising.
+    Precondition: message must be a dict. Returns the sum of chars across its content
+    blocks: text blocks add len(text), thinking blocks add len(thinking), tool_use blocks
+    add len(json.dumps(input)). Non-list content returns 0. Malformed blocks (non-dict
+    blocks, wrong-typed text/thinking, missing or non-serializable tool_use input)
+    contribute 0 and the remaining blocks are still summed. Never raises for a dict argument.
+
+    Units are mixed: tool_use input is measured as len(json.dumps(input)) with json.dumps
+    defaults (ASCII-escaped, default separators), while text/thinking are raw codepoint
+    counts. The documented 1.11 chars-per-token calibration assumes exactly this unit.
     """
     content = message.get("content")
     if not isinstance(content, list):
@@ -1313,6 +1319,7 @@ def _content_chars(message: dict) -> int:
         elif block_type == "tool_use":
             if "input" in block:
                 try:
+                    # ASCII-escaped, default separators; keeps the mixed-unit contract documented above
                     input_json = json.dumps(block["input"])
                     total += len(input_json)
                 except (TypeError, ValueError, RecursionError):
@@ -1320,10 +1327,26 @@ def _content_chars(message: dict) -> int:
     return total
 
 
-def parse_transcript_tokens(path: Path) -> dict:
+class TranscriptParseResult(TypedDict):
+    """Return contract of parse_transcript_tokens (nine keys).
+
+    tokens values are ints, or the UNKNOWN string when no usage field was seen.
+    """
+    tokens: Dict[str, Union[int, str]]
+    turns: int
+    lines_parsed: int
+    lines_skipped: int
+    cost_state: Optional[dict]
+    first_assistant_event: Optional[dict]
+    unfinalized_messages: int
+    unfinalized_output_tokens_recorded: int
+    unfinalized_content_chars: int
+
+
+def parse_transcript_tokens(path: Path) -> TranscriptParseResult:
     """Parse a Claude Code transcript JSONL and extract usage metrics.
 
-    Returns a dict with keys: tokens (dict with input/output/cache_read/cache_creation),
+    Returns a TranscriptParseResult with keys: tokens (dict with input/output/cache_read/cache_creation),
     turns (int), lines_parsed (int), lines_skipped (int), cost_state (dict or None),
     first_assistant_event (dict or None), unfinalized_messages (int),
     unfinalized_output_tokens_recorded (int), unfinalized_content_chars (int).
@@ -1331,6 +1354,10 @@ def parse_transcript_tokens(path: Path) -> dict:
     Unfinalized messages are those whose last line has stop_reason explicitly set to null
     (an absent stop_reason key does not count). The three unfinalized_* fields are
     observational counts only; tokens dict is unchanged and no estimate is applied.
+    unfinalized_content_chars assumes per-line deltas: each transcript line of a message id
+    is assumed to carry only the block(s) streamed on that line, and content chars are summed
+    across an id's lines. A harness change to cumulative-per-line content would inflate
+    unfinalized_content_chars.
 
     Raises OSError or FileNotFoundError if the file cannot be read.
     For parse errors, the exception is raised (caller decides how to handle).
@@ -1342,8 +1369,8 @@ def parse_transcript_tokens(path: Path) -> dict:
     path = Path(path)
     lines_parsed = 0
     lines_skipped = 0
-    seen_message_ids = {}  # message_id -> event dict (keeps last)
-    content_chars_by_id = {}  # message_id -> accumulated content chars
+    seen_message_ids: Dict[str, dict] = {}  # message_id -> event dict (keeps last)
+    content_chars_by_id: Dict[str, int] = {}  # message_id -> accumulated content chars
     cost_state = None
     first_assistant_event = None
 
@@ -1369,9 +1396,7 @@ def parse_transcript_tokens(path: Path) -> dict:
                         if msg_id:
                             seen_message_ids[msg_id] = event
                             # Accumulate content chars across all lines of this message
-                            if msg_id not in content_chars_by_id:
-                                content_chars_by_id[msg_id] = 0
-                            content_chars_by_id[msg_id] += _content_chars(msg)
+                            content_chars_by_id[msg_id] = content_chars_by_id.get(msg_id, 0) + _content_chars(msg)
             except (json.JSONDecodeError, ValueError):
                 lines_skipped += 1
 
@@ -1431,7 +1456,11 @@ def parse_transcript_tokens(path: Path) -> dict:
         if "stop_reason" in msg and msg["stop_reason"] is None:
             unfinalized_messages += 1
             usage = msg.get("usage", {})
+            if not isinstance(usage, dict):
+                usage = {}
             output_tokens = usage.get("output_tokens", 0)
+            # The headline tokens loop above raises on malformed usage by design (that is the
+            # parse_raised signal); this loop is observational and must never raise.
             if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
                 unfinalized_output_tokens_recorded += output_tokens
             unfinalized_content_chars += content_chars_by_id.get(msg_id, 0)
