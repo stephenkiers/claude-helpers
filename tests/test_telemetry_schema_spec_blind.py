@@ -280,4 +280,24 @@ try:
 except Exception as e:  # noqa: BLE001
     t("TranscriptParseResult is importable and declares documented keys", False, f"raised {e!r}")
 
+# =============================================================================
+# Part 7: cost_state selection
+# =============================================================================
+print("\n[Part 7] cost_state is the last cost-state line, verbatim")
+
+# Test 7.1: two cost-state lines -> the later one wins; assistant lines are never chosen.
+try:
+    r = _parse([
+        {"type": "cost-state", "modelUsage": {"outputTokens": 1}},
+        _asst("msg_i", "end_turn", out=4),
+        {"type": "cost-state", "modelUsage": {"outputTokens": 9}},
+    ])
+    t(
+        "cost_state is the last cost-state event, verbatim",
+        r["cost_state"] == {"type": "cost-state", "modelUsage": {"outputTokens": 9}},
+        f"got {r['cost_state']!r}",
+    )
+except Exception as e:  # noqa: BLE001
+    t("cost_state is the last cost-state event", False, f"raised {e!r}")
+
 h.summarize_and_exit()
