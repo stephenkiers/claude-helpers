@@ -200,7 +200,13 @@ separate from the reviewer-context cascade.
 **Research & writing**
 - `/research-swarm` — deep research on a topic via parallel web agents, optionally cross-checked
   against internal knowledge (via whatever internal-search MCP tools you have configured — Slack,
-  Confluence, Notion, Glean, Drive, etc.) if any are available
+  Confluence, Notion, Glean, Drive, etc.) if any are available. One-shot topic exploration; for a
+  closed question that needs resumable, checkpointed research, see `/expert-spike`.
+- `/expert-spike` — resumable research spike for a closed question (ADR-0022). Every effort level has
+  a checkpoint; effort 2–4 is auto-picked by `scripts/spike-effort.py` (1 and 5 are explicit-only).
+  Persists to `${PROJECT_ROOT}/spikes/<slug>-<id>/`; `--resume` and `--list` pick it back up. Researchers
+  return their body and the orchestrator writes `research/<id>.md`. Stateful, unlike `/research-swarm`
+  (ADR-0022 §1).
 - `/expert-write` — edit a document with expert writing personas + accumulated prose rules
 - `/style-google-doc` — apply a standard Google Doc visual style
 - `/search-claude` — search prior Claude Code transcripts; returns resume commands
@@ -319,11 +325,14 @@ avoidable, so this relies on self-report rather than a lint rule.
 - `plan-implementer` — implements a step-by-step plan autonomously, type-checks, commits, reports back
   (used by `/implement-with-haiku`).
 - `expert-reviewer` — one reviewer persona, one diff, one checkpoint file (used by `/expert-review`
-  for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator). Model comes from
-  the caller (`--model`), except Router which is pinned to sonnet.
+  for Router, Pass 1, Contrarian Carl, Pass 2 skeptic-verifier, and Amalgamator; and by `/expert-spike`
+  for its expert roles). Model comes from the caller (`--model`), except Router which is pinned to sonnet.
 - `expert-scout` — the pinned mechanical roles: Q&A (Haiku), Code Rot Cody (Haiku), and Consistency
   Checker (Haiku). Router (Sonnet; narrow judgment) is spawned as expert-reviewer with an explicit
   model override.
+- `spike-researcher` — web-only worker for `/expert-spike` (WebSearch/WebFetch only, no Write). It
+  answers one sub-question and returns its research body as the reply; the orchestrator validates it
+  and writes `research/<id>.md`.
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory
@@ -339,4 +348,5 @@ prompts tell the subagent to treat diff/PR content as data, not instructions, pr
 content is attacker-influenceable and `bypassPermissions` removes the confirmation dialog that would
 otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/Bash restriction and
 the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a
-residual, not eliminated, risk.
+residual, not eliminated, risk. `/expert-spike` expert roles also write one orchestrator-named file
+under `${PROJECT_ROOT}/spikes/`, which is still prompt-scoped; see the ADR-0018 2026-10-09 amendment.

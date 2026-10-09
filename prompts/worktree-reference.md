@@ -615,6 +615,10 @@ fi
 
 If `LOCAL_MODE` is false, fall through to the command's normal GitHub flow.
 
+**`spikes/` is not a plans directory.** `${PROJECT_ROOT}/spikes/` sits at the project root as a sibling
+of `plans/`. It holds `/expert-spike` working files (one directory per spike) and does not affect
+the `LOCAL_MODE` check above. To keep it out of `git status`, add `spikes/` to `.git/info/exclude`.
+
 ## In-Worktree Check
 
 Detects whether the current directory is inside a non-main worktree (used by pivot detection and
