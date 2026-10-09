@@ -107,6 +107,10 @@ Not changed: efforts 1 and 2 of `/expert-review`. Those paths already run withou
 the Consistency Checker (ADR-0012's accepted cost/coverage trade-off), so "always-run" continues to
 mean efforts 3–5.
 
+**Triage and escalation monitoring:** The Triage Chief (`prompts/triage.md`) test 6 (whether a finding is answerable without data, the criterion for "Needs measurement") is deliberately unchanged. However, Nick's QUESTION tag (issued when a finding requires architectural or directional judgment from the human) is to be used sparingly — it marks true decisions the human owns, not findings Nick is uncertain about. Escalation volume is to be monitored via `/review-stats` to watch for runaway escalation, which would indicate prompt calibration drift (not a triage test issue, which remains unchanged).
+
+**Phase 3 (Routing v2) inheritance (#196, #200):** Phase 3 (issues #196 and #200) will inherit the four-member always-run set as foundational: Code Rot Cody, Consistency Checker, Contrarian Carl, and North Star Nick. Any flip in Phase 3 toward deterministic routing (moving ADR-0003.3's shadow-mode observer to live seating authority) applies only to the router's judgment layer, never to the always-run group. The four always-run seats are a cost floor for efforts 3–5, reflecting non-routing properties (mechanical checks, universal alignment, final skepticism, and cross-cutting context) that no routing signal can prove absent.
+
 ## Consequences
 
 - **Good:** Single routing decision per review, made with full context (diff + summary + business).
