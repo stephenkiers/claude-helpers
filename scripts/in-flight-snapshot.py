@@ -133,7 +133,7 @@ def fetch_issues(cwd: str, limit: int, failures: Optional[Dict[str, str]] = None
     return issues, reason
 
 
-def issue_bodies(issues: Optional[List[Dict[str, Any]]], reason: Optional[str], limit: int) -> str:
+def issue_bodies(issues: Optional[List[Dict[str, Any]]], reason: Optional[str], limit: int = DEFAULT_ISSUE_LIMIT) -> str:
     """Render open issues with truncated bodies, for the scouts.
 
     Each body is fenced in a quoted block with `> ` prefix, and HTML comments are neutralized.

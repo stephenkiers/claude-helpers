@@ -120,7 +120,8 @@ def main():
     t("panel named-mode loop seats north-star-nick",
       "for r in code-rot-cody consistency-checker contrarian-carl north-star-nick; do" in panel)
     t("panel writes the in-flight snapshot",
-      'in-flight-snapshot.py" --repo-dir "${WORKTREE_PATH:-.}"' in panel)
+      'in-flight-snapshot.py" $SNAPSHOT_FLAGS' in panel
+      and '--repo-dir ${WORKTREE_PATH:-.}' in panel)
     t("panel launches the three Haiku North Star scouts as expert-scout",
       "prompts/north-star-scout.md" in panel and "Lens: {adrs|docs|in-flight}" in panel
       and 'Then launch **three** `subagent_type: "expert-scout"` agents in ONE message' in panel)
