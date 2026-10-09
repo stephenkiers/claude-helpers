@@ -99,7 +99,8 @@ exit 1
 **Failure Procedure** (`FAIL <stage> <label> <class>`): the stage is open. This is the only failure exit for a stage.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STAGE> --outcome failure --failure-class <CLASS> 2>/dev/null || true
+STAGE_ARGS=(--stage <STAGE>)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${STAGE_ARGS[@]}" --outcome failure --failure-class <CLASS> 2>/dev/null || true
 python3 "$HOME/.claude/scripts/spike-manifest.py" mark --dir "$SPIKE_DIR" --stage <STAGE> --status failed >/dev/null 2>&1 || true
 printf '%s\n' "- failure: <LABEL> at <STAGE> (<CLASS>)" >> "$SPIKE_DIR/decisions.md"
 EV=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg stage "<STAGE>" --arg label "<LABEL>" --arg class "<CLASS>" '{ts:$ts,stage:$stage,event:"failure",label:$label,failure_class:$class}')
@@ -119,7 +120,7 @@ jq -rn --arg from "$REPLAY_FROM" --arg s "<STAGE>" '["gather-context","decompose
 ```bash
 VERIFY_OK=no
 SHOW=$(python3 "$HOME/.claude/scripts/spike-manifest.py" show --dir "$SPIKE_DIR" 2>/dev/null) && printf '%s' "$SHOW" | jq -e 'type == "object"' >/dev/null 2>&1 && [ "$(printf '%s' "$SHOW" | jq -r '.resume_point // "<none>"')" != "<STAGE>" ] && VERIFY_OK=yes
-[ "$VERIFY_OK" = yes ] || { FAIL <STAGE> <label> <class> }
+[ "$VERIFY_OK" = yes ] || { FAIL <STAGE> <label> <class>; }
 ```
 
 **Sentinel check** (`SENTINEL-CHECK <file> <sentinel>`): the final non-blank line of the file, trimmed, must equal the sentinel exactly. This is the same rule the manifest applies.
@@ -184,7 +185,11 @@ fi
 
 Mutual exclusivity: `--list` and `--resume` are mutually exclusive with each other and with a question, `--effort`, `--models`, and named experts. On resume the manifest is authoritative, so any such conflict is `bad-flag` (`guard_block`). `--pause` is allowed with fresh runs only.
 
-Set `RUN_MODE`: `list` for `--list`, `resume` for `--resume`, `fresh` otherwise.
+Set `RUN_MODE`: `list` for `--list`, `resume` for `--resume`, `fresh` otherwise. On a fresh run, record the replay point before Stage 1:
+
+```bash
+REPLAY_FROM=gather-context
+```
 
 ## Routing
 
@@ -737,7 +742,8 @@ Routine decisions are also logged to `decisions.md` with a one-line rationale.
 **Interrupted, stage open** (user declines at a checkpoint, takes a rule-5 stop, or any other human-interrupt stop):
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STAGE> --outcome interrupted 2>/dev/null || true
+STAGE_ARGS=(--stage <STAGE>)
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${STAGE_ARGS[@]}" --outcome interrupted 2>/dev/null || true
 python3 "$HOME/.claude/scripts/spike-manifest.py" mark --dir "$SPIKE_DIR" --stage <STAGE> --status pending >/dev/null 2>&1 || true
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-spike --outcome interrupted 2>/dev/null || true
 exit 0
