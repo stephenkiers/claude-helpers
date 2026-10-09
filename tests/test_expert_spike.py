@@ -10,6 +10,7 @@ Run with: python3 tests/test_expert_spike.py
 """
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -83,10 +84,8 @@ def _extract_yaml_list(content, key):
     fm = _parse_frontmatter(content)
     val = fm.get(key, "")
     if val.startswith("[") and val.endswith("]"):
-        # Parse [A, B, C] format
         val = val[1:-1]
-        return [x.strip() for x in val.split(",") if x.strip()]
-    return []
+    return [x.strip() for x in val.split(",") if x.strip()]
 
 
 def main():
@@ -275,7 +274,7 @@ def main():
         snippet_stages = []
         for line in snippet_lines:
             # Extract stage token after "$SPIKE_DIR"
-            match = re.search(r'\$SPIKE_DIR["\']?,\s*["\']?(\S+?)["\']?(?:,|\))', line)
+            match = re.search(r'"\$SPIKE_DIR"\s+([a-z0-9-]+)\)', line)
             if match:
                 stage = match.group(1)
                 if stage not in snippet_stages:
@@ -417,7 +416,7 @@ def main():
         cli_text = "\n".join(lines_for_cli)
 
         # Check spike-manifest.py subcommands
-        manifest_subs = re.findall(r'spike-manifest\.py\s+(\w+)', cli_text)
+        manifest_subs = re.findall(r'spike-manifest\.py"?\s+(\w[\w-]*)', cli_text)
         manifest_subs_set = set(manifest_subs)
         expected_manifest = {"init", "mark", "expect", "show", "list", "resolve", "add-command-id"}
         h.test_result(
@@ -548,7 +547,7 @@ def main():
 
         # Check phrase1 in various files
         files_for_phrase1 = {
-            "expert-reviewer": agent_content,
+            "expert-reviewer": _read_file(REPO_ROOT / "agents" / "expert-reviewer.md"),
             "contribution": _read_file(PROMPT_FILES["contribution"]),
             "assessment": _read_file(PROMPT_FILES["assessment"]),
             "audit": _read_file(PROMPT_FILES["audit"]),
@@ -776,7 +775,7 @@ def main():
     # ========== GROUP 13: FAILURE CLASSES ==========
     if cmd_content:
         # Extract all --failure-class tokens
-        failure_classes = re.findall(r'--failure-class\s+(\S+)', cmd_content)
+        failure_classes = [t.rstrip("`),.") for t in re.findall(r'--failure-class\s+(\S+)', cmd_content)]
         invalid_classes = []
         for fc in failure_classes:
             # Skip if it's a variable reference
@@ -814,7 +813,7 @@ def main():
     if cmd_content:
         # Check gather-context section ordering
         gather_idx = cmd_content.find("stage-begin --stage gather-context")
-        init_idx = cmd_content.find("spike-manifest.py init")
+        init_idx = cmd_content.find("spike-manifest.py\" init")
         gather_running_idx = cmd_content.find("--stage gather-context --status running")
 
         if gather_idx >= 0 and init_idx >= 0 and gather_running_idx >= 0:
@@ -897,89 +896,82 @@ def main():
             "command doc missing — cannot run real CLI test",
         )
     else:
-        # Try to extract verification snippet from command doc
-        # The snippet is between python3 -c ' and ' on a missing_artifacts line
-        snippet_match = re.search(r"python3\s+-c\s+'([^']+)'", cmd_content)
-        if not snippet_match:
-            h.test_result(
-                "manifest state machine: fresh run (effort 3)",
-                False,
-                "could not extract verification snippet from command doc",
-            )
-            h.test_result(
-                "manifest state machine: zero-gap wave 2 (effort 4)",
-                False,
-                "could not extract verification snippet",
-            )
-            h.test_result(
-                "manifest state machine: mid-stage crash and resume point",
-                False,
-                "could not extract verification snippet",
-            )
-            h.test_result(
-                "manifest state machine: supersede and file movement",
-                False,
-                "could not extract verification snippet",
-            )
+        snip = re.search(r"python3 -c '(import importlib[^']*missing_artifacts[^']*)'", cmd_content)
+        sup = re.search(r"python3 -c '(import os,sys; d=sys\.argv\[1\][^']*)'", cmd_content)
+        mf = str(REPO_ROOT / "scripts" / "spike-manifest.py")
+
+        def run(*args):
+            return subprocess.run([sys.executable, *args], capture_output=True, text=True, timeout=10)
+
+        def cli(*args):
+            return run(mf, *args)
+
+        def missing(d, stage):
+            r = run("-c", snip.group(1), mf, str(d), stage)
+            return r.stdout.strip() if r.returncode == 0 else "ERR:" + r.stderr
+
+        def init(tmp, effort):
+            d = Path(tmp) / "spikes" / "demo-1"
+            d.mkdir(parents=True)
+            (d / "question.md").write_text("What is the best approach?")
+            r = cli("init", "--dir", str(d), "--question", "What is the best approach?",
+                    "--slug", "demo", "--effort", str(effort), "--models", "balanced")
+            return d, r
+
+        def resume(d):
+            return json.loads(cli("show", "--dir", str(d)).stdout).get("resume_point")
+
+        if not snip or not sup:
+            for name in ("fresh run (effort 3)", "zero-gap wave 2 (effort 4)",
+                         "mid-stage crash and resume point", "supersede and file movement"):
+                h.test_result(f"manifest state machine: {name}", False, "could not extract doc snippet")
         else:
-            # Test (a): fresh run, effort 3
             try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    spike_dir = Path(tmpdir) / "spike-dir"
-                    spike_dir.mkdir()
-                    question_file = spike_dir / "question.md"
-                    question_file.write_text("What is the best approach?")
-
-                    # Initialize manifest
-                    result = subprocess.run(
-                        [sys.executable, str(REPO_ROOT / "scripts" / "spike-manifest.py"), "init",
-                         str(spike_dir), "What is the best approach?", "test-spike", "3"],
-                        cwd=REPO_ROOT,
-                        capture_output=True,
-                        timeout=5,
-                    )
-
-                    if result.returncode == 0:
-                        # Try to mark gather-context and run through stages
-                        mark_result = subprocess.run(
-                            [sys.executable, str(REPO_ROOT / "scripts" / "spike-manifest.py"), "mark",
-                             str(spike_dir), "gather-context", "done"],
-                            cwd=REPO_ROOT,
-                            capture_output=True,
-                            timeout=5,
-                        )
-                        fresh_run_ok = mark_result.returncode == 0
-                    else:
-                        fresh_run_ok = False
-
-                h.test_result(
-                    "manifest state machine: fresh run (effort 3)",
-                    fresh_run_ok,
-                    "could not initialize manifest" if not fresh_run_ok else "",
-                )
+                with tempfile.TemporaryDirectory() as tmp:
+                    d, r = init(tmp, 3)
+                    ok = r.returncode == 0 and cli("mark", "--dir", str(d), "--stage", "gather-context", "--status", "running").returncode == 0
+                    ok = ok and missing(d, "gather-context") == '["README.md"]'
+                    (d / "README.md").write_text("readme")
+                    ok = ok and missing(d, "gather-context") == "[]"
+                    ok = ok and cli("mark", "--dir", str(d), "--stage", "gather-context", "--status", "done").returncode == 0
+                    ok = ok and resume(d) == "decompose"
+                h.test_result("manifest state machine: fresh run (effort 3)", ok, r.stderr if not ok else "")
             except Exception as e:
-                h.test_result(
-                    "manifest state machine: fresh run (effort 3)",
-                    False,
-                    str(e),
-                )
+                h.test_result("manifest state machine: fresh run (effort 3)", False, str(e))
 
-            # Test (b), (c), (d): simplified checks since full state machine is complex
-            h.test_result(
-                "manifest state machine: zero-gap wave 2 (effort 4)",
-                True,
-                "deferred: full test requires all stages to exist",
-            )
-            h.test_result(
-                "manifest state machine: mid-stage crash and resume point",
-                True,
-                "deferred: full test requires all stages to exist",
-            )
-            h.test_result(
-                "manifest state machine: supersede and file movement",
-                True,
-                "deferred: full test requires all stages to exist",
-            )
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    d, r = init(tmp, 4)
+                    ok = r.returncode == 0
+                    ok = ok and cli("mark", "--dir", str(d), "--stage", "research-wave-2", "--status", "skipped").returncode == 0
+                    ok = ok and json.loads(cli("show", "--dir", str(d)).stdout)["stages"]["research-wave-2"] == "skipped"
+                h.test_result("manifest state machine: zero-gap wave 2 (effort 4)", ok, "")
+            except Exception as e:
+                h.test_result("manifest state machine: zero-gap wave 2 (effort 4)", False, str(e))
+
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    d, r = init(tmp, 3)
+                    (d / "README.md").write_text("readme")
+                    cli("mark", "--dir", str(d), "--stage", "gather-context", "--status", "done")
+                    cli("mark", "--dir", str(d), "--stage", "decompose", "--status", "running")
+                    ok = resume(d) == "decompose"
+                h.test_result("manifest state machine: mid-stage crash and resume point", ok, "")
+            except Exception as e:
+                h.test_result("manifest state machine: mid-stage crash and resume point", False, str(e))
+
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    d, r = init(tmp, 3)
+                    (d / "survey").mkdir()
+                    (d / "survey" / "q0.md").write_text("x")
+                    (d / "synthesis.md").write_text("y")
+                    rr = run("-c", sup.group(1), str(d), "20260101T000000", "survey", "knowledge", "experts", "research", "synthesis.md", "audit.md")
+                    t = d / "superseded" / "20260101T000000"
+                    ok = rr.returncode == 0 and (t / "survey" / "q0.md").exists() and (t / "synthesis.md").exists() and not (d / "survey").exists()
+                h.test_result("manifest state machine: supersede and file movement", ok, rr.stderr if not ok else "")
+            except Exception as e:
+                h.test_result("manifest state machine: supersede and file movement", False, str(e))
 
     print()
     h.summarize_and_exit()
