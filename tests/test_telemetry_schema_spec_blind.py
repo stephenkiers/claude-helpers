@@ -158,21 +158,7 @@ except Exception as e:  # noqa: BLE001
 # =============================================================================
 # Part 4: bool handling in output token sums
 # =============================================================================
-print("\n[Part 4] bool output_tokens: rejected in unfinalized sum, counted in headline")
-
-# Test 4.1: unfinalized recorded sum ignores bool, keeps int.
-try:
-    r = _parse([
-        _asst("msg_e", None, out=True),
-        _asst("msg_f", None, out=10),
-    ])
-    t(
-        "unfinalized_output_tokens_recorded rejects bool True and sums int 10 only",
-        r["unfinalized_output_tokens_recorded"] == 10,
-        f"got {r['unfinalized_output_tokens_recorded']}",
-    )
-except Exception as e:  # noqa: BLE001
-    t("unfinalized_output_tokens_recorded rejects bool", False, f"raised {e!r}")
+print("\n[Part 4] bool output_tokens: counted in headline sum (unfinalized-sum rejection is pinned by the named suite)")
 
 # Test 4.2: headline tokens["output"] does NOT reject bool (True contributes 1).
 try:
