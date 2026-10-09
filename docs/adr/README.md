@@ -75,6 +75,9 @@ to North Star Nick).
   exact base it lands on, with unverified-main detection and force-push carve-out; status is Accepted (partial) — documents
   planned features not yet implemented (Claude hand-off, resume subcommand, cleanup consumption, fetch retry); amends ADR-0013
   with a mutation-allowlist exception note
+- [ADR-0022: /expert-spike — resumable research spikes with a persisted knowledge base](0022-expert-spike.md) — a
+  stateful sibling of `/research-swarm` with resumable stages, no model pin in frontmatter, a third sanctioned subagent write
+  prefix (`${PROJECT_ROOT}/spikes/`), and a web-only researcher agent with query-sanitization rules
 
 ## Format
 
