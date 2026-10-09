@@ -45,6 +45,17 @@ def _bounded(value, max_len=MAX_FIELD_LEN):
     return value
 
 
+def _field(payload, key):
+    """Normalize a field: return UNKNOWN unless value is a non-empty string after stripping.
+
+    Otherwise return _bounded(value) to normalize first, then bound.
+    """
+    value = payload.get(key)
+    if isinstance(value, str) and value.strip():
+        return _bounded(value)
+    return telemetry_schema.UNKNOWN
+
+
 # Alias: this tool always compares against timezone-aware values, so a naive
 # result can't be used safely — telemetry_schema._parse_iso_or_none already
 # treats a naive parse the same as unparseable (returns None).
@@ -196,11 +207,14 @@ def cmd_agent_begin(args):
     if payload is None:
         sys.exit(1)
 
-    session_id = _bounded(payload.get("session_id", telemetry_schema.UNKNOWN))
-    agent_id = _bounded(payload.get("agent_id", telemetry_schema.UNKNOWN))
-    agent_type = _bounded(payload.get("agent_type", telemetry_schema.UNKNOWN))
-    cwd = _bounded(payload.get("cwd", telemetry_schema.UNKNOWN))
+    session_id = _field(payload, "session_id")
+    agent_id = _field(payload, "agent_id")
+    agent_type = _field(payload, "agent_type")
+    cwd = _field(payload, "cwd")
     repo = os.path.basename(cwd.rstrip("/")) if cwd != telemetry_schema.UNKNOWN else telemetry_schema.UNKNOWN
+    # Map empty repo basename to UNKNOWN (os.path.basename("/") returns "")
+    if repo == "":
+        repo = telemetry_schema.UNKNOWN
     timestamp = datetime.now(timezone.utc).isoformat()
 
     if session_id != telemetry_schema.UNKNOWN and agent_id != telemetry_schema.UNKNOWN:
@@ -226,14 +240,18 @@ def cmd_agent_begin(args):
 
 
 def cmd_agent_end(args):
-    """Record an agent.end event from a SubagentStop hook payload on stdin.
+    """Record an agent.end or agent.internal_stop event from a SubagentStop hook payload on stdin.
 
     Explicitly discards last_assistant_message, background_tasks, and session_crons
     (never written to telemetry). SubagentStop hook carries no failure signal, so we
     record success as the default outcome.
 
     Parses agent_transcript_path if present, extracts token usage, and records it
-    in the usage state via record_agent_usage.
+    in the usage state. Internal-stop classification: if status is "path_not_a_file"
+    (transcript doesn't exist) AND there is no matching begin event for this agent_id,
+    the agent-end is classified as "internal" and emitted as agent.internal_stop instead
+    of agent.end. Internal stops do not contribute to usage accounting or the usage gate
+    floor_count.
 
     Parse failures are logged to stderr with the exception class and message, but
     never written to events.jsonl. Status values distinguish: no_transcript_path
@@ -249,9 +267,9 @@ def cmd_agent_end(args):
     _ = payload.get("background_tasks")        # never used
     _ = payload.get("session_crons")           # never used
 
-    session_id = _bounded(payload.get("session_id", telemetry_schema.UNKNOWN))
-    agent_id = _bounded(payload.get("agent_id", telemetry_schema.UNKNOWN))
-    agent_type = _bounded(payload.get("agent_type", telemetry_schema.UNKNOWN))
+    session_id = _field(payload, "session_id")
+    agent_id = _field(payload, "agent_id")
+    agent_type = _field(payload, "agent_type")
     timestamp = datetime.now(timezone.utc).isoformat()
     recorded_at = timestamp
 
@@ -282,9 +300,10 @@ def cmd_agent_end(args):
                 usage_status = "parse_raised"
                 print(f"telemetry: agent.end transcript parse failed for agent_id={agent_id}: {type(e).__name__}: {e}", file=sys.stderr)
 
+    is_internal = False
     if session_id != telemetry_schema.UNKNOWN and agent_id != telemetry_schema.UNKNOWN:
-        began_at = _guarded_state_op(
-            telemetry_schema.record_agent_usage,
+        result = _guarded_state_op(
+            telemetry_schema.record_agent_end_classified,
             telemetry_schema.session_meta_path(session_id, args.state_dir),
             session_id,
             agent_id,
@@ -293,21 +312,39 @@ def cmd_agent_end(args):
             status=usage_status,
             recorded_at=recorded_at,
         )
-        elapsed_seconds = _compute_elapsed(began_at, timestamp)
+        if result is not None:
+            began_at, is_internal = result
+            elapsed_seconds = _compute_elapsed(began_at, timestamp)
+        else:
+            # State op failed; fall back to agent.end
+            is_internal = False
 
-    event = telemetry_schema.build_event(
-        "agent.end",
-        session_id=session_id,
-        timestamp=timestamp,
-        agent_id=agent_id,
-        agent_type=agent_type,
-        outcome=telemetry_schema.outcome_success(),
-        elapsed_seconds=elapsed_seconds,
-        tokens=tokens_dict,
-        token_confidence=token_confidence,
-    )
-    telemetry_schema.append_event(args.log, event)
-    print("agent.end recorded", file=sys.stderr)
+    if is_internal:
+        # Emit agent.internal_stop with no tokens/token_confidence/outcome
+        event = telemetry_schema.build_event(
+            "agent.internal_stop",
+            session_id=session_id,
+            timestamp=timestamp,
+            agent_id=agent_id,
+            agent_type=agent_type,
+        )
+        telemetry_schema.append_event(args.log, event)
+        print("agent.internal_stop recorded", file=sys.stderr)
+    else:
+        # Emit agent.end as usual
+        event = telemetry_schema.build_event(
+            "agent.end",
+            session_id=session_id,
+            timestamp=timestamp,
+            agent_id=agent_id,
+            agent_type=agent_type,
+            outcome=telemetry_schema.outcome_success(),
+            elapsed_seconds=elapsed_seconds,
+            tokens=tokens_dict,
+            token_confidence=token_confidence,
+        )
+        telemetry_schema.append_event(args.log, event)
+        print("agent.end recorded", file=sys.stderr)
 
 
 def cmd_command_begin(args):
