@@ -1,7 +1,7 @@
 ---
 description: Research spike orchestrator; runs resumable stages to explore open questions about a codebase. Effort 1–5 with optional named experts. Persists results under ${PROJECT_ROOT}/spikes/<slug>-<id>/.
 argument-hint: "<question>" [expert-name ...] [--effort 1-5] [--models balanced|opus] [--pause] [--resume <spike-dir|slug-prefix>] [--list]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(gh repo view:*), Bash(mkdir:*), Bash(cp:*), Bash(mv:*), Bash(cat:*), Bash(cd:*), Bash(date:*), Bash(printf:*), Bash(tail:*), Bash(wc:*), Bash(tr:*), Bash(sed:*), Bash(grep:*), Bash(jq:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/spike-manifest.py":*), Bash(python3 "$HOME/.claude/scripts/spike-effort.py":*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(find:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(gh repo view:*), Bash(mkdir:*), Bash(mv:*), Bash(cat:*), Bash(cd:*), Bash(pwd:*), Bash(date:*), Bash(printf:*), Bash(tail:*), Bash(wc:*), Bash(tr:*), Bash(sed:*), Bash(grep:*), Bash(jq:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/spike-manifest.py":*), Bash(python3 "$HOME/.claude/scripts/spike-effort.py":*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 ---
 
 # Expert Spike
@@ -86,10 +86,10 @@ Never build the spikes path from parent-directory hops. If `PROJECT_ROOT` equals
 
 These are the only failure, verification, gate, and sentinel procedures. Every block that needs one invokes it by shorthand.
 
-**Pre-Stage Failure** (`PRE-FAIL <label> <class>`): no stage is open, so there are no stage events. Substitute `<LABEL>` (user-facing only, or into `decisions.md` when `SPIKE_DIR` exists) and `<CLASS>` (one of the closed failure classes).
+**Pre-Stage Failure** (`PRE-FAIL <label> <class>`): no stage is open, so there are no stage events. Substitute `<LABEL>` (user-facing only, or into `decisions.md` when `SPIKE_DIR` exists) and `<CLASS>` (one of the closed failure classes). If `CMD_ID` is already set, a command-begin is open and this exit reuses it; it must not open a second command.
 
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-spike --mode local 2>/dev/null || true
+[ -n "${CMD_ID:-}" ] || CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command expert-spike --mode local 2>/dev/null || true)
 # Only when SPIKE_DIR is set and exists:
 printf '%s\n' "- failure: <LABEL> (<CLASS>), no stage open" >> "$SPIKE_DIR/decisions.md"
 python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-spike --outcome failure --failure-class <CLASS> 2>/dev/null || true
@@ -128,13 +128,17 @@ SHOW=$(python3 "$HOME/.claude/scripts/spike-manifest.py" show --dir "$SPIKE_DIR"
 [ "$(grep -v '^[[:space:]]*$' "<file>" 2>/dev/null | tail -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" = "<sentinel>" ]
 ```
 
-**Research validation** (`RESEARCH-VALIDATE <file> <sentinel>`): structure check on a researcher's body. It passes only when the file's first line is `## Sub-question`, it has `## Claims` with at least one `### Claim N` heading, `## Sources`, and `## Follow-up questions`, and the final non-blank line is the sentinel. A body that fails is a failed worker. A worker is retried once; a second failure becomes a stand-in.
+**Research validation** (`RESEARCH-VALIDATE <file> <sentinel>`): structure check on a researcher's reply body, run on a staging file before anything reaches a stage path. It passes only when the file's first line is `## Sub-question`, it has `## Claims` with at least one `### Claim N` heading, `## Sources`, and `## Follow-up questions`, every `- **Status:**` line carries a valid status (`confirmed | partial | refuted | unknown`), every `- **Confidence:**` line carries a valid confidence (`high | medium | low`), and the final non-blank line is the sentinel. It is structural only; it does not judge content. A body that fails is a failed worker. A worker is retried once; a second failure becomes a stand-in.
 
 ```bash
 R="<file>"
 [ -s "$R" ] && [ "$(sed -n '1p' "$R")" = "## Sub-question" ] \
   && grep -qx -- '## Claims' "$R" && grep -qx -- '## Sources' "$R" && grep -qx -- '## Follow-up questions' "$R" \
   && [ "$(grep -c '^### Claim ' "$R")" -ge 1 ] \
+  && [ "$(grep -c '^- \*\*Status:\*\* ' "$R")" -ge 1 ] \
+  && [ -z "$(grep '^- \*\*Status:\*\* ' "$R" | grep -Ev '^- \*\*Status:\*\* (confirmed|partial|refuted|unknown)[[:space:]]*$')" ] \
+  && [ "$(grep -c '^- \*\*Confidence:\*\* ' "$R")" -ge 1 ] \
+  && [ -z "$(grep '^- \*\*Confidence:\*\* ' "$R" | grep -Ev '^- \*\*Confidence:\*\* (high|medium|low)[[:space:]]*$')" ] \
   && [ "$(grep -v '^[[:space:]]*$' "$R" | tail -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" = "<sentinel>" ] \
   && printf '%s\n' VALID || printf '%s\n' INVALID
 ```
@@ -361,7 +365,7 @@ CMD_ID=$(python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command 
 
 ## Effort Table
 
-<!-- ADR-0022 §8: the Experts, research-wave-2, expert-assessment, and audit columns follow the ADR table. The research and survey caps are the command's own per-stage limits. -->
+<!-- ADR-0022 §8: the Experts, expert-assessment, and audit columns follow the ADR table. The codebase-survey, research, and research-wave-2 caps are the command's own per-stage limits; ADR-0022 §8 does not fix them. -->
 
 | Effort | codebase-survey | Experts | research (wave 1) | research-wave-2 | expert-assessment (+Carl) | audit |
 |---|---|---|---|---|---|---|
@@ -539,13 +543,24 @@ python3 "$HOME/.claude/scripts/spike-manifest.py" expect --dir "$SPIKE_DIR" --st
 
 **Keep rule (ADR-0022 §10).** Before dispatch, a minted path that already exists and passes `RESEARCH-VALIDATE` (or is a stand-in) is kept and not re-dispatched. Stand-ins are final until the stage is restarted.
 
-**Dispatch.** Fill one brief per remaining worker from `$HOME/.claude/prompts/spike-researcher-brief.md` (inline question slice and survey excerpt, sentinel `<!-- research-end -->`). Dispatch `subagent_type: spike-researcher` (Sonnet override for hard questions) in one message. Each worker's final reply is the complete markdown body of its research file, with no preamble and no code fence. The first line of the reply is the first line of the file.
+**Dispatch.** Fill one brief per remaining worker from `$HOME/.claude/prompts/spike-researcher-brief.md`. Fill only these placeholders, using that file's *Placeholder Sources* table:
+- `{QID}` — the id (`q0`, `q1`…).
+- `{WAVE}` — `1`.
+- `{SUB_QUESTION}` — the sub-question text for the id from the latest `questions.md`, restated by the orchestrator in public terms (no local paths, file names, code, or survey content).
+- `{ANSWERED_LOOKS_LIKE}` — the "what answered looks like" line for the id from the latest `questions.md`.
+- `{QUERY_BUDGET}` — the per-effort value from the brief's budget table.
+- `{SENTINEL}` — `<!-- research-end -->`.
 
-**Collect.** For each worker, in order:
-1. Write the reply verbatim to its minted path with the Write tool.
-2. Run `RESEARCH-VALIDATE <path> <!-- research-end -->`. If it prints `INVALID`, re-dispatch that worker once and overwrite the same path with its new reply.
-3. If the retry is also `INVALID`, overwrite the path with a stand-in (Write tool) and record the result as `stand-in`. Otherwise the result is `ok`.
-4. Append one event for the worker (Event shorthand, stage `research`, id `<qid>`).
+Strip the *Placeholder Sources* section from the brief. Do not inline survey excerpts, knowledge files, the spike directory path, or any output path. Dispatch `subagent_type: spike-researcher` (Sonnet override for hard questions) in one message. The researcher has no write tool. Its final reply is the complete research-file body, with no preamble and no code fence; its first line is `## Sub-question`.
+
+**Collect.** The reply is a body, not a receipt. For each worker, in order, run this loop (one attempt, then at most one retry):
+0. Run `mkdir -p "$SPIKE_DIR/.staging/research" "$SPIKE_DIR/research"` once before the first worker. Staging lives outside every path the stages read, so a rejected body never reaches a stage.
+1. Take the reply body verbatim (the whole reply, no edits). Write it with the Write tool to `$SPIKE_DIR/.staging/research/<qid>-1.try<N>`, where `<N>` is the attempt number (1 or 2). Use a fresh `<N>` for each attempt.
+2. Run `RESEARCH-VALIDATE "$SPIKE_DIR/.staging/research/<qid>-1.try<N>" <!-- research-end -->`.
+3. If it prints `VALID`, move the staging file to its minted path: `mv "$SPIKE_DIR/.staging/research/<qid>-1.try<N>" "$SPIKE_DIR/research/<qid>-1.md"`. The result is `ok`.
+4. If it prints `INVALID` on attempt 1, re-dispatch that worker once with the same brief and repeat from step 1 with `<N>` = 2.
+5. If attempt 2 is also `INVALID`, the orchestrator writes a stand-in to `$SPIKE_DIR/research/<qid>-1.md` with the Write tool, and the result is `stand-in`.
+6. Append one event for the worker (Event shorthand, stage `research`, id `<qid>`, result).
 
 ```bash
 python3 "$HOME/.claude/scripts/spike-manifest.py" mark --dir "$SPIKE_DIR" --stage research --status done >/dev/null 2>&1 || FAIL research manifest-error other
@@ -579,7 +594,7 @@ GAP_LINES=""
 case "$GAP_LINES" in ''|*[!0-9]*) FAIL gap-check artifacts-missing guard_block ;; esac
 ```
 
-Carry `GAP_LINES` forward as a literal. Wave 2 runs only when `GAP_LINES` is greater than zero.
+Carry `GAP_LINES` forward as a literal. Wave 2 runs only when `GAP_LINES` is greater than zero. Stage 9 recounts it from disk, because a resume that starts at a later stage has no `GAP_LINES` in shell state.
 
 ```bash
 python3 "$HOME/.claude/scripts/spike-manifest.py" mark --dir "$SPIKE_DIR" --stage gap-check --status done >/dev/null 2>&1 || FAIL gap-check manifest-error other
@@ -591,8 +606,12 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gap-check --out
 
 ```bash
 GATE research-wave-2   # if "skip", go to Stage 10
+GAPS="$SPIKE_DIR/knowledge/gaps.md"
+GAP_LINES=""
+[ -s "$GAPS" ] && GAP_LINES=$(grep -Evc '^[[:space:]]*$|^None\.[[:space:]]*$' "$GAPS" || true)
+case "$GAP_LINES" in ''|*[!0-9]*) PRE-FAIL artifacts-missing guard_block ;; esac
 WAVE2_RUN=no
-if [ "$EFFORT" -ge 2 ] && [ "${GAP_LINES:-0}" -gt 0 ]; then WAVE2_RUN=yes; fi
+if [ "$EFFORT" -ge 2 ] && [ "$GAP_LINES" -gt 0 ]; then WAVE2_RUN=yes; fi
 ```
 
 If `WAVE2_RUN` is `no`, record the stage as skipped and go to Stage 10:
@@ -607,9 +626,10 @@ Otherwise:
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage research-wave-2 2>/dev/null || true
 python3 "$HOME/.claude/scripts/spike-manifest.py" mark --dir "$SPIKE_DIR" --stage research-wave-2 --status running >/dev/null 2>&1 || FAIL research-wave-2 manifest-error other
 python3 "$HOME/.claude/scripts/spike-manifest.py" expect --dir "$SPIKE_DIR" --stage research-wave-2 --path research/wave-2/<qid-1>-1.md --path research/wave-2/<qid-2>-1.md || FAIL research-wave-2 manifest-error other
+mkdir -p "$SPIKE_DIR/research/wave-2" "$SPIKE_DIR/.staging/research-wave-2" || FAIL research-wave-2 manifest-error other
 ```
 
-Mint the wave-2 ids from the qids named in `gaps.md` (`grep -Eo 'q[0-9]{1,3}'`), capped per the Effort Table (6 for efforts 2–4, 8 for effort 5). Dispatch `spike-researcher` per gap id, using the same collect, retry, stand-in, and event rules as Stage 7, with sentinel `<!-- research-wave-2-end -->` and paths under `research/wave-2/`.
+Mint the wave-2 ids from the qids named in `gaps.md` (`grep -Eo 'q[0-9]{1,3}'`), capped per the Effort Table (6 for efforts 2–4, 8 for effort 5) <!-- ADR-0022 §8: unspecified -->. Fill each worker's brief as in Stage 7, with `{WAVE}` = `2` and `{SENTINEL}` = `<!-- research-wave-2-end -->`. Dispatch `spike-researcher` per gap id, and use the same reply-body, staging, validation, retry, stand-in, and event rules as Stage 7, with staging files under `.staging/research-wave-2/<qid>-1.try<N>` and minted paths under `research/wave-2/<qid>-1.md`.
 
 ```bash
 python3 "$HOME/.claude/scripts/spike-manifest.py" mark --dir "$SPIKE_DIR" --stage research-wave-2 --status done >/dev/null 2>&1 || FAIL research-wave-2 manifest-error other
@@ -667,7 +687,7 @@ else
   python3 "$HOME/.claude/scripts/spike-manifest.py" expect --dir "$SPIKE_DIR" --stage audit --path audit.md || FAIL audit manifest-error other
 ```
 
-Dispatch `expert-reviewer` on Opus with the prompt `$HOME/.claude/prompts/spike-audit.md`. Write its output to `$SPIKE_DIR/audit.md`. Retry once if the sentinel check fails. The orchestrator applies must-fix items to `synthesis.md` and notes each one.
+Dispatch `expert-reviewer` on Opus with the prompt `$HOME/.claude/prompts/spike-audit.md`, substituting `{SPIKE_DIR}` with the spike directory path. The auditor writes `$SPIKE_DIR/audit.md` itself and returns only its one-line receipt; the orchestrator does not write `audit.md`. Retry once if the sentinel check fails. The orchestrator applies must-fix items to `synthesis.md` and notes each one.
 
 ```bash
   SENTINEL-CHECK "$SPIKE_DIR/audit.md" '<!-- spike-audit-end -->' || { re-dispatch the auditor once, then re-run SENTINEL-CHECK; if it still fails: FAIL audit audit-failed guard_block }
