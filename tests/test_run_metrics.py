@@ -3599,7 +3599,7 @@ def test_agent_end_no_transcript_path_status():
 
 
 def test_agent_end_path_not_a_file_status():
-    """agent-end whose agent_transcript_path points at a directory records status path_not_a_file."""
+    """T6a: agent-end with begin present and directory as transcript_path records status path_not_a_file."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         log_path = tmpdir / "events.jsonl"
@@ -3607,9 +3607,27 @@ def test_agent_end_path_not_a_file_status():
         session_id = "test-session-" + uuid.uuid4().hex[:8]
         env = {**os.environ, "CLAUDE_CODE_SESSION_ID": session_id}
 
+        # First, agent-begin
+        begin_payload = json.dumps({
+            "agent_id": "agent-2",
+            "agent_type": "test-agent",
+            "session_id": session_id,
+            "cwd": "/tmp",
+        })
+        code1, stdout1, stderr1 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+            stdin_text=begin_payload,
+            env=env,
+        )
+        if code1 != 0:
+            return False, f"agent-begin failed: {stderr1}"
+
+        log_path.unlink()
+
         dir_path = tmpdir / "a_directory"
         dir_path.mkdir()
 
+        # Then, agent-end with directory as transcript path
         payload = json.dumps({
             "agent_id": "agent-2",
             "agent_type": "test-agent",
@@ -4069,6 +4087,439 @@ def test_stage_end_gates_emission_on_cleared_true():
         return True, ""
 
 
+# PR 1 tests: T1–T7 for agent.internal_stop classification and normalization
+
+def test_t1_normalizer_hostile_agent_begin_values():
+    """T1a: agent-begin normalizer accepts hostile values and coerces to 'unknown'."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+
+        hostile_values = ["", " ", None, 0, False, 5, [], {}, True, "unknown", "a" * 5000]
+
+        for hostile_val in hostile_values:
+            log_path.unlink(missing_ok=True)
+            # Test with hostile agent_id
+            payload = json.dumps({
+                "session_id": "s1",
+                "agent_id": hostile_val,
+                "agent_type": "t1",
+                "cwd": "/tmp",
+            })
+            code, stdout, stderr = run_script(
+                ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+                stdin_text=payload,
+            )
+            if code != 0:
+                return False, f"agent-begin failed with hostile agent_id {hostile_val!r}: {stderr}"
+
+            with open(log_path) as f:
+                event = json.loads(f.readline())
+
+            agent_id = event.get("agent_id", "")
+            if agent_id == "":
+                return False, f"agent_id is blank for hostile {hostile_val!r}"
+            if not isinstance(agent_id, str):
+                return False, f"agent_id not str for hostile {hostile_val!r}, got {type(agent_id)}"
+            # Non-blank values become "unknown" or truncated, but never blank
+            if " " in agent_id and agent_id != "unknown":
+                return False, f"agent_id has internal space for hostile {hostile_val!r}: {agent_id!r}"
+
+        return True, ""
+
+
+def test_t1_normalizer_hostile_agent_end_values():
+    """T1b: agent-end normalizer accepts hostile values and coerces to 'unknown'."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s1"
+
+        # First, create a valid agent-begin to establish state
+        begin_payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "a1",
+            "agent_type": "t1",
+            "cwd": "/tmp",
+        })
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+            stdin_text=begin_payload,
+        )
+        log_path.unlink()
+
+        # Test agent-end with hostile agent_type
+        hostile_values = ["", " ", None, 0, False, 5, [], {}, True, "unknown", "x" * 5000]
+
+        for hostile_val in hostile_values:
+            log_path.unlink(missing_ok=True)
+            payload = json.dumps({
+                "session_id": session_id,
+                "agent_id": "a1",
+                "agent_type": hostile_val,
+            })
+            code, stdout, stderr = run_script(
+                ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+                stdin_text=payload,
+            )
+            # Should not crash (swallows errors)
+            if not log_path.exists():
+                return False, f"log not created for hostile agent_type {hostile_val!r}"
+
+            with open(log_path) as f:
+                event = json.loads(f.readline())
+
+            agent_type = event.get("agent_type", "")
+            if agent_type == "":
+                return False, f"agent_type is blank for hostile {hostile_val!r}"
+            if not isinstance(agent_type, str):
+                return False, f"agent_type not str for hostile {hostile_val!r}, got {type(agent_type)}"
+
+        return True, ""
+
+
+def test_t2_cwd_slash_produces_repo_unknown():
+    """T2: cwd='/' on agent-begin produces repo == 'unknown', not ''."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s2"
+
+        payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "a2",
+            "agent_type": "test",
+            "cwd": "/",
+        })
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"agent-begin failed: {stderr}"
+
+        with open(log_path) as f:
+            event = json.loads(f.readline())
+
+        repo = event.get("repo", "")
+        if repo == "":
+            return False, "repo should not be empty string"
+        if repo != "unknown":
+            return False, f"cwd='/' should produce repo='unknown', got {repo!r}"
+
+        return True, ""
+
+
+def test_t3_blank_agent_id_never_reaches_state():
+    """T3: blank or None agent_id never reaches state after begin and end."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s3"
+
+        # Test with agent_id = ""
+        begin_payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "",
+            "agent_type": "test",
+            "cwd": "/tmp",
+        })
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+            stdin_text=begin_payload,
+        )
+
+        end_payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "",
+            "agent_type": "test",
+        })
+        run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=end_payload,
+        )
+
+        # Check state file
+        for sf in Path(state_dir).glob("*.json"):
+            state = json.loads(sf.read_text())
+            agents = state.get("usage", {}).get("agents", {})
+            if "" in agents:
+                return False, "state has entry keyed by empty string"
+            if "unknown" in agents:
+                return False, "state has entry keyed by 'unknown' for blank agent_id"
+
+        return True, ""
+
+
+def test_t4_internal_classification_no_begin_missing_transcript():
+    """T4: agent-end without prior agent-begin, empty agent_type, missing transcript emits agent.internal_stop."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s4"
+
+        # NO prior agent-begin; just go straight to agent-end
+        payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "a4-internal",
+            "agent_type": "",  # Empty type
+            "agent_transcript_path": "/nonexistent/transcript.jsonl",
+        })
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"agent-end failed: {stderr}"
+
+        # Read events
+        events = []
+        with open(log_path) as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+
+        # Should have exactly one agent.internal_stop, no agent.end
+        internal_stops = [e for e in events if e.get("event_type") == "agent.internal_stop"]
+        agent_ends = [e for e in events if e.get("event_type") == "agent.end"]
+
+        if len(internal_stops) != 1:
+            return False, f"expected 1 agent.internal_stop, got {len(internal_stops)}"
+        if agent_ends:
+            return False, f"should have no agent.end, got {len(agent_ends)}"
+
+        # agent.internal_stop should have agent_type == "unknown" (normalized)
+        internal_stop = internal_stops[0]
+        if internal_stop.get("agent_type") != "unknown":
+            return False, f"agent.internal_stop agent_type should be 'unknown', got {internal_stop.get('agent_type')!r}"
+
+        # Should have no tokens key
+        if "tokens" in internal_stop:
+            return False, f"agent.internal_stop should not have tokens key"
+
+        # Check that usage.agents was not updated
+        for sf in Path(state_dir).glob("*.session.json"):
+            state = json.loads(sf.read_text())
+            agents = state.get("usage", {}).get("agents", {})
+            if "a4-internal" in agents:
+                return False, f"usage.agents should not have entry for internal_stop agent"
+
+        return True, ""
+
+
+def test_t5_missed_subagentstart_real_transcript():
+    """T5: agent-end without begin but with valid transcript is NOT internal (counted usage recorded)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s5"
+
+        # Create a valid transcript
+        transcript_path = Path(tmpdir) / "transcript.jsonl"
+        transcript_path.write_text(json.dumps({
+            "type": "assistant",
+            "message": {
+                "id": "msg_1",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                }
+            }
+        }) + "\n")
+
+        # NO prior agent-begin
+        payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "a5-real",
+            "agent_type": "real-agent",
+            "agent_transcript_path": str(transcript_path),
+        })
+        code, stdout, stderr = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
+        )
+        if code != 0:
+            return False, f"agent-end failed: {stderr}"
+
+        # Should have agent.end, not agent.internal_stop
+        events = []
+        with open(log_path) as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+
+        agent_ends = [e for e in events if e.get("event_type") == "agent.end"]
+        internal_stops = [e for e in events if e.get("event_type") == "agent.internal_stop"]
+
+        if not agent_ends:
+            return False, "should have agent.end for real transcript"
+        if internal_stops:
+            return False, f"should not have agent.internal_stop for real transcript"
+
+        # Check that usage was recorded
+        for sf in Path(state_dir).glob("*.session.json"):
+            state = json.loads(sf.read_text())
+            agents = state.get("usage", {}).get("agents", {})
+            if "a5-real" not in agents:
+                return False, f"usage.agents should have entry for real agent with transcript"
+
+        return True, ""
+
+
+def test_t6_begin_present_transcript_missing():
+    """T6: after agent-begin, agent-end with missing transcript emits agent.end with status path_not_a_file (not internal)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s6"
+
+        # First, agent-begin
+        begin_payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "a6",
+            "agent_type": "test",
+            "cwd": "/tmp",
+        })
+        code1, _, _ = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+            stdin_text=begin_payload,
+        )
+        if code1 != 0:
+            return False, f"agent-begin failed"
+
+        log_path.unlink()
+
+        # Then, agent-end with missing transcript
+        end_payload = json.dumps({
+            "session_id": session_id,
+            "agent_id": "a6",
+            "agent_type": "test",
+            "agent_transcript_path": "/nonexistent/transcript.jsonl",
+        })
+        code2, stdout2, stderr2 = run_script(
+            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=end_payload,
+        )
+        if code2 != 0:
+            return False, f"agent-end failed: {stderr2}"
+
+        # Should have agent.end, not agent.internal_stop
+        events = []
+        with open(log_path) as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+
+        agent_ends = [e for e in events if e.get("event_type") == "agent.end"]
+        internal_stops = [e for e in events if e.get("event_type") == "agent.internal_stop"]
+
+        if not agent_ends:
+            return False, "should have agent.end when begin present"
+        if internal_stops:
+            return False, "should not have agent.internal_stop when begin present"
+
+        # Check status in state
+        for sf in Path(state_dir).glob("*.session.json"):
+            state = json.loads(sf.read_text())
+            agents = state.get("usage", {}).get("agents", {})
+            if "a6" in agents:
+                status = agents["a6"].get("status")
+                if status != "path_not_a_file":
+                    return False, f"expected status path_not_a_file, got {status!r}"
+
+        return True, ""
+
+
+def test_t7_internal_firings_do_not_inflate_floor_count():
+    """T7: internal firings are not recorded to usage, so floor_count/is_floor are unchanged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "test.jsonl"
+        state_dir = Path(tmpdir) / "state"
+        state_dir.mkdir()
+        session_id = "s7"
+
+        # Create N real counted agents first
+        for i in range(2):
+            begin_payload = json.dumps({
+                "session_id": session_id,
+                "agent_id": f"real-{i}",
+                "agent_type": f"type-{i}",
+                "cwd": "/tmp",
+            })
+            run_script(
+                ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+                stdin_text=begin_payload,
+            )
+
+            # Create valid transcript
+            transcript_path = Path(tmpdir) / f"transcript-{i}.jsonl"
+            transcript_path.write_text(json.dumps({
+                "type": "assistant",
+                "message": {
+                    "id": f"msg_{i}",
+                    "usage": {"input_tokens": 100, "output_tokens": 50}
+                }
+            }) + "\n")
+
+            end_payload = json.dumps({
+                "session_id": session_id,
+                "agent_id": f"real-{i}",
+                "agent_type": f"type-{i}",
+                "agent_transcript_path": str(transcript_path),
+            })
+            run_script(
+                ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+                stdin_text=end_payload,
+            )
+
+        # Read state BEFORE sending internal firings
+        state_file = None
+        for sf in Path(state_dir).glob("*.session.json"):
+            state_file = sf
+            break
+
+        state_before = json.loads(state_file.read_text())
+        floor_before = state_before.get("usage", {}).get("floor_count", 0)
+        is_floor_before = state_before.get("usage", {}).get("is_floor", None)
+        counted_tokens_before = state_before.get("usage", {}).get("counted_tokens", 0)
+
+        # Now send 3 internal firings (no begin, empty type, missing transcript)
+        for i in range(3):
+            payload = json.dumps({
+                "session_id": session_id,
+                "agent_id": f"internal-{i}",
+                "agent_type": "",
+                "agent_transcript_path": "/nonexistent/file.jsonl",
+            })
+            run_script(
+                ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
+                stdin_text=payload,
+            )
+
+        # Read state AFTER
+        state_after = json.loads(state_file.read_text())
+        floor_after = state_after.get("usage", {}).get("floor_count", 0)
+        is_floor_after = state_after.get("usage", {}).get("is_floor", None)
+        counted_tokens_after = state_after.get("usage", {}).get("counted_tokens", 0)
+
+        # These should be unchanged
+        if floor_after != floor_before:
+            return False, f"floor_count changed from {floor_before} to {floor_after}"
+        if is_floor_after != is_floor_before:
+            return False, f"is_floor changed from {is_floor_before} to {is_floor_after}"
+        if counted_tokens_after != counted_tokens_before:
+            return False, f"counted_tokens changed from {counted_tokens_before} to {counted_tokens_after}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("RUN_METRICS TEST SUITE")
 
@@ -4441,6 +4892,33 @@ if __name__ == "__main__":
 
     passed, msg = test_stage_end_gates_emission_on_cleared_true()
     test_result("stage-end gates terminal event emission on resolution.cleared=true", passed, msg)
+
+    print()
+
+    print("[Section 16] PR 1: Agent normalization, internal classification, and gate payoff (T1–T7)")
+    passed, msg = test_t1_normalizer_hostile_agent_begin_values()
+    test_result("T1a: agent-begin normalizer coerces hostile values to 'unknown'", passed, msg)
+
+    passed, msg = test_t1_normalizer_hostile_agent_end_values()
+    test_result("T1b: agent-end normalizer coerces hostile values to 'unknown'", passed, msg)
+
+    passed, msg = test_t2_cwd_slash_produces_repo_unknown()
+    test_result("T2: cwd='/' produces repo='unknown', not ''", passed, msg)
+
+    passed, msg = test_t3_blank_agent_id_never_reaches_state()
+    test_result("T3: blank agent_id never reaches state", passed, msg)
+
+    passed, msg = test_t4_internal_classification_no_begin_missing_transcript()
+    test_result("T4: agent-end without begin + missing transcript emits agent.internal_stop", passed, msg)
+
+    passed, msg = test_t5_missed_subagentstart_real_transcript()
+    test_result("T5: agent-end without begin but real transcript is not internal", passed, msg)
+
+    passed, msg = test_t6_begin_present_transcript_missing()
+    test_result("T6: agent-end with begin present + missing transcript emits agent.end (not internal)", passed, msg)
+
+    passed, msg = test_t7_internal_firings_do_not_inflate_floor_count()
+    test_result("T7: internal firings do not inflate floor_count/is_floor", passed, msg)
 
     print()
 

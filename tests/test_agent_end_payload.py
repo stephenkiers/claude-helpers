@@ -24,6 +24,18 @@ from _test_harness import REPO_ROOT, Harness
 SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
 
 
+def run_script(args, stdin_text=None):
+    """Run the script as a subprocess. Returns (returncode, stdout, stderr)."""
+    cmd = [sys.executable, str(SCRIPT)] + args
+    result = subprocess.run(
+        cmd,
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
 def run_agent_end(stdin_payload, log_file=None, state_dir=None):
     """Run agent-end subcommand with JSON stdin. Returns (returncode, stdout, stderr)."""
     cmd = [sys.executable, str(SCRIPT)]
@@ -89,16 +101,33 @@ def test_agent_end_missing_transcript_path():
 
 
 def test_agent_end_with_invalid_transcript_path():
-    """agent-end with nonexistent transcript path records unparseable but still emits agent.end."""
+    """T6b: agent-end with begin present and nonexistent transcript path emits agent.end."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "events.jsonl"
         state_dir = Path(tmpdir) / "state"
         state_dir.mkdir()
+        session_id = "test_session_2"
 
-        # Payload with a nonexistent transcript path
+        # First, agent-begin to establish the agent
+        begin_payload = json.dumps({
+            "agent_id": "test_agent_2",
+            "session_id": session_id,
+            "agent_type": "test-agent",
+            "cwd": "/tmp",
+        })
+        code_begin, _, _ = run_script(
+            ["--log", str(log_file), "--state-dir", str(state_dir), "agent-begin"],
+            stdin_text=begin_payload,
+        )
+        if code_begin != 0:
+            return False, "agent-begin failed"
+
+        log_file.unlink()
+
+        # Then, agent-end with a nonexistent transcript path
         payload = json.dumps({
             "agent_id": "test_agent_2",
-            "session_id": "test_session_2",
+            "session_id": session_id,
             "agent_transcript_path": "/nonexistent/transcript.jsonl",
         })
 
@@ -121,7 +150,7 @@ def test_agent_end_with_invalid_transcript_path():
                 except json.JSONDecodeError:
                     pass
 
-        # Should still have an agent.end event
+        # Should have an agent.end event (not agent.internal_stop, since begin was present)
         agent_end_events = [e for e in events if e.get("event_type") == "agent.end"]
         if not agent_end_events:
             return False, "no agent.end event found in log"
