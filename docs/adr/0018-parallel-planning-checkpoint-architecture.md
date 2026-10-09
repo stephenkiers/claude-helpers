@@ -62,3 +62,20 @@ Per-id state progresses: `launched → returned → ok | bad`. The barrier close
 The canonical text lives in `prompts/join-barrier-pattern.md` § "Waiting for the barrier". All commands referencing join barriers now point at that section via a fixed pointer sentence, replacing earlier contradictory inline wording.
 
 Observed in sampled transcripts (2026-09), not a harness guarantee: calls return a launch ack regardless of `run_in_background` flag value, a notification follows for nearly all launched agents, and the flag made no observable waiting difference. The receipt/file/sentinel contract is unchanged.
+
+## Amendment — Third sanctioned write prefix for /expert-spike (2026-10-09)
+
+This section is the single full statement of the rule. It is the reciprocal of ADR-0022 §4 and §13, which introduced the prefix for `/expert-spike`.
+
+**Decision: a third write prefix, scoped to one file per spike role.** Subagents may write to `${PROJECT_ROOT}/spikes/<spike-dir>/`, and only to the single file the orchestrator names in that directory. It applies only to `expert-reviewer` spike roles (contribution, assessment, audit). It is not a blanket `spikes/` grant.
+
+- **`spike-researcher` is excluded.** It has no `Write` tool. It returns its research body, and the orchestrator writes that body to `research/<id>.md` (ADR-0022, 2026-10-09 amendment).
+- **`Write` stays prompt-scoped, not tool-scoped.** The residual risk is unchanged (ADR-0022 §4). A hook does not close it, and the sanctioned-prefix list is a convention that the subagent is instructed to follow, as it is for the two existing prefixes (CLAUDE.md, "Panel agents are capability-restricted, not dialog-gated").
+- **The PreToolUse hook is optional, per-machine, and a guard rather than a boundary.** The example in `agents/expert-reviewer.md` uses `<PROJECT_ROOT>` as a literal placeholder that the user replaces with an absolute path. The example uses raw `startswith` with no normalization, so it is a shape to adapt, not hardened code. A hardened matcher should resolve the path to an absolute form and compare against the prefix with a trailing `/`, so that `spikes-evil/` and `../` escapes fail.
+
+**Failure modes (documented behavior):**
+
+- **No hook configured:** nothing enforces the `spikes/` prefix. The rule is prompt-level only.
+- **Hook configured without the `spikes/` prefix:** expert writes into the spike directory are rejected. The missing artifact leaves that stage as the manifest's resume point, because VERIFY fails (`commands/expert-spike.md`, Verify block). The spike stops visibly at that stage instead of continuing with a gap.
+
+See ADR-0022 §4 (write prefixes and residual risk) and §13 (relationship to this ADR).

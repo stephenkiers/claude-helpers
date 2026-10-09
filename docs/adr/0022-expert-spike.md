@@ -54,7 +54,7 @@ This is the **third sanctioned subagent write prefix** beyond `~/.claude/reviews
 **Implications:**
 - Until PR C, CLAUDE.md's "Panel agents" section and ADR-0018 document only two write prefixes.
 - Users of the recommended PreToolUse Write hook must add the third prefix (`${PROJECT_ROOT}/spikes/`) to their hook configuration.
-- **Residual risk is unchanged**: `Write` is prompt-scoped, not tool-scoped. An injected subagent could still overwrite `.claude/settings.json`, `commands/*.md`, or `~/.zshrc` — nothing structural stops it. This is a named **PR C amendment to ADR-0018**; the one-sided reference here is temporary and intentional.
+- **Residual risk is unchanged**: `Write` is prompt-scoped, not tool-scoped. An injected subagent could still overwrite `.claude/settings.json`, `commands/*.md`, or `~/.zshrc` — nothing structural stops it. The reciprocal amendment to ADR-0018 has landed (2026-10-09); see ADR-0018's "Amendment — Third sanctioned write prefix."
 - `agents/expert-reviewer.md` receives a write-prefix clause in PR B (Step 6) documenting this third prefix.
 
 ### 5. Spike-Researcher Tools: `WebSearch, WebFetch` Under `bypassPermissions` (amended 2026-10-09)
@@ -197,7 +197,7 @@ Inside a replayed fan-out stage, sentinel-complete research files are kept only 
 
 ### 13. Relationship to ADR-0018
 
-The third write prefix (item 4 above) amends ADR-0018's sanctioned-targets list. The reciprocal one-line amendment on ADR-0018 is a named **PR C deliverable**; the one-sided reference in this ADR is temporary and intentional.
+The third write prefix (item 4 above) amends ADR-0018's sanctioned-targets list. The reciprocal amendment on ADR-0018 landed 2026-10-09 ("Amendment — Third sanctioned write prefix"), so the two ADRs now agree on the three-prefix list.
 
 ### 14. Measured: Pending (PR C)
 
