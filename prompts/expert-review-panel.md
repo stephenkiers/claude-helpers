@@ -177,12 +177,12 @@ The router outputs `{REVIEW_DIR}/tagged-sections.md` with:
 2. Per-reviewer sections with line ranges, exactly as today's router outputs them, so Pass 1 reviewers
    can use them for bounded reads.
 
-**Always-run set (never routed, pre-seated):**
-- Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing),
-- Contrarian Carl (runs last, always),
+**Always-run set (four reviewers, never routed, pre-seated):**
+- Code Rot Cody, Consistency Checker (they get the full diff by domain, not by routing; Haiku scouts),
 - North Star Nick (consistency with the project's direction; a normal Pass 1 seat on `PANEL_MODEL` that
   reads the full diff, because alignment with the ADRs, the repo's docs, and in-flight work is a property of
-  the whole change — ADR-0003's 2026-10-09 amendment).
+  the whole change — ADR-0003's 2026-10-09 amendment),
+- Contrarian Carl (runs last, always, sees the whole panel's work).
 
 **Sam System** is not pre-seated at any effort level — he runs only if the router selects him (or,
 at effort 3's independent routed-pair path, only if the router's top-2 includes him). The stage
@@ -347,11 +347,23 @@ and pull requests. Reviewer subagents have no `gh` access and cannot read all of
 before launching Pass 1 gather it for him. First write the snapshot once:
 
 ```bash
-python3 "$HOME/.claude/scripts/in-flight-snapshot.py" --repo-dir "${WORKTREE_PATH:-.}" \
-  --out "$REVIEW_DIR/in-flight.md" --bodies-out "$REVIEW_DIR/in-flight-issues.md" 2>/dev/null || true
+CURRENT_BRANCH=$(git -C "${WORKTREE_PATH:-.}" branch --show-current)
+SNAPSHOT_FLAGS="--repo-dir ${WORKTREE_PATH:-.} --out $REVIEW_DIR/in-flight.md --bodies-out $REVIEW_DIR/in-flight-issues.md"
+[ "$PR_MODE" = "true" ] && SNAPSHOT_FLAGS="$SNAPSHOT_FLAGS --no-worktrees"
+[ -n "$CURRENT_BRANCH" ] && SNAPSHOT_FLAGS="$SNAPSHOT_FLAGS --current-branch $CURRENT_BRANCH"
+python3 "$HOME/.claude/scripts/in-flight-snapshot.py" $SNAPSHOT_FLAGS 2>"$REVIEW_DIR/in-flight.err" || true
+
+# Verify snapshot files exist and are non-empty
+if [ ! -s "$REVIEW_DIR/in-flight.md" ] || [ ! -s "$REVIEW_DIR/in-flight-issues.md" ]; then
+  SNAPSHOT_FAILURE=$(cat "$REVIEW_DIR/in-flight.err" 2>/dev/null || echo "unknown failure")
+  echo "Warning: snapshot failed or produced empty output; reason: $SNAPSHOT_FAILURE"
+  echo "Proceeding without snapshot (non-blocking)"
+fi
 ```
 
 The script is fail-open (an unreachable `gh` becomes an `unavailable:` line, never a failed run).
+On failure, the reason is written to `in-flight.err` next to the output files, and the run proceeds
+without the snapshot.
 Then launch **three** `subagent_type: "expert-scout"` agents in ONE message (pinned Haiku by the
 agent definition, independent of `PANEL_MODEL`), one per lens — `adrs`, `docs`, `in-flight`. Each
 prompt is only:
@@ -359,18 +371,24 @@ prompt is only:
 ```
 Read ~/.claude/prompts/north-star-scout.md for your full mandate.
 Lens: {adrs|docs|in-flight}
-Subject (review): {REVIEW_DIR}/technical-summary.md and {REVIEW_DIR}/diff-index.md
+Subject (review): Read ONLY the `## Technical Summary` section from {REVIEW_DIR}/technical-summary.md
+  (forbidden: do not read Business Context). Also read {REVIEW_DIR}/diff-index.md.
 Repo root: {WORKTREE_PATH or the orchestrator's cwd}
 DIR: {REVIEW_DIR}
 Output path: {REVIEW_DIR}/north-star-{lens}.md
 ```
 
 Join on file-exists + the `north-star-scout | …` receipt; retry a failed scout once, then proceed
-without it — a missing brief never blocks the review. In `north-star-nick`'s Pass 1 prompt — and no
-other reviewer's — list the paths that exist (`north-star-adrs.md`, `north-star-docs.md`,
-`north-star-in-flight.md`, `in-flight.md`), name any that are missing as missing, and tell him to
-read `{REVIEW_DIR}/full-diff.patch` in full rather than line ranges, like the other always-run
-reviewers.
+without it — a missing brief never blocks the review. After all scouts finish, verify each wrote
+only to its assigned output path (`north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`);
+if any unexpected files were written, treat that run as compromised and report it.
+
+In `north-star-nick`'s Pass 1 prompt — and no other reviewer's — list the paths that exist 
+(`north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`, `in-flight.md`), name any 
+that are missing as missing, and tell him to read `{REVIEW_DIR}/full-diff.patch` in full rather than 
+line ranges, like the other always-run reviewers. Also add this rule to Nick's persona-facing text: 
+local worktree paths and branch names from `in-flight.md` must not be cited in his findings 
+(they reveal the reviewer's local checkout structure and leak review information).
 
 **The file is the contract (rule #2 above) — never ask a subagent to return its report.** Instruct
 each reviewer to Write its full review to `{REVIEW_DIR}/{reviewer}-pass1.md` in the framework's
