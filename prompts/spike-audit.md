@@ -84,20 +84,35 @@ Does the synthesis surface every `Decision: FAILED` research file in the "Stood-
 
 ### 5. Interrupt Decision Compliance
 
-The `decisions.md` file records user decisions made during the spike (interrupt rules 2 and 3 from stage `checkpoint`).
-Does the synthesis honor these decisions?
+The `decisions.md` file records user decisions made during the spike. Each interrupt rule that fires (at whichever
+stage it fired) appends one line to `decisions.md` naming the rule and the user's choice. Does the synthesis honor
+these decisions?
 
-- Rule 2 (fork): If a user decided to fork a question into a separate spike, the main synthesis should not
+### Interrupt Rule Names
+
+These are the canonical names of the human-interrupt rules. The command references them by name; a decision line
+in `decisions.md` uses the name, not the number alone.
+
+1. **vague** — the question is too vague to decompose (fires at `decompose`).
+2. **fork** — the question splits into a separate question that should become its own spike (fires at `gap-check`).
+3. **premise break** — research contradicts a core premise of the question (fires at `refine-questions` or `gap-check`).
+4. **research exhaustion** — a gap cannot be filled from available sources; it is recorded and the spike continues (fires at `gap-check`).
+5. **effort mismatch** — the effort looks wrong for the question (fires at `refine-questions`).
+
+Audit the two rules that change what the synthesis may claim:
+
+- **fork**: If a user decided to fork a question into a separate spike, the main synthesis should not
   claim to answer the forked question.
-- Rule 3 (premise break): If a user rejected a premise, the synthesis should not rest its recommendation on that premise.
+- **premise break**: If a user rejected a premise, the synthesis should not rest its recommendation on that premise.
 
-For each decision in `decisions.md`, verify the synthesis doesn't contradict it.
+For each decision in `decisions.md`, verify the synthesis doesn't contradict it. Rules 1, 4, and 5 do not change
+the answer's scope and are not audited here.
 
 ## Enum Definitions
 
-Do not assume what the verdict and confidence enums mean. Reference `~/.claude/prompts/spike-researcher-brief.md`
+Do not assume what the status and confidence enums mean. Reference `~/.claude/prompts/spike-researcher-brief.md`
 for the complete enum definitions:
-- Verdict: `confirmed | partial | refuted | unknown`
+- Status: `confirmed | partial | refuted | unknown`
 - Confidence: `high | medium | low`
 
 When auditing findings, use these enums as stated in the brief, not your own interpretation.
@@ -132,14 +147,14 @@ Write your findings to `{SPIKE_DIR}/audit.md`.
 No findings.
 ```
 
-**Critical:** Your file must end with the join-barrier sentinel on a new line:
+**Critical:** The final non-blank line of your file must be exactly this join-barrier sentinel:
 ```
 <!-- spike-audit-end -->
 ```
 
 The orchestrator's join barrier checks for this marker before marking the stage done.
 It is **not manifest-enforced** — if it's missing, the orchestrator detects the problem and stops,
-allowing recovery. The last non-blank line of your file must be exactly this sentinel, with no content after it.
+allowing recovery. Nothing may come after the sentinel.
 
 ## Finding Classification
 

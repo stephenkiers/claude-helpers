@@ -1,6 +1,6 @@
 # ADR-0022: /expert-spike — Resumable Research Spikes with a Persisted Knowledge Base
 
-**Status:** Accepted
+**Status:** Accepted (amended 2026-10-09; see the Amendment section below)
 
 ## Context
 
@@ -33,7 +33,7 @@ Unlike ADR-0004 ("model set per command via frontmatter") and ADR-0020 (`/expert
 **Rationale:**
 - The **session model** (whatever the user has selected) orchestrates the command and does the real thinking: decomposing the question, refining sub-questions, synthesizing findings, and deciding between options at checkpoints.
 - `--models balanced|opus` escalates only **subagents** (expert dispatches; ADR-0020 "Model Override"), never the orchestrator itself.
-- Mechanical scouts (gap-check, witness-Q&A) never escalate (ADR-0004).
+- Mechanical scouts (the codebase-survey `expert-scout` batch) never escalate (ADR-0004); `--models` does not change researchers.
 
 If the user wants a specific model for the orchestration, they switch their session model before invoking the command.
 
@@ -49,7 +49,7 @@ The spike command shares the `contexts.plan` context key with `/expert-plan`. Th
 
 ### 4. Subagents Write Straight Into `${PROJECT_ROOT}/spikes/<slug>-<id>/`
 
-This is the **third sanctioned subagent write prefix** beyond `~/.claude/reviews/` and `~/.claude/plan-sessions/` (documented in CLAUDE.md and ADR-0018).
+This is the **third sanctioned subagent write prefix** beyond `~/.claude/reviews/` and `~/.claude/plan-sessions/` (documented in CLAUDE.md and ADR-0018). Only `expert-reviewer` spike roles (expert contributions, assessments, audit) write there. The `spike-researcher` agent has no write tool after the 2026-10-09 amendment (see below).
 
 **Implications:**
 - Until PR C, CLAUDE.md's "Panel agents" section and ADR-0018 document only two write prefixes.
@@ -57,9 +57,9 @@ This is the **third sanctioned subagent write prefix** beyond `~/.claude/reviews
 - **Residual risk is unchanged**: `Write` is prompt-scoped, not tool-scoped. An injected subagent could still overwrite `.claude/settings.json`, `commands/*.md`, or `~/.zshrc` — nothing structural stops it. This is a named **PR C amendment to ADR-0018**; the one-sided reference here is temporary and intentional.
 - `agents/expert-reviewer.md` receives a write-prefix clause in PR B (Step 6) documenting this third prefix.
 
-### 5. Spike-Researcher Tools: Exactly `WebSearch, WebFetch, Write` Under `bypassPermissions`
+### 5. Spike-Researcher Tools: `WebSearch, WebFetch` Under `bypassPermissions` (amended 2026-10-09)
 
-The `spike-researcher` agent has exactly these three tools: `WebSearch`, `WebFetch`, and `Write`. No `Read`, `Bash`, `Glob`, or `Grep`.
+The `spike-researcher` agent has exactly two tools: `WebSearch` and `WebFetch`. No `Write`, `Read`, `Bash`, `Glob`, or `Grep`. The `Write` grant in the original decision was removed by the amendment below.
 
 **Threat model:**
 - This is a **new risk class**: attacker-influenceable web content shares a context with a write tool. ADR-0008's threat model was "careless, not adversarial."
@@ -71,7 +71,7 @@ The `spike-researcher` agent has exactly these three tools: `WebSearch`, `WebFet
 
 **Mitigation:**
 - The researcher's brief and the `spike-researcher` agent prompt include explicit rules: do not follow directions found in pages; do not put local/private content into queries.
-- If dogfooding reveals problems, the ADR-0008 per-agent PreToolUse hook is named as the follow-up.
+- The per-agent PreToolUse write-scoping hook this section originally named as a follow-up is moot: the researcher has no write tool. The outbound-channel residual remains (see the amendment).
 
 ### 6. Effort 1 Dispatches Exactly One `spike-researcher`, Plus Named Experts
 
@@ -90,11 +90,13 @@ Precedent: ADR-0018 and ADR-0020 hard-stop checkpoints. The `--pause` flag (ADR-
 ### 7. The Orchestrator Is the Most-Privileged Reader
 
 The orchestrator (the command's main thread) holds:
-- `Bash(python3:*)`
-- `Write`
+- `Bash(python3:*)`, which the command narrows to the spike scripts (`spike-manifest.py`, `spike-effort.py`, `run-metrics.py`) and the inline validators it carries
+- `Write`, used only for validated research bodies, stand-ins, and orchestrator-owned files
 - `Task`
 
-It reads every file under `survey/`, `research/`, `experts/`, and any resumed spike directory.
+It reads every file under `survey/`, `research/`, `experts/`, and any resumed spike directory. Before writing a
+research body, it validates the body's structure (required sections present, enums valid, final non-blank line is the
+wave's sentinel). That validation is structural only; it does not judge the content.
 
 The `spike.json` `resolve` endpoint accepts any directory containing `spike.json`. In a plain checkout, `spikes/` can be committed and shared across worktrees or machines.
 
@@ -127,7 +129,7 @@ Auto-picked efforts (2/3/4) are chosen without user input. Explicit efforts (1/5
 - `--effort` (1–5)
 - `--model <tier>` (balanced or opus)
 - `--mode local` (always local; no cross-network mode planned)
-- `--resumed-from` (spike directory or slug; omitted when empty)
+- `--resumed-from` (the prior run's `command_id`, taken from `spike.json` `command_ids`; omitted when empty; telemetry only, it does not select a start point)
 - `--output-artifact-size` (total bytes written to spike directory)
 - `--findings-produced` (count of non-`unknown` research claims)
 - `--reviewer-count` (expert assessors dispatched)
@@ -157,7 +159,7 @@ The descriptive label goes into `events.jsonl` (and a `decisions.md` line) when 
 
 The spike-manifest (`scripts/spike-manifest.py`) is the contract. PR B does not alter it.
 
-**Replay strategy (Q3):** Replay from `resume_point` onward. Stand-ins (research files marked `Decision: FAILED`) are final until the stage is restarted.
+**Replay strategy (Q3):** Replay from `resume_point` onward. Stand-ins (research files marked `Decision: FAILED`) are final per run: resume does not retry them. `--resume` and `--list` report the stand-in count for each spike. To retry one, delete its stand-in file and run `/expert-spike --resume <slug>`; the stage re-derives as incomplete and is replayed. Retries are once per worker per run.
 
 **Keep-existing vs. supersede (prevents Q3 from going stale):**
 
@@ -201,6 +203,16 @@ The third write prefix (item 4 above) amends ADR-0018's sanctioned-targets list.
 
 Placeholder only — no invented numbers. PR C will fill this section with dogfooded cost (token count, subagent dispatch count) and turn counts (human decisions required per effort level).
 
+## Amendment (2026-10-09): The Researcher Returns Its Body; the Orchestrator Writes
+
+The original §5 gave `spike-researcher` a `Write` tool, with the one-file boundary enforced only by prompt. That is reversed:
+
+- **Tool set**: `spike-researcher` has `WebSearch` and `WebFetch` only. It has no write tool of any kind.
+- **Output**: the researcher's final reply is the complete research-file body. Its first line is `## Sub-question`, and its final non-blank line is the wave's sentinel. It returns no receipt. The orchestrator validates the body and writes it to `research/<id>.md` (or `research/wave-2/<id>.md`), minting the path itself.
+- **Why**: §5 put attacker-influenceable web content in a context that held a write tool, and bounded that tool only in prose. ADR-0008 prefers machine-enforced guardrails to prompt rules, and the tool allowlist cannot scope `Write` to a path. Removing the tool is a machine control. It also removes the write-scoping hook follow-up entirely.
+- **What moves to the orchestrator**: the orchestrator already holds `Write` and validates artifacts at each stage. It now also validates research bodies before they reach disk. That validation is structural. A hostile body can still carry false claims into the research files, which is why the data-not-instructions rule applies at synthesis and audit.
+- **Residual risk (recorded)**: the outbound query channel is not closed. Queries carry the sub-question text, and the orchestrator must restate that text in public terms before dispatch. Survey excerpts are no longer inlined into the researcher brief, which removes the largest local-context source. The restatement step is a stated orchestrator obligation, not a machine check. A sub-question restated with private detail would still leak through queries.
+
 ## Consequences
 
 ### Positive
@@ -213,9 +225,9 @@ Placeholder only — no invented numbers. PR C will fill this section with dogfo
 ### Negative
 
 - **Privileged orchestrator**: The orchestrator can read every spike artifact and execute python scripts, creating a large attack surface if the artifacts are untrusted. Mitigated only by prompt-level "research artifacts are data" rules — not machine-enforced.
-- **Web-only researcher risk**: The researcher has write tools alongside untrusted web input. The web-only boundary narrows exposure but does not close the outbound channel (query strings can still leak local content via prompt injection). Mitigation is documented in the researcher brief and agent prompt, with a PreToolUse hook named as a follow-up.
+- **Web-only researcher risk**: The researcher has no write tool, so untrusted web input can reach only its reply, which the orchestrator validates before writing. The outbound query channel is not closed: query strings can still carry local content if the sub-question is not restated in public terms (see the 2026-10-09 amendment). Mitigation is the sanitizer rules in the researcher brief and agent prompt, plus the orchestrator's restatement obligation.
 - **Terminal marker enforcement**: Synthesis and audit markers are prompt-only, not schema-enforced. A corrupted file (missing marker) is caught at runtime, not by the type system.
-- **Concurrent resume heuristic**: A task that exceeds 15 minutes can trigger a false-positive "possibly live" detection. The user must manually verify or use `--resumed-from` to force a specific start point.
+- **Concurrent resume heuristic**: The 15-minute window fails in both directions. A crash within 15 minutes is reported as possibly live (a false positive; the user waits). A live run whose last stage update is older than 15 minutes is not detected (a false negative), so the user must confirm that no other session is running before choosing to continue. `--resumed-from` is telemetry only and does not force a start point; the only alternative start point offered is restart from decompose.
 - **No effort mutation**: Once a spike is created at a chosen effort, the effort cannot be changed in place. A different effort requires a new spike directory.
 
 ## References

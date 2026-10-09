@@ -17,13 +17,13 @@ Then a blank line, then the structured sections below.
 
 ## Required Sections
 
-### ## Answer
+## Answer
 
 **What this section contains:**
 The direct answer to the research question, stated clearly in 1-2 sentences. Cite the confidence
 level (use the enums from `~/.claude/prompts/spike-researcher-brief.md`: `high | medium | low`).
 
-### ## Options
+## Options
 
 **What this section contains:**
 For each credible interpretation of the evidence, list:
@@ -33,13 +33,13 @@ For each credible interpretation of the evidence, list:
 
 If only one option is credible given the evidence, state that and move on.
 
-### ## Recommendation
+## Recommendation
 
 **What this section contains:**
 Your expert recommendation based on the evidence and assessments. 1-2 sentences. The decision-maker
 still decides; this is your best read of the evidence.
 
-### ## Confidence
+## Confidence
 
 **What this section contains:**
 The confidence level for your recommendation. Use the enum from `~/.claude/prompts/spike-researcher-brief.md`:
@@ -49,7 +49,7 @@ The confidence level for your recommendation. Use the enum from `~/.claude/promp
 
 State the level and the key reason (gap in evidence, conflicting assessments, confounders, etc.).
 
-### ## What would change the answer
+## What would change the answer
 
 **What this section contains:**
 Concrete signals or findings that would shift your confidence or recommendation:
@@ -59,7 +59,7 @@ Concrete signals or findings that would shift your confidence or recommendation:
 
 List 2-3 scenarios, not abstract possibilities. Example: "If the service is stateless (check the cache layer), the reliability risks drop significantly."
 
-### ## Stood-in workers
+## Stood-in workers
 
 **What this section contains:**
 Every `Decision: FAILED` research file, listed with its id and a restart hint. The orchestrator
@@ -69,11 +69,11 @@ If no research included `Decision: FAILED` stand-ins, write "None".
 
 Example:
 ```
-- `research/q1-2.md` (FAILED) — attempt `spike-research q1-2 --force` to retry
+- `research/q1-2.md` (FAILED) — delete the file and run `/expert-spike --resume`
 - `research/q2-1.md` (FAILED) — research hit external API limits
 ```
 
-### ## Open items
+## Open items
 
 **What this section contains:**
 Questions that research couldn't answer and expert assessment couldn't resolve. What would the
@@ -81,7 +81,7 @@ next spike need to investigate?
 
 If no open items exist, write "None".
 
-### ## Evidence index
+## Evidence index
 
 **What this section contains:**
 A mapping of claims in the Answer/Recommendation back to source files (research and survey). This
@@ -95,16 +95,16 @@ Example:
 
 ## Enum Definitions
 
-Do not restate the verdict and confidence enums here. Reference `~/.claude/prompts/spike-researcher-brief.md`
+Do not restate the status and confidence enums here. Reference `~/.claude/prompts/spike-researcher-brief.md`
 for the complete enum definitions:
-- Verdict: `confirmed | partial | refuted | unknown`
+- Status: `confirmed | partial | refuted | unknown`
 - Confidence: `high | medium | low`
 
 The researcher brief is the single source of truth for these enums.
 
 ## Terminal Marker
 
-**Critical:** The file must end with this marker on a new line:
+**Critical:** The final non-blank line of the file must be exactly this marker:
 
 ```
 <!-- synthesis-end -->
@@ -114,8 +114,8 @@ This is a join-barrier sentinel. The orchestrator checks for this marker before 
 It is **not manifest-enforced** — if it's missing, the orchestrator detects the problem and stops,
 allowing recovery. The marker's absence indicates an incomplete synthesis, not a schema violation.
 
-The last non-blank line of the file must be exactly this sentinel, with no content after it.
+Nothing may come after the sentinel.
 
 ## Last Non-Blank Line
 
-As specified above, the last non-blank line must be exactly `<!-- synthesis-end -->`.
+As specified above, the final non-blank line must be exactly `<!-- synthesis-end -->`.

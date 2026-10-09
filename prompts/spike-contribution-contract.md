@@ -71,7 +71,7 @@ List questions where research (not just code reading) would answer them. Each qu
 **Rules:**
 - Questions must be **answerable by research** — patterns in code, architecture, external documentation, or behavior, not opinions
 - Each question must have both `_Why it matters_` and `_What evidence would settle it_`
-- The question is routed to **research**, not the human, unless it meets interrupt rule 2 (fork) or 3 (premise break)
+- The question is routed to **research**, not the human, unless it meets the **fork** or **premise break** interrupt rule (names defined in the "Interrupt Rule Names" section of `~/.claude/prompts/spike-audit.md`)
 
 ### "Initial hypothesis" Section
 
@@ -128,12 +128,12 @@ After writing your contribution file, return **only a one-line receipt** as your
 
 Example: `security-sage | spike-questions | wrote: /path/to/spikes/abc-123/experts/security-sage-questions.md`
 
-**Critical: Your file must end with the join-barrier sentinel on a new line:**
+**Critical: The final non-blank line of your file must be exactly this join-barrier sentinel:**
 ```
 <!-- spike-questions-end -->
 ```
 
-The last non-blank line must be exactly this sentinel. The orchestrator's join barrier waits for three conditions per expert: receipt returned, file exists on disk, and file ends with `<!-- spike-questions-end -->`. Without this sentinel, the orchestrator cannot detect whether your write succeeded, and will retry or emit a stand-in file.
+Nothing may come after it. The orchestrator's join barrier waits for three conditions per expert: receipt returned, file exists on disk, and file ends with `<!-- spike-questions-end -->`. Without this sentinel, the orchestrator cannot detect whether your write succeeded, and will retry or emit a stand-in file.
 
 Do not return your contribution itself. Your report is the file, not the message. Returning the
 full contribution in your final message would double-load the orchestrator's context (once from the
