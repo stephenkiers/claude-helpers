@@ -70,6 +70,7 @@ See the ADRs for the full rationale:
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
   ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 - [ADR-0021 Local merge queue](docs/adr/0021-local-merge-queue.md) — serialized per-repo merge queue for testing every PR against the exact base it lands on, with unverified-main detection and the force-push carve-out.
+- [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation, sequential epics.
 
 ## Triage: the review ends with decisions, not findings
 
@@ -188,7 +189,13 @@ separate from the reviewer-context cascade.
   spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
-- `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
+- `/expert-flow` — lifecycle orchestrator: plan → track → implement → review → fix → verify → ship → merge for one
+  issue (or `--epic` for an epic's sub-issues, sequentially), each step the existing command run as a subagent in the
+  right worktree. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
+  Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
+  references the Ask block). Failures are hard stops (Retry ≤2 / Take over / Abort) — never auto-remediated. State
+  under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
+  (per-run only). See [ADR-0023](docs/adr/0023-expert-flow.md)
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. If a merge-queue configuration exists and the PR targets the queue's base branch, routes the PR through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports it MERGED; a kickback or refusal stops and leaves the worktree intact. An `unknown`/undeterminable queue state still refuses (exit 3). PRs targeting other bases merge normally. When no queue is configured (but the layout supports one), offers to create `merge-queue.json` and then routes through `/queued-merge`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
 - `/queued-merge` — merge an open PR through the local merge queue when a `merge-queue.json` config exists. The queue serializes PRs and merges them one at a time in arrival order, testing each against the exact base it will land on, with unverified-main detection. See [ADR-0021](docs/adr/0021-local-merge-queue.md) for the force-push carve-out (the queue's only authorized force-push, audited and constrained, happens only after the full gate passes).
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
