@@ -195,6 +195,8 @@ schema now adds the snake_case members `steps_skipped`, `plan_not_found`, `all_u
 for steps that were not completed and `command-end --outcome success` only when the ledger shows every step
 done. The command doc never emits success directly.
 
+The ledger is a control input, not just observational telemetry — it directly gates whether success is recorded, not merely reported after the fact. Changes to the ledger structure or the finish logic are architectural changes, not telemetry implementation details.
+
 **Scope, stated honestly.** The ledger covers *omission*: a step that was never recorded as done cannot be
 reported as a success. It does not cover *fabrication*. The ledger is written by the same orchestrator that
 runs the command, so a deliberate false entry is not technically prevented. Non-empty artifact-file evidence

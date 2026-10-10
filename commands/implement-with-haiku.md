@@ -38,6 +38,8 @@ each one marks:
 The success outcome is not recorded by any failure path or step in this doc. It is recorded only by
 `finish` (the last step of the run), and a run that never reaches `finish` is reported as incomplete.
 
+Failure classes must be snake_case (e.g., `steps_skipped`, not `steps-skipped`); kebab-case values are not valid and will be dropped silently by the telemetry schema.
+
 These are wired into the shell commands throughout this doc at each terminal path.
 
 **Flags:** `--pause` opts in to the Round 1 join pause (Step 4d). Without it the run goes straight
@@ -928,9 +930,10 @@ printf '%s DONE round-sizing %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round-sizing.txt"
 ```
 
 Any downstream step that this classification does not run gets a `SKIPPED <step-id> <reason>` row. The
-authoritative skip matrix lives in `scripts/implement-ledger.py`; consult it for which steps each
-classification skips. The allowed reasons are `mechanical`, `test-only`, `no-test-files-changed`,
-`dirty-file`, `no-comparison-operator`, `no-new-tests`, and `pause-not-requested`. Append each skip row
+authoritative skip matrix lives in `scripts/implement-ledger.py`; consult functions `required_steps()`
+and `permitted_skip_reasons()` for which steps each classification skips. The allowed reasons are
+`mechanical`, `test-only`, `no-test-files-changed`, `dirty-file`, `no-comparison-operator`,
+`no-new-tests`, `pause-not-requested`, `no-report`, and `resumed`. Append each skip row
 with `printf '%s SKIPPED <step-id> %s\n' "<RUN_KEY>" "<reason>" >> "<LEDGER_PATH>"`.
 
 - **Mechanical** — formatting/lint/config-only diff, no logic change (e.g. clippy/prettier churn,

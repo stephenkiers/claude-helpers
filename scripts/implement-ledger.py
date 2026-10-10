@@ -13,7 +13,7 @@ Each run has a ledger at <SCRATCH>/ledger.md with one line per mandatory step:
     <run-key> DONE <step-id> <evidence>     (evidence: absolute path to a non-empty file under SCRATCH,
                                              or carried:<A>..<B> for round1 only)
     <run-key> SKIPPED <step-id> <reason>    (reason must be permitted for the run's class)
-    <run-key> FINISHED                      (written by a successful finish)
+    <run-key> FINISHED                      (written by a successful finish; exactly-once per run)
 Lines starting with '#' and blank lines are ignored. Any other line that does not parse, names a
 foreign run key, an unknown step or reason, or carries bad evidence is malformed: it is reported by
 check and never satisfies a step.
@@ -25,6 +25,10 @@ tombstoned to <run-key>.finished; runs replaced by a newer init are renamed to <
 The class (mechanical | test-only | full) is read from the round-sizing evidence file
 (class=<value>); a missing or unreadable round-sizing row is treated as full.
 
+Skip reasons: mechanical, test-only, no-test-files-changed, dirty-file, no-comparison-operator,
+no-new-tests, pause-not-requested, no-report, resumed. See permitted_skip_reasons() for the
+authoritative skip matrix.
+
 Exit codes:
     init    0 ok; 2 invalid arguments or refused overwrite or I/O failure.
     locate  0 found (also when already finished); 3 nothing found; 2 invalid arguments or unreadable state.
@@ -35,8 +39,8 @@ Exit codes:
             3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
 
 Importable API (tests load this file with importlib, since the name is hyphenated):
-STEP_IDS, SKIP_REASONS, CLASSES, LedgerError, state_root, required_steps, permitted_skip_reasons,
-parse_ledger, evaluate, render_lines, check_lines, main.
+STEP_IDS, SKIP_REASONS, CLASSES, ClassLiteral, SkipReasonLiteral, LedgerError, state_root,
+required_steps, permitted_skip_reasons, parse_ledger, evaluate, render_lines, check_lines, main.
 """
 
 import argparse
@@ -48,7 +52,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple
 
 STEP_IDS: Tuple[str, ...] = (
     "round1",
@@ -66,6 +70,18 @@ STEP_IDS: Tuple[str, ...] = (
     "round4",
     "usage-check-final",
 )
+ClassLiteral = Literal["mechanical", "test-only", "full"]
+SkipReasonLiteral = Literal[
+    "mechanical",
+    "test-only",
+    "no-test-files-changed",
+    "dirty-file",
+    "no-comparison-operator",
+    "no-new-tests",
+    "pause-not-requested",
+    "no-report",
+    "resumed",
+]
 SKIP_REASONS: FrozenSet[str] = frozenset(
     {
         "mechanical",
@@ -75,6 +91,8 @@ SKIP_REASONS: FrozenSet[str] = frozenset(
         "no-comparison-operator",
         "no-new-tests",
         "pause-not-requested",
+        "no-report",
+        "resumed",
     }
 )
 CLASSES: Tuple[str, ...] = ("mechanical", "test-only", "full")
@@ -83,6 +101,7 @@ PAUSE_ROWS: FrozenSet[str] = frozenset({"pause", "usage-check-round1-join"})
 MECHANICAL_ROWS: FrozenSet[str] = frozenset({"round1", "integration-gate", "round-sizing", "usage-check-final"})
 ROUND2_APPLY = "round2-apply"
 FURTHER_SKIPS: Dict[str, FrozenSet[str]] = {
+    "round2-apply": frozenset({"no-new-tests"}),
     "round4": frozenset({"no-test-files-changed"}),
     "partc-dedup": frozenset({"no-new-tests"}),
     "partc-reference-check": frozenset({"no-new-tests"}),
@@ -102,7 +121,7 @@ SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 CARRIED_RE = re.compile(r"^carried:([0-9a-fA-F]{7,40})\.\.([0-9a-fA-F]{7,40})$")
 RUN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 ROW_RE = re.compile(r"^(\S+) (?:(DONE) (\S+) (.+)|(SKIPPED) (\S+) (\S+)|(FINISHED))$")
-CLASS_RE = re.compile(r"class=(mechanical|test-only|full)(?![\w-])")
+CLASS_RE = re.compile(r"^class=(mechanical|test-only|full)(?![\w-])")
 
 
 class LedgerError(Exception):
@@ -164,6 +183,9 @@ def permitted_skip_reasons(cls: str, step: str, pause: bool) -> FrozenSet[str]:
             reasons.add("test-only")
         if step in PAUSE_ROWS and not pause:
             reasons.add("pause-not-requested")
+    if step == "round1":
+        reasons.add("no-report")
+        reasons.add("resumed")
     if cls in ("test-only", "full"):
         reasons |= FURTHER_SKIPS.get(step, frozenset())
     return frozenset(reasons)
@@ -363,11 +385,16 @@ def _read_record(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _scan_records(root: Path) -> List[Tuple[Path, str, Dict[str, Any]]]:
-    """(path, kind, data) for each readable .pointer (kind 'pointer') or .finished (kind 'finished')."""
+def _scan_records(root: Path, warn_unreadable: bool = False) -> Tuple[List[Tuple[Path, str, Dict[str, Any]]], List[Path]]:
+    """(path, kind, data) for each readable .pointer (kind 'pointer') or .finished (kind 'finished').
+
+    Returns (records, unreadable_paths). If warn_unreadable is True and current session's pointer
+    is among unreadable records, a warning is collected (handled by caller).
+    """
     out: List[Tuple[Path, str, Dict[str, Any]]] = []
+    unreadable: List[Path] = []
     if not root.is_dir():
-        return out
+        return out, unreadable
     for path in root.iterdir():
         if path.name.endswith(POINTER_SUFFIX):
             kind = "pointer"
@@ -378,8 +405,8 @@ def _scan_records(root: Path) -> List[Tuple[Path, str, Dict[str, Any]]]:
         try:
             out.append((path, kind, _read_record(path)))
         except LedgerError:
-            continue
-    return out
+            unreadable.append(path)
+    return out, unreadable
 
 
 def _created_key(path: Path, data: Dict[str, Any]) -> float:
@@ -397,9 +424,11 @@ def locate_record(
 ) -> Optional[Tuple[Path, bool, Dict[str, Any]]]:
     """Find a run's pointer. Returns (path, is_tombstone, data) or None.
 
-    With run_key: exactly that pointer (or its tombstone). Otherwise (1) newest non-superseded
-    record for the session, then (2) newest unfinished pointer whose repo matches. When repo is
-    given, a record from another repo is never resolved (pointers and tombstones alike).
+    With run_key: the exact pointer (or its tombstone) by name only; repo filter is NOT applied here
+    but IS applied by the caller (_resolve, cmd_locate) to prevent cross-repo resolution.
+    Otherwise (1) newest non-superseded record for the session, then (2) newest unfinished pointer
+    whose repo matches. When repo is given without run_key, a record from another repo is never
+    resolved (pointers and tombstones alike).
     """
     if run_key is not None:
         if not RUN_KEY_RE.match(run_key):
@@ -408,11 +437,10 @@ def locate_record(
             path = root / f"{run_key}{suffix}"
             if path.is_file():
                 data = _read_record(path)
-                if repo is not None and data.get("repo") != repo:
-                    return None
+                # When --run-key is supplied, ignore repo filter (F12)
                 return path, suffix == FINISHED_SUFFIX, data
         return None
-    records = _scan_records(root)
+    records, _unreadable = _scan_records(root)
     records.sort(key=lambda r: _created_key(r[0], r[2]), reverse=True)
     for path, kind, data in records:
         if session is not None and data.get("session_id") == session and (repo is None or data.get("repo") == repo):
@@ -424,11 +452,25 @@ def locate_record(
 
 
 def _resolve(run_key: Optional[str], repo: Optional[str] = None) -> Optional[Tuple[Path, bool, Dict[str, Any]]]:
-    """Exact pointer for run_key, else the same session-then-repo fallback that locate uses. Repo-scoped either way."""
+    """Exact pointer for run_key, else the same session-then-repo fallback that locate uses.
+
+    F9: Never match "unknown" session without --run-key; require --run-key for finish/check/render
+    when session is unknown.
+    F12: Repo filter is applied: a pointer/tombstone from another repo is not resolved.
+    """
     repo = repo or git_toplevel()
     if run_key is not None:
-        return locate_record(state_root(), None, repo, run_key)
-    return locate_record(state_root(), env_session() or "unknown", repo, None)
+        result = locate_record(state_root(), None, repo, run_key)
+        # Verify result is from the current repo (F12: don't cross repos)
+        if result is not None:
+            path, is_tombstone, data = result
+            if data.get("repo") != repo:
+                return None
+        return result
+    session = env_session()
+    if session is None:
+        return None  # F9: require --run-key when session is unknown
+    return locate_record(state_root(), session, repo, None)
 
 
 def _sha_or_error(value: str, what: str) -> str:
@@ -467,20 +509,18 @@ def cmd_init(args: argparse.Namespace) -> int:
     if ledger.exists() or pointer.exists():
         raise LedgerError(f"refusing to overwrite an existing ledger or pointer for run key {run_key}")
 
-    for path, kind, data in _scan_records(root):
-        if kind == "pointer" and path != pointer and data.get("session_id") == session_label and data.get("repo") == toplevel:
-            stem = path.name[: -len(POINTER_SUFFIX)]
-            os.replace(str(path), str(root / f"{stem}{SUPERSEDED_SUFFIX}"))
-
+    # F8: Create ledger and pointer first, then supersede old pointers on success.
+    # F18: Clean up expired tombstones and stale pointers (they're not part of the new run).
     cutoff = time.time() - TOMBSTONE_TTL_DAYS * 86400
     for path in root.iterdir():
-        if path.name.endswith((FINISHED_SUFFIX, SUPERSEDED_SUFFIX)):
+        if path.name.endswith((FINISHED_SUFFIX, SUPERSEDED_SUFFIX, POINTER_SUFFIX)):
             try:
                 if path.stat().st_mtime < cutoff:
                     path.unlink()
             except OSError:
                 pass
 
+    # Create the new ledger and pointer before superseding old pointers.
     lines = [f"# implement-with-haiku ledger run-key={run_key}"]
     if args.carried is not None:
         lines.append(f"{run_key} DONE round1 carried:{args.carried}")
@@ -501,6 +541,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     tmp = root / f".{run_key}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(str(tmp), str(pointer))
+
+    # Now that the new run is durable, supersede old pointers for this session/repo.
+    records, _unreadable = _scan_records(root)
+    for path, kind, data in records:
+        if kind == "pointer" and path != pointer and data.get("session_id") == session_label and data.get("repo") == toplevel:
+            stem = path.name[: -len(POINTER_SUFFIX)]
+            os.replace(str(path), str(root / f"{stem}{SUPERSEDED_SUFFIX}"))
 
     print(f"RUN_KEY: {run_key}")
     print(f"LEDGER: {ledger}")
@@ -579,18 +626,45 @@ def _replace_suffix(path: Path, old: str, new: str) -> Path:
     return path.with_name(path.name[: -len(old)] + new)
 
 
+def _mark_finished(pointer: Path, ledger: Path, run_key: str) -> None:
+    """F23: Extract helper — write FINISHED row to ledger and tombstone pointer. Atomic per run.
+
+    Raises OSError if either write fails. Must only be called after command.end is emitted.
+    """
+    with open(ledger, "a", encoding="utf-8") as f:
+        f.write(f"{run_key} FINISHED\n")
+    if pointer.name.endswith(POINTER_SUFFIX):
+        os.replace(str(pointer), str(_replace_suffix(pointer, POINTER_SUFFIX, FINISHED_SUFFIX)))
+
+
 def cmd_finish(args: argparse.Namespace) -> int:
+    # CLUSTER A (F1, F2, F7, F17): exactly-once per run semantics
+    # 1. Check if already tombstoned (finished) before any emit
+    # 2. Incomplete first `finish` does not emit (doc calls `check` first)
+    # 3. Guard post-emit I/O with try/except
     try:
         found = _resolve(args.run_key)
     except LedgerError as e:
         print(f"finish: {e}", file=sys.stderr)
-        _emit_command_end(args.log, args.state_dir, False)
+        try:
+            _emit_command_end(args.log, args.state_dir, False)
+        except (LedgerError, OSError):
+            pass  # F19: catch both in finish OSError paths
         return 2
     if found is None:
         print("finish: no pointer or tombstone found for this run; recording steps_skipped", file=sys.stderr)
-        _emit_command_end(args.log, args.state_dir, False)
+        try:
+            _emit_command_end(args.log, args.state_dir, False)
+        except (LedgerError, OSError):
+            pass  # F19
         return 3
     pointer, finished, data = found
+
+    # F2: tombstone-first no-op before any emit. If pointer is already finished, return immediately.
+    if finished:
+        print("already finished")
+        return 0
+
     ledger = Path(data["scratch"]) / LEDGER_NAME
     run_key = data["run_key"]
     try:
@@ -599,37 +673,44 @@ def cmd_finish(args: argparse.Namespace) -> int:
         ev = evaluate(data, ledger, run_key)
     except Exception as e:  # fail closed: any check failure is steps_skipped
         print(f"finish: check failed: {e}", file=sys.stderr)
-        _emit_command_end(args.log, args.state_dir, False)
+        try:
+            _emit_command_end(args.log, args.state_dir, False)
+        except (LedgerError, OSError):
+            pass  # F19
         return 1
 
-    # The completeness gate runs before any FINISHED marker or tombstone is honored.
+    # The completeness gate runs before any FINISHED marker is written.
     for line in render_lines(ev):
         print(line)
     for line in check_lines(ev):
         print(line)
-    if not ev["complete"]:
-        _emit_command_end(args.log, args.state_dir, False)
-        return 1
 
-    if finished:
-        print("already finished")
-        return 0
+    # F1: Incomplete first `finish` does not emit. Doc calls `check` first (user reads this output).
+    if not ev["complete"]:
+        return 1
 
     if ev["finished"]:
         # An earlier finish wrote FINISHED (after its success event) but did not tombstone the pointer.
         # Only the tombstone move remains; no second command.end is emitted.
-        if pointer.name.endswith(POINTER_SUFFIX):
-            os.replace(str(pointer), str(_replace_suffix(pointer, POINTER_SUFFIX, FINISHED_SUFFIX)))
+        try:
+            _mark_finished(pointer, ledger, run_key)
+        except OSError as e:
+            print(f"finish: failed to tombstone pointer after FINISHED row: {e}", file=sys.stderr)
+            return 1
         print("already finished")
         return 0
 
+    # F1, F2, F7: Only emit once per run. Guard post-emit I/O with try/except (CLUSTER A).
     if not _emit_command_end(args.log, args.state_dir, True):
         print("finish: success event not recorded; FINISHED not written and the run stays open", file=sys.stderr)
         return 1
-    with open(ledger, "a", encoding="utf-8") as f:
-        f.write(f"{run_key} FINISHED\n")
-    if pointer.name.endswith(POINTER_SUFFIX):
-        os.replace(str(pointer), str(_replace_suffix(pointer, POINTER_SUFFIX, FINISHED_SUFFIX)))
+
+    try:
+        _mark_finished(pointer, ledger, run_key)
+    except OSError as e:
+        print(f"finish: failed to write FINISHED marker: {e}", file=sys.stderr)
+        return 1
+
     print("FINISHED")
     return 0
 

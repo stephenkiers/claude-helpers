@@ -15,7 +15,8 @@ checkpoints and a "proceed and don't pause again" dismissal, needed only for mul
 The mechanism differs from [ADR-0016](0016-usage-yield-telemetry.md)'s usage gate: the usage gate is
 **data-driven** (token totals trigger a threshold-crossing ask), whereas this is **content-driven**
 (user declares via `--pause-at` which named steps should prompt). Both are stop-and-ask mechanisms;
-they must remain independent and separately branded so the two systems don't interfere.
+they must remain independent and separately branded so the two systems don't interfere. (See also
+ADR-0016's amendment on the run ledger being a control input, not just observational telemetry.)
 
 ## Decision
 
