@@ -90,7 +90,15 @@ class StageEndResolution(NamedTuple):
 
 
 class AgentEndResult(NamedTuple):
-    """Return type for record_agent_end_classified."""
+    """Return type for record_agent_end_classified.
+
+    Fields:
+        began_at: The agent's begin timestamp (str) if found and session_id matched, else None.
+                  None also indicates the agent was classified as internal.
+        internal: True if the agent-end was classified as an internal stop (begin-less,
+                  within-harness termination); False otherwise. Internal stops do not
+                  contribute to usage.counted_tokens or appear in usage.agents.
+    """
     began_at: Optional[str]
     internal: bool
 
@@ -1720,6 +1728,12 @@ def _mutate_agent_usage(state: dict, session_id: str, agent_id: str, tokens: dic
 
     Called by both record_agent_usage and record_agent_end_classified; the latter applies
     is_internal classification before calling this helper.
+
+    Args:
+        result: Out-parameter dict (mutated by this function). Caller-provided dict that
+                receives {"began_at": Optional[str]} (the popped begin timestamp or None).
+                record_agent_end_classified also pre-populates result["internal"] before
+                calling this, and this function does not modify that key.
     """
     agents_begin_map = state.get("agents", {})
     if not isinstance(agents_begin_map, dict):
@@ -1792,8 +1806,7 @@ def _mutate_agent_usage(state: dict, session_id: str, agent_id: str, tokens: dic
             if status == "counted" and counted is not None:
                 current_counted = usage.get("counted_tokens", 0)
                 usage["counted_tokens"] = current_counted + counted
-            elif status in UNPARSEABLE_STATUSES or status == "session-mismatch" or counted is None:
-                pass
+            # Other statuses (unparseable, session-mismatch, or counted=None) don't fold into counted_tokens.
 
     state["agents"] = agents_begin_map
     state["usage"] = usage
@@ -1839,6 +1852,21 @@ def record_agent_end_classified(
     Internal-stop agents are not recorded in usage.agents and do not fold into
     usage.counted_tokens, effectively filtering them from the usage gate's floor_count.
 
+    PRECONDITION: Classification uses membership-only semantics—checking only whether
+    agent_id exists in the begin-entry map. It ignores the begin-entry's session_id field.
+    An agent-end is classified as internal only if no begin entry exists for agent_id,
+    regardless of session_id mismatch at the begin entry.
+
+    BLIND SPOTS: The classifier has two documented limitations:
+    1. If the begin event was lost (missing from the begin-entry map before this call),
+       the stop is classified as internal.
+    2. If the transcript is missing (e.g., path_not_a_file), but a begin entry exists
+       for the agent_id, the stop is not classified as internal; it falls back to agent.end
+       with zero tokens.
+    In both cases, a stop whose begin was lost or whose transcript is missing is
+    ultimately classified as a plain agent.end (or internal if the begin was lost AND
+    status indicates path_not_a_file).
+
     Returns an AgentEndResult with (began_at, internal).
     """
     path = Path(path)
@@ -1861,6 +1889,8 @@ def record_agent_end_classified(
         # Otherwise, delegate to shared mutate body
         return _mutate_agent_usage(state, session_id, agent_id, tokens, token_confidence, status, recorded_at, result)
 
+    # State file rewrite via ftruncate is safe: it is protected by exclusive lock in
+    # load_and_update_state, and the ftruncate-then-write atomicity pre-dates this change.
     load_and_update_state(path, mutate)
     return AgentEndResult(result.get("began_at"), result.get("internal", False))
 
