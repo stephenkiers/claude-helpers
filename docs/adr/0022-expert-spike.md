@@ -197,7 +197,7 @@ Inside a replayed fan-out stage, sentinel-complete research files are kept only 
 
 ### 13. Relationship to ADR-0018
 
-The third write prefix (item 4 above) amends ADR-0018's sanctioned-targets list. The reciprocal amendment on ADR-0018 landed 2026-10-09 ("Amendment — Third sanctioned write prefix"), so the two ADRs now agree on the three-prefix list.
+The third write prefix (item 4 above) amends ADR-0018's sanctioned-targets list. The reciprocal amendment on ADR-0018 landed 2026-10-09 ("Amendment — Third sanctioned write prefix"), so ADR-0018 now records the third prefix.
 
 ### 14. Measured: Pending (PR C)
 

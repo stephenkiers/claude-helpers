@@ -76,6 +76,6 @@ This section is the single full statement of the rule. It is the reciprocal of A
 **Failure modes (documented behavior):**
 
 - **No hook configured:** nothing enforces the `spikes/` prefix. The rule is prompt-level only.
-- **Hook configured without the `spikes/` prefix:** expert writes into the spike directory are rejected. The missing artifact leaves that stage as the manifest's resume point, because VERIFY fails (`commands/expert-spike.md`, Verify block). The spike stops visibly at that stage instead of continuing with a gap.
+- **Hook configured without the `spikes/` prefix:** expert writes into the spike directory are rejected. The missing artifact leaves that stage as the manifest's resume point, because VERIFY fails (`commands/expert-spike.md`, Verify block). The spike stops visibly at that stage instead of continuing with a gap. State this as the documented behavior; if dogfood shows otherwise, file an issue rather than changing the behavior in the PR that records it.
 
 See ADR-0022 §4 (write prefixes and residual risk) and §13 (relationship to this ADR).
