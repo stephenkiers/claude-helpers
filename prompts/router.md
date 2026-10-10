@@ -97,8 +97,10 @@ one warrants asking the human whether to upgrade.
 - **Code Rot Cody** — dead-symbol detection; full repo by role definition
 - **Consistency Checker** — mechanical pattern pass; full diff by role definition
 - **Contrarian Carl** — runs last, always, seeing all other findings
+- **North Star Nick** — consistency with the project's direction; every diff is checked against the
+  ADRs, the repo's docs, and in-flight work, so no diff shape can prove his domain does not apply
 
-These three are pre-seated. List them as "Yes" in the Panel Decision table with reason "Always-run".
+These four are pre-seated. List them as "Yes" in the Panel Decision table with reason "Always-run".
 
 ## Tagging Within Selected Reviewers
 
@@ -134,6 +136,7 @@ For each selected reviewer, map the sections of the diff that triggered them:
 | code-rot-cody | Yes | Always-run |
 | consistency-checker | Yes | Always-run |
 | contrarian-carl | Yes | Always-run |
+| north-star-nick | Yes | Always-run |
 
 # Tagged Sections
 
@@ -153,7 +156,7 @@ For each selected reviewer, map the sections of the diff that triggered them:
 **Lines**: 1-50
 **Context**: New exported struct and methods
 
-## (Code Rot Cody, Consistency Checker, and Carl receive the full diff by role definition)
+## (Code Rot Cody, Consistency Checker, Carl, and North Star Nick receive the full diff by role definition)
 
 ## Escalation Recommendation
 
@@ -178,10 +181,10 @@ Write `{REVIEW_DIR}/tagged-sections.md`, then return **only** this line — neve
 itself:
 
 ```
-router | selected: {n}/{total} | always-run: 3 | escalate: {yes|no} | wrote: {path}
+router | selected: {n}/{total} | always-run: 4 | escalate: {yes|no} | wrote: {path}
 ```
 
-`{n}` is the count of routed reviewers selected (excluding the three always-run); `{total}` is the
+`{n}` is the count of routed reviewers selected (excluding the four always-run); `{total}` is the
 count of reviewers evaluated (all entries in the index); `escalate` is the escalation recommendation
 (yes if the Router judged this diff warrants Opus-tier review, no otherwise). Return only this line — never the table.
 

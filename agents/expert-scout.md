@@ -13,6 +13,8 @@ Your prompt tells you which of these jobs you have:
   evidence from the code.
 - **Code Rot Cody** — grep the repo for dead/orphaned symbols.
 - **Consistency Checker** — mechanical pattern pass over the diff.
+- **North Star Scout** (`prompts/north-star-scout.md`) — sweep one source (ADRs, repo docs, or
+  in-flight issues/PRs) and quote what relates to the change, so North Star Nick can judge it.
 - **Effort Scout** (`prompts/effort-scout.md`) — recommend an effort tier (2/3/4) for the diff this
   run is about to size, from `diff-index.md` and the resolved heuristic thresholds only. This is
   the one job that can produce a number other than the mechanical calculation, and only when

@@ -222,7 +222,11 @@ with their triggers, participation contexts (`review`, `plan`, `write`), and str
 - **Eric Evans** — DDD, domain boundaries, ubiquitous language
 - **Mozart** — composition/orchestration and event-driven architecture
 - **Sam System** — cross-file composition and data-flow (gated by diff-shape precondition since #148; receives the full diff when routed in)
-- **North Star Nick** — alignment with documented ADRs (reads `docs/adr/` here)
+- **North Star Nick** — the consistency keeper: the project's direction is organic (ADRs, root
+  docs, open issues/epics/PRs), so three Haiku scouts (`prompts/north-star-scout.md`) find the
+  related material per run, fed by `scripts/in-flight-snapshot.py`, and Nick judges the change
+  against it. Always-run in `/expert-review` at efforts 3–5 and always seated
+  in `/expert-plan` (ADR-0003 and ADR-0020, 2026-10-09 amendments)
 - **Fragile Feynman** — pre-mortem fragility analysis
 - **Contract Chris** — contract completeness, docstrings, silenced errors
 - **Code Rot Cody** — dead code / orphaned-symbol detection (Haiku, full-repo grep)

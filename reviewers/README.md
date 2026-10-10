@@ -74,7 +74,7 @@ Phase 1 ranking.
    (not an error).
 2. **`contexts`** — Hard eligibility filter applied before the Router sees a candidate list.
 3. **Existing gates** — `structural_pre_gate_ineligible` (the four reviewers listed under that key in `index.yaml`), the Sam System diff-shape gate and effort clauses in `prompts/expert-review-panel.md`,
-   the always-run roles (Code Rot Cody, Consistency Checker, Contrarian Carl), and the path
+   the always-run roles (Code Rot Cody, Consistency Checker, Contrarian Carl, North Star Nick), and the path
    conditions for Fact-Check Fiona and Data Scientist Dana — applied to the eligible set.
 4. **`useWhen` / `triggers`** — Rank and select among what remains.
 
@@ -101,7 +101,7 @@ route:
   include_at: <int>                     # score >= include_at → tier "Must" (default 6, PROVISIONAL)
   candidate_at: <int>                   # score >= candidate_at → tier "Candidate"; else "Exclude" (default 3, PROVISIONAL, must be <= include_at)
   hard_requires: [predicate, ...]       # if any false → tier "Exclude" (named predicates from registry only)
-  always: true                          # must be ONLY key and the literal bool true; tier "Always"; must agree with ALWAYS_RUN_SLUGS (contrarian-carl, code-rot-cody, consistency-checker)
+  always: true                          # must be ONLY key and the literal bool true; tier "Always"; must agree with ALWAYS_RUN_SLUGS (contrarian-carl, code-rot-cody, consistency-checker, north-star-nick)
 ```
 
 **Shape predicates (registry, closed set):** `cross_file_symbol`, `file_count_ge`, `top_dirs_ge`,
@@ -111,7 +111,7 @@ route:
 - `include_at: 6`, `candidate_at: 3` — independent thresholds per reviewer allowed
 - `file_count_ge` and `top_dirs_ge` default N values: 3 files, 2 dirs (matching the Sam System diff-shape gate)
 
-**Always-run set:** `contrarian-carl`, `code-rot-cody`, `consistency-checker` get `route: {always: true}`.
+**Always-run set:** `contrarian-carl`, `code-rot-cody`, `consistency-checker`, `north-star-nick` get `route: {always: true}`.
 
 **Editors (no `review` context):** no `route:` block required.
 

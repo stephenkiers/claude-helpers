@@ -166,9 +166,11 @@ router to exclude him; only effort 3 had a special case that forced him in.
 - **Consistency Checker** — pinned haiku mechanical pattern pass on full diff.
 - **Contrarian Carl** — runs last, seeing all other findings; the only reviewer whose seating overrides
   heuristics and routing.
+- **North Star Nick** — added 2026-10-09 (ADR-0003's amendment of that date): strategic
+  alignment on the full diff, fed by three Haiku North Star scouts and the in-flight snapshot. Like the three above, this applies on the
+  Step 4–10 path (efforts 3–5); the effort 1 and 2 paths are unchanged.
 
-This refinement maintains the cost-monotonicity principle: you pay for what you get, not for expensive seats
-that add no incremental finding on a given diff.
+This refinement maintains the cost-monotonicity principle for all reviewers **except** North Star Nick: he is always-run (alongside Code Rot Cody, Consistency Checker, and Contrarian Carl) as a deliberate exception because alignment is a property of the whole change, not a diff-dependent routing signal. See [ADR-0003's 2026-10-09 amendment](0003-tagger-routing.md) for the full rationale and the three Haiku scouts that feed him. The effort-3 pre-seated set therefore grows from three to four always-run reviewers, which narrows the effort-3 vs effort-4 gap — effort 3 seats the four always-run reviewers plus the router's top three picks (with Fragile Feynman fallback), while effort 4 and 5 seat the same four plus their respective routed sets. For all other reviewers, you pay for what you get; expensive seats that add no incremental finding on a given diff are not forced in.
 
 **Note on basis and revisit trigger:** This generalization to all effort levels is based on a single observed run's data (n=1). The metric "zero uniquely-escalated findings" measures whether Sam System's cross-file findings disagreed sharply enough with other reviewers to require adjudication — not whether he independently caught an integration bug nobody else was positioned to notice. The policy will be revisited once more runs' data accumulates, or when a metric is defined that captures "caught a bug nobody else could see" in addition to escalation count. Cost (6.4% of one run) motivates testing the change; escalation count (zero in one run) provides initial evidence it is safe; the revisit trigger ensures the policy adapts if either premise changes.
 

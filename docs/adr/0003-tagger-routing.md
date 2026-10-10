@@ -71,6 +71,46 @@ Sonnet is the middle tier: capable of judgment, economical enough for every revi
 
 Amended 2026-09-17 (#193): the always-run set is three — Code Rot Cody, Consistency Checker, and Contrarian Carl. Sam System is not always-run; since #148 he is gated by the deterministic diff-shape precondition in `prompts/expert-review-panel.md` and runs only when routed in, still receiving the full diff on those runs — superseding the four-reviewer list in `Decision (Revised)` above.
 
+Amended 2026-10-09: the always-run set is four — Code Rot Cody, Consistency Checker, Contrarian Carl,
+and **North Star Nick**. Nick was Router-judged (triggers such as `architecture`, `refactor`, an ADR
+touched), which meant a diff with no architectural keywords was never read against the ADRs,
+the repo's docs, or other work in flight — and those are exactly the diffs that drift unnoticed. The recurring
+failure this fixes is a review or plan that is locally sound but unaware of what else is happening.
+Alignment is a property of the whole change, so, like the other three, no routing signal can prove
+his domain does not apply.
+
+What changes with it:
+
+- `reviewers/index.yaml` gives him `route: {always: true}` and `scripts/route-score.py` lists him in
+  `ALWAYS_RUN_SLUGS`; he is no longer scored for routing.
+- He reads the full diff, on the panel model. This is a deliberate cost: one more full-patch Pass 1
+  seat on every effort 3–5 review. It is the opposite call from Sam System's demotion (#193), made
+  for a different reason — Sam's domain is provably absent from a single-file diff; Nick's never is.
+- He gains inputs he could not reach before. The project's direction is deliberately **not** a
+  single vision document: it is organic, spread across the ADRs, the repo's root docs, and the open
+  issues, epics, and pull requests. That is too much to read per run on the panel model, and
+  reviewer subagents have no `gh` access. So the orchestrator (a) runs
+  `scripts/in-flight-snapshot.py` once — open issues with epics marked, open PRs, local worktrees,
+  plus issue bodies for the scouts — and (b) launches three Haiku `expert-scout` agents
+  (`prompts/north-star-scout.md`), one each for ADRs, repo docs, and in-flight work, which quote
+  and locate what relates to the change. Nick reads the briefs, opens the sources they cite, and
+  judges. Scouts never issue verdicts (ADR-0004: mechanical work on the cheap model, judgment on
+  the panel model). Every piece is fail-open; a source that could not be read is reported as
+  unchecked, never as "no conflicts".
+- A maintained north-star index — one roadmap document pointing at everything — was considered and
+  deferred. The scouts rediscover the material each run; an index would only be worth its upkeep if
+  that rediscovery proves too slow or too lossy.
+- `/expert-plan` seats him on every run as one of its 3 (effort 2) or 4 (effort 3) experts — see
+  ADR-0020's amendment.
+
+Not changed: efforts 1 and 2 of `/expert-review`. Those paths already run without Code Rot Cody or
+the Consistency Checker (ADR-0012's accepted cost/coverage trade-off), so "always-run" continues to
+mean efforts 3–5.
+
+**Triage and escalation monitoring:** The Triage Chief (`prompts/triage.md`) test 6 (whether a finding is answerable without data, the criterion for "Needs measurement") is deliberately unchanged. However, Nick's QUESTION tag (issued when a finding requires architectural or directional judgment from the human) is to be used sparingly — it marks true decisions the human owns, not findings Nick is uncertain about. Escalation volume is to be monitored via `/review-stats` to watch for runaway escalation, which would indicate prompt calibration drift (not a triage test issue, which remains unchanged).
+
+**Phase 3 (Routing v2) inheritance (#196, #200):** Phase 3 (issues #196 and #200) will inherit the four-member always-run set as foundational: Code Rot Cody, Consistency Checker, Contrarian Carl, and North Star Nick. Any flip in Phase 3 toward deterministic routing (moving ADR-0003.3's shadow-mode observer to live seating authority) applies only to the router's judgment layer, never to the always-run group. The four always-run seats are a cost floor for efforts 3–5, reflecting non-routing properties (mechanical checks, universal alignment, final skepticism, and cross-cutting context) that no routing signal can prove absent.
+
 ## Consequences
 
 - **Good:** Single routing decision per review, made with full context (diff + summary + business).

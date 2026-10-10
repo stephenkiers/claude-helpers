@@ -107,7 +107,7 @@ When synthesizing a pod-path finding into `final-report.md`:
 |----------|----------|----------|-----------|-------|
 
 Decision legend: `DEEP-DIVE` thorough investigation · `QUICK-SCAN` quick look at tagged sections ·
-`ROUTED` selected by router · `ALWAYS-RUN` (Code Rot Cody, Consistency Checker, Carl) ·
+`ROUTED` selected by router · `ALWAYS-RUN` (Code Rot Cody, Consistency Checker, Carl, North Star Nick) ·
 `CODE-ROT` mechanical grep verification · `CONTRARIAN` ran last with all prior findings
 
 ## Routing Accuracy
