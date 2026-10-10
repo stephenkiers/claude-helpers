@@ -196,6 +196,39 @@ wrote.
 This follows the same principle as the code-review framework: **the file is the contract**. See
 `agents/expert-reviewer.md` under "The file is the contract" for the full rationale.
 
+## Sub-tickets (epic mode only)
+
+This section applies **only** when `{PLAN_SESSION_DIR}/context.md` contains a line reading
+`EPIC_MODE: true` (written by `/expert-plan --epic`, which `/expert-flow --epic` passes for an
+epic issue). When that line is absent, skip this section entirely and do not emit the block below.
+
+In epic mode the ticket is an epic, and the plan's job is to split it into independently shippable
+sub-tickets before anything else. Add one more block to your contribution, after **Open
+Questions**:
+
+```markdown
+**Sub-tickets**:
+1. **[Title — one line, as a GitHub issue title]**
+   - scope: [2–5 lines: what this sub-ticket delivers and where it stops]
+   - depends-on: [none | the numbers of earlier items this one needs merged first]
+2. ...
+```
+
+Rules:
+- Order items so that every `depends-on` points **backwards** — the flow runs them in this order,
+  one after another, each branching from main after the previous one has merged.
+- Each item must be shippable on its own: one PR, one review, a check gate that can pass without
+  the later items.
+- Three to eight items is the normal range. Fewer means the epic probably is not an epic; more
+  means the split is too fine for sequential delivery.
+- Scope lines are the sub-issue body. Write them for the engineer who will plan that sub-ticket in
+  isolation, with no access to this contribution.
+- Do not restate the epic's full requirements in every item; name only what that item owns.
+
+The synthesizer merges every contributor's list into one `## Sub-tickets` section in the plan. If
+your lens has nothing to add to the split, write `**Sub-tickets**: no changes to the split` rather
+than omitting the block, so the synthesizer can tell silence from oversight.
+
 ## Scope Discipline
 
 Raise only considerations that belong in your domain:
