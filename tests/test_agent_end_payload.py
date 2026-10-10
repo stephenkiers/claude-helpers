@@ -12,52 +12,21 @@ Run with: python3 tests/test_agent_end_payload.py
 """
 
 import json
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import REPO_ROOT, Harness
-
-SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
+from _test_harness import Harness, run_script_helper
 
 
 def run_script(args, stdin_text=None):
     """Run the script as a subprocess. Returns (returncode, stdout, stderr)."""
-    cmd = [sys.executable, str(SCRIPT)] + args
-    result = subprocess.run(
-        cmd,
-        input=stdin_text,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
+    return run_script_helper(args, stdin_text=stdin_text)
 
 
-def run_agent_end(stdin_payload, log_file=None, state_dir=None):
-    """Run agent-end subcommand with JSON stdin. Returns (returncode, stdout, stderr)."""
-    cmd = [sys.executable, str(SCRIPT)]
-
-    if state_dir:
-        cmd.extend(["--state-dir", state_dir])
-
-    if log_file:
-        cmd.extend(["--log", log_file])
-
-    cmd.append("agent-end")
-
-    result = subprocess.run(
-        cmd,
-        input=stdin_payload,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
-
-
-def test_agent_end_missing_transcript_path():
+def test_agent_end_with_no_transcript_path():
     """agent-end with payload lacking agent_transcript_path field still emits agent.end event."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "events.jsonl"
@@ -70,10 +39,9 @@ def test_agent_end_missing_transcript_path():
             "session_id": "test_session_1",
         })
 
-        code, stdout, stderr = run_agent_end(
-            payload,
-            log_file=str(log_file),
-            state_dir=str(state_dir),
+        code, stdout, stderr = run_script(
+            ["--log", str(log_file), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
         )
 
         # Should complete without crashing
@@ -100,8 +68,8 @@ def test_agent_end_missing_transcript_path():
         return True, ""
 
 
-def test_agent_end_with_invalid_transcript_path():
-    """T6b: agent-end with begin present and nonexistent transcript path emits agent.end."""
+def test_agent_end_with_begin_present_and_missing_transcript():
+    """agent-end with begin present and nonexistent transcript path emits agent.end."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "events.jsonl"
         state_dir = Path(tmpdir) / "state"
@@ -131,10 +99,9 @@ def test_agent_end_with_invalid_transcript_path():
             "agent_transcript_path": "/nonexistent/transcript.jsonl",
         })
 
-        code, stdout, stderr = run_agent_end(
-            payload,
-            log_file=str(log_file),
-            state_dir=str(state_dir),
+        code, stdout, stderr = run_script(
+            ["--log", str(log_file), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
         )
 
         # Should complete (errors are swallowed per install.sh hook)
@@ -158,7 +125,7 @@ def test_agent_end_with_invalid_transcript_path():
         return True, ""
 
 
-def test_agent_end_with_valid_transcript():
+def test_agent_end_with_valid_transcript_parses_tokens():
     """agent-end with valid transcript path parses and logs tokens."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "events.jsonl"
@@ -191,10 +158,9 @@ def test_agent_end_with_valid_transcript():
             "agent_transcript_path": str(transcript_path),
         })
 
-        code, stdout, stderr = run_agent_end(
-            payload,
-            log_file=str(log_file),
-            state_dir=str(state_dir),
+        code, stdout, stderr = run_script(
+            ["--log", str(log_file), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
         )
 
         # Check log file
@@ -223,7 +189,7 @@ def test_agent_end_with_valid_transcript():
         return True, ""
 
 
-def test_agent_end_transcript_path_not_logged():
+def test_agent_end_does_not_log_transcript_path():
     """agent-end does not store transcript_path in state or event log."""
     with tempfile.TemporaryDirectory() as tmpdir:
         log_file = Path(tmpdir) / "events.jsonl"
@@ -247,10 +213,9 @@ def test_agent_end_transcript_path_not_logged():
             "agent_transcript_path": str(transcript_path),
         })
 
-        code, stdout, stderr = run_agent_end(
-            payload,
-            log_file=str(log_file),
-            state_dir=str(state_dir),
+        code, stdout, stderr = run_script(
+            ["--log", str(log_file), "--state-dir", str(state_dir), "agent-end"],
+            stdin_text=payload,
         )
 
         # Read log and state files to ensure transcript_path is not stored
@@ -277,20 +242,20 @@ def main():
     h = Harness("AGENT-END PAYLOAD TEST SUITE")
 
     h.test_result(
-        "agent-end with missing agent_transcript_path emits agent.end",
-        *test_agent_end_missing_transcript_path()
+        "agent-end with no transcript_path emits agent.end",
+        *test_agent_end_with_no_transcript_path()
     )
     h.test_result(
-        "agent-end with invalid transcript path still emits agent.end",
-        *test_agent_end_with_invalid_transcript_path()
+        "agent-end with begin present and missing transcript emits agent.end",
+        *test_agent_end_with_begin_present_and_missing_transcript()
     )
     h.test_result(
         "agent-end with valid transcript parses and logs tokens",
-        *test_agent_end_with_valid_transcript()
+        *test_agent_end_with_valid_transcript_parses_tokens()
     )
     h.test_result(
-        "agent-end does not store transcript_path",
-        *test_agent_end_transcript_path_not_logged()
+        "agent-end does not store transcript_path in log or state",
+        *test_agent_end_does_not_log_transcript_path()
     )
 
     print()
