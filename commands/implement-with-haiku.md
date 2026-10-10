@@ -1,6 +1,6 @@
 ---
 description: "Parallel round-1 Haiku implementers, orchestrator-owned integration gate with anti-cheat scanning, bounded convergence loop, machine-checked spec-blind, adversary review."
-allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Agent
+allowed-tools: Read, Bash(gh issue view:*), Bash(git log:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git ls-tree:*), Bash(git diff:*), Bash(git worktree:*), Bash(git apply:*), Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(git checkout * -- *), Bash(git mv:*), Bash(git rm:*), Bash(git branch -D:*), Bash(git branch -d:*), Bash(pwd:*), Bash(find:*), Bash(date:*), Bash(echo:*), Bash(cat:*), Bash(wc:*), Bash(grep:*), Bash(rg:*), Bash(mktemp:*), Bash(printf:*), Bash(cargo:*), Bash(npm:*), Bash(npx:*), Bash(pnpm:*), Bash(yarn:*), Bash(swift:*), Bash(xcodebuild:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*), Agent
 ---
 
 # Implement with Haiku
@@ -23,11 +23,20 @@ The flow:
 
 ### Telemetry vocabulary
 
-This command records telemetry via fixed kebab-case terminal paths:
-- `plan-not-found` — Step 1 found no plan
-- `all-units-failed` — Step 4d, all units failed  
-- `gate-not-converged` — Integration gate step 4.6, failed after K=3 iterations
-- `success` — Final summary reached
+Failure exits record telemetry with `--failure-class` values in the snake_case schema classes
+(defined in `scripts/telemetry_schema.py`). The classes this command emits, and the terminal path
+each one marks:
+- `plan_not_found` — Step 1 found no plan
+- `resume_format_invalid`, `resume_sha_not_found`, `ancestry_invalid`, `working_tree_dirty`,
+  `detached_head`, `outstanding_worktree` — Step 0 resume validation
+- `resume_cancelled`, `ancestry_invalid_after_drift` — Step 0 HEAD-drift handling
+- `all_units_failed` — Step 4d, all units failed
+- `gate_not_converged` — Integration gate step 4.6, failed after K=3 iterations
+
+`steps_skipped` is the telemetry count of `SKIPPED` rows in the run ledger.
+
+The success outcome is not recorded by any failure path or step in this doc. It is recorded only by
+`finish` (the last step of the run), and a run that never reaches `finish` is reported as incomplete.
 
 These are wired into the shell commands throughout this doc at each terminal path.
 
@@ -51,6 +60,26 @@ done
 python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement-with-haiku ${RESUMED_FROM:+--resumed-from "$RESUMED_FROM"} >/dev/null 2>&1 || true
 ```
 
+## No early exit / after compaction
+
+Only these exits may end a run: the failure and interrupted exits defined below (each with its
+telemetry), the human "stop and ask" waits, and the final `finish` call. Every other point in the
+flow continues to the next step, even when a step's output looks like it already settles the run.
+
+The "stop and ask" waits that cover salvage overlap and unassigned-file conflicts emit no telemetry
+if the human walks away, and success is unreachable from them, so the run simply stays open.
+
+After any context compaction, or whenever you are uncertain where the run stands, the FIRST action is:
+```bash
+python3 "$HOME/.claude/scripts/implement-ledger.py" locate
+```
+Then re-read the ledger at the `LEDGER` path recorded in Step 2 and continue from the first step that
+has no `DONE` or `SKIPPED` row. The orchestrator may supplement a delegated round (check or finish a
+piece of it directly) but never replace it with its own version.
+
+Do not rely on this section surviving compaction. `finish` is the enforcement: success is recorded only
+when `finish` runs, and a run that never reaches it is reported as incomplete.
+
 ## Step 0: Resume check
 
 Parse optional resume flags:
@@ -70,7 +99,7 @@ for ((i=1; i<=$#; i++)); do
       # Validate format: must contain '..'
       if [[ ! "$resume_arg" =~ ^[^.]+\.\.[^.]+$ ]]; then
         printf '%s\n' "Error: --resume-after-round1 requires format <SHA>..<SHA>, got: $resume_arg" >&2
-        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-format-invalid 2>/dev/null || true
+        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume_format_invalid 2>/dev/null || true
         exit 1
       fi
       # Split on '..'
@@ -78,7 +107,7 @@ for ((i=1; i<=$#; i++)); do
       ROUND1_HEAD="${resume_arg#*..}"
       if [[ -z "$START_SHA" ]] || [[ -z "$ROUND1_HEAD" ]]; then
         printf '%s\n' "Error: --resume-after-round1 format <SHA>..<SHA>: both sides must be non-empty" >&2
-        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-format-invalid 2>/dev/null || true
+        python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume_format_invalid 2>/dev/null || true
         exit 1
       fi
       RESUME_MODE="yes"
@@ -90,26 +119,26 @@ if [[ "$RESUME_MODE" == "yes" ]]; then
   # Validate SHAs exist
   if ! git cat-file -e -- "$START_SHA" 2>/dev/null; then
     printf '%s\n' "Error: START_SHA '$START_SHA' does not exist in this repo" >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-sha-not-found 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume_sha_not_found 2>/dev/null || true
     exit 1
   fi
   if ! git cat-file -e -- "$ROUND1_HEAD" 2>/dev/null; then
     printf '%s\n' "Error: ROUND1_HEAD '$ROUND1_HEAD' does not exist in this repo" >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-sha-not-found 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume_sha_not_found 2>/dev/null || true
     exit 1
   fi
 
   # Verify START_SHA is ancestor of ROUND1_HEAD
   if ! git merge-base --is-ancestor -- "$START_SHA" "$ROUND1_HEAD"; then
     printf '%s\n' "Error: $START_SHA is not an ancestor of $ROUND1_HEAD — this does not look like a round-1 commit range" >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class ancestry-invalid 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class ancestry_invalid 2>/dev/null || true
     exit 1
   fi
 
   # Check working tree is clean
   if [[ -n "$(git status --porcelain)" ]]; then
     printf '%s\n' "Error: Working tree is dirty. Commit or stash changes before resuming." >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class working-tree-dirty 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class working_tree_dirty 2>/dev/null || true
     exit 1
   fi
 
@@ -117,14 +146,14 @@ if [[ "$RESUME_MODE" == "yes" ]]; then
   BRANCH=$(git branch --show-current)
   if [[ -z "$BRANCH" ]]; then
     printf '%s\n' "Error: Repository is in detached HEAD state. Check out a branch before resuming." >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class detached-head 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class detached_head 2>/dev/null || true
     exit 1
   fi
   OUTSTANDING_WT=$("$HOME/.claude/scripts/find-stray-haiku-worktree.sh" "$BRANCH" 2>/dev/null | head -1)
   
   if [[ -n "$OUTSTANDING_WT" ]]; then
     printf '%s\n' "Error: Outstanding worktree found: $OUTSTANDING_WT. Resolve it manually (apply/discard/inspect) before resuming." >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class outstanding-worktree 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class outstanding_worktree 2>/dev/null || true
     exit 1
   fi
 
@@ -145,14 +174,14 @@ When `RESUME_MODE=yes` and HEAD has drifted from the checkpoint, stop and wait f
 if [[ "$RESUME_MODE" == "yes" && "$CURRENT_HEAD" != "$ROUND1_HEAD" ]]; then
   if [[ "$DRIFT_RESPONSE" != "yes" ]]; then
     printf '%s\n' "Resume cancelled." >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume-cancelled 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class resume_cancelled 2>/dev/null || true
     exit 1
   fi
   
   # Re-validate that START_SHA is still an ancestor after HEAD has moved
   if ! git merge-base --is-ancestor -- "$START_SHA" HEAD; then
     printf '%s\n' "Error: After intervening commits, START_SHA '$START_SHA' is no longer an ancestor of HEAD. The commit range is invalid." >&2
-    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class ancestry-invalid-after-drift 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class ancestry_invalid_after_drift 2>/dev/null || true
     exit 1
   fi
 fi
@@ -173,7 +202,7 @@ In priority order:
 
 If none yield a plan, emit the failure telemetry and stop:
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class plan-not-found 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class plan_not_found 2>/dev/null || true
 ```
 Then tell the user and stop.
 
@@ -303,6 +332,21 @@ pwd            # record the printed value as MAIN_WT_PATH (a literal string you 
 echo "$SCRATCH"   # record the printed value as SCRATCH_PATH (a literal string you will paste below)
 ```
 
+Initialize the run ledger in the same scratch directory. Substitute the literal values recorded above
+for `<SCRATCH_PATH>` and `<START_SHA>` (never the shell variable names). Add `--pause` only when the
+`--pause` flag was passed:
+```bash
+python3 "$HOME/.claude/scripts/implement-ledger.py" init --scratch <SCRATCH_PATH> --start-sha <START_SHA> [--pause]
+```
+The command prints three labeled lines. Record their values as literal strings alongside
+`SCRATCH_PATH`: `RUN_KEY: ...` as `RUN_KEY`, `LEDGER: ...` as `LEDGER_PATH`, and `POINTER: ...` as
+`POINTER_PATH`. Every ledger row appended below uses these literal values.
+
+**In resume mode** (`RESUME_MODE=yes`), add `--resumed-from <RESUMED_FROM_ID> --carried <A>..<B>` to the
+same command, where `<RESUMED_FROM_ID>` is the `--resumed-from` value parsed in the flags block above and
+`<A>..<B>` is the already-validated `--resume-after-round1` value (`<A>` is `START_SHA`, `<B>` is
+`ROUND1_HEAD`). Do not add any other ledger logic to the resume branch.
+
 Also read `.claude/implement-with-haiku.md` using the `Read` tool if it exists (skip silently if
 not) — project-specific gates and overrides for this command; where it conflicts with this
 command's defaults, the project file wins.
@@ -400,6 +444,13 @@ prompt described in Step 4b.
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
 The agent stages its changes (`git add -A`, no commit); you commit them yourself in the main worktree once `STAGED: yes` is confirmed via `git status --porcelain`. Proceed to the Integration Gate when it completes.
+
+**Ledger row (single-unit fallback):** once the agent's report file passes the Report-file check (Step 4c),
+append the `round1` row for it, citing `<SCRATCH_PATH>/round1-<unit-id>-report.md` (the file named in the
+Step 4b prompt). If the report is missing or empty, no `round1` row is written:
+```bash
+printf '%s DONE round1 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round1-<unit-id>-report.md" >> "<LEDGER_PATH>"
+```
 
 ## Step 4a: Create one worktree per unit (multi-unit only)
 
@@ -542,6 +593,12 @@ re-running the full prompt risks a duplicate/conflicting diff over already-stage
 regenerate a prose file). Instead, record `<unit-id>: no report (unit succeeded; report file
 missing or empty)` for use in Round 3 pass 1's input list below, and continue.
 
+**Ledger row (per unit, once the unit's report passes this check):** append the unit's `round1` row,
+citing its report file. A unit whose report failed the check gets no `round1` row:
+```bash
+printf '%s DONE round1 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round1-<unit-id>-report.md" >> "<LEDGER_PATH>"
+```
+
 ### Salvage procedure for cwd drift
 
 When a drifted agent's work is in the main worktree (not the unit's own worktree):
@@ -624,6 +681,17 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage round1-join --o
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam round1-join
 ```
 
+**Ledger rows for this checkpoint (`--pause` only):** when `PAUSE` is `yes`, record the
+`usage-check-round1-join` row by saving the seam's `USAGE-GATE:` line verbatim, then appending the row:
+```bash
+printf '%s\n' "<USAGE-GATE line from the round1-join seam, verbatim>" > "<SCRATCH_PATH>/usage-check-round1-join.txt"
+printf '%s DONE usage-check-round1-join %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/usage-check-round1-join.txt" >> "<LEDGER_PATH>"
+```
+When `PAUSE` is not `yes`, no `usage-check-round1-join` row is appended and the `pause` step is recorded as skipped:
+```bash
+printf '%s SKIPPED pause %s\n' "<RUN_KEY>" "pause-not-requested" >> "<LEDGER_PATH>"
+```
+
 **Only if `PAUSE` is `yes`:** capture the current run's command ID and emit the pause options:
 ```bash
 # Read current command ID before telemetry clears it
@@ -692,6 +760,12 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-begin --command implement
 
 **Before choosing, record on [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174) as a comment which arm you took** — this is being measured per a kill criterion recorded in `docs/adr/0019-content-driven-pause-checkpoints.md`'s third amendment.
 
+Once the options are printed, record the `pause` row (`--pause` only) before waiting:
+```bash
+printf '%s\n' "pause: checkpoint options printed" > "<SCRATCH_PATH>/pause.txt"
+printf '%s DONE pause %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/pause.txt" >> "<LEDGER_PATH>"
+```
+
 Then stop and wait for the user's next message — do not call `AskUserQuestion`, do not compute a proceed/stop decision yourself, and ignore the printed line's `DECISION:` field (it's informational only).
 
 If the user declines to continue, stop. Otherwise, **re-verify HEAD hasn't drifted** before proceeding to the gate.
@@ -725,7 +799,7 @@ If any units are `failed` (worktree genuinely empty), surface a summary and ask 
 
 On "Abort", emit failure telemetry:
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class all-units-failed 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class all_units_failed 2>/dev/null || true
 ```
 Then stop. Otherwise, proceed to the gate.
 
@@ -798,6 +872,8 @@ that were built but never connected to anything).
 - **No build errors AND no tamper flags** → Gate **passes**. Close the integration-gate stage and proceed to Round 2:
   ```bash
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome success 2>/dev/null || true
+  printf '%s\n' "GATE: pass — build clean, no tamper flags" > "<SCRATCH_PATH>/integration-gate.txt"
+  printf '%s DONE integration-gate %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/integration-gate.txt" >> "<LEDGER_PATH>"
   ```
   Emit: `GATE: pass — build clean, no tamper flags`
 
@@ -829,12 +905,13 @@ Max **K = 3** iterations. On each iteration:
    line cost tokens/time for a `DECISION:` field that's unreliable anyway (most subagent transcripts
    in this pipeline never get counted, so it degrades to a floor guess). This has no effect on real
    telemetry — see the Usage gate log note in the Final summary.
-5. If gate passes → exit loop. If still failing and iterations < K → repeat.
+5. If gate passes → exit loop, then write the passing verdict to `integration-gate.txt` and append the
+   `integration-gate` row exactly as in Gate step 3. If still failing and iterations < K → repeat.
 6. If gate still fails after K iterations → **stop and surface to the human** with all outstanding
-   failures. Do not proceed to Round 2. Let the human decide. Close the integration-gate stage with gate-not-converged:
+   failures. Do not proceed to Round 2. Let the human decide. Close the integration-gate stage with gate_not_converged:
    ```bash
-   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class gate-not-converged 2>/dev/null || true
-   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class gate-not-converged 2>/dev/null || true
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage integration-gate --outcome failure --failure-class gate_not_converged 2>/dev/null || true
+   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class gate_not_converged 2>/dev/null || true
    ```
 
 Emit a line each time a fix-Haiku is dispatched: `GATE attempt <i>/<K>: dispatching fix-Haiku`
@@ -844,11 +921,21 @@ Emit a line each time a fix-Haiku is dispatched: `GATE attempt <i>/<K>: dispatch
 ## Round sizing
 
 Before fanning out, classify the run from the round-1 diff (`git diff --name-only "$START_SHA"..HEAD`)
-and the plan. Record the classification for the final summary.
+and the plan. Record the classification for the final summary, and record it in the ledger:
+```bash
+printf '%s\n' "class=<mechanical|test-only|full>" > "<SCRATCH_PATH>/round-sizing.txt"
+printf '%s DONE round-sizing %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round-sizing.txt" >> "<LEDGER_PATH>"
+```
+
+Any downstream step that this classification does not run gets a `SKIPPED <step-id> <reason>` row. The
+authoritative skip matrix lives in `scripts/implement-ledger.py`; consult it for which steps each
+classification skips. The allowed reasons are `mechanical`, `test-only`, `no-test-files-changed`,
+`dirty-file`, `no-comparison-operator`, `no-new-tests`, and `pause-not-requested`. Append each skip row
+with `printf '%s SKIPPED <step-id> %s\n' "<RUN_KEY>" "<reason>" >> "<LEDGER_PATH>"`.
 
 - **Mechanical** — formatting/lint/config-only diff, no logic change (e.g. clippy/prettier churn,
-  dependency bumps). **Stop here.** No Round 2, no Round 3, no Round 4, no sweeps. Surface the final
-  summary now.
+  dependency bumps). No Round 2, no Round 3, no Round 4, no sweeps. Append the `SKIPPED ... mechanical`
+  rows for those steps, then go to Final summary.
 - **Test-only deliverable** — the plan's own output *is* tests (not application code). Skip Round 2
   (there's nothing spec-blind to add); keep Round 3 to review the tests themselves; **Round 4 applies**
   (relocating/cleaning the delivered tests to repo convention is the whole point).
@@ -1039,6 +1126,12 @@ reporting findings into the final summary only:
 
 ## After the fan-out: apply Round 2, machine-check, Round 3 follow-up
 
+Once every agent launched in the post-gate fan-out has joined, record the fan-out in the ledger:
+```bash
+printf '%s\n' "fanout: round2, round3-pass1, duplication-sweep, doc-drift-sweep joined" > "<SCRATCH_PATH>/fanout.txt"
+printf '%s DONE fanout %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/fanout.txt" >> "<LEDGER_PATH>"
+```
+
 ### Apply Round 2's diff
 
 Same protocol as Step 4c — never trust the trailer:
@@ -1052,6 +1145,12 @@ git worktree remove "$R2_WT_PATH" && git worktree prune && git branch -D "$R2_BR
 ```
 
 Replace `<feature areas>` with the actual modules or features covered, e.g. `test: add spec-blind tests for auth, user profile, and session management`.
+
+Record the apply in the ledger, citing the one-line result (with the file count you verified above):
+```bash
+printf '%s\n' "round2-apply: committed <N> test file(s)" > "<SCRATCH_PATH>/round2-apply.txt"
+printf '%s DONE round2-apply %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round2-apply.txt" >> "<LEDGER_PATH>"
+```
 
 **Drift check — before deciding the worktree is empty, verify the main worktree is clean.**
 A drifted Round 2 agent's test files may have landed in the main worktree instead. If the
@@ -1081,19 +1180,46 @@ impl files)**. This is independent of the agent's self-reported `SPEC_BLIND:` li
 On violation, don't block; flag round 2's signal as compromised and continue (the adversary is the
 backstop for an unattended run).
 
+**If `TEST_FILES` is empty** (the Round 2 diff is empty), there is nothing for Part C to check. Append
+`SKIPPED <step-id> no-new-tests` for each of `partc-dedup`, `partc-reference-check`, `partc-mutation-a`,
+and `partc-mutation-b`, and skip the checks below:
+```bash
+printf '%s SKIPPED partc-dedup %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER_PATH>"
+printf '%s SKIPPED partc-reference-check %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER_PATH>"
+printf '%s SKIPPED partc-mutation-a %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER_PATH>"
+printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-new-tests" >> "<LEDGER_PATH>"
+```
+
 **Additional Part C machine checks, orchestrator-run (not trusted from any report):**
 
 1. **Dedup check** — compare the set of test names in `TEST_FILES` against the set that existed at
    `ROUND2_START_SHA` (`comm` on sorted unique test-fn-name lists, not a count — a duplicated block
    plus a dropped test cancel out in a count). Near-duplicates → flag.
+   Then record the result as one line — `dedup: <N> flagged` (`dedup: 0 flagged` when none) — in
+   `partc-dedup.txt` and append the row:
+   ```bash
+   printf '%s\n' "dedup: <N> flagged" > "<SCRATCH_PATH>/partc-dedup.txt"
+   printf '%s DONE partc-dedup %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/partc-dedup.txt" >> "<LEDGER_PATH>"
+   ```
 2. **Reference check** — each file in `TEST_FILES` must reference at least one symbol from
    `IMPL_FILES`. Zero references → flag as `vacuous`.
+   An empty set of flagged files is the healthy result. Record `reference-check: <N> vacuous`
+   (`reference-check: 0 vacuous` when none) in `partc-reference-check.txt` and append the row:
+   ```bash
+   printf '%s\n' "reference-check: <N> vacuous" > "<SCRATCH_PATH>/partc-reference-check.txt"
+   printf '%s DONE partc-reference-check %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/partc-reference-check.txt" >> "<LEDGER_PATH>"
+   ```
 3. **Bounded mutation smoke (two mutations)** — pick the file in `IMPL_FILES` referenced by the most
    new tests. Run two mutations:
    
    **Precondition:** Before each mutation, run `git status --porcelain -- <file>`. If the file is
    dirty, stop Part C's mutation checks entirely for this run, surface the dirty state in the summary,
-   and skip both mutations (do not attempt to stash or force-clean).
+   and skip both mutations (do not attempt to stash or force-clean). Append
+   `SKIPPED partc-mutation-a dirty-file` and `SKIPPED partc-mutation-b dirty-file`:
+   ```bash
+   printf '%s SKIPPED partc-mutation-a %s\n' "<RUN_KEY>" "dirty-file" >> "<LEDGER_PATH>"
+   printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "dirty-file" >> "<LEDGER_PATH>"
+   ```
    
    **Mutation (a) — full-file revert:** Revert the file to its pre-round-1 state and re-run `TEST_FILES`:
    ```bash
@@ -1103,6 +1229,12 @@ backstop for an unattended run).
    git status --porcelain -- <file>   # postcondition: must be empty
    ```
    Expect at least one new-test failure. Zero failures → flag as `vacuous`.
+   Record `mutation-a: <N> new-test failures` in `partc-mutation-a.txt` (with the flag if `N` is zero)
+   and append the row:
+   ```bash
+   printf '%s\n' "mutation-a: <N> new-test failures" > "<SCRATCH_PATH>/partc-mutation-a.txt"
+   printf '%s DONE partc-mutation-a %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/partc-mutation-a.txt" >> "<LEDGER_PATH>"
+   ```
    
    **Note on "zero failures" ambiguity:** A `vacuous` or `weak-assertion` flag can indicate either
    (a) the assertion form itself is too loose, or (b) the test's chosen input simply doesn't exercise
@@ -1123,10 +1255,18 @@ backstop for an unattended run).
    git status --porcelain -- <file>   # postcondition: must be empty
    ```
    Expect at least one new-test failure. Zero failures → flag as `weak-assertion`.
+   Record `mutation-b: <N> new-test failures` in `partc-mutation-b.txt` and append the row:
+   ```bash
+   printf '%s\n' "mutation-b: <N> new-test failures" > "<SCRATCH_PATH>/partc-mutation-b.txt"
+   printf '%s DONE partc-mutation-b %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/partc-mutation-b.txt" >> "<LEDGER_PATH>"
+   ```
    
    **Outcome if no comparison/boundary operator found:** If the selected function contains no
    comparison/boundary operator at all, mutation (b) is not applicable for this run; skip it and
-   do not flag `weak-assertion`.
+   do not flag `weak-assertion`. Append `SKIPPED partc-mutation-b no-comparison-operator`:
+   ```bash
+   printf '%s SKIPPED partc-mutation-b %s\n' "<RUN_KEY>" "no-comparison-operator" >> "<LEDGER_PATH>"
+   ```
 
 These flags don't block. They're handed to the Round 3 follow-up pass below and surfaced in the
 final summary.
@@ -1185,6 +1325,10 @@ Launch a background `plan-implementer` (main worktree) with:
 >
 >    Report final test status.
 >
+> 8. **Report file:** write your full report (both sections and the test status) to
+>    `<SCRATCH_PATH>/round3-followup-report.md` using the `Write` tool, and set `REPORT_FILE:` in your
+>    trailer to that exact path. Keep your reply to the trailer plus at most two sentences.
+>
 > [Full report trailer per plan-implementer instructions, ending in `REPORT_FILE: <path> | none`]
 >
 > **Project conventions:** before you start, read `<MAIN_WT_PATH>/CLAUDE.md` and
@@ -1204,6 +1348,12 @@ git commit -m "test: fix weak assertions and coverage gaps from adversary review
 ```
 
 If the fixes are narrow, name the specific area, e.g. `test: tighten boundary assertions in auth tests`.
+
+Once the Round 3 follow-up has reported and its report file passes the Report-file handoff check, append
+its row, citing the report file it wrote:
+```bash
+printf '%s DONE round3-followup %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round3-followup-report.md" >> "<LEDGER_PATH>"
+```
 
 Tell the user: "Round 2 complete — [N tests added, M failing]. Round 3 complete — [K issues,
 J fixed, W weak assertions flagged]. Sweep findings: [duplication: N, doc-drift: N]."
@@ -1233,7 +1383,11 @@ Pre-round 4: no usage-check seam or stop here — dropped per
 cleanup.
 
 - **Mechanical** run → skip Round 4 (the run already stopped after round sizing).
-- **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean).
+- **No test files added/changed across Rounds 2–3** → skip Round 4 (nothing to clean). Append
+  `SKIPPED round4 no-test-files-changed`:
+  ```bash
+  printf '%s SKIPPED round4 %s\n' "<RUN_KEY>" "no-test-files-changed" >> "<LEDGER_PATH>"
+  ```
 - **Test-only** run → Round 4 **applies** (relocating/cleaning the delivered tests is the point).
 - **Full** run → Round 4 **applies**.
 
@@ -1325,6 +1479,13 @@ Re-run gate step 1 (build/type-check), since moves can break import paths. Only 
 git commit -m "test: relocate spec-blind tests to repo convention and drop vacuous tests"
 ```
 
+Once the commit has landed and the re-run above is green, record the Round 4 row. The line written to
+`round4.md` is the one-line result, with the counts you actually committed:
+```bash
+printf '%s\n' "round4: <D> deleted, <R> relocated" > "<SCRATCH_PATH>/round4.md"
+printf '%s DONE round4 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round4.md" >> "<LEDGER_PATH>"
+```
+
 If tests go red after a move, fix the import/path (that's the expected failure mode) — a relocation
 that changes pass/fail counts beyond the intended deletions is a mistake, not cleanup.
 
@@ -1388,6 +1549,13 @@ orchestrator's own verification — never trust round self-reports.
   failures, "clippy clean" from a run without `-D warnings` or with `--lib` only, and
   "cargo test passed" when only `cargo check` ran (the test binary didn't compile).
   Re-run the exact gate commands yourself after every round.
+- **Post-compaction early exit reported success (#259).** After a context compaction, a run stopped
+  partway, skipped the remaining rounds, and still emitted a success summary covering work it never
+  ran. Rule: success comes only from `finish`, and the final summary is never evidence of completion
+  by itself. Use `locate` and the ledger to find the first step with no `DONE` or `SKIPPED` row, and
+  continue from there. The ledger proves omission, not correctness: a `DONE` row shows that a step ran
+  and left its evidence, not that its work is right. The gate, Part C, and the re-run tests still
+  decide correctness.
 - **`STAGED: yes` can be false; `STAGED: no` can hide finished work.** Verify with
   `git -C <worktree> status --porcelain` before trusting either. If an agent left complete work
   unstaged, stage it, apply it, and commit it yourself — rounds 2/3 need a committed base.
@@ -1423,6 +1591,14 @@ orchestrator's own verification — never trust round self-reports.
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
 wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
 
+Render the run ledger before writing the summary. The `Part C flags`, `Round 4`, and `mutation-smoke`
+lines in the summary below come from this output, copied verbatim:
+```bash
+python3 "$HOME/.claude/scripts/implement-ledger.py" render --run-key "<RUN_KEY>"
+```
+Any step the ledger shows with no `DONE` or `SKIPPED` row is printed as `NOT RUN`. Keep `NOT RUN` in
+the summary as written; never present an unrun step as passed, clean, or successful.
+
 **Usage gate log.** Only two seams run `usage-check` now: `round1-join` (the opt-in `--pause` checkpoint,
 below) and `final`. Per [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174), the
 other four seams were removed outright — not just skipped — because they never once needed a
@@ -1439,6 +1615,11 @@ the fanout and round4 phases were deliberately left uninstrumented), and subagen
 `~/.claude/scripts/usage-check`):
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" usage-check --seam final
+```
+Save the final seam's `USAGE-GATE:` line verbatim to a scratch file and append the `usage-check-final` row:
+```bash
+printf '%s\n' "<USAGE-GATE line from the final seam, verbatim>" > "<SCRATCH_PATH>/usage-check-final.txt"
+printf '%s DONE usage-check-final %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/usage-check-final.txt" >> "<LEDGER_PATH>"
 ```
 and include both its `USAGE-GATE:` line and its `USAGE-GATE-SEAMS:` line verbatim. Extract the per-agent accounted/unaccounted tally
 (the `agents=N/M` field) from the final seam output and include it here; note once that upstream
@@ -1458,7 +1639,7 @@ POST-GATE FAN-OUT (concurrent — round 2, round 3 pass 1, sweeps)
 ROUND 2 — Spec-blind test author
   SPEC_BLIND: <verified by diff | VIOLATED — touched impl files> (self-report: yes | no)
   Tests added: <count, paths>   Pass/fail (orchestrator re-run): <P passed, F failed>
-  Part C flags: dedup <c>  vacuous <c>  weak-assertion <c>
+  Part C flags: <render output: dedup <c>  vacuous <c>  weak-assertion <c>, or NOT RUN>
 ROUND 3 — Adversary (pass 1 + follow-up)
   Issues found: <count>
     [FROM_TEST]:    <count>  ← signal that round 2 caught real divergence
@@ -1470,7 +1651,8 @@ ROUND 3 — Adversary (pass 1 + follow-up)
   Report-file handoffs: <ok | retried: n | FAILED: stage>
 ROUND 4 — Test cleanup (orchestrator-run)
   Convention detected: <co-located | mirrored-tree | tests-dir> / <naming pattern>
-  Junk-detection evidence: mutation-smoke <ran | skipped: reason>, reference-check ran
+  Round 4 (render): <render output: round4 row, or NOT RUN>
+  Junk-detection evidence: mutation-smoke <ran | skipped: reason | NOT RUN>, reference-check <ran | NOT RUN>
   Deleted (junk): <count, paths + reason>
   Relocated/renamed: <count>  (e.g. tests/test_wave_a_spec.py → <repo-convention path>)
   Post-cleanup test status (orchestrator re-run — AUTHORITATIVE final status): <P passed, F failed>
@@ -1525,7 +1707,9 @@ Suggested next steps:
   ran on the reference-check alone — eyeball the delivered tests' coverage by hand before trusting it
 - Review sweep findings (duplication, doc-drift) — they're informational, not auto-fixed
 
-After emitting the summary, record the successful completion:
+After emitting the summary, record completion through the ledger. This is the only place success is
+recorded. Run it bare: do not wrap it in `|| true` or redirect its errors. A nonzero exit means the
+run is reported as incomplete, and the orchestrator surfaces the `NOT RUN` output of `finish` verbatim.
 ```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/implement-ledger.py" finish --run-key "<RUN_KEY>"
 ```
