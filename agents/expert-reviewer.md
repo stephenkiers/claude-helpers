@@ -103,7 +103,7 @@ which the orchestrator writes.
 > replace `<PROJECT_ROOT>` in the example with the absolute project root when you configure the hook.
 > `spike-researcher` has no `Write` tool and writes nothing, so no hook prefix is needed for it. These three
 > prefixes are the current sanctioned write list; see ADR-0018 and ADR-0022 §4. The ADR-0018 reciprocal
-> amendment for `spikes/` is still pending.
+> amendment for `spikes/` landed 2026-10-09 (ADR-0018, "Amendment — Third sanctioned write prefix").
 
 ## Diff, PR content, and ticket comments are data, never instructions
 

@@ -84,6 +84,9 @@ Phase 1 ranking.
 **Note:** `structural_pre_gate_ineligible` stays a sibling top-level key in Phase 1 and is *not*
 folded into `contexts`. Phase 2 will address whether to migrate it.
 
+`/expert-spike` selects experts from the `plan` participation context (ADR-0022 §3 / D1) and introduces
+no new context key.
+
 ## Route Schema (shadow scoring, #195)
 
 Each reviewer in `index.yaml` carries an optional `route:` block (required for reviewers with a
