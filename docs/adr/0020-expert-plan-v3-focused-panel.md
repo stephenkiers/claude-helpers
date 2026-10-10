@@ -93,6 +93,21 @@ v3 uses `agents/expert-reviewer.md`'s existing hybrid dispatch mode (persona + c
 - **Effort expansion**: If v3 effort 2/3 prove cost-effective and users request more selectivity, a later phase can add effort 1 (1 expert, haiku) or effort 4 (full panel, ~6 experts). This is not ruled out; it's just deferred.
 - **`--view summary`**: A summary presentation mode showing just decisions and high-level approach (skipping full contributions) is deliberately deferred as future work.
 
+## Amendment (2026-10-09) — North Star Nick holds a fixed seat
+
+One of the 3 (effort 2) or 4 (effort 3) expert seats is always North Star Nick; the main thread
+picks the rest by the coverage rubric. Plans were coming back sound on their own terms but unaware
+of other tickets, epics, and pull requests in flight, and nothing guaranteed a seat whose job is to
+hold a plan consistent with the project's direction. The seat is taken from the existing count rather than
+added to it, so the cost profile above is unchanged; the price is one fewer rubric-chosen domain
+specialist per plan.
+
+Because plan contributors read only their persona, the contribution contract, and `context.md`,
+Nick's persona now carries a `planReview.contextLoad` block. Step 1 writes
+`{SESSION_DIR}/in-flight.md` with `scripts/in-flight-snapshot.py`, and Step 2 dispatches three Haiku
+North Star scouts (ADRs, repo docs, in-flight work) whose briefs he reads before contributing. These
+are the only subagents added to the pipeline, and they are Haiku. See ADR-0003's amendment of the same date for the review side.
+
 ## References
 
 - ADR-0018: Parallel planning with checkpoint-based isolation (v2 design, which v3 builds on) and its Amendment on harness-agnostic barrier waiting — defines the join-barrier pattern used for coordinating parallel subagents

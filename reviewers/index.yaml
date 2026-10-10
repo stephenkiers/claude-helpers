@@ -79,14 +79,9 @@ reviewers:
     contexts: {review: primary, plan: primary}
     useWhen: Any architectural change, new modules, scope-affecting work, pattern decisions
     triggers: [new files, package.json, Cargo.toml, ADR, milestone, phase, scope, architecture, migrate, refactor]
-    note: "Strategic alignment reviewer. Loads ADRs, issues index, and product docs. Cross-references diff against documented decisions. Review participation is subject to diff-shape gating in prompts/expert-review-panel.md."
+    note: "Strategic alignment reviewer; the one seat that keeps work consistent with the project's direction (ADRs, root docs, open issues/epics/PRs). Reads briefs from three Haiku North Star scouts plus the in-flight snapshot, then cross-references the change against documented decisions and other work in progress. Always-run in review (efforts 3-5) and always seated in /expert-plan; that behavior lives in panel prose, not in the context tag."
     route:
-      paths: ["docs/adr/**"]
-      strong: [architecture, refactor]
-      weak: [migrate]
-      shape: {adr_touched: 3, dep_manifest: 3, new_files: 1}
-      include_at: 6
-      candidate_at: 3
+      always: true
 
   - name: Rachel
     file: rachel.yaml

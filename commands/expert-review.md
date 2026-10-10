@@ -11,8 +11,8 @@ A checkpoint-based, parallel code review pipeline:
 
 1. **Summarizer** analyzes the diff (subagent)
 2. **Router** (sonnet) judges which reviewers meet the threshold for this diff
-3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (Code Rot Cody and
-   Consistency Checker always run; others routed by the Router, incl. Sam System when selected), each writing its own checkpoint file
+3. **Pass 1 blind reviews** — one **parallel subagent per selected reviewer** (Code Rot Cody, Consistency 
+   Checker, and North Star Nick always run; others routed by the Router, incl. Sam System when selected), each writing its own checkpoint file
 4. **Contrarian Carl** — always runs after all Pass 1 files exist, sees everything, finds what was missed
 5. **Haiku Q&A** — parallel haiku subagents answer each reviewer's open questions
 6. **Pass 2 re-evaluations** — parallel subagents, **fresh skeptic-verifier framing**, business context
@@ -371,9 +371,9 @@ this step and continue at Step 2.
   `diff-index.md` is the file list plus every hunk header — each one already carries its enclosing
   function/section (`@@ -39,13 +39,16 @@ See the ADRs for…`) — at roughly 1/20th the size of the
   full patch. The Router reads `full-diff.patch` (its line ranges in `tagged-sections.md` are
-  offsets into that file, which Pass 1 reviewers use for bounded reads). Code Rot Cody, Consistency
-  Checker, and Contrarian Carl always read the full patch (their domain is the whole diff); Sam
-  System reads it too, but only when routed in.
+  offsets into that file, which Pass 1 reviewers use for bounded reads). Four reviewers always read 
+  the full patch (their domain is the whole diff): Code Rot Cody, Consistency Checker, North Star Nick, 
+  and Contrarian Carl. Sam System reads it too, but only when routed in.
 
 ### Step 2: Discover Available Reviewers
 
@@ -484,13 +484,13 @@ STAGE_END_ARGS=(--stage resolve-scope --outcome success --effort "$EFFORT")
 [ -n "${PANEL_MODEL:-}" ] && STAGE_END_ARGS+=(--model "$PANEL_MODEL")
 STAGE_END_ARGS+=(--mode "$([ "${PR_MODE:-false}" = true ] && echo pr || echo local)")
 if [ "${NAMED_SELECTION:-false}" = true ]; then
-  # Count explicitly-named reviewers plus whichever of the three always-run reviewers
-  # (code-rot-cody, consistency-checker, contrarian-carl) are NOT already named — a named
-  # reviewer that happens to be one of the always-run three must not be counted twice
+  # Count explicitly-named reviewers plus whichever of the four always-run reviewers
+  # (code-rot-cody, consistency-checker, contrarian-carl, north-star-nick) are NOT already named — a named
+  # reviewer that happens to be one of the always-run four must not be counted twice
   # (mirrors the dedup in prompts/expert-review-panel.md's panel-decision table builder).
   NAMED_COUNT=$(echo "$NAMED_REVIEWERS" | wc -w)
   EXTRA_ALWAYS_RUN_COUNT=0
-  for r in code-rot-cody consistency-checker contrarian-carl; do
+  for r in code-rot-cody consistency-checker contrarian-carl north-star-nick; do
     echo "$NAMED_REVIEWERS" | grep -qw "$r" || EXTRA_ALWAYS_RUN_COUNT=$((EXTRA_ALWAYS_RUN_COUNT + 1))
   done
   REVIEWER_COUNT=$((NAMED_COUNT + EXTRA_ALWAYS_RUN_COUNT))
@@ -703,7 +703,7 @@ CRITICAL_COUNT=$(sev_count critical) && HIGH_COUNT=$(sev_count high) && \
   { echo "ERROR: could not derive severity counts from findings.json" >&2; false; }
 
 # Collect reviewers that actually ran by checking for pass1 files and known always-run reviewers.
-# Always-run reviewers (code-rot-cody, consistency-checker, contrarian-carl) are included if
+# Always-run reviewers (code-rot-cody, consistency-checker, contrarian-carl, north-star-nick) are included if
 # their pass files exist; conditionally-routed reviewers are included only if they have pass files.
 REVIEWERS=()
 for pass1_file in "$REVIEW_DIR"/*-pass1.md; do
