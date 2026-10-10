@@ -65,7 +65,25 @@ This is the traceability matrix.]
 
 ## Open Items
 [Anything genuinely open that needs follow-up after implementation, or empty if none.]
+
+## Sub-tickets
+[EPIC MODE ONLY — include this section when `context.md` contains the line `EPIC_MODE: true`;
+omit it entirely otherwise. Ordered list; every `depends-on` points backwards.]
+
+1. **[Title — a GitHub issue title]**
+   - scope: [2–5 lines, the sub-issue body]
+   - depends-on: [none | earlier item numbers]
+2. ...
 ```
+
+**Epic mode (`EPIC_MODE: true` in `context.md`).** The contributors each wrote a
+`**Sub-tickets**:` block (see `plan-contribution-contract.md` § Sub-tickets). Merge them into one
+`## Sub-tickets` section: reconcile overlapping items into one, keep every dependency a contributor
+named, order so that `depends-on` always points to an earlier item, and keep the list to three to
+eight items. The section is machine-read by `/expert-flow --epic` — keep the exact shape above
+(numbered items, bold title, `scope:` and `depends-on:` sub-bullets). The Implementation Steps
+section still describes the epic as a whole; the sub-tickets are how it is delivered, not a
+replacement for the plan.
 
 ### Synthesis Quality Rules
 
@@ -93,6 +111,8 @@ After writing `{SESSION_DIR}/plan.md`, immediately perform these checks on the p
 4. **Optional Work and Scope**: Verify that anything marked "optional" is listed in **Out of Scope** and does not appear in **Implementation Steps** as required.
 
 5. **Decision Traceability**: For each decision listed in **Decisions Made**, verify a corresponding implementation step exists or it's listed in **Out of Scope**.
+
+6. **Sub-ticket Order (epic mode only)**: When `context.md` contains `EPIC_MODE: true`, verify the plan has a `## Sub-tickets` section, every `depends-on` names only earlier item numbers, and no contributor-named dependency was dropped. When it does not, verify the plan has **no** `## Sub-tickets` section.
 
 ### Correction Procedure
 

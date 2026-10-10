@@ -78,6 +78,10 @@ to North Star Nick).
 - [ADR-0022: /expert-spike — resumable research spikes with a persisted knowledge base](0022-expert-spike.md) — a
   stateful sibling of `/research-swarm` with resumable stages, no model pin in frontmatter, a third sanctioned subagent write
   prefix (`${PROJECT_ROOT}/spikes/`), and a web-only researcher agent with query-sanitization rules
+- [ADR-0023: /expert-flow — lifecycle orchestrator with a question relay](0023-expert-flow.md) — one
+  command runs plan → track → implement → review → fix → verify → ship → merge as subagent steps; steps relay their
+  `AskUserQuestion` sites through files (`prompts/flow-reference.md`), state lives on disk and resumes, failures are
+  hard stops with no auto-remediation, epics run sequentially
 
 ## Format
 
