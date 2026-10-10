@@ -31,7 +31,8 @@ Exit codes:
     check   0 complete; 1 incomplete or malformed, or no pointer found; 2 unreadable state.
     render  0 rendered; 3 nothing found; 2 unreadable state.
     finish  0 success, or already finished (no-op); 1 gate failed (command-end recorded as
-            steps_skipped); 3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
+            steps_skipped), or success event could not be recorded (FINISHED not written);
+            3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
 
 Importable API (tests load this file with importlib, since the name is hyphenated):
 STEP_IDS, SKIP_REASONS, CLASSES, LedgerError, state_root, required_steps, permitted_skip_reasons,
@@ -397,7 +398,8 @@ def locate_record(
     """Find a run's pointer. Returns (path, is_tombstone, data) or None.
 
     With run_key: exactly that pointer (or its tombstone). Otherwise (1) newest non-superseded
-    record for the session, then (2) newest unfinished pointer whose repo matches.
+    record for the session, then (2) newest unfinished pointer whose repo matches. When repo is
+    given, a record from another repo is never resolved (pointers and tombstones alike).
     """
     if run_key is not None:
         if not RUN_KEY_RE.match(run_key):
@@ -405,12 +407,15 @@ def locate_record(
         for suffix in (POINTER_SUFFIX, FINISHED_SUFFIX):
             path = root / f"{run_key}{suffix}"
             if path.is_file():
-                return path, suffix == FINISHED_SUFFIX, _read_record(path)
+                data = _read_record(path)
+                if repo is not None and data.get("repo") != repo:
+                    return None
+                return path, suffix == FINISHED_SUFFIX, data
         return None
     records = _scan_records(root)
     records.sort(key=lambda r: _created_key(r[0], r[2]), reverse=True)
     for path, kind, data in records:
-        if session is not None and data.get("session_id") == session:
+        if session is not None and data.get("session_id") == session and (repo is None or data.get("repo") == repo):
             return path, kind == "finished", data
     for path, kind, data in records:
         if kind == "pointer" and repo is not None and data.get("repo") == repo:
@@ -419,10 +424,11 @@ def locate_record(
 
 
 def _resolve(run_key: Optional[str], repo: Optional[str] = None) -> Optional[Tuple[Path, bool, Dict[str, Any]]]:
-    """Exact pointer for run_key, else the same session-then-repo fallback that locate uses."""
+    """Exact pointer for run_key, else the same session-then-repo fallback that locate uses. Repo-scoped either way."""
+    repo = repo or git_toplevel()
     if run_key is not None:
-        return locate_record(state_root(), None, None, run_key)
-    return locate_record(state_root(), env_session() or "unknown", repo or git_toplevel(), None)
+        return locate_record(state_root(), None, repo, run_key)
+    return locate_record(state_root(), env_session() or "unknown", repo, None)
 
 
 def _sha_or_error(value: str, what: str) -> str:
@@ -585,10 +591,6 @@ def cmd_finish(args: argparse.Namespace) -> int:
         _emit_command_end(args.log, args.state_dir, False)
         return 3
     pointer, finished, data = found
-    if finished:
-        print("already finished")
-        return 0
-
     ledger = Path(data["scratch"]) / LEDGER_NAME
     run_key = data["run_key"]
     try:
@@ -600,12 +602,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
         _emit_command_end(args.log, args.state_dir, False)
         return 1
 
-    if ev["finished"]:
-        print("already finished")
-        if pointer.name.endswith(POINTER_SUFFIX):
-            os.replace(str(pointer), str(_replace_suffix(pointer, POINTER_SUFFIX, FINISHED_SUFFIX)))
-        return 0
-
+    # The completeness gate runs before any FINISHED marker or tombstone is honored.
     for line in render_lines(ev):
         print(line)
     for line in check_lines(ev):
@@ -614,7 +611,21 @@ def cmd_finish(args: argparse.Namespace) -> int:
         _emit_command_end(args.log, args.state_dir, False)
         return 1
 
-    _emit_command_end(args.log, args.state_dir, True)
+    if finished:
+        print("already finished")
+        return 0
+
+    if ev["finished"]:
+        # An earlier finish wrote FINISHED (after its success event) but did not tombstone the pointer.
+        # Only the tombstone move remains; no second command.end is emitted.
+        if pointer.name.endswith(POINTER_SUFFIX):
+            os.replace(str(pointer), str(_replace_suffix(pointer, POINTER_SUFFIX, FINISHED_SUFFIX)))
+        print("already finished")
+        return 0
+
+    if not _emit_command_end(args.log, args.state_dir, True):
+        print("finish: success event not recorded; FINISHED not written and the run stays open", file=sys.stderr)
+        return 1
     with open(ledger, "a", encoding="utf-8") as f:
         f.write(f"{run_key} FINISHED\n")
     if pointer.name.endswith(POINTER_SUFFIX):

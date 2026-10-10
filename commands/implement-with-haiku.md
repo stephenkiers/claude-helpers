@@ -33,7 +33,7 @@ each one marks:
 - `all_units_failed` — Step 4d, all units failed
 - `gate_not_converged` — Integration gate step 4.6, failed after K=3 iterations
 
-`steps_skipped` is the telemetry count of `SKIPPED` rows in the run ledger.
+`steps_skipped` marks a run whose ledger was missing or incomplete.
 
 The success outcome is not recorded by any failure path or step in this doc. It is recorded only by
 `finish` (the last step of the run), and a run that never reaches `finish` is reported as incomplete.
@@ -1591,14 +1591,6 @@ orchestrator's own verification — never trust round self-reports.
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
 wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
 
-Render the run ledger before writing the summary. The `Part C flags`, `Round 4`, and `mutation-smoke`
-lines in the summary below come from this output, copied verbatim:
-```bash
-python3 "$HOME/.claude/scripts/implement-ledger.py" render --run-key "<RUN_KEY>"
-```
-Any step the ledger shows with no `DONE` or `SKIPPED` row is printed as `NOT RUN`. Keep `NOT RUN` in
-the summary as written; never present an unrun step as passed, clean, or successful.
-
 **Usage gate log.** Only two seams run `usage-check` now: `round1-join` (the opt-in `--pause` checkpoint,
 below) and `final`. Per [issue #174](https://github.com/stephenkiers/claude-helpers/issues/174), the
 other four seams were removed outright — not just skipped — because they never once needed a
@@ -1626,6 +1618,14 @@ and include both its `USAGE-GATE:` line and its `USAGE-GATE-SEAMS:` line verbati
 `token_confidence` is always hardcoded as `"low"` (a blanket disclaimer on the mechanism, not a
 signal about any specific transcript's trustworthiness).
 
+Render the run ledger after the `usage-check-final` row is appended, so the output includes every row.
+The `partc-*` and `round4` lines of that output are copied verbatim into the summary below. Any step
+the ledger shows with no `DONE` or `SKIPPED` row is printed as `NOT RUN`. Keep `NOT RUN` in the summary
+as written; never present an unrun step as passed, clean, or successful.
+```bash
+python3 "$HOME/.claude/scripts/implement-ledger.py" render --run-key "<RUN_KEY>"
+```
+
 ```
 ROUND SIZING: <mechanical | test-only | full>
 ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]
@@ -1639,7 +1639,7 @@ POST-GATE FAN-OUT (concurrent — round 2, round 3 pass 1, sweeps)
 ROUND 2 — Spec-blind test author
   SPEC_BLIND: <verified by diff | VIOLATED — touched impl files> (self-report: yes | no)
   Tests added: <count, paths>   Pass/fail (orchestrator re-run): <P passed, F failed>
-  Part C flags: <render output: dedup <c>  vacuous <c>  weak-assertion <c>, or NOT RUN>
+  Part C flags: <partc-dedup, partc-reference-check, partc-mutation-a, partc-mutation-b render lines, verbatim>
 ROUND 3 — Adversary (pass 1 + follow-up)
   Issues found: <count>
     [FROM_TEST]:    <count>  ← signal that round 2 caught real divergence
@@ -1651,7 +1651,7 @@ ROUND 3 — Adversary (pass 1 + follow-up)
   Report-file handoffs: <ok | retried: n | FAILED: stage>
 ROUND 4 — Test cleanup (orchestrator-run)
   Convention detected: <co-located | mirrored-tree | tests-dir> / <naming pattern>
-  Round 4 (render): <render output: round4 row, or NOT RUN>
+  Round 4 (render): <round4 render line, verbatim>
   Junk-detection evidence: mutation-smoke <ran | skipped: reason | NOT RUN>, reference-check <ran | NOT RUN>
   Deleted (junk): <count, paths + reason>
   Relocated/renamed: <count>  (e.g. tests/test_wave_a_spec.py → <repo-convention path>)

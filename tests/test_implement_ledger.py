@@ -95,7 +95,14 @@ class Sandbox:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def run(self, args, session=None):
+    def other_repo(self):
+        """A second git repo under the same sandbox (for cross-repo resolution tests)."""
+        d = self.root / "other-repo"
+        d.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        return d
+
+    def run(self, args, session=None, cwd=None):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
         env["IMPLEMENT_LEDGER_STATE_DIR"] = str(self.state)
         env["HOME"] = str(self.home)
@@ -103,7 +110,7 @@ class Sandbox:
             env["CLAUDE_CODE_SESSION_ID"] = session
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
-            cwd=str(self.repo), env=env, capture_output=True, text=True, timeout=120,
+            cwd=str(cwd or self.repo), env=env, capture_output=True, text=True, timeout=120,
         )
 
     def command_ends(self):
@@ -134,8 +141,9 @@ class Run:
         self.ledger = self.scratch / "ledger.md"
 
     def init(self, *, session=SESSION, pause=False, carried=None, sha=START_SHA):
-        args = ["init", "--scratch", str(self.scratch), "--start-sha", sha,
-                "--session-id", session, "--run-key", self.rk]
+        args = ["init", "--scratch", str(self.scratch), "--start-sha", sha, "--run-key", self.rk]
+        if session is not None:
+            args += ["--session-id", session]
         if pause:
             args.append("--pause")
         if carried:
@@ -302,10 +310,11 @@ def test_test_only_skip_round2_apply_only_for_test_only():
         f_run = Run(sb, "run-full-skip", "scratch-f")
         f_run.init()
         f_run.append(full_rows(f_run, cls="full", skip={"round2-apply": "test-only"}))
-        rc_f, _ = _check_rows(f_run)
+        rc_f, out_f = _check_rows(f_run)
 
-        ok = rc_t == 0 and rc_f != 0
-        return ok, f"test-only check rc={rc_t} ({out_t[:200]!r}); full check rc={rc_f} (expected non-zero)"
+        ok = (rc_t == 0 and rc_f == 1
+              and "SKIPPED round2-apply test-only is not permitted for class full" in out_f)
+        return ok, f"test-only check rc={rc_t} ({out_t[:200]!r}); full check rc={rc_f} output={out_f[:200]!r}"
     finally:
         sb.close()
 
@@ -363,9 +372,9 @@ def test_malformed_skip_reasons_fail():
             run = Run(sb, name, name)
             run.init()
             run.append(full_rows(run, drop={step}) + [f"{run.rk} SKIPPED {step} {reason}"])
-            rc, _ = _check_rows(run)
-            if rc == 0:
-                problems.append(f"SKIPPED {step} {reason} passed the gate")
+            rc, out = _check_rows(run)
+            if rc != 1 or f"unknown skip reason {reason!r}" not in out:
+                problems.append(f"SKIPPED {step} {reason} not rejected: rc={rc} output={out[:200]!r}")
         return not problems, "; ".join(problems) or "ok"
     finally:
         sb.close()
@@ -381,7 +390,8 @@ def test_done_with_missing_evidence_fails():
         rows.append(f"{run.rk} DONE round4 {run.scratch / 'does-not-exist.txt'}")
         run.append(rows)
         rc, out = _check_rows(run)
-        return rc != 0 and "round4" in out, f"check rc={rc} output={out[:300]!r}"
+        ok = rc == 1 and "evidence file is missing or unreadable" in out
+        return ok, f"check rc={rc} output={out[:300]!r}"
     finally:
         sb.close()
 
@@ -394,7 +404,8 @@ def test_done_with_empty_evidence_fails():
         run.init()
         run.append(full_rows(run, text={"partc-dedup": ""}))
         rc, out = _check_rows(run)
-        return rc != 0 and "partc-dedup" in out, f"check rc={rc} output={out[:300]!r}"
+        ok = rc == 1 and "evidence file is empty" in out and "line " in out
+        return ok, f"check rc={rc} output={out[:300]!r}"
     finally:
         sb.close()
 
@@ -418,8 +429,9 @@ def test_foreign_run_key_does_not_satisfy_row():
         control.append(full_rows(control))
         rc_control, _ = _check_rows(control)
 
-        ok = rc_foreign != 0 and "round4" in out and rc_control == 0
-        return ok, f"foreign-key run rc={rc_foreign}; control rc={rc_control}"
+        ok = (rc_foreign == 1 and "MISSING: round4" in out and "foreign run key" in out
+              and rc_control == 0)
+        return ok, f"foreign-key run rc={rc_foreign} output={out[:200]!r}; control rc={rc_control}"
     finally:
         sb.close()
 
@@ -434,7 +446,8 @@ def test_unknown_step_id_does_not_satisfy_required_row():
         rows.append(f"{run.rk} DONE round-four {run.evidence('bogus')}")
         run.append(rows)
         rc, out = _check_rows(run)
-        return rc != 0 and "round4" in out, f"check rc={rc} output={out[:300]!r}"
+        ok = rc == 1 and "unknown step 'round-four'" in out and "MISSING: round4" in out
+        return ok, f"check rc={rc} output={out[:300]!r}"
     finally:
         sb.close()
 
@@ -449,7 +462,7 @@ def test_pause_rows_required_under_pause():
         rc_without, out = _check_rows(run)
         run.append([f"{run.rk} DONE {s} {run.evidence(s)}" for s in sorted(PAUSE_ROWS)])
         rc_with, _ = _check_rows(run)
-        ok = rc_without != 0 and all(s in out for s in PAUSE_ROWS) and rc_with == 0
+        ok = rc_without == 1 and all(s in out for s in PAUSE_ROWS) and rc_with == 0
         return ok, f"missing pause rows rc={rc_without} output={out[:200]!r}; after adding rc={rc_with}"
     finally:
         sb.close()
@@ -491,7 +504,8 @@ def test_carried_token_on_other_step_is_malformed():
         rows.append(f"{run.rk} DONE round4 carried:{SHA_A}..{SHA_B}")
         run.append(rows)
         rc, out = _check_rows(run)
-        return rc != 0 and "round4" in out, f"check rc={rc} output={out[:300]!r}"
+        ok = rc == 1 and "carried evidence is only valid for round1" in out and "MISSING: round4" in out
+        return ok, f"check rc={rc} output={out[:300]!r}"
     finally:
         sb.close()
 
@@ -505,7 +519,8 @@ def test_missing_round_sizing_treated_as_full():
         rows = [r for r in mechanical_rows(run, drop={"round-sizing"})]
         run.append(rows)
         rc, out = _check_rows(run)
-        return rc != 0 and "round-sizing" in out, f"check rc={rc} output={out[:300]!r}"
+        ok = rc == 1 and "MISSING: round-sizing" in out
+        return ok, f"check rc={rc} output={out[:300]!r}"
     finally:
         sb.close()
 
@@ -556,7 +571,7 @@ def test_required_absent_row_renders_not_run():
         run.append(mechanical_rows(run, drop={"integration-gate"}))
         rc, out = _check_rows(run)
         rendered = _out(run.render())
-        ok = rc != 0 and "integration-gate" in out and any(
+        ok = rc == 1 and "MISSING: integration-gate" in out and any(
             "integration-gate" in ln and "NOT RUN" in ln for ln in rendered.splitlines())
         return ok, f"check rc={rc}; render lines={[ln for ln in rendered.splitlines() if 'integration' in ln]}"
     finally:
@@ -719,6 +734,115 @@ def test_steps_skipped_round_trips_through_schema():
     return ok, f"errors={errors}"
 
 
+def test_hand_appended_finished_does_not_bypass_gate():
+    """A FINISHED line on an incomplete ledger (no tombstone) does not make finish succeed."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-hand-finished")
+        run.init()
+        run.append(full_rows(run, drop={"round4"}) + [f"{run.rk} FINISHED"])
+        c = run.check()
+        f = run.finish()
+        ends = sb.command_ends()
+        problems = []
+        if c.returncode != 1 or "MISSING: round4" not in _out(c):
+            problems.append(f"check {_brief(c)}")
+        if f.returncode != 1:
+            problems.append(f"finish on incomplete ledger with FINISHED line: {_brief(f)}")
+        if [e.get("outcome") for e in ends] != [{"status": "failure", "class": "steps_skipped"}]:
+            problems.append(f"command.end outcomes={[e.get('outcome') for e in ends]}")
+        if sb.pointers(run.rk, "finished"):
+            problems.append("tombstone written for an incomplete run")
+        if not sb.pointers(run.rk):
+            problems.append("live pointer removed on a failed finish")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_unknown_session_finish_does_not_resolve_other_repo():
+    """Session unset, pointer in repo A; finish and locate from repo B must not resolve or tombstone it."""
+    sb = Sandbox()
+    try:
+        other = sb.other_repo()
+        run = Run(sb, "run-xrepo-unknown")
+        run.init(session=None)
+        run.append(full_rows(run))
+        loc = sb.run(["locate"], cwd=other)
+        f = sb.run(["finish", "--run-key", "run-xrepo-unknown", "--log", str(sb.log),
+                    "--state-dir", str(sb.metrics_state)], cwd=other)
+        ends = sb.command_ends()
+        problems = []
+        if loc.returncode != 3:
+            problems.append(f"locate from other repo: {_brief(loc)}")
+        if f.returncode != 3:
+            problems.append(f"finish from other repo: {_brief(f)}")
+        if any(e.get("outcome") == {"status": "success"} for e in ends):
+            problems.append("success recorded for another repo's run")
+        if not sb.pointers(run.rk) or sb.pointers(run.rk, "finished"):
+            problems.append("repo A pointer was tombstoned by a finish from repo B")
+        if "FINISHED" in run.ledger.read_text():
+            problems.append("FINISHED written by a finish from another repo")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_foreign_tombstone_is_not_already_finished():
+    """Run finished in repo A; finish with the same session from repo B exits 3, not 'already finished'."""
+    sb = Sandbox()
+    try:
+        other = sb.other_repo()
+        run = Run(sb, "run-xrepo-tomb")
+        run.init(session=SESSION)
+        run.append(full_rows(run))
+        first = run.finish(session=SESSION)
+        second = sb.run(["finish", "--run-key", run.rk, "--log", str(sb.log),
+                         "--state-dir", str(sb.metrics_state)], session=SESSION, cwd=other)
+        ends = [e.get("outcome") for e in sb.command_ends()]
+        problems = []
+        if first.returncode != 0:
+            problems.append(f"first finish {_brief(first)}")
+        if second.returncode != 3:
+            problems.append(f"finish from other repo: {_brief(second)}")
+        if "already finished" in _out(second).lower():
+            problems.append("foreign tombstone reported as already finished")
+        if ends != [{"status": "success"}, {"status": "failure", "class": "steps_skipped"}]:
+            problems.append(f"command.end outcomes={ends}")
+        if not sb.pointers(run.rk, "finished"):
+            problems.append("repo A tombstone missing")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_success_event_failure_leaves_run_open():
+    """command-end emission fails: finish exits 1, writes no FINISHED, keeps the pointer; a retry then succeeds."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-emit-fail")
+        run.init()
+        run.append(full_rows(run))
+        blocker = sb.root / "blocker"
+        blocker.write_text("not a directory\n")
+        bad_log = blocker / "events.jsonl"
+        f = sb.run(["finish", "--run-key", run.rk, "--log", str(bad_log),
+                    "--state-dir", str(sb.metrics_state)])
+        problems = []
+        if f.returncode != 1 or "success event not recorded" not in _out(f):
+            problems.append(f"finish with failing emission: {_brief(f)}")
+        if "FINISHED" in run.ledger.read_text():
+            problems.append("FINISHED written although success was not recorded")
+        if sb.pointers(run.rk, "finished") or not sb.pointers(run.rk):
+            problems.append("run tombstoned or pointer removed although success was not recorded")
+        retry = run.finish()
+        if retry.returncode != 0 or [e.get("outcome") for e in sb.command_ends()] != [{"status": "success"}]:
+            problems.append(f"retry with working log: {_brief(retry)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
 TESTS = [
     ("STEP_IDS and SKIP_REASONS match the plan vocabulary", test_vocabulary_pinned),
     ("init writes ledger and pointer", test_init_writes_ledger_and_pointer),
@@ -750,6 +874,10 @@ TESTS = [
     ("finish with missing pointer records steps_skipped", test_finish_missing_pointer_records_steps_skipped),
     ("test-only: partc-* SKIPPED no-new-tests passes", test_test_only_partc_no_new_tests_skip_passes),
     ("steps_skipped round-trips through telemetry schema", test_steps_skipped_round_trips_through_schema),
+    ("hand-appended FINISHED does not bypass the completeness gate", test_hand_appended_finished_does_not_bypass_gate),
+    ("unknown session: finish and locate do not resolve another repo's pointer", test_unknown_session_finish_does_not_resolve_other_repo),
+    ("foreign tombstone is not reported as already finished", test_foreign_tombstone_is_not_already_finished),
+    ("failed success emission leaves the run open (no FINISHED, no tombstone)", test_success_event_failure_leaves_run_open),
 ]
 
 
