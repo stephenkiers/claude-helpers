@@ -87,9 +87,10 @@ session-state file. This specific race is now resolved: `load_and_update_state` 
 already keys per-agent data by `agent_id` inside a shared dict, preventing per-agent state clobbering.
 A DIFFERENT hazard class remains open: a `SubagentStop` hook firing more than once for the same agent
 (a "re-fire") is a possible failure mode that any future new hook on an event with a blocking hook chain
-must independently guard against. This feature's own mitigation for re-fires (idempotent-on-status
-folding; see (d) below) is a specific fix, not a general principle — the ADR records the hazard class
-for future reference, not just this feature's workaround.
+must independently guard against. This feature's own mitigation for re-fires distinguishes re-fire (same
+hook firing twice) from duplicate classification (second call with matching status `path_not_a_file` and
+no begin entry is classified as `agent.internal_stop`, not a duplicate real subagent) — the ADR records
+the hazard class for future reference, not just this feature's workaround.
 
 **First production consumer of telemetry's usage data.**
 `/implement-with-haiku` is the first consumer of this ADR's telemetry data for any decision beyond

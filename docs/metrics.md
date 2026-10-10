@@ -166,7 +166,7 @@ payload against this exact config shape during this implementation pass):
 
 ### Important Caveat
 
-`SessionStart`/`SessionEnd` hook payload field names (`session_id`, `cwd`, `session_start_type`, `session_end_reason`, etc.) are documented by Claude Code but were **not independently re-verified in this implementation pass** — only `SubagentStart`/`SubagentStop` payloads were empirically captured and confirmed. The `run-metrics.py` handlers for `agent-begin`/`agent-end` are defensive (using `.get()` with `UNKNOWN` fallback) precisely to handle uncertainty in payload schema.
+`SessionStart`/`SessionEnd` hook payload field names (`session_id`, `cwd`, `session_start_type`, `session_end_reason`, etc.) are documented by Claude Code but were **not independently re-verified in this implementation pass** — only `SubagentStart`/`SubagentStop` payloads were empirically captured and confirmed. The `run-metrics.py` handlers for `agent-begin`/`agent-end` normalize all fields (non-str values and blank/whitespace-only strings become `"unknown"`, then bounded to `MAX_FIELD_LEN`) to handle uncertainty in payload schema.
 
 #### Harness-internal SubagentStop firings
 
@@ -189,7 +189,7 @@ jq -r 'select(.event_type == "agent.end" and .agent_type == "") | .agent_id' \
 
 Note: `(session_id, agent_id)` dedup would remove nothing because the agent ids are fresh — no repeats per session.
 
-The defensive `.get()` with `UNKNOWN` fallback previously absorbed blank values silently. Now, `agent.end` rows receive a strict-`str` field normalizer: non-str values and blank/whitespace-only strings become `"unknown"`, then bounded to `MAX_FIELD_LEN`.
+The defensive `.get()` with `UNKNOWN` fallback previously absorbed blank values silently. Now, `agent.begin` and `agent.end` rows receive a strict-`str` field normalizer: non-str values and blank/whitespace-only strings become `"unknown"`, then bounded to `MAX_FIELD_LEN`.
 
 ## Command/Stage Boundaries
 
@@ -600,7 +600,7 @@ frequency, outcome, and timing questions, not token cost.
 **How many subagents of type X ran:**
 
 ```bash
-jq -r 'select(.event_type == "agent.begin" and .agent_type == "X")' \
+jq -rc 'select(.event_type == "agent.begin" and .agent_type == "X")' \
   ~/.claude/telemetry/events.jsonl | wc -l
 ```
 
@@ -753,13 +753,15 @@ Stored at `~/.claude/telemetry/state/<session_id>.json` (same session state file
 
 Classified harness-internal SubagentStop firings (`agent.internal_stop` events) are never recorded in the session-state `usage.agents` dict and never enter token counting for the usage gate. They do not create a `path_not_a_file` entry; such entries represent real subagents whose transcript files were missing.
 
-Session meta files created before the cutoff date may carry inflated `floor_count` values from the ~58k internal firings previously counted as unparseable agents; these session files are pruned on a 24-hour cycle and will self-correct when re-written.
+Session meta files created before the cutoff date may carry inflated `floor_count` values from the ~58k internal firings previously counted as unparseable agents; these values persist in the session state file until it is pruned (24-hour cycle).
 
 The historical ~58k blank `agent.end` rows in earlier logs are not rewritten (the log is append-only); the fix applies only to new events forward. Queries over logs spanning both pre- and post-cutoff periods will see the transition: before the cutoff date (<PR 1 merge timestamp — filled in by the follow-up PR>), internal firings appear as `agent.end` rows with `agent_type` blank or normalized to `"unknown"`; after the cutoff, they emit `agent.internal_stop` instead.
 
+**Edge cases that still emit agent.end:** A stop whose agent.begin entry was lost (never existed in session meta) but whose transcript was successfully parsed, or whose status is not `path_not_a_file`, is recorded as plain `agent.end`. On state-operation failure (OSError/PermissionError), the stop falls back to `agent.end` (best-effort, not guaranteed never appears). If either `session_id` or `agent_id` is blank/missing (normalized to UNKNOWN), the stop remains `agent.end`.
+
 #### Duplicate agent.end calls per agent_id
 
-If `agent-end` is invoked twice for the same `agent_id` (unexpected but defended against), the first call will find a matching `agent.begin` entry and emit `agent.end`; the second call will find no begin entry and emit `agent.internal_stop`. This behavior is conservative: the second occurrence is treated as harness-internal because the begin entry was already consumed by the first call, and re-calling the same agent_id is not expected in normal operation. If duplicate calls occur, they should be investigated as a process issue rather than interpreted as real subagent spawns.
+If `agent-end` is invoked twice for the same `agent_id` (unexpected but defended against), the first call will find a matching `agent.begin` entry and emit `agent.end`; the second call (with `path_not_a_file` status) will find no begin entry and emit `agent.internal_stop`. This behavior is conservative: the second occurrence is treated as harness-internal because the begin entry was already consumed by the first call, and re-calling the same agent_id is not expected in normal operation. If duplicate calls occur, they should be investigated as a process issue rather than interpreted as real subagent spawns.
 
 ### Query Pattern: Token Totals by Session
 
