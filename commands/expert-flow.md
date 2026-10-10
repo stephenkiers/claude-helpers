@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
 argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 1-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(sed -E:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
 
@@ -143,7 +143,7 @@ Run Project Detection (`~/.claude/prompts/worktree-reference.md` § Project Dete
 non-empty) — local plan mode is not supported; error otherwise.
 
 ```bash
-REPO_KEY=$(printf '%s' "$REPO" | sed -E 's#/#_#g')
+REPO_KEY="${REPO//\//_}"
 FLOWS_ROOT="$HOME/.claude/flows/$REPO_KEY"
 mkdir -p "$FLOWS_ROOT"
 ```
@@ -291,7 +291,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `plan_path` | path or `null` | set by plan (`FINAL_PLAN_PATH`) or `--plan-file` |
 | `review_dir` | path or `null` | set by review (`REVIEW_DIR`) |
 | `pr` | URL or `null` | set by ship (`PR_URL`) or `--from merge` |
-| `gate_passed` | boolean | `true` only after the human answers **Merge** at the merge gate |
+| `gate_passed` | boolean | `true` only after the human answers Merge at the merge gate |
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |
 | `started`, `updated` | ISO-8601 UTC | `updated` is set on every `WRITE-STATE` |
 | `flags.plan_effort` | `null`, `2`, `3` | forwarded to plan |
@@ -403,8 +403,8 @@ already have answers are history.
 
 ```bash
 PENDING=""
-for Q in $(grep -oE 'awaiting-answers: questions/[^ ]+\.json' "$RECEIPT" | sed -E 's/^awaiting-answers: //'); do
-  A=$(printf '%s' "$Q" | sed -E 's#^questions/#answers/#')
+for Q in $(grep -oE 'awaiting-answers: questions/[^ ]+\.json' "$RECEIPT" | sed -n 's/^awaiting-answers: //p'); do
+  A="answers/${Q#questions/}"
   [ -f "$FLOW_DIR/$A" ] || PENDING="$Q"
 done
 printf 'PENDING: %s\n' "$PENDING"
