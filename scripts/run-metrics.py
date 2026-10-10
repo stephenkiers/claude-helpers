@@ -17,7 +17,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, Callable, NamedTuple, Optional, TypeVar
 
 # Add scripts/ to path so we can import telemetry_schema
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +48,8 @@ def _bounded(value, max_len=MAX_FIELD_LEN):
 def _field(payload, key):
     """Normalize a field: return UNKNOWN unless value is a non-empty string after stripping.
 
-    Otherwise return _bounded(value) to normalize first, then bound.
+    If value is a string with non-whitespace content, return _bounded(value) (the original
+    unstripped value, bounded to MAX_FIELD_LEN). Otherwise return UNKNOWN.
     """
     value = payload.get(key)
     if isinstance(value, str) and value.strip():
@@ -62,12 +63,18 @@ def _field(payload, key):
 _parse_event_timestamp = telemetry_schema._parse_iso_or_none
 
 
-def _guarded_state_op(fn, *args, **kwargs):
+_T = TypeVar("_T")
+
+
+def _guarded_state_op(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> Optional[_T]:
     """Call a telemetry_schema state operation, swallowing OSError/PermissionError
     with a stderr warning instead of propagating (state I/O failures must never
     crash the CLI — the event still gets recorded, just without state-derived data).
 
-    Returns fn's return value, or None if it raised.
+    On best-effort failure (OSError or PermissionError), the stop falls back to agent.end
+    rather than erroring. The caller should treat None return as a fallback condition.
+
+    Returns fn's return value, or None if it raised OSError/PermissionError.
     """
     try:
         return fn(*args, **kwargs)
@@ -253,6 +260,12 @@ def cmd_agent_end(args):
     of agent.end. Internal stops do not contribute to usage accounting or the usage gate
     floor_count.
 
+    Identity-less stops (blank/missing session_id or agent_id) bypass classification and
+    always emit as plain agent.end (never agent.internal_stop).
+
+    State-op failure (OSError/PermissionError): if classification fails due to state file
+    access issues, the stop falls back to agent.end rather than erroring (best-effort contract).
+
     Parse failures are logged to stderr with the exception class and message, but
     never written to events.jsonl. Status values distinguish: no_transcript_path
     (not provided), path_not_a_file (path doesn't exist), parse_raised (exception),
@@ -313,11 +326,8 @@ def cmd_agent_end(args):
             recorded_at=recorded_at,
         )
         if result is not None:
-            began_at, is_internal = result
-            elapsed_seconds = _compute_elapsed(began_at, timestamp)
-        else:
-            # State op failed; fall back to agent.end
-            is_internal = False
+            is_internal = result.internal
+            elapsed_seconds = _compute_elapsed(result.began_at, timestamp)
 
     if is_internal:
         # Emit agent.internal_stop with no tokens/token_confidence/outcome
