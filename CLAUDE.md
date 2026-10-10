@@ -195,7 +195,10 @@ separate from the reviewer-context cascade.
   Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
   references the Ask block). Failures are hard stops (Retry ≤2 / Take over / Abort) — never auto-remediated. State
   under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
-  (per-run only). See [ADR-0023](docs/adr/0023-expert-flow.md)
+  (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
+  scope: `FLOW_DIR` and the marker file). Its step agents are `general-purpose` subagents with full
+  capability, not restricted panel agents; ADR-0008 (machine-enforced guardrails) was considered and
+  deferred. See [ADR-0023](docs/adr/0023-expert-flow.md)
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. If a merge-queue configuration exists and the PR targets the queue's base branch, routes the PR through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports it MERGED; a kickback or refusal stops and leaves the worktree intact. An `unknown`/undeterminable queue state still refuses (exit 3). PRs targeting other bases merge normally. When no queue is configured (but the layout supports one), offers to create `merge-queue.json` and then routes through `/queued-merge`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
 - `/queued-merge` — merge an open PR through the local merge queue when a `merge-queue.json` config exists. The queue serializes PRs and merges them one at a time in arrival order, testing each against the exact base it will land on, with unverified-main detection. See [ADR-0021](docs/adr/0021-local-merge-queue.md) for the force-push carve-out (the queue's only authorized force-push, audited and constrained, happens only after the full gate passes).
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
@@ -359,3 +362,6 @@ otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/
 the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a
 residual, not eliminated, risk. `/expert-spike` expert roles also write one orchestrator-named file
 under `${PROJECT_ROOT}/spikes/`, which is still prompt-scoped; see the ADR-0018 2026-10-09 amendment.
+`/expert-flow` is the exception to the tool-restriction story: its step
+agents are `general-purpose` Task subagents with full capability, and its orchestrator's `Write` is
+prompt-scoped only (ADR-0023 §1). The `tools:` restriction above does not apply to them.

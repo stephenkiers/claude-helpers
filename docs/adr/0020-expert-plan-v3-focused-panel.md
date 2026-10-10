@@ -115,3 +115,7 @@ are the only subagents added to the pipeline, and they are Haiku. See ADR-0003's
 - `/expert-plan-v2`: The comprehensive reference implementation that v3 adapts (not replaces)
 - `commands/expert-plan-v3.md`: The command specification
 - `prompts/plan-synthesize-and-check.md`, `plan-audit.md`: Role prompts
+
+## Pointer — /expert-flow (2026-10-09)
+
+`--flow`/`--epic` handling, the orchestrator's `Write` scope, and the full-capability step agents are recorded in ADR-0023 (§1, §2, §2.1, §5).
