@@ -25,7 +25,7 @@ Correlation between stages and commands is automatic via a session-scoped state 
 
 Apply the **Resolve FLOW_DIR** block from `~/.claude/prompts/flow-reference.md` (read it by path)
 and carry the printed `FLOW_DIR=` value forward as a literal. `/shipit` takes no `--flow` flag; only
-the `.claude/flow-run` marker in the current worktree can set it. **When `FLOW_DIR` is empty, nothing
+the `.claude/flow-run` marker in the current worktree can set it. **When `FLOW_DIR` is empty (not running under `/expert-flow` — skip the block), nothing
 in this doc changes** — every "Ask block" site below asks the user directly, as it always has, and no
 receipt is written.
 

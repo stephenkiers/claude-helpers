@@ -2,7 +2,7 @@
 name: merge-and-cleanup
 description: Merge a PR through the repo's real merge gate, then remove its worktree and update main. Run from the worktree you want to merge (auto-detects PR), or from the main worktree with a PR number or worktree path, e.g. /merge-and-cleanup or /merge-and-cleanup 1022 or /merge-and-cleanup ../1020-some-worktree.
 argument-hint: [PR number | worktree path]
-allowed-tools: Read, Skill, AskUserQuestion, Bash(cd:*), Bash(git rev-parse:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(cat:*), Bash(python3:*), Bash(command:*), Bash(*merge-queue*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
+allowed-tools: Read, Write, Skill, AskUserQuestion, Bash(cd:*), Bash(git rev-parse:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(jq:*), Bash(ls:*), Bash(grep:*), Bash(printf:*), Bash(test:*), Bash(python3 -m scripts.workflow.cli:*), Bash(cat:*), Bash(python3:*), Bash(command:*), Bash(*merge-queue*), Bash(dirname:*), Bash(readlink:*), Bash(mkdir:*), Bash(rm:*)
 model: haiku
 ---
 
