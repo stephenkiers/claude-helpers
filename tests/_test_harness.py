@@ -1,10 +1,26 @@
 """Shared harness for this repo's invariant test scripts (no pytest dependency)."""
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
+
+
+def run_script_helper(args, stdin_text=None, env=None):
+    """Run the run-metrics.py script as a subprocess. Returns (returncode, stdout, stderr)."""
+    cmd = [sys.executable, str(SCRIPT)] + args
+    result = subprocess.run(
+        cmd,
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result.returncode, result.stdout, result.stderr
 
 
 class Harness:

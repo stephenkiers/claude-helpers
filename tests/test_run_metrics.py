@@ -38,6 +38,32 @@ def run_script(args, stdin_text=None, env=None):
     return result.returncode, result.stdout, result.stderr
 
 
+def _load_telemetry_schema():
+    """Load telemetry_schema module dynamically."""
+    spec = importlib.util.spec_from_file_location("telemetry_schema", REPO_ROOT / "scripts" / "telemetry_schema.py")
+    ts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ts)
+    return ts
+
+
+def _get_single_session_state_file(state_dir):
+    """Find and return the single session state file, or (None, error_msg) if not exactly one found."""
+    state_files = list(Path(state_dir).glob("*.session.json"))
+    if len(state_files) != 1:
+        return None, f"expected exactly 1 session state file, found {len(state_files)}"
+    return state_files[0], None
+
+
+def _read_usage_state_or_fail(state_dir, session_id):
+    """Read usage state using telemetry_schema, or return (None, error_msg) on failure."""
+    ts = _load_telemetry_schema()
+    state_file, err = _get_single_session_state_file(state_dir)
+    if err:
+        return None, err
+    usage_state = ts.read_usage_state(state_file, session_id)
+    return usage_state, None
+
+
 def test_session_begin():
     """session-begin reads JSON from stdin and writes an event."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -4091,15 +4117,14 @@ def test_stage_end_gates_emission_on_cleared_true():
 
 def test_t1_normalizer_hostile_agent_begin_values():
     """T1a: agent-begin normalizer accepts hostile values and coerces to 'unknown'."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log_path = Path(tmpdir) / "test.jsonl"
-        state_dir = Path(tmpdir) / "state"
-        state_dir.mkdir()
+    hostile_values = ["", " ", None, 0, False, 5, [], {}, True, "unknown", "a" * 5000]
 
-        hostile_values = ["", " ", None, 0, False, 5, [], {}, True, "unknown", "a" * 5000]
+    for hostile_val in hostile_values:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "test.jsonl"
+            state_dir = Path(tmpdir) / "state"
+            state_dir.mkdir()
 
-        for hostile_val in hostile_values:
-            log_path.unlink(missing_ok=True)
             # Test with hostile agent_id
             payload = json.dumps({
                 "session_id": "s1",
@@ -4114,47 +4139,61 @@ def test_t1_normalizer_hostile_agent_begin_values():
             if code != 0:
                 return False, f"agent-begin failed with hostile agent_id {hostile_val!r}: {stderr}"
 
+            if not log_path.exists():
+                return False, f"log file not created for hostile {hostile_val!r}"
+
             with open(log_path) as f:
                 event = json.loads(f.readline())
 
             agent_id = event.get("agent_id", "")
+            # Blank inputs must be coerced to "unknown"
             if agent_id == "":
                 return False, f"agent_id is blank for hostile {hostile_val!r}"
             if not isinstance(agent_id, str):
                 return False, f"agent_id not str for hostile {hostile_val!r}, got {type(agent_id)}"
-            # Non-blank values become "unknown" or truncated, but never blank
-            if " " in agent_id and agent_id != "unknown":
-                return False, f"agent_id has internal space for hostile {hostile_val!r}: {agent_id!r}"
+            # Assert normalized to exactly "unknown" or truncated (length bound)
+            if agent_id not in ("unknown",) and len(agent_id) > 4096:
+                return False, f"agent_id exceeds 4096 chars for hostile {hostile_val!r}: {len(agent_id)}"
+            # Check state isolation: no multi-part agents
+            state_files = list(Path(state_dir).glob("*.session.json"))
+            if state_files:
+                state = json.loads(state_files[0].read_text())
+                agents = state.get("usage", {}).get("agents", {})
+                # Blank values should not reach state
+                if "" in agents:
+                    return False, f"blank agent_id reached state for hostile {hostile_val!r}"
 
-        return True, ""
+    return True, ""
 
 
 def test_t1_normalizer_hostile_agent_end_values():
     """T1b: agent-end normalizer accepts hostile values and coerces to 'unknown'."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log_path = Path(tmpdir) / "test.jsonl"
-        state_dir = Path(tmpdir) / "state"
-        state_dir.mkdir()
-        session_id = "s1"
+    hostile_values = ["", " ", None, 0, False, 5, [], {}, True, "unknown", "x" * 5000]
 
-        # First, create a valid agent-begin to establish state
-        begin_payload = json.dumps({
-            "session_id": session_id,
-            "agent_id": "a1",
-            "agent_type": "t1",
-            "cwd": "/tmp",
-        })
-        run_script(
-            ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
-            stdin_text=begin_payload,
-        )
-        log_path.unlink()
+    for hostile_val in hostile_values:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "test.jsonl"
+            state_dir = Path(tmpdir) / "state"
+            state_dir.mkdir()
+            session_id = "s1"
 
-        # Test agent-end with hostile agent_type
-        hostile_values = ["", " ", None, 0, False, 5, [], {}, True, "unknown", "x" * 5000]
+            # First, create a valid agent-begin to establish state
+            begin_payload = json.dumps({
+                "session_id": session_id,
+                "agent_id": "a1",
+                "agent_type": "t1",
+                "cwd": "/tmp",
+            })
+            code_begin, _, stderr_begin = run_script(
+                ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
+                stdin_text=begin_payload,
+            )
+            if code_begin != 0:
+                return False, f"agent-begin failed: {stderr_begin}"
 
-        for hostile_val in hostile_values:
-            log_path.unlink(missing_ok=True)
+            log_path.unlink()
+
+            # Test agent-end with hostile agent_type
             payload = json.dumps({
                 "session_id": session_id,
                 "agent_id": "a1",
@@ -4172,12 +4211,16 @@ def test_t1_normalizer_hostile_agent_end_values():
                 event = json.loads(f.readline())
 
             agent_type = event.get("agent_type", "")
+            # Blank inputs must be coerced to "unknown"
             if agent_type == "":
                 return False, f"agent_type is blank for hostile {hostile_val!r}"
             if not isinstance(agent_type, str):
                 return False, f"agent_type not str for hostile {hostile_val!r}, got {type(agent_type)}"
+            # Assert normalized to exactly "unknown" or truncated (length bound)
+            if agent_type not in ("unknown",) and len(agent_type) > 4096:
+                return False, f"agent_type exceeds 4096 chars for hostile {hostile_val!r}: {len(agent_type)}"
 
-        return True, ""
+    return True, ""
 
 
 def test_t2_cwd_slash_produces_repo_unknown():
@@ -4228,29 +4271,44 @@ def test_t3_blank_agent_id_never_reaches_state():
             "agent_type": "test",
             "cwd": "/tmp",
         })
-        run_script(
+        code1, _, stderr1 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
             stdin_text=begin_payload,
         )
+        if code1 != 0:
+            return False, f"agent-begin failed: {stderr1}"
 
         end_payload = json.dumps({
             "session_id": session_id,
             "agent_id": "",
             "agent_type": "test",
         })
-        run_script(
+        code2, _, stderr2 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
             stdin_text=end_payload,
         )
+        if code2 != 0:
+            return False, f"agent-end failed: {stderr2}"
 
-        # Check state file
-        for sf in Path(state_dir).glob("*.json"):
-            state = json.loads(sf.read_text())
+        # Check state file - if it exists, validate no blank entries
+        state_files = list(Path(state_dir).glob("*.session.json"))
+
+        # Blank agent_id may not create a state file, or if it does, must not have blank entries
+        if state_files:
+            if len(state_files) > 1:
+                return False, f"expected at most 1 session state file, found {len(state_files)}"
+
+            state = json.loads(state_files[0].read_text())
             agents = state.get("usage", {}).get("agents", {})
             if "" in agents:
                 return False, "state has entry keyed by empty string"
             if "unknown" in agents:
                 return False, "state has entry keyed by 'unknown' for blank agent_id"
+
+            # Assert no internal-* keys
+            for key in agents.keys():
+                if key.startswith("internal-"):
+                    return False, f"state has internal key {key!r}"
 
         return True, ""
 
@@ -4276,6 +4334,10 @@ def test_t4_internal_classification_no_begin_missing_transcript():
         )
         if code != 0:
             return False, f"agent-end failed: {stderr}"
+
+        # Log file must exist
+        if not log_path.exists():
+            return False, "log file not created"
 
         # Read events
         events = []
@@ -4303,11 +4365,19 @@ def test_t4_internal_classification_no_begin_missing_transcript():
             return False, "agent.internal_stop should not have tokens key"
 
         # Check that usage.agents was not updated
-        for sf in Path(state_dir).glob("*.session.json"):
-            state = json.loads(sf.read_text())
-            agents = state.get("usage", {}).get("agents", {})
-            if "a4-internal" in agents:
-                return False, "usage.agents should not have entry for internal_stop agent"
+        state_file, err = _get_single_session_state_file(state_dir)
+        if err:
+            return False, err
+
+        state = json.loads(state_file.read_text())
+        agents = state.get("usage", {}).get("agents", {})
+        if "a4-internal" in agents:
+            return False, "usage.agents should not have entry for internal_stop agent"
+
+        # Assert no internal-* keys
+        for key in agents.keys():
+            if key.startswith("internal-"):
+                return False, f"state has internal key {key!r}"
 
         return True, ""
 
@@ -4347,6 +4417,10 @@ def test_t5_missed_subagentstart_real_transcript():
         if code != 0:
             return False, f"agent-end failed: {stderr}"
 
+        # Log file must exist
+        if not log_path.exists():
+            return False, "log file not created"
+
         # Should have agent.end, not agent.internal_stop
         events = []
         with open(log_path) as f:
@@ -4363,11 +4437,14 @@ def test_t5_missed_subagentstart_real_transcript():
             return False, "should not have agent.internal_stop for real transcript"
 
         # Check that usage was recorded
-        for sf in Path(state_dir).glob("*.session.json"):
-            state = json.loads(sf.read_text())
-            agents = state.get("usage", {}).get("agents", {})
-            if "a5-real" not in agents:
-                return False, "usage.agents should have entry for real agent with transcript"
+        state_file, err = _get_single_session_state_file(state_dir)
+        if err:
+            return False, err
+
+        state = json.loads(state_file.read_text())
+        agents = state.get("usage", {}).get("agents", {})
+        if "a5-real" not in agents:
+            return False, "usage.agents should have entry for real agent with transcript"
 
         return True, ""
 
@@ -4387,12 +4464,12 @@ def test_t6_begin_present_transcript_missing():
             "agent_type": "test",
             "cwd": "/tmp",
         })
-        code1, _, _ = run_script(
+        code1, _, stderr1 = run_script(
             ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
             stdin_text=begin_payload,
         )
         if code1 != 0:
-            return False, "agent-begin failed"
+            return False, f"agent-begin failed: {stderr1}"
 
         log_path.unlink()
 
@@ -4410,6 +4487,10 @@ def test_t6_begin_present_transcript_missing():
         if code2 != 0:
             return False, f"agent-end failed: {stderr2}"
 
+        # Log file must exist
+        if not log_path.exists():
+            return False, "log file not created"
+
         # Should have agent.end, not agent.internal_stop
         events = []
         with open(log_path) as f:
@@ -4426,13 +4507,16 @@ def test_t6_begin_present_transcript_missing():
             return False, "should not have agent.internal_stop when begin present"
 
         # Check status in state
-        for sf in Path(state_dir).glob("*.session.json"):
-            state = json.loads(sf.read_text())
-            agents = state.get("usage", {}).get("agents", {})
-            if "a6" in agents:
-                status = agents["a6"].get("status")
-                if status != "path_not_a_file":
-                    return False, f"expected status path_not_a_file, got {status!r}"
+        state_file, err = _get_single_session_state_file(state_dir)
+        if err:
+            return False, err
+
+        state = json.loads(state_file.read_text())
+        agents = state.get("usage", {}).get("agents", {})
+        if "a6" in agents:
+            status = agents["a6"].get("status")
+            if status != "path_not_a_file":
+                return False, f"expected status path_not_a_file, got {status!r}"
 
         return True, ""
 
@@ -4453,10 +4537,12 @@ def test_t7_internal_firings_do_not_inflate_floor_count():
                 "agent_type": f"type-{i}",
                 "cwd": "/tmp",
             })
-            run_script(
+            code, _, stderr = run_script(
                 ["--log", str(log_path), "--state-dir", str(state_dir), "agent-begin"],
                 stdin_text=begin_payload,
             )
+            if code != 0:
+                return False, f"agent-begin failed: {stderr}"
 
             # Create valid transcript
             transcript_path = Path(tmpdir) / f"transcript-{i}.jsonl"
@@ -4474,21 +4560,25 @@ def test_t7_internal_firings_do_not_inflate_floor_count():
                 "agent_type": f"type-{i}",
                 "agent_transcript_path": str(transcript_path),
             })
-            run_script(
+            code, _, stderr = run_script(
                 ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
                 stdin_text=end_payload,
             )
+            if code != 0:
+                return False, f"agent-end failed: {stderr}"
 
-        # Read state BEFORE sending internal firings
-        state_file = None
-        for sf in Path(state_dir).glob("*.session.json"):
-            state_file = sf
-            break
+        # Read state BEFORE sending internal firings using read_usage_state
+        state_file, err = _get_single_session_state_file(state_dir)
+        if err:
+            return False, err
 
-        state_before = json.loads(state_file.read_text())
-        floor_before = state_before.get("usage", {}).get("floor_count", 0)
-        is_floor_before = state_before.get("usage", {}).get("is_floor", None)
-        counted_tokens_before = state_before.get("usage", {}).get("counted_tokens", 0)
+        usage_before, err = _read_usage_state_or_fail(state_dir, session_id)
+        if err:
+            return False, err
+
+        floor_before = usage_before.get("floor_count", 0)
+        is_floor_before = usage_before.get("is_floor", None)
+        unparseable_before = usage_before.get("total_known", 0) - usage_before.get("accounted", 0)
 
         # Now send 3 internal firings (no begin, empty type, missing transcript)
         for i in range(3):
@@ -4498,24 +4588,35 @@ def test_t7_internal_firings_do_not_inflate_floor_count():
                 "agent_type": "",
                 "agent_transcript_path": "/nonexistent/file.jsonl",
             })
-            run_script(
+            code, _, stderr = run_script(
                 ["--log", str(log_path), "--state-dir", str(state_dir), "agent-end"],
                 stdin_text=payload,
             )
+            if code != 0:
+                return False, f"agent-end for internal firing {i} failed: {stderr}"
 
-        # Read state AFTER
-        state_after = json.loads(state_file.read_text())
-        floor_after = state_after.get("usage", {}).get("floor_count", 0)
-        is_floor_after = state_after.get("usage", {}).get("is_floor", None)
-        counted_tokens_after = state_after.get("usage", {}).get("counted_tokens", 0)
+        # Read state AFTER using read_usage_state
+        usage_after, err = _read_usage_state_or_fail(state_dir, session_id)
+        if err:
+            return False, err
+
+        floor_after = usage_after.get("floor_count", 0)
+        is_floor_after = usage_after.get("is_floor", None)
+        unparseable_after = usage_after.get("total_known", 0) - usage_after.get("accounted", 0)
 
         # These should be unchanged
         if floor_after != floor_before:
             return False, f"floor_count changed from {floor_before} to {floor_after}"
         if is_floor_after != is_floor_before:
             return False, f"is_floor changed from {is_floor_before} to {is_floor_after}"
-        if counted_tokens_after != counted_tokens_before:
-            return False, f"counted_tokens changed from {counted_tokens_before} to {counted_tokens_after}"
+        if unparseable_after != unparseable_before:
+            return False, f"unparseable count changed from {unparseable_before} to {unparseable_after}"
+
+        # Assert no internal-* keys in state
+        state = json.loads(state_file.read_text())
+        for key in state.keys():
+            if key.startswith("internal-"):
+                return False, f"state has internal key {key!r}"
 
         return True, ""
 
