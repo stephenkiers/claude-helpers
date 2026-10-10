@@ -31,9 +31,18 @@ Every `*.end` event carries an `outcome` field with one of three shapes:
 
 ```json
 {"status": "success"}
-{"status": "failure", "class": "timeout|api_error|test_failure|guard_block|other"}
+{"status": "failure", "class": "timeout|api_error|test_failure|guard_block|other|steps_skipped|plan_not_found|all_units_failed|gate_not_converged|resume_format_invalid|resume_sha_not_found|ancestry_invalid|ancestry_invalid_after_drift|working_tree_dirty|detached_head|outstanding_worktree|resume_cancelled"}
 {"status": "interrupted"}
 ```
+
+> **As of 2026-10-09:** `/implement-with-haiku` failure events appear in telemetry for the first time
+> with this change. Its previously emitted kebab-case failure classes (e.g. `plan-not-found`) were rejected
+> by the schema and silently dropped, so no failure events from that command were recorded before this date.
+> Its success events are now emitted only by the ledger-gated `implement-ledger.py finish`, so the
+> `/implement-with-haiku` success rate steps down relative to earlier data. Pre-change successes are an
+> unknown mix of real and false successes and cannot be backfilled. If the helper itself cannot run,
+> nothing is recorded, and the session-end sweep later closes the command as `interrupted`.
+> See [ADR-0016 amendment](adr/0016-usage-yield-telemetry.md).
 
 **Important:** an event whose matching `*.end` never arrives is never silently dropped and never
 inferred as a zero-cost success. Today, `run-metrics.py diagnose` surfaces this as an unmatched
@@ -396,7 +405,7 @@ python3 scripts/run-metrics.py [--log PATH] command-begin --command NAME
 
 python3 scripts/run-metrics.py [--log PATH] command-end \
   --command-id ID --command NAME --outcome success|failure|interrupted \
-  [--failure-class timeout|api_error|test_failure|guard_block|other]
+  [--failure-class timeout|api_error|test_failure|guard_block|other|steps_skipped|plan_not_found|all_units_failed|gate_not_converged|resume_format_invalid|resume_sha_not_found|ancestry_invalid|ancestry_invalid_after_drift|working_tree_dirty|detached_head|outstanding_worktree|resume_cancelled]
 
 python3 scripts/run-metrics.py [--log PATH] command-id --command NAME
   # prints the most recently begun command_id for the given command name, or empty output if none found (read-only)

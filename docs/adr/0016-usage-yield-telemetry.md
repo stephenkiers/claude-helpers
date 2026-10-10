@@ -179,3 +179,39 @@ When analyzing agent-spawn data, count from `agent.begin` events, not `agent.end
 
 **No history rewrite.**
 The ~58k pre-fix blank `agent.end` rows in existing logs are not rewritten (the log is append-only). Queries spanning pre- and post-cutoff periods will observe the transition directly. The jq token-sum pattern (summing input + output + cache_creation from `agent.end` events) is unaffected because the blank rows carried only `unknown` tokens, contributing nothing to the sum.
+
+## Amendment — `/implement-with-haiku` failure-class vocabulary and ledger-gated success
+
+**Silently dropped failure events, now fixed.** `/implement-with-haiku` emitted `--failure-class` values in
+kebab-case (e.g. `plan-not-found`). `telemetry_schema.outcome_failure` accepts only the snake_case members of
+`FAILURE_CLASSES`, so every such failure event was rejected with a `ValueError` and silently dropped. The
+schema now adds the snake_case members `steps_skipped`, `plan_not_found`, `all_units_failed`,
+`gate_not_converged`, `resume_format_invalid`, `resume_sha_not_found`, `ancestry_invalid`,
+`ancestry_invalid_after_drift`, `working_tree_dirty`, `detached_head`, `outstanding_worktree`, and
+`resume_cancelled`. The kebab-case forms are not aliased. `outcome_failure` and the validator are unchanged.
+
+**Success is ledger-gated.** `/implement-with-haiku` success is emitted only by the helper
+`scripts/implement-ledger.py finish`, which records `command-end --outcome failure --failure-class steps_skipped`
+for steps that were not completed and `command-end --outcome success` only when the ledger shows every step
+done. The command doc never emits success directly.
+
+**Scope, stated honestly.** The ledger covers *omission*: a step that was never recorded as done cannot be
+reported as a success. It does not cover *fabrication*. The ledger is written by the same orchestrator that
+runs the command, so a deliberate false entry is not technically prevented. Non-empty artifact-file evidence
+(the files each step must produce) makes casual fabrication a deliberate act rather than an easy default, but
+it is not a cryptographic or independent check.
+
+**Dated discontinuity (as of 2026-10-09).** Failure events for `/implement-with-haiku` appear for the first
+time with this change, because the previously emitted classes were dropped. The `/implement-with-haiku` success
+rate steps down, because successes now require the ledger gate. Pre-change successes are an unknown mix of real
+and false successes and cannot be backfilled. Any comparison across this date must treat the two periods as
+different measurements.
+
+**Helper cannot run.** If `implement-ledger.py` itself cannot run, nothing is recorded for that command. The
+command stays open, and the session-end sweep later closes it as `interrupted`. An `interrupted` outcome therefore
+means "the helper did not record a terminal state", not "the run was known to be incomplete".
+
+**Permission grant (narrow, pending verification).** The command doc's allowed-tools grant for the helper is
+`Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*)`, which is narrow to that one script. It has not yet
+been verified in a non-bypass permission mode. If it has to widen to `Bash(python3:*)` to run, this amendment
+will be updated to say so.

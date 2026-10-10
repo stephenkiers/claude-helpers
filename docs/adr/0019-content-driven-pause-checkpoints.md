@@ -181,8 +181,11 @@ unchanged.
 - *Metric, readable off existing telemetry* (`~/.claude/telemetry/events.jsonl`): (a) fix-Haiku
   iterations = count of `agent.end` events with `agent_type=plan-implementer` whose timestamp falls
   inside the run's `integration-gate` `stage.begin`/`stage.end` window; (b) terminal outcome = the
-  run's `command.end` `outcome.status` plus `failure_class` (`gate-not-converged` is the failure that
+  run's `command.end` `outcome.status` plus `failure_class` (`gate_not_converged` is the failure that
   matters here).
+  *Note: before the telemetry failure-class vocabulary fix (2026-10-09), this kill criterion was evaluated
+  on data that could not contain that class — the kebab-case form `gate-not-converged` was rejected by the
+  schema and silently dropped.*
 - *Refutation*: if the `clear-resume` arm does **not** show both a strictly lower mean fix-Haiku
   iteration count **and** no more failure outcomes than the `compact` arm, the resume branch is
   **deleted** — the `--resume-after-round1` branch and the `RESUME-AFTER-CLEAR:` print come out of
