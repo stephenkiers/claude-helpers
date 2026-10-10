@@ -3,12 +3,17 @@
 Structural test suite for /expert-flow (commands/expert-flow.md), its ADR, and the epic-mode
 prompt additions.
 
+These tests are STRUCTURAL ONLY: they check that documented headings, phrases, flags, and
+frontmatter grants are present (and, where noted, that related phrases sit in the same
+section). They do not verify that the described orchestration behaves correctly at runtime.
+
 Covers:
 1. Command existence, frontmatter model: sonnet, documented flags
 2. Telemetry: stage-pairing linter clean; all eight stage names listed; Every Exit Path section
 3. Relay contract: references flow-reference.md, verifies the answers file before SendMessage,
    never passes --pause, no auto-remediation wording, stop-line format
-4. Orchestrator capability: no Edit tool, no write-capable git/gh in allowed-tools
+4. Orchestrator capability: allowed-tools is an allowlist of read-only Bash plus the
+   orchestrator tools (no Edit, no write-capable git/gh/sed)
 5. ADR-0023 exists, is indexed in docs/adr/README.md, CLAUDE.md lists /expert-flow and ADR-0023,
    the stale /expert-implement-with-haiku-and-ship entry is gone
 6. Epic mode: --epic documented in the command; both planning prompts gate Sub-tickets on
@@ -39,11 +44,59 @@ STAGE_LINT = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 STAGES = ["plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
 FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--from", "--resume", "--list", "--epic"]
 
+# Allowlist for the orchestrator's allowed-tools grants. Bash grants must be read-only
+# git/gh, read/inspection utilities, or the run-metrics script. Matching is done on the
+# grant's command core: the trailing `:*` or ` *` wildcard is stripped first, so
+# `Bash(sed -n:*)` is checked as `sed -n` and `Bash(sed:*)` is checked as `sed` (rejected).
+READ_ONLY_BASH = (
+    r"git (?:log|status|diff|show|rev-parse|rev-list|ls-files|merge-base|for-each-ref|cat-file"
+    r"|describe|symbolic-ref|worktree list|branch --show-current|config --get)(?: .*)?",
+    r"gh (?:pr|issue|repo|run) (?:view|list|checks|diff|status)(?: .*)?",
+    r"(?:ls|cat|grep|jq|date|printf|mkdir)(?: .*)?",
+    r"sed -n(?: .*)?",
+    r".*run-metrics\.py['\"]?(?: .*)?",
+)
+ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
+
 
 def frontmatter(text):
     """Return the YAML frontmatter block of a command doc, or an empty string."""
     m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
     return m.group(1) if m else ""
+
+
+def heading_section(text, heading):
+    """Return the body of the `## ` section whose heading line starts with `heading`."""
+    m = re.search(rf"^{re.escape(heading)}\b.*$", text, re.MULTILINE)
+    if not m:
+        return ""
+    nxt = re.search(r"^## ", text[m.end():], re.MULTILINE)
+    end = m.end() + nxt.start() if nxt else len(text)
+    return text[m.start():end]
+
+
+def enclosing_section(text, anchor):
+    """Return the `## ` section that contains the first occurrence of `anchor` ("" if absent)."""
+    pos = text.find(anchor)
+    if pos < 0:
+        return ""
+    starts = [m.start() for m in re.finditer(r"^## ", text, re.MULTILINE) if m.start() <= pos]
+    start = starts[-1] if starts else 0
+    nxt = re.search(r"^## ", text[pos:], re.MULTILINE)
+    end = pos + nxt.start() if nxt else len(text)
+    return text[start:end]
+
+
+def disallowed_grants(tools):
+    """Return the allowed-tools grants that fall outside the read-only allowlist."""
+    offenders = []
+    for inner in re.findall(r"Bash\(([^)]*)\)", tools):
+        core = re.sub(r"(?::\*| \*)$", "", inner.strip())
+        if not any(re.fullmatch(pattern, core) for pattern in READ_ONLY_BASH):
+            offenders.append(f"Bash({inner})")
+    bare = re.findall(r"[A-Za-z]\w*", re.sub(r"Bash\([^)]*\)", "", tools))
+    offenders.extend(tool for tool in bare if tool not in ORCHESTRATOR_TOOLS)
+    return offenders
 
 
 def main():
@@ -85,18 +138,24 @@ def main():
     print("[Section 3] Relay contract")
     h.test_result("references prompts/flow-reference.md", "flow-reference.md" in text)
     h.test_result("step prompt names the receipt path", "steps/<NN>-<STEP>.md" in text)
-    h.test_result("verifies the answers file exists before resuming",
-                  "Verify the answers file exists before resuming" in text and "SendMessage" in text)
+    verify_sec = enclosing_section(text, "Verify the answers file exists before resuming")
+    h.test_result("verifies the answers file before resuming, with SendMessage in the same section",
+                  "Verify the answers file exists before resuming" in verify_sec and "SendMessage" in verify_sec)
     h.test_result("never passes --pause to implement", "Never pass `--pause`" in text)
-    h.test_result("merge gate offers Merge / Hold / Take over",
-                  all(s in text for s in ("**Merge**", "**Hold**", "**Take over**")))
-    h.test_result("hard stop offers Retry / Take over / Abort and nothing else",
-                  all(s in text for s in ("**Retry**", "**Abort**", "No other option exists")))
+    merge_sec = enclosing_section(text, "**Merge**")
+    h.test_result("merge gate offers Merge / Hold / Take over in one section",
+                  all(s in merge_sec for s in ("**Merge**", "**Hold**", "**Take over**")))
+    hard_sec = enclosing_section(text, "No other option exists")
+    h.test_result("hard stop offers Retry / Abort in the same section as 'No other option exists'",
+                  all(s in hard_sec for s in ("**Retry**", "**Take over**", "**Abort**")))
     h.test_result("attempts capped at two per step", "two attempts per step" in text)
-    h.test_result("stop line format present", "▶️ expert-flow #<ISSUE> — paused at: <STEP>" in text
-                  and "resume: /expert-flow --resume <ISSUE>" in text)
+    stop_sec = enclosing_section(text, "paused at: <STEP>")
+    h.test_result("stop line format present in the stop-line section",
+                  "▶️ expert-flow #<ISSUE> — paused at: <STEP>" in stop_sec
+                  and "resume: /expert-flow --resume <ISSUE>" in stop_sec)
+    rebase_sec = enclosing_section(text, "/expert-rebase")
     h.test_result("/expert-rebase is suggested, never invoked",
-                  bool(re.search(r"never\s+invoked", text)) and "/expert-rebase" in text)
+                  bool(re.search(r"never\s+invoked", rebase_sec)) and "/expert-rebase" in rebase_sec)
     h.test_result("fix step skipped when every CONFIRMED count is 0",
                   "are all `0`" in text or "every CONFIRMED count is 0" in text)
     h.test_result("verify uses commands.check only", "commands.check" in text and "epic decision 4" in text)
@@ -107,13 +166,20 @@ def main():
     h.test_result("marker excluded via info/exclude, not .gitignore edits", "info/exclude" in text)
 
     print()
-    print("[Section 4] Orchestrator capability (allowed-tools)")
+    print("[Section 4] Orchestrator capability (allowed-tools allowlist)")
     tools = re.search(r"allowed-tools:\s*(.*)", fm)
     tools = tools.group(1) if tools else ""
+    h.test_result("allowed-tools has at least one Bash grant",
+                  bool(re.search(r"Bash\(", tools)), tools)
+    off = disallowed_grants(tools)
+    h.test_result("allowed-tools grants only the read-only allowlist (no Edit, no write-capable Bash)",
+                  not off, ", ".join(off))
     h.test_result("no Edit tool", not re.search(r"(^|,\s*)Edit(,|$)", tools), tools)
-    for bad in ("git push", "git commit", "git checkout", "git rebase", "git add", "git reset",
-                "gh pr merge", "gh pr create", "gh issue create", "Bash(git:*)", "Bash(gh:*)", "Bash(*)"):
-        h.test_result(f"allowed-tools does not grant {bad}", bad not in tools)
+    guard_fixture = ("Read, Edit, Bash(git branch:*), Bash(sed:*), "
+                     "Bash(git branch --show-current:*), Bash(sed -n:*)")
+    h.test_result("allowlist guard rejects Edit, Bash(git branch:*) and Bash(sed:*) (fixture)",
+                  set(disallowed_grants(guard_fixture)) == {"Edit", "Bash(git branch:*)", "Bash(sed:*)"},
+                  str(disallowed_grants(guard_fixture)))
     for good in ("Task", "SendMessage", "AskUserQuestion", "Write", "Read"):
         h.test_result(f"allowed-tools grants {good}", good in tools)
 
@@ -138,11 +204,12 @@ def main():
 
     print()
     print("[Section 6] Epic mode")
-    h.test_result("command has an Epic mode section", "## Epic mode" in text)
-    h.test_result("epic plan step passes --epic", "--flow <FLOW_DIR> --epic" in text)
-    h.test_result("epic approval has Approve / Edit / Stop", all(s in text for s in ("**Approve**", "**Edit**", "**Stop**")))
-    h.test_result("epic sub-issues carry Part of #<epic>", "Part of #<ISSUE>" in text)
-    h.test_result("epic is sequential; --stack deferred", "`--stack`" in text and "Not in v1" in text)
+    epic = heading_section(text, "## Epic mode")
+    h.test_result("command has an Epic mode section", bool(epic))
+    h.test_result("epic plan step passes --epic", "--flow <FLOW_DIR> --epic" in epic)
+    h.test_result("epic approval has Approve / Edit / Stop", all(s in epic for s in ("**Approve**", "**Edit**", "**Stop**")))
+    h.test_result("epic sub-issues carry Part of #<epic>", "Part of #<ISSUE>" in epic)
+    h.test_result("epic is sequential; --stack deferred", "`--stack`" in epic and "Not in v1" in epic)
     contract = CONTRACT.read_text()
     synth = SYNTH.read_text()
     for name, body in (("plan-contribution-contract.md", contract), ("plan-synthesize-and-check.md", synth)):
