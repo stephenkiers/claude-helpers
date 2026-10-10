@@ -11,6 +11,7 @@ This plan fixes three main areas:
 Run with: python3 tests/test_implement_with_haiku_doc_consistency.py
 """
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -19,6 +20,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import telemetry_schema
 
 COMMANDS = REPO_ROOT / "commands"
 AGENTS = REPO_ROOT / "agents"
@@ -694,6 +698,121 @@ else:
     t("Diagnostic message includes PLAN_REF 'none' as a suppression reason",
       False,
       "Could not find ## Step 4d: section to verify diagnostic message")
+
+print()
+
+# ============================================================================
+# PLAN STEP 6: run-ledger / fail-closed finish contract (issue #259)
+# ============================================================================
+print("[Step 6] Run-ledger and fail-closed finish doc pins")
+
+
+def logical_lines(text):
+    """Join backslash-continued shell lines into single logical lines."""
+    out = []
+    buf = ""
+    for line in text.split("\n"):
+        if line.rstrip().endswith("\\"):
+            buf += line.rstrip()[:-1] + " "
+            continue
+        out.append(buf + line)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+def is_placeholder(token):
+    return token == "" or token[0] in "<$%.[" or token in ("...", "*")
+
+
+_ledger_spec = importlib.util.spec_from_file_location(
+    "implement_ledger_doc_pins", REPO_ROOT / "scripts" / "implement-ledger.py")
+_ledger = importlib.util.module_from_spec(_ledger_spec)
+_ledger_spec.loader.exec_module(_ledger)
+
+# (a) every literal --failure-class token is a FAILURE_CLASSES member
+classes_cited = []
+for m in re.finditer(r"--failure-class\s+(\S+)", IMPLEMENT_WITH_HAIKU):
+    tok = m.group(1).strip("\"'`;,)")
+    if not is_placeholder(tok):
+        classes_cited.append(tok)
+bad_classes = sorted({c for c in classes_cited if c not in telemetry_schema.FAILURE_CLASSES})
+t("(a) every literal --failure-class in implement-with-haiku.md is in FAILURE_CLASSES",
+  bool(classes_cited) and not bad_classes,
+  f"not in FAILURE_CLASSES: {bad_classes}" if bad_classes else "no literal --failure-class sites found")
+
+# (b) no command-end line carries --outcome success
+success_ends = [
+    line for line in logical_lines(IMPLEMENT_WITH_HAIKU)
+    if "command-end" in line and re.search(r"--outcome\s+success\b", line)
+]
+t("(b) no command-end line in implement-with-haiku.md carries --outcome success",
+  not success_ends,
+  f"offending lines: {success_ends[:2]}")
+
+# (c) exactly one finish invocation, with no error suppression on that line
+finish_lines = [
+    line for line in logical_lines(IMPLEMENT_WITH_HAIKU)
+    if re.search(r'implement-ledger\.py"?\s+finish\b', line)
+]
+t("(c) exactly one implement-ledger.py finish invocation",
+  len(finish_lines) == 1,
+  f"found {len(finish_lines)}")
+if len(finish_lines) == 1:
+    t("(c) the finish invocation has no '|| true' or '2>/dev/null'",
+      "|| true" not in finish_lines[0] and "2>/dev/null" not in finish_lines[0],
+      f"line: {finish_lines[0][:200]}")
+
+# (d) no-early-exit and post-compaction (locate) rules appear before ## Step 0
+step0_pos = IMPLEMENT_WITH_HAIKU.find("## Step 0")
+early_match = re.search(r"early[- ]exit", IMPLEMENT_WITH_HAIKU, re.I)
+locate_match = re.search(r'implement-ledger\.py"?\s+locate\b', IMPLEMENT_WITH_HAIKU)
+t("(d) no-early-exit rule appears before ## Step 0",
+  step0_pos != -1 and early_match is not None and early_match.start() < step0_pos,
+  f"Step 0 at {step0_pos}, early-exit at {early_match.start() if early_match else None}")
+t("(d) post-compaction implement-ledger.py locate rule appears before ## Step 0",
+  step0_pos != -1 and locate_match is not None and locate_match.start() < step0_pos,
+  f"Step 0 at {step0_pos}, locate at {locate_match.start() if locate_match else None}")
+
+# (e) every step id and skip reason cited in a ledger append is in the helper's vocabulary
+cited_steps = []
+cited_reasons = []
+for line in logical_lines(IMPLEMENT_WITH_HAIKU):
+    if "printf" not in line or ">>" not in line or "LEDGER" not in line:
+        continue
+    fmt_and_args = line.split(">>")[0]
+    done = re.search(r"\bDONE\s+(\S+)\s+%s", fmt_and_args)
+    skipped = re.search(r"\bSKIPPED\s+(\S+)\s+%s", fmt_and_args)
+    if done and not is_placeholder(done.group(1)):
+        cited_steps.append(done.group(1))
+    if skipped:
+        if not is_placeholder(skipped.group(1)):
+            cited_steps.append(skipped.group(1))
+        quoted = re.findall(r'"([^"]*)"', fmt_and_args)
+        if quoted and not is_placeholder(quoted[-1]):
+            cited_reasons.append(quoted[-1])
+bad_steps = sorted({s for s in cited_steps if s not in _ledger.STEP_IDS})
+bad_reasons = sorted({r for r in cited_reasons if r not in _ledger.SKIP_REASONS})
+t("(e) every step id cited in a ledger append is in implement-ledger.py STEP_IDS",
+  len(cited_steps) > 0 and not bad_steps,
+  f"unknown step ids: {bad_steps} (cited {len(cited_steps)})")
+t("(e) every skip reason cited in a ledger append is in implement-ledger.py SKIP_REASONS",
+  len(cited_reasons) > 0 and not bad_reasons,
+  f"unknown reasons: {bad_reasons} (cited {len(cited_reasons)})")
+
+# (f) frontmatter grants the helper, and the python3 grant is not a bare wildcard
+frontmatter = re.match(r"---\n(.*?)\n---", IMPLEMENT_WITH_HAIKU, re.S)
+allowed_tools = ""
+if frontmatter:
+    am = re.search(r"^allowed-tools:(.*)$", frontmatter.group(1), re.M)
+    allowed_tools = am.group(1) if am else ""
+t("(f) allowed-tools frontmatter grants implement-ledger.py",
+  "implement-ledger.py" in allowed_tools,
+  f"allowed-tools: {allowed_tools[:200]}")
+t("(f) the python3 grant is narrow (no bare Bash(python3:*))",
+  "Bash(python3:*)" not in allowed_tools and "Bash(python3 *)" not in allowed_tools,
+  f"allowed-tools: {allowed_tools[:200]}")
 
 print()
 
