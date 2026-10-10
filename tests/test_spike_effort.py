@@ -437,25 +437,37 @@ def t_is_path_like_rejects_numeric_tokens():
 
 # ---------------------------------------------------------------- F18: template-vs-DEFAULTS equality drift guard
 
-def t_template_defaults_consistency():
-    """Template file and DEFAULTS should have matching defaults."""
-    template_path = REPO_ROOT / "prompts" / "spike-effort-heuristic.yaml.template"
-    if not template_path.exists():
-        return  # Skip if template doesn't exist
+TEMPLATE_KEYS = [
+    "default_effort", "long_question_chars", "subsystem_min", "decision_cues", "risk_keywords",
+]
 
-    # Load template as YAML
-    import yaml
+
+def t_template_defaults_consistency():
+    """Template file and DEFAULTS must match on every tunable key (lists compared in order)."""
+    template_path = REPO_ROOT / "prompts" / "spike-effort-heuristic.yaml.template"
+    assert template_path.exists(), "template missing: %s" % template_path
+
+    # PyYAML is optional for scripts/spike-effort.py, so its absence is a visible skip, not a failure.
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError:
+        print("  SKIP template/DEFAULTS consistency: PyYAML not installed "
+              "(pip install pyyaml to run this check)")
+        return
+
     try:
         template_data = yaml.safe_load(template_path.read_text())
-    except Exception:
-        return  # Skip if template is not valid YAML
+    except Exception as e:
+        raise AssertionError("template is not parseable YAML: %s" % e)
+    assert isinstance(template_data, dict), \
+        "template top level is not a mapping: %s" % type(template_data).__name__
 
-    # Check key defaults match
-    for key in ["default_effort", "long_question_chars"]:
-        if key in template_data and key in se.DEFAULTS:
-            assert template_data[key] == se.DEFAULTS[key], \
-                "template %s=%r differs from DEFAULTS %s=%r" % (
-                    key, template_data[key], key, se.DEFAULTS[key])
+    for key in TEMPLATE_KEYS:
+        assert key in template_data, "template missing key %r" % key
+        assert key in se.DEFAULTS, "DEFAULTS missing key %r" % key
+        assert template_data[key] == se.DEFAULTS[key], \
+            "template %s=%r differs from DEFAULTS %s=%r" % (
+                key, template_data[key], key, se.DEFAULTS[key])
 
 
 TESTS = [
