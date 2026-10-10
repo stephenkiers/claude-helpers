@@ -14,6 +14,8 @@ Glean, Google Drive, etc.), one validation worker per available source. If no in
 are present, Wave 2 is skipped automatically. Produces a contextually-named output file in
 `artifacts/drafts/`.
 
+For a closed question that needs resumable, checkpointed research, use `/expert-spike` instead.
+
 ---
 
 ## Step 1: Get the topic

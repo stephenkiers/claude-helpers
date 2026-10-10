@@ -53,6 +53,8 @@ is `./install.sh` (add `--with-zsh-keybindings` to opt into Option+Arrow word ju
   isolated worktree (ADR-0012).
 - **Planning & hardening** — `/expert-plan`, `/expert-review-plan`, `/expert-harden-{types,contracts,tests}`,
   `/expert-pre-mortem`.
+- **Research** — `/expert-spike`: resumable research spikes on a closed question, with a persisted
+  knowledge base under `spikes/` (see [ADR-0022](docs/adr/0022-expert-spike.md)).
 - **Lifecycle** — `/track`, `/implement-with-haiku`, `/shipit`, `/cleanup`, `/expert-rebase`, and more.
 
 See [CLAUDE.md](CLAUDE.md) for the full command and persona catalog.
