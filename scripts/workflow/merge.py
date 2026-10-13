@@ -642,14 +642,18 @@ def _resolve_pr_from_worktree(target_worktree: str) -> Tuple[Optional[int], Opti
     The cached pr.number is used only when the github-cache is trusted for the
     worktree's branch and GitHub confirms the PR's head is that branch (issue #213).
     Otherwise falls through to the by-branch lookup.
+
+    Note: The verify_pr_head call at line 654 checks that the PR's head branch matches
+    and that the lookup succeeds, but does not check the PR's state (OPEN/MERGED/CLOSED).
+    The PR state is not validated here; only its existence and head branch are confirmed.
     """
     try:
         worktree_path = Path(target_worktree)
         head_ref = git.get_current_branch(cwd=worktree_path)
 
         cache_file = worktree_path / ".claude" / "github-cache.json"
-        trusted, pr_section, _, _ = trusted_github_cache(cache_file, head_ref)
-        pr_number = cached_pr_number(pr_section) if trusted is not None else None
+        result = trusted_github_cache(cache_file, head_ref)
+        pr_number = cached_pr_number(result.pr_section) if result.cache is not None else None
         if pr_number is not None:
             _, probe_err = verify_pr_head(pr_number, head_ref, worktree_path)
             if probe_err is None:

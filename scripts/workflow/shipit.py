@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any, Tuple
 from . import git
 from .cache import (
     cached_pr_number, hash_cache_file, hash_file_content, positive_int,
-    trusted_github_cache, verify_pr_head, write_cache
+    trusted_github_cache, verify_pr_head, write_cache, normalize_branch
 )
 from .safety import Unknown, fail_closed
 from .models import StackInfo, GITHUB_CACHE_SCHEMA_VERSION
@@ -100,6 +100,88 @@ class ShipitResult:
         return d
 
 
+def _resolve_pr_action(branch: str, cwd: Path) -> Tuple[Optional[int], bool]:
+    """
+    Resolve whether to create or edit a PR for the given branch.
+
+    Does a by-branch lookup via `gh pr view <branch>` to find an existing open PR.
+    Returns (pr_number, should_create):
+    - If an open PR for this branch is found, returns (number, False) to edit it.
+    - If no PR is found or lookup fails, returns (None, True) to create one.
+    - If a PR is found but not open or head ref doesn't match, returns (None, True) to create.
+    """
+    try:
+        pr_data = git.pr_view_json(branch, ["number", "state"], cwd=cwd)
+        if isinstance(pr_data, dict) and pr_data:
+            pr_number = pr_data.get("number")
+            state = pr_data.get("state")
+            if isinstance(pr_number, int) and pr_number > 0 and state == "OPEN":
+                return pr_number, False
+    except Exception:
+        # Lookup failed; fall back to create
+        pass
+    return None, True
+
+
+def _build_github_cache_data(
+    existing_data: Dict[str, Any],
+    plan: ShipitPlan,
+    result: ShipitResult,
+    repo_root: Path
+) -> Dict[str, Any]:
+    """
+    Build github cache data dict from plan and result after PR operation succeeds.
+
+    Updates existing_data in-place with schema_version, branch, pr section, and
+    stack info. Returns the updated dict.
+    """
+    # Stamp branch and schema_version so the next plan_shipit trusts this cache.
+    existing_data["schema_version"] = GITHUB_CACHE_SCHEMA_VERSION
+    existing_data["branch"] = plan.branch
+
+    # pr section: on the create path (including MERGED-create) replace it
+    # wholesale. On the edit path keep the verified existing section.
+    if result.pr_created:
+        existing_data.pop("pr", None)
+
+        # Merge PR data into cache
+        # Attempt fallback extraction if plan.pr_number is still None
+        pr_num_to_cache = plan.pr_number
+        if not pr_num_to_cache and result.pr_url:
+            try:
+                pr_num_to_cache = int(result.pr_url.rstrip().split('/')[-1])
+            except (ValueError, IndexError):
+                pr_num_to_cache = None
+
+        if pr_num_to_cache and result.pr_url:
+            pr_data = {
+                "number": pr_num_to_cache,
+                "url": result.pr_url,
+                "state": "OPEN"
+            }
+            existing_data["pr"] = pr_data
+
+    # Update stack info if present
+    if plan.stack:
+        existing_data["stack"] = {
+            "isStacked": plan.stack.is_stacked,
+            "parentBranch": plan.stack.parent_branch,
+            "parentPr": plan.stack.parent_pr
+        }
+
+    return existing_data
+
+
+def _refuse(result: ShipitResult, message: str) -> ShipitResult:
+    """
+    Set result to a refusal state (no PR mutation, branch already committed/pushed).
+
+    Sets result.error and returns result for early exit.
+    """
+    result.error = Unknown(message)
+    return result
+
+
 def _fresh_github_cache_base(path: Path, branch: str) -> Dict[str, Any]:
     """
     Base dict for a write-back over a stale github-cache (issue #213).
@@ -118,7 +200,7 @@ def _fresh_github_cache_base(path: Path, branch: str) -> Dict[str, Any]:
             existing = None
     if isinstance(existing, dict):
         review = existing.get("review")
-        normalized_branch = branch.strip().replace("/", "-")
+        normalized_branch = normalize_branch(branch)
         if isinstance(review, dict) and review.get("branch") == normalized_branch:
             fresh["review"] = review
     return fresh
@@ -154,9 +236,11 @@ def plan_shipit(
         # Whole-cache branch check (issue #213): pr, stack, and issue are read only
         # from a cache that describes this branch.
         github_cache_path = repo_root / ".claude" / "github-cache.json"
-        trusted, pr_section, cache_stale, stale_stack_claimed = trusted_github_cache(
-            github_cache_path, branch
-        )
+        result = trusted_github_cache(github_cache_path, branch)
+        trusted = result.cache
+        pr_section = result.pr_section
+        cache_stale = result.stale_reason
+        stale_stack_claimed = result.stale_stack_claimed
 
         pr_number = None
         pr_exists = False
@@ -294,14 +378,17 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
             # Edit-path-only live probe (issue #213). Runs before any PR mutation:
             # the cached number is edited only if GitHub says its head is this branch
             # and it is OPEN. MERGED falls through to create; anything else refuses.
+            merged_pr_during_probe = None
+            will_create = False
             if plan.pr_exists:
-                if plan.pr_number is None:
+                validated_pr_number = positive_int(plan.pr_number)
+                if validated_pr_number is None:
                     result.error = Unknown(
                         "Plan says a PR exists but carries no PR number. Branch was pushed; "
                         "the PR was not touched. Re-run /shipit"
                     )
                     return result, result.error
-                pr_state, probe_err = verify_pr_head(plan.pr_number, plan.branch, repo_root)
+                pr_state, probe_err = verify_pr_head(validated_pr_number, plan.branch, repo_root)
                 if probe_err is not None:
                     result.error = Unknown(
                         f"{probe_err.reason}. Branch was pushed; the PR was not touched. Retry if the "
@@ -310,9 +397,8 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     )
                     return result, result.error
                 if pr_state == "MERGED":
-                    result.merged_pr_number = plan.pr_number
-                    plan.pr_number = None
-                    plan.pr_exists = False
+                    merged_pr_during_probe = plan.pr_number
+                    will_create = True
                 elif pr_state != "OPEN":
                     result.error = Unknown(
                         f"cached PR #{plan.pr_number} for {plan.branch} is {pr_state}; not editing or "
@@ -320,28 +406,41 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     )
                     return result, result.error
 
-            if not plan.pr_exists:
-                # Create PR
-                pr_url, err = git.pr_create(
-                    title=title,
-                    body_file=body_file,
-                    base=plan.base_branch,
-                    cwd=repo_root
-                )
-                if pr_url:
-                    result.pr_created = True
-                    result.pr_url = pr_url
-                    # Extract PR number from URL
-                    try:
-                        pr_num = int(pr_url.rstrip().split('/')[-1])
-                        plan.pr_number = pr_num
-                    except (ValueError, IndexError):
-                        pass
-                elif err:
-                    result.error = err
-                    return result, result.error
+            if will_create or not plan.pr_exists:
+                # Create or adopt PR. First check by-branch lookup (issue #213).
+                # If a PR is found and is open, adopt it; otherwise create.
+                adopted_pr_number, should_create = _resolve_pr_action(plan.branch, repo_root)
+
+                if not should_create and adopted_pr_number:
+                    # Adopt the existing open PR
+                    plan.pr_number = adopted_pr_number
+                    result.pr_updated = True
+                    result.pr_url = f"https://github.com/{plan.branch.split('/')[0]}/pull/{adopted_pr_number}"
+                else:
+                    # Create a new PR
+                    pr_url, err = git.pr_create(
+                        title=title,
+                        body_file=body_file,
+                        base=plan.base_branch,
+                        cwd=repo_root
+                    )
+                    if pr_url:
+                        result.pr_created = True
+                        result.pr_url = pr_url
+                        # Extract PR number from URL
+                        try:
+                            pr_num = int(pr_url.rstrip().split('/')[-1])
+                            plan.pr_number = pr_num
+                        except (ValueError, IndexError):
+                            pass
+                        # Only record the merged PR if we successfully created a replacement
+                        if merged_pr_during_probe is not None:
+                            result.merged_pr_number = merged_pr_during_probe
+                    elif err:
+                        result.error = err
+                        return result, result.error
             else:
-                # Edit existing PR
+                # Edit existing PR (only if it's OPEN, not MERGED)
                 assert plan.pr_number is not None  # pr_exists is True implies pr_number is set
                 success, err = git.pr_edit(
                     pr_number=plan.pr_number,
@@ -372,39 +471,8 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                 # Stale cache (issue #213): start fresh so no stale pr/stack/issue survives.
                 existing_data = _fresh_github_cache_base(github_cache_path, plan.branch)
 
-            # Stamp branch and schema_version so the next plan_shipit trusts this cache.
-            existing_data["schema_version"] = GITHUB_CACHE_SCHEMA_VERSION
-            existing_data["branch"] = plan.branch
-
-            # pr section: on the create path (including MERGED-create) replace it
-            # wholesale. On the edit path keep the verified existing section.
-            if result.pr_created:
-                existing_data.pop("pr", None)
-
-                # Merge PR data into cache
-                # Attempt fallback extraction if plan.pr_number is still None
-                pr_num_to_cache = plan.pr_number
-                if not pr_num_to_cache and result.pr_url:
-                    try:
-                        pr_num_to_cache = int(result.pr_url.rstrip().split('/')[-1])
-                    except (ValueError, IndexError):
-                        pr_num_to_cache = None
-
-                if pr_num_to_cache and result.pr_url:
-                    pr_data = {
-                        "number": pr_num_to_cache,
-                        "url": result.pr_url,
-                        "state": "OPEN"
-                    }
-                    existing_data["pr"] = pr_data
-
-            # Update stack info if present
-            if plan.stack:
-                existing_data["stack"] = {
-                    "isStacked": plan.stack.is_stacked,
-                    "parentBranch": plan.stack.parent_branch,
-                    "parentPr": plan.stack.parent_pr
-                }
+            # Build updated cache data from plan and result
+            existing_data = _build_github_cache_data(existing_data, plan, result, repo_root)
 
             # write_cache's lock file needs the parent dir to exist already.
             github_cache_path.parent.mkdir(parents=True, exist_ok=True)
