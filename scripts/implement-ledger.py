@@ -26,7 +26,7 @@ The class (mechanical | test-only | full) is read from the round-sizing evidence
 (class=<value>); a missing or unreadable round-sizing row is treated as full.
 
 Skip reasons: mechanical, test-only, no-test-files-changed, dirty-file, no-comparison-operator,
-no-new-tests, pause-not-requested, no-report, resumed. See permitted_skip_reasons() for the
+no-new-tests, pause-not-requested. See permitted_skip_reasons() for the
 authoritative skip matrix.
 
 Exit codes:
@@ -79,8 +79,6 @@ SkipReasonLiteral = Literal[
     "no-comparison-operator",
     "no-new-tests",
     "pause-not-requested",
-    "no-report",
-    "resumed",
 ]
 SKIP_REASONS: FrozenSet[str] = frozenset(
     {
@@ -91,8 +89,6 @@ SKIP_REASONS: FrozenSet[str] = frozenset(
         "no-comparison-operator",
         "no-new-tests",
         "pause-not-requested",
-        "no-report",
-        "resumed",
     }
 )
 CLASSES: Tuple[str, ...] = ("mechanical", "test-only", "full")
@@ -183,9 +179,6 @@ def permitted_skip_reasons(cls: str, step: str, pause: bool) -> FrozenSet[str]:
             reasons.add("test-only")
         if step in PAUSE_ROWS and not pause:
             reasons.add("pause-not-requested")
-    if step == "round1":
-        reasons.add("no-report")
-        reasons.add("resumed")
     if cls in ("test-only", "full"):
         reasons |= FURTHER_SKIPS.get(step, frozenset())
     return frozenset(reasons)
@@ -685,8 +678,11 @@ def cmd_finish(args: argparse.Namespace) -> int:
     for line in check_lines(ev):
         print(line)
 
-    # F1: Incomplete first `finish` does not emit. Doc calls `check` first (user reads this output).
+    # Fail closed: an incomplete run records steps_skipped (ticket #259) and keeps its pointer so the
+    # run can be completed and finished again. This must precede the `finished` branch below, so a
+    # hand-appended FINISHED row cannot bypass the completeness gate.
     if not ev["complete"]:
+        _emit_command_end(args.log, args.state_dir, False)
         return 1
 
     if ev["finished"]:

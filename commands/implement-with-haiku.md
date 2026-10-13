@@ -933,7 +933,7 @@ Any downstream step that this classification does not run gets a `SKIPPED <step-
 authoritative skip matrix lives in `scripts/implement-ledger.py`; consult functions `required_steps()`
 and `permitted_skip_reasons()` for which steps each classification skips. The allowed reasons are
 `mechanical`, `test-only`, `no-test-files-changed`, `dirty-file`, `no-comparison-operator`,
-`no-new-tests`, `pause-not-requested`, `no-report`, and `resumed`. Append each skip row
+`no-new-tests`, and `pause-not-requested`. Append each skip row
 with `printf '%s SKIPPED <step-id> %s\n' "<RUN_KEY>" "<reason>" >> "<LEDGER_PATH>"`.
 
 - **Mechanical** — formatting/lint/config-only diff, no logic change (e.g. clippy/prettier churn,
