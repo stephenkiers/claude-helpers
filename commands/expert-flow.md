@@ -95,30 +95,30 @@ issue stop before any telemetry with a `guard_block` exit.
 ```bash
 PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
 RESUME_REF=""; LIST=no; ISSUE_ARG=""; BAD=""
-flag_bad() { [ -n "$BAD" ] || BAD="$1"; }
+flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
 while [ $# -gt 0 ]; do
-  case "$1" in
+  case "${1}" in
     --plan-effort=*) PLAN_EFFORT="${1#--plan-effort=}"; [ -n "$PLAN_EFFORT" ] || flag_bad "--plan-effort requires a value" ;;
     --review-effort=*) REVIEW_EFFORT="${1#--review-effort=}"; [ -n "$REVIEW_EFFORT" ] || flag_bad "--review-effort requires a value" ;;
     --from=*) FROM_STEP="${1#--from=}"; [ -n "$FROM_STEP" ] || flag_bad "--from requires a value" ;;
     --plan-file=*) PLAN_FILE_FLAG="${1#--plan-file=}"; [ -n "$PLAN_FILE_FLAG" ] || flag_bad "--plan-file requires a value" ;;
     --resume=*) RESUME_REF="${1#--resume=}"; [ -n "$RESUME_REF" ] || flag_bad "--resume requires a value" ;;
     --plan-effort|--review-effort|--from|--plan-file|--resume)
-      if [ $# -lt 2 ] || [ -z "$2" ]; then flag_bad "$1 requires a value"; else
-        case "$1" in
-          --plan-effort) PLAN_EFFORT="$2" ;;
-          --review-effort) REVIEW_EFFORT="$2" ;;
-          --from) FROM_STEP="$2" ;;
-          --plan-file) PLAN_FILE_FLAG="$2" ;;
-          --resume) RESUME_REF="$2" ;;
+      if [ $# -lt 2 ] || [ -z "${2}" ]; then flag_bad "${1} requires a value"; else
+        case "${1}" in
+          --plan-effort) PLAN_EFFORT="${2}" ;;
+          --review-effort) REVIEW_EFFORT="${2}" ;;
+          --from) FROM_STEP="${2}" ;;
+          --plan-file) PLAN_FILE_FLAG="${2}" ;;
+          --resume) RESUME_REF="${2}" ;;
         esac
         shift
       fi ;;
     --auto-merge) AUTO_MERGE=yes ;;
     --epic) EPIC=yes ;;
     --list) LIST=yes ;;
-    --*) flag_bad "unknown flag: $1" ;;
-    *) [ -z "$ISSUE_ARG" ] || flag_bad "only one issue argument is allowed"; ISSUE_ARG="$1" ;;
+    --*) flag_bad "unknown flag: ${1}" ;;
+    *) [ -z "$ISSUE_ARG" ] || flag_bad "only one issue argument is allowed"; ISSUE_ARG="${1}" ;;
   esac
   shift
 done
@@ -185,14 +185,20 @@ ls "$FLOW_DIR/steps/" 2>/dev/null
 
 Record every field. Resume rules, applied in this order:
 
-1. **Live step.** If `live` is not `null`, a step agent may still be running (or waiting for answers)
-   under another session. STOP with reason `step may still be running (state.live set)` — the stop
-   text adds: "if no step agent is alive, a human clears `live` in `state.json` and resumes again."
-   A new session cannot reach a step agent started by another session. Do not touch `live` here.
+1. **Live step.** If `live` is not `null`, the previous session left a step agent that was running or
+   waiting for answers, and a new session cannot reach it. `--resume` is the only way back into a
+   crashed or interrupted `running`/`awaiting` flow, so this is not a refusal: ask once with
+   `AskUserQuestion` — "state.json shows `<live.step>` attempt `<live.attempt>` live since
+   `<live.since>`. Is another session still driving this flow?" — options `No — clear it and resume
+   (Recommended)` and `Yes — stop`. On `No`, set `live: null`, log `resumed`, and continue to rule 4;
+   a re-run is the only recovery, so the agent is treated as gone. On `Yes` (or no answer),
+   `STOP step may still be running (state.live set)` — the stop text adds: "if no step agent is
+   alive, a human clears `live` in `state.json` and resumes again." The stop does not touch `live`.
 2. `status: done` → print `flow already done` and the PR URL; stop, no telemetry.
 3. `status: failed` (aborted) → re-run the recorded step if `failures[STEP] < 2`, else
    `STOP attempts exhausted for <STEP>`.
-4. `status: awaiting`, `paused`, or `running` → the step subagent from the earlier session is gone.
+4. `status: awaiting`, `paused`, or `running` → the step subagent from the earlier session is gone
+   (a stale `live` was already cleared by rule 1).
    **Resume re-runs the current step from its beginning** (the spawn procedure takes the next
    attempt number and stubs the old receipt). The old `awaiting-answers` marker is stale; the re-run
    asks again with a new sequence number. Answered `answers/*.json` files are kept for reference,

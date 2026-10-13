@@ -54,6 +54,21 @@ def main():
         "\n      " + "\n      ".join(offenders) if offenders else "",
     )
 
+    # expert-flow.md's argument parser reads $1/$2; bare forms were rewritten to the user's
+    # arguments (case "2" in ... [ -z "Fix" ]). The braced forms survive substitution.
+    import re
+    flow_doc = commands_dir / "expert-flow.md"
+    bare = [
+        f"expert-flow.md:{n}: {ln.strip()}"
+        for n, ln in enumerate(flow_doc.read_text().splitlines(), start=1)
+        if re.search(r"\$[1-9]\b", ln)
+    ]
+    h.test_result(
+        "expert-flow.md uses braced positional tokens only (no bare dollar-1..9)",
+        not bare,
+        "\n      " + "\n      ".join(bare) if bare else "",
+    )
+
     # Guard the guard: if the scan silently stopped matching, this suite would pass
     # vacuously forever. Prove the detector still fires on a known-bad line.
     synthetic = f"_cap8k() {{ awk '{{print substr({POSITIONAL_ZERO},1,10)}}'; }}"

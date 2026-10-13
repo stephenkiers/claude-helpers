@@ -664,11 +664,12 @@ Next steps:
 **Flow receipt (only when `FLOW_DIR` is set).** Before the closing telemetry below, write the step
 receipt per the Receipt block of `~/.claude/prompts/flow-reference.md`, with the `Write` tool, to the path the
 orchestrator named in its step prompt (default `${FLOW_DIR}/steps/01-plan.md`). If an Ask earlier
-in this run left the receipt open, append to it rather than replacing the awaiting-answers marker
-lines. Content: the closing message above, unchanged, followed by:
+in this run left the receipt open, rewrite the whole file and drop its awaiting-answers marker
+lines — a receipt with `Decision:` carries no marker. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Content: the closing message above, unchanged, followed by:
 
 ```
 FINAL_PLAN_PATH: <absolute FINAL_PLAN_PATH, $HOME expanded>
+ATTEMPT: <k>
 Decision: OK
 Reason: completed
 <!-- step-end -->
@@ -692,7 +693,7 @@ Use `--outcome interrupted` for user-initiated stops (declined dialogs, checkpoi
 
 **In a flow (`FLOW_DIR` set), every failure or stop exit also writes the receipt** (Receipt block of
 `~/.claude/prompts/flow-reference.md`, same path as Step 9) after its telemetry: whatever summary exists so
-far, then `Decision: FAILED`, `Reason: <one line naming the stop — e.g. "plan context resolved empty",
+far, then `ATTEMPT: <k>`, `Decision: FAILED`, `Reason: <one line naming the stop — e.g. "plan context resolved empty",
 "copy-failed", "contributor-failed", "user declined at checkpoint">`, `<!-- step-end -->`. Ending a
 turn on an Ask is not an exit: it writes `<!-- awaiting-answers: … -->` and leaves the receipt open,
 as the Ask block describes — it is never recorded as `FAILED`.

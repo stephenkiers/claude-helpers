@@ -446,7 +446,7 @@ echo "Path verified unambiguous — invoking /cleanup with: $WT"
 - This command must not compute `WORKTREE_PARENT` or `PROJECT_ROOT` itself — that is owned by Project Detection elsewhere.
 - This command must not reimplement worktree removal or branch deletion — `/cleanup` owns that.
 
-**If `/cleanup` fails after a successful merge, the merge is irreversible but cleanup is idempotent.** Print the exact recovery command and stop (inside a flow: receipt with `MERGED: yes`, `Decision: FAILED`, and the recovery command in the `Reason:` line):
+**If `/cleanup` fails after a successful merge, the merge is irreversible but cleanup is idempotent.** Print the exact recovery command and stop (inside a flow: receipt with `Decision: FAILED`, no `MERGED:` line, and the recovery command in the `Reason:` line, which also says the PR is already merged):
 ```
 /cleanup <abs-path>
 ```
@@ -602,7 +602,7 @@ rm -rf "$MC_STATE_DIR"
 echo "✓ State directory removed"
 ```
 
-**If `/cleanup` fails** after the queue route, the merge is already irreversible on GitHub but cleanup is idempotent. Print the recovery command and stop (inside a flow: receipt with `MERGED: yes`, `Decision: FAILED`, and the recovery command in the `Reason:` line):
+**If `/cleanup` fails** after the queue route, the merge is already irreversible on GitHub but cleanup is idempotent. Print the recovery command and stop (inside a flow: receipt with `Decision: FAILED`, no `MERGED:` line, and the recovery command in the `Reason:` line, which also says the PR is already merged):
 ```
 /cleanup <abs-path>
 ```
@@ -663,22 +663,29 @@ worktree, so `/cleanup` removing that worktree does not affect the write — but
 the receipt needs from the state already captured (Phase 1's literals, the state directory, the
 `/cleanup` output) rather than reading anything from the worktree afterwards.
 
-Get the live merge state for the required `MERGED:` line:
+Decide whether to write the `MERGED:` line from the live merge state:
 
 ```bash
 PR_NUM=<PR number resolved in Phase 1>   # substitute the literal number; this is a new Bash call
-if [ "$(gh pr view "$PR_NUM" --json state -q .state 2>/dev/null)" = "MERGED" ]; then echo "MERGED: yes"; else echo "MERGED: no"; fi
+[ "$(gh pr view "$PR_NUM" --json state -q .state 2>/dev/null)" = "MERGED" ] && echo "write MERGED: yes" || echo "omit the MERGED line"
 ```
 
-(If Phase 1 never resolved a PR number, the line is `MERGED: no`.) Then write the receipt with the
-`Write` tool: the Phase 5 summary exactly as printed, then
+(If Phase 1 never resolved a PR number, omit the line.) The line is `MERGED: yes` only on an `OK`
+receipt; every other receipt omits it — never write `MERGED: no`, and never pair `MERGED: yes` with
+`FAILED` (when `/cleanup` failed after the merge landed, say so in `Reason:`). `<k>` is the step
+prompt's `ATTEMPT=<k>` (use `1` when it gives none). Then write the receipt with the `Write` tool:
+the Phase 5 summary exactly as printed, then (the `MERGED: yes` line only on `OK`)
 
 ```
-MERGED: yes|no
+MERGED: yes
+ATTEMPT: <k>
 Decision: OK | FAILED
 Reason: <"completed", or the stop that ended the run>
 <!-- step-end -->
 ```
+
+If an earlier Ask left `<!-- awaiting-answers: … -->` markers in the file, rewrite the whole file and
+drop them — a receipt with `Decision:` carries no marker.
 
 `Decision: OK` only when the PR is merged **and** `/cleanup` succeeded. Otherwise `FAILED`, with a
 `Reason:` naming the stop: `queue kickback (exit 2) — fix, push, re-run /merge-and-cleanup <N>`,
