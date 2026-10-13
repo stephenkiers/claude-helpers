@@ -25,16 +25,21 @@ Correlation between stages and commands is automatic via a session-scoped state 
 
 Start these in parallel:
 - Read `.claude/repo-cache.json`
-- Read `.claude/github-cache.json` (worktree cache — issue/PR data)
+- Note `.claude/github-cache.json` exists (worktree cache; PR, issue and stack decisions are read only by the `shipit plan` CLI, never here)
 - `git status && git diff --stat`
 
-**PR existence check (cache-first):**
-1. If `.claude/github-cache.json` has `pr.url` → PR already exists, skip API call
-2. If no cache or no `pr` section → fall back to `gh pr view --json url 2>/dev/null`
+**PR existence check (plan verdict):** PR existence, PR number, and issue linkage come from the
+`shipit plan` CLI verdict (the early plan in "Stack Detection", re-checked by the late plan in
+"Create PR"), not from reading `.claude/github-cache.json` in this section. The CLI is the only
+reader of that cache for those decisions. It ignores the whole cache when its `branch` is not this
+branch. On PR creation (when no cached PR number exists), the CLI does a by-branch lookup via GitHub
+and adopts any existing OPEN PR whose head matches the current branch — allowing the create path to
+recover when the PR cache is stale or missing. The `shipit apply` step re-verifies the PR head and
+OPEN state against GitHub before any edit.
 
-**If no cache or cache is stale (>30 days):** Run full detection (Step 1.5) and write cache.
+**If no `repo-cache.json` or it is stale (>30 days):** Run full detection (Step 1.5) and write cache.
 
-**If cache exists and fresh:** Use cached commands.
+**If `repo-cache.json` exists and is fresh:** Use cached commands.
 
 ### Cache Schema
 
@@ -225,7 +230,7 @@ required so the `scripts.workflow` package import resolves regardless of which r
 invoked from):
 
 ```bash
-source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
 # Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
 # 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
@@ -283,21 +288,77 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-pr >/d
 
 ### Stack Detection (if stacked)
 
-Before pushing and creating the PR, run the **Stack Detection → Is-stacked** block from
+**First, take the early plan verdict.** This is a `shipit plan` call that is never passed to
+`shipit apply`. It supplies only the cache verdict (issue number, PR existence and number, cache
+staleness, and whether a stale cached stack must be discarded), and it runs before the Is-stacked
+block and before any push. `plan_shipit` is read-only here: it makes no network call and does not
+read the commit message file. Note the exact `EARLY_PLAN_FILE=` path this prints and reuse it
+verbatim in later bash fences (shell variables do not survive across Bash tool calls). The shipit
+command runs the plan twice (early and late) to ensure the PR body merge uses a consistent verdict;
+see ADR-0013 for the early/late plan agreement mechanism.
+
+```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+# /dev/null is a safe placeholder message path: this plan is never applied.
+EARLY_PLAN_FILE=$(mktemp)
+echo "EARLY_PLAN_FILE=$EARLY_PLAN_FILE"
+if ! PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit plan /dev/null > "$EARLY_PLAN_FILE"; then
+  printf '%s\n' "ERROR: early shipit plan failed" >&2
+  rm -f "$EARLY_PLAN_FILE"
+  exit 1
+fi
+if [ ! -s "$EARLY_PLAN_FILE" ]; then
+  printf '%s\n' "ERROR: early shipit plan produced empty output" >&2
+  rm -f "$EARLY_PLAN_FILE"
+  exit 1
+fi
+if [ -z "$(jq -r '.plan_hash // empty' < "$EARLY_PLAN_FILE")" ]; then
+  printf '%s\n' "ERROR: early shipit plan produced no plan_hash" >&2
+  rm -f "$EARLY_PLAN_FILE"
+  exit 1
+fi
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading cache_stale" >&2; exit 1; }
+CACHE_STALE=$(jq -r '.cache_stale // empty' < "$EARLY_PLAN_FILE")
+case "$CACHE_STALE" in
+  invalid|branch_mismatch:*)
+    printf 'NOTE: .claude/github-cache.json ignored (%s): it does not describe this branch.\n' "$CACHE_STALE" >&2
+    ;;
+esac
+```
+
+Then, before pushing and creating the PR, run the **Stack Detection → Is-stacked** block from
 `~/.claude/prompts/worktree-reference.md` to detect whether this branch's parent is another
 worktree's branch. This resolves `STACK_IS_STACKED`, `STACK_PARENT_BRANCH`, and `STACK_PARENT_PR`.
 (See that reference doc for the full detection logic.)
+
+**Then discard a stale cached stack, before any push.** The Is-stacked block can take its parent
+from a cache that describes another branch. The early plan's `stale_stack_claimed` is `true` only
+when such a stale cache claimed a stack. A `missing` cache, or an invalid cache without a stack
+claim (for example a review-only cache), keeps the ancestry-detected values. When it is `true`, the
+push below takes the plain `git push -u` path: no rebase onto the old parent and no
+`--force-with-lease`.
+
+```bash
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading stale_stack_claimed" >&2; exit 1; }
+if [ "$(jq -r '.stale_stack_claimed' < "$EARLY_PLAN_FILE")" = "true" ]; then
+  printf '%s\n' "NOTE: discarding stale cached stack parent from .claude/github-cache.json; the PR will target the default branch." >&2
+  STACK_IS_STACKED=false
+  STACK_PARENT_BRANCH=""
+  STACK_PARENT_PR=""
+fi
+```
+
 Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-reference.md` to resolve `STACK_LAYOUT`. (Skip if `STACK_IS_STACKED` is false AND the branch has no stacked descendants — but note a stack root is exactly that case: unstacked itself, yet heading a stack. The descendant-sync gate below needs `STACK_LAYOUT` for roots too, so when the branch may have children, run layout detection anyway.)
 
 ### Create PR (with correct base for stacked PRs)
 
 ```bash
-# Detect issue number: cache-first, then branch name regex fallback
+# Detect issue number: early plan verdict first, then branch name regex fallback.
+# The early plan is the only cache reader here; it ignores a cache that does not describe this branch.
 BRANCH=$(git branch --show-current)
-GITHUB_CACHE=$(cat .claude/github-cache.json 2>/dev/null || echo '{}')
-# printf, not echo: zsh's builtin echo interprets backslash escapes, turning a stored
-# \n back into a literal newline and making the JSON invalid before jq ever sees it.
-ISSUE_NUM=$(printf '%s' "$GITHUB_CACHE" | jq -r '.issue.number // empty' 2>/dev/null)
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading issue_number" >&2; exit 1; }
+ISSUE_NUM=$(jq -r '.issue_number // empty' < "$EARLY_PLAN_FILE" 2>/dev/null)
 if [ -z "$ISSUE_NUM" ]; then
   ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
 fi
@@ -308,9 +369,10 @@ else
   # Run the "Push a stacked branch (new local work)" block from
   # ~/.claude/prompts/worktree-reference.md (routes on STACK_LAYOUT: gh stack sync for
   # single-driver, git rebase --onto + --force-with-lease for per-branch; stops on unknown).
-  echo "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
+  printf '%s\n' "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class other 2>/dev/null || true
+  rm -f "$EARLY_PLAN_FILE"
   exit 1
 fi
 
@@ -336,9 +398,8 @@ runs on the same PR. Gather:
   a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
   Assign it to `$TITLE`.
 - **Why this PR exists**: if `$ISSUE_NUM` is set, run `gh issue view "$ISSUE_NUM" --json
-  title,body` (cache-first against `.claude/github-cache.json`'s `.issue` section, same as the
-  `ISSUE_NUM` lookup above); otherwise derive it from the user's original request earlier in this
-  conversation. 1-3 sentences on the problem/need being addressed.
+  title,body` directly. If `$ISSUE_NUM` is not set, derive the
+  problem from the user's original request earlier in this conversation. 1-3 sentences on the problem/need being addressed.
 - **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
   / `git diff --stat` output above.
 - **What major decisions were made**: pull from a plan file's "Decisions Made" section if one
@@ -411,15 +472,11 @@ if [ "$STACK_IS_STACKED" = "true" ] && [ -n "$STACK_PARENT_PR" ]; then
   mv "${TMP_BODY}.with-stack" "$TMP_BODY"
 fi
 
-# Check if PR already exists (cache-first)
-PR_NUM=""
-if [ -f ".claude/github-cache.json" ]; then
-  PR_NUM=$(jq -r '.pr.number // empty' < .claude/github-cache.json 2>/dev/null)
-fi
-if [ -z "$PR_NUM" ]; then
-  # Fallback: try gh pr view
-  PR_NUM=$(gh pr view --json number -q '.number' 2>/dev/null || echo "")
-fi
+# Check if PR already exists, from the early plan verdict. PR_NUM is set only when the plan
+# considers this branch's PR to exist. This read is read-only: if the PR is not this branch's,
+# apply's head probe refuses before any mutation.
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading pr_exists" >&2; exit 1; }
+PR_NUM=$(jq -r 'if .pr_exists then .pr_number else empty end' < "$EARLY_PLAN_FILE" 2>/dev/null)
 ```
 
 **If the PR already exists, merge into its current body before handing it to the CLI — never
@@ -429,11 +486,30 @@ description since the last `/shipit` run, and that work must not be silently des
 ```bash
 if [ -n "$PR_NUM" ]; then
   TMP_BODY_CURRENT=$(mktemp)
-  if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
-    echo "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
-    exit 1
+  # Verify the PR before merging: it must be OPEN and its head must match the current branch.
+  # Skip the body merge if verification fails, proceeding to create a fresh PR instead.
+  PR_INFO=$(gh pr view "$PR_NUM" --json state,headRefName 2>/dev/null)
+  if [ -z "$PR_INFO" ]; then
+    printf '%s\n' "WARNING: could not fetch PR #$PR_NUM; proceeding with fresh PR creation." >&2
+    PR_NUM=""
+  else
+    PR_STATE=$(printf '%s' "$PR_INFO" | jq -r '.state // "unknown"')
+    PR_HEAD=$(printf '%s' "$PR_INFO" | jq -r '.headRefName // "unknown"')
+    if [ "$PR_STATE" != "OPEN" ]; then
+      printf '%s\n' "NOTE: PR #$PR_NUM is $PR_STATE (not OPEN); creating a fresh PR instead." >&2
+      PR_NUM=""
+    elif [ "$PR_HEAD" != "$BRANCH" ]; then
+      printf '%s\n' "NOTE: PR #$PR_NUM head ($PR_HEAD) does not match current branch ($BRANCH); creating a fresh PR instead." >&2
+      PR_NUM=""
+    else
+      # PR is valid; fetch its current body for merging
+      if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
+        printf '%s\n' "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
+        exit 1
+      fi
+      echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
+    fi
   fi
-  echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
 fi
 ```
 
@@ -472,7 +548,7 @@ the result:
 ```bash
 # Resolve CLAUDE_HELPERS_DIR again — a new Bash tool call does not inherit shell
 # variables from the Run Checks step above.
-source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
 # Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
 TMP_MSG=$(mktemp)
@@ -485,10 +561,22 @@ if [ -z "$PLAN_OK" ]; then
   exit 1
 fi
 
-# Apply the plan (stages, commits, pushes, creates/edits PR, writes cache).
-# The CLI detects pr_exists from the same cache read above and calls `gh pr edit`
-# instead of `gh pr create` accordingly — it does not re-decide create-vs-edit itself.
-SHIPIT_RESULT=$(echo "$SHIPIT_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit apply -)
+# The early verdict must still hold: the body merge above used it. If the cache changed
+# during /shipit, stop rather than apply a verdict the body merge did not use.
+for KEY in pr_exists pr_number cache_stale issue_number stale_stack_claimed base_branch; do
+  EARLY_VAL=$(jq -c --arg k "$KEY" '.[$k]' < "$EARLY_PLAN_FILE")
+  LATE_VAL=$(printf '%s' "$SHIPIT_PLAN" | jq -c --arg k "$KEY" '.[$k]')
+  if [ "$EARLY_VAL" != "$LATE_VAL" ]; then
+    printf '%s\n' "ERROR: github-cache.json changed during /shipit; re-run" >&2
+    exit 1
+  fi
+done
+
+# Apply the late plan (stages, commits, pushes, creates/edits PR, writes cache). This is the
+# only plan passed to apply. The CLI is the only cache reader for pr_exists/pr_number/issue, and
+# apply re-verifies the PR head (and OPEN state) against GitHub before any edit. It does not
+# re-decide create-vs-edit itself.
+SHIPIT_RESULT=$(printf '%s' "$SHIPIT_PLAN" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit apply -)
 SHIPIT_OK=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.success // false')
 if [ "$SHIPIT_OK" != "true" ]; then
   ERROR=$(printf '%s' "$SHIPIT_RESULT" | jq -r '.error // "Unknown error"')
@@ -496,7 +584,7 @@ if [ "$SHIPIT_OK" != "true" ]; then
   exit 1
 fi
 
-rm -f "$TMP_BODY" "$TMP_MSG"
+rm -f "$TMP_BODY" "$TMP_MSG" "$EARLY_PLAN_FILE"
 ```
 
 **The CLI's `shipit apply` step already writes `pr` and `stack` (isStacked/parentBranch/parentPr)

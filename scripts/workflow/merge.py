@@ -18,7 +18,9 @@ from typing import List, Optional, Dict, Any, Tuple, Literal
 
 from . import git
 from . import merge_queue
-from .cache import read_repo_cache, write_cache
+from .cache import (
+    cached_pr_number, read_repo_cache, trusted_github_cache, verify_pr_head, write_cache
+)
 from .safety import Unknown, fail_closed
 
 
@@ -634,19 +636,30 @@ def _unresolved_pr_message(target_worktree: str, is_current: bool) -> str:
 
 
 def _resolve_pr_from_worktree(target_worktree: str) -> Tuple[Optional[int], Optional[str], str]:
-    """Resolve PR number and head ref from a worktree path."""
-    try:
-        cache_file = Path(target_worktree) / ".claude" / "github-cache.json"
-        if cache_file.exists():
-            cache_data = json.loads(cache_file.read_text())
-            pr_number = cache_data.get("pr", {}).get("number")
-            if pr_number:
-                pr_data = git.pr_view_json(str(pr_number), ["headRefName", "state"], cwd=Path(target_worktree))
-                if pr_data:
-                    return pr_number, pr_data.get("headRefName"), target_worktree
+    """
+    Resolve PR number and head ref from a worktree path.
 
-        head_ref = git.get_current_branch(cwd=Path(target_worktree))
-        pr_data = git.pr_view_json(head_ref, ["number", "state"], cwd=Path(target_worktree))
+    The cached pr.number is used only when the github-cache is trusted for the
+    worktree's branch and GitHub confirms the PR's head is that branch (issue #213).
+    Otherwise falls through to the by-branch lookup.
+
+    Note: The verify_pr_head call at line 654 checks that the PR's head branch matches
+    and that the lookup succeeds, but does not check the PR's state (OPEN/MERGED/CLOSED).
+    The PR state is not validated here; only its existence and head branch are confirmed.
+    """
+    try:
+        worktree_path = Path(target_worktree)
+        head_ref = git.get_current_branch(cwd=worktree_path)
+
+        cache_file = worktree_path / ".claude" / "github-cache.json"
+        result = trusted_github_cache(cache_file, head_ref)
+        pr_number = cached_pr_number(result.pr_section) if result.cache is not None else None
+        if pr_number is not None:
+            _, probe_err = verify_pr_head(pr_number, head_ref, worktree_path)
+            if probe_err is None:
+                return pr_number, head_ref, target_worktree
+
+        pr_data = git.pr_view_json(head_ref, ["number", "state"], cwd=worktree_path)
         if pr_data:
             return pr_data.get("number"), head_ref, target_worktree
 

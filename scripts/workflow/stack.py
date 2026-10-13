@@ -9,7 +9,7 @@ Ports ADR-0011's stack detection logic verbatim:
 from pathlib import Path
 from typing import Optional, Tuple
 from .worktrees import parse_worktree_list
-from .cache import read_github_cache
+from .cache import read_github_cache, trusted_github_cache
 from .safety import Unknown, fail_closed
 from . import git
 
@@ -42,11 +42,19 @@ def is_stacked(
 
     default_branch, _ = git.get_default_branch(cwd=cwd)
 
+    # Try to read cache via trusted_github_cache first (branch-aware trust check).
+    # Fall back to read_github_cache if cache_path is provided but cache is stale.
     cache_result = None
     if cache_path:
-        cache_result, _ = read_github_cache(cache_path)
+        trust_result = trusted_github_cache(cache_path, branch)
+        if trust_result.cache is not None:
+            # Cache is trusted for this branch
+            cache_result = trust_result.cache
+        else:
+            # Cache is stale or not for this branch; try read_github_cache as fallback
+            cache_result, _ = read_github_cache(cache_path)
 
-    if cache_result and cache_result.stack is not None and cache_result.stack.is_stacked:
+    if cache_result and cache_result.stack is not None and cache_result.stack.is_stacked is True:
         return (
             True,
             cache_result.stack.parent_branch,
@@ -54,7 +62,7 @@ def is_stacked(
             None
         )
 
-    if cache_result and cache_result.stack is not None and not cache_result.stack.is_stacked:
+    if cache_result and cache_result.stack is not None and cache_result.stack.is_stacked is False:
         return False, None, None, None
 
     try:

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from workflow.merge import plan_merge, apply_merge, merge_lock_path, MergePlan, MergeResult, _get_merge_apply_timeout, DEFAULT_MERGE_APPLY_TIMEOUT_SECS
 from workflow.safety import Unknown
 from workflow.merge import QueueDetection, QueueGuardDecision
+from workflow.merge import _resolve_pr_from_worktree
 from _test_harness import Harness
 
 
@@ -589,6 +590,108 @@ if __name__ == "__main__":
                     "current branch" not in str(err).lower(),
                     f"got: {err}"
                 )
+
+        print()
+        print("[Section 18] _resolve_pr_from_worktree trusts the cached PR number only after a head probe")
+
+        def _is_probe(call):
+            """True when a pr_view_json call is the cached-number head probe."""
+            return call.args[:2] == ("68", ["headRefName", "state", "isCrossRepository"])
+
+        def _resolve_with(cache_data, head_ref, probe_result, by_branch=(9, "OPEN")):
+            """Run _resolve_pr_from_worktree on a fake worktree; return (result, pr_view mock, wt path)."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                wt_dir = Path(tmpdir) / "worktree"
+                (wt_dir / ".claude").mkdir(parents=True)
+                if cache_data is not None:
+                    (wt_dir / ".claude" / "github-cache.json").write_text(json.dumps(cache_data))
+
+                def fake_view(branch_or_number, json_args, cwd=None):
+                    if json_args == ["headRefName", "state", "isCrossRepository"]:
+                        return probe_result
+                    return {"number": by_branch[0], "state": by_branch[1]}
+
+                with mock.patch("workflow.git.get_current_branch", return_value=head_ref):
+                    with mock.patch("workflow.git.pr_view_json", side_effect=fake_view) as mock_view:
+                        result = _resolve_pr_from_worktree(str(wt_dir))
+                return result, mock_view, str(wt_dir)
+
+        track_shaped_pr = {"number": 68, "url": "https://github.com/owner/repo/pull/68"}
+        verified = {"headRefName": "feature/x", "state": "OPEN"}
+
+        # 18a: cache names another branch -> never probed, by-branch result returned.
+        result, mock_view, wt = _resolve_with(
+            {"branch": "other-branch", "pr": track_shaped_pr}, "feature/x", verified
+        )
+        test_result(
+            "resolve: cache for another branch is never probed by cached number",
+            not any(_is_probe(c) for c in mock_view.call_args_list),
+            f"calls={mock_view.call_args_list}"
+        )
+        test_result(
+            "resolve: cache for another branch falls through to the by-branch number",
+            result[0] == 9 and result[1] == "feature/x",
+            f"result={result!r}"
+        )
+
+        # 18b: matching cache, probe reports a different head -> by-branch result returned.
+        result, mock_view, wt = _resolve_with(
+            {"branch": "feature/x", "pr": track_shaped_pr},
+            "feature/x",
+            {"headRefName": "other-branch", "state": "OPEN"},
+        )
+        test_result(
+            "resolve: matching cache with head mismatch falls back to the by-branch number",
+            result[0] == 9,
+            f"result={result!r}"
+        )
+
+        # 18c: matching cache, verified head -> cached number returned.
+        result, mock_view, wt = _resolve_with({"branch": "feature/x", "pr": track_shaped_pr}, "feature/x", verified)
+        test_result(
+            "resolve: matching cache with verified head returns the cached number",
+            result[0] == 68,
+            f"result={result!r}"
+        )
+        test_result(
+            "resolve: matching cache with verified head returns the verified branch as head_ref",
+            result[1] == "feature/x" and result[2] == wt,
+            f"result={result!r}"
+        )
+        test_result(
+            "resolve: matching cache with verified head probes the cached number once",
+            sum(1 for c in mock_view.call_args_list if _is_probe(c)) == 1,
+            f"calls={mock_view.call_args_list}"
+        )
+
+        # 18d: /track-shaped cache (pr, no schema_version) is trusted and probed.
+        result, mock_view, wt = _resolve_with(
+            {"branch": "feature/x", "issue": {"number": 55, "url": "u", "title": "t", "body": "b", "state": "OPEN"},
+             "pr": track_shaped_pr},
+            "feature/x",
+            verified,
+        )
+        test_result(
+            "resolve: /track-shaped cache (no schema_version) is probed and its number returned",
+            result[0] == 68 and any(_is_probe(c) for c in mock_view.call_args_list),
+            f"result={result!r}"
+        )
+
+        # 18e: probe returns {} -> falls through to the by-branch path.
+        result, mock_view, wt = _resolve_with({"branch": "feature/x", "pr": track_shaped_pr}, "feature/x", {})
+        test_result(
+            "resolve: probe returning {} falls through to the by-branch number",
+            result[0] == 9,
+            f"result={result!r}"
+        )
+
+        # 18f: no cache file -> no probe, by-branch result returned.
+        result, mock_view, wt = _resolve_with(None, "feature/x", verified)
+        test_result(
+            "resolve: no cache file never probes the cached number",
+            not any(_is_probe(c) for c in mock_view.call_args_list) and result[0] == 9,
+            f"result={result!r} calls={mock_view.call_args_list}"
+        )
 
         print()
         h.summarize_and_exit()
