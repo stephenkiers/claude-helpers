@@ -11,15 +11,43 @@ Run with: python3 tests/test_workflow_shipit_integration.py
 import sys
 import os
 import json
+import contextlib
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.shipit import apply_shipit, ShipitPlan
+from workflow.shipit import apply_shipit, plan_shipit, ShipitPlan
 from workflow.safety import Unknown
 from _test_harness import Harness
 from _git_fixture import GitFixture
+
+
+URL_68 = "https://github.com/owner/repo/pull/68"
+URL_69 = "https://github.com/owner/repo/pull/69"
+
+
+@contextlib.contextmanager
+def _remote_and_gh_mocks(create_url=None):
+    """Mock only the network and mutating calls; git reads in plan/apply stay real."""
+    names = ("stage_all", "commit_with_message_file", "push_upstream", "pr_create", "pr_edit", "pr_view_json")
+    with contextlib.ExitStack() as stack:
+        mocks = {name: stack.enter_context(mock.patch(f"workflow.git.{name}")) for name in names}
+        mocks["stage_all"].return_value = (True, None)
+        mocks["commit_with_message_file"].return_value = (True, None)
+        mocks["push_upstream"].return_value = (True, None)
+        mocks["pr_create"].return_value = (create_url, None)
+        mocks["pr_edit"].return_value = (True, None)
+        mocks["pr_view_json"].return_value = {}
+        yield mocks
+
+
+def _read_cache(wt_path):
+    """Return the worktree's cache dict, or {} when no cache file exists (so assertions fail, not crash)."""
+    cache_file = wt_path / ".claude" / "github-cache.json"
+    if not cache_file.exists():
+        return {}
+    return json.loads(cache_file.read_text())
 
 
 if __name__ == "__main__":
@@ -249,6 +277,95 @@ if __name__ == "__main__":
             "apply_shipit: success flag set on full flow",
             result.success is True,
             f"result.success={result.success}, error={result.error}"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 5] Repro (issue #213): a recycled worktree never edits the previous branch's PR")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+
+        fixture.create_initial_commit("initial")
+        fixture.create_branch("feature/a")
+        wt_path = fixture.create_worktree("feature/a")
+
+        msg_file = wt_path / "COMMIT_MSG.txt"
+        msg_file.write_text("Ship A")
+        body_file = wt_path / "PR_BODY.md"
+        body_file.write_text("Body for A")
+
+        os.chdir(wt_path)
+
+        # Step 1: ship branch A. No cache yet, so the plan creates PR 68 and the write-back records it.
+        plan_a, plan_err = plan_shipit(str(msg_file), cwd=wt_path)
+        plan_a_json = plan_a.to_dict()
+        plan_a_json.update(pr_body_path=str(body_file), pr_title="Ship A")
+        with _remote_and_gh_mocks(create_url=URL_68) as gh_a:
+            result_a, _ = apply_shipit(json.dumps(plan_a_json), cwd=wt_path)
+
+        test_result(
+            "repro step 1: shipping A creates PR 68",
+            gh_a["pr_create"].call_count == 1 and result_a.pr_url == URL_68,
+            f"plan_err={plan_err}, error={result_a.error}"
+        )
+        test_result(
+            "repro step 1: shipping A writes branch feature/a and pr 68 to the cache",
+            _read_cache(wt_path).get("branch") == "feature/a"
+            and _read_cache(wt_path).get("pr") == {"number": 68, "url": URL_68, "state": "OPEN"},
+            f"cache={_read_cache(wt_path)}"
+        )
+
+        # Step 2: recycle the same worktree onto branch B. The cache file stays behind.
+        fixture._run_git(["checkout", "-b", "feature/b"], cwd=wt_path)
+
+        # Step 3: plan and apply branch B. The stale cache must be ignored and PR 68 never edited.
+        msg_file.write_text("Ship B")
+        body_file.write_text("Body for B")
+        plan_b, plan_b_err = plan_shipit(str(msg_file), cwd=wt_path)
+
+        test_result(
+            "repro step 3: plan for recycled B reports cache_stale=branch_mismatch:feature/a",
+            plan_b is not None and plan_b.cache_stale == "branch_mismatch:feature/a",
+            f"cache_stale={plan_b.cache_stale if plan_b else 'N/A'}, error={plan_b_err}"
+        )
+        test_result(
+            "repro step 3: plan for recycled B does not claim PR 68",
+            plan_b is not None and plan_b.pr_exists is False and plan_b.pr_number is None,
+            f"pr_exists={plan_b.pr_exists if plan_b else 'N/A'}"
+        )
+
+        plan_b_json = plan_b.to_dict()
+        plan_b_json.update(pr_body_path=str(body_file), pr_title="Ship B")
+        with _remote_and_gh_mocks(create_url=URL_69) as gh_b:
+            result_b, _ = apply_shipit(json.dumps(plan_b_json), cwd=wt_path)
+
+        test_result(
+            "repro step 3: apply for B calls pr_create for B",
+            gh_b["pr_create"].call_count == 1,
+            f"error={result_b.error}"
+        )
+        test_result(
+            "repro step 3: apply for B never calls pr_edit with PR 68",
+            not any(c.kwargs.get("pr_number") == 68 for c in gh_b["pr_edit"].call_args_list)
+            and not gh_b["pr_edit"].called,
+            f"pr_edit calls={gh_b['pr_edit'].call_args_list}"
+        )
+        test_result(
+            "repro step 3: apply for B never probes PR 68",
+            not any(c.args[:1] == ("68",) for c in gh_b["pr_view_json"].call_args_list),
+            f"pr_view_json calls={gh_b['pr_view_json'].call_args_list}"
+        )
+        test_result(
+            "repro step 3: cache is rewritten for B with pr 69",
+            _read_cache(wt_path).get("branch") == "feature/b"
+            and _read_cache(wt_path).get("pr") == {"number": 69, "url": URL_69, "state": "OPEN"},
+            f"cache={_read_cache(wt_path)}"
         )
 
     finally:
