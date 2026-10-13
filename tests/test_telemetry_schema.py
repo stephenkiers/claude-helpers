@@ -10,6 +10,7 @@ Run with: python3 tests/test_telemetry_schema.py
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import telemetry_schema
 
-from _test_harness import Harness
+from _test_harness import Harness, REPO_ROOT
 
 
 def test_invalid_event_type():
@@ -2602,6 +2603,85 @@ def test_evict_expired_hard_cap_never_evicts_keep_id():
     return "keep-me" in entries, f"expected keep-me kept despite being oldest, got entries={entries}"
 
 
+# Failure-class vocabulary for /implement-with-haiku (issue #259). Each doc class is a
+# snake_case member; the kebab-case literal the doc used to emit must NOT be accepted.
+IMPLEMENT_HAIKU_SNAKE_CLASSES = [
+    "plan_not_found", "all_units_failed", "gate_not_converged", "resume_format_invalid",
+    "resume_sha_not_found", "ancestry_invalid", "ancestry_invalid_after_drift",
+    "working_tree_dirty", "detached_head", "outstanding_worktree", "resume_cancelled",
+]
+NEW_FAILURE_CLASSES = ["steps_skipped"] + IMPLEMENT_HAIKU_SNAKE_CLASSES
+
+
+def test_new_failure_classes_accepted_by_outcome_failure():
+    """outcome_failure accepts steps_skipped and every snake_case implement-with-haiku class."""
+    rejected = []
+    for cls in NEW_FAILURE_CLASSES:
+        try:
+            outcome = telemetry_schema.outcome_failure(cls)
+        except ValueError:
+            rejected.append(cls)
+            continue
+        if outcome != {"status": "failure", "class": cls}:
+            rejected.append(f"{cls} -> {outcome}")
+    return not rejected, f"rejected or malformed: {rejected}"
+
+
+def test_new_failure_classes_are_schema_members():
+    """Every new class is a FAILURE_CLASSES member."""
+    missing = [c for c in NEW_FAILURE_CLASSES if c not in telemetry_schema.FAILURE_CLASSES]
+    return not missing, f"not in FAILURE_CLASSES: {missing}"
+
+
+def test_new_failure_classes_validate_in_command_end():
+    """A command.end event carrying each new class passes validate_event."""
+    problems = {}
+    for cls in NEW_FAILURE_CLASSES:
+        event = telemetry_schema.build_event(
+            "command.end",
+            session_id="123",
+            timestamp="2026-10-09T12:00:00Z",
+            outcome=telemetry_schema.outcome_failure(cls),
+        )
+        errors = telemetry_schema.validate_event(event)
+        if errors:
+            problems[cls] = errors
+    return not problems, f"validation errors: {problems}"
+
+
+def test_kebab_forms_of_implement_haiku_classes_rejected():
+    """The retired kebab-case literals are rejected by outcome_failure and by validate_event."""
+    accepted = []
+    unflagged = []
+    for snake in IMPLEMENT_HAIKU_SNAKE_CLASSES:
+        kebab = snake.replace("_", "-")
+        try:
+            telemetry_schema.outcome_failure(kebab)
+            accepted.append(kebab)
+        except ValueError:
+            pass
+        event = telemetry_schema.build_event(
+            "command.end",
+            session_id="123",
+            timestamp="2026-10-09T12:00:00Z",
+            outcome={"status": "failure", "class": kebab},
+        )
+        if not any("class" in e.lower() for e in telemetry_schema.validate_event(event)):
+            unflagged.append(kebab)
+    ok = not accepted and not unflagged
+    return ok, f"accepted by outcome_failure: {accepted}; not flagged by validate_event: {unflagged}"
+
+
+def test_metrics_doc_names_every_failure_class():
+    """docs/metrics.md mentions every FAILURE_CLASSES member (membership parity with the schema)."""
+    metrics = (REPO_ROOT / "docs" / "metrics.md").read_text()
+    missing = [
+        cls for cls in sorted(telemetry_schema.FAILURE_CLASSES)
+        if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(cls) + r"(?![A-Za-z0-9_])", metrics)
+    ]
+    return not missing, f"FAILURE_CLASSES members absent from docs/metrics.md: {missing}"
+
+
 if __name__ == "__main__":
     h = Harness("TELEMETRY_SCHEMA TEST SUITE")
 
@@ -3074,6 +3154,25 @@ if __name__ == "__main__":
 
     passed, msg = test_evict_expired_hard_cap_never_evicts_keep_id()
     test_result("_evict_expired hard cap never evicts keep_id", passed, msg)
+
+    print()
+
+    # Failure-class vocabulary for /implement-with-haiku (issue #259)
+    print("[Section 17] implement-with-haiku failure classes and steps_skipped")
+    passed, msg = test_new_failure_classes_accepted_by_outcome_failure()
+    test_result("outcome_failure accepts steps_skipped and the 11 snake_case doc classes", passed, msg)
+
+    passed, msg = test_new_failure_classes_are_schema_members()
+    test_result("new failure classes are FAILURE_CLASSES members", passed, msg)
+
+    passed, msg = test_new_failure_classes_validate_in_command_end()
+    test_result("command.end with each new failure class validates", passed, msg)
+
+    passed, msg = test_kebab_forms_of_implement_haiku_classes_rejected()
+    test_result("kebab-case forms of the doc classes are rejected", passed, msg)
+
+    passed, msg = test_metrics_doc_names_every_failure_class()
+    test_result("docs/metrics.md names every FAILURE_CLASSES member", passed, msg)
 
     print()
 
