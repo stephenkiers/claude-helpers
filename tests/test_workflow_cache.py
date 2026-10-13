@@ -17,11 +17,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from workflow.cache import (
     read_github_cache, read_issues_cache, hash_file_content,
     hash_github_cache_file, hash_issues_cache_file, write_cache,
-    read_local_tracker, write_local_tracker
+    read_local_tracker, write_local_tracker,
+    trusted_github_cache, verify_pr_head
 )
 from workflow.models import GitHubCacheData, IssueInfo, StackInfo, LocalTrackerData, LocalTrackerEntry
 from workflow.safety import Unknown
 from _test_harness import Harness
+from unittest import mock
 
 
 if __name__ == "__main__":
@@ -315,6 +317,195 @@ if __name__ == "__main__":
         shutil.rmtree(tmpdir)
 
     print()
+
+    print()
+    print("[Section 20] trusted_github_cache: whole-cache branch trust")
+
+    ISSUE_55 = {"number": 55, "url": "https://github.com/o/r/issues/55", "title": "t", "body": "b", "state": "OPEN"}
+
+    def _trust(content, branch="feature/x"):
+        """Write content (dict -> JSON, str -> raw) to a temp cache file and run the helper."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "github-cache.json"
+            path.write_text(content if isinstance(content, str) else json.dumps(content))
+            return trusted_github_cache(path, branch)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        missing_result = trusted_github_cache(Path(tmpdir) / "absent.json", "feature/x")
+    test_result(
+        "trusted_github_cache: missing file -> (None, None, 'missing', False)",
+        missing_result == (None, None, "missing", False),
+        f"got {missing_result!r}"
+    )
+
+    test_result(
+        "trusted_github_cache: non-JSON -> invalid, not stack-claiming",
+        _trust("{not json") == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: JSON array -> invalid, not stack-claiming",
+        _trust("[1, 2]") == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: branch absent (pr present) -> invalid",
+        _trust({"pr": {"number": 68, "url": "u"}}) == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: empty branch -> invalid",
+        _trust({"branch": "", "pr": {"number": 68, "url": "u"}}) == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: non-str branch -> invalid",
+        _trust({"branch": 5}) == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: section that fails to construct -> invalid",
+        _trust({"branch": "feature/x", "issue": {"bogus_key": 1}}) == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: review-only cache -> invalid, not stack-claiming",
+        _trust({"review": {"branch": "feature-x", "commit": "abc"}}) == (None, None, "invalid", False)
+    )
+    test_result(
+        "trusted_github_cache: branchless cache with isStacked=true -> invalid, stack-claiming",
+        _trust({"stack": {"isStacked": True, "parentBranch": "p", "parentPr": 1}}) == (None, None, "invalid", True)
+    )
+
+    test_result(
+        "trusted_github_cache: branch mismatch -> branch_mismatch:<cached>, not stack-claiming",
+        _trust({"branch": "old-branch", "pr": {"number": 68, "url": "u"}}) == (None, None, "branch_mismatch:old-branch", False)
+    )
+    test_result(
+        "trusted_github_cache: branch mismatch with isStacked=true -> stack-claiming",
+        _trust({"branch": "old-branch", "stack": {"isStacked": True, "parentBranch": "p", "parentPr": 1}})
+        == (None, None, "branch_mismatch:old-branch", True)
+    )
+    test_result(
+        "trusted_github_cache: branch mismatch with isStacked=false -> not stack-claiming",
+        _trust({"branch": "old-branch", "stack": {"isStacked": False, "parentBranch": "p", "parentPr": 1}})
+        == (None, None, "branch_mismatch:old-branch", False)
+    )
+
+    trusted, raw_pr, stale_reason, claimed = _trust({
+        "branch": "feature/x",
+        "issue": ISSUE_55,
+        "localPlan": {"path": "plans/x.md"},
+        "pr": {"number": 68, "url": "https://github.com/o/r/pull/68"},
+    })
+    test_result(
+        "trusted_github_cache: /track-shaped cache (no schema_version) is trusted",
+        stale_reason is None and claimed is False and isinstance(trusted, GitHubCacheData),
+        f"stale_reason={stale_reason!r} claimed={claimed!r}"
+    )
+    test_result(
+        "trusted_github_cache: trusted cache carries the branch",
+        trusted is not None and trusted.branch == "feature/x",
+        f"branch={trusted.branch if trusted else 'N/A'}"
+    )
+    test_result(
+        "trusted_github_cache: trusted cache carries the issue",
+        trusted is not None and trusted.issue is not None and trusted.issue.number == 55
+    )
+    test_result(
+        "trusted_github_cache: pr section is read from the same parsed dict",
+        raw_pr == {"number": 68, "url": "https://github.com/o/r/pull/68"},
+        f"raw_pr={raw_pr!r}"
+    )
+
+    trusted, raw_pr, stale_reason, claimed = _trust({
+        "branch": "feature/x",
+        "stack": {"isStacked": True, "parentBranch": "feature/parent", "parentPr": 10},
+    })
+    test_result(
+        "trusted_github_cache: trusted stacked cache populates the stack and claims nothing",
+        stale_reason is None and claimed is False
+        and trusted is not None and trusted.stack is not None
+        and trusted.stack.parent_branch == "feature/parent",
+        f"stale_reason={stale_reason!r} claimed={claimed!r}"
+    )
+
+    trusted, raw_pr, stale_reason, claimed = _trust({"branch": "old-branch", "pr": {"number": 68, "url": "u"}})
+    test_result(
+        "trusted_github_cache: stale verdict returns no data and no raw pr",
+        trusted is None and raw_pr is None and stale_reason is not None
+    )
+
+    print()
+    print("[Section 21] verify_pr_head: live head probe, binary verdict")
+
+    def _verify(view_return, branch="feature/x", pr_number=68):
+        """Run verify_pr_head with git.pr_view_json mocked; return (state, err, mock)."""
+        with mock.patch("workflow.git.pr_view_json") as mock_view:
+            mock_view.return_value = view_return
+            state, err = verify_pr_head(pr_number, branch, Path("."))
+        return state, err, mock_view
+
+    state, err, mock_view = _verify({"headRefName": "feature/x", "state": "OPEN"})
+    test_result(
+        "verify_pr_head: head matches and OPEN -> ('OPEN', None)",
+        state == "OPEN" and err is None,
+        f"state={state!r} err={err!r}"
+    )
+    test_result(
+        "verify_pr_head: asks git.pr_view_json for headRefName and state of the cached number",
+        mock_view.call_count == 1 and mock_view.call_args.args[:2] == ("68", ["headRefName", "state"]),
+        f"calls={mock_view.call_args_list}"
+    )
+
+    state, err, _ = _verify({"headRefName": "feature/x", "state": "MERGED"})
+    test_result(
+        "verify_pr_head: head matches and MERGED -> ('MERGED', None) (caller decides policy)",
+        state == "MERGED" and err is None,
+        f"state={state!r} err={err!r}"
+    )
+
+    state, err, _ = _verify({})
+    test_result(
+        "verify_pr_head: {} -> (None, Unknown lookup-failed), never 'no PR'",
+        state is None and isinstance(err, Unknown)
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        f"state={state!r} err={err!r}"
+    )
+
+    state, err, _ = _verify({"headRefName": "feature/x"})
+    test_result(
+        "verify_pr_head: response missing state -> lookup-failed Unknown",
+        state is None and isinstance(err, Unknown)
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        f"state={state!r} err={err!r}"
+    )
+
+    state, err, _ = _verify({"state": "OPEN"})
+    test_result(
+        "verify_pr_head: response missing headRefName -> lookup-failed Unknown",
+        state is None and isinstance(err, Unknown)
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        f"state={state!r} err={err!r}"
+    )
+
+    state, err, _ = _verify({"headRefName": 5, "state": "OPEN"})
+    test_result(
+        "verify_pr_head: non-str headRefName -> lookup-failed Unknown",
+        state is None and isinstance(err, Unknown)
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        f"state={state!r} err={err!r}"
+    )
+
+    state, err, _ = _verify({"headRefName": "feature/x", "state": None})
+    test_result(
+        "verify_pr_head: non-str state -> lookup-failed Unknown",
+        state is None and isinstance(err, Unknown)
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        f"state={state!r} err={err!r}"
+    )
+
+    state, err, _ = _verify({"headRefName": "other-branch", "state": "OPEN"})
+    test_result(
+        "verify_pr_head: head mismatch -> Unknown naming cached PR and actual head",
+        state is None and isinstance(err, Unknown)
+        and err.reason == "cached PR #68 belongs to other-branch, not feature/x",
+        f"state={state!r} err={err!r}"
+    )
 
     print()
     h.summarize_and_exit()
