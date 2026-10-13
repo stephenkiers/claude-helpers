@@ -12,12 +12,13 @@ sensitive fields like last_assistant_message.
 
 import argparse
 import json
+import math
 import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional, TypeVar
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, TypeVar
 
 # Add scripts/ to path so we can import telemetry_schema
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -45,6 +46,11 @@ def _bounded(value, max_len=MAX_FIELD_LEN):
     return value
 
 
+def _is_nonblank_str(value) -> bool:
+    """True iff value is a str with non-whitespace content. The single definition of "blank"."""
+    return isinstance(value, str) and value.strip() != ""
+
+
 def _field(payload, key):
     """Normalize a field: return UNKNOWN unless value is a non-empty string after stripping.
 
@@ -52,7 +58,7 @@ def _field(payload, key):
     unstripped value, bounded to MAX_FIELD_LEN). Otherwise return UNKNOWN.
     """
     value = payload.get(key)
-    if isinstance(value, str) and value.strip():
+    if _is_nonblank_str(value):
         return _bounded(value)
     return telemetry_schema.UNKNOWN
 
@@ -61,6 +67,45 @@ def _field(payload, key):
 # result can't be used safely — telemetry_schema._parse_iso_or_none already
 # treats a naive parse the same as unparseable (returns None).
 _parse_event_timestamp = telemetry_schema._parse_iso_or_none
+
+
+# Agent data guard cutoff (ADR-0016 internal-stop amendment; #143, #267). Events before this
+# instant predate the #267 hook fix, so the guard ignores them. The prose home of this value
+# is docs/metrics.md, "Telemetry Health Check" — keep the two in sync.
+AGENT_GUARD_CUTOFF = _parse_event_timestamp("2026-10-13T18:58:25Z")
+assert AGENT_GUARD_CUTOFF is not None, "AGENT_GUARD_CUTOFF must parse as a tz-aware timestamp"
+
+
+def _aware_timestamp(value):
+    """argparse type: an ISO-8601 timestamp that must be timezone-aware."""
+    parsed = _parse_event_timestamp(value)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(
+            f"expected a timezone-aware ISO-8601 timestamp (e.g. 2026-10-13T18:58:25Z), got {value!r}"
+        )
+    return parsed
+
+
+def _unit_fraction(value):
+    """argparse type: a finite float with 0 <= x <= 1."""
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number in [0, 1], got {value!r}")
+    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+        raise argparse.ArgumentTypeError(f"expected a finite number in [0, 1], got {value!r}")
+    return number
+
+
+def _positive_int(value):
+    """argparse type: an integer >= 1."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer >= 1, got {value!r}")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"expected an integer >= 1, got {value!r}")
+    return number
 
 
 _T = TypeVar("_T")
@@ -698,11 +743,164 @@ def cmd_stage_end(args):
     print("stage.end recorded", file=sys.stderr)
 
 
+AGENT_GUARD_EVENT_TYPES = frozenset({"agent.begin", "agent.end", "agent.internal_stop"})
+AGENT_GUARD_IDENTITY_FIELDS = ("agent_type", "agent_id", "session_id")
+AGENT_GUARD_REPR_LIMIT = 80
+
+
+class AgentGuardResult(NamedTuple):
+    """Result of the agent data guard: violations fail diagnose, skipped/report never do."""
+    violations: List[str]
+    skipped: List[str]
+    report: Dict[str, int]
+
+
+def _short_repr(value) -> str:
+    """repr(value), truncated to AGENT_GUARD_REPR_LIMIT characters for report lines."""
+    text = repr(value)
+    if len(text) > AGENT_GUARD_REPR_LIMIT:
+        text = text[:AGENT_GUARD_REPR_LIMIT] + "..."
+    return text
+
+
+def check_agent_events(events, since, tolerance, min_begins) -> AgentGuardResult:
+    """Check agent events for blank identity fields and an agent.end count that outruns agent.begin.
+
+    Pure: no I/O, and it never raises on untyped JSON values (non-dict rows, non-str fields
+    and timestamps are handled as data, not as errors).
+
+    Scope: agent.begin / agent.end / agent.internal_stop events whose timestamp parses and is
+    >= since (inclusive). The guard counts raw events and does not use the id-keyed `agents`
+    dict that the match rate uses; duplicate ids can therefore make the two numbers differ.
+    That is intended.
+
+    Check (a): agent_type, agent_id and session_id must each be a non-blank string. A missing
+    key or a blank/non-str value is one violation per failing field. The "unknown" sentinel is
+    NOT a violation; it is only reported.
+
+    Check (b): begins = agent.begin count, ends = agent.end count (agent.internal_stop is
+    excluded). If begins < min_begins the ratio check is skipped and the skip is recorded.
+    Otherwise ends > begins * (1 + tolerance) is a violation. Fewer ends than begins never fails.
+
+    `report` is always populated and never fails the guard.
+    """
+    violations: List[str] = []
+    skipped: List[str] = []
+    report: Dict[str, int] = {
+        "begins": 0,
+        "ends": 0,
+        "internal_stops": 0,
+        "unknown_agent_type": 0,
+        "unknown_ids": 0,
+        "typed_internal_stops": 0,
+    }
+
+    scoped = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("event_type")
+        if not isinstance(event_type, str) or event_type not in AGENT_GUARD_EVENT_TYPES:
+            continue
+        raw_ts = event.get("timestamp")
+        ts = _parse_event_timestamp(raw_ts) if isinstance(raw_ts, str) else None
+        if ts is None or ts < since:
+            continue
+        scoped.append((event, event_type, raw_ts))
+
+    begin_ids = set()
+    for event, event_type, _ in scoped:
+        if event_type == "agent.begin" and _is_nonblank_str(event.get("agent_id")):
+            begin_ids.add(event.get("agent_id"))
+
+    for event, event_type, raw_ts in scoped:
+        ts_label = raw_ts if isinstance(raw_ts, str) else _short_repr(raw_ts)
+
+        # Check (a): identity fields
+        for field in AGENT_GUARD_IDENTITY_FIELDS:
+            value = event.get(field)
+            if not _is_nonblank_str(value):
+                shown = "missing" if field not in event else _short_repr(value)
+                violations.append(
+                    f"{event_type} has blank or non-string {field} ({shown}) at {ts_label}"
+                )
+
+        # Report-only counters
+        if event_type == "agent.begin":
+            report["begins"] += 1
+        elif event_type == "agent.end":
+            report["ends"] += 1
+        else:
+            report["internal_stops"] += 1
+
+        if event.get("agent_type") == telemetry_schema.UNKNOWN:
+            report["unknown_agent_type"] += 1
+        if (event.get("agent_id") == telemetry_schema.UNKNOWN
+                or event.get("session_id") == telemetry_schema.UNKNOWN):
+            report["unknown_ids"] += 1
+        if event_type == "agent.internal_stop":
+            agent_type = event.get("agent_type")
+            typed = _is_nonblank_str(agent_type) and agent_type != telemetry_schema.UNKNOWN
+            agent_id = event.get("agent_id")
+            matches_begin = _is_nonblank_str(agent_id) and agent_id in begin_ids
+            if typed or matches_begin:
+                report["typed_internal_stops"] += 1
+
+    # Check (b): one-sided begin/end ratio
+    begins = report["begins"]
+    ends = report["ends"]
+    if begins < min_begins:
+        skipped.append(f"ratio check skipped: {begins} begins < min {min_begins}")
+    elif ends > begins * (1 + tolerance):
+        ratio = ends / begins
+        violations.append(
+            f"agent.end outruns agent.begin: {ends} ends vs {begins} begins "
+            f"(ratio {ratio:.3f} exceeds allowed {1 + tolerance:.3f}, tolerance {tolerance})"
+        )
+
+    return AgentGuardResult(violations, skipped, report)
+
+
+def describe_hook_provenance(home: Path, self_path: Path) -> str:
+    """Return one read-only line describing which run-metrics.py the hook target points at.
+
+    Resolves home/.claude/scripts/run-metrics.py with realpath on both sides. Never raises:
+    an unreadable target is reported as such.
+    """
+    target = Path(home) / ".claude" / "scripts" / "run-metrics.py"
+    if not os.path.isfile(target):
+        return "Hook target: not installed at ~/.claude/scripts/run-metrics.py"
+
+    resolved = os.path.realpath(target)
+    self_resolved = os.path.realpath(self_path)
+    if resolved == self_resolved:
+        return f"Hook target: {resolved} (this script)"
+
+    line = f"Hook target: {resolved} (differs from this script {self_resolved})"
+    try:
+        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return f"{line} — unreadable, cannot check for agent.internal_stop support"
+
+    if "agent.internal_stop" in text:
+        return f"{line} — supports agent.internal_stop"
+    return (
+        f"{line} — does NOT support agent.internal_stop "
+        "(pre-#267 code: re-run /setup-local from main)"
+    )
+
+
 def cmd_diagnose(args):
     """Read the log file, reconcile begin/end pairs, and report match rate and data quality.
 
     Stages/agents with an "unknown" id are excluded from match-rate accounting, and the
     report includes a per-stage-name match-rate breakdown alongside the overall rate.
+
+    Also runs the agent data guard (check_agent_events) over the window-filtered events,
+    with an effective lower bound of max(--agent-guard-since, now - --window-days). Guard
+    violations fail diagnose. The hook-provenance line is always printed so that a stale
+    hook (pre-#267 code still installed) can be identified.
     """
     log_path = Path(args.log)
 
@@ -869,8 +1067,28 @@ def cmd_diagnose(args):
                 f"and were excluded from the stale/recent split)"
             )
 
+    # Agent data guard (runs on the window-filtered events, so the effective bound is the later
+    # of --agent-guard-since and the window cutoff)
+    guard_since = max(args.agent_guard_since, cutoff_timestamp)
+    guard = check_agent_events(
+        filtered_events,
+        args.agent_guard_since,
+        args.agent_guard_tolerance,
+        args.agent_guard_min_begins,
+    )
+    print(f"Agent guard: events from {guard_since.isoformat()} onward")
+    for violation in guard.violations:
+        print(f"  VIOLATION: {violation}")
+    for skip in guard.skipped:
+        print(f"  Skipped: {skip}")
+    print(f"  internal_stop events (report-only): {guard.report['internal_stops']}")
+    print(f"  unknown agent_type (report-only): {guard.report['unknown_agent_type']}")
+    print(f"  unknown agent_id/session_id (report-only): {guard.report['unknown_ids']}")
+    print(f"  typed internal stops (report-only): {guard.report['typed_internal_stops']}")
+    print(describe_hook_provenance(Path.home(), Path(__file__)))
+
     # Check thresholds
-    passes = match_rate >= 0.95 and unknown_pct < 0.15
+    passes = match_rate >= 0.95 and unknown_pct < 0.15 and not guard.violations
     if passes:
         print("PASS: All thresholds met")
         sys.exit(0)
@@ -880,6 +1098,9 @@ def cmd_diagnose(args):
             print(f"  - Match rate {match_rate:.1%} < 95%")
         if unknown_pct >= 0.15:
             print(f"  - Unknown token fields {unknown_pct:.1%} >= 15%")
+        if guard.violations:
+            print(f"  - Agent guard: {len(guard.violations)} violation(s)")
+            print("    hint: check the Hook target line above before adjusting --agent-guard-since")
         sys.exit(1)
 
 
@@ -1190,6 +1411,25 @@ def main():
         type=int,
         default=30,
         help="Report on events from the last N days (default: 30)",
+    )
+    sp_diagnose.add_argument(
+        "--agent-guard-since",
+        type=_aware_timestamp,
+        default=AGENT_GUARD_CUTOFF,
+        help="Agent guard ignores agent events before this timezone-aware ISO-8601 instant "
+             "(default: the #267 cutoff, 2026-10-13T18:58:25Z)",
+    )
+    sp_diagnose.add_argument(
+        "--agent-guard-tolerance",
+        type=_unit_fraction,
+        default=0.05,
+        help="Allowed excess of agent.end over agent.begin as a fraction in [0, 1] (default: 0.05)",
+    )
+    sp_diagnose.add_argument(
+        "--agent-guard-min-begins",
+        type=_positive_int,
+        default=20,
+        help="Skip the begin/end ratio check below this many agent.begin events (default: 20)",
     )
     sp_diagnose.set_defaults(func=cmd_diagnose)
 
