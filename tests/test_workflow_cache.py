@@ -18,7 +18,7 @@ from workflow.cache import (
     read_github_cache, read_issues_cache, hash_file_content,
     hash_github_cache_file, hash_issues_cache_file, write_cache,
     read_local_tracker, write_local_tracker,
-    trusted_github_cache, verify_pr_head
+    trusted_github_cache, verify_pr_head, normalize_branch
 )
 from workflow.models import GitHubCacheData, IssueInfo, StackInfo, LocalTrackerData, LocalTrackerEntry
 from workflow.safety import Unknown
@@ -317,6 +317,24 @@ if __name__ == "__main__":
         shutil.rmtree(tmpdir)
 
     print()
+    print("[Section 10] normalize_branch: consistency with write-review-cache")
+
+    test_result(
+        "normalize_branch: strips whitespace",
+        normalize_branch("  feature/test  ") == "feature-test"
+    )
+    test_result(
+        "normalize_branch: replaces / with -",
+        normalize_branch("feature/test") == "feature-test"
+    )
+    test_result(
+        "normalize_branch: handles both stripping and replacement",
+        normalize_branch("  feature/my-branch  ") == "feature-my-branch"
+    )
+    test_result(
+        "normalize_branch: matches write-review-cache.py normalization",
+        normalize_branch("feature/test-branch") == "feature/test-branch".strip().replace("/", "-")
+    )
 
     print()
     print("[Section 20] trusted_github_cache: whole-cache branch trust")
@@ -447,8 +465,8 @@ if __name__ == "__main__":
         f"state={state!r} err={err!r}"
     )
     test_result(
-        "verify_pr_head: asks git.pr_view_json for headRefName and state of the cached number",
-        mock_view.call_count == 1 and mock_view.call_args.args[:2] == ("68", ["headRefName", "state"]),
+        "verify_pr_head: asks git.pr_view_json for headRefName, state, and isCrossRepository of the cached number",
+        mock_view.call_count == 1 and mock_view.call_args.args[:2] == ("68", ["headRefName", "state", "isCrossRepository"]),
         f"calls={mock_view.call_args_list}"
     )
 
@@ -463,7 +481,7 @@ if __name__ == "__main__":
     test_result(
         "verify_pr_head: {} -> (None, Unknown lookup-failed), never 'no PR'",
         state is None and isinstance(err, Unknown)
-        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        and err.reason == "could not verify PR #68 belongs to feature/x: gh lookup failed or PR not found",
         f"state={state!r} err={err!r}"
     )
 
@@ -471,7 +489,7 @@ if __name__ == "__main__":
     test_result(
         "verify_pr_head: response missing state -> lookup-failed Unknown",
         state is None and isinstance(err, Unknown)
-        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup returned invalid response",
         f"state={state!r} err={err!r}"
     )
 
@@ -479,7 +497,7 @@ if __name__ == "__main__":
     test_result(
         "verify_pr_head: response missing headRefName -> lookup-failed Unknown",
         state is None and isinstance(err, Unknown)
-        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup returned invalid response",
         f"state={state!r} err={err!r}"
     )
 
@@ -487,7 +505,7 @@ if __name__ == "__main__":
     test_result(
         "verify_pr_head: non-str headRefName -> lookup-failed Unknown",
         state is None and isinstance(err, Unknown)
-        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup returned invalid response",
         f"state={state!r} err={err!r}"
     )
 
@@ -495,7 +513,7 @@ if __name__ == "__main__":
     test_result(
         "verify_pr_head: non-str state -> lookup-failed Unknown",
         state is None and isinstance(err, Unknown)
-        and err.reason == "could not verify PR #68 belongs to feature/x: lookup failed",
+        and err.reason == "could not verify PR #68 belongs to feature/x: lookup returned invalid response",
         f"state={state!r} err={err!r}"
     )
 

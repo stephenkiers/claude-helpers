@@ -596,7 +596,7 @@ if __name__ == "__main__":
 
         def _is_probe(call):
             """True when a pr_view_json call is the cached-number head probe."""
-            return call.args[:2] == ("68", ["headRefName", "state"])
+            return call.args[:2] == ("68", ["headRefName", "state", "isCrossRepository"])
 
         def _resolve_with(cache_data, head_ref, probe_result, by_branch=(9, "OPEN")):
             """Run _resolve_pr_from_worktree on a fake worktree; return (result, pr_view mock, wt path)."""
@@ -607,7 +607,7 @@ if __name__ == "__main__":
                     (wt_dir / ".claude" / "github-cache.json").write_text(json.dumps(cache_data))
 
                 def fake_view(branch_or_number, json_args, cwd=None):
-                    if json_args == ["headRefName", "state"]:
+                    if json_args == ["headRefName", "state", "isCrossRepository"]:
                         return probe_result
                     return {"number": by_branch[0], "state": by_branch[1]}
 

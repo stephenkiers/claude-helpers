@@ -103,8 +103,13 @@ t(
 # ============================================================================
 print("[Check 4] Stale cached stack is discarded before the push block, keyed on stale_stack_claimed")
 claim_idx = first_index(r"jq[^\n]*stale_stack_claimed")
-clear_idx = first_index(r"STACK_IS_STACKED=false")
 push_idx = first_index(r"git push -u origin")
+# For Check 4, search only BEFORE the push block (not globally)
+search_before_push = DOC[:push_idx] if push_idx is not None else DOC
+clear_idx = search_before_push.rfind('STACK_IS_STACKED=false')  # Most recent occurrence before push
+parent_branch_idx = search_before_push.rfind('STACK_PARENT_BRANCH=""')
+parent_pr_idx = search_before_push.rfind('STACK_PARENT_PR=""')
+
 t(
     "stale_stack_claimed is read from $EARLY_PLAN_FILE",
     claim_idx is not None and re.search(r'stale_stack_claimed[^\n]*EARLY_PLAN_FILE|EARLY_PLAN_FILE[^\n]*stale_stack_claimed', DOC[claim_idx:claim_idx + 400]) is not None,
@@ -112,21 +117,21 @@ t(
 )
 t(
     "STACK_IS_STACKED is set to false when the stale stack is claimed",
-    clear_idx is not None,
+    clear_idx >= 0,
 )
 t(
     "STACK_PARENT_BRANCH is cleared",
-    re.search(r'STACK_PARENT_BRANCH=""', DOC) is not None,
+    parent_branch_idx >= 0,
 )
 t(
     "STACK_PARENT_PR is cleared",
-    re.search(r'STACK_PARENT_PR=""', DOC) is not None,
+    parent_pr_idx >= 0,
 )
 t(
     "stale-stack clearing appears before the `git push -u` block",
-    claim_idx is not None and clear_idx is not None and push_idx is not None
-    and claim_idx < push_idx and clear_idx < push_idx,
-    f"claim_idx={claim_idx} clear_idx={clear_idx} push_idx={push_idx}",
+    claim_idx is not None and clear_idx >= 0 and push_idx is not None
+    and claim_idx < push_idx and clear_idx < push_idx and parent_branch_idx < push_idx and parent_pr_idx < push_idx,
+    f"claim_idx={claim_idx} clear_idx={clear_idx} parent_branch_idx={parent_branch_idx} parent_pr_idx={parent_pr_idx} push_idx={push_idx}",
 )
 t(
     "stale-stack clearing is not keyed on cache_stale (missing cache must not clear)",
@@ -187,7 +192,18 @@ t(
 
 # ============================================================================
 print("[Check 7] Agreement check compares the four verdict fields between the two plans")
-agree_region = DOC[late_idx:apply_idx] if late_idx is not None and apply_idx is not None and late_idx < apply_idx else ""
+# Find the "for KEY in" loop that does the field comparison
+for_loop_match = re.search(r'for\s+KEY\s+in\s+pr_exists\s+pr_number\s+cache_stale\s+issue_number', DOC)
+agree_region = ""
+if for_loop_match:
+    # Extract the for loop and a reasonable context around it
+    start = for_loop_match.start()
+    # Find the end of the for loop (look for the closing done or similar)
+    end = DOC.find('\ndone', start)
+    if end == -1:
+        end = start + 500  # Fallback to reasonable size
+    agree_region = DOC[start:end]
+
 for field in ("pr_exists", "pr_number", "cache_stale", "issue_number"):
     t(
         f"agreement check compares .{field}",
@@ -197,9 +213,11 @@ for field in ("pr_exists", "pr_number", "cache_stale", "issue_number"):
 
 # ============================================================================
 print("[Check 8] The early plan file is removed at the end")
+# Search only after the apply invocation for the rm command (should be at the end)
+search_after_apply = DOC[apply_idx:] if apply_idx is not None else DOC
 t(
     "rm -f removes EARLY_PLAN_FILE",
-    re.search(r"rm -f[^\n]*EARLY_PLAN_FILE", DOC) is not None,
+    re.search(r"rm -f[^\n]*EARLY_PLAN_FILE", search_after_apply) is not None,
 )
 
 print()

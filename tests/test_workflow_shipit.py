@@ -20,7 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.shipit import plan_shipit, apply_shipit, ShipitPlan, ShipitResult
+from workflow.shipit import plan_shipit, apply_shipit, ShipitPlan, ShipitResult, _fresh_github_cache_base
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -204,6 +204,85 @@ if __name__ == "__main__":
     test_result(
         "ShipitResult.to_dict() serializes error",
         "error" in result_dict_with_error and "push rejected" in result_dict_with_error["error"]
+    )
+
+    print()
+    print("[Section 2.5] _fresh_github_cache_base: write-back base construction")
+
+    # Test: non-JSON existing file -> {}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "github-cache.json"
+        cache_file.write_text("{not valid json")
+        result = _fresh_github_cache_base(cache_file, "feature/test")
+    test_result(
+        "_fresh_github_cache_base: non-JSON existing file -> {}",
+        result == {}
+    )
+
+    # Test: JSON array -> {}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "github-cache.json"
+        cache_file.write_text(json.dumps([1, 2, 3]))
+        result = _fresh_github_cache_base(cache_file, "feature/test")
+    test_result(
+        "_fresh_github_cache_base: JSON array -> {}",
+        result == {}
+    )
+
+    # Test: dict with matching normalized review.branch keeps 'review'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "github-cache.json"
+        review_data = {"branch": "feature-test", "commit": "abc123"}
+        cache_file.write_text(json.dumps({"review": review_data}))
+        result = _fresh_github_cache_base(cache_file, "feature/test")
+    test_result(
+        "_fresh_github_cache_base: dict with matching normalized review.branch keeps 'review'",
+        result == {"review": review_data}
+    )
+
+    # Test: mismatched review dropped
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "github-cache.json"
+        review_data = {"branch": "other-branch", "commit": "abc123"}
+        cache_file.write_text(json.dumps({"review": review_data}))
+        result = _fresh_github_cache_base(cache_file, "feature/test")
+    test_result(
+        "_fresh_github_cache_base: mismatched review dropped",
+        result == {}
+    )
+
+    # Test: pr/stack/issue/localPlan never survive
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "github-cache.json"
+        cache_data = {
+            "branch": "feature/test",
+            "pr": {"number": 68, "url": "u"},
+            "stack": {"isStacked": True, "parentBranch": "p", "parentPr": 1},
+            "issue": {"number": 55, "url": "u", "title": "t", "body": "b", "state": "OPEN"},
+            "localPlan": {"path": "plans/x.md"},
+            "review": {"branch": "feature-test", "commit": "abc123"}
+        }
+        cache_file.write_text(json.dumps(cache_data))
+        result = _fresh_github_cache_base(cache_file, "feature/test")
+    test_result(
+        "_fresh_github_cache_base: pr/stack/issue/localPlan never survive",
+        "pr" not in result and "stack" not in result and "issue" not in result
+        and "localPlan" not in result and result.get("review") is not None
+    )
+
+    # Test: missing cache file -> {}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        cache_file = tmppath / "nonexistent.json"
+        result = _fresh_github_cache_base(cache_file, "feature/test")
+    test_result(
+        "_fresh_github_cache_base: missing cache file -> {}",
+        result == {}
     )
 
     print()
@@ -839,9 +918,9 @@ if __name__ == "__main__":
         cache_after = _read_cache(root)
 
     test_result(
-        "apply_shipit edit: probes the cached PR number with headRefName and state",
+        "apply_shipit edit: probes the cached PR number with headRefName, state, and isCrossRepository",
         mocks["pr_view_json"].call_count == 1
-        and mocks["pr_view_json"].call_args.args[:2] == ("68", ["headRefName", "state"]),
+        and mocks["pr_view_json"].call_args.args[:2] == ("68", ["headRefName", "state", "isCrossRepository"]),
         f"calls={mocks['pr_view_json'].call_args_list}"
     )
     test_result(
@@ -928,7 +1007,7 @@ if __name__ == "__main__":
     test_result(
         "apply_shipit lookup {}: result.error is the lookup-failed Unknown",
         isinstance(result.error, Unknown)
-        and result.error.reason.startswith("could not verify PR #68 belongs to feature/test: lookup failed.")
+        and result.error.reason.startswith("could not verify PR #68 belongs to feature/test: gh lookup failed or PR not found.")
         and "the PR was not touched" in result.error.reason,
         f"reason={getattr(result.error, 'reason', None)!r}"
     )
@@ -953,7 +1032,7 @@ if __name__ == "__main__":
     test_result(
         "apply_shipit lookup missing state: result.error is the lookup-failed Unknown",
         isinstance(result.error, Unknown)
-        and result.error.reason.startswith("could not verify PR #68 belongs to feature/test: lookup failed.")
+        and result.error.reason.startswith("could not verify PR #68 belongs to feature/test: lookup returned invalid response.")
         and "the PR was not touched" in result.error.reason,
         f"reason={getattr(result.error, 'reason', None)!r}"
     )
@@ -1078,7 +1157,7 @@ if __name__ == "__main__":
         not mocks["pr_edit"].called and not mocks["pr_create"].called
     )
 
-    # 14i: create path (pr_exists=False) makes no probe call.
+    # 14i: create path (pr_exists=False) does a by-branch lookup; if nothing found, calls pr_create.
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         msg, body = _apply_files(root)
@@ -1088,12 +1167,56 @@ if __name__ == "__main__":
             result, err = apply_shipit(plan_json, cwd=root)
 
     test_result(
-        "apply_shipit create path: pr_view_json is not called",
-        not mocks["pr_view_json"].called
+        "apply_shipit create path: pr_view_json is called with branch name",
+        mocks["pr_view_json"].call_count == 1
+        and mocks["pr_view_json"].call_args.args[0] == "feature/test"
+        and mocks["pr_view_json"].call_args.args[1] == ["number", "url", "state", "headRefName", "isCrossRepository"],
+        f"calls={mocks['pr_view_json'].call_args_list}"
     )
     test_result(
         "apply_shipit create path: pr_create is called once",
         mocks["pr_create"].call_count == 1
+    )
+
+    # 14j: create path with by-branch lookup finding OPEN PR: adopts it via pr_edit, sets pr_updated.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        msg, body = _apply_files(root)
+        _write_cache(root, {"branch": "feature/test", "issue": ISSUE_55})
+        plan_json = _apply_plan_json(msg, body, pr_number=None, pr_exists=False)
+        with _apply_env(
+            "feature/test",
+            view_result={"number": 123, "url": URL_123, "state": "OPEN", "headRefName": "feature/test", "isCrossRepository": False},
+            create_result=(URL_123, None)
+        ) as mocks:
+            result, err = apply_shipit(plan_json, cwd=root)
+        cache_after = _read_cache(root)
+
+    test_result(
+        "apply_shipit create adoption: pr_view_json is called with branch name",
+        mocks["pr_view_json"].call_count == 1
+        and mocks["pr_view_json"].call_args.args[0] == "feature/test",
+        f"calls={mocks['pr_view_json'].call_args_list}"
+    )
+    test_result(
+        "apply_shipit create adoption: pr_edit is called (not pr_create)",
+        mocks["pr_edit"].call_count == 1 and not mocks["pr_create"].called,
+        f"pr_edit={mocks['pr_edit'].call_count} pr_create={mocks['pr_create'].call_count}"
+    )
+    test_result(
+        "apply_shipit create adoption: result.pr_updated is True",
+        result.pr_updated is True,
+        f"pr_updated={result.pr_updated!r}"
+    )
+    test_result(
+        "apply_shipit create adoption: result.pr_url is the looked-up url",
+        result.pr_url == URL_123,
+        f"pr_url={result.pr_url!r}"
+    )
+    test_result(
+        "apply_shipit create adoption: cache pr section is written as OPEN",
+        cache_after.get("pr") == {"number": 123, "url": URL_123, "state": "OPEN"},
+        f"pr={cache_after.get('pr')!r}"
     )
 
     print()
