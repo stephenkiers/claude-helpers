@@ -313,6 +313,18 @@ def t9_direct_ratio_boundary():
     return True, ""
 
 
+def t9_direct_exact_ratio_boundary():
+    """Exact-limit cases pass despite float rounding; one event over the limit fails."""
+    for begins, ends, tol in [(100, 115, 0.15), (180, 207, 0.15), (100, 113, 0.13)]:
+        res = check_agent_events(_ratio_events(begins, ends), SINCE, tol, 20)
+        if res.violations != []:
+            return False, f"{begins}/{ends} at tol {tol} should pass: {res.violations!r}"
+    res = check_agent_events(_ratio_events(100, 116), SINCE, 0.15, 20)
+    if len(res.violations) != 1:
+        return False, f"100/116 at tol 0.15 should fail once: {res.violations!r}"
+    return True, ""
+
+
 def t9_direct_internal_stops_do_not_count_as_ends():
     """100 begins, 103 ends and 250 internal stops passes; report counts internal stops separately."""
     res = check_agent_events(_ratio_events(100, 103, internal_stops=250), SINCE, 0.05, 20)
@@ -641,6 +653,7 @@ def main():
         ("T8 CLI: same blank row before --agent-guard-since is ignored", t8_cli_row_before_since_ignored),
         ("T8 CLI: row between constant and later --agent-guard-since is ignored", t8_cli_row_between_constant_and_later_since_ignored),
         ("T9 direct: ends == begins*(1+tol) passes, one more fails", t9_direct_ratio_boundary),
+        ("T9 direct: exact ratio limits at 0.15/0.13 pass; 100/116 at 0.15 fails", t9_direct_exact_ratio_boundary),
         ("T9 direct: internal stops do not count as ends", t9_direct_internal_stops_do_not_count_as_ends),
         ("T9 direct: 100/130 fails; 100/70 passes (one-sided)", t9_direct_one_sided_and_large_excess),
         ("T9 direct: 19 begins skipped; 20 begins with 40 ends fails", t9_direct_min_begins_skip_and_fail),

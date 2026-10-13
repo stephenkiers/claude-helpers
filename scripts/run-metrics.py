@@ -17,6 +17,7 @@ import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, TypeVar
 
@@ -757,17 +758,31 @@ class AgentGuardResult(NamedTuple):
 
 def _short_repr(value) -> str:
     """repr(value), truncated to AGENT_GUARD_REPR_LIMIT characters for report lines."""
-    text = repr(value)
+    try:
+        text = repr(value)
+    except (RecursionError, ValueError):
+        return "<unrepresentable>"
     if len(text) > AGENT_GUARD_REPR_LIMIT:
         text = text[:AGENT_GUARD_REPR_LIMIT] + "..."
     return text
+
+
+def _exceeds_allowed(ends: int, begins: int, tolerance: float) -> bool:
+    """True iff ends > begins * (1 + tolerance), decided in exact integer arithmetic.
+
+    The tolerance is taken from its decimal string (e.g. 0.15 -> 3/20), so boundary cases such
+    as 100 begins / 115 ends at 0.15 are not misjudged by binary floating-point rounding.
+    """
+    allowed = Fraction(str(tolerance)) + 1
+    return ends * allowed.denominator > begins * allowed.numerator
 
 
 def check_agent_events(events, since, tolerance, min_begins) -> AgentGuardResult:
     """Check agent events for blank identity fields and an agent.end count that outruns agent.begin.
 
     Pure: no I/O, and it never raises on untyped JSON values (non-dict rows, non-str fields
-    and timestamps are handled as data, not as errors).
+    and timestamps are handled as data, not as errors). `since` must be a tz-aware datetime
+    (the CLI enforces this via argparse; direct callers must pass tz-aware values).
 
     Scope: agent.begin / agent.end / agent.internal_stop events whose timestamp parses and is
     >= since (inclusive). The guard counts raw events and does not use the id-keyed `agents`
@@ -782,7 +797,8 @@ def check_agent_events(events, since, tolerance, min_begins) -> AgentGuardResult
     excluded). If begins < min_begins the ratio check is skipped and the skip is recorded.
     Otherwise ends > begins * (1 + tolerance) is a violation. Fewer ends than begins never fails.
 
-    `report` is always populated and never fails the guard.
+    `report` is always populated and never fails the guard. An agent.internal_stop whose
+    agent_type is blank or non-str is not counted as typed (it is a check (a) violation).
     """
     violations: List[str] = []
     skipped: List[str] = []
@@ -851,7 +867,7 @@ def check_agent_events(events, since, tolerance, min_begins) -> AgentGuardResult
     ends = report["ends"]
     if begins < min_begins:
         skipped.append(f"ratio check skipped: {begins} begins < min {min_begins}")
-    elif ends > begins * (1 + tolerance):
+    elif _exceeds_allowed(ends, begins, tolerance):
         ratio = ends / begins
         violations.append(
             f"agent.end outruns agent.begin: {ends} ends vs {begins} begins "

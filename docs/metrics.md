@@ -579,15 +579,17 @@ data exists and should be revisited once there is a real baseline.
 
 **Report-only lines.** The guard block reports these keys without failing on them:
 
-- `internal_stops` — count of `agent.internal_stop` rows in the window.
-- `unknown agent_type` — rows whose `agent_type` is the `"unknown"` sentinel.
-- `unknown ids` — rows whose `agent_id` or `session_id` is the `"unknown"` sentinel.
-- `typed internal stops` — `agent.internal_stop` rows that carry a real (non-`unknown`) `agent_type`.
+- `internal_stop events (report-only)` — count of `agent.internal_stop` rows in the window.
+- `unknown agent_type (report-only)` — rows whose `agent_type` is the `"unknown"` sentinel.
+- `unknown agent_id/session_id (report-only)` — rows whose `agent_id` or `session_id` is the `"unknown"` sentinel.
+- `typed internal stops (report-only)` — `agent.internal_stop` rows counted as typed. A row is typed if
+  it carries a real (non-blank, non-`unknown`) `agent_type`, **or** its `agent_id` matches the `agent_id`
+  of a post-`since` `agent.begin`.
 
-Harness-internal firings are normally untyped, so a nonzero `typed internal stops` count means a firing
-with a real agent type was classified as harness-internal. The usual cause is a spawn whose
-`agent.begin` was lost, or a duplicate stop for an agent that already ended. It does not fail the guard,
-but it is worth investigating before trusting the spawn count for that period.
+ADR-0016 notes that `agent_type` is not a reliable signal for harness-internal firings, so a nonzero
+`typed internal stops` count does not by itself mean a misclassification. It means internal-stop
+classification disagreed with the identity and begin data for those rows, and is worth inspecting
+before trusting the spawn count for that period. It does not fail the guard.
 
 **Straddler edge.** An `agent.begin` written before `since` whose `agent.end` lands after it is counted
 as an end with no begin in the window. That inflates `ends` for check (b). This matters only with small
@@ -609,7 +611,8 @@ Work through these steps in order:
    bound past the old rows; it does not repair them.
 3. Warning: running `/setup-local` from any older worktree reverts the fix, and a time cutoff cannot
    detect this, because the old code's rows look the same as new ones after the cutoff. The provenance
-   line can detect it, which is why step 1 comes first.
+   line is a heuristic (it reads the hook target path and checks whether that file mentions
+   `agent.internal_stop`), not a proof of what code is running, which is why step 1 comes first.
 
 ## Automatic Token Logging
 
