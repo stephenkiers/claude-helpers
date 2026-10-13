@@ -32,7 +32,10 @@ Start these in parallel:
 `shipit plan` CLI verdict (the early plan in "Stack Detection", re-checked by the late plan in
 "Create PR"), not from reading `.claude/github-cache.json` in this section. The CLI is the only
 reader of that cache for those decisions. It ignores the whole cache when its `branch` is not this
-branch, and `shipit apply` re-verifies the PR head against GitHub before any edit.
+branch. On PR creation (when no cached PR number exists), the CLI does a by-branch lookup via GitHub
+and adopts any existing OPEN PR whose head matches the current branch — allowing the create path to
+recover when the PR cache is stale or missing. The `shipit apply` step re-verifies the PR head and
+OPEN state against GitHub before any edit.
 
 **If no `repo-cache.json` or it is stale (>30 days):** Run full detection (Step 1.5) and write cache.
 
@@ -227,7 +230,7 @@ required so the `scripts.workflow` package import resolves regardless of which r
 invoked from):
 
 ```bash
-source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
 # Run checks via deterministic CLI. Exit codes: 0 = passed, 1 = a check failed,
 # 2 = nothing ran (empty/all-null cache) or a coverage-assertion violation.
@@ -290,7 +293,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-pr >/d
 staleness, and whether a stale cached stack must be discarded), and it runs before the Is-stacked
 block and before any push. `plan_shipit` is read-only here: it makes no network call and does not
 read the commit message file. Note the exact `EARLY_PLAN_FILE=` path this prints and reuse it
-verbatim in later bash fences (shell variables do not survive across Bash tool calls).
+verbatim in later bash fences (shell variables do not survive across Bash tool calls). The shipit
+command runs the plan twice (early and late) to ensure the PR body merge uses a consistent verdict;
+see ADR-0013 for the early/late plan agreement mechanism.
 
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
@@ -299,15 +304,21 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: c
 EARLY_PLAN_FILE=$(mktemp)
 echo "EARLY_PLAN_FILE=$EARLY_PLAN_FILE"
 if ! PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit plan /dev/null > "$EARLY_PLAN_FILE"; then
-  echo "ERROR: early shipit plan failed" >&2
+  printf '%s\n' "ERROR: early shipit plan failed" >&2
+  rm -f "$EARLY_PLAN_FILE"
+  exit 1
+fi
+if [ ! -s "$EARLY_PLAN_FILE" ]; then
+  printf '%s\n' "ERROR: early shipit plan produced empty output" >&2
   rm -f "$EARLY_PLAN_FILE"
   exit 1
 fi
 if [ -z "$(jq -r '.plan_hash // empty' < "$EARLY_PLAN_FILE")" ]; then
-  echo "ERROR: early shipit plan produced no plan_hash" >&2
+  printf '%s\n' "ERROR: early shipit plan produced no plan_hash" >&2
   rm -f "$EARLY_PLAN_FILE"
   exit 1
 fi
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading cache_stale" >&2; exit 1; }
 CACHE_STALE=$(jq -r '.cache_stale // empty' < "$EARLY_PLAN_FILE")
 case "$CACHE_STALE" in
   invalid|branch_mismatch:*)
@@ -329,8 +340,9 @@ push below takes the plain `git push -u` path: no rebase onto the old parent and
 `--force-with-lease`.
 
 ```bash
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading stale_stack_claimed" >&2; exit 1; }
 if [ "$(jq -r '.stale_stack_claimed' < "$EARLY_PLAN_FILE")" = "true" ]; then
-  echo "NOTE: discarding stale cached stack parent from .claude/github-cache.json; the PR will target the default branch." >&2
+  printf '%s\n' "NOTE: discarding stale cached stack parent from .claude/github-cache.json; the PR will target the default branch." >&2
   STACK_IS_STACKED=false
   STACK_PARENT_BRANCH=""
   STACK_PARENT_PR=""
@@ -345,6 +357,7 @@ Then also run the **"Detect layout"** block from `~/.claude/prompts/worktree-ref
 # Detect issue number: early plan verdict first, then branch name regex fallback.
 # The early plan is the only cache reader here; it ignores a cache that does not describe this branch.
 BRANCH=$(git branch --show-current)
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading issue_number" >&2; exit 1; }
 ISSUE_NUM=$(jq -r '.issue_number // empty' < "$EARLY_PLAN_FILE" 2>/dev/null)
 if [ -z "$ISSUE_NUM" ]; then
   ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
@@ -356,9 +369,10 @@ else
   # Run the "Push a stacked branch (new local work)" block from
   # ~/.claude/prompts/worktree-reference.md (routes on STACK_LAYOUT: gh stack sync for
   # single-driver, git rebase --onto + --force-with-lease for per-branch; stops on unknown).
-  echo "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
+  printf '%s\n' "ERROR: stacked push block not expanded — run the 'Push a stacked branch (new local work)' block from ~/.claude/prompts/worktree-reference.md here." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-pr --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class other 2>/dev/null || true
+  rm -f "$EARLY_PLAN_FILE"
   exit 1
 fi
 
@@ -384,9 +398,7 @@ runs on the same PR. Gather:
   a commit subject (`add X`, `fix Y`, `rewrite Z`), not a restatement of the last commit alone.
   Assign it to `$TITLE`.
 - **Why this PR exists**: if `$ISSUE_NUM` is set, run `gh issue view "$ISSUE_NUM" --json
-  title,body`. You may use the cached `.issue` body from `.claude/github-cache.json` instead
-  only when `ISSUE_NUM` came from the early plan's `issue_number` (that cache passed the branch
-  check). Otherwise call `gh issue view` directly. If `$ISSUE_NUM` is not set, derive the
+  title,body` directly. If `$ISSUE_NUM` is not set, derive the
   problem from the user's original request earlier in this conversation. 1-3 sentences on the problem/need being addressed.
 - **What it does**: a bulleted list of concrete behavior/code changes, derived from the `git log`
   / `git diff --stat` output above.
@@ -463,6 +475,7 @@ fi
 # Check if PR already exists, from the early plan verdict. PR_NUM is set only when the plan
 # considers this branch's PR to exist. This read is read-only: if the PR is not this branch's,
 # apply's head probe refuses before any mutation.
+[ -s "$EARLY_PLAN_FILE" ] || { printf '%s\n' "ERROR: EARLY_PLAN_FILE lost before reading pr_exists" >&2; exit 1; }
 PR_NUM=$(jq -r 'if .pr_exists then .pr_number else empty end' < "$EARLY_PLAN_FILE" 2>/dev/null)
 ```
 
@@ -473,11 +486,30 @@ description since the last `/shipit` run, and that work must not be silently des
 ```bash
 if [ -n "$PR_NUM" ]; then
   TMP_BODY_CURRENT=$(mktemp)
-  if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
-    echo "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
-    exit 1
+  # Verify the PR before merging: it must be OPEN and its head must match the current branch.
+  # Skip the body merge if verification fails, proceeding to create a fresh PR instead.
+  PR_INFO=$(gh pr view "$PR_NUM" --json state,headRefName 2>/dev/null)
+  if [ -z "$PR_INFO" ]; then
+    printf '%s\n' "WARNING: could not fetch PR #$PR_NUM; proceeding with fresh PR creation." >&2
+    PR_NUM=""
+  else
+    PR_STATE=$(printf '%s' "$PR_INFO" | jq -r '.state // "unknown"')
+    PR_HEAD=$(printf '%s' "$PR_INFO" | jq -r '.headRefName // "unknown"')
+    if [ "$PR_STATE" != "OPEN" ]; then
+      printf '%s\n' "NOTE: PR #$PR_NUM is $PR_STATE (not OPEN); creating a fresh PR instead." >&2
+      PR_NUM=""
+    elif [ "$PR_HEAD" != "$BRANCH" ]; then
+      printf '%s\n' "NOTE: PR #$PR_NUM head ($PR_HEAD) does not match current branch ($BRANCH); creating a fresh PR instead." >&2
+      PR_NUM=""
+    else
+      # PR is valid; fetch its current body for merging
+      if ! gh pr view "$PR_NUM" --json body -q '.body' > "$TMP_BODY_CURRENT"; then
+        printf '%s\n' "ERROR: failed to fetch the existing PR body — stopping rather than risking a blind overwrite." >&2
+        exit 1
+      fi
+      echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
+    fi
   fi
-  echo "TMP_BODY_CURRENT=$TMP_BODY_CURRENT"
 fi
 ```
 
@@ -516,7 +548,7 @@ the result:
 ```bash
 # Resolve CLAUDE_HELPERS_DIR again — a new Bash tool call does not inherit shell
 # variables from the Run Checks step above.
-source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 
 # Plan the shipit operation (captures current state: branch, HEAD SHA, cache hash)
 TMP_MSG=$(mktemp)
@@ -531,11 +563,11 @@ fi
 
 # The early verdict must still hold: the body merge above used it. If the cache changed
 # during /shipit, stop rather than apply a verdict the body merge did not use.
-for KEY in pr_exists pr_number cache_stale issue_number; do
+for KEY in pr_exists pr_number cache_stale issue_number stale_stack_claimed base_branch; do
   EARLY_VAL=$(jq -c --arg k "$KEY" '.[$k]' < "$EARLY_PLAN_FILE")
   LATE_VAL=$(printf '%s' "$SHIPIT_PLAN" | jq -c --arg k "$KEY" '.[$k]')
   if [ "$EARLY_VAL" != "$LATE_VAL" ]; then
-    echo "ERROR: github-cache.json changed during /shipit; re-run" >&2
+    printf '%s\n' "ERROR: github-cache.json changed during /shipit; re-run" >&2
     exit 1
   fi
 done
