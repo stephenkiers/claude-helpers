@@ -294,7 +294,9 @@ tooling, each with its own audit and confirmation gate:
    `<tested_sha>:refs/heads/<branch>`, audited in a single function (`force_push_tested()`), runs
    only after the full gate has passed. See [ADR-0021 Decision 6](docs/adr/0021-local-merge-queue.md).
 2. **`/shipit`** — stacked-branch `--force-with-lease` push (for rebased stacked branches), confirmed
-   after the local CI gate passes. See `commands/shipit.md` "Sync stacked children" section.
+   after the local CI gate passes. See `commands/shipit.md` "Sync stacked children" section. Also,
+   after a stale-base self-heal rebase of an already-pushed branch, a user-confirmed
+   `--force-with-lease` push of that branch (see "Stale-base rebase" in Step 3).
 3. **`/stack-sync`** — per-child `--force-with-lease` push, gated behind the project's check gate
    inside the canonical Restack-a-child block. See `commands/stack-sync.md`.
 4. **`/expert-rebase`** — per-branch `--force-with-lease` push (or `--force-with-lease --force-if-includes`

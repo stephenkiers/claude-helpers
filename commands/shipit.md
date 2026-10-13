@@ -250,7 +250,51 @@ for every configured command. Do not treat an empty result as "nothing to check.
 the same as a failing check; if the project genuinely has no checks configured, that is itself a gap
 worth surfacing to the user rather than swallowing.
 
-**On any non-zero exit (1 or 2):** Stop immediately, report error (including `$CHECK_EXECUTED` so the
+**Self-heal known, recoverable failures — at most once each, then re-run the checks once.** Before
+treating a non-zero exit as final, scan `$CHECK_RESULT` for these exact signatures. Anything that
+doesn't match, or that fails again after its remedy, falls through to the hard stop below.
+
+| Signature in `$CHECK_RESULT` | Remedy |
+|---|---|
+| `sidecar not built` **and** `scripts/setup-agent-dev.sh` exists | `bash scripts/setup-agent-dev.sh` (one-time per-worktree build; slow is normal). If it exits non-zero, stop and report its output. |
+| `Branch is stale` (from `check-base-fresh.sh`) | Rebase onto the default branch — see below. |
+
+**Stale-base rebase.** Never rebase a stacked branch: a plain rebase onto the default branch would
+orphan the stack, so if another worktree's unmerged branch is an ancestor of `HEAD`, fall through to
+the hard stop and point the user at `/stack-sync`. This check is ancestry-only on purpose — the
+cache-first Is-stacked block in Step 5 must not run before the early plan's cache verdict. Checks run
+before Step 4's commit, so the tree is normally dirty here; `--autostash` carries the uncommitted
+work across the rebase and restores it on abort:
+
+```bash
+DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+git fetch origin "$DEFAULT_BRANCH" || exit 1
+CURRENT_BRANCH=$(git branch --show-current)
+STACK_PARENT_FOUND=""
+for b in $(git worktree list --porcelain | sed -n 's|^branch refs/heads/||p'); do
+  [ "$b" = "$DEFAULT_BRANCH" ] || [ "$b" = "$CURRENT_BRANCH" ] && continue
+  git merge-base --is-ancestor "$b" HEAD 2>/dev/null \
+    && ! git merge-base --is-ancestor "$b" "origin/$DEFAULT_BRANCH" 2>/dev/null \
+    && STACK_PARENT_FOUND="$b"
+done
+[ -z "$STACK_PARENT_FOUND" ] || { printf 'ERROR: branch is stacked on %s — run /stack-sync instead of a self-heal rebase\n' "$STACK_PARENT_FOUND" >&2; exit 1; }
+git rebase --autostash "origin/$DEFAULT_BRANCH" || {
+  git rebase --abort 2>/dev/null
+  printf '%s\n' "ERROR: rebase onto origin/$DEFAULT_BRANCH failed and was aborted — run /expert-rebase" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage run-checks --outcome failure --failure-class rebase_conflict 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command shipit --outcome failure --failure-class rebase_conflict 2>/dev/null || true
+  exit 1
+}
+```
+
+A conflicted rebase is never resolved here: abort, leave the branch untouched, and point the user at
+`/expert-rebase`. If the autostashed changes conflict when re-applied after a successful rebase, git
+keeps them in `git stash list`; stop and tell the user rather than resolving it. If the rebased branch already has a pushed upstream, the Step 5 push will be
+non-fast-forward; **ask the user before force-pushing** (`git push --force-with-lease`, never bare
+`--force`) — the repo rule is that force pushes happen only when explicitly requested.
+
+**On any non-zero exit (1 or 2) that wasn't healed above:** Stop immediately, report error (including `$CHECK_EXECUTED` so the
 user can see what did run), record gotcha in cache. Do NOT commit.
 
 ```bash
