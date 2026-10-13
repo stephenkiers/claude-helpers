@@ -534,10 +534,14 @@ Reading the output: a subagent file with `unfinalized_messages` near half of `tu
 The `diagnose` subcommand reads the telemetry log, reconciles `*.begin` / `*.end` pairs, and checks data quality:
 
 ```
-python3 scripts/run-metrics.py [--log PATH] diagnose [--window-days N]
-  # prints a match-rate / unknown-field report
-  # exits 0 if match_rate >= 95% AND unknown_pct < 15%, else 1
+python3 scripts/run-metrics.py [--log PATH] diagnose [--window-days N] \
+  [--agent-guard-since ISO8601] [--agent-guard-tolerance F] [--agent-guard-min-begins N]
+  # prints a match-rate / unknown-field report, the Agent guard block, and a Hook target provenance line
+  # exits 0 only if match_rate >= 95% AND unknown_pct < 15% AND the agent guard passes, else 1
 ```
+
+The agent guard is a third PASS condition in this health check. It does not feed the usage gate
+(see [Usage Gate](#usage-gate-per-subagent-token-accounting)).
 
 ### Thresholds
 
@@ -547,6 +551,65 @@ These thresholds were defined **before any baseline data exists**, per the issue
 - **<15% of token/cache fields are `"unknown"` across successful runs** — ensures reasonable token capture rate
 
 Run `diagnose` regularly to track telemetry data quality over time.
+
+### Agent data guard
+
+The guard checks `agent.*` rows written after a cutoff, so that a regression in the agent hooks fails
+loudly instead of quietly skewing the spawn and token counts. It runs on the events that survive the
+`--window-days` filter, so its effective lower bound is `max(since, window start)`.
+
+The cutoff is `2026-10-13T18:58:25Z`, the merge time of #267 (the PR that introduced
+`agent.internal_stop` and normalized agent identity). Events before it were written by older code and
+are not judged. `--agent-guard-since` must be a timezone-aware ISO 8601 timestamp.
+
+**Check (a): identity completeness.** On post-`since` `agent.begin`, `agent.end`, and
+`agent.internal_stop` rows, a blank, non-string, or missing `agent_type`, `agent_id`, or `session_id`
+is a FAIL. The literal sentinel `"unknown"` is not a FAIL; it is only counted in the report.
+
+**Check (b): begin/end balance.** This is one-sided. It fails only when
+`ends > begins × (1 + tolerance)`, so surplus ends fail and surplus begins do not (unmatched begins are
+already covered by the match rate). `agent.internal_stop` rows are excluded from the ratio. The check
+is skipped, and reported as skipped, when `begins < min_begins`, because the ratio is too noisy on
+small samples.
+
+**Flags and defaults.** `--agent-guard-since` defaults to the cutoff above;
+`--agent-guard-tolerance` defaults to `0.05` (range 0..1); `--agent-guard-min-begins` defaults to `20`
+(must be ≥ 1). **These defaults are untuned** (open question Q4): they were chosen before any post-cutoff
+data exists and should be revisited once there is a real baseline.
+
+**Report-only lines.** The guard block reports these keys without failing on them:
+
+- `internal_stops` — count of `agent.internal_stop` rows in the window.
+- `unknown agent_type` — rows whose `agent_type` is the `"unknown"` sentinel.
+- `unknown ids` — rows whose `agent_id` or `session_id` is the `"unknown"` sentinel.
+- `typed internal stops` — `agent.internal_stop` rows that carry a real (non-`unknown`) `agent_type`.
+
+Harness-internal firings are normally untyped, so a nonzero `typed internal stops` count means a firing
+with a real agent type was classified as harness-internal. The usual cause is a spawn whose
+`agent.begin` was lost, or a duplicate stop for an agent that already ended. It does not fail the guard,
+but it is worth investigating before trusting the spawn count for that period.
+
+**Straddler edge.** An `agent.begin` written before `since` whose `agent.end` lands after it is counted
+as an end with no begin in the window. That inflates `ends` for check (b). This matters only with small
+samples just after moving `since` (for example, a `--agent-guard-since` set to a few hours ago), which is
+one reason the `min_begins` floor exists.
+
+**Machine-local state.** `diagnose` reads the machine's own `~/.claude/telemetry/events.jsonl` and the
+machine's hook wiring. `just check` therefore covers the guard only through fixtures; it cannot tell you
+whether this machine's real log passes.
+
+#### When the agent guard fails
+
+Work through these steps in order:
+
+1. Read the `Hook target` line in the `diagnose` output, or run `readlink ~/.claude/scripts/run-metrics.py`.
+   If it points at a worktree from before #267, re-run `/setup-local` from `main`.
+2. Only after step 1 shows the current code is wired, pass `--agent-guard-since <time you re-ran
+   setup-local>` to exclude events written before the fix was in place. This moves the guard's lower
+   bound past the old rows; it does not repair them.
+3. Warning: running `/setup-local` from any older worktree reverts the fix, and a time cutoff cannot
+   detect this, because the old code's rows look the same as new ones after the cutoff. The provenance
+   line can detect it, which is why step 1 comes first.
 
 ## Automatic Token Logging
 
@@ -604,7 +667,7 @@ session's transcript file and joined by `session_id`/`agent_id` at read time (se
 Parsing" above). Any cost question requires that join; the `events.jsonl` log alone answers
 frequency, outcome, and timing questions, not token cost.
 
-**Agent spawn counts: `agent.begin` is authoritative.** Count subagent spawns by filtering `agent.begin` events, not `agent.end` — `agent.end` may include harness-internal firings (classified as `agent.internal_stop` after the fix) that have no spawn event. Before the cutoff date (<PR 1 merge timestamp — filled in by the follow-up PR>), `agent.end` rows with `agent_type in ("", "unknown")` are untyped and include harness-internal firings; after the cutoff, those firings emit `agent.internal_stop` instead and never appear in `agent.end`.
+**Agent spawn counts: `agent.begin` is authoritative.** Count subagent spawns by filtering `agent.begin` events, not `agent.end` — `agent.end` may include harness-internal firings (classified as `agent.internal_stop` after the fix) that have no spawn event. Before the cutoff date ([`2026-10-13T18:58:25Z` (#267)](#agent-data-guard)), `agent.end` rows with `agent_type in ("", "unknown")` are untyped and include harness-internal firings; after the cutoff, those firings emit `agent.internal_stop` instead and never appear in `agent.end`.
 
 **How many subagents of type X ran:**
 
@@ -764,7 +827,7 @@ Classified harness-internal SubagentStop firings (`agent.internal_stop` events) 
 
 Session meta files created before the cutoff date may carry inflated `floor_count` values from the ~58k internal firings previously counted as unparseable agents; these values persist in the session state file until it is pruned (24-hour cycle).
 
-The historical ~58k blank `agent.end` rows in earlier logs are not rewritten (the log is append-only); the fix applies only to new events forward. Queries over logs spanning both pre- and post-cutoff periods will see the transition: before the cutoff date (<PR 1 merge timestamp — filled in by the follow-up PR>), internal firings appear as `agent.end` rows with `agent_type` blank or normalized to `"unknown"`; after the cutoff, they emit `agent.internal_stop` instead.
+The historical ~58k blank `agent.end` rows in earlier logs are not rewritten (the log is append-only); the fix applies only to new events forward. Queries over logs spanning both pre- and post-cutoff periods will see the transition: before the cutoff date ([`2026-10-13T18:58:25Z` (#267)](#agent-data-guard)), internal firings appear as `agent.end` rows with `agent_type` blank or normalized to `"unknown"`; after the cutoff, they emit `agent.internal_stop` instead.
 
 **Edge cases that still emit agent.end:** A stop whose agent.begin entry was lost (never existed in session meta) but whose transcript was successfully parsed, or whose status is not `path_not_a_file`, is recorded as plain `agent.end`. On state-operation failure (OSError/PermissionError), the stop falls back to `agent.end` (best-effort, not guaranteed never appears). If either `session_id` or `agent_id` is blank/missing (normalized to UNKNOWN), the stop remains `agent.end`.
 

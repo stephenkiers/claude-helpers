@@ -175,7 +175,7 @@ A new event type `agent.internal_stop` classifies SubagentStop firings that are 
 Classified internal firings emit `agent.internal_stop` events (carrying session_id, timestamp, agent_id, agent_type, and default metric fields, but no tokens, token_confidence, or outcome) and are never written to the session-state `usage.agents` dict. They do not participate in token counting or the usage gate. This is distinct from `path_not_a_file` status on a **recorded** agent in `usage.agents`, which represents a real spawned agent whose transcript was simply missing.
 
 **`agent.begin` is authoritative for spawn counts.**
-When analyzing agent-spawn data, count from `agent.begin` events, not `agent.end`. Before the cutoff date (the merge timestamp of the PR that introduced `agent.internal_stop`), `agent.end` rows with `agent_type in ("", "unknown")` are untyped and include harness-internal firings; after the cutoff, these firings emit `agent.internal_stop` instead.
+When analyzing agent-spawn data, count from `agent.begin` events, not `agent.end`. Before the cutoff date (the merge timestamp of the PR that introduced `agent.internal_stop`, `2026-10-13T18:58:25Z`, #267), `agent.end` rows with `agent_type in ("", "unknown")` are untyped and include harness-internal firings; after the cutoff, these firings emit `agent.internal_stop` instead.
 
 **No history rewrite.**
 The ~58k pre-fix blank `agent.end` rows in existing logs are not rewritten (the log is append-only). Queries spanning pre- and post-cutoff periods will observe the transition directly. The jq token-sum pattern (summing input + output + cache_creation from `agent.end` events) is unaffected because the blank rows carried only `unknown` tokens, contributing nothing to the sum.
@@ -217,3 +217,7 @@ means "the helper did not record a terminal state", not "the run was known to be
 `Bash(python3 "$HOME/.claude/scripts/implement-ledger.py":*)`, which is narrow to that one script. It has not yet
 been verified in a non-bypass permission mode. If it has to widen to `Bash(python3:*)` to run, this amendment
 will be updated to say so.
+
+## Amendment — Agent data guard in `diagnose` (#143 PR 2)
+
+The agent data guard is an extra health-check PASS condition on `diagnose`: `diagnose` exits 0 only when the match rate, the unknown-field rate, and the guard all pass. It is **not** part of the usage gate, so the "single threshold" consequence above still refers only to the `/implement-with-haiku` gate. The guard's cutoff is a timestamp (`2026-10-13T18:58:25Z`, #267), and it judges only rows written after that time. A timestamp cannot express "events were written by fixed code," because a stale worktree's `/setup-local` can reintroduce the old hook wiring after the cutoff. The `Hook target` provenance line covers that gap; event-level provenance is a possible follow-up.
