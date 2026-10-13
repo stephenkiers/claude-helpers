@@ -100,27 +100,34 @@ class ShipitResult:
         return d
 
 
-def _resolve_pr_action(branch: str, cwd: Path) -> Tuple[Optional[int], bool]:
+def _resolve_pr_action(branch: str, cwd: Path) -> Optional[Tuple[int, str]]:
     """
-    Resolve whether to create or edit a PR for the given branch.
+    Look up an existing open PR for ``branch`` before creating one (issue #213).
 
-    Does a by-branch lookup via `gh pr view <branch>` to find an existing open PR.
-    Returns (pr_number, should_create):
-    - If an open PR for this branch is found, returns (number, False) to edit it.
-    - If no PR is found or lookup fails, returns (None, True) to create one.
-    - If a PR is found but not open or head ref doesn't match, returns (None, True) to create.
+    Does a by-branch lookup via `gh pr view <branch>`. Returns (number, url) only when
+    the PR is OPEN, its head ref equals ``branch``, and it is not cross-repository;
+    otherwise returns None, meaning the caller should create a new PR. A failed or
+    empty lookup is non-fatal and also returns None.
     """
     try:
-        pr_data = git.pr_view_json(branch, ["number", "state"], cwd=cwd)
-        if isinstance(pr_data, dict) and pr_data:
-            pr_number = pr_data.get("number")
-            state = pr_data.get("state")
-            if isinstance(pr_number, int) and pr_number > 0 and state == "OPEN":
-                return pr_number, False
+        pr_data = git.pr_view_json(
+            branch, ["number", "url", "state", "headRefName", "isCrossRepository"], cwd=cwd
+        )
     except Exception:
-        # Lookup failed; fall back to create
-        pass
-    return None, True
+        return None
+    if not isinstance(pr_data, dict) or not pr_data:
+        return None
+    number = positive_int(pr_data.get("number"))
+    url = pr_data.get("url")
+    if (
+        number is not None
+        and isinstance(url, str) and url
+        and pr_data.get("state") == "OPEN"
+        and pr_data.get("headRefName") == branch
+        and pr_data.get("isCrossRepository") is not True
+    ):
+        return number, url
+    return None
 
 
 def _build_github_cache_data(
@@ -141,7 +148,7 @@ def _build_github_cache_data(
 
     # pr section: on the create path (including MERGED-create) replace it
     # wholesale. On the edit path keep the verified existing section.
-    if result.pr_created:
+    if result.pr_created or result.pr_url:
         existing_data.pop("pr", None)
 
         # Merge PR data into cache
@@ -407,17 +414,27 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     return result, result.error
 
             if will_create or not plan.pr_exists:
-                # Create or adopt PR. First check by-branch lookup (issue #213).
-                # If a PR is found and is open, adopt it; otherwise create.
-                adopted_pr_number, should_create = _resolve_pr_action(plan.branch, repo_root)
+                # Create or adopt PR. First check by-branch lookup (issue #213):
+                # an OPEN PR whose head is this branch is edited instead of creating.
+                adopted = _resolve_pr_action(plan.branch, repo_root)
 
-                if not should_create and adopted_pr_number:
-                    # Adopt the existing open PR
-                    plan.pr_number = adopted_pr_number
+                if adopted is not None:
+                    adopted_number, adopted_url = adopted
+                    success, err = git.pr_edit(
+                        pr_number=adopted_number,
+                        title=title,
+                        body_file=body_file,
+                        cwd=repo_root
+                    )
+                    if not success:
+                        result.error = err or Unknown(f"Failed to edit PR #{adopted_number}")
+                        return result, result.error
+                    plan.pr_number = adopted_number
                     result.pr_updated = True
-                    result.pr_url = f"https://github.com/{plan.branch.split('/')[0]}/pull/{adopted_pr_number}"
+                    result.pr_url = adopted_url
                 else:
-                    # Create a new PR
+                    # A MERGED cached number must not leak into the new PR's cache entry.
+                    plan.pr_number = None
                     pr_url, err = git.pr_create(
                         title=title,
                         body_file=body_file,
@@ -429,8 +446,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                         result.pr_url = pr_url
                         # Extract PR number from URL
                         try:
-                            pr_num = int(pr_url.rstrip().split('/')[-1])
-                            plan.pr_number = pr_num
+                            plan.pr_number = int(pr_url.rstrip().split('/')[-1])
                         except (ValueError, IndexError):
                             pass
                         # Only record the merged PR if we successfully created a replacement
