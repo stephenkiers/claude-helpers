@@ -8,7 +8,7 @@ The privacy boundary is hard: telemetry records only metadata (repo name, comman
 
 ## Event Model
 
-Telemetry consists of 8 event types, forming a 4-level hierarchy via correlation IDs:
+Telemetry consists of 9 event types, forming a 4-level hierarchy via correlation IDs:
 
 ### Event Types
 
@@ -16,6 +16,7 @@ Telemetry consists of 8 event types, forming a 4-level hierarchy via correlation
 2. **`command.begin` / `command.end`** — lifecycle of a custom slash command (e.g., `/expert-review`)
 3. **`stage.begin` / `stage.end`** — lifecycle of an internal phase within a command (e.g., "router", "pass1", "implementation")
 4. **`agent.begin` / `agent.end`** — lifecycle of a spawned subagent (e.g., expert-reviewer, plan-implementer)
+5. **`agent.internal_stop`** — a SubagentStop with no matching SubagentStart and no transcript file on disk; harness-internal model calls (observed coincident with `/compact`); never enters usage accounting
 
 ### Correlation IDs (Foreign Keys)
 
@@ -165,7 +166,30 @@ payload against this exact config shape during this implementation pass):
 
 ### Important Caveat
 
-`SessionStart`/`SessionEnd` hook payload field names (`session_id`, `cwd`, `session_start_type`, `session_end_reason`, etc.) are documented by Claude Code but were **not independently re-verified in this implementation pass** — only `SubagentStart`/`SubagentStop` payloads were empirically captured and confirmed. The `run-metrics.py` handlers for `agent-begin`/`agent-end` are defensive (using `.get()` with `UNKNOWN` fallback) precisely to handle uncertainty in payload schema.
+`SessionStart`/`SessionEnd` hook payload field names (`session_id`, `cwd`, `session_start_type`, `session_end_reason`, etc.) are documented by Claude Code but were **not independently re-verified in this implementation pass** — only `SubagentStart`/`SubagentStop` payloads were empirically captured and confirmed. The `run-metrics.py` handlers for `agent-begin`/`agent-end` normalize all fields (non-str values and blank/whitespace-only strings become `"unknown"`, then bounded to `MAX_FIELD_LEN`) to handle uncertainty in payload schema.
+
+#### Harness-internal SubagentStop firings
+
+As of 2026-10-09, an observed phenomenon: 58,569 blank `agent.end` events with 58,569 distinct non-empty `agent_id`s, none matching any `agent.begin` or typed `agent.end`, all with `tokens`/`elapsed` `unknown`, all `path_not_a_file` in session meta, and 2,962 in sessions with no typed subagent. These are harness-internal model calls with no matching subagent start — classified and filtered via two signals:
+
+1. **Transcript status is `path_not_a_file`** — recorded during agent-end when the session meta file lookup returns this status for the agent's transcript path
+2. **No matching `agent.begin` entry for that `agent_id`** — verified by checking the session meta file's `agents` dict
+
+Classified internal firings emit an `agent.internal_stop` event (fields: `session_id`, `timestamp`, `agent_id`, `agent_type`, default metric fields; NO tokens/token_confidence/outcome) instead of `agent.end` and never write to `usage.agents` or the token gate.
+
+To reproduce the blank-`agent.end` count and distinct-id count (before the fix), run:
+
+```bash
+jq -r 'select(.event_type == "agent.end" and .agent_type == "") | .agent_id' \
+  ~/.claude/telemetry/events.jsonl | wc -l
+
+jq -r 'select(.event_type == "agent.end" and .agent_type == "") | .agent_id' \
+  ~/.claude/telemetry/events.jsonl | sort -u | wc -l
+```
+
+Note: `(session_id, agent_id)` dedup would remove nothing because the agent ids are fresh — no repeats per session.
+
+The defensive `.get()` with `UNKNOWN` fallback previously absorbed blank values silently. Now, `agent.begin` and `agent.end` rows receive a strict-`str` field normalizer: non-str values and blank/whitespace-only strings become `"unknown"`, then bounded to `MAX_FIELD_LEN`.
 
 ## Command/Stage Boundaries
 
@@ -571,6 +595,15 @@ session's transcript file and joined by `session_id`/`agent_id` at read time (se
 Parsing" above). Any cost question requires that join; the `events.jsonl` log alone answers
 frequency, outcome, and timing questions, not token cost.
 
+**Agent spawn counts: `agent.begin` is authoritative.** Count subagent spawns by filtering `agent.begin` events, not `agent.end` — `agent.end` may include harness-internal firings (classified as `agent.internal_stop` after the fix) that have no spawn event. Before the cutoff date (<PR 1 merge timestamp — filled in by the follow-up PR>), `agent.end` rows with `agent_type in ("", "unknown")` are untyped and include harness-internal firings; after the cutoff, those firings emit `agent.internal_stop` instead and never appear in `agent.end`.
+
+**How many subagents of type X ran:**
+
+```bash
+jq -rc 'select(.event_type == "agent.begin" and .agent_type == "X")' \
+  ~/.claude/telemetry/events.jsonl | wc -l
+```
+
 **Counts by command and outcome:**
 
 ```bash
@@ -716,15 +749,35 @@ Stored at `~/.claude/telemetry/state/<session_id>.json` (same session state file
   - `unparseable` — a legacy value: state files written before this four-way split still carry this
     single catch-all bucket; new writes never use it
 
+#### Harness-internal firings and usage accounting
+
+Classified harness-internal SubagentStop firings (`agent.internal_stop` events) are never recorded in the session-state `usage.agents` dict and never enter token counting for the usage gate. They do not create a `path_not_a_file` entry; such entries represent real subagents whose transcript files were missing.
+
+Session meta files created before the cutoff date may carry inflated `floor_count` values from the ~58k internal firings previously counted as unparseable agents; these values persist in the session state file until it is pruned (24-hour cycle).
+
+The historical ~58k blank `agent.end` rows in earlier logs are not rewritten (the log is append-only); the fix applies only to new events forward. Queries over logs spanning both pre- and post-cutoff periods will see the transition: before the cutoff date (<PR 1 merge timestamp — filled in by the follow-up PR>), internal firings appear as `agent.end` rows with `agent_type` blank or normalized to `"unknown"`; after the cutoff, they emit `agent.internal_stop` instead.
+
+**Edge cases that still emit agent.end:** A stop whose agent.begin entry was lost (never existed in session meta) but whose transcript was successfully parsed, or whose status is not `path_not_a_file`, is recorded as plain `agent.end`. On state-operation failure (OSError/PermissionError), the stop falls back to `agent.end` (best-effort, not guaranteed never appears). If either `session_id` or `agent_id` is blank/missing (normalized to UNKNOWN), the stop remains `agent.end`.
+
+#### Duplicate agent.end calls per agent_id
+
+If `agent-end` is invoked twice for the same `agent_id` (unexpected but defended against), the first call will find a matching `agent.begin` entry and emit `agent.end`; the second call (with `path_not_a_file` status) will find no begin entry and emit `agent.internal_stop`. This behavior is conservative: the second occurrence is treated as harness-internal because the begin entry was already consumed by the first call, and re-calling the same agent_id is not expected in normal operation. If duplicate calls occur, they should be investigated as a process issue rather than interpreted as real subagent spawns.
+
 ### Query Pattern: Token Totals by Session
 
 To sum input + output + cache_creation tokens across all agents for a session (the metric used by the usage gate):
 
 ```bash
 jq -r 'select(.event_type == "agent.end" and .tokens != null) |
-  [(.tokens.input // 0) + (.tokens.output // 0) + (.tokens.cache_creation // 0)] |
+  [
+    (if (.tokens.input | type) == "number" then .tokens.input else 0 end) +
+    (if (.tokens.output | type) == "number" then .tokens.output else 0 end) +
+    (if (.tokens.cache_creation | type) == "number" then .tokens.cache_creation else 0 end)
+  ] |
   add' \
   ~/.claude/telemetry/events.jsonl | awk '{sum += $1} END {print "Total tokens (input+output+cache_creation): " sum}'
 ```
 
-This pattern excludes cache_read (which can be large and is not counted by the gate) and sums only agent.end events (for which token data is available). Adapt `$event_type` or `.event_type` filters to answer other questions (e.g., per-command, per-model, per-outcome).
+This pattern coerces non-numeric token values (such as the string `"unknown"` from pre-cutoff blank rows) to zero, excludes cache_read (which can be large and is not counted by the gate), and sums only agent.end events (for which token data is available). Adapt `$event_type` or `.event_type` filters to answer other questions (e.g., per-command, per-model, per-outcome).
+
+**Note on pre-cutoff data:** Before the fix (before the cutoff date above), pre-cutoff blank-`agent.end` rows had `tokens: {"input": "unknown", "output": "unknown", ...}`. The corrected query coerces these string values to 0, so the result correctly sums zero tokens from the ~58k blank rows — the historical blank rows contributed no tokens to the sum, and the fix does not change this behavior.
