@@ -25,7 +25,7 @@ Correlation between stages and commands is automatic via a session-scoped state 
 
 Start these in parallel:
 - Read `.claude/repo-cache.json`
-- Read `.claude/github-cache.json` (worktree cache — issue/PR data)
+- Note `.claude/github-cache.json` exists (worktree cache; PR, issue and stack decisions are read only by the `shipit plan` CLI, never here)
 - `git status && git diff --stat`
 
 **PR existence check (plan verdict):** PR existence, PR number, and issue linkage come from the
@@ -34,9 +34,9 @@ Start these in parallel:
 reader of that cache for those decisions. It ignores the whole cache when its `branch` is not this
 branch, and `shipit apply` re-verifies the PR head against GitHub before any edit.
 
-**If no cache or cache is stale (>30 days):** Run full detection (Step 1.5) and write cache.
+**If no `repo-cache.json` or it is stale (>30 days):** Run full detection (Step 1.5) and write cache.
 
-**If cache exists and fresh:** Use cached commands.
+**If `repo-cache.json` exists and is fresh:** Use cached commands.
 
 ### Cache Schema
 
@@ -300,10 +300,12 @@ EARLY_PLAN_FILE=$(mktemp)
 echo "EARLY_PLAN_FILE=$EARLY_PLAN_FILE"
 if ! PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli shipit plan /dev/null > "$EARLY_PLAN_FILE"; then
   echo "ERROR: early shipit plan failed" >&2
+  rm -f "$EARLY_PLAN_FILE"
   exit 1
 fi
 if [ -z "$(jq -r '.plan_hash // empty' < "$EARLY_PLAN_FILE")" ]; then
   echo "ERROR: early shipit plan produced no plan_hash" >&2
+  rm -f "$EARLY_PLAN_FILE"
   exit 1
 fi
 CACHE_STALE=$(jq -r '.cache_stale // empty' < "$EARLY_PLAN_FILE")

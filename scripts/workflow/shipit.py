@@ -295,7 +295,12 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
             # the cached number is edited only if GitHub says its head is this branch
             # and it is OPEN. MERGED falls through to create; anything else refuses.
             if plan.pr_exists:
-                assert plan.pr_number is not None  # pr_exists is True implies pr_number is set
+                if plan.pr_number is None:
+                    result.error = Unknown(
+                        "Plan says a PR exists but carries no PR number. Branch was pushed; "
+                        "the PR was not touched. Re-run /shipit"
+                    )
+                    return result, result.error
                 pr_state, probe_err = verify_pr_head(plan.pr_number, plan.branch, repo_root)
                 if probe_err is not None:
                     result.error = Unknown(
@@ -401,6 +406,8 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
                     "parentPr": plan.stack.parent_pr
                 }
 
+            # write_cache's lock file needs the parent dir to exist already.
+            github_cache_path.parent.mkdir(parents=True, exist_ok=True)
             success, cache_err = write_cache(github_cache_path, existing_data)
             if not success and cache_err:
                 # Cache write failure is non-fatal; log but don't fail the operation

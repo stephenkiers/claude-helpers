@@ -68,7 +68,7 @@ t(
 print("[Check 2] Early shipit plan lives in Stack Detection, before the Is-stacked reference")
 stack_idx = DOC.find("### Stack Detection")
 early_idx = first_index(r"shipit plan /dev/null")
-is_stacked_idx = first_index(r"(?i)is[- ]stacked")
+is_stacked_idx = first_index(r"run the \*\*Stack Detection")
 t(
     "Stack Detection heading exists",
     stack_idx >= 0,
@@ -104,7 +104,7 @@ t(
 print("[Check 4] Stale cached stack is discarded before the push block, keyed on stale_stack_claimed")
 claim_idx = first_index(r"jq[^\n]*stale_stack_claimed")
 clear_idx = first_index(r"STACK_IS_STACKED=false")
-push_idx = first_index(r"git push -u")
+push_idx = first_index(r"git push -u origin")
 t(
     "stale_stack_claimed is read from $EARLY_PLAN_FILE",
     claim_idx is not None and re.search(r'stale_stack_claimed[^\n]*EARLY_PLAN_FILE|EARLY_PLAN_FILE[^\n]*stale_stack_claimed', DOC[claim_idx:claim_idx + 400]) is not None,
