@@ -12,7 +12,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, Union, List, NamedTuple, Literal
+from typing import Optional, Dict, Any, Tuple, Union, List, NamedTuple
 from . import git
 from .models import (
     GitHubCacheData, IssuesCacheData, RepoCacheData,
@@ -32,13 +32,13 @@ class TrustedCacheResult(NamedTuple):
     Attributes:
         cache: GitHubCacheData if cache is trusted, None if stale.
         pr_section: Raw 'pr' dict from the cache (None if absent, stale, or not a dict).
-        stale_reason: Literal indicating staleness reason: "missing", "invalid", or
+        stale_reason: Staleness reason string: "missing", "invalid", or
                      "branch_mismatch:<branch>". None when cache is trusted.
         stale_stack_claimed: True only for stale cache whose raw stack.isStacked is true.
     """
     cache: Optional[GitHubCacheData]
     pr_section: Optional[Dict[str, Any]]
-    stale_reason: Optional[Literal["missing", "invalid", "branch_mismatch"]]
+    stale_reason: Optional[str]
     stale_stack_claimed: bool
 
 
@@ -129,7 +129,7 @@ def trusted_github_cache(
         return TrustedCacheResult(None, None, "invalid", claims_stack)
 
     if cached_branch != current_branch:
-        return TrustedCacheResult(None, None, "branch_mismatch", claims_stack)
+        return TrustedCacheResult(None, None, "branch_mismatch:" + cached_branch, claims_stack)
 
     try:
         cache_data = GitHubCacheData.from_dict(data)
