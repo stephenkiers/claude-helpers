@@ -587,6 +587,9 @@ data exists and should be revisited once there is a real baseline.
 - `attributable internal stops (report-only)` — `agent.internal_stop` rows counted as attributable. A row is attributable if
   it carries a real (non-blank, non-`unknown`) `agent_type`, **or** its `agent_id` matches the `agent_id`
   of a post-`since` `agent.begin`.
+- `straddler ends (report-only)` — `agent.end` events whose corresponding `agent.begin` was written before `since`.
+  These inflate the `ends` count in check (b) and are expected to be zero or near-zero in normal operation;
+  nonzero counts typically appear after moving `since` forward while the sample is still small.
 
 ADR-0016 notes that `agent_type` is not a reliable signal for harness-internal firings, so a nonzero
 `attributable internal stops` count does not by itself mean a misclassification. It means internal-stop

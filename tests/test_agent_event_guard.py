@@ -462,6 +462,9 @@ def t9_cli_skip_and_report_lines():
         return False, f"19/40 should exit 0 (skipped), got {code}: {out!r} {err!r}"
     if "ratio check skipped" not in out:
         return False, f"skip line not printed: {out!r}"
+    # Verify the qualified PASS message is printed when ratio check is skipped
+    if "PASS: All thresholds met" not in out:
+        return False, f"qualified PASS message not printed when skip occurs: {out!r}"
 
     rows = _ratio_events(100, 103, internal_stops=250, base=now - timedelta(days=2))
     code, out, err = _run(_baseline(now) + rows, extra=extra)
@@ -483,6 +486,23 @@ def t9_cli_min_begins_fail_and_control():
         return False, msg
     code, out, err = _run(_baseline(now), extra=extra)
     return _control_ok(code, out, err)
+
+
+def t9_cli_begins_lt_min_with_ratio_violation_passes():
+    """10 begins / 100 ends: ratio would fail but check is skipped (begins < min_begins); exit 0 and qualified PASS."""
+    now = _now()
+    extra = ["--agent-guard-since", (now - timedelta(days=3)).isoformat()]
+    # 10 begins (< min 20) and 100 ends (> 10 * 1.05 = 10.5, so ratio violates)
+    # But ratio check is skipped, so it should pass overall
+    rows = _ratio_events(10, 100, base=now - timedelta(days=2))
+    code, out, err = _run(_baseline(now) + rows, extra=extra)
+    if code != 0:
+        return False, f"10/100 should exit 0 (skipped), got {code}: {out!r} {err!r}"
+    if "ratio check skipped" not in out:
+        return False, f"skip line not printed: {out!r}"
+    if "PASS: All thresholds met" not in out:
+        return False, f"qualified PASS message not printed: {out!r}"
+    return True, ""
 
 
 # ============================================================================
@@ -748,6 +768,7 @@ def main():
         ("T9 CLI: 100/130 fails with text; control exits 0", t9_cli_ratio_fail_and_control),
         ("T9 CLI: 19/40 skip line printed; report lines printed", t9_cli_skip_and_report_lines),
         ("T9 CLI: 20/40 fails; control exits 0", t9_cli_min_begins_fail_and_control),
+        ("T9 CLI: 10 begins with 100 ends (ratio violates but skipped) exits 0 with qualified PASS", t9_cli_begins_lt_min_with_ratio_violation_passes),
         ("T10: truncated trailing line warns, no traceback, guard still runs", t10_truncated_line_warns_and_guard_runs),
         ("T11: --window-days bounds the lower edge and the header shows it", t11_window_bounds_the_lower_edge),
         ("T11: default since is AGENT_GUARD_CUTOFF (header and enforcement)", t11_default_since_is_cutoff),
