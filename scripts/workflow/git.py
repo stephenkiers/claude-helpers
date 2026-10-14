@@ -565,6 +565,15 @@ def stage_all(cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
         return False, Unknown(f"Failed to stage all changes: {e}")
 
 
+def has_staged_changes(cwd: Optional[Path] = None) -> bool:
+    """True when the index differs from HEAD (read-only; 'git diff --cached --quiet')."""
+    try:
+        run_git_command(["diff", "--cached", "--quiet"], cwd=cwd)
+        return False
+    except (subprocess.CalledProcessError, RuntimeError):
+        return True
+
+
 def commit_with_message_file(message_path: Path, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
     """
     Commit with message from file via 'git commit -F <path>' through the mutation funnel.

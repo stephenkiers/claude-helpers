@@ -349,12 +349,16 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
             result.error = Unknown(f"Failed to stage changes: {e}")
             return result, result.error
 
-        # Commit with message file
+        # Commit with message file. A clean index means the work is already
+        # committed on the branch: skip the commit and go on to push and PR.
         try:
-            success, err = git.commit_with_message_file(Path(plan.commit_message_path), cwd=repo_root)
-            if success:
-                result.committed = True
-            elif err:
+            if not git.has_staged_changes(cwd=repo_root):
+                success, err = True, None
+            else:
+                success, err = git.commit_with_message_file(Path(plan.commit_message_path), cwd=repo_root)
+                if success:
+                    result.committed = True
+            if not success and err:
                 result.error = err
                 return result, result.error
         except Exception as e:
@@ -501,7 +505,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
             # Non-fatal; cache write failures don't fail the whole operation
             pass
 
-        result.success = result.committed and result.pushed
+        result.success = result.pushed
         return result, None
 
     except json.JSONDecodeError as e:
