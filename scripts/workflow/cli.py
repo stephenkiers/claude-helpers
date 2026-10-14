@@ -13,6 +13,7 @@ Usage:
   python3 -m scripts.workflow.cli verify-queue sync [--cwd <dir>] [--branch <name>]
   python3 -m scripts.workflow.cli track plan --mode github --plan-file <path> --title <title> [--assignee <a>]
   python3 -m scripts.workflow.cli track apply <plan_json_or_->
+  python3 -m scripts.workflow.cli track seed-cache --from <main> --to <worktree>
 """
 
 import sys
@@ -258,6 +259,20 @@ def main() -> None:
         help="Plan JSON or '-' to read from stdin"
     )
 
+    track_seed_cache_parser = track_subparsers.add_parser("seed-cache", help="Seed cache files from main worktree")
+    track_seed_cache_parser.add_argument(
+        "--from",
+        dest="from_worktree",
+        required=True,
+        help="Main worktree path to copy from"
+    )
+    track_seed_cache_parser.add_argument(
+        "--to",
+        dest="to_worktree",
+        required=True,
+        help="New worktree path to copy to"
+    )
+
     checks_parser = subparsers.add_parser("checks", help="Run checks")
     checks_subparsers = checks_parser.add_subparsers(dest="checks_action")
 
@@ -275,6 +290,18 @@ def main() -> None:
         "--timeout",
         type=int,
         help="Timeout per check in seconds (default: SHIPIT_CHECK_TIMEOUT_SECS, then the cache's checkTimeoutSecs, then 300)"
+    )
+
+    checks_resolve_check_parser = checks_subparsers.add_parser("resolve-check", help="Resolve check command")
+    checks_resolve_check_parser.add_argument(
+        "--worktree",
+        required=True,
+        help="Worktree path to resolve check command for"
+    )
+    checks_resolve_check_parser.add_argument(
+        "--main-worktree",
+        default=None,
+        help="Main worktree path for fallback (optional)"
     )
 
     args = parser.parse_args()
@@ -470,6 +497,29 @@ def main() -> None:
                 return track.apply_track(provider=provider_apply, plan_json=pj)
 
             _run_apply(apply_track_wrapper, plan_json)
+
+        elif args.track_action == "seed-cache":
+            from .cache import seed_worktree_cache
+            try:
+                main_wt = Path(args.from_worktree)
+                new_wt = Path(args.to_worktree)
+                seeded, skipped, seed_error = seed_worktree_cache(main_wt, new_wt)
+                output = {
+                    "seeded": seeded,
+                    "skipped": skipped,
+                    "error": seed_error
+                }
+                print(json.dumps(output))
+                if seed_error:
+                    sys.exit(1)
+            except Exception as e:
+                output = {
+                    "seeded": [],
+                    "skipped": [],
+                    "error": str(e)
+                }
+                print(json.dumps(output))
+                sys.exit(1)
         else:
             track_parser.print_help()
             sys.exit(1)
@@ -507,6 +557,29 @@ def main() -> None:
                     sys.exit(exit_code)
             except json.JSONDecodeError as e:
                 output = {"success": False, "error": f"Invalid cache JSON: {e}"}
+                print(json.dumps(output))
+                sys.exit(1)
+        elif args.checks_action == "resolve-check":
+            try:
+                worktree_path = Path(args.worktree)
+                main_worktree_path = Path(args.main_worktree) if args.main_worktree else None
+                check_cmd, source, failure_reason = checks.resolve_check_command(
+                    worktree_path, main_worktree_path
+                )
+                output = {
+                    "command": check_cmd,
+                    "source": source,
+                    "failure_reason": failure_reason
+                }
+                print(json.dumps(output))
+                if failure_reason:
+                    sys.exit(1)
+            except Exception as e:
+                output = {
+                    "command": None,
+                    "source": None,
+                    "failure_reason": str(e)
+                }
                 print(json.dumps(output))
                 sys.exit(1)
         else:

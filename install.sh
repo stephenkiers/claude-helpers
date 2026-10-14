@@ -77,8 +77,8 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     exit "$drift"
 fi
 
-# scripts/workflow/ (ADR-0013) requires python3 3.8+. Fail loudly and early rather than
-# mid-workflow with an opaque "command not found" or traceback.
+# scripts/workflow/ (ADR-0013) requires python3 3.8+ and PyYAML for reading project.yaml.
+# Fail loudly and early rather than mid-workflow with an opaque "command not found" or traceback.
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=8
 if ! command -v python3 >/dev/null 2>&1; then
@@ -109,6 +109,15 @@ if ! stderr_out=$(python3 -c "import sys; sys.exit(0 if sys.version_info >= (${M
             echo "Error: python3 version check failed (could not retrieve version string) — this may indicate a broken or corrupted python3 installation." >&2
         fi
     fi
+    exit 1
+fi
+
+# PyYAML is required for reading project.yaml (ADR-0013 Amendment 7)
+if ! python3 -c "import yaml" 2>/dev/null; then
+    echo "Error: PyYAML not found, but scripts/workflow/ requires it for reading project.yaml." >&2
+    echo "Install it via: pip3 install PyYAML" >&2
+    echo "Or on macOS with Homebrew: brew install pyyaml" >&2
+    echo "Then re-run ./install.sh." >&2
     exit 1
 fi
 

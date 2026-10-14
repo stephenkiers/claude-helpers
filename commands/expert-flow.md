@@ -630,14 +630,24 @@ action plan for `/verify-queue` after merge.
 are all `0`. Otherwise `/implement-with-haiku <REVIEW_DIR>/claude-action-plan.md` with step name
 `fix` and receipt `05-fix.md`.
 
-**verify.** The check command is the project's `commands.check` from `<WORKTREE>/.claude/repo-cache.json`;
-if that key is null or the file is absent, fall back to running `commands.test` then
-`commands.lint` from the same file; if none exist, `FAILED` with reason `no check command
-configured — run /shipit once by hand to detect it`. The step prompt is the generic template with
-"Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the
-slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
+**verify.** Resolve the check command by running:
+
+```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree "<WORKTREE>" --main-worktree "<MAIN_WORKTREE>"
+```
+
+This prints a JSON object with keys `command`, `source`, and `failure_reason`. Resolution order (commands.check only per ADR-0023 Decision 4):
+1. worktree repo-cache.json
+2. main worktree repo-cache.json (via `<MAIN_WORKTREE>` placeholder)
+3. worktree project.yaml
+4. main worktree project.yaml
+5. worktree justfile check recipe
+
+If none exist, `failure_reason` is set to `no check command configured — run /shipit once or add commands.check to .claude/project.yaml (commands.check only per ADR-0023 Decision 4)` followed by the sources tried and why each failed. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
 `CHECK: <command>`, `CHECK_EXIT: <n>`, `Decision: OK` when the exit is 0, else `FAILED` with reason
-`check failed (exit <n>)`. Verify is deliberately *only* the check command (epic decision 4):
+`check failed (exit <n>)`. Verify is deliberately *only* the check command (epic decision 4, ADR-0023 Decision 4):
 coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is
 reported by the step agent, not measured by the orchestrator, so verify is **advisory**: the
 authoritative gate is `/shipit`'s own local CI run in the ship step.

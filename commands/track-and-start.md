@@ -669,11 +669,44 @@ fi
 ```
 
 ```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
 if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
   echo "ERROR: computed worktree path '$WORKTREE_PATH' is not a direct child of WORKTREE_PARENT ('$WORKTREE_PARENT') — refusing to create a nested worktree." >&2
   exit 1
 fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
+
+# Seed cache files from main worktree (non-fatal)
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH")
+SEED_RC=$?
+
+if [ -z "$SEED_RESULT" ]; then
+  echo "Note: Cache seeding produced no output (exit $SEED_RC)" >&2
+elif [ $SEED_RC -ne 0 ]; then
+  # Try to extract error from JSON; fall back to full output if jq parsing fails
+  SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty' 2>/dev/null) || true
+  if [ -n "$SEED_ERROR" ]; then
+    echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+  else
+    echo "Note: Cache seeding failed (non-fatal, exit $SEED_RC): $SEED_RESULT" >&2
+  fi
+else
+  # Success case: log what was seeded and skipped
+  SEEDED=$(printf '%s' "$SEED_RESULT" | jq -r '.seeded[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  SKIPPED=$(printf '%s' "$SEED_RESULT" | jq -r '.skipped[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  
+  if [ -n "$SEEDED" ] || [ -n "$SKIPPED" ]; then
+    NOTE="Note: Cache seeding:"
+    if [ -n "$SEEDED" ]; then
+      NOTE="$NOTE seeded=$SEEDED"
+    fi
+    if [ -n "$SKIPPED" ]; then
+      NOTE="$NOTE skipped=$SKIPPED"
+    fi
+    echo "$NOTE" >&2
+  fi
+fi
 ```
 
 #### Cache Write
@@ -1150,6 +1183,9 @@ For **Tracker Ticket mode**, which does NOT use the CLI, a plain-git worktree cr
 
 ```bash
 # ONLY for Tracker Ticket mode (step 248 in that section):
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+MAIN_WORKTREE=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
 cd "$MAIN_WORKTREE"
 WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
 if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
@@ -1157,9 +1193,24 @@ if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
   exit 1
 fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
+
+# Seed cache files from main worktree (non-fatal)
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH")
+SEED_RC=$?
+
+if [ -z "$SEED_RESULT" ]; then
+  echo "Note: Cache seeding produced no output (exit $SEED_RC)" >&2
+elif [ $SEED_RC -ne 0 ]; then
+  SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty' 2>/dev/null) || true
+  if [ -n "$SEED_ERROR" ]; then
+    echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+  else
+    echo "Note: Cache seeding failed (non-fatal, exit $SEED_RC): $SEED_RESULT" >&2
+  fi
+fi
 ```
 
-**Worktree location:** The CLI places the worktree at `${WORKTREE_PARENT}/{issue_number}-{slug}` (e.g., `~/Repositories/my-project/worktrees/42-add-feature`).
+**Worktree location:** The CLI places the worktree at `${WORKTREE_PARENT}/{issue_number}-{slug}` (e.g., `~/Repositories/my-project/worktrees/42-add-feature`); repo-cache.json and project.yaml are seeded from main at worktree creation.
 
 **GitHub Cache:** The CLI's `track apply` writes `.claude/github-cache.json` in the new worktree, populated with issue number, URL, title, body, and state. This file is read by downstream commands like `/shipit` and `/expert-review`.
 

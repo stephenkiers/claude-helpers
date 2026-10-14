@@ -258,3 +258,55 @@ This exception is documented in both ADRs to mark the boundary clearly.
 **Updated cache trust wording:** The Consequences section's wording for `is_stacked()` (lines ~43 and ~78 in the Decision section) now reads "cache-first, or falls back to ancestor search" — acknowledging that the cache is consulted first but not trusted without verification. Similarly, "Fail-closed to `unknown` exactly as ADR-0011 specifies" applies when stack detection cannot resolve the layout, not when the cache is merely absent or stale.
 
 **Remaining direct cache readers (follow-up):** Other scripts that directly read `.claude/github-cache.json` (e.g., `scripts/workflow/stack.py`) may not yet be patched to trust only the branch-matching cache. These readers are routed through the CLI's trusted wrappers or are being addressed in follow-up work. The cache trust model is authoritative in the CLI; scripts outside the CLI are out-of-scope for this amendment but should migrate to the same model when touched.
+
+### Amendment 7: PyYAML dependency for project.yaml reading (2026-10-13)
+
+**Problem:** Decision 6 declared "stdlib only" (no third-party dependencies beyond Python's standard library). However, reading `.claude/project.yaml` (added in issue #275) requires YAML parsing. Using only stdlib's poor `configparser` or hand-rolled regex parsing is fragile and unmaintainable.
+
+**Resolution:** Declare **PyYAML** as an approved, required dependency for `scripts/workflow/`. The import in `scripts/workflow/checks.py` uses a try/except guard to handle missing PyYAML gracefully during the import phase (see lines 20–23):
+
+```python
+try:
+    import yaml  # type: ignore[import-untyped]
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+```
+
+When `resolve_check_command()` reads `.claude/project.yaml` and `yaml` is `None`, it skips that source and falls back to the next one (justfile). This ensures the code does not crash if PyYAML is absent, though the resolve will fail with a clear message if all sources are exhausted.
+
+**Installation and testing:** `install.sh` now checks for PyYAML availability and instructs the user to install it via `pip3 install PyYAML` or `brew install pyyaml` if missing (lines 54–60). `requirements-dev.txt` declares both `PyYAML>=6.0` (runtime) and `types-PyYAML>=6.0` (for mypy type checking), allowing `just typecheck` to pass without `type: ignore` comments. The guarded import is kept for runtime robustness (graceful fallback if the environment lacks PyYAML), but during development and CI the full suite is expected to install the dependency.
+
+**Rationale:** YAML is a standard config format across the Python ecosystem (Ansible, Docker Compose, Kubernetes, etc.), and PyYAML is the de facto standard library for YAML in Python. The dependency is lightweight, well-maintained, and acceptable as the one approved exception to the "stdlib only" principle for the specific purpose of reading declarative project configuration files (`.claude/project.yaml`). This amendment supersedes Decision 6's strict "stdlib only" requirement for the YAML-reading use case.
+
+### Amendment 8: Worktree cache seeding and fallback resolution (2026-10-13)
+
+**Problem:** When `/track-and-start` creates a new worktree, the new worktree lacks `.claude/repo-cache.json` and `.claude/project.yaml`, which are needed by downstream commands like `/shipit`, `/cleanup`, and `/verify`. Manually creating these files in new worktrees is error-prone; they should be automatically seeded from the main worktree during worktree creation.
+
+**Seeding mechanism:** `scripts/workflow/cache.py`'s `seed_worktree_cache(main_worktree, new_worktree)` atomically copies `repo-cache.json` and `project.yaml` from the main worktree to the new worktree. Copies are skipped if:
+- Source file is absent
+- Source file is not a regular file (e.g., a directory or symlink)
+- Destination file already exists (never overwrites)
+
+The function returns `(seeded: List[str], skipped: List[str], error_msg: Optional[str])`:
+- `seeded`: filenames successfully copied
+- `skipped`: filenames skipped
+- `error_msg`: errors encountered during copying (non-None even if some files succeeded; fatal errors like "cannot create .claude directory" prevent all copying)
+
+**Integration into track:** `/track-and-start` (and `/track`) invoke `seed_worktree_cache()` after creating the worktree and writing the initial cache. Seeding is non-fatal: any errors are logged but do not fail the command.
+
+**Fallback resolution in downstream commands:** Commands that need check configuration (`/shipit`, `/cleanup`, `/merge-and-cleanup`, `/verify`) use `resolve_check_command(worktree, main_worktree)` to find the check command with fallback:
+1. Try `<worktree>/.claude/repo-cache.json` → commands.check
+2. If absent, try `<main_worktree>/.claude/repo-cache.json` → commands.check (seeding fallback)
+3. If absent, try `<worktree>/.claude/project.yaml` → commands.check
+4. If absent, try `<main_worktree>/.claude/project.yaml` (project.yaml fallback)
+5. If absent, try `<worktree>/justfile check` recipe
+6. If all fail, return explicit failure reason ("no check command configured")
+
+This two-stage approach (seed-then-fallback) ensures:
+- New worktrees inherit the main worktree's commands configuration without manual intervention
+- If seeding fails (non-fatal), downstream commands can still find configuration via fallback
+- A single source of truth (main worktree) drives configuration for all worktrees in the project
+
+**Snapshot semantics:** Seeded files represent a snapshot of the main worktree's configuration at worktree-creation time. If the main worktree's configuration changes later (e.g., `/shipit` is run in the main worktree and updates `repo-cache.json`), the new worktree's seeded copy is NOT automatically updated. This is intentional: the new worktree's seeded snapshot is stable and independent from later changes in the main worktree. Downstream commands' fallback resolution (step 2 and 4 above) bridges this gap by consulting the main worktree's current files when needed.
+
+**Failure modes:** If seeding fails completely (e.g., permission denied), worktrees can still be created and used — downstream commands fall back to the main worktree's current configuration. If fallback sources are also absent, the command fails with a clear message ("no check command configured"). This design ensures robustness: the absence of seeded files is never a blocker.
