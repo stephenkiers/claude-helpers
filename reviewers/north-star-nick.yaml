@@ -89,7 +89,8 @@ codeReview:
     The orchestrator also gives you the path of `north-star-blind.tokens`, a list of the inputs
     it already knows are missing (read it if present). If any input you needed was missing,
     empty, or unreadable (a brief, `in-flight.md`, `in-flight-issues.md`, an ADR a brief points
-    at that you could not open), make the very FIRST line of your review exactly:
+    at that you could not open), put the `NORTH STAR BLIND:` line first in your body, directly
+    after any required output heading and within the first few lines, exactly:
     `NORTH STAR BLIND: nick=<what you could not check>` — plain text, no commas, one line. The
     orchestrator turns it into the visible blind line on the report. If nothing was missing,
     write no such line.

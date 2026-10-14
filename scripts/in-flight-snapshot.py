@@ -347,7 +347,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         err_path = Path(args.out).parent / "in-flight.err"
         err_lines = ["in-flight snapshot had failures:", ""]
         for key, msg in sorted(failures.items()):
-            err_lines.append("{}: {}".format(key, msg))
+            # One failure per line: a message with embedded newlines must not forge extra keys.
+            one_line = str(msg).replace("\r", " ").replace("\n", " ")
+            err_lines.append("{}: {}".format(key, one_line))
         try:
             fd, temp_path = tempfile.mkstemp(dir=str(err_path.parent), text=True)
             try:
@@ -362,6 +364,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 raise
         except OSError:
             # Silently skip error logging if it fails
+            pass
+    else:
+        # A reused output dir must not yield a false failure from an earlier run.
+        try:
+            os.unlink(Path(args.out).parent / "in-flight.err")
+        except OSError:
             pass
 
     print("in-flight-snapshot | wrote: {}".format(args.out))

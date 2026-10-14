@@ -20,8 +20,9 @@ done
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 
-# The one enumeration of repo files that get linked, shared by install and --check so they
-# can never disagree about what "should be linked" means.
+# The one enumeration of repo files that get linked; install and --check both use it.
+# A real file at a managed path is informational only (reported as not-ours, not drift):
+# install backs it up to .bak, --check just reports it. The exit code ignores it.
 list_source_files() {
     find "$1" -type f -not -path '*/__pycache__/*'
 }
@@ -36,6 +37,8 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
         if [ -L "$target_dir" ]; then
             echo "dir-symlink: $target_dir (./install.sh replaces it with a real directory)"
             drift=1
+            # Report once per directory: the per-file checks would only repeat the same drift.
+            continue
         fi
         while IFS= read -r source_file; do
             rel_path="${source_file#"$source_dir"/}"
