@@ -26,7 +26,7 @@ if __name__ == "__main__":
     EXPERT_FLOW = REPO_ROOT / "commands" / "expert-flow.md"
 
     # The new reason string that should appear in expert-flow.md
-    NEW_REASON_STRING = "no check command configured (tried repo-cache.json, project.yaml, justfile check) — run /shipit once or add commands.check to .claude/project.yaml"
+    NEW_REASON_STRING = "no check command configured — run /shipit once or add commands.check to .claude/project.yaml"
 
     print("[Section 1] track-and-start.md doc consistency")
 

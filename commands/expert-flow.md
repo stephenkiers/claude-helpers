@@ -645,9 +645,9 @@ This prints a JSON object with keys `command`, `source`, and `failure_reason`. R
 4. main worktree project.yaml
 5. worktree justfile check recipe
 
-If none exist, `failure_reason` is set with the sources tried. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
+If none exist, `failure_reason` is set to `no check command configured — run /shipit once or add commands.check to .claude/project.yaml (commands.check only per ADR-0023 Decision 4)` followed by the sources tried and why each failed. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
 `CHECK: <command>`, `CHECK_EXIT: <n>`, `Decision: OK` when the exit is 0, else `FAILED` with reason
-`check failed (exit <n>)`. Verify is deliberately *only* the check command (ADR-0023 Decision 4):
+`check failed (exit <n>)`. Verify is deliberately *only* the check command (epic decision 4, ADR-0023 Decision 4):
 coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is
 reported by the step agent, not measured by the orchestrator, so verify is **advisory**: the
 authoritative gate is `/shipit`'s own local CI run in the ship step.
