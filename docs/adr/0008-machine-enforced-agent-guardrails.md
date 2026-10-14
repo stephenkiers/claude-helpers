@@ -136,3 +136,18 @@ file, and reading a prior round's report file, both at orchestrator-named absolu
 out-of-cwd read or write is not permitted and should be treated as an anomaly." This statement
 clarifies the boundary so the agent and future maintainers (or anomaly detectors) know what
 out-of-cwd activity is expected and what is unexpected.
+
+## Standing Exception: /expert-flow step agents (2026-10-13)
+
+`/expert-flow` step agents are `general-purpose` Task subagents with full capability, not restricted
+panel agents (ADR-0023 §1). They run without the PreToolUse hook and machine-enforced constraints
+documented in this ADR's Consequences section. The decision is that this capability is acceptable for
+the `/expert-flow` orchestrator's step agents because (a) they run only when the user explicitly
+invokes `/expert-flow` (not by default), (b) they operate inside the user's own worktrees and flow
+directories under explicit user control, not reading arbitrary diff content as untrusted data, and
+(c) the orchestrator's own prompt-scoped `Write` rule (confined to `FLOW_DIR` and marker files; see
+ADR-0023 §1 and ADR-0018 2026-10-13 amendment) mirrors the cascade of prompt-level conventions
+already governing other multi-step commands.
+
+**Decision:** No machine-enforced guardrails are required for `/expert-flow` step agents. No follow-up
+issue is filed — this is a standing exception, not a temporary deferral.

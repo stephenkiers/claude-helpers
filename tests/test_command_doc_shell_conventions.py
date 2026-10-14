@@ -54,6 +54,21 @@ def main():
         "\n      " + "\n      ".join(offenders) if offenders else "",
     )
 
+    # expert-flow.md's argument parser reads $1/$2; bare forms were rewritten to the user's
+    # arguments (case "2" in ... [ -z "Fix" ]). The braced forms survive substitution.
+    import re
+    flow_doc = commands_dir / "expert-flow.md"
+    bare = [
+        f"expert-flow.md:{n}: {ln.strip()}"
+        for n, ln in enumerate(flow_doc.read_text().splitlines(), start=1)
+        if re.search(r"\$[1-9]\b", ln)
+    ]
+    h.test_result(
+        "expert-flow.md uses braced positional tokens only (no bare dollar-1..9)",
+        not bare,
+        "\n      " + "\n      ".join(bare) if bare else "",
+    )
+
     # Guard the guard: if the scan silently stopped matching, this suite would pass
     # vacuously forever. Prove the detector still fires on a known-bad line.
     synthetic = f"_cap8k() {{ awk '{{print substr({POSITIONAL_ZERO},1,10)}}'; }}"
@@ -138,6 +153,23 @@ def main():
             False,
             f"{merge_cleanup_doc} not found",
         )
+
+    print()
+    print("[Section 6] Command doc fence parity (balanced markdown code blocks)")
+
+    # Test cleanup.md specifically for fence parity (owned file; other files may have
+    # pre-existing unbalanced fences not yet fixed).
+    cleanup_doc = commands_dir / "cleanup.md"
+    if cleanup_doc.exists():
+        content = cleanup_doc.read_text()
+        fence_count = content.count("```")
+        h.test_result(
+            "cleanup.md has balanced markdown fences (even count of ``` lines)",
+            fence_count % 2 == 0,
+            f"found {fence_count} fence lines (unbalanced)" if fence_count % 2 != 0 else "",
+        )
+    else:
+        h.test_result("cleanup.md exists", False, "cleanup.md not found")
 
     print()
     h.summarize_and_exit()

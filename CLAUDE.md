@@ -48,10 +48,14 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
 
 This is wired into `.claude/repo-cache.json` (`commands.check` = `"just check"`, etc.), the same
 cache `/shipit`, `/cleanup`, and `/merge-and-cleanup` already read generically for any project — so
-those commands run the local CI here with no per-command changes needed. `typecheck` is covered by
-`check`, not as a separate cache entry. `.claude/repo-cache.json` is gitignored per-machine state;
-if it's ever regenerated from scratch (e.g. `/shipit`'s detection step), re-point `lint`/`test`/`check`
-at the `just` targets above rather than the raw commands.
+those commands run the local CI here with no per-command changes needed. `just check` already runs
+lint + typecheck + test, so `typecheck` and `test` must be `null` in the cache, not separate
+entries: the executor only supersedes `lint`/`typecheck` by `check`, so a cached `"test": "just test"`
+runs the whole suite a second time. The suite takes several minutes under load, past the 300s
+per-command default, so the cache also needs a top-level `"checkTimeoutSecs": 900`. `.claude/repo-cache.json` is gitignored
+per-machine state; if it's ever regenerated from scratch (e.g. `/shipit`'s detection step), write
+`commands.check = "just check"`, `commands.test = null`, `commands.typecheck = null`, and
+`checkTimeoutSecs = 900` rather than pointing every key at its own `just` target.
 
 ## How the review system works
 
@@ -70,6 +74,7 @@ See the ADRs for the full rationale:
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
   ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 - [ADR-0021 Local merge queue](docs/adr/0021-local-merge-queue.md) — serialized per-repo merge queue for testing every PR against the exact base it lands on, with unverified-main detection and the force-push carve-out.
+- [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation, sequential epics.
 
 ## Triage: the review ends with decisions, not findings
 
@@ -188,7 +193,15 @@ separate from the reviewer-context cascade.
   spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
-- `/expert-implement-with-haiku-and-ship` — run implement → shipit → expert-review in one shot, halting on the first failure; hands the final review back to you
+- `/expert-flow` — lifecycle orchestrator: plan → track → implement → review → fix → verify → ship → merge for one
+  issue (or `--epic` **[experimental until #252 dogfood gate passes]** for an epic's sub-issues, sequentially), each step the existing command run as a subagent in the
+  right worktree. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
+  Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
+  references the Ask block). Failures are hard stops (Retry ≤2 / Take over / Abort) — never auto-remediated. State
+  under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
+  (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
+  scope: `FLOW_DIR` and the marker file). Its step agents are `general-purpose` subagents with full
+  capability, not restricted panel agents; see ADR-0008 (standing exception, 2026-10-13). See [ADR-0023](docs/adr/0023-expert-flow.md)
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. If a merge-queue configuration exists and the PR targets the queue's base branch, routes the PR through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports it MERGED; a kickback or refusal stops and leaves the worktree intact. An `unknown`/undeterminable queue state still refuses (exit 3). PRs targeting other bases merge normally. When no queue is configured (but the layout supports one), offers to create `merge-queue.json` and then routes through `/queued-merge`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
 - `/queued-merge` — merge an open PR through the local merge queue when a `merge-queue.json` config exists. The queue serializes PRs and merges them one at a time in arrival order, testing each against the exact base it will land on, with unverified-main detection. See [ADR-0021](docs/adr/0021-local-merge-queue.md) for the force-push carve-out (the queue's only authorized force-push, audited and constrained, happens only after the full gate passes).
 - `/cleanup` — clean up a worktree after a PR is merged; syncs pending review rulings into the repo's verify-queue and asks one non-blocking batch `done|defer|ignore`
@@ -352,3 +365,11 @@ otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/
 the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a
 residual, not eliminated, risk. `/expert-spike` expert roles also write one orchestrator-named file
 under `${PROJECT_ROOT}/spikes/`, which is still prompt-scoped; see the ADR-0018 2026-10-09 amendment.
+`/expert-flow` is the exception to the tool-restriction story: its step
+agents are `general-purpose` Task subagents with full capability, and its orchestrator's `Write` is
+prompt-scoped only (ADR-0023 §1, ADR-0008 standing exception). The `tools:` restriction above does not apply to them. **Hard rule:** Commands invoked as `/expert-flow` step agents
+(`/merge-and-cleanup`, `/stack-sync`, `/implement-with-haiku`) carry `Write` in their `allowed-tools`.
+Their prompts enforce (via hard-rule sentence near the Resolve FLOW_DIR block) that `Write` is used
+**ONLY to write receipts and markers under a validated `FLOW_DIR`** — never for repo content. The
+sanctioned write prefix is `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`; see ADR-0018 2026-10-13
+amendment for the full governance rule.

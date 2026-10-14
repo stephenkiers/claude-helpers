@@ -15,6 +15,8 @@ read this file and follow these steps.
 - `EFFORT_EXPLICIT` — `true` when the caller passed `--effort` explicitly, else `false` (OPTIONAL, default `false`)
 - `PR_MODE` — `true` if in PR mode (reviewing a coworker's PR), else `false` (OPTIONAL, default `false`)
 - `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
+- `FLOW_DIR` — the `/expert-flow` run directory when the caller is running as a flow step, resolved by the caller's Resolve FLOW_DIR step (`~/.claude/prompts/flow-reference.md`) (OPTIONAL, default empty; empty ≡ not in a flow ≡ every ask in this file behaves exactly as written)
+- `STEP_NAME` — the flow step name used for question files (OPTIONAL, default empty; `/expert-review` sets `review`; only meaningful when `FLOW_DIR` is set)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
 
 All I/O is through `REVIEW_DIR` paths. Reviewer YAMLs live in `~/.claude/reviewers/` regardless of
@@ -260,8 +262,13 @@ is the sole source of truth for the escalation decision; the Router's one-line r
 on. If the section is missing, unparseable, or reads `Escalate: No`, skip silently — no prompt,
 proceed to Step 6.
 
-**If `Escalate: Yes`:** Call `AskUserQuestion`, stating the Router's `Reason:` text, with two
-options: "Escalate to opus" (marked recommended) and "Stay on sonnet". If the user picks escalate,
+**If `Escalate: Yes`:** Call `AskUserQuestion` by applying the Ask block from `prompts/flow-reference.md`
+(with the caller's `FLOW_DIR`/`STEP_NAME`; `context_path` = `{REVIEW_DIR}/tagged-sections.md`), stating the Router's `Reason:` text, with two
+options: "Escalate to opus" (marked recommended) and "Stay on sonnet". No stage is open at this
+point (`route` has ended, `pass1` has not begun), so the Ask block's interrupt needs only the
+`command-end`; on resume, carry every precondition above forward as literals. In practice this site
+rarely fires inside a flow: the orchestrator passes `--effort`, so `EFFORT_EXPLICIT=true` already
+skips it — it fires there only when the flow omitted `--review-effort`. If the user picks escalate,
 set `PANEL_MODEL=opus` for the rest of the run (this affects Step 6 onward — Pass 1, Contrarian
 Carl, Pass 2, Amalgamator, Triage Chief; note explicitly that Haiku Q&A, Code Rot Cody, and
 Consistency Checker are mechanical roles pinned to Haiku and are unaffected by this) and print
