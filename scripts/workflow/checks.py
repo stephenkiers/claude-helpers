@@ -252,6 +252,33 @@ def run_checks(
     return results, None
 
 
+def _read_project_yaml_check(path: Path) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Read commands.check from a project.yaml file.
+
+    Returns:
+        (command, note) where command is the check string (or None),
+        and note is a failure reason string (or None on success).
+    """
+    if yaml is None:
+        return None, "PyYAML not installed"
+
+    try:
+        with open(path, "r") as f:
+            project_data = yaml.safe_load(f)
+            if isinstance(project_data, dict):
+                commands = project_data.get("commands", {})
+                if isinstance(commands, dict):
+                    check_cmd = commands.get("check")
+                    if isinstance(check_cmd, str) and check_cmd.strip():
+                        return check_cmd.strip(), None
+        return None, "no commands.check found in project.yaml"
+    except yaml.YAMLError as e:
+        return None, f"malformed YAML: {e}"
+    except OSError as e:
+        return None, f"read error: {e}"
+
+
 def resolve_check_command(
     worktree: Path, main_worktree: Optional[Path] = None
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -259,60 +286,92 @@ def resolve_check_command(
     Resolve the check command with fallback logic.
 
     Resolution order:
-    1. Try repo-cache.json commands.check
-    1a. (if absent and main_worktree provided) Try reading repo-cache.json from main_worktree
-    2. If missing or no check command, try project.yaml commands.check
-    3. If still missing, try justfile check recipe
-    4. Return (command, source, failure_reason) where:
-       - command: the resolved check command string, or None
-       - source: where it came from ("repo-cache", "project.yaml", "justfile"), or None
-       - failure_reason: descriptive reason if resolution failed (all sources exhausted), or None
+    1. Worktree repo-cache.json commands.check
+    2. Main worktree repo-cache.json commands.check (if main_worktree provided)
+    3. Worktree project.yaml commands.check
+    4. Main worktree project.yaml commands.check (if main_worktree provided)
+    5. Worktree justfile check recipe
+
+    Files are seeded from main at worktree creation, so the main fallback
+    applies only when the worktree file has no check command (not just when
+    the file is absent). This implements snapshot semantics: the seeded files
+    at creation time are the source of truth for that worktree.
+
+    Trust model: project.yaml is local, per-machine state (gitignored per
+    CLAUDE.md) and is trusted the same as repo-cache.json. Both are
+    repository-committer-controlled at their source.
 
     Args:
         worktree: Path to the worktree to check
-        main_worktree: Optional path to main worktree (for seeding fallback); if provided and
-                       repo-cache.json is absent from worktree, attempts to read it from main_worktree
+        main_worktree: Optional path to main worktree (for fallback); if
+                      provided, falls back to main when worktree has no check
 
     Returns:
-        (command, source, failure_reason) tuple
+        (command, source, failure_reason) tuple:
+        - command: resolved check command string, or None
+        - source: source ("repo-cache", "project.yaml", "justfile"), or None
+        - failure_reason: descriptive reason if resolution failed, or None
     """
-    # 1. Try repo-cache.json
+    sources_tried = []
+
+    # 1. Try repo-cache.json in worktree
     cache_file = worktree / ".claude" / "repo-cache.json"
     if cache_file.exists():
-        cache_data, err = read_repo_cache(cache_file)
-        if not err and cache_data:
+        cache_data, read_err = read_repo_cache(cache_file)
+        sources_tried.append("worktree repo-cache.json")
+        if not read_err and cache_data:
             check_cmd = cache_data.commands.get("check")
             if isinstance(check_cmd, str) and check_cmd.strip():
                 return check_cmd.strip(), "repo-cache", None
+            else:
+                sources_tried[-1] += " (no check key)"
+        else:
+            sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
+    else:
+        sources_tried.append("worktree repo-cache.json (not found)")
 
-    # 2. Try seeding from main if main_worktree provided and cache not found
-    if main_worktree and not cache_file.exists():
+    # 2. Try repo-cache.json in main worktree if worktree had no check
+    if main_worktree:
         main_cache_file = main_worktree / ".claude" / "repo-cache.json"
         if main_cache_file.exists():
-            cache_data, err = read_repo_cache(main_cache_file)
-            if not err and cache_data:
+            cache_data, read_err = read_repo_cache(main_cache_file)
+            sources_tried.append("main repo-cache.json")
+            if not read_err and cache_data:
                 check_cmd = cache_data.commands.get("check")
                 if isinstance(check_cmd, str) and check_cmd.strip():
                     return check_cmd.strip(), "repo-cache", None
+                else:
+                    sources_tried[-1] += " (no check key)"
+            else:
+                sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
+        else:
+            sources_tried.append("main repo-cache.json (not found)")
 
-    # 3. Try project.yaml
+    # 3. Try project.yaml in worktree
     project_yaml = worktree / ".claude" / "project.yaml"
-    if project_yaml.exists() and yaml is not None:
-        try:
-            with open(project_yaml, "r") as f:
-                project_data = yaml.safe_load(f)
-                if isinstance(project_data, dict):
-                    commands = project_data.get("commands", {})
-                    if isinstance(commands, dict):
-                        check_cmd = commands.get("check")
-                        if isinstance(check_cmd, str) and check_cmd.strip():
-                            return check_cmd.strip(), "project.yaml", None
-        except Exception:
-            pass
+    if project_yaml.exists():
+        check_cmd, note = _read_project_yaml_check(project_yaml)
+        if check_cmd:
+            return check_cmd, "project.yaml", None
+        sources_tried.append(f"worktree project.yaml ({note})")
+    else:
+        sources_tried.append("worktree project.yaml (not found)")
 
-    # 4. Try justfile check recipe
+    # 4. Try project.yaml in main worktree if worktree had no check
+    if main_worktree:
+        main_project_yaml = main_worktree / ".claude" / "project.yaml"
+        if main_project_yaml.exists():
+            check_cmd, note = _read_project_yaml_check(main_project_yaml)
+            if check_cmd:
+                return check_cmd, "project.yaml", None
+            sources_tried.append(f"main project.yaml ({note})")
+        else:
+            sources_tried.append("main project.yaml (not found)")
+
+    # 5. Try justfile check recipe
     justfile = worktree / "justfile"
     if justfile.exists():
+        sources_tried.append("justfile check")
         try:
             summary = subprocess.run(
                 ["just", "-f", str(justfile), "--summary"],
@@ -320,12 +379,20 @@ def resolve_check_command(
             )
             if summary.returncode == 0 and "check" in summary.stdout.split():
                 return "just check", "justfile", None
-        except Exception:
-            pass
+            sources_tried[-1] += " (check recipe not found)"
+        except subprocess.TimeoutExpired:
+            sources_tried[-1] += " (timed out)"
+        except FileNotFoundError:
+            sources_tried[-1] += " (just not found)"
+        except Exception as e:
+            sources_tried[-1] += f" (error: {e})"
+    else:
+        sources_tried.append("justfile (not found)")
 
-    # 5. No check command found
+    # Resolution exhausted
+    sources_str = "; tried " + ", ".join(sources_tried)
     failure_msg = (
-        "no check command configured (tried repo-cache.json, project.yaml, justfile check) — "
-        "run /shipit once or add commands.check to .claude/project.yaml"
+        "no check command configured — run /shipit once or add commands.check to "
+        ".claude/project.yaml (commands.check only per ADR-0023 Decision 4)" + sources_str
     )
     return None, None, failure_msg

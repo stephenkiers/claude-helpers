@@ -678,10 +678,34 @@ fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
 
 # Seed cache files from main worktree (non-fatal)
-SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH") || true
-SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty')
-if [ -n "$SEED_ERROR" ]; then
-  echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH")
+SEED_RC=$?
+
+if [ -z "$SEED_RESULT" ]; then
+  echo "Note: Cache seeding produced no output (exit $SEED_RC)" >&2
+elif [ $SEED_RC -ne 0 ]; then
+  # Try to extract error from JSON; fall back to full output if jq parsing fails
+  SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty' 2>/dev/null) || true
+  if [ -n "$SEED_ERROR" ]; then
+    echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+  else
+    echo "Note: Cache seeding failed (non-fatal, exit $SEED_RC): $SEED_RESULT" >&2
+  fi
+else
+  # Success case: log what was seeded and skipped
+  SEEDED=$(printf '%s' "$SEED_RESULT" | jq -r '.seeded[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  SKIPPED=$(printf '%s' "$SEED_RESULT" | jq -r '.skipped[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  
+  if [ -n "$SEEDED" ] || [ -n "$SKIPPED" ]; then
+    NOTE="Note: Cache seeding:"
+    if [ -n "$SEEDED" ]; then
+      NOTE="$NOTE seeded=$SEEDED"
+    fi
+    if [ -n "$SKIPPED" ]; then
+      NOTE="$NOTE skipped=$SKIPPED"
+    fi
+    echo "$NOTE" >&2
+  fi
 fi
 ```
 
@@ -1171,10 +1195,18 @@ fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
 
 # Seed cache files from main worktree (non-fatal)
-SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH") || true
-SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty')
-if [ -n "$SEED_ERROR" ]; then
-  echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH")
+SEED_RC=$?
+
+if [ -z "$SEED_RESULT" ]; then
+  echo "Note: Cache seeding produced no output (exit $SEED_RC)" >&2
+elif [ $SEED_RC -ne 0 ]; then
+  SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty' 2>/dev/null) || true
+  if [ -n "$SEED_ERROR" ]; then
+    echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+  else
+    echo "Note: Cache seeding failed (non-fatal, exit $SEED_RC): $SEED_RESULT" >&2
+  fi
 fi
 ```
 

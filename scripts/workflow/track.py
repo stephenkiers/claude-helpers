@@ -495,11 +495,14 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
             seeded, skipped, seed_error = seed_worktree_cache(
                 Path(plan.main_worktree), real_worktree_path
             )
-            result.steps_completed.append(STEP_SEED_CACHE)
             if seed_error:
                 result.seed_errors.append(seed_error)
+                result.steps_failed.append(STEP_SEED_CACHE)
+            else:
+                result.steps_completed.append(STEP_SEED_CACHE)
         except Exception as e:
             result.seed_errors.append(f"seed_worktree_cache failed: {e}")
+            result.steps_failed.append(STEP_SEED_CACHE)
 
         # Success!
         result.success = True

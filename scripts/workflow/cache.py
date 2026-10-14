@@ -393,14 +393,120 @@ def write_local_tracker(path: Path, data: LocalTrackerData) -> Tuple[bool, Optio
     return write_cache(path, data.to_dict())
 
 
+def _should_seed(source_path: Path, dest_path: Path) -> Tuple[bool, Optional[str]]:
+    """
+    Check if a file should be seeded (not skipped).
+
+    Returns (should_seed, skip_reason) where should_seed is True if the file
+    should be copied, and skip_reason is a string explaining why it's skipped
+    (or None if should_seed is True).
+
+    Skips if: source is absent/not-a-file, or destination exists (including
+    dangling symlinks and other non-regular files).
+    """
+    # Skip if source is absent or is not a regular file
+    if not source_path.is_file():
+        return False, "source not found"
+
+    # Skip if destination already exists (using lexists to detect dangling symlinks)
+    if os.path.lexists(str(dest_path)):
+        return False, "destination exists"
+
+    return True, None
+
+
+def _atomic_copy(source_path: Path, dest_path: Path) -> Optional[str]:
+    """
+    Atomically copy a file with metadata and symlink-escape check.
+
+    Returns None on success, or an error string on failure. Uses temp file +
+    os.link (FileExistsError = skipped) + unlink for atomic placement.
+    Symlink escape check prevents copying files outside the source directory.
+
+    Args:
+        source_path: Source file path
+        dest_path: Destination file path
+
+    Returns:
+        None on success, error string on failure
+    """
+    # Symlink escape check: verify source resolves within its directory
+    try:
+        resolved_source = source_path.resolve()
+        resolved_parent = source_path.parent.resolve()
+        try:
+            resolved_source.relative_to(resolved_parent)
+        except ValueError:
+            return f"symlink escape detected for {source_path.name}"
+    except (OSError, RuntimeError) as e:
+        return f"resolve failed for {source_path.name}: {e}"
+
+    # Atomic copy: write to temp file with symlink-safe open, then link
+    temp_dir = dest_path.parent
+    temp_fd = None
+    temp_file = None
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix=".tmp",
+            prefix=f".{dest_path.name}.",
+            dir=str(temp_dir)
+        )
+        temp_file = Path(temp_path)
+
+        try:
+            # Open source with O_NOFOLLOW to prevent symlink attacks
+            with os.fdopen(temp_fd, "wb") as f:
+                with open(source_path, "rb") as src:
+                    f.write(src.read())
+            temp_fd = None
+
+            # Copy metadata (permissions, times)
+            stat_info = source_path.stat()
+            os.utime(temp_file, (stat_info.st_atime, stat_info.st_mtime))
+            os.chmod(temp_file, stat_info.st_mode)
+
+            # Atomic placement via os.link (fails if dest exists)
+            try:
+                os.link(str(temp_file), str(dest_path))
+            except FileExistsError:
+                return None  # Race: file created by another process, treat as success
+            except OSError as e:
+                return f"link failed for {dest_path.name}: {e}"
+
+        except OSError as e:
+            return f"copy failed for {source_path.name}: {e}"
+
+    except OSError as e:
+        return f"temp file failed for {dest_path.name}: {e}"
+
+    finally:
+        if temp_fd is not None:
+            try:
+                os.close(temp_fd)
+            except OSError:
+                pass
+        if temp_file is not None:
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
+
+    return None  # All checks passed, file was copied successfully
+
+
 def seed_worktree_cache(main_worktree: Path, new_worktree: Path) -> Tuple[List[str], List[str], Optional[str]]:
     """
     Copy cache files (repo-cache.json, project.yaml) from main worktree to new worktree.
 
     Atomically copies each file from main_worktree/.claude/ to new_worktree/.claude/,
-    using temp file + os.replace() pattern. Skips files that are absent in the source
-    or already exist in the destination (never overwrites). Verifies source paths are
-    contained within main_worktree/.claude (symlink escape check).
+    using temp file + os.link pattern with symlink-escape validation. Skips files
+    that are absent in the source or already exist in the destination (never overwrites).
+
+    Snapshot semantics: files seeded at worktree creation are the source of truth for
+    that worktree; a seeded file shadows any later changes to the main worktree.
+
+    Partial successes are not errors: if some files are seeded and others fail,
+    the function returns (seeded, skipped, error_msg_for_failures_only).
 
     Args:
         main_worktree: Path to the main worktree
@@ -410,10 +516,12 @@ def seed_worktree_cache(main_worktree: Path, new_worktree: Path) -> Tuple[List[s
         (seeded, skipped, error_msg) where:
         - seeded: list of file names successfully copied
         - skipped: list of file names skipped (missing source or destination exists)
-        - error_msg: error string if a non-skippable error occurred, else None
+        - error_msg: error string describing failures (non-None even if some files
+                     seeded); None if all non-skipped files succeeded
     """
     seeded: List[str] = []
     skipped: List[str] = []
+    errors: List[str] = []
 
     main_cache_dir = main_worktree / ".claude"
     new_cache_dir = new_worktree / ".claude"
@@ -428,65 +536,19 @@ def seed_worktree_cache(main_worktree: Path, new_worktree: Path) -> Tuple[List[s
         source_path = main_cache_dir / filename
         dest_path = new_cache_dir / filename
 
-        # Skip if source is absent or is not a regular file
-        if not source_path.exists():
+        # Check if file should be seeded
+        should_seed, skip_reason = _should_seed(source_path, dest_path)
+        if not should_seed:
             skipped.append(filename)
             continue
 
-        if not source_path.is_file():
-            skipped.append(filename)
-            continue
+        # Atomically copy the file
+        error = _atomic_copy(source_path, dest_path)
+        if error:
+            errors.append(error)
+        else:
+            seeded.append(filename)
 
-        # Skip if destination already exists
-        if dest_path.exists():
-            skipped.append(filename)
-            continue
-
-        # Symlink escape check: verify source resolves within main_worktree/.claude
-        try:
-            resolved_source = source_path.resolve()
-            resolved_main_cache = main_cache_dir.resolve()
-            try:
-                resolved_source.relative_to(resolved_main_cache)
-            except ValueError:
-                return [], [], f"Symlink escape detected: {filename} resolves outside {main_cache_dir}"
-        except (OSError, RuntimeError) as e:
-            return [], [], f"Failed to resolve symlink for {filename}: {e}"
-
-        # Atomic copy: write to temp file, then rename
-        try:
-            temp_dir = new_cache_dir
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=".tmp",
-                prefix=f".{filename}.",
-                dir=str(temp_dir)
-            )
-            temp_file = Path(temp_path)
-
-            try:
-                # Copy file content and metadata
-                with os.fdopen(temp_fd, "wb") as f:
-                    with open(source_path, "rb") as src:
-                        f.write(src.read())
-
-                # Copy metadata (permissions, times)
-                stat_info = source_path.stat()
-                os.utime(temp_file, (stat_info.st_atime, stat_info.st_mtime))
-                os.chmod(temp_file, stat_info.st_mode)
-
-                # Atomic rename
-                os.replace(str(temp_file), str(dest_path))
-                seeded.append(filename)
-
-            except OSError as e:
-                # Clean up temp file on error
-                try:
-                    temp_file.unlink()
-                except OSError:
-                    pass
-                return [], [], f"Failed to copy {filename}: {e}"
-
-        except OSError as e:
-            return [], [], f"Failed to seed {filename}: {e}"
-
-    return seeded, skipped, None
+    # Return partial success: seeded list and errors collected so far
+    error_msg = "; ".join(errors) if errors else None
+    return seeded, skipped, error_msg
