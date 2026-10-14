@@ -32,11 +32,18 @@ SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
 _DEFAULT_STATE_DIR = tempfile.mkdtemp(prefix="run-metrics-test-state-")
 atexit.register(shutil.rmtree, _DEFAULT_STATE_DIR, ignore_errors=True)
 
+# Same idea for the event log: a standalone run of this suite must never append to the real
+# <HOME>/.claude/telemetry/events.jsonl. Callers that pass their own --log are unaffected.
+_DEFAULT_LOG_DIR = tempfile.mkdtemp(prefix="run-metrics-test-log-")
+atexit.register(shutil.rmtree, _DEFAULT_LOG_DIR, ignore_errors=True)
+
 
 def run_script(args, stdin_text=None, env=None):
     """Run the script as a subprocess. Returns (returncode, stdout, stderr)."""
     if "--state-dir" not in args:
         args = ["--state-dir", _DEFAULT_STATE_DIR] + list(args)
+    if "--log" not in args:
+        args = ["--log", os.path.join(_DEFAULT_LOG_DIR, "events.jsonl")] + list(args)
     cmd = [sys.executable, str(SCRIPT)] + args
     result = subprocess.run(
         cmd,

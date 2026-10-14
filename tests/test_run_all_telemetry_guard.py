@@ -59,11 +59,13 @@ def test_leaking_suite_named_even_when_exit_zero():
         return True, ""
 
 
-def test_state_dir_leak_reported():
+def test_nested_telemetry_leak_reported():
     with tempfile.TemporaryDirectory() as tmp:
-        failures = run_all.run_suites([_write(tmp, "state_leaker_case.py", STATE_LEAK)])
-        if len(failures) != 1 or "state" not in failures[0]:
-            return False, f"expected state leak failure, got {failures}"
+        failures = run_all.run_suites([_write(tmp, "nested_leaker_case.py", STATE_LEAK)])
+        if len(failures) != 1:
+            return False, f"expected exactly one nested leak failure, got {failures}"
+        if "telemetry/state" not in failures[0] and "x.json" not in failures[0]:
+            return False, f"label should name the nested leaked path (telemetry/state or x.json): {failures[0]}"
         return True, ""
 
 
@@ -101,7 +103,7 @@ def test_env_carries_temp_home_and_user_base():
 def main():
     h = Harness("RUN_ALL TELEMETRY GUARD TEST SUITE")
     h.test_result("leaking suite named even when exit 0", *test_leaking_suite_named_even_when_exit_zero())
-    h.test_result("state-dir-only leak reported", *test_state_dir_leak_reported())
+    h.test_result("nested telemetry leak reported", *test_nested_telemetry_leak_reported())
     h.test_result("clean suite passes", *test_clean_suite_passes())
     h.test_result("child env carries temp HOME and pinned user base", *test_env_carries_temp_home_and_user_base())
     print()

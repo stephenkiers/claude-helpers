@@ -56,8 +56,12 @@ def run_suites(suites):
             result = subprocess.run([sys.executable, str(suite)], env=suite_env(tmp_home))
             leaked = telemetry_leak(tmp_home)
         if leaked:
-            failures.append(f"{suite.name} (leaked telemetry: {', '.join(leaked)})")
-            print(f"✗ {suite.name} wrote under the real-telemetry path: {', '.join(leaked)}")
+            detail = f"leaked telemetry: {', '.join(leaked)}"
+            if result.returncode != 0:
+                detail += f"; exit {result.returncode}"
+            failures.append(f"{suite.name} ({detail})")
+            print(f"✗ {suite.name} wrote under the real-telemetry path: {', '.join(leaked)}"
+                  + (f" (exit {result.returncode})" if result.returncode != 0 else ""))
         elif result.returncode != 0:
             failures.append(suite.name)
     return failures
