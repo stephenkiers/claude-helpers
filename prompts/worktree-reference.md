@@ -11,6 +11,9 @@ instead of restating these blocks.
 
 Resolves the repo, main worktree, worktree parent, issue cache, and project root.
 
+Step 3 calls the claude-helpers CLI, so `CLAUDE_HELPERS_DIR` must be resolved first — see the
+"Resolve `CLAUDE_HELPERS_DIR` first" block in `commands/shipit.md` (~line 257).
+
 ```bash
 # 1. Repo identity (empty in a repo with no GitHub remote — local plan mode relies on this)
 REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
@@ -18,19 +21,10 @@ REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo
 # 2. Main worktree (first entry is always main)
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
-# 3. Detect worktree parent from existing worktrees
-SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
-SECOND_PARENT_BASENAME=$(basename "$(dirname "$SECOND_WORKTREE")" 2>/dev/null)
-# A second-worktree parent whose basename is a branch-type prefix (feature/fix/chore) means that
-# worktree is itself nested — trusting it would perpetuate the nesting. Fall through instead.
-if [ -n "$SECOND_WORKTREE" ] && ! printf '%s\n' "feature fix chore" | grep -qw "$SECOND_PARENT_BASENAME"; then
-  WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
-elif [ "$(basename "$(dirname "$MAIN_WORKTREE")")" = "worktrees" ]; then
-  # Fresh /setup-repo clone: main worktree already sits under a worktrees/ dir, so siblings go there.
-  WORKTREE_PARENT=$(dirname "$MAIN_WORKTREE")
-else
-  WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
-fi
+# 3. Worktree parent: ONE implementation, in Python (scripts/workflow/worktrees.py::detect_worktree_parent).
+#    Fails closed (exit 1) if unsafe.
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory" >&2; exit 1; }
+WORKTREE_PARENT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli worktree detect-parent --cwd "$PWD") || { echo "ERROR: could not determine WORKTREE_PARENT" >&2; exit 1; }
 
 # 4. Issue cache at worktree parent level
 CACHE_FILE="${WORKTREE_PARENT}/issues.json"
@@ -55,10 +49,18 @@ on `REPO` or `ASSIGNEE`.
 
 **`WORKTREE_PARENT` and worktree directory names must never contain `/`**, even though branch names
 do (`feature/166-foo`, `fix/...`, `chore/...` — see `commands/track-and-start.md` "Branch Naming").
-Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone. Step 3 above
-guards against adopting a `WORKTREE_PARENT` nested under a type-prefixed folder, which otherwise
-self-reinforces: once one worktree lands there and is second in `git worktree list` order, every
-future worktree would be created under it too.
+Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone.
+
+The precedence is implemented once, in `scripts/workflow/worktrees.py::detect_worktree_parent`, and
+exposed to command docs via `worktree detect-parent`; the bash no longer duplicates that logic. In order:
+(a) the canonical layout (`MAIN_WORKTREE` under a `worktrees/` dir) is taken first and short-circuits
+everything; (b) otherwise the first usable sibling worktree is used, skipping entries under
+`$HOME/.claude/` (merge-queue scratch, `.claude/worktrees`, PR-review worktrees), entries nested under
+`MAIN_WORKTREE/`, and entries whose parent is a type-prefixed folder (`feature`/`fix`/`chore`) —
+otherwise a nested or scratch entry would self-reinforce into nested worktrees; (c) a plain top-level
+clone falls back to `${MAIN_WORKTREE}/worktrees`. Detection fails closed: a result equal to
+`MAIN_WORKTREE` or under `$HOME/.claude/`, or a git failure, makes the CLI print `ERROR: <message>` to
+stderr and exit 1 with empty stdout, and the calling block aborts instead of creating a worktree there.
 
 ## Stack Detection
 

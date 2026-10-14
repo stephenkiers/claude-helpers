@@ -81,9 +81,26 @@ class ShipitPlan:
 
 @dataclass
 class ShipitResult:
-    """Result of applying a shipit plan."""
+    """
+    Result of applying a shipit plan.
+
+    Fields:
+        success: True when changes were pushed (even if the commit step was skipped
+                 because there were no staged changes).
+        committed: True if a commit was created (False if the index was clean and
+                   the commit step was skipped).
+        skipped_commit: True if the commit step was skipped due to no staged changes.
+        pushed: True if the branch was pushed to origin.
+        pr_created: True if a new PR was created.
+        pr_updated: True if an existing PR was edited.
+        pr_url: The URL of the created or edited PR, if applicable.
+        merged_pr_number: Set when the cached PR was MERGED and a new PR was created
+                          instead (issue #213).
+        error: Set if the operation failed.
+    """
     success: bool
     committed: bool = False
+    skipped_commit: bool = False
     pushed: bool = False
     pr_created: bool = False
     pr_updated: bool = False
@@ -349,12 +366,17 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
             result.error = Unknown(f"Failed to stage changes: {e}")
             return result, result.error
 
-        # Commit with message file
+        # Commit with message file. A clean index means the work is already
+        # committed on the branch: skip the commit and go on to push and PR.
         try:
-            success, err = git.commit_with_message_file(Path(plan.commit_message_path), cwd=repo_root)
-            if success:
-                result.committed = True
-            elif err:
+            if not git.has_staged_changes(cwd=repo_root):
+                success, err = True, None
+                result.skipped_commit = True
+            else:
+                success, err = git.commit_with_message_file(Path(plan.commit_message_path), cwd=repo_root)
+                if success:
+                    result.committed = True
+            if not success and err:
                 result.error = err
                 return result, result.error
         except Exception as e:
@@ -501,7 +523,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
             # Non-fatal; cache write failures don't fail the whole operation
             pass
 
-        result.success = result.committed and result.pushed
+        result.success = result.pushed
         return result, None
 
     except json.JSONDecodeError as e:

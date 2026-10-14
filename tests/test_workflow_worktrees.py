@@ -97,19 +97,7 @@ branch refs/heads/feature
         except Exception:
             pass
 
-    # Extract type list from prompts/worktree-reference.md line 26
-    # Find the line with: printf '%s\n' "feature fix chore" | grep -qw "$SECOND_PARENT_BASENAME"
-    prompt_file = Path(__file__).parent.parent / "prompts" / "worktree-reference.md"
-    prompt_types = set()
-    if prompt_file.exists():
-        prompt_content = prompt_file.read_text()
-        # Find the line with the printf statement containing type prefixes
-        match = re.search(r'printf\s+\'%s\\n\'\s+"([^"]+)"', prompt_content)
-        if match:
-            types_str = match.group(1)
-            prompt_types = set(types_str.split())
-
-    # All three sets should be equal
+    # The two code sources must agree; the prompt no longer carries a copy.
     test_result(
         "type prefixes: worktrees._TYPE_PREFIXES contains expected types",
         worktrees_type_prefixes == {"feature", "fix", "chore"}
@@ -120,14 +108,15 @@ branch refs/heads/feature
         track_types == worktrees_type_prefixes
     )
 
+    prompt_text = (Path(__file__).parent.parent / "prompts" / "worktree-reference.md").read_text()
     test_result(
-        "type prefixes: prompts/worktree-reference.md types match worktrees._TYPE_PREFIXES",
-        prompt_types == worktrees_type_prefixes
+        "type prefixes: prompts/worktree-reference.md holds no copy of the type list",
+        re.search(r"feature\|fix\|chore", prompt_text) is None
     )
 
     test_result(
-        "type prefixes: all three sources are synchronized",
-        worktrees_type_prefixes == track_types == prompt_types
+        "type prefixes: worktrees.py and track.py are synchronized",
+        worktrees_type_prefixes == track_types
     )
 
     print()

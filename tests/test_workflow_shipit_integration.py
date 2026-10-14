@@ -30,10 +30,11 @@ URL_69 = "https://github.com/owner/repo/pull/69"
 @contextlib.contextmanager
 def _remote_and_gh_mocks(create_url=None):
     """Mock only the network and mutating calls; git reads in plan/apply stay real."""
-    names = ("stage_all", "commit_with_message_file", "push_upstream", "pr_create", "pr_edit", "pr_view_json")
+    names = ("stage_all", "has_staged_changes", "commit_with_message_file", "push_upstream", "pr_create", "pr_edit", "pr_view_json")
     with contextlib.ExitStack() as stack:
         mocks = {name: stack.enter_context(mock.patch(f"workflow.git.{name}")) for name in names}
         mocks["stage_all"].return_value = (True, None)
+        mocks["has_staged_changes"].return_value = True
         mocks["commit_with_message_file"].return_value = (True, None)
         mocks["push_upstream"].return_value = (True, None)
         mocks["pr_create"].return_value = (create_url, None)
@@ -257,7 +258,9 @@ if __name__ == "__main__":
         mock_pr_url = "https://github.com/owner/repo/pull/123"
 
         # Mock all git/gh operations
-        with mock.patch("workflow.git.stage_all") as mock_stage:
+        with mock.patch("workflow.git.stage_all") as mock_stage, mock.patch(
+            "workflow.git.has_staged_changes", return_value=True
+        ):
             with mock.patch("workflow.git.commit_with_message_file") as mock_commit:
                 with mock.patch("workflow.git.push_upstream") as mock_push:
                     with mock.patch("workflow.git.pr_create") as mock_pr_create:
