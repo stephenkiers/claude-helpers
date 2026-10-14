@@ -500,23 +500,27 @@ def test_over_threshold_reported_shows_next_ask_boundary():
             }},
         }) + "\n")
 
-        run_usage_check(["--seam", "round1-join", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir)
+        rc_join, _, stderr_join = run_usage_check(
+            ["--seam", "round1-join", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir
+        )
         err = run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path=str(transcript))
         if err:
             return False, err
 
-        run_usage_check(
+        rc_mark, _, stderr_mark = run_usage_check(
             ["--seam", "pre-fanout", "--session-id", session_id, "--threshold", "100000", "--mark-reported"],
             state_dir=tmpdir,
         )
+        earlier = (f"[earlier calls: round1-join rc={rc_join} stderr={stderr_join!r}; "
+                   f"pre-fanout --mark-reported rc={rc_mark} stderr={stderr_mark!r}]")
         code, stdout, stderr = run_usage_check(
             ["--seam", "post-fanout", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir
         )
 
         if "state=over-threshold-reported" not in stdout:
-            return False, f"expected over-threshold-reported state, got: {stdout} rc={code} stderr={stderr!r}"
+            return False, f"expected over-threshold-reported state, got: {stdout} rc={code} stderr={stderr!r} {earlier}"
         if "already reported at 155,000" not in stdout or "next ask at 255,000" not in stdout:
-            return False, f"expected last-reported/next-ask boundary text, got: {stdout} stderr={stderr!r}"
+            return False, f"expected last-reported/next-ask boundary text, got: {stdout} stderr={stderr!r} {earlier}"
         if code != 0:
             return False, f"already-reported crossing should proceed, got exit {code} stdout={stdout} stderr={stderr!r}"
 
@@ -539,15 +543,15 @@ def test_round1_join_reinvocation_shows_fresh_budget():
         err = run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path=str(transcript))
         if err:
             return False, err
-        run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+        rc_first, _, stderr_first = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
 
         _, stdout_mid, stderr_mid = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
         if "counted=0" not in stdout_mid:
-            return False, f"pre-fanout right after round1-join with no further spend should show 0, got: {stdout_mid} stderr={stderr_mid!r}"
+            return False, f"pre-fanout right after round1-join with no further spend should show 0, got: {stdout_mid} stderr={stderr_mid!r} (first round1-join rc={rc_first} stderr={stderr_first!r})"
 
         _, stdout_reinvoke, stderr_reinvoke = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
         if "counted=0" not in stdout_reinvoke:
-            return False, f"re-invocation's round1-join must show a fresh (0) budget, got: {stdout_reinvoke} stderr={stderr_reinvoke!r}"
+            return False, f"re-invocation's round1-join must show a fresh (0) budget, got: {stdout_reinvoke} stderr={stderr_reinvoke!r} (first round1-join rc={rc_first} stderr={stderr_first!r})"
 
         return True, ""
 

@@ -81,8 +81,8 @@ AGENT_GUARD_CUTOFF = datetime(2026, 10, 13, 18, 58, 25, tzinfo=timezone.utc)
 # manual smoke run that no file in the repo reproduces. `diagnose` drops exactly these ids.
 # This list is CLOSED TO ADDITIONS: a new leak is fixed at source and caught by the temp-HOME guard
 # in tests/run_all.py, never added here. See the #280 amendment in docs/adr/0016-usage-yield-telemetry.md.
-# The exclusion only matters for wider windows (the legacy rows are older than the default window);
-# it is deletable together with the pinned test once the legacy rows age out.
+# The default 30-day window still includes the 2026-10-13 leak rows until about 2026-11-12; after
+# that the exclusion only matters for wider windows. Deletable with the pinned test once they age out.
 KNOWN_FIXTURE_SESSION_IDS = frozenset({
     "floor-latch-sess", "next-ask-sess", "fresh-budget-sess",
     "smoketest1", "smoketest2", "smoketest3", "smoketest4", "smoketest5",
@@ -1111,7 +1111,7 @@ def cmd_diagnose(args):
     print(f"Excluded fixture rows: {excluded_fixture_rows} (known test-fixture session_ids; see ADR-0016)")
     if excluded_fixture_ids:
         # Separate line so the count line above keeps its format; lists which ids were dropped
-        # so a real row that reuses a fixture id is visible rather than silently masked.
+        # so the drop is auditable (it does not detect a real row reusing a fixture id).
         print(f"Excluded fixture session_ids: {', '.join(excluded_fixture_ids)}")
 
     # Per-stage match rate breakdown

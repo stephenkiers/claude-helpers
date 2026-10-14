@@ -545,7 +545,7 @@ The agent guard is a third PASS condition in this health check. It does not feed
 
 Every run also prints `Excluded fixture rows: N (known test-fixture session_ids; see ADR-0016)`: the
 number of in-window rows dropped because their `session_id` is one of 8 known legacy test-fixture ids
-(#280). N is printed even when it is 0.
+(#280). N is printed even when it is 0. When N > 0, an `Excluded fixture session_ids: ...` line follows, listing the distinct dropped ids.
 
 ### Thresholds
 
