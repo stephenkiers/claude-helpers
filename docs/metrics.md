@@ -610,9 +610,10 @@ one reason the `min_begins` floor exists.
 
 **Machine-local state.** `diagnose` reads the machine's own `~/.claude/telemetry/events.jsonl` and the
 machine's hook wiring. `just check` therefore covers the guard only through fixtures; it cannot tell you
-whether this machine's real log passes. Fixtures cannot write to the real log either: `tests/run_all.py`
+whether this machine's real log passes. Fixtures should not write to the real log either: `tests/run_all.py`
 runs every suite under a temp HOME and fails the run, naming the suite, on any write under
-`<tmp HOME>/.claude/telemetry/`.
+`<tmp HOME>/.claude/telemetry/` by any suite that inherits `HOME`. That guard has documented limits
+(it covers only suites that inherit `HOME` and writes it can observe), so it is a backstop, not a proof.
 
 #### When the agent guard fails
 

@@ -81,6 +81,8 @@ AGENT_GUARD_CUTOFF = datetime(2026, 10, 13, 18, 58, 25, tzinfo=timezone.utc)
 # manual smoke run that no file in the repo reproduces. `diagnose` drops exactly these ids.
 # This list is CLOSED TO ADDITIONS: a new leak is fixed at source and caught by the temp-HOME guard
 # in tests/run_all.py, never added here. See the #280 amendment in docs/adr/0016-usage-yield-telemetry.md.
+# The exclusion only matters for wider windows (the legacy rows are older than the default window);
+# it is deletable together with the pinned test once the legacy rows age out.
 KNOWN_FIXTURE_SESSION_IDS = frozenset({
     "floor-latch-sess", "next-ask-sess", "fresh-budget-sess",
     "smoketest1", "smoketest2", "smoketest3", "smoketest4", "smoketest5",
@@ -1016,8 +1018,14 @@ def cmd_diagnose(args):
             unparseable_timestamp_count += 1
 
     # Drop legacy test-fixture rows (once, after the window filter; see KNOWN_FIXTURE_SESSION_IDS).
-    real_events = [e for e in filtered_events if e.get("session_id") not in KNOWN_FIXTURE_SESSION_IDS]
+    # A non-str session_id (e.g. unhashable) is never a fixture id and must be kept.
+    def _is_fixture_row(event):
+        sid = event.get("session_id")
+        return isinstance(sid, str) and sid in KNOWN_FIXTURE_SESSION_IDS
+
+    real_events = [e for e in filtered_events if not _is_fixture_row(e)]
     excluded_fixture_rows = len(filtered_events) - len(real_events)
+    excluded_fixture_ids = sorted({e["session_id"] for e in filtered_events if _is_fixture_row(e)})
     filtered_events = real_events
 
     # Reconcile begin/end pairs by type and correlating id
@@ -1101,6 +1109,10 @@ def cmd_diagnose(args):
     print(f"Match rate: {match_rate:.1%} ({total_matched}/{total_begins} begin/end pairs matched)")
     print(f"Unknown token fields: {unknown_pct:.1%}")
     print(f"Excluded fixture rows: {excluded_fixture_rows} (known test-fixture session_ids; see ADR-0016)")
+    if excluded_fixture_ids:
+        # Separate line so the count line above keeps its format; lists which ids were dropped
+        # so a real row that reuses a fixture id is visible rather than silently masked.
+        print(f"Excluded fixture session_ids: {', '.join(excluded_fixture_ids)}")
 
     # Per-stage match rate breakdown
     stage_name_totals = {}  # stage_name -> [begins, matched]
