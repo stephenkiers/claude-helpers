@@ -66,6 +66,10 @@ NEGATED_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An explicit exemption marker: a comment containing `flow-ask-exempt:` signals that any
+# AskUserQuestion on this line should not be flagged, even if it has no negation.
+EXPLICIT_EXEMPT_MARKER = "flow-ask-exempt:"
+
 
 def is_exempt(line: str) -> bool:
     """The frontmatter allowed-tools grant is not a call site."""
@@ -75,6 +79,11 @@ def is_exempt(line: str) -> bool:
 def has_live_ask_token(line: str) -> bool:
     """True when the line has an AskUserQuestion mention that is not immediately negated."""
     return ASK_TOKEN in NEGATED_TOKEN_RE.sub("", line)
+
+
+def has_explicit_exempt_marker(line: str) -> bool:
+    """True when the line contains an explicit flow-ask-exempt: marker."""
+    return EXPLICIT_EXEMPT_MARKER in line
 
 
 def references_ask_block(line: str) -> bool:
@@ -106,6 +115,8 @@ def scan(path: Path):
         if is_exempt(line):
             continue
         if not has_live_ask_token(line) or is_allowlisted(path, line):
+            continue
+        if has_explicit_exempt_marker(line):
             continue
         sites += 1
         if not references_ask_block(line):
@@ -179,6 +190,7 @@ def main():
     negation_line = "Then stop and wait — do not call `AskUserQuestion`."
     mixed_line = ("Do not call `AskUserQuestion` for the sweep, but then call `AskUserQuestion` "
                   "with the two options.")
+    exempt_marker_line = "Then call `AskUserQuestion`. <!-- flow-ask-exempt: this is a test utility -->"
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         bad_file = tmp_dir / "bad.md"
@@ -189,6 +201,8 @@ def main():
         mixed_file.write_text(mixed_line + "\n")
         negation_file = tmp_dir / "negation.md"
         negation_file.write_text(negation_line + "\n")
+        exempt_file = tmp_dir / "exempt.md"
+        exempt_file.write_text(exempt_marker_line + "\n")
 
         bad_sites, bad_off = scan(bad_file)
         h.test_result("scan() flags a bare AskUserQuestion site and ignores the negation line",
@@ -204,6 +218,10 @@ def main():
         h.test_result("negation elsewhere on the line does not hide a real site (flagged)",
                       mixed_sites == 1 and len(mixed_off) == 1,
                       f"sites={mixed_sites} offenders={len(mixed_off)}")
+        exempt_sites, exempt_off = scan(exempt_file)
+        h.test_result("scan() exempts a site marked with flow-ask-exempt:",
+                      exempt_sites == 0 and not exempt_off,
+                      f"sites={exempt_sites} offenders={len(exempt_off)}")
         h.test_result("detector fixtures produce ask-sites (guard is not vacuous)",
                       bad_sites + good_sites + mixed_sites > 0)
     h.test_result("roster is non-empty once conversions have landed", len(ROSTER) > 0)
