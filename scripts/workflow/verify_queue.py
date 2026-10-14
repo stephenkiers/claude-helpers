@@ -164,7 +164,13 @@ def resolve_repo_key(cwd: Optional[Path] = None) -> Optional[str]:
 
 
 def resolve_queue_path(cwd: Optional[Path] = None) -> Optional[Path]:
-    """<worktree-parent>/verify-queue.jsonl. Detached worktrees (merge-queue scratch) are ignored."""
+    """
+    <worktree-parent>/verify-queue.jsonl. Detached worktrees (merge-queue scratch) are ignored.
+
+    Returns None only when no worktree parent can be determined. Raises
+    worktrees.WorktreeParentError (a RuntimeError) when the detected parent is unsafe
+    (the main worktree itself or under ~/.claude); it is not converted to None.
+    """
     parent = worktrees.detect_worktree_parent(cwd=cwd)
     return Path(parent) / QUEUE_FILENAME if parent else None
 
@@ -196,7 +202,8 @@ def sync(
     """
     Enqueue pending rulings (idempotent). With `branch`, only that branch's reviews are scanned;
     without it, every review for the repo is. Raises RuntimeError if the repo key or queue path
-    cannot be resolved. Raises OSError if I/O operations fail (mkdir, file write, fsync), or
+    cannot be resolved; an unsafe worktree parent surfaces as worktrees.WorktreeParentError,
+    a RuntimeError subclass, from resolve_queue_path (not swallowed). Raises OSError if I/O operations fail (mkdir, file write, fsync), or
     ValueError (e.g. UnicodeDecodeError) if a plan file's contents are not valid text.
     """
     key = repo_key or resolve_repo_key(cwd)

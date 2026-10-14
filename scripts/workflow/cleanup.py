@@ -145,7 +145,10 @@ def plan_cleanup(
     Plan a cleanup operation (read-only).
 
     Returns (CleanupPlan, None) on success.
-    Returns (None, Unknown(...)) if target resolution or state inspection fails.
+    Returns (None, Unknown(...)) if target resolution or state inspection fails,
+    including when the worktree parent is unsafe (WorktreeParentError from
+    worktrees.detect_worktree_parent is reported as an Unknown, never as an empty
+    stacked-children list).
     """
     try:
         target_worktree = Path(target_path).resolve()
@@ -487,6 +490,10 @@ def _detect_stacked_children(
     2. gh pr list: find open PRs targeting branch
     Union and dedup by branch name.
     Returns (children_list, gh_lookup_failed, detection_incomplete).
+    Raises worktrees.WorktreeParentError when the detected worktree parent is unsafe
+    (the main worktree itself or under ~/.claude). That is not swallowed: the caller
+    (plan_cleanup) reports it as an Unknown, so cleanup fails instead of planning
+    as if there were no stacked children.
     """
     from . import worktrees
 
@@ -502,6 +509,8 @@ def _detect_stacked_children(
         worktree_parent = Path(worktree_parent_str)
         if not worktree_parent.is_dir():
             return [], False, False
+    except worktrees.WorktreeParentError:
+        raise
     except Exception:
         return [], False, False
 
