@@ -17,6 +17,7 @@ Run with: python3 tests/test_usage_gate_cli_contract.py
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -395,20 +396,48 @@ def test_session_id_env_fallback():
         return True, ""
 
 
-def run_agent_lifecycle(state_dir, session_id, agent_id, transcript_path=None):
-    """Run agent-begin then agent-end (with optional transcript) via stdin JSON payloads."""
-    begin_payload = json.dumps({"session_id": session_id, "agent_id": agent_id})
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--state-dir", state_dir, "agent-begin"],
-        input=begin_payload, capture_output=True, text=True,
-    )
-    end_obj = {"session_id": session_id, "agent_id": agent_id}
-    if transcript_path:
-        end_obj["agent_transcript_path"] = transcript_path
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--state-dir", state_dir, "agent-end"],
-        input=json.dumps(end_obj), capture_output=True, text=True,
-    )
+def run_agent_lifecycle(state_dir, session_id, agent_id, transcript_path=None, env=None):
+    """Run agent-begin then agent-end (with optional transcript) via stdin JSON payloads.
+
+    Events go to ``<state_dir>/events.jsonl`` (via --log), never the real telemetry log. As a second
+    line of defence the children also run under a private temp HOME unless ``env`` is passed.
+    """
+    log_path = os.path.join(state_dir, "events.jsonl")
+    with tempfile.TemporaryDirectory() as private_home:
+        child_env = env if env is not None else {**os.environ, "HOME": private_home}
+        begin_payload = json.dumps({"session_id": session_id, "agent_id": agent_id})
+        subprocess.run(
+            [sys.executable, str(SCRIPT), "--state-dir", state_dir, "--log", log_path, "agent-begin"],
+            input=begin_payload, capture_output=True, text=True, env=child_env,
+        )
+        end_obj = {"session_id": session_id, "agent_id": agent_id}
+        if transcript_path:
+            end_obj["agent_transcript_path"] = transcript_path
+        subprocess.run(
+            [sys.executable, str(SCRIPT), "--state-dir", state_dir, "--log", log_path, "agent-end"],
+            input=json.dumps(end_obj), capture_output=True, text=True, env=child_env,
+        )
+
+
+def test_agent_lifecycle_does_not_leak_to_real_log():
+    """run_agent_lifecycle writes only to its --log file, never <HOME>/.claude/telemetry (#280)."""
+    with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as state_dir:
+        run_agent_lifecycle(
+            state_dir, "leak-check-sess", "agent1",
+            env={**os.environ, "HOME": tmp_home},
+        )
+        leaked = Path(tmp_home) / ".claude" / "telemetry" / "events.jsonl"
+        if leaked.exists():
+            return False, f"default telemetry log was written: {leaked}"
+        log = Path(state_dir) / "events.jsonl"
+        if not log.exists():
+            return False, "--log file was not written"
+        events = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+        mine = [e for e in events if e.get("session_id") == "leak-check-sess"]
+        kinds = sorted(e.get("event_type", "") for e in mine)
+        if len(mine) != 2 or kinds != ["agent.begin", "agent.end"]:
+            return False, f"expected one agent.begin and one agent.end, got {mine}"
+        return True, ""
 
 
 def test_floor_ask_latches_until_new_unparseable_agent():
@@ -523,6 +552,7 @@ def main():
     h.test_result("floor ask latches until new unparseable agent", *test_floor_ask_latches_until_new_unparseable_agent())
     h.test_result("over-threshold-reported shows next-ask boundary", *test_over_threshold_reported_shows_next_ask_boundary())
     h.test_result("round1-join re-invocation shows fresh budget", *test_round1_join_reinvocation_shows_fresh_budget())
+    h.test_result("agent lifecycle does not leak to real log", *test_agent_lifecycle_does_not_leak_to_real_log())
 
     print()
     h.summarize_and_exit()

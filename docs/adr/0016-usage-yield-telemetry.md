@@ -221,3 +221,10 @@ will be updated to say so.
 ## Amendment — Agent data guard in `diagnose` (#143 PR 2)
 
 The agent data guard is an extra health-check PASS condition on `diagnose`: `diagnose` exits 0 only when the match rate, the unknown-field rate, and the guard all pass. It is **not** part of the usage gate, so the "single threshold" consequence above still refers only to the `/implement-with-haiku` gate. The guard's cutoff is a timestamp (`2026-10-13T18:58:25Z`, #267), and it judges only rows written after that time. A timestamp cannot express "events were written by fixed code," because a stale worktree's `/setup-local` can reintroduce the old hook wiring after the cutoff. The `Hook target` provenance line covers that gap; event-level provenance is a possible follow-up.
+
+## Amendment — Known test-fixture rows excluded from `diagnose` (#280)
+
+- `diagnose` drops rows whose `session_id` is in a closed, documented set of 8 known test-fixture ids (`floor-latch-sess`, `next-ask-sess`, `fresh-budget-sess`, `smoketest1` to `smoketest5`). It does so once, after the window filter, so the match rate, the unknown-field rate and the agent guard all judge real data only. This also changes the agent guard's input: it now judges post-cutoff rows minus fixture ids. `Excluded fixture rows: N` is printed on every run, including N = 0.
+- The log stays append-only and untouched (#143). The rows are hidden at read time, never removed.
+- Measured effect on one machine's log at decision time: unknown-token 63.2% to 63.8%, match rate 97.1% unchanged, agent guard 575 violations unchanged. The exclusion is about population purity. It is **not** a fix for the unknown-token rate.
+- The list is closed. Recurrence is prevented at the source by the `--log` fix in `run_agent_lifecycle` and by the temp-HOME guard in `tests/run_all.py`, which fails the run when any suite writes under `<tmp HOME>/.claude/telemetry/`. A new leak is never added to the list.

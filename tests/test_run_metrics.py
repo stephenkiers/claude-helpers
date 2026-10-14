@@ -8,10 +8,12 @@ and the diagnose command's match rate calculation.
 Run with: python3 tests/test_run_metrics.py
 """
 
+import atexit
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,9 +26,17 @@ from _test_harness import REPO_ROOT, Harness
 
 SCRIPT = REPO_ROOT / "scripts" / "run-metrics.py"
 
+# Shared by every run_script call that does not pass its own --state-dir, so no test writes session
+# state under the default <HOME>/.claude/telemetry/state (#280). Shared, not per-call, so state
+# still carries across calls within this suite as it did with the default directory.
+_DEFAULT_STATE_DIR = tempfile.mkdtemp(prefix="run-metrics-test-state-")
+atexit.register(shutil.rmtree, _DEFAULT_STATE_DIR, ignore_errors=True)
+
 
 def run_script(args, stdin_text=None, env=None):
     """Run the script as a subprocess. Returns (returncode, stdout, stderr)."""
+    if "--state-dir" not in args:
+        args = ["--state-dir", _DEFAULT_STATE_DIR] + list(args)
     cmd = [sys.executable, str(SCRIPT)] + args
     result = subprocess.run(
         cmd,
