@@ -80,6 +80,40 @@ This section is the single full statement of the rule. It is the reciprocal of A
 
 See ADR-0022 §4 (write prefixes and residual risk) and §13 (relationship to this ADR).
 
+## Amendment — Fourth sanctioned write prefix for /expert-flow flow dirs (2026-10-13)
+
+This section documents the rule for `/expert-flow` step agents' `Write` scope, parallel to the
+prior amendments covering `/expert-spike` spikes and the original two prefixes
+(`.claude/plan-sessions/` and `.claude/plans/`).
+
+**Decision: a fourth write prefix, scoped to flow-directory files only.** Step agents spawned by
+`/expert-flow` may write to `~/.claude/flows/<repo>/<issue>-<slug>-<id>/` — the flow directory
+tree the orchestrator creates — and **only to receipt files and answer markers named by the
+orchestrator in that directory**. It applies to step agents when they invoke commands like
+`/merge-and-cleanup`, `/stack-sync`, and `/implement-with-haiku` with `FLOW_DIR` set (from
+the `.claude/flow-run` marker or relay flag). The orchestrator itself writes flow-run markers
+(`~/.claude/flows/<repo>/<issue>-<slug>-<id>/.claude/flow-run`), question files
+(`<FLOW_DIR>/questions/...`), and answer files (`<FLOW_DIR>/answers/...`).
+
+- **`Write` stays prompt-scoped, not tool-scoped.** The residual risk and lack of a hardened
+  PreToolUse hook are unchanged from the spike amendment. The sanctioned-prefix list is a
+  convention the step agent is instructed to follow in its prompt (e.g., "Write is used ONLY
+  under a validated FLOW_DIR (receipt/question files), never for repo content").
+- **Step agents record receipts under `<FLOW_DIR>/steps/`.** The orchestrator names the receipt
+  path in the step prompt (e.g., `RECEIPT_PATH="${FLOW_DIR}/steps/03-implement.md"`). The step
+  command (`implement-with-haiku`, `merge-and-cleanup`, etc.) documents this in a hard-rule
+  sentence near the Resolve FLOW_DIR block.
+- **No answer writes from step agents.** Step agents read answer files (`${FLOW_DIR}/answers/*.json`)
+  after relay, but never write them. The orchestrator owns answer-file writes (via the `Ask` relay
+  pattern in `flow-reference.md`).
+
+**Failure modes (documented behavior):**
+
+- **No hook configured:** nothing enforces the flow-directory prefix. The rule is prompt-level only.
+- **Hook configured without the flow-prefix rule:** step-agent writes into flow directories are
+  rejected. The missing receipt leaves that step as the manifest's resume point, because VERIFY
+  fails (the receipt check); the step stops visibly there instead of continuing with a gap.
+
 ## Pointer — /expert-flow (2026-10-09)
 
 `--flow`/`--epic` handling, the orchestrator's `Write` scope, and the full-capability step agents are recorded in ADR-0023 (§1, §2, §2.1, §5).

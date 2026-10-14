@@ -165,6 +165,8 @@ fi
 
 ### Phase 1a — Resolve FLOW_DIR (only matters inside an `/expert-flow` run)
 
+**Hard rule: `Write` is used ONLY under a validated `FLOW_DIR` to write receipt files, never for repo content.**
+
 Run this right after Phase 1, **whether or not Phase 1 exited 0** (a Phase 1 failure inside a flow
 still needs its receipt). Apply the **Resolve FLOW_DIR** block from
 `~/.claude/prompts/flow-reference.md` with `MARKER_ROOT` set to the target worktree:

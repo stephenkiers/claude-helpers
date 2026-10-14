@@ -84,6 +84,8 @@ when `finish` runs, and a run that never reaches it is reported as incomplete.
 
 ### Resolve FLOW_DIR (only matters inside an `/expert-flow` run)
 
+**Hard rule: `Write` is used ONLY under a validated `FLOW_DIR` to write receipt files, never for repo content.**
+
 Right after argument parsing, apply the **Resolve FLOW_DIR** block from
 `~/.claude/prompts/flow-reference.md` (read it by path — don't re-derive it here) and carry the
 printed `FLOW_DIR=` value forward as a literal. This command takes no `--flow` flag, so only the

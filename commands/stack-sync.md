@@ -67,6 +67,8 @@ printf 'FLOW_FLAG_DIR=%s\n' "$FLOW_FLAG_DIR"
 
 ### Resolve FLOW_DIR (only matters inside an `/expert-flow` run)
 
+**Hard rule: `Write` is used ONLY under a validated `FLOW_DIR` to write receipt files, never for repo content.**
+
 Apply the **Resolve FLOW_DIR** block from `~/.claude/prompts/flow-reference.md` now, with
 `FLOW_FLAG_DIR` set to the literal printed above and the default `MARKER_ROOT` (the cwd's worktree).
 When `/shipit` invokes `/stack-sync` it runs inside the ticket worktree, so the `.claude/flow-run`
