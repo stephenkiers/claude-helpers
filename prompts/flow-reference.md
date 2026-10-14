@@ -293,6 +293,9 @@ Each state's meaning:
   converged, layout unknown, queue kickback). The reason line names it and, where the command
   already suggests a remedy (`/expert-rebase`), repeats that suggestion. The orchestrator never
   remediates; it offers Retry / Take over / Abort to the human.
+  Some FAILED reasons are deterministic and not retryable (for example the North Star preflight
+  stop from #273: a missing install or `gh` auth). Their reason line says so; Retry will fail the
+  same way until the cause is fixed, so the human should Take over (fix it, then `--resume`).
 - `AWAITING` — the command ended its turn via the Ask block. This is not a decision. The receipt
   stays open: it has the awaiting marker(s) and no `Decision:` line and no `<!-- step-end -->`. On
   resume the command rewrites the file with the rest of the summary and the final trailer for its
