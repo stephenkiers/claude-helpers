@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple, List
 from . import git
+from .paths import is_within
 
 
 def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
@@ -39,32 +40,19 @@ def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
     return worktrees
 
 
-def detect_main_worktree(cwd: Optional[Path] = None) -> Optional[str]:
-    """Get the main worktree path (first entry from git worktree list)."""
-    try:
-        porcelain = git.get_worktree_list_porcelain(cwd=cwd)
-        worktrees = parse_worktree_list(porcelain)
-        if worktrees:
-            return worktrees[0][0]
-    except Exception:
-        pass
-    return None
-
-
-def _all_worktree_paths(cwd: Optional[Path] = None) -> List[str]:
+def list_worktrees(cwd: Optional[Path] = None) -> Optional[List[str]]:
     """
     All worktree paths in `git worktree list` order, including detached entries.
 
-    Swallows every exception raised while listing worktrees (git not runnable,
-    not inside a repository, non-zero exit). The caller sees an empty list, never
-    an error, so detect_worktree_parent returns "" and cannot tell "no worktrees"
-    apart from "git failed". Callers that need the distinction must check git
-    themselves.
+    Returns None when git could not produce a listing: git not runnable, not
+    inside a repository, or a non-zero exit. Returns [] only when git succeeded
+    and reported no worktrees. A failure is never reported as an empty list,
+    so callers must check for None explicitly.
     """
     try:
         porcelain = git.get_worktree_list_porcelain(cwd=cwd)
     except Exception:
-        return []
+        return None
     return [
         line[9:].strip()
         for line in porcelain.split("\n")
@@ -72,22 +60,23 @@ def _all_worktree_paths(cwd: Optional[Path] = None) -> List[str]:
     ]
 
 
+def detect_main_worktree(cwd: Optional[Path] = None) -> Optional[str]:
+    """
+    Get the main worktree path (first entry from git worktree list).
+
+    Returns None when the listing fails or reports no worktrees.
+    """
+    listed = list_worktrees(cwd=cwd)
+    if listed:
+        return listed[0]
+    return None
+
+
 _TYPE_PREFIXES = {"feature", "fix", "chore"}
 
 
 class WorktreeParentError(RuntimeError):
     """Detected WORKTREE_PARENT is unsafe (main worktree itself or under ~/.claude)."""
-
-
-def _is_under(path: str, root: str) -> bool:
-    """
-    True if path is strictly inside root (component-wise, not a string prefix).
-
-    Both sides are resolved with os.path.realpath before comparing, so symlinked
-    spellings of the same directory compare equal.
-    """
-    real_root = os.path.realpath(root).rstrip("/")
-    return os.path.realpath(path).startswith(real_root + "/")
 
 
 def _home_claude() -> str:
@@ -100,8 +89,10 @@ def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     """
     Detect the worktree parent directory.
 
-    Implements the same precedence as the bash block in
-    prompts/worktree-reference.md (ADR-0010 Project Detection, step 3):
+    This function is the single implementation; prompts/worktree-reference.md
+    calls it via `python3 -m scripts.workflow.cli worktree detect-parent`.
+
+    Precedence (ADR-0010 Project Detection, step 3):
     1. Canonical layout first: if main worktree's parent dir is named
        'worktrees', use that directory. No other heuristic applies.
     2. Else take the first non-main worktree that is a usable sibling
@@ -112,14 +103,17 @@ def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     3. Else fall back to '<main>/worktrees' (legit only for a bare top-level
        clone with no 'worktrees/' parent).
 
-    Fail closed: raises WorktreeParentError if the result is the main
-    worktree itself or lies under ~/.claude/. Returns "" only when no
-    worktree can be determined at all.
+    Fail closed: raises WorktreeParentError if git could not list worktrees
+    (list_worktrees returned None), or if the result is the main worktree
+    itself or lies under ~/.claude/. Returns "" only when git succeeded and
+    reported no worktrees at all.
     """
-    paths = _all_worktree_paths(cwd=cwd)
-    if not paths:
+    listed = list_worktrees(cwd=cwd)
+    if listed is None:
+        raise WorktreeParentError("could not list git worktrees")
+    if not listed:
         return ""
-    main = paths[0].rstrip("/") or paths[0]
+    main = listed[0].rstrip("/") or listed[0]
     real_main = os.path.realpath(main)
     home_claude = _home_claude()
 
@@ -127,8 +121,8 @@ def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     if os.path.basename(os.path.dirname(main)) == "worktrees":
         parent = os.path.dirname(main)
     else:
-        for cand in paths[1:]:
-            if os.path.realpath(cand) == real_main or _is_under(cand, home_claude) or _is_under(cand, main):
+        for cand in listed[1:]:
+            if os.path.realpath(cand) == real_main or is_within(cand, home_claude) or is_within(cand, main):
                 continue
             cand_parent = os.path.dirname(cand)
             if os.path.basename(cand_parent) in _TYPE_PREFIXES:
@@ -139,7 +133,7 @@ def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
             parent = main + "/worktrees"
 
     real_parent = os.path.realpath(parent)
-    if real_parent == real_main or real_parent == home_claude or _is_under(parent, home_claude):
+    if real_parent == real_main or real_parent == home_claude or is_within(parent, home_claude):
         raise WorktreeParentError(
             f"refusing unsafe WORKTREE_PARENT {parent!r} (main worktree {main!r})"
         )
