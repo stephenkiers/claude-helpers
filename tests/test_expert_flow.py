@@ -310,6 +310,25 @@ def main():
     h.test_result("ADR has the worktree-first amendment", "## Amendment: worktree-first invocation" in adr)
 
     print()
+    print("[Section 9] Mandatory AskUserQuestion relay and prose ingestion (#277)")
+    relay = heading_section(text, "### Relaying a question")
+    h.test_result("Relaying section found", bool(relay))
+    h.test_result("AskUserQuestion call is mandatory",
+                  re.search(r"`AskUserQuestion` call is mandatory", relay) is not None)
+    h.test_result("memory/prose preferences do not override the call",
+                  "No personal memory" in relay and "overrides" in relay and "prefer prose" in relay)
+    h.test_result("awaiting only after the call is issued",
+                  "ends without the call having been issued" in " ".join(relay.split()))
+    h.test_result("prose ingestion echo format", "`q1 → Approve`" in relay and "`q2 → Other:" in relay)
+    h.test_result("answers keyed by question id, never text",
+                  "keyed by question **id**, never" in relay)
+    h.test_result("unmapped ids are re-asked, never guessed",
+                  "re-ask that question" in relay and "Never guess" in relay and "never fill a default" in relay)
+    h.test_result("#277 tracks prose ingestion", "#277" in relay)
+    h.test_result("flow-reference orchestrator handshake agrees",
+                  "`AskUserQuestion` (mandatory" in FLOW_REF.read_text())
+
+    print()
     h.summarize_and_exit()
 
 

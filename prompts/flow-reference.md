@@ -197,7 +197,8 @@ this block applies.
 
 5. **END THE TURN.** Print one line — `AWAITING ANSWERS: questions/<STEP_NAME>-<SEQ>.json` — and
    stop. Do not poll, do not sleep, do not schedule a wakeup, do not guess an answer, do not pick
-   the default. The orchestrator reads the question file, asks the human in its own conversation,
+   the default. The orchestrator reads the question file, asks the human with `AskUserQuestion` (mandatory;
+   prose replies are mapped to question `id`s, see `/expert-flow` "Relaying a question"),
    writes `${FLOW_DIR}/answers/<STEP_NAME>-<SEQ>.json`, and resumes you with `SendMessage`.
 
 **On resume** (the orchestrator's message says "Answers written to `answers/<STEP_NAME>-<SEQ>.json`

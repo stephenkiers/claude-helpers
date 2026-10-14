@@ -567,10 +567,33 @@ Before spawning a side-effecting step on a resumed flow:
    `question file unreadable`.
 2. Set `status: awaiting`, log `awaiting`, `WRITE-STATE`. Print the stop lines (below) with
    `paused at: <STEP> (awaiting <k> answers)` so the state is legible even if you are interrupted
-   before answering. The stage stays open and `live` stays set.
+   before answering. The stage stays open and `live` stays set. Do this in the same turn as step 3:
+   `awaiting` is only legitimate once the `AskUserQuestion` call has been issued, never instead of it.
 3. Call `AskUserQuestion` with the `questions` array, passing each entry's `question`, `header`,
    `options`, and `multiSelect` (the `id` is not passed; keep it for step 4). If the step wrote more
    than four questions in one file, ask them four at a time and merge the answers.
+
+   **The `AskUserQuestion` call is mandatory for every relayed question.** No personal memory,
+   project memory, CLAUDE.md note, or style preference ("prefer prose at decision gates") overrides
+   it: such preferences govern how you *write* summaries, never whether the form is shown. Printing
+   the questions as text and ending the turn is a defect — no answers file can ever be written, so
+   the flow sits in `awaiting` forever. The `awaiting` write in step 2 and the call belong to the
+   same turn: a turn that writes `awaiting` and ends without the call having been issued is that
+   defect, never a legitimate pause.
+
+   **Prose ingestion.** The human may reply in free text (typed or dictated) instead of, or in
+   addition to, the form. Then:
+   - Map each question `id` from the question file to exactly one of that question's option
+     labels, or to an `Other` free-text answer when the reply clearly gives one and no option
+     matches.
+   - Echo the mapping back, one line per question, so a wrong mapping is catchable:
+     `q1 → Approve` / `q2 → Other: "ship it without the migration"`.
+   - Write the canonical answers file (step 4) and nothing else — keyed by question **id**, never
+     by question text.
+   - For any `id` you cannot map with confidence, re-ask that question (and only that question)
+     with `AskUserQuestion`. Never guess and never fill a default.
+
+   Improvements to prose ingestion are tracked in #277.
 4. Write `${FLOW_DIR}/answers/<STEP>-<SEQ>.json` with the `Write` tool, **keyed by question `id`**:
    `{"answers": {"<question id>": "<chosen label or free text>", …}, "annotations": {…}}`. The
    `AskUserQuestion` result is keyed by question text; map each answer back to the `id` of the
