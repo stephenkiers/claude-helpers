@@ -48,7 +48,8 @@ FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--from", "--resume
 # git/gh, read/inspection utilities, or the run-metrics script. Matching is done on the
 # grant's command core: the trailing `:*` or ` *` wildcard is stripped first, so
 # `Bash(sed -n:*)` is checked as `sed -n` and `Bash(sed:*)` is checked as `sed` (rejected).
-# Note: sed -n is NOT a write boundary; it is a read-only, non-mutating tool.
+# Note: this allowlist is NOT a write boundary. `sed -n` can still write (e.g. a `w` command), so
+# grants are a convention check; prefer `head -n 1` or Read where possible.
 READ_ONLY_BASH = (
     r"git (?:log|status|diff|show|rev-parse|rev-list|ls-files|merge-base|for-each-ref|cat-file"
     r"|describe|symbolic-ref|worktree list|branch --show-current|config --get)(?: .*)?",
