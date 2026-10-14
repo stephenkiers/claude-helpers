@@ -14,7 +14,11 @@ import json
 import tempfile
 import subprocess
 from pathlib import Path
-import unittest.mock as mock
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -533,40 +537,43 @@ if __name__ == "__main__":
     print()
     print("[Section 13] resolve_check_command: fallback to project.yaml")
 
-    fixture = GitFixture()
-    old_cwd = os.getcwd()
-    try:
-        os.chdir(fixture.repo_root)
-        fixture.create_initial_commit("Initial commit")
-        _track_claude_dir(fixture)
+    if yaml is None:
+        print("[Section 13] SKIPPED (PyYAML not available)")
+    else:
+        fixture = GitFixture()
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(fixture.repo_root)
+            fixture.create_initial_commit("Initial commit")
+            _track_claude_dir(fixture)
 
-        # Create a worktree with project.yaml but no repo-cache.json
-        fixture.create_branch("feature/test2")
-        wt_path = fixture.create_worktree("feature/test2")
+            # Create a worktree with project.yaml but no repo-cache.json
+            fixture.create_branch("feature/test2")
+            wt_path = fixture.create_worktree("feature/test2")
 
-        new_claude = wt_path / ".claude"
-        new_claude.mkdir(exist_ok=True)
+            new_claude = wt_path / ".claude"
+            new_claude.mkdir(exist_ok=True)
 
-        project_yaml = "commands:\n  check: custom-check\n"
-        (new_claude / "project.yaml").write_text(project_yaml)
+            project_yaml = "commands:\n  check: custom-check\n"
+            (new_claude / "project.yaml").write_text(project_yaml)
 
-        command, source, failure_reason = resolve_check_command(wt_path)
+            command, source, failure_reason = resolve_check_command(wt_path)
 
-        test_result(
-            "resolve_check_command: falls back to project.yaml",
-            command == "custom-check",
-            f"command={command}"
-        )
+            test_result(
+                "resolve_check_command: falls back to project.yaml",
+                command == "custom-check",
+                f"command={command}"
+            )
 
-        test_result(
-            "resolve_check_command: source is 'project.yaml' on fallback",
-            source == "project.yaml",
-            f"source={source}"
-        )
+            test_result(
+                "resolve_check_command: source is 'project.yaml' on fallback",
+                source == "project.yaml",
+                f"source={source}"
+            )
 
-    finally:
-        os.chdir(old_cwd)
-        fixture.cleanup()
+        finally:
+            os.chdir(old_cwd)
+            fixture.cleanup()
 
     print()
     print("[Section 14] resolve_check_command: failure when no checks configured")
@@ -1362,6 +1369,45 @@ if __name__ == "__main__":
 
         finally:
             os.chdir(old_cwd)
+
+    print()
+    print("[Section 29] resolve_check_command: justfile summary path with stubbed subprocess (F6)")
+    import workflow.checks as _checks_mod
+
+    class _Proc:
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self.stdout = out
+
+    def _run_justfile_case(stub):
+        with tempfile.TemporaryDirectory() as td:
+            wt = Path(td)
+            (wt / "justfile").write_text("check:\n\techo ok\n")
+            real_run = _checks_mod.subprocess.run
+            _checks_mod.subprocess.run = stub
+            try:
+                return resolve_check_command(wt)
+            finally:
+                _checks_mod.subprocess.run = real_run
+
+    cmd, src, fr = _run_justfile_case(lambda *a, **k: _Proc(0, "build check test\n"))
+    h.test_result("justfile (F6): summary listing check -> ('just check', 'justfile', None)",
+                  (cmd, src, fr) == ("just check", "justfile", None), f"{(cmd, src, fr)}")
+
+    cmd, src, fr = _run_justfile_case(lambda *a, **k: _Proc(1, "build check test\n"))
+    h.test_result("justfile (F6): nonzero summary exit is not trusted",
+                  cmd is None and src is None and fr is not None, f"{(cmd, src, fr)}")
+
+    cmd, src, fr = _run_justfile_case(lambda *a, **k: _Proc(0, "build test\n"))
+    h.test_result("justfile (F6): summary without check recipe -> failure_reason mentions justfile",
+                  cmd is None and fr is not None and "justfile" in fr, f"{(cmd, src, fr)}")
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="just", timeout=5)
+
+    cmd, src, fr = _run_justfile_case(_timeout)
+    h.test_result("justfile (F6): timeout is reported in failure_reason",
+                  cmd is None and fr is not None and "timed out" in fr, f"{(cmd, src, fr)}")
 
     print()
     h.summarize_and_exit()
