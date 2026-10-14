@@ -164,8 +164,8 @@ fi
 SESSION_DIR="$HOME/.claude/plan-sessions/${REPO_KEY}/${SLUG}-${INVOCATION_ID}"
 if ! mkdir -p "$SESSION_DIR"; then
   echo "ERROR: Failed to create session directory $SESSION_DIR" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome failure --failure-class session-dir-create-failed 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class session-dir-create-failed 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage gather-context --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
@@ -700,8 +700,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage present >/dev
 mkdir -p "$HOME/.claude/plans" || true
 if ! cp "$SESSION_DIR/plan.md" "$FINAL_PLAN_PATH"; then
   echo "ERROR: Failed to copy plan.md to $FINAL_PLAN_PATH" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage present --outcome failure --failure-class copy-failed 2>/dev/null || true
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class copy-failed 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage present --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
@@ -772,8 +772,8 @@ as the Ask block describes — it is never recorded as `FAILED`.
 Examples:
 - User declines Plan Mode guard → `stage-end --outcome interrupted`, `command-end --outcome interrupted`
 - User declines checkpoint at Step 5 → `stage-end --outcome interrupted`, `command-end --outcome interrupted`
-- Contributor fails after retry → `stage-end --outcome failure --failure-class contributor-failed`, `command-end --outcome failure --failure-class contributor-failed`
-- Copy plan to final path fails → `stage-end --outcome failure --failure-class copy-failed`, `command-end --outcome failure --failure-class copy-failed`
+- Contributor fails after retry → `stage-end --outcome failure --failure-class other`, `command-end --outcome failure --failure-class other` (failure class `other`; the specific cause is in the printed message)
+- Copy plan to final path fails → `stage-end --outcome failure --failure-class other`, `command-end --outcome failure --failure-class other` (failure class `other`; the specific cause is in the printed message)
 
 ---
 
