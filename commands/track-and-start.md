@@ -1,5 +1,6 @@
 ---
 name: track-and-start
+argument-hint: "[--plan-file <path>] [--issue <N|TICKET-ID>] [--worktree-only] [<ticket-id|plan-path>]"
 description: Use when user says "/track-and-start" to create a GitHub issue (or local plan), branch, and worktree in one step.
 ---
 
@@ -17,6 +18,10 @@ Creates a GitHub issue (or local plan file) from the plan, generates a branch na
 
 - `--plan-file <path>`: Explicitly names the plan-file path, instead of relying on positional-argument inference. Use this whenever you also want to pass other hint text (e.g. `--issue`), since a bare path in `$ARG1` alongside any other token hits the "Ambiguous arguments" error (see Entry Mode Dispatch below) — `--plan-file` sidesteps that entirely.
 - `--issue <number|TICKET-ID>`: Explicitly names the issue (or tracker ticket) to attach/pivot this plan to, skipping the auto-detected Pivot Detection and the interactive Duplicate Detection prompt. The target issue must exist and be open (validated via `gh issue view` before any mutation) — an invalid or closed target is a hard error, not a silent fallback. This is the recommended way to say "pivot to issue N" up front, including when no worktree exists yet for that issue (the "Pivot to existing" flow creates one).
+
+- `--worktree-only`: Only valid together with `--issue <N>` where `<N>` is a bare GitHub issue number (a tracker ticket ID is an error here). Creates the ticket branch and worktree for an existing open issue and nothing else — no plan file, no plan mode, and no positional arguments may accompany it. It **never mutates the issue**: no issue is created, commented on, or edited, and the issue-cache body is not touched. Prints the normal handoff block (`**Branch:**` / `**Worktree:**` lines). Used by `/expert-flow`'s worktree-first step, before any plan exists. See "`--worktree-only` Flow" below.
+
+Example: `/track-and-start --issue 59 --worktree-only` creates the branch and worktree for issue #59 from the default branch and stops, leaving the issue untouched. A later `/track-and-start --issue 59 --plan-file <plan>` reuses that worktree (see "Existing worktree reuse" under Step 4-pre) and attaches the plan.
 
 Example: `/track-and-start --plan-file ~/.claude/plans/floating-skipping-hippo.md --issue 59` resolves the plan file from the flag, skips the candidate-matching guesswork, and pivots straight to issue #59 — creating its worktree if one doesn't already exist.
 
@@ -62,6 +67,13 @@ if printf '%s' "$ARGUMENTS_CLEAN" | grep -qE '\s*--no-confirm\s*|\s*--yes\s*'; t
   ARGUMENTS_CLEAN=$(printf '%s' "$ARGUMENTS_CLEAN" | sed -E 's/[[:space:]]*(--no-confirm|--yes)[[:space:]]*/ /g; s/[[:space:]]+/ /g; s/^[[:space:]]*//; s/[[:space:]]*$//')
 fi
 
+# Extract --worktree-only (boolean, takes no value), if present, into WORKTREE_ONLY_FLAG and strip it out
+WORKTREE_ONLY_FLAG=0
+if printf '%s' "$ARGUMENTS_CLEAN" | grep -qE '(^| )--worktree-only( |$)'; then
+  WORKTREE_ONLY_FLAG=1
+  ARGUMENTS_CLEAN=$(printf '%s' "$ARGUMENTS_CLEAN" | sed -E 's/(^|[[:space:]])--worktree-only([[:space:]]|$)/ /g; s/[[:space:]]+/ /g; s/^[[:space:]]*//; s/[[:space:]]*$//')
+fi
+
 # Extract --plan-file <path>, if present, into PLAN_FILE_FLAG and strip it out
 PLAN_FILE_FLAG=""
 if printf '%s' "$ARGUMENTS_CLEAN" | grep -qE '(^| )--plan-file( |$)'; then
@@ -76,12 +88,12 @@ if printf '%s' "$ARGUMENTS_CLEAN" | grep -qE '(^| )--issue( |$)'; then
   ARGUMENTS_CLEAN=$(printf '%s' "$ARGUMENTS_CLEAN" | sed -E "s|--issue[[:space:]]+$(printf '%s' "$ISSUE_FLAG" | sed 's/[.[\*^$/]/\\&/g')||; s/[[:space:]]+/ /g; s/^[[:space:]]*//; s/[[:space:]]*$//")
 fi
 
-# Parse remaining positional arguments (whatever --plan-file/--issue didn't consume)
+# Parse remaining positional arguments (whatever --worktree-only/--plan-file/--issue didn't consume)
 set -- $ARGUMENTS_CLEAN
 ARG1="${1:-}"
 ARG2="${2:-}"
 
-echo "PLAN_FILE_FLAG=$PLAN_FILE_FLAG ISSUE_FLAG=$ISSUE_FLAG ARG1=$ARG1 ARG2=$ARG2"
+echo "WORKTREE_ONLY_FLAG=$WORKTREE_ONLY_FLAG PLAN_FILE_FLAG=$PLAN_FILE_FLAG ISSUE_FLAG=$ISSUE_FLAG ARG1=$ARG1 ARG2=$ARG2"
 ```
 
 **Known limitation:** `set -- $ARGUMENTS_CLEAN` word-splits on whitespace — a plan-file path containing
@@ -96,10 +108,43 @@ wrong entry mode. Use a path without spaces, or rename/symlink the file, as a wo
 a GitHub issue number) or the tracker ticket pattern (`^[A-Z]+-[0-9]+$`). Anything else is a hard
 error: `"ERROR: --issue must be a GitHub issue number or a tracker ticket ID (e.g. 59 or PPS-166), got: $ISSUE_FLAG"`.
 
-**Entry mode dispatch:** One ordered `if/elif/elif/elif/else` chain (never independent `if`s). If `$PLAN_FILE_FLAG` is set (the `--plan-file` flag was passed), it is handled **first**, entirely separately from branches 1–6 below — see "`--plan-file` dispatch" immediately after this table.
+**`--worktree-only` validation:** If `$WORKTREE_ONLY_FLAG` is `1`, all of these must hold, else a hard error (checked before anything else in the dispatch):
+
+- `$ISSUE_FLAG` is set and matches `^[0-9]+$`. Missing: `"ERROR: --worktree-only requires --issue <N> (a GitHub issue number)"`. A tracker ticket ID: `"ERROR: --worktree-only does not support tracker ticket IDs ($ISSUE_FLAG) — use a bare GitHub issue number."`
+- `$PLAN_FILE_FLAG` is empty. Otherwise: `"ERROR: --worktree-only cannot be combined with --plan-file (it creates the worktree only; attach the plan later with --issue <N> --plan-file <path>)."`
+- `$ARG1` and `$ARG2` are empty. Otherwise: `"ERROR: --worktree-only takes no positional arguments, got: $ARG1 $ARG2"`
+- Plan mode is irrelevant: it is neither required nor used, and `ExitPlanMode` is never called.
+
+```bash
+if [ "$WORKTREE_ONLY_FLAG" = "1" ]; then
+  if [ -z "$ISSUE_FLAG" ]; then
+    echo "ERROR: --worktree-only requires --issue <N> (a GitHub issue number)" >&2
+    exit 1
+  fi
+  if printf '%s' "$ISSUE_FLAG" | grep -qE '^[A-Z]+-[0-9]+$'; then
+    echo "ERROR: --worktree-only does not support tracker ticket IDs ($ISSUE_FLAG) — use a bare GitHub issue number." >&2
+    exit 1
+  fi
+  if ! printf '%s' "$ISSUE_FLAG" | grep -qE '^[0-9]+$'; then
+    echo "ERROR: --issue must be a GitHub issue number or a tracker ticket ID (e.g. 59 or PPS-166), got: $ISSUE_FLAG" >&2
+    exit 1
+  fi
+  if [ -n "$PLAN_FILE_FLAG" ]; then
+    echo "ERROR: --worktree-only cannot be combined with --plan-file (it creates the worktree only; attach the plan later with --issue <N> --plan-file <path>)." >&2
+    exit 1
+  fi
+  if [ -n "$ARG1" ] || [ -n "$ARG2" ]; then
+    echo "ERROR: --worktree-only takes no positional arguments, got: $ARG1 $ARG2" >&2
+    exit 1
+  fi
+fi
+```
+
+**Entry mode dispatch:** One ordered `if/elif/elif/elif/else` chain (never independent `if`s). If `$WORKTREE_ONLY_FLAG` is `1` it is handled **before everything else**, including branch 0: `ENTRY_MODE=worktree-only`, `IN_PLAN_MODE=0`, no plan file source — jump to "`--worktree-only` Flow" (after Project Detection) and do not evaluate branches 0–6. Otherwise, if `$PLAN_FILE_FLAG` is set (the `--plan-file` flag was passed), it is handled **first**, entirely separately from branches 1–6 below — see "`--plan-file` dispatch" immediately after this table.
 
 | # | Condition | `ENTRY_MODE` | `IN_PLAN_MODE` | Plan file source |
 |---|-----------|--------------|-----------------|-------------------|
+| W | `$WORKTREE_ONLY_FLAG` is `1` (validated above) | `worktree-only` | 0 | none |
 | 0 | `$PLAN_FILE_FLAG` is set | see "`--plan-file` dispatch" below | see below | `$PLAN_FILE_FLAG` |
 | 1 | `$ARG1` matches `^[A-Z]+-[0-9]+$` **and** NOT an existing regular file (`-f`) **and** no `$ARG2` | `tracker` | 1 (plan mode still required) | none |
 | 2 | `$ARG1` matches the regex **and** NOT an existing regular file **and** `$ARG2` present (non-empty) | `tracker-with-path` | 0 | `$ARG2` |
@@ -173,7 +218,8 @@ echo "ARG1_IS_TICKET=$ARG1_IS_TICKET ARG1_IS_FILE=$ARG1_IS_FILE ARG1_PRESENT=$AR
 
 Then assign `ENTRY_MODE` and `IN_PLAN_MODE` yourself (the model), by walking this **ordered** chain — never as independent `if`s, and never write these two branches as unconditioned shell with a "change this if needed" placeholder, since "is plan mode currently active" is not something a bash predicate in this environment can answer; it is a judgment you already know from the conversation you are in:
 
-0. If `$PLAN_FILE_FLAG` is set → follow "`--plan-file` dispatch" above instead of branches 1–6 below; do not evaluate branches 1–6 at all in this case.
+W. If `$WORKTREE_ONLY_FLAG` is `1` → `ENTRY_MODE=worktree-only`, `IN_PLAN_MODE=0`; follow "`--worktree-only` Flow" and skip Plan File Resolution, Local Plan Mode, Tracker Ticket Mode, Pivot Detection, and everything after; do not evaluate branches 0–6.
+0. Else if `$PLAN_FILE_FLAG` is set → follow "`--plan-file` dispatch" above instead of branches 1–6 below; do not evaluate branches 1–6 at all in this case.
 1. If `ARG1_IS_TICKET=1` and `ARG1_IS_FILE=0` and `ARG2_PRESENT=0` → `ENTRY_MODE=tracker`, `IN_PLAN_MODE=1` (plan mode is still required for this branch; if you are not actually in plan mode, stop and emit the "Neither plan mode nor a plan-file path argument" error instead of forcing this branch).
 2. Else if `ARG1_IS_TICKET=1` and `ARG1_IS_FILE=0` and `ARG2_PRESENT=1` → `ENTRY_MODE=tracker-with-path`, `IN_PLAN_MODE=0`.
 3. Else if `ARG1_PRESENT=1` and `ARG2_PRESENT=0` (this covers both a non-matching `$ARG1` and the matching-but-`ARG1_IS_FILE=1` tiebreaker case) → `ENTRY_MODE=path-arg`. For `IN_PLAN_MODE`, assess whether this session is *currently* in plan mode (the same judgment the old "Validate plan mode" step already required) — set `IN_PLAN_MODE=1` if so, `IN_PLAN_MODE=0` otherwise. **This is the branch the ticket exists to fix: a live plan-mode session that also passes a path must still get `IN_PLAN_MODE=1`, even though the path — not the live session — is the plan content source.** This branch 3 assessment is not shell-testable; it requires model judgment about whether plan mode is currently active.
@@ -186,7 +232,7 @@ Then assign `ENTRY_MODE` and `IN_PLAN_MODE` yourself (the model), by walking thi
 
 ```bash
 # After you've made the judgment above, record it so later bash blocks in this doc can read it:
-# ENTRY_MODE="<tracker|tracker-with-path|path-arg|plan-mode>"
+# ENTRY_MODE="<worktree-only|tracker|tracker-with-path|path-arg|plan-mode>"
 # IN_PLAN_MODE=<0|1>
 echo "ENTRY_MODE=$ENTRY_MODE IN_PLAN_MODE=$IN_PLAN_MODE"
 # ISSUE_FLAG may have just been set implicitly by branch 3b above — leave it untouched otherwise.
@@ -197,7 +243,7 @@ echo "ISSUE_FLAG=$ISSUE_FLAG"
 
 ## Plan File Resolution
 
-This section resolves and validates the plan file for modes that require it. It runs for `ENTRY_MODE ∈ {path-arg, tracker-with-path, plan-mode}` only; NOT for plain `tracker` mode. It produces `PLAN_FILE`, `PLAN_CONTENT`, and (for path-arg and plan-mode only) `TITLE`.
+This section resolves and validates the plan file for modes that require it. It runs for `ENTRY_MODE ∈ {path-arg, tracker-with-path, plan-mode}` only; NOT for plain `tracker` mode or `worktree-only`. It produces `PLAN_FILE`, `PLAN_CONTENT`, and (for path-arg and plan-mode only) `TITLE`.
 
 **Note:** `TITLE` is an unstated partial function — it is never assigned in either tracker mode (tracker and tracker-with-path), only in path-arg and plan-mode. In tracker modes, `BRANCH` and `TICKET_TITLE` come from the tracker and must not be overridden.
 
@@ -399,6 +445,119 @@ Run the **Project Detection** block from
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage detect-project --outcome success 2>/dev/null || true
 ```
+
+## `--worktree-only` Flow
+
+Runs only for `ENTRY_MODE=worktree-only`, immediately after Project Detection above (which has set `REPO`, `MAIN_WORKTREE`, `WORKTREE_PARENT`, `CACHE_FILE`, `PROJECT_ROOT`), and **instead of** every section from Local Plan Mode through Final Output. It is self-contained: its own validation, worktree creation, cache write, and handoff. A project with a `plans/` directory and array `issues.json` still takes this GitHub path, because `--issue <N>` names a GitHub issue.
+
+**Never mutates the issue.** This flow must not call `gh issue create`, `gh issue comment`, or `gh issue edit`, and must not write the issue body into `$CACHE_FILE` (the project-level issue cache) or anywhere else. `gh issue view` is the only `gh` call. If `REPO` is empty, error: "No GitHub remote found." (this flow needs one).
+
+**1. Validate the issue exists and is open, and fetch its title:**
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
+
+ISSUE_JSON=$(gh issue view "$ISSUE_FLAG" --repo "$REPO" --json state,title,url 2>/dev/null)
+ISSUE_STATE=$(printf '%s' "$ISSUE_JSON" | jq -r '.state // empty')
+if [ -z "$ISSUE_STATE" ]; then
+  echo "ERROR: --issue $ISSUE_FLAG not found in $REPO." >&2
+  exit 1
+fi
+if [ "$ISSUE_STATE" != "OPEN" ]; then
+  echo "ERROR: --issue $ISSUE_FLAG is not open (state: $ISSUE_STATE) — cannot create a worktree for a closed issue." >&2
+  exit 1
+fi
+ISSUE_TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title')
+ISSUE_URL=$(printf '%s' "$ISSUE_JSON" | jq -r '.url')
+```
+
+**2. Refuse if a worktree for this issue already exists** (shared "Existing worktree lookup" from Step 4-pre):
+
+```bash
+EXISTING_WTS=$(git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt; do
+  case "$(basename "$wt")" in "${ISSUE_FLAG}-"*) printf '%s\n' "$wt" ;; esac
+done)
+if [ -n "$EXISTING_WTS" ]; then
+  EXISTING_FIRST=$(printf '%s\n' "$EXISTING_WTS" | head -1)
+  echo "ERROR: Worktree already exists at $EXISTING_FIRST. Use it or pick a different branch name." >&2
+  exit 1
+fi
+```
+
+**3. Derive the branch and worktree path** with the same rules as the CLI (`infer_type()`, `slugify()`, `build_branch_name()` in `scripts/workflow/track.py` — type from the issue title via the Type Inference table, slug from the title, max 50 chars). Call the Python helpers directly, since `track plan` requires a plan file:
+
+```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+BRANCH=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -c 'import sys; from scripts.workflow.track import infer_type, slugify, build_branch_name; t = sys.argv[1]; print(build_branch_name(infer_type(t), sys.argv[2], slugify(t)))' "$ISSUE_TITLE" "$ISSUE_FLAG")
+if [ -z "$BRANCH" ]; then
+  echo "ERROR: could not derive a branch name from issue #$ISSUE_FLAG title" >&2
+  exit 1
+fi
+# Flat sibling directory: {issue#}-{slug} — the "/" in the branch name never reaches the path.
+WORKTREE_DIR="${BRANCH#*/}"
+WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
+```
+
+**4. Fail-closed checks, then create the worktree from the default branch after a fetch:**
+
+```bash
+if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
+  echo "ERROR: computed worktree path '$WORKTREE_PATH' is not a direct child of WORKTREE_PARENT ('$WORKTREE_PARENT') — refusing to create a nested worktree." >&2
+  exit 1
+fi
+case "$WORKTREE_PATH" in
+  "$MAIN_WORKTREE"/*)
+    echo "ERROR: computed worktree path '$WORKTREE_PATH' is inside the main worktree ('$MAIN_WORKTREE') — refusing to create it." >&2
+    exit 1 ;;
+esac
+if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+  echo "ERROR: Branch ${BRANCH} already exists. Create a new plan with a different title or branch name." >&2
+  exit 1
+fi
+
+DEFAULT_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+[ -z "$DEFAULT_BASE" ] && DEFAULT_BASE="main"
+git fetch origin "$DEFAULT_BASE" || { echo "ERROR: git fetch origin $DEFAULT_BASE failed" >&2; exit 1; }
+cd "$MAIN_WORKTREE"
+git worktree add "$WORKTREE_PATH" -b "$BRANCH" "origin/${DEFAULT_BASE}" || { echo "ERROR: git worktree add failed for $WORKTREE_PATH" >&2; exit 1; }
+```
+
+**5. Write the per-worktree `.claude/github-cache.json`** in the same shape the normal path writes (`branch` plus `issue.number/url/title/body/state`). The issue body is fetched read-only for this file only; nothing is written back to GitHub or to `$CACHE_FILE`:
+
+```bash
+ISSUE_BODY=$(gh issue view "$ISSUE_FLAG" --repo "$REPO" --json body -q '.body' 2>/dev/null)
+mkdir -p "${WORKTREE_PATH}/.claude"
+jq -n \
+  --arg branch "$BRANCH" \
+  --argjson number "$ISSUE_FLAG" \
+  --arg url "$ISSUE_URL" \
+  --arg title "$ISSUE_TITLE" \
+  --arg body "$ISSUE_BODY" \
+  '{branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' \
+  > "${WORKTREE_PATH}/.claude/github-cache.json"
+```
+
+**6. Handoff:**
+
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome success 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome success 2>/dev/null || true
+```
+
+```
+## Worktree ready!
+
+**Issue:** <issue-url>
+**Branch:** `<branch-name>`
+**Worktree:** `<worktree-path>`
+
+### Continue in the worktree:
+
+cd <worktree-path> && claude
+```
+
+The `**Branch:**` and `**Worktree:**` lines use the same format as every other handoff block (value in backticks) so callers such as `/expert-flow` can parse them. **Do NOT** call `ExitPlanMode`, create/comment on/edit any issue, or archive a plan.
 
 ## Local Plan Mode
 
@@ -783,14 +942,27 @@ worktree exists yet** for the target issue (auto-detected Pivot Detection only e
    fi
    ```
 
-2. **Execute the pivot:** set `EXISTING_ISSUE_NUM="$ISSUE_FLAG"` and jump directly to
+2. **Existing worktree reuse:** look for a worktree already created for this issue (for example by an earlier `--worktree-only` run):
+
+   ```bash
+   EXISTING_WTS=$(git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt; do
+     case "$(basename "$wt")" in "${ISSUE_FLAG}-"*) printf '%s\n' "$wt" ;; esac
+   done)
+   EXISTING_WT_COUNT=$(printf '%s' "$EXISTING_WTS" | grep -c . || true)
+   ```
+
+   - **Exactly one** worktree whose directory basename starts with `<N>-` (`EXISTING_WT_COUNT=1`) → **reuse it**: set `REUSE_WORKTREE_PATH` to that path and `REUSE_BRANCH=$(git -C "$REUSE_WORKTREE_PATH" branch --show-current)` — read the branch from git, never guess it from the title. Skip branch and worktree creation entirely (no `git worktree add`, no `track apply` worktree step). Still do the archive-then-replace of the issue body with the plan (Step 4d steps 1 and 3) and the `$CACHE_FILE` update, then refresh `${REUSE_WORKTREE_PATH}/.claude/github-cache.json` by setting `.branch = $REUSE_BRANCH` and `.issue.body` to the new plan while preserving the other fields (create the file with the standard shape, as in the `--worktree-only` Flow step 5, if it is missing). Print the handoff block pointing at `$REUSE_WORKTREE_PATH` and `$REUSE_BRANCH`. If `REUSE_BRANCH` is empty (detached HEAD), error rather than guess.
+   - **More than one** match → error: "Multiple worktrees match issue #N: {paths}. Remove or rename all but one, then retry."
+   - **Zero** matches → create the worktree as the "Pivot to existing" flow normally does.
+
+3. **Execute the pivot:** set `EXISTING_ISSUE_NUM="$ISSUE_FLAG"` and jump directly to
    [Duplicate Detection → "Pivot to existing" Flow](#pivot-to-existing-flow) — the same flow used
    when the user picks "Pivot to existing" from the interactive prompt, including its worktree
    creation (so a target issue with no existing worktree gets one). Do not run Steps 4a–4c, and do
    not run the normal Duplicate Detection candidate-matching/`AskUserQuestion` step — `$ISSUE_FLAG`
    already resolved that decision.
 
-3. **If `$ISSUE_FLAG` is not set**, proceed to Step 4a as normal (unchanged).
+4. **If `$ISSUE_FLAG` is not set**, proceed to Step 4a as normal (unchanged).
 
 ### Step 4a: Detect Current Worktree's Linked Issue
 
@@ -1010,7 +1182,7 @@ worktree's issue):
 
 1. **Skip issue creation** — use the existing issue number for branch naming: `{type}/{existing-issue#}-{slug}`
 2. **Update `$CACHE_FILE`** with the new issue body so future duplicate detection runs against the current plan
-3. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number
+3. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number — **unless** Step 4-pre's "Existing worktree reuse" found exactly one existing worktree for the issue, in which case skip creation and hand off that worktree and its git-reported branch
 
 ## Branch Naming
 
@@ -1346,7 +1518,12 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-s
 | Pivot: linked issue is closed | Skip pivot detection, proceed to Step 5 (Duplicate Detection) |
 | Issue cache missing/empty | Skip duplicate detection, proceed to create issue |
 | Issue creation succeeded, worktree creation failed | Error + warning: "GitHub issue #N was created (URL) but worktree creation failed. The issue is orphaned. Resolve the error, retry, or delete the issue and start over." |
-| Worktree already exists | Error: "Worktree already exists at `<path>`. Use it or pick a different branch name." |
+| Worktree already exists | Error: "Worktree already exists at `<path>`. Use it or pick a different branch name." Applies when there is no `--issue` (the CLI would create a colliding worktree), the existing worktree is for a different issue, or `--worktree-only` finds a worktree for `<N>-`. With `--issue <N>` plus a plan and exactly one existing worktree for `<N>-`, this is NOT an error: that worktree is reused. |
+| `--worktree-only` without `--issue <N>` | Error: "--worktree-only requires --issue <N> (a GitHub issue number)" |
+| `--worktree-only` with a tracker ticket ID | Error: "--worktree-only does not support tracker ticket IDs ({id}) — use a bare GitHub issue number." |
+| `--worktree-only` with `--plan-file` | Error: "--worktree-only cannot be combined with --plan-file (it creates the worktree only; attach the plan later with --issue <N> --plan-file <path>)." |
+| `--worktree-only` with positional arguments | Error: "--worktree-only takes no positional arguments, got: {args}" |
+| `--issue` matches several existing worktrees | Error: "Multiple worktrees match issue #N: {paths}. Remove or rename all but one, then retry." |
 | Branch already exists | Error: "Branch `<name>` already exists. Create a new plan with a different title or branch name." |
 | gh CLI not authenticated | Error: "GitHub CLI not authenticated. Run `gh auth login`" |
 | Ticket ID not found in Linear or Jira | Error: "Ticket $TICKET_ID not found in Linear or Jira. Check the ID and try again." |
