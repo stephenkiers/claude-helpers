@@ -107,6 +107,12 @@ def blind(tokens_file, *extra):
     return run([sys.executable, str(PREFLIGHT), "blind-line", "--tokens-file", str(tokens_file), *extra])
 
 
+def read_optional(path):
+    """Text of `path`, or "<absent>" when the file does not exist (used in failure messages)."""
+    p = Path(path)
+    return p.read_text() if p.exists() else "<absent>"
+
+
 def section(doc, heading):
     """Markdown section whose heading contains `heading`, up to the next heading of the same or a
     higher level. Fenced code blocks are skipped, so a `# comment` inside bash is not a heading."""
@@ -336,7 +342,10 @@ def section_contract(h, t):
             repo.mkdir()
             out_dir = Path(tmp) / "out"
             out_dir.mkdir()
-            with open(str(out_dir / "in-flight.err"), "w") as err_file:
+            # Capture the subprocess stderr separately from in-flight.err: the script
+            # unlinks a stale in-flight.err when the snapshot has no failures, so the
+            # test must not depend on that file existing after the run.
+            with open(str(out_dir / "snapshot-stderr.txt"), "w") as err_file:
                 proc = subprocess.run(
                     [sys.executable, str(SNAPSHOT), "--repo-dir", str(repo),
                      "--out", str(out_dir / "in-flight.md"), "--bodies-out", str(out_dir / "in-flight-issues.md")],
@@ -346,7 +355,7 @@ def section_contract(h, t):
             t("contract (%s): snapshot exits 0 and preflight says %s" % (mode, want),
               proc.returncode == 0 and (rc, out) == (want_rc, want),
               "snap=%s preflight=%s %s err=%s" % (proc.returncode, rc, out,
-                                                  (out_dir / "in-flight.err").read_text()[:120]))
+                                                  read_optional(out_dir / "in-flight.err")[:120]))
 
 
 def section_vocabulary(h, t):
