@@ -56,8 +56,10 @@ READ_ONLY_BASH = (
     r"gh (?:pr|issue|repo|run) (?:view|list|checks|diff|status)(?: .*)?",
     r"(?:ls|cat|grep|jq|date|printf|mkdir)(?: .*)?",
     # Named exceptions: mutating git grants that exist for the confirmation-gated Rebase action
-    # in the Hard stop only (verify base-stale). Exactly these two, nothing broader.
-    r"git (?:fetch|rebase)",
+    # in the Hard stop only (verify base-stale), narrowed per ADR-0023's gated-Rebase amendment.
+    r"git fetch origin",
+    r"git rebase (?:origin/\*|--abort)",
+    r"realpath(?: .*)?",
     r"sed -n(?: .*)?",
     r".*run-metrics\.py['\"]?(?: .*)?",
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
@@ -372,15 +374,17 @@ def main():
     audit = sub("### Fidelity audit")
     h.test_result("Fidelity audit section exists", bool(audit))
     for needle in ("expert-scout", ".audit.md", "FIDELITY: ok", "FIDELITY: reduced", "<!-- audit-end -->",
-                   "reduced run (audit)", "--failure-class reduced-run", "audits.jsonl", "audit-unavailable"):
+                   "reduced run (audit)", "--failure-class reduced-run", "audits.jsonl", "audit failure"):
         h.test_result(f"audit section mentions {needle}", needle in audit)
-    h.test_result("missing audit file is treated as ok, not a failure",
-                  "treated as `FIDELITY: ok`" in audit and "not a new" in audit)
+    h.test_result("missing audit file is an audit failure, not treated as ok",
+                  "audit failure" in audit and "fidelity audit failed:" in audit
+                  and "treated as `FIDELITY: ok`" not in audit)
     h.test_result("audit covers plan, implement, review, fix and excludes the rest",
                   "`plan`, `implement`, `review`, and `fix`" in audit
                   and "never\nworktree, track, verify, ship, or merge" in audit)
     h.test_result("Retry after a reduced run adds the extra line",
-                  "Previous\nattempt was rejected as a reduced run" in audit)
+                  "Previous attempt was rejected as a reduced run" in audit.replace("\n", " ")
+                  and "<<<REASON" in audit)
     h.test_result("ledger render uses --run-key (render has no --repo)",
                   "implement-ledger.py\" locate --repo" in audit and "render --run-key" in audit)
     h.test_result("--list prints the reduced-runs tally from audits.jsonl",
@@ -415,8 +419,9 @@ def main():
                   re.search(r"^\| Hard stop → Rebase[^\n]*clean", exit_sec, re.M) is not None
                   and re.search(r"^\| Hard stop → Rebase[^\n]*conflicts", exit_sec, re.M) is not None)
     fm_tools = frontmatter(text)
-    h.test_result("allowed-tools grants git fetch and git rebase for Rebase only",
-                  "Bash(git fetch:*)" in fm_tools and "Bash(git rebase:*)" in fm_tools)
+    h.test_result("allowed-tools grants only the narrowed git fetch origin / rebase origin/* for Rebase",
+                  "Bash(git fetch origin:*)" in fm_tools and "Bash(git rebase origin/*:*)" in fm_tools
+                  and "Bash(git fetch:*)" not in fm_tools and "Bash(git rebase:*)" not in fm_tools)
 
     print()
     h.summarize_and_exit()
