@@ -274,7 +274,7 @@ def _count_commits(repo: str, base: str, branch: str) -> int:
     """Count commits from base to branch. Return commit count; error on failure."""
     try:
         result = subprocess.run(
-            ["git", "-C", repo, "rev-list", "--count", "--", base + ".." + branch],
+            ["git", "-C", repo, "rev-list", "--count", "--end-of-options", base + ".." + branch],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECS,
