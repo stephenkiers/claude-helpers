@@ -564,7 +564,9 @@ are not judged. `--agent-guard-since` must be a timezone-aware ISO 8601 timestam
 
 **Check (a): identity completeness.** On post-`since` `agent.begin`, `agent.end`, and
 `agent.internal_stop` rows, a blank, non-string, or missing `agent_type`, `agent_id`, or `session_id`
-is a FAIL. The literal sentinel `"unknown"` is not a FAIL; it is only counted in the report.
+is a FAIL. The literal sentinel `"unknown"` is not a FAIL; it is only counted in the report. Note that
+saturation of these fields with the `"unknown"` sentinel is not guarded; only the blank/missing/non-string
+condition is checked.
 
 **Check (b): begin/end balance.** This is one-sided. It fails only when
 `ends > begins × (1 + tolerance)`, so surplus ends fail and surplus begins do not (unmatched begins are
@@ -574,20 +576,20 @@ small samples.
 
 **Flags and defaults.** `--agent-guard-since` defaults to the cutoff above;
 `--agent-guard-tolerance` defaults to `0.05` (range 0..1); `--agent-guard-min-begins` defaults to `20`
-(must be ≥ 1). **These defaults are untuned** (open question Q4): they were chosen before any post-cutoff
+(must be ≥ 1). **These defaults are untuned** (#143): they were chosen before any post-cutoff
 data exists and should be revisited once there is a real baseline.
 
 **Report-only lines.** The guard block reports these keys without failing on them:
 
-- `internal_stop events (report-only)` — count of `agent.internal_stop` rows in the window.
+- `internal_stop events (report-only)` — count of `agent.internal_stop` rows post-`since` with parseable timestamps.
 - `unknown agent_type (report-only)` — rows whose `agent_type` is the `"unknown"` sentinel.
 - `unknown agent_id/session_id (report-only)` — rows whose `agent_id` or `session_id` is the `"unknown"` sentinel.
-- `typed internal stops (report-only)` — `agent.internal_stop` rows counted as typed. A row is typed if
+- `attributable internal stops (report-only)` — `agent.internal_stop` rows counted as attributable. A row is attributable if
   it carries a real (non-blank, non-`unknown`) `agent_type`, **or** its `agent_id` matches the `agent_id`
   of a post-`since` `agent.begin`.
 
 ADR-0016 notes that `agent_type` is not a reliable signal for harness-internal firings, so a nonzero
-`typed internal stops` count does not by itself mean a misclassification. It means internal-stop
+`attributable internal stops` count does not by itself mean a misclassification. It means internal-stop
 classification disagreed with the identity and begin data for those rows, and is worth inspecting
 before trusting the spawn count for that period. It does not fail the guard.
 

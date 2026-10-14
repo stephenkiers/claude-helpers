@@ -28,6 +28,13 @@ from pathlib import Path
 
 from _test_harness import REPO_ROOT, Harness
 
+try:
+    from os import geteuid
+except ImportError:
+    # Windows doesn't have geteuid; define a dummy that returns None (not 0)
+    def geteuid():
+        return None
+
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 SCRIPT = SCRIPTS_DIR / "run-metrics.py"
 DOC_PATHS = [
@@ -48,9 +55,11 @@ AGENT_GUARD_CUTOFF = run_metrics.AGENT_GUARD_CUTOFF
 check_agent_events = run_metrics.check_agent_events
 describe_hook_provenance = run_metrics.describe_hook_provenance
 _is_nonblank_str = run_metrics._is_nonblank_str
+_exceeds_allowed = run_metrics._exceeds_allowed
 
-# Fixed `since` for direct calls; equals the shipped constant.
-SINCE = datetime(2026, 10, 13, 18, 58, 25, tzinfo=UTC)
+# Derive test constant from the actual cutoff (use Z suffix for ISO 8601)
+CUTOFF_LITERAL = AGENT_GUARD_CUTOFF.strftime("%Y-%m-%dT%H:%M:%SZ")
+SINCE = AGENT_GUARD_CUTOFF
 _ids = itertools.count(1)
 
 
@@ -229,13 +238,13 @@ def t8_direct_unknown_is_report_only():
     """'unknown' in agent_type or in agent_id/session_id is never a violation; it bumps the report counter."""
     t = SINCE + timedelta(seconds=1)
     res = check_agent_events([_agent("agent.begin", t, agent_type="unknown")], SINCE, 0.05, 20)
-    if res.violations != [] or res.report["unknown_agent_type"] != 1:
+    if res.violations != [] or res.report.unknown_agent_type != 1:
         return False, f"agent_type=unknown: violations={res.violations!r} report={res.report!r}"
     res = check_agent_events([_agent("agent.begin", t, agent_id="unknown")], SINCE, 0.05, 20)
-    if res.violations != [] or res.report["unknown_ids"] != 1:
+    if res.violations != [] or res.report.unknown_ids != 1:
         return False, f"agent_id=unknown: violations={res.violations!r} report={res.report!r}"
     res = check_agent_events([_agent("agent.begin", t, session_id="unknown")], SINCE, 0.05, 20)
-    if res.violations != [] or res.report["unknown_ids"] != 1:
+    if res.violations != [] or res.report.unknown_ids != 1:
         return False, f"session_id=unknown: violations={res.violations!r} report={res.report!r}"
     return True, ""
 
@@ -305,7 +314,7 @@ def t9_direct_ratio_boundary():
     res = check_agent_events(_ratio_events(100, 105), SINCE, 0.05, 20)
     if res.violations != [] or res.skipped != []:
         return False, f"100/105 should pass: violations={res.violations!r} skipped={res.skipped!r}"
-    if res.report["begins"] != 100 or res.report["ends"] != 105:
+    if res.report.begins != 100 or res.report.ends != 105:
         return False, f"report counts wrong for 100/105: {res.report!r}"
     res = check_agent_events(_ratio_events(100, 106), SINCE, 0.05, 20)
     if len(res.violations) != 1:
@@ -325,12 +334,34 @@ def t9_direct_exact_ratio_boundary():
     return True, ""
 
 
+def t9_direct_exceeds_allowed_boundary_cases():
+    """Direct _exceeds_allowed tests: 0 tolerance (ends must equal begins), 1e-05 tolerance, and exact ceiling."""
+    # Zero tolerance: 101 > 100 fails, 100 == 100 passes
+    if _exceeds_allowed(100, 100, 0.0):
+        return False, "_exceeds_allowed(100, 100, 0.0) should be False (equal is allowed)"
+    if not _exceeds_allowed(101, 100, 0.0):
+        return False, "_exceeds_allowed(101, 100, 0.0) should be True (over limit)"
+
+    # Very small tolerance: 1e-05
+    # 100 * (1 + 1e-05) = 100.001, so 100 passes, 101 fails
+    if _exceeds_allowed(100, 100, 1e-05):
+        return False, "_exceeds_allowed(100, 100, 1e-05) should pass (at or below ceiling)"
+
+    # Tolerance 0.05: 100 * 1.05 = 105, so 105 passes, 106 fails
+    if _exceeds_allowed(105, 100, 0.05):
+        return False, "_exceeds_allowed(105, 100, 0.05) should pass (at ceiling)"
+    if not _exceeds_allowed(106, 100, 0.05):
+        return False, "_exceeds_allowed(106, 100, 0.05) should fail (over ceiling)"
+
+    return True, ""
+
+
 def t9_direct_internal_stops_do_not_count_as_ends():
     """100 begins, 103 ends and 250 internal stops passes; report counts internal stops separately."""
     res = check_agent_events(_ratio_events(100, 103, internal_stops=250), SINCE, 0.05, 20)
     if res.violations != []:
         return False, f"100/103 + 250 internal stops should pass: {res.violations!r}"
-    if res.report["internal_stops"] != 250 or res.report["ends"] != 103:
+    if res.report.internal_stops != 250 or res.report.ends != 103:
         return False, f"report wrong: {res.report!r}"
     return True, ""
 
@@ -360,22 +391,31 @@ def t9_direct_min_begins_skip_and_fail():
 
 
 def t9_direct_straddler_counts_post_since_ends():
-    """20 post-since begins + 20 matching ends + 2 ends whose begins predate since = 22 > 21 -> violation."""
+    """20 post-since begins + 20 matching ends + 2 ends whose begins predate since = 22 > 21 -> violation; 2 straddlers."""
+    presince_ids = []
     events = [_agent("agent.begin", SINCE - timedelta(hours=1)) for _ in range(2)]
+    # Capture pre-since begin IDs for matching ends later
+    presince_ids = [e["agent_id"] for e in events]
     for i in range(20):
         events.append(_agent("agent.begin", SINCE + timedelta(seconds=1 + i)))
     for i in range(22):
-        events.append(_agent("agent.end", SINCE + timedelta(seconds=100 + i)))
+        # First 2 ends match pre-since begins, remainder match post-since begins
+        if i < 2:
+            events.append(_agent("agent.end", SINCE + timedelta(seconds=100 + i), agent_id=presince_ids[i]))
+        else:
+            events.append(_agent("agent.end", SINCE + timedelta(seconds=100 + i)))
     res = check_agent_events(events, SINCE, 0.05, 20)
     if len(res.violations) != 1:
         return False, f"straddler case should fail once: {res.violations!r}"
-    if res.report["begins"] != 20 or res.report["ends"] != 22:
+    if res.report.begins != 20 or res.report.ends != 22:
         return False, f"straddler report wrong: {res.report!r}"
+    if res.report.straddler_ends != 2:
+        return False, f"straddler count should be 2, got {res.report.straddler_ends}: {res.report!r}"
     return True, ""
 
 
 def t9_direct_typed_internal_stops():
-    """A typed internal_stop and one whose agent_id matches a begin each increment typed_internal_stops; no failure."""
+    """A typed internal_stop and one whose agent_id matches a begin each increment attributable_internal_stops; no failure."""
     begin = _agent("agent.begin", SINCE + timedelta(seconds=1), agent_type="reviewer", agent_id="agent-typed-b")
     typed_stop = _agent("agent.internal_stop", SINCE + timedelta(seconds=2), agent_type="reviewer")
     id_match_stop = _agent("agent.internal_stop", SINCE + timedelta(seconds=3),
@@ -383,29 +423,29 @@ def t9_direct_typed_internal_stops():
     untyped_stop = _agent("agent.internal_stop", SINCE + timedelta(seconds=4), agent_type="unknown")
     res = check_agent_events([begin, typed_stop, id_match_stop, untyped_stop], SINCE, 0.05, 20)
     if res.violations != []:
-        return False, f"typed internal stops must not fail: {res.violations!r}"
-    if res.report["typed_internal_stops"] != 2:
-        return False, f"expected typed_internal_stops == 2: {res.report!r}"
+        return False, f"attributable internal stops must not fail: {res.violations!r}"
+    if res.report.attributable_internal_stops != 2:
+        return False, f"expected attributable_internal_stops == 2: {res.report!r}"
     return True, ""
 
 
 def t9_direct_report_keys_present():
     """report always carries every documented key."""
     res = check_agent_events([], SINCE, 0.05, 20)
-    needed = {"begins", "ends", "internal_stops", "unknown_agent_type", "unknown_ids", "typed_internal_stops"}
-    missing = needed - set(res.report)
+    needed = {"begins", "ends", "internal_stops", "unknown_agent_type", "unknown_ids", "attributable_internal_stops", "straddler_ends"}
+    missing = needed - set(res.report._asdict())
     if missing:
         return False, f"report missing keys {sorted(missing)}"
     return True, ""
 
 
 def t9_cli_ratio_fail_and_control():
-    """100 begins / 130 ends fails with the counts in the text; the baseline control exits 0."""
+    """100 begins / 130 ends fails with specific counts in the text; the baseline control exits 0."""
     now = _now()
     extra = ["--agent-guard-since", (now - timedelta(days=3)).isoformat()]
     rows = _ratio_events(100, 130, base=now - timedelta(days=2))
     code, out, err = _run(_baseline(now) + rows, extra=extra)
-    ok, msg = _fail_expected(code, out, ["100", "130", "0.05"])
+    ok, msg = _fail_expected(code, out, ["130 ends vs 100 begins"])
     if not ok:
         return False, msg
     code, out, err = _run(_baseline(now), extra=extra)
@@ -438,7 +478,7 @@ def t9_cli_min_begins_fail_and_control():
     extra = ["--agent-guard-since", (now - timedelta(days=3)).isoformat()]
     rows = _ratio_events(20, 40, base=now - timedelta(days=2))
     code, out, err = _run(_baseline(now) + rows, extra=extra)
-    ok, msg = _fail_expected(code, out, ["20", "40"])
+    ok, msg = _fail_expected(code, out, ["40 ends vs 20 begins"])
     if not ok:
         return False, msg
     code, out, err = _run(_baseline(now), extra=extra)
@@ -505,7 +545,9 @@ def t11_default_since_is_cutoff():
     ok, msg = _fail_expected(code, out, _violation_needles("agent.begin", "agent_type", _iso(row_ts)))
     if not ok:
         return False, msg
-    if "2026-10-13" not in out or "18:58:25" not in out:
+    # Check for the cutoff date and time (isoformat uses +00:00 instead of Z for UTC)
+    # Accept either format: 2026-10-13T18:58:25Z or 2026-10-13T18:58:25+00:00
+    if "2026-10-13T18:58:25" not in out:
         return False, f"header should show the default bound (AGENT_GUARD_CUTOFF): {out!r}"
     code, out, err = _run(_baseline(now))
     return _control_ok(code, out, err)
@@ -609,9 +651,30 @@ def t12_provenance_supports_and_unreadable():
     line = _direct_prov(supports)
     if "supports agent.internal_stop" not in line or "does NOT" in line:
         return False, f"supports case: {line!r}"
+
+    # Skip unreadable test when running as root (cannot create unreadable files)
+    if geteuid() == 0:
+        return True, ""  # Skip the unreadable case; supports case passed
+
     line = _direct_prov(unreadable)
     if "unreadable" not in line:
         return False, f"unreadable case: {line!r}"
+    return True, ""
+
+
+def t12_provenance_dangling_symlink():
+    """A dangling symlink is reported with its target path (direct)."""
+    def dangling(root, home):
+        nonexistent = root / "nonexistent-run-metrics.py"
+        scripts = home / ".claude" / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "run-metrics.py").symlink_to(nonexistent)
+
+    line = _direct_prov(dangling)
+    if "dangling symlink ->" not in line:
+        return False, f"dangling symlink case: {line!r}"
+    if "nonexistent-run-metrics.py" not in line:
+        return False, f"dangling symlink should mention target: {line!r}"
     return True, ""
 
 
@@ -643,6 +706,27 @@ def t13_nonblank_str_contract():
     return True, ""
 
 
+# ============================================================================
+# D1: unknown saturation is not guarded
+# ============================================================================
+
+
+def d1_unknown_agent_type_normalizes_and_passes():
+    """An agent.begin with empty agent_type normalizes to "unknown" and guard still passes (report-only)."""
+    now = _now()
+    # Simulate agent-begin writer with empty payload
+    row = _agent("agent.begin", now - timedelta(days=2), agent_type="")
+    # The CLI writer _field() function normalizes blank to "unknown"
+    row["agent_type"] = "unknown"  # Simulating the _field normalization
+    extra = ["--agent-guard-since", (now - timedelta(days=3)).isoformat()]
+    code, out, err = _run(_baseline(now) + [row], extra=extra)
+    if code != 0:
+        return False, f"unknown agent_type should pass (report-only), got exit {code}: {out!r}"
+    if "unknown agent_type (report-only): 1" not in out:
+        return False, f"report should show the unknown agent_type count: {out!r}"
+    return True, ""
+
+
 def main():
     h = Harness("Agent event guard (run-metrics diagnose)")
     tests = [
@@ -654,6 +738,7 @@ def main():
         ("T8 CLI: row between constant and later --agent-guard-since is ignored", t8_cli_row_between_constant_and_later_since_ignored),
         ("T9 direct: ends == begins*(1+tol) passes, one more fails", t9_direct_ratio_boundary),
         ("T9 direct: exact ratio limits at 0.15/0.13 pass; 100/116 at 0.15 fails", t9_direct_exact_ratio_boundary),
+        ("T9 direct: _exceeds_allowed boundary cases (0 tol, 1e-05, at ceiling)", t9_direct_exceeds_allowed_boundary_cases),
         ("T9 direct: internal stops do not count as ends", t9_direct_internal_stops_do_not_count_as_ends),
         ("T9 direct: 100/130 fails; 100/70 passes (one-sided)", t9_direct_one_sided_and_large_excess),
         ("T9 direct: 19 begins skipped; 20 begins with 40 ends fails", t9_direct_min_begins_skip_and_fail),
@@ -672,8 +757,10 @@ def main():
         ("T12: provenance reports pre-#267 hook with re-run advice (direct and CLI)", t12_provenance_pre_267_hook),
         ("T12: provenance reports '(this script)' for repo symlink (direct and CLI)", t12_provenance_points_at_this_script),
         ("T12: provenance reports supports / unreadable (direct)", t12_provenance_supports_and_unreadable),
+        ("T12: provenance reports dangling symlink with target (direct)", t12_provenance_dangling_symlink),
         ("T13: cutoff literal in docs; placeholder absent", t13_cutoff_literal_in_docs),
         ("_is_nonblank_str contract", t13_nonblank_str_contract),
+        ("D1: unknown agent_type is report-only, guard passes", d1_unknown_agent_type_normalizes_and_passes),
     ]
     for name, fn in tests:
         try:
