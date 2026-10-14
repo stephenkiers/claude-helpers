@@ -47,8 +47,8 @@ shared bash block in `prompts/worktree-reference.md` and `detect_worktree_parent
 Fail-closed behaviour: the Python implementation raises `WorktreeParentError` when the resolved parent
 is the main worktree itself or lies under `~/.claude/`; the `worktree detect-parent` CLI exits 1 on the
 same conditions. A git failure while listing worktrees also raises rather than returning an empty
-result. Only a repo that reports no worktrees yields an empty worktree list, and the sibling scan then
-finds no candidate and detection falls back to `<main>/worktrees`. The detection key
+result. An empty listing is not a fallback case: detection returns `""` and the `worktree detect-parent`
+CLI exits 1 with `ERROR:`, so the caller fails closed. The detection key
 remains the parent directory name `worktrees`; the reordering changes precedence, not the invariant.
 
 ## Amendment (2026-10-13): detection implemented once, in Python

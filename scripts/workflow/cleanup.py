@@ -513,8 +513,6 @@ def _detect_stacked_children(
         worktree_parent = Path(worktree_parent_str)
         if not worktree_parent.is_dir():
             return [], False, False
-    except worktrees.WorktreeListError:
-        return [], False, False
     except worktrees.WorktreeParentError:
         raise
     except Exception:

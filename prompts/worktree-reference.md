@@ -23,6 +23,7 @@ MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cu
 
 # 3. Worktree parent: ONE implementation, in Python (scripts/workflow/worktrees.py::detect_worktree_parent).
 #    Fails closed (exit 1) if unsafe.
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory" >&2; exit 1; }
 WORKTREE_PARENT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli worktree detect-parent --cwd "$PWD") || { echo "ERROR: could not determine WORKTREE_PARENT" >&2; exit 1; }
 
 # 4. Issue cache at worktree parent level

@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
 argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 1-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh":*), Bash(python3 -m scripts.workflow.cli cleanup:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
 
@@ -13,8 +13,8 @@ chain of subagent steps, so you type one command and come back to a merged PR or
 **worktree-first**: started from the main worktree, it creates the ticket worktree and prints the
 command to continue from inside it, so your session, its cwd, PR detection and metadata live where
 the work happens. The
-orchestrator does **no engineering work itself**: it never edits code, never runs a git mutation,
-never remediates a failure. Every step is the existing command, unchanged except that questions it
+orchestrator does **no engineering work itself**: it never edits code, never runs a git mutation
+(beyond the human-gated Rebase and the Start fresh deletion below), never remediates a failure. Every step is the existing command, unchanged except that questions it
 would have asked you with `AskUserQuestion` are written to a file, relayed to you here, and the
 answers handed back. See `docs/adr/0023-expert-flow.md` for the design and
 `docs/plans/expert-flow-proposal.md` for the full proposal; the relay mechanism every step follows
@@ -38,7 +38,7 @@ files under `FLOW_DIR` and the one marker file), `Task` (to spawn a step), `Send
 a step with answers), and `AskUserQuestion`. Shell writes are limited to: `printf >` receipt stubs and
 `printf >>` log lines under `FLOW_DIR`, and the one marker-exclude line described in the worktree step.
 The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`).
-There is no `Edit`, no write-capable git, no `gh` mutation. The one destructive action is the
+There is no `Edit`, no write-capable git beyond the exact Rebase grants, no `gh` mutation. The one destructive action is the
 **Start fresh** deletion of the old flow's worktree through the `/cleanup` helper: the orchestrator's
 only sanctioned destructive action, run only after the human chose Start fresh (see "Existing flow"). (`Bash(sed -n:*)` and similar read-only
 Bash grants are not write boundaries; prefer `head -n 1` or `Read` for simple reads where possible.)
@@ -386,13 +386,13 @@ printf 'ISSUE=%s STATE=%s FLOW_DIR=%s\n' "$ISSUE" "$ISSUE_STATE" "$FLOW_DIR"
 runs" (classify `HERE` now that `ISSUE` is known).
 
 **Existing flow.** A plain run (no `--from`, no `--epic`) for which `$FLOWS_ROOT` already holds an
-`<ISSUE>-*` directory with a `state.json` does not resume silently. Pick the newest by `updated` (this
+`<ISSUE>-*` directory with a `state.json` does not resume silently. Pick the newest with the shared newest-flow lookup, `<PREFIX>` = `<ISSUE>-` (this
 is the `EXISTING_DIR`) and read its `status`, `step`, and `live` with `jq`. Then:
 
 1. If `live` is not `null`, resume rule 1 applies first (its own question); the question below is
    asked only once `live` is `null`.
 2. Ask once with `AskUserQuestion` (header `Existing flow`): "`#<ISSUE>` already has a flow at
-   `<EXISTING step>` (`<EXISTING status>`, updated `<EXISTING updated>`). What should this run do?"
+   `<EXISTING step>` (`<EXISTING status>`, updated `<EXISTING updated>`). What should this run do? Start fresh deletes the old flow's worktree."
    Options: `Resume (Recommended)` — continue the existing flow exactly as `--resume <ISSUE>` does;
    `Start fresh` — delete the old flow's worktree at `<EXISTING worktree path>` (the `worktree` field of
    its `state.json`; say so in the option if it is `null`) and create a new flow directory (step 3);
@@ -402,18 +402,30 @@ is the `EXISTING_DIR`) and read its `status`, `step`, and `live` with `jq`. Then
 3. **Start fresh.** This is the orchestrator's one sanctioned destructive action: deleting the old
    flow's worktree. It runs only after the human chose **Start fresh**, and in this order:
    a. **Check the old worktree.** `EXISTING_WT=$(jq -r '.worktree // empty' "$EXISTING_DIR/state.json")`.
-      If it is empty or the directory no longer exists, skip (a) and (b) and go to (c): nothing is lost.
-      Otherwise check it for uncommitted changes and unpushed commits:
+      If it is empty: run `git worktree list --porcelain` and, if any listed worktree's directory name
+      starts with `<ISSUE>-`, hard stop (`flow not started`, state untouched): the flow lost track of its
+      worktree and deleting blindly is unsafe, so the human removes it first. If none matches, or the
+      field is set but the directory no longer exists, skip (a) and (b) and go to (c): nothing is lost.
+      Otherwise apply these guards before anything is deleted, each a hard stop with `flow not started`
+      (`guard_block`, no telemetry, state untouched):
+      - `EXISTING_WT=$(realpath "$EXISTING_WT")` must not equal `MAIN_WORKTREE` and must lie strictly
+        under `WORKTREE_PARENT` (starts with `"$WORKTREE_PARENT"/`); a hand-edited or stale `state.json`
+        must never point the deletion elsewhere.
+      - `HERE` must not equal `EXISTING_WT` or lie inside it: the deletion would remove the directory
+        this session runs in. Print "run `/expert-flow` from Main" instead.
+
+      Then check it for uncommitted changes and unpushed commits. Any command that exits non-zero, or an
+      empty `DEFAULT_BRANCH`, counts as **unknown**, which is treated like "something would be lost":
 
       ```bash
+      DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || printf 'main')
       git -C "$EXISTING_WT" status --porcelain
       git -C "$EXISTING_WT" log "@{u}..HEAD" --oneline 2>/dev/null || git -C "$EXISTING_WT" log "origin/$DEFAULT_BRANCH..HEAD" --oneline
       ```
 
-      `DEFAULT_BRANCH` is `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` (fallback
-      `main`). If either output is non-empty, list what would be lost (the status lines and commit lines)
-      and ask once with `AskUserQuestion` (header `Delete worktree`): "Deleting `<EXISTING_WT>` loses the
-      uncommitted changes or unpushed commits listed above. Delete it anyway?" — options `Delete anyway`
+      If either output is non-empty or a command failed (say which), list what would be lost (or that
+      the state is unknown) and ask once with `AskUserQuestion` (header `Delete worktree`): "Deleting `<EXISTING_WT>` loses the
+      uncommitted changes or unpushed commits listed above (or its state could not be determined). Delete it anyway?" — options `Delete anyway`
       and `Keep and abort`. `Keep and abort` (or no answer) prints `flow not started` and stops
       (`guard_block`, no telemetry, state untouched). A clean, fully pushed worktree needs no question.
    b. **Delete the old worktree** through the `/cleanup` helper, with the same `cleanup plan` then
@@ -424,7 +436,12 @@ is the `EXISTING_DIR`) and read its `status`, `step`, and `live` with `jq`. Then
       PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup plan "$EXISTING_WT") && printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup apply -
       ```
 
-      If either command exits non-zero, print its output and hard stop with `Retry` (re-run (b)),
+      Read `needs_confirmation` in the plan JSON: if it is non-empty (open or absent PR, stacked
+      children), ask the same `Delete worktree` question naming those reasons before `apply`.
+      `cleanup apply` also runs `git pull --ff-only origin main` and the repo's check commands as a
+      main-health gate; those never block removal, and exit 0 does not mean the worktree is gone: read
+      `worktree_removed` in the JSON and treat `false` as a failure. If either command exits non-zero, or
+      `worktree_removed` is not `true`, print its output and hard stop with `Retry` (re-run (b)),
       `Take over`, or `Abort`. `Take over` and `Abort` both print `flow not started` and stop. The
       existing flow and its state stay untouched, and no new flow is created. As with `/cleanup`, the
       removal may take the directory this session is sitting in.

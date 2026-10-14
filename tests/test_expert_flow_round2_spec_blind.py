@@ -96,10 +96,9 @@ if __name__ == "__main__":
     t("worktree-reference.md is present", WT_REF.is_file())
     bash_blocks = re.findall(r"```bash\n(.*?)```", wt_text, re.S)
     all_bash = "\n".join(bash_blocks)
-    t("no bash block in worktree-reference.md runs git worktree list",
-      "worktree list" not in all_bash, "found 'worktree list' in a bash block")
-    t("worktree-reference.md has no porcelain parsing anywhere",
-      "porcelain" not in wt_text)
+    # Other sections of the doc legitimately list worktrees (main-worktree lookup,
+    # stacked-branch detection); only the detect-parent step is single-implementation,
+    # and test_worktree_reference_detection.py scopes its no-duplication check to that step.
     t("worktree-reference.md calls the detect-parent CLI",
       "scripts.workflow.cli worktree detect-parent" in wt_text)
 
@@ -126,8 +125,8 @@ if __name__ == "__main__":
     t("no bare sort_by(.updated) without a tie-break remains",
       not re.search(r"sort_by\(\s*\.updated\s*\)", cmd_text))
     sites = cmd_text.count("sort_by([.updated, .dir])")
-    t("the same lookup is used at four sites (--list, --resume, --abandon, Existing-flow prompt)",
-      sites >= 4, f"sort_by sites={sites}")
+    t("the tie-broken lookup is spelled out at the shared definition, --list and --resume",
+      sites >= 3, f"sort_by sites={sites}")
     guard_near = all(
         re.search(r"try|malformed|skip", cmd_text[max(0, m.start() - 400):m.start() + 400])
         for m in re.finditer(r"sort_by\(\[\.updated, \.dir\]\)", cmd_text)
