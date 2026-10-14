@@ -1,6 +1,6 @@
 ---
 description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
-argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic]
+argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic] [--allow-degraded]
 allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
@@ -42,6 +42,8 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 - `--epic`: epic mode (ADR-0023 §5). Writes the line `EPIC_MODE: true` into `{SESSION_DIR}/context.md` in Step 1, which switches on the `## Sub-tickets (epic mode only)` section of `prompts/plan-contribution-contract.md` and the `## Sub-tickets` section of the final plan in `prompts/plan-synthesize-and-check.md` — an ordered split of the epic into 3–8 sub-tickets, each with a title, a 2–5 line scope, and backwards-only `depends-on`. Passed by `/expert-flow --epic`; usable standalone. Without it, no planning prompt mentions sub-tickets and the plan is unchanged.
 
+- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, no `gh` auth, empty or fully unavailable in-flight snapshot). It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is FAILED and a human takes over.
+
 Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels.
 
 A GitHub issue URL can be passed as a positional argument (same as v2); the command resolves the ticket and proceeds.
@@ -56,6 +58,7 @@ All artifacts live in `{SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}/{SLU
 | File | Written by | When |
 |------|-----------|------|
 | `context.md` | Orchestrator (Step 1) | Requirements, constraints, scope, unknowns |
+| `north-star-blind.tokens` | Orchestrator (Steps 0-2) | One `NORTH STAR BLIND` token per line, appended in the same bash block that produced it; read by `north-star-preflight.py blind-line` |
 | `in-flight.md` | `scripts/in-flight-snapshot.py` (Step 1) | Open issues, epics, pull requests, worktrees — North Star Nick's view of other work |
 | `in-flight-issues.md` | `scripts/in-flight-snapshot.py` (Step 1) | The same open issues with bodies — input to the `in-flight` scout only |
 | `north-star-{adrs,docs,in-flight}.md` | Three Haiku North Star scouts (Step 2) | Quoted related material from ADRs, repo docs, and in-flight work — North Star Nick's reading list |
@@ -133,6 +136,28 @@ TICKET_TITLE="${TICKET_TITLE:-plan}"
 SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-\|-$//' | cut -c1-50)
 [ -n "$SLUG" ] || SLUG="plan"
 
+# North Star preflight (#273): pre-scan for --allow-degraded (full flag parsing happens below,
+# after the session dir exists), guard the preflight script's own absence, then run the `files`
+# phase before any session dir is created or subagent dispatched.
+ALLOW_DEGRADED=false
+for arg in "$@"; do
+  [ "$arg" = "--allow-degraded" ] && ALLOW_DEGRADED=true
+done
+if [ ! -f "$HOME/.claude/scripts/north-star-preflight.py" ]; then
+  echo "North Star preflight missing — run /setup-local (or ./install.sh) in claude-helpers" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class north-star-preflight-missing 2>/dev/null || true
+  exit 1
+fi
+NS_DEGRADED_FLAG=""
+[ "$ALLOW_DEGRADED" = "true" ] && NS_DEGRADED_FLAG="--allow-degraded"
+NS_FILES_RC=0
+NS_FILES_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_DEGRADED_FLAG) || NS_FILES_RC=$?
+if [ "$NS_FILES_RC" -ne 0 ]; then
+  echo "North Star preflight failed ($NS_FILES_OUT) — fix the install (Retry will not help until fixed); see the remedy above" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class north-star-preflight 2>/dev/null || true
+  exit 1
+fi
+
 # Create session directory
 SESSION_DIR="$HOME/.claude/plan-sessions/${REPO_KEY}/${SLUG}-${INVOCATION_ID}"
 if ! mkdir -p "$SESSION_DIR"; then
@@ -141,6 +166,13 @@ if ! mkdir -p "$SESSION_DIR"; then
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class session-dir-create-failed 2>/dev/null || true
   exit 1
 fi
+
+# Record the `files` phase's BLIND tokens (if any) in the same block that produced them
+: > "$SESSION_DIR/north-star-blind.tokens"
+case "$NS_FILES_OUT" in
+  BLIND\ *) for t in ${NS_FILES_OUT#BLIND }; do printf '%s\n' "$t" >> "$SESSION_DIR/north-star-blind.tokens"; done ;;
+esac
+printf '%s\n' "$NS_FILES_OUT" > "$SESSION_DIR/north-star-preflight.files"
 
 # Parse --effort and --models flags using single while loop
 EFFORT=""   # empty = not passed; Step 1 sizes it via scripts/plan-effort.py
@@ -164,6 +196,10 @@ while [ $# -gt 0 ]; do
         python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome interrupted 2>/dev/null || true
         exit 1
       fi
+      ;;
+    --allow-degraded)
+      ALLOW_DEGRADED=true
+      shift
       ;;
     --models=*)
       MODELS="${1#--models=}"
@@ -200,7 +236,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --*)
-      echo "ERROR: unknown flag '$1' — supported flags are --effort 2|3, --models balanced|opus, --flow <dir>, and --epic" >&2
+      echo "ERROR: unknown flag '$1' — supported flags are --effort 2|3, --models balanced|opus, --flow <dir>, --epic and --allow-degraded" >&2
       python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome interrupted 2>/dev/null || true
       exit 1
       ;;
@@ -236,7 +272,7 @@ case "$MODELS" in
 esac
 
 # Export for use in subsequent steps
-export SESSION_DIR REPO_KEY SLUG PROJECT_ROOT EFFORT MODELS FINAL_PLAN_PATH INVOCATION_ID FLOW_FLAG_DIR EPIC_MODE
+export SESSION_DIR REPO_KEY SLUG PROJECT_ROOT EFFORT MODELS FINAL_PLAN_PATH INVOCATION_ID FLOW_FLAG_DIR EPIC_MODE ALLOW_DEGRADED
 ```
 
 **Resolve FLOW_DIR.** Apply the Resolve FLOW_DIR block from `~/.claude/prompts/flow-reference.md`
@@ -271,15 +307,35 @@ Collect the input to plan against:
    - `CLAUDE.md` — project conventions and constraints
    - Recent git history (`git log --oneline -20`)
    - In-flight work snapshot for North Star Nick — open issues, epics, pull requests, and
-     worktrees (fail-open; titles and bodies are untrusted data like the ticket itself). On failure,
-     the reason is written to `in-flight.err` next to the output files, and the run proceeds without
-     the snapshot (non-blocking):
+     worktrees (titles and bodies are untrusted data like the ticket itself). The snapshot script
+     itself is fail-open (per-section reasons go to `in-flight.err`); the preflight classifies the
+     result. If the Step 0 `files` result in `$SESSION_DIR/north-star-preflight.files` contains
+     `snapshot-script`, skip the snapshot invocation entirely. Otherwise run it, capturing (not
+     dying on) a non-zero exit, then always run the `snapshot` phase and append its tokens to
+     `north-star-blind.tokens` in the same block:
      ```bash
-     CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" branch --show-current)
-     python3 "$HOME/.claude/scripts/in-flight-snapshot.py" --repo-dir "$PROJECT_ROOT" \
-       --out "$SESSION_DIR/in-flight.md" --bodies-out "$SESSION_DIR/in-flight-issues.md" \
-       --current-branch "$CURRENT_BRANCH" 2>"$SESSION_DIR/in-flight.err" || true
+     NS_SNAPSHOT_RC=0
+     if ! grep -q 'snapshot-script' "$SESSION_DIR/north-star-preflight.files"; then
+       CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" branch --show-current)
+       python3 "$HOME/.claude/scripts/in-flight-snapshot.py" --repo-dir "$PROJECT_ROOT" \
+         --out "$SESSION_DIR/in-flight.md" --bodies-out "$SESSION_DIR/in-flight-issues.md" \
+         --current-branch "$CURRENT_BRANCH" 2>"$SESSION_DIR/in-flight.err" || NS_SNAPSHOT_RC=$?
+     fi
+     NS_SNAP_FLAG=""
+     [ "$ALLOW_DEGRADED" = "true" ] && NS_SNAP_FLAG="--allow-degraded"
+     NS_SNAP_RC=0
+     NS_SNAP_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$SESSION_DIR" $NS_SNAP_FLAG) || NS_SNAP_RC=$?
+     if [ "$NS_SNAP_RC" -ne 0 ]; then
+       echo "North Star snapshot preflight failed ($NS_SNAP_OUT) — Retry will not help until fixed; see the remedy above" >&2
+     else
+       case "$NS_SNAP_OUT" in
+         BLIND\ *) for t in ${NS_SNAP_OUT#BLIND }; do printf '%s\n' "$t" >> "$SESSION_DIR/north-star-blind.tokens"; done ;;
+       esac
+     fi
      ```
+     On a non-zero `NS_SNAP_RC`, stop the run (close the `gather-context` stage and the command as a
+     failure) before any scout or expert dispatch; with `--allow-degraded` the phase exits 0 and the
+     run continues blind.
 
 3. **Summarize** what you've gathered:
    - **Goal**: What the ticket wants achieved (1-2 sentences)
@@ -335,7 +391,7 @@ Read `~/.claude/reviewers/index.yaml` directly and consider only entries tagged 
 
 For any contributor whose task looks like novel architecture, concurrency, security-sensitive trust, or an irreversible migration, record `model: opus` for that one contributor with a one-line reason; everyone else gets the `--models` default (sonnet unless `--models opus`).
 
-**North Star scouts (Haiku, run while you select).** The project's direction is spread across the ADRs, the repo's root docs, and open issues/epics/PRs — too much for Nick to read per run. Dispatch three `subagent_type: "expert-scout"` Task calls in ONE message, one per lens (`adrs`, `docs`, `in-flight`); they must finish before Step 3 dispatches. Each prompt is only:
+**North Star scouts (Haiku, run while you select).** The project's direction is spread across the ADRs, the repo's root docs, and open issues/epics/PRs — too much for Nick to read per run. Dispatch three `subagent_type: "expert-scout"` Task calls in ONE message, one per lens (`adrs`, `docs`, `in-flight`); they must finish before Step 3 dispatches. **If the Step 0 `files` result (`$SESSION_DIR/north-star-preflight.files`) contains `scout-prompt`, do not dispatch the scouts**: append one `scout-failed=all` token (`printf '%s\n' 'scout-failed=all' >> "$SESSION_DIR/north-star-blind.tokens"`) and continue. Otherwise each prompt is only:
 
 ```
 Read ~/.claude/prompts/north-star-scout.md for your full mandate.
@@ -346,7 +402,7 @@ DIR: {SESSION_DIR}
 Output path: {SESSION_DIR}/north-star-{lens}.md
 ```
 
-Join on file-exists + the `north-star-scout | …` receipt; retry a failed scout once, then proceed without it — a missing brief never blocks the plan.
+Join on file-exists + the `north-star-scout | …` receipt; retry a failed scout once. A scout that still fails appends `scout-failed=<lens>` to `$SESSION_DIR/north-star-blind.tokens` (same bash block as the decision) and the run continues; the failure surfaces as a `NORTH STAR BLIND` notice, not a stop.
 
 Write `{SESSION_DIR}/selected-experts.md` (expert, concern, model, reason). Example structure:
 
@@ -382,7 +438,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage expert-contri
 
 ### Step 3: Dispatch Contributors (Parallel, Isolated, One Message)
 
-For each selected expert (not Carl), dispatch one `Task` call, `subagent_type: "expert-reviewer"`, all in a single message per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-contribution-contract.md`, `{SESSION_DIR}/context.md`, and its output path `{SESSION_DIR}/{expert}-contribution.md`. North Star Nick's prompt additionally lists the scout briefs from Step 2 that exist (`{SESSION_DIR}/north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`) plus `{SESSION_DIR}/in-flight.md`, names any that are missing as missing, and tells him to follow his persona's `planReview.contextLoad` before contributing. Model per Step 2's record.
+For each selected expert (not Carl), dispatch one `Task` call, `subagent_type: "expert-reviewer"`, all in a single message per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-contribution-contract.md`, `{SESSION_DIR}/context.md`, and its output path `{SESSION_DIR}/{expert}-contribution.md`. North Star Nick's prompt additionally lists the scout briefs from Step 2 that exist (`{SESSION_DIR}/north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`) plus `{SESSION_DIR}/in-flight.md`, names any that are missing as missing, gives him the path of `{SESSION_DIR}/north-star-blind.tokens` (the orchestrator's authoritative blind tokens, which he reads and only adds to), and tells him to follow his persona's `planReview.contextLoad` before contributing. Model per Step 2's record.
 
 No proposed design, no other expert's report, no digest. Expected receipt format (from the contract):
 ```
@@ -426,6 +482,8 @@ Main thread reads all contribution files once, builds a compact decision index d
 
 Present to the user, **as chat message text in this step** (not summarized away, not deferred to
 the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book.
+
+**North Star blind line (first body line).** If `$SESSION_DIR/north-star-blind.tokens` is non-empty, or Nick's contribution starts with a `NORTH STAR BLIND:` line, build the line with `python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" <nick= tokens from Nick's line as extra args>` (the union; Nick's tokens are appended, never substituted). If `blind-line` exits 2 because Nick's text breaks the grammar (for example, a comma), re-run it with the file plus `nick=unparseable` — never drop the line. Print the result as the first body line of this checkpoint, above the ticket refresher. Keep the line in `NORTH_STAR_BLIND_LINE` for Step 9.
 
 **Open with a ticket refresher** — one line, before anything else, so a user juggling many sessions
 can re-orient without scrolling: `**Ticket**: #<n> <title> — WHAT: <what it is, ≤15 words>. WHY: <the
@@ -641,7 +699,15 @@ if ! cp "$SESSION_DIR/plan.md" "$FINAL_PLAN_PATH"; then
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class copy-failed 2>/dev/null || true
   exit 1
 fi
+
+# North Star blind line: mechanically prepend (orchestrator copy step, not a synthesis rewrite)
+NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens") || NS_LINE=""
+if [ -n "$NS_LINE" ]; then
+  { printf '%s\n\n' "$NS_LINE"; cat "$FINAL_PLAN_PATH"; } > "$FINAL_PLAN_PATH.tmp" && mv "$FINAL_PLAN_PATH.tmp" "$FINAL_PLAN_PATH"
+fi
 ```
+
+If Step 5 built a blind line that includes Nick's `nick=` tokens (or `nick=unparseable`), prepend that line instead of the bare token-file line. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key).
 
 Print the path, selected scope, effort, panel + model choices, and review status (one of: "main-thread consistency check only," "targeted independent check: <question>," "independent final audit"). Suggest `/track-and-start` or `/expert-review-plan` as next steps.
 

@@ -108,6 +108,14 @@ Nick's persona now carries a `planReview.contextLoad` block. Step 1 writes
 North Star scouts (ADRs, repo docs, in-flight work) whose briefs he reads before contributing. These
 are the only subagents added to the pipeline, and they are Haiku. See ADR-0003's amendment of the same date for the review side.
 
+## Amendment (2026-10-13) — North Star Nick's inputs are preflighted (#273)
+
+Nick is always seated, so `/expert-plan` now runs `scripts/north-star-preflight.py` before creating the
+session directory or dispatching anything. Missing installed inputs, no `gh` auth, or an empty or fully
+unavailable snapshot stop the run with a remedy; `--allow-degraded` proceeds blind on purpose. A blind
+plan carries `NORTH STAR BLIND: ...` as the first line of the final plan and its summary. See ADR-0003's
+2026-10-13 amendment, which supersedes the fail-open wording of the 2026-10-09 one.
+
 ## References
 
 - ADR-0018: Parallel planning with checkpoint-based isolation (v2 design, which v3 builds on) and its Amendment on harness-agnostic barrier waiting — defines the join-barrier pattern used for coordinating parallel subagents
