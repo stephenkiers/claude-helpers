@@ -503,14 +503,14 @@ def main() -> None:
             try:
                 main_wt = Path(args.from_worktree)
                 new_wt = Path(args.to_worktree)
-                seeded, skipped, error = seed_worktree_cache(main_wt, new_wt)
+                seeded, skipped, seed_error = seed_worktree_cache(main_wt, new_wt)
                 output = {
                     "seeded": seeded,
                     "skipped": skipped,
-                    "error": error
+                    "error": seed_error
                 }
                 print(json.dumps(output))
-                if error:
+                if seed_error:
                     sys.exit(1)
             except Exception as e:
                 output = {

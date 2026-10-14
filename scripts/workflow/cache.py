@@ -9,7 +9,6 @@ plus lock-file helpers for coordinating concurrent writers.
 import json
 import hashlib
 import os
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -447,7 +446,9 @@ def seed_worktree_cache(main_worktree: Path, new_worktree: Path) -> Tuple[List[s
         try:
             resolved_source = source_path.resolve()
             resolved_main_cache = main_cache_dir.resolve()
-            if not str(resolved_source).startswith(str(resolved_main_cache)):
+            try:
+                resolved_source.relative_to(resolved_main_cache)
+            except ValueError:
                 return [], [], f"Symlink escape detected: {filename} resolves outside {main_cache_dir}"
         except (OSError, RuntimeError) as e:
             return [], [], f"Failed to resolve symlink for {filename}: {e}"

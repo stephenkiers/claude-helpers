@@ -7,7 +7,6 @@ executing something (unless explicitly configured to skip all checks,
 which is a hard error rather than a silent pass).
 """
 
-import json
 import os
 import signal
 import subprocess
@@ -19,7 +18,7 @@ from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
 
 try:
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 except ImportError:
     yaml = None  # type: ignore[assignment]
 
@@ -306,7 +305,7 @@ def resolve_check_command(
                         check_cmd = commands.get("check")
                         if isinstance(check_cmd, str) and check_cmd.strip():
                             return check_cmd.strip(), "project.yaml", None
-        except (OSError, Exception):
+        except Exception:
             pass
 
     # 4. Try justfile check recipe
