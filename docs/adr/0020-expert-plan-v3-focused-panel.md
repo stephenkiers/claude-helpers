@@ -112,7 +112,7 @@ are the only subagents added to the pipeline, and they are Haiku. See ADR-0003's
 
 Nick is always seated, so `/expert-plan` now runs `scripts/north-star-preflight.py` before creating the
 session directory or dispatching anything. Missing installed inputs or an empty or fully
-unavailable snapshot stop the run with a remedy (a missing `gh` auth is only an advisory `BLIND gh-auth` notice); `--allow-degraded` proceeds blind on purpose. A blind
+unavailable snapshot stop the run with a remedy (including a missing or failed `gh` auth, token `gh-auth`); `--allow-degraded` proceeds blind on purpose. A blind
 plan carries `NORTH STAR BLIND: ...` as the first line of the final plan and its summary. See ADR-0003's
 2026-10-13 amendment, which supersedes the fail-open wording of the 2026-10-09 one. Scout output quality (empty or garbage `north-star-*.md` scout files, and Nick's self-reported `NORTH STAR BLIND:` line) is NOT gated by the preflight and is out of scope for #273; a `scouts --dir` phase is a possible follow-up.
 

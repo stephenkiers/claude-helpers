@@ -8,7 +8,7 @@ preflight script is driven only through its CLI (subprocess), and the install sc
 on the rulings' observable wording; they do not parse prose beyond that.
 
 Covers (plan item in parentheses):
-1. files phase: missing installs FAIL with a neutral remedy; gh is advisory; blind run (F2, F3, F25)
+1. files phase: missing installs FAIL with a neutral remedy; gh is hard; blind run (F2, F3, F25)
 2. snapshot phase: empty / partial / complete outputs; remedies per token (F2, F10-adjacent)
 3. blind-line: token output, first-seen order, invalid-token fallback (F1, F24)
 4. blind-line: free-text nick= validation: comma, control chars, length cap, encoding (F9, F15, F17, F27)
@@ -138,7 +138,7 @@ def main():
     t = h.test_result
 
     # ------------------------------------------------------------------
-    print("[Section 1] files phase: missing installs, gh advisory, blind run")
+    print("[Section 1] files phase: missing installs, gh hard, blind run")
 
     with tempfile.TemporaryDirectory() as tmp:
         empty_claude = Path(tmp) / "empty-claude"
@@ -177,12 +177,12 @@ def main():
         claude = populated_claude_dir(tmp)
         rc, out, err = run_preflight(
             ["files", "--claude-dir", str(claude)], path_value=empty_path_dir(tmp))
-        t("files: missing gh is advisory, not a hard stop (F3) — exit 0",
-          rc == 0, f"rc={rc} stderr={err.strip()[:200]}")
+        t("files: missing gh is a hard stop (F3) — exit 3",
+          rc == 3, f"rc={rc} stderr={err.strip()[:200]}")
         t("files: missing gh is reported as the gh-auth token (F3)",
-          "gh-auth" in (status_tokens(out, "BLIND") or []), out.strip()[:300])
-        t("files: missing gh notice is advisory: no stop language on stderr (#2)",
-          "Retry will not help" not in err and "continues" in err, err.strip()[:300])
+          "gh-auth" in (status_tokens(out, "FAIL") or []), out.strip()[:300])
+        t("files: missing gh stop remedy names gh auth login and the stop language (#2)",
+          "gh auth login" in err and "Retry will not help" in err, err.strip()[:300])
 
     with tempfile.TemporaryDirectory() as tmp:
         claude = populated_claude_dir(tmp)
@@ -192,8 +192,8 @@ def main():
         (unrunnable_dir / "gh").chmod(0o644)
         rc, out, err = run_preflight(
             ["files", "--claude-dir", str(claude)], path_value=str(unrunnable_dir))
-        t("files: a gh that exists but cannot run is a gh-auth notice, exit 0 (#11)",
-          rc == 0 and "gh-auth" in (status_tokens(out, "BLIND") or []), f"rc={rc} out={out.strip()[:200]!r}")
+        t("files: a gh that exists but cannot run is a hard gh-auth FAIL, exit 3 (#11)",
+          rc == 3 and "gh-auth" in (status_tokens(out, "FAIL") or []), f"rc={rc} out={out.strip()[:200]!r}")
         t("files: a gh that cannot run is remedied as 'could not be run', not 'not authenticated' (#11)",
           "could not be run" in err and "not authenticated" not in err, err.strip()[:300])
 

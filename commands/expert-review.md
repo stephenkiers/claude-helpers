@@ -103,8 +103,8 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   `ALLOW_DEGRADED=true`, passed through to the shared panel. It suppresses only the hard stop,
   never the notice: the run carries a `NORTH STAR BLIND:` line. Only meaningful at effort 3-5
   (where Nick is seated); `/expert-flow` does not forward it. Accepted in local and PR-URL forms.
-  A missing or failed `gh auth` is only a notice (`BLIND gh-auth`, exit 0); the hard gate for GitHub
-  context is the snapshot phase (`snapshot-unavailable`, `snapshot-empty`). A preflight stop is a
+  A missing, failed or timed-out `gh auth` is a hard stop (`gh-auth`, `files` phase), and the snapshot phase
+  gates the fetch outcome (`snapshot-unavailable`, `snapshot-empty`). A preflight stop is a
   deterministic, non-retryable failure: Retry will not help until the installed files (`/setup-local`)
   or the snapshot's GitHub context is fixed, so the human takes over or re-runs with `--allow-degraded`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
@@ -571,7 +571,7 @@ case "$NS_FILES_OUT" in
   BLIND\ *) printf '%s\n' "${NS_FILES_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "<REVIEW_DIR>/north-star-blind.tokens" ;;
 esac
 ```
-On exit 3, stop with the remedy (stderr, verbatim). FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens, and its stderr carries an advisory note (the run continues; `gh auth` is a notice here, never a stop). Preflight stdout tokens are whitespace-split; `blind-line`
+On exit 3, stop with the remedy (stderr, verbatim). FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens, and its stderr carries an advisory note (the run continues; `gh-auth` is a hard token and stops the run without `--allow-degraded`). Preflight stdout tokens are whitespace-split; `blind-line`
 never fails on a bad token (an invalid one prints `nick=unparseable` with a stderr warning, exit 0). **Residual, stated rather than hidden:**
 `REVIEW_DIR` exists already (Step 0), in PR mode the PR worktree exists too (created by
 `scripts/setup-pr-worktree.sh` in place of Step 1), and the Effort Scout may have run, because

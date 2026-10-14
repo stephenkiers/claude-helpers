@@ -42,7 +42,7 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 - `--epic`: epic mode (ADR-0023 §5). Writes the line `EPIC_MODE: true` into `{SESSION_DIR}/context.md` in Step 1, which switches on the `## Sub-tickets (epic mode only)` section of `prompts/plan-contribution-contract.md` and the `## Sub-tickets` section of the final plan in `prompts/plan-synthesize-and-check.md` — an ordered split of the epic into 3–8 sub-tickets, each with a title, a 2–5 line scope, and backwards-only `depends-on`. Passed by `/expert-flow --epic`; usable standalone. Without it, no planning prompt mentions sub-tickets and the plan is unchanged.
 
-- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, empty or fully unavailable in-flight snapshot). A missing or failed `gh auth` is only a notice (`BLIND gh-auth`, exit 0); the GitHub-context hard gate is the snapshot phase. It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is a deterministic, non-retryable FAILED (receipt Reason `north-star-preflight: <tokens>`), so the human takes over or re-runs with `--allow-degraded` rather than Retrying.
+- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, empty or fully unavailable in-flight snapshot). A missing, failed or timed-out `gh auth` is a hard stop too (`gh-auth`, `files` phase); the snapshot phase gates the fetch outcome. It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is a deterministic, non-retryable FAILED (receipt Reason `north-star-preflight: <tokens>`), so the human takes over or re-runs with `--allow-degraded` rather than Retrying.
 
 Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels.
 
@@ -170,7 +170,7 @@ if ! mkdir -p "$SESSION_DIR"; then
 fi
 
 # Record the `files` phase's BLIND tokens (if any) in the same block that produced them.
-# FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens (its stderr is advisory: the run continues).
+# FAIL stdout lists hard tokens only (including `gh-auth`); BLIND lists hard then notice tokens (its stderr is advisory: the run continues).
 # Stdout tokens are whitespace-split; split with tr + sed rather than an unquoted for-loop (zsh does not word-split).
 : > "$SESSION_DIR/north-star-blind.tokens"
 case "$NS_FILES_OUT" in
@@ -341,7 +341,7 @@ Collect the input to plan against:
      On a non-zero `NS_SNAP_RC`, stop the run (close the `gather-context` stage and the command as a
      failure with `--failure-class other`, via `stage-end` and `command-end`) before any scout or expert
      dispatch. This is a deterministic, non-retryable FAILED: Retry will not help until the cause is fixed
-     (`/setup-local`, or the snapshot's GitHub context via `gh auth`). FAIL stdout lists hard tokens only; BLIND
+     (`/setup-local`, or `gh auth login` for a `gh-auth` failure and the snapshot's GitHub context). FAIL stdout lists hard tokens only; BLIND
      lists hard then notice tokens, and its stderr is advisory. With `--allow-degraded` the phase exits 0 and the run continues blind.
 
 3. **Summarize** what you've gathered:

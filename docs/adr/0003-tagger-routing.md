@@ -270,7 +270,7 @@ The 2026-10-09 amendment said "Every piece is fail-open; a source that could not
 unchecked". That sentence is **superseded** for the orchestrator. A run in which Nick is seated (effort
 3-5) now fails loudly before any panel dispatch when his inputs are missing: `scripts/in-flight-snapshot.py`
 or `prompts/north-star-scout.md` not installed, or an empty or fully unavailable snapshot
-(`scripts/north-star-preflight.py` defines the predicate). A missing `gh` auth is advisory (a `BLIND gh-auth` notice, exit 0), not a stop. Pass `--allow-degraded` to proceed blind on
+(`scripts/north-star-preflight.py` defines the predicate). A missing or failed `gh` auth is a hard stop too (token `gh-auth`, `files` phase). Pass `--allow-degraded` to proceed blind on
 purpose. Partial degradation (one snapshot section down, a failed scout, a Nick-reported gap) is a
 notice, not a stop. Any blind run carries a `NORTH STAR BLIND: ...` line as the first body line of
 `final-report.md`, `claude-action-plan.md` and the closing summary. The snapshot script itself stays

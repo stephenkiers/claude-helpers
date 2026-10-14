@@ -168,16 +168,16 @@ def section_files(h, t):
         t("files: an empty file counts as missing", (rc, out) == (3, "FAIL scout-prompt"), out)
 
         rc, out, _ = files(claude, env_with(bindir, "auth-fail"))
-        t("files: gh auth failure is an advisory BLIND gh-auth notice, exit 0",
-          (rc, out) == (0, "BLIND gh-auth"), out)
+        t("files: gh auth failure is a hard FAIL gh-auth, exit 3",
+          (rc, out) == (3, "FAIL gh-auth"), out)
 
         empty_bin = Path(tmp) / "emptybin"
         empty_bin.mkdir()
         env2 = os.environ.copy()
         env2["PATH"] = str(empty_bin)
         rc, out, _ = run([sys.executable, str(PREFLIGHT), "files", "--claude-dir", str(claude)], env=env2)
-        t("files: gh absent from PATH is an advisory BLIND gh-auth notice, exit 0",
-          (rc, out) == (0, "BLIND gh-auth"), out)
+        t("files: gh absent from PATH is a hard FAIL gh-auth, exit 3",
+          (rc, out) == (3, "FAIL gh-auth"), out)
 
         rc, out, _ = files(c2, env_with(bindir, "auth-fail"), "--allow-degraded")
         t("files: --allow-degraded downgrades to BLIND with the same tokens, exit 0",
@@ -294,11 +294,13 @@ def section_exit_table(h, t):
 
     cases = [
         # (label, builder, want_rc, want_stdout)
-        ("files: gh-auth notice alone is BLIND gh-auth, exit 0",
-         files_case(gh_mode="auth-fail"), 0, "BLIND gh-auth"),
-        ("files: hard snapshot-script plus gh-auth notice: FAIL lists only the hard token, exit 3",
-         files_case(gh_mode="auth-fail", break_snapshot=True), 3, "FAIL snapshot-script"),
-        ("files: hard plus notice under --allow-degraded: BLIND hard then notice, exit 0",
+        ("files: gh-auth alone is FAIL gh-auth, exit 3",
+         files_case(gh_mode="auth-fail"), 3, "FAIL gh-auth"),
+        ("files: gh-auth alone under --allow-degraded is BLIND gh-auth, exit 0",
+         files_case(gh_mode="auth-fail", extra=("--allow-degraded",)), 0, "BLIND gh-auth"),
+        ("files: snapshot-script plus gh-auth: FAIL lists both hard tokens, exit 3",
+         files_case(gh_mode="auth-fail", break_snapshot=True), 3, "FAIL snapshot-script gh-auth"),
+        ("files: both hard tokens under --allow-degraded: BLIND in order, exit 0",
          files_case(gh_mode="auth-fail", break_snapshot=True, extra=("--allow-degraded",)), 0,
          "BLIND snapshot-script gh-auth"),
         ("files: hard failure without --allow-degraded is exit 3",

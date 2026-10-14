@@ -10,10 +10,9 @@ Subcommands:
     files    [--claude-dir DIR] [--allow-degraded]
         Required installed files (`scripts/in-flight-snapshot.py`, `prompts/north-star-scout.md`
         under the claude dir) are hard: each must exist, resolve to a regular file, and be non-empty.
-        `gh auth status` is advisory only: a failed, missing or timed-out check emits a `gh-auth`
-        notice (BLIND, exit 0). Host-global gh auth must not hard-block a working user; the
-        `snapshot` phase is the authoritative gate on real fetch outcomes. A missing `gh` binary
-        counts as a `gh-auth` notice.
+        `gh auth status` is hard too: a failed, missing or timed-out check is the `gh-auth` token
+        (a missing `gh` binary counts). North Star Nick needs GitHub issue and PR context, so an
+        unauthenticated host stops the run unless --allow-degraded is passed.
     snapshot --dir DIR [--allow-degraded]
         Classifies the snapshot the orchestrator just wrote into DIR (`in-flight.md`,
         `in-flight.err`, `in-flight-issues.md`).
@@ -82,13 +81,14 @@ _ERR_KEY = re.compile(r"^(issues|prs|epics):")
 FILES_REMEDY = ("North Star inputs are not installed in ~/.claude: run /setup-local "
                 "(or ./install.sh) in claude-helpers. Retry will not help until fixed.")
 NOTICE_PREFIX = "notice: the run continues; --allow-degraded is not required for these."
-GH_NOTICE = {
-    "timeout": "gh auth status timed out: GitHub context may be missing; check the network to restore it.",
-    "missing": "gh is not installed: GitHub context may be missing; install the GitHub CLI and run "
-               "`gh auth login` to restore it.",
-    "unrunnable": "gh could not be run: GitHub context may be missing; check the gh install and its "
-                  "permissions.",
-    "unauth": "gh is not authenticated: GitHub context may be missing; run `gh auth login` to restore it.",
+GH_REMEDY = {
+    "timeout": "gh auth status timed out: check the network, then retry. Retry may help.",
+    "missing": "gh is not installed: install the GitHub CLI and run `gh auth login`, or pass "
+               "--allow-degraded to run blind on purpose. Retry will not help until fixed.",
+    "unrunnable": "gh could not be run: check the gh install and its permissions, or pass "
+                  "--allow-degraded to run blind on purpose. Retry will not help until fixed.",
+    "unauth": "gh is not authenticated: run `gh auth login`, or pass --allow-degraded to run blind "
+              "on purpose. Retry will not help until fixed.",
 }
 PARTIAL_NOTICE = ("GitHub context is partial: run `gh auth login` (or check the network if the fetch "
                   "timed out) to restore it.")
@@ -151,8 +151,8 @@ def _remedy(tokens: Sequence[str], gh_status: str = "unauth") -> str:
     if any(t in FILE_TOKENS for t in tokens):
         lines.append(FILES_REMEDY)
     if "gh-auth" in tokens:
-        lines.append(GH_NOTICE.get(gh_status, GH_NOTICE["unauth"]))
-    # Only the GitHub-context tokens get the gh auth login remedy. FILE_TOKENS never do.
+        lines.append(GH_REMEDY.get(gh_status, GH_REMEDY["unauth"]))
+    # gh-auth, snapshot-unavailable and snapshot-partial get the gh auth login remedy. FILE_TOKENS never do.
     if "snapshot-unavailable" in tokens:
         lines.append(CONTEXT_REMEDY)
     if any(t.startswith("snapshot-partial=") for t in tokens):
@@ -185,8 +185,9 @@ def _emit(hard: List[str], notice: List[str], allow_degraded: bool, gh_status: s
 def phase_files(claude_dir: Path, allow_degraded: bool) -> int:
     hard = [token for token, rel in REQUIRED_FILES if not _usable_file(claude_dir / rel)]
     gh_status = _gh_ok()
-    notice = [] if gh_status == "ok" else ["gh-auth"]
-    return _emit(hard, notice, allow_degraded, gh_status)
+    if gh_status != "ok":
+        hard.append("gh-auth")
+    return _emit(hard, [], allow_degraded, gh_status)
 
 
 def _read_err_keys(err: Path) -> List[str]:

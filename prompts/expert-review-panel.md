@@ -386,7 +386,7 @@ fi
 A non-zero `SNAPSHOT_RC` is reported alongside it. Otherwise, for a `BLIND ...` stdout, the tokens are whitespace-split and appended (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`
 (the `tr` + `sed` split above, not an unquoted `for` loop, which zsh does not word-split). The snapshot script itself is
 fail-open (exit 0, an `unavailable:` line in the output and keys in `in-flight.err`); the preflight
-is what classifies that into a hard stop or a notice. FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens, and the stop remedy is printed on stderr only on the FAIL path (BLIND prints an advisory note that the run continues).
+is what classifies that into a hard stop or a notice. FAIL stdout lists hard tokens only (a failed `gh auth` is the hard token `gh-auth`); BLIND lists hard then notice tokens, and the stop remedy is printed on stderr only on the FAIL path (BLIND prints an advisory note that the run continues).
 
 If `north-star-preflight.files` named `scout-prompt`, skip the scouts entirely and append
 `scout-failed=all` to the tokens file. Otherwise launch **three** `subagent_type: "expert-scout"` agents in ONE message (pinned Haiku by the

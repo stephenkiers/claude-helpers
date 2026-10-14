@@ -8,7 +8,7 @@ running the actual scripts via subprocess with temporary directories and a
 stubbed `gh` command.
 
 Test categories:
-- files phase: missing scripts, dangling symlinks, gh auth (advisory), --allow-degraded
+- files phase: missing scripts, dangling symlinks, gh auth (hard), --allow-degraded
 - snapshot phase: empty/missing in-flight.md, partial snapshots, unavailable snapshot
 - Grammar: NORTH STAR BLIND prefix, token vocabulary, de-duplication, unparseable handling
 - Nick's line: first-5-lines scan, length cap, printable-only, undecodable bytes
@@ -258,8 +258,8 @@ ok, detail = test_files_fail_dangling_symlink()
 t("files: dangling symlink counts as missing -> FAIL snapshot-script, exit 3", ok, detail)
 
 
-def test_files_gh_auth_advisory():
-    """gh auth fails with every required file present -> advisory BLIND gh-auth, exit 0 (not FAIL)."""
+def test_files_gh_auth_hard():
+    """gh auth fails with every required file present -> FAIL gh-auth, exit 3."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         home = tmpdir / "home"
@@ -275,15 +275,15 @@ def test_files_gh_auth_advisory():
 
         rc, out, err = run_preflight(["files", "--claude-dir", str(claude_dir)], env)
 
-        return (rc == 0 and out == "BLIND gh-auth"), f"rc={rc}, out={out!r}"
+        return (rc == 3 and out == "FAIL gh-auth"), f"rc={rc}, out={out!r}"
 
 
-ok, detail = test_files_gh_auth_advisory()
-t("files: gh auth failure is an advisory notice -> BLIND gh-auth, exit 0", ok, detail)
+ok, detail = test_files_gh_auth_hard()
+t("files: gh auth failure is a hard stop -> FAIL gh-auth, exit 3", ok, detail)
 
 
-def test_files_fail_line_omits_notice_tokens():
-    """Hard snapshot-script plus gh-auth notice -> FAIL line carries only the hard token, exit 3."""
+def test_files_fail_line_lists_all_hard_tokens():
+    """Hard snapshot-script plus gh-auth -> FAIL line lists both hard tokens, exit 3."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         home = tmpdir / "home"
@@ -300,11 +300,11 @@ def test_files_fail_line_omits_notice_tokens():
 
         rc, out, err = run_preflight(["files", "--claude-dir", str(claude_dir)], env)
 
-        return (rc == 3 and out == "FAIL snapshot-script"), f"rc={rc}, out={out!r}"
+        return (rc == 3 and out == "FAIL snapshot-script gh-auth"), f"rc={rc}, out={out!r}"
 
 
-ok, detail = test_files_fail_line_omits_notice_tokens()
-t("files: FAIL line omits the gh-auth notice token, exit 3", ok, detail)
+ok, detail = test_files_fail_line_lists_all_hard_tokens()
+t("files: FAIL line lists every hard token including gh-auth, exit 3", ok, detail)
 
 
 def test_files_allow_degraded_downgrades():
@@ -340,8 +340,8 @@ ok, detail = test_files_allow_degraded_downgrades()
 t("files: --allow-degraded downgrades to BLIND with same tokens, exit 0", ok, detail)
 
 
-def test_files_allow_degraded_lists_hard_then_notice():
-    """Under --allow-degraded the BLIND line lists hard tokens first, then notice tokens."""
+def test_files_allow_degraded_lists_hard_tokens_in_order():
+    """Under --allow-degraded the BLIND line lists the hard tokens in order."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         home = tmpdir / "home"
@@ -364,8 +364,8 @@ def test_files_allow_degraded_lists_hard_then_notice():
         return (rc == 0 and out == "BLIND snapshot-script gh-auth"), f"rc={rc}, out={out!r}"
 
 
-ok, detail = test_files_allow_degraded_lists_hard_then_notice()
-t("files: --allow-degraded BLIND line is exactly hard tokens then notice tokens", ok, detail)
+ok, detail = test_files_allow_degraded_lists_hard_tokens_in_order()
+t("files: --allow-degraded BLIND line is exactly the hard tokens in order", ok, detail)
 
 
 # ============================================================================
