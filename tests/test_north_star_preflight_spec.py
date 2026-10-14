@@ -8,9 +8,10 @@ running the actual scripts via subprocess with temporary directories and a
 stubbed `gh` command.
 
 Test categories:
-- files phase: missing scripts, dangling symlinks, gh auth, --allow-degraded
+- files phase: missing scripts, dangling symlinks, gh auth (advisory), --allow-degraded
 - snapshot phase: empty/missing in-flight.md, partial snapshots, unavailable snapshot
 - Grammar: NORTH STAR BLIND prefix, token vocabulary, de-duplication, unparseable handling
+- Nick's line: first-5-lines scan, length cap, printable-only, undecodable bytes
 - Contract: in-flight.err key names and the preflight classification
 
 Run with: python3 tests/test_north_star_preflight_spec.py
@@ -115,6 +116,20 @@ def env_with_path(bin_dir):
     return env
 
 
+def snapshot_state(directory):
+    """Bytes and mtime of every regular file in a directory, for before/after comparison."""
+    return {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in directory.iterdir() if p.is_file()}
+
+
+def nick_line_result(tmpdir, payload):
+    """Write `payload` (bytes) as Nick's output and run blind-line with no tokens file contents."""
+    nick_file = tmpdir / "nick.md"
+    nick_file.write_bytes(payload)
+    return run_preflight(["blind-line", "--tokens-file", str(tmpdir / "missing"),
+                          "--nick-file", str(nick_file)])
+
+
 # ============================================================================
 # FILES PHASE TESTS
 # ============================================================================
@@ -144,9 +159,8 @@ def test_files_ok_when_present():
         return (rc == 0 and out == "OK"), f"rc={rc}, out={out!r}"
 
 
-t("files: both present and gh succeeds -> OK, exit 0",
-  test_files_ok_when_present(),
-  test_files_ok_when_present()[1])
+ok, detail = test_files_ok_when_present()
+t("files: both present and gh succeeds -> OK, exit 0", ok, detail)
 
 
 def test_files_fail_missing_snapshot_script():
@@ -176,9 +190,8 @@ def test_files_fail_missing_snapshot_script():
                f"rc={rc}, out={out!r}, '/setup-local' in err={has_setup_local}"
 
 
-t("files: missing snapshot script -> FAIL snapshot-script, exit 3, /setup-local in stderr",
-  test_files_fail_missing_snapshot_script(),
-  test_files_fail_missing_snapshot_script()[1])
+ok, detail = test_files_fail_missing_snapshot_script()
+t("files: missing snapshot script -> FAIL snapshot-script, exit 3, /setup-local in stderr", ok, detail)
 
 
 def test_files_fail_missing_scout_prompt():
@@ -207,9 +220,8 @@ def test_files_fail_missing_scout_prompt():
                f"rc={rc}, out={out!r}"
 
 
-t("files: missing scout prompt -> FAIL scout-prompt, exit 3",
-  test_files_fail_missing_scout_prompt(),
-  test_files_fail_missing_scout_prompt()[1])
+ok, detail = test_files_fail_missing_scout_prompt()
+t("files: missing scout prompt -> FAIL scout-prompt, exit 3", ok, detail)
 
 
 def test_files_fail_dangling_symlink():
@@ -242,13 +254,12 @@ def test_files_fail_dangling_symlink():
                f"rc={rc}, out={out!r}"
 
 
-t("files: dangling symlink counts as missing -> FAIL snapshot-script, exit 3",
-  test_files_fail_dangling_symlink(),
-  test_files_fail_dangling_symlink()[1])
+ok, detail = test_files_fail_dangling_symlink()
+t("files: dangling symlink counts as missing -> FAIL snapshot-script, exit 3", ok, detail)
 
 
-def test_files_fail_gh_auth():
-    """gh auth fails -> FAIL gh-auth, exit 3."""
+def test_files_gh_auth_advisory():
+    """gh auth fails with every required file present -> advisory BLIND gh-auth, exit 0 (not FAIL)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         home = tmpdir / "home"
@@ -264,16 +275,36 @@ def test_files_fail_gh_auth():
 
         rc, out, err = run_preflight(["files", "--claude-dir", str(claude_dir)], env)
 
-        has_fail = out.startswith("FAIL")
-        has_token = "gh-auth" in out
-
-        return (rc == 3 and has_fail and has_token), \
-               f"rc={rc}, out={out!r}"
+        return (rc == 0 and out == "BLIND gh-auth"), f"rc={rc}, out={out!r}"
 
 
-t("files: gh auth failure -> FAIL gh-auth, exit 3",
-  test_files_fail_gh_auth(),
-  test_files_fail_gh_auth()[1])
+ok, detail = test_files_gh_auth_advisory()
+t("files: gh auth failure is an advisory notice -> BLIND gh-auth, exit 0", ok, detail)
+
+
+def test_files_fail_line_omits_notice_tokens():
+    """Hard snapshot-script plus gh-auth notice -> FAIL line carries only the hard token, exit 3."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        home = tmpdir / "home"
+        home.mkdir()
+        bin_dir = tmpdir / "bin"
+        bin_dir.mkdir()
+
+        claude_dir = setup_claude_dir(home)
+        (claude_dir / "scripts" / "in-flight-snapshot.py").unlink()
+        fake_gh_failure(bin_dir)
+
+        env = env_with_path(bin_dir)
+        env["HOME"] = str(home)
+
+        rc, out, err = run_preflight(["files", "--claude-dir", str(claude_dir)], env)
+
+        return (rc == 3 and out == "FAIL snapshot-script"), f"rc={rc}, out={out!r}"
+
+
+ok, detail = test_files_fail_line_omits_notice_tokens()
+t("files: FAIL line omits the gh-auth notice token, exit 3", ok, detail)
 
 
 def test_files_allow_degraded_downgrades():
@@ -305,9 +336,36 @@ def test_files_allow_degraded_downgrades():
                f"rc={rc}, out={out!r}"
 
 
-t("files: --allow-degraded downgrades to BLIND with same tokens, exit 0",
-  test_files_allow_degraded_downgrades(),
-  test_files_allow_degraded_downgrades()[1])
+ok, detail = test_files_allow_degraded_downgrades()
+t("files: --allow-degraded downgrades to BLIND with same tokens, exit 0", ok, detail)
+
+
+def test_files_allow_degraded_lists_hard_then_notice():
+    """Under --allow-degraded the BLIND line lists hard tokens first, then notice tokens."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        home = tmpdir / "home"
+        home.mkdir()
+        bin_dir = tmpdir / "bin"
+        bin_dir.mkdir()
+
+        claude_dir = setup_claude_dir(home)
+        (claude_dir / "scripts" / "in-flight-snapshot.py").unlink()
+        fake_gh_failure(bin_dir)
+
+        env = env_with_path(bin_dir)
+        env["HOME"] = str(home)
+
+        rc, out, err = run_preflight(
+            ["files", "--claude-dir", str(claude_dir), "--allow-degraded"],
+            env
+        )
+
+        return (rc == 0 and out == "BLIND snapshot-script gh-auth"), f"rc={rc}, out={out!r}"
+
+
+ok, detail = test_files_allow_degraded_lists_hard_then_notice()
+t("files: --allow-degraded BLIND line is exactly hard tokens then notice tokens", ok, detail)
 
 
 # ============================================================================
@@ -338,9 +396,8 @@ def test_snapshot_empty():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: empty in-flight.md -> FAIL snapshot-empty, exit 3",
-  test_snapshot_empty(),
-  test_snapshot_empty()[1])
+ok, detail = test_snapshot_empty()
+t("snapshot: empty in-flight.md -> FAIL snapshot-empty, exit 3", ok, detail)
 
 
 def test_snapshot_missing():
@@ -360,9 +417,8 @@ def test_snapshot_missing():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: missing in-flight.md -> FAIL snapshot-empty, exit 3",
-  test_snapshot_missing(),
-  test_snapshot_missing()[1])
+ok, detail = test_snapshot_missing()
+t("snapshot: missing in-flight.md -> FAIL snapshot-empty, exit 3", ok, detail)
 
 
 def test_snapshot_unavailable():
@@ -388,9 +444,8 @@ def test_snapshot_unavailable():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: both issues and prs in .err -> FAIL snapshot-unavailable, exit 3",
-  test_snapshot_unavailable(),
-  test_snapshot_unavailable()[1])
+ok, detail = test_snapshot_unavailable()
+t("snapshot: both issues and prs in .err -> FAIL snapshot-unavailable, exit 3", ok, detail)
 
 
 def test_snapshot_partial_issues():
@@ -416,9 +471,8 @@ def test_snapshot_partial_issues():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: only issues failing -> BLIND snapshot-partial=issues, exit 0",
-  test_snapshot_partial_issues(),
-  test_snapshot_partial_issues()[1])
+ok, detail = test_snapshot_partial_issues()
+t("snapshot: only issues failing -> BLIND snapshot-partial=issues, exit 0", ok, detail)
 
 
 def test_snapshot_partial_prs():
@@ -444,9 +498,8 @@ def test_snapshot_partial_prs():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: only prs failing -> BLIND snapshot-partial=prs, exit 0",
-  test_snapshot_partial_prs(),
-  test_snapshot_partial_prs()[1])
+ok, detail = test_snapshot_partial_prs()
+t("snapshot: only prs failing -> BLIND snapshot-partial=prs, exit 0", ok, detail)
 
 
 def test_snapshot_partial_epics():
@@ -472,9 +525,8 @@ def test_snapshot_partial_epics():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: only epics failing -> BLIND snapshot-partial=epics, exit 0",
-  test_snapshot_partial_epics(),
-  test_snapshot_partial_epics()[1])
+ok, detail = test_snapshot_partial_epics()
+t("snapshot: only epics failing -> BLIND snapshot-partial=epics, exit 0", ok, detail)
 
 
 def test_snapshot_no_err_file():
@@ -484,8 +536,9 @@ def test_snapshot_no_err_file():
         session_dir = tmpdir / "session"
         session_dir.mkdir()
 
-        # Create in-flight.md with content but no .err file
+        # Create in-flight.md with content and a non-empty issue-bodies file, but no .err file
         (session_dir / "in-flight.md").write_text("# In-flight\n")
+        (session_dir / "in-flight-issues.md").write_text("## #1 body\n")
 
         rc, out, err = run_preflight(["snapshot", "--dir", str(session_dir)])
 
@@ -493,9 +546,8 @@ def test_snapshot_no_err_file():
                f"rc={rc}, out={out!r}"
 
 
-t("snapshot: no in-flight.err file -> OK, exit 0",
-  test_snapshot_no_err_file(),
-  test_snapshot_no_err_file()[1])
+ok, detail = test_snapshot_no_err_file()
+t("snapshot: no in-flight.err file -> OK, exit 0", ok, detail)
 
 
 # ============================================================================
@@ -524,13 +576,12 @@ def test_blind_line_prefix():
                f"rc={rc}, out={out!r}"
 
 
-t("blind-line: output starts with 'NORTH STAR BLIND: ' exactly",
-  test_blind_line_prefix(),
-  test_blind_line_prefix()[1])
+ok, detail = test_blind_line_prefix()
+t("blind-line: output starts with 'NORTH STAR BLIND: ' exactly", ok, detail)
 
 
 def test_blind_line_dedup():
-    """blind-line de-duplicates and preserves order."""
+    """blind-line de-duplicates tokens."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         tokens_file = tmpdir / "tokens.txt"
@@ -549,9 +600,27 @@ def test_blind_line_dedup():
                f"rc={rc}, out={out!r}, counts: gh-auth={count_auth}, snapshot-empty={count_empty}"
 
 
-t("blind-line: de-duplicates tokens, preserving first-seen order",
-  test_blind_line_dedup(),
-  test_blind_line_dedup()[1])
+ok, detail = test_blind_line_dedup()
+t("blind-line: de-duplicates tokens", ok, detail)
+
+
+def test_blind_line_first_seen_order():
+    """De-duplication keeps first-seen order, which here is NOT alphabetical."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        tokens_file = tmpdir / "tokens.txt"
+        tokens_file.write_text("snapshot-empty\ngh-auth\nsnapshot-empty\n")
+
+        rc, out, err = run_preflight(
+            ["blind-line", "--tokens-file", str(tokens_file)]
+        )
+
+        return (rc == 0 and out == "NORTH STAR BLIND: snapshot-empty, gh-auth"), \
+               f"rc={rc}, out={out!r}"
+
+
+ok, detail = test_blind_line_first_seen_order()
+t("blind-line: de-duplicated output is exactly first-seen order (not alphabetical)", ok, detail)
 
 
 def test_blind_line_empty():
@@ -569,13 +638,12 @@ def test_blind_line_empty():
                f"rc={rc}, out={out!r}"
 
 
-t("blind-line: empty tokens -> no output, exit 0",
-  test_blind_line_empty(),
-  test_blind_line_empty()[1])
+ok, detail = test_blind_line_empty()
+t("blind-line: empty tokens -> no output, exit 0", ok, detail)
 
 
 def test_blind_line_unknown_token():
-    """blind-line rejects unknown tokens with exit 2."""
+    """An unknown token becomes nick=unparseable, warned on stderr, exit 0 (never exit 2)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         tokens_file = tmpdir / "tokens.txt"
@@ -585,16 +653,16 @@ def test_blind_line_unknown_token():
             ["blind-line", "--tokens-file", str(tokens_file)]
         )
 
-        return (rc == 2), f"rc={rc}, out={out!r}"
+        return (rc == 0 and out == "NORTH STAR BLIND: nick=unparseable" and "invalid" in err), \
+               f"rc={rc}, out={out!r}, err={err!r}"
 
 
-t("blind-line: unknown token -> exit 2",
-  test_blind_line_unknown_token(),
-  test_blind_line_unknown_token()[1])
+ok, detail = test_blind_line_unknown_token()
+t("blind-line: unknown token -> nick=unparseable, stderr warning, exit 0", ok, detail)
 
 
 def test_blind_line_nick_with_comma_rejected():
-    """blind-line rejects nick= tokens containing commas with exit 2."""
+    """A nick= extra token containing a comma becomes nick=unparseable, exit 0."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         tokens_file = tmpdir / "tokens.txt"
@@ -604,12 +672,12 @@ def test_blind_line_nick_with_comma_rejected():
             ["blind-line", "--tokens-file", str(tokens_file), "nick=has,comma"]
         )
 
-        return (rc == 2), f"rc={rc}, out={out!r}"
+        return (rc == 0 and out == "NORTH STAR BLIND: gh-auth, nick=unparseable"), \
+               f"rc={rc}, out={out!r}"
 
 
-t("blind-line: nick= token with comma -> exit 2",
-  test_blind_line_nick_with_comma_rejected(),
-  test_blind_line_nick_with_comma_rejected()[1])
+ok, detail = test_blind_line_nick_with_comma_rejected()
+t("blind-line: nick= extra token with comma -> nick=unparseable, exit 0", ok, detail)
 
 
 def test_blind_line_scout_failed_all():
@@ -629,9 +697,8 @@ def test_blind_line_scout_failed_all():
                f"rc={rc}, out={out!r}"
 
 
-t("blind-line: accepts scout-failed=all token",
-  test_blind_line_scout_failed_all(),
-  test_blind_line_scout_failed_all()[1])
+ok, detail = test_blind_line_scout_failed_all()
+t("blind-line: accepts scout-failed=all token", ok, detail)
 
 
 def test_blind_line_nick_unparseable():
@@ -651,9 +718,78 @@ def test_blind_line_nick_unparseable():
                f"rc={rc}, out={out!r}"
 
 
-t("blind-line: accepts nick=unparseable fallback token",
-  test_blind_line_nick_unparseable(),
-  test_blind_line_nick_unparseable()[1])
+ok, detail = test_blind_line_nick_unparseable()
+t("blind-line: accepts nick=unparseable fallback token", ok, detail)
+
+
+# ============================================================================
+# NICK'S LINE (--nick-file) TESTS
+# ============================================================================
+
+print()
+print("[NICK LINE] Position, length cap, printable-only, undecodable bytes")
+print("=" * 70)
+
+
+def test_nick_line_within_first_five_lines():
+    """The blind line is found on line 5 and ignored from line 6 on."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        found_rc, found_out, _ = nick_line_result(
+            tmpdir, b"one\ntwo\nthree\nfour\nNORTH STAR BLIND: nick=on line five\nbody\n")
+        missed_rc, missed_out, _ = nick_line_result(
+            tmpdir, b"one\ntwo\nthree\nfour\nfive\nNORTH STAR BLIND: nick=on line six\n")
+
+        ok = (found_rc == 0 and found_out == "NORTH STAR BLIND: nick=on line five"
+              and missed_rc == 0 and missed_out == "")
+        return ok, f"found={found_out!r}, missed={missed_out!r}"
+
+
+ok, detail = test_nick_line_within_first_five_lines()
+t("nick line: found within the first 5 lines, ignored from line 6", ok, detail)
+
+
+def test_nick_text_length_cap():
+    """Nick text of exactly 200 characters is kept; 201 collapses to nick=unparseable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        at_cap = "x" * 200
+        over_cap = "x" * 201
+        rc1, out1, _ = nick_line_result(tmpdir, ("NORTH STAR BLIND: nick=" + at_cap + "\n").encode())
+        rc2, out2, _ = nick_line_result(tmpdir, ("NORTH STAR BLIND: nick=" + over_cap + "\n").encode())
+
+        ok = (rc1 == 0 and out1 == "NORTH STAR BLIND: nick=" + at_cap
+              and rc2 == 0 and out2 == "NORTH STAR BLIND: nick=unparseable")
+        return ok, f"at_cap_out_len={len(out1)}, over_cap_out={out2!r}"
+
+
+ok, detail = test_nick_text_length_cap()
+t("nick line: nick text of 200 chars is kept, 201 chars collapses to nick=unparseable", ok, detail)
+
+
+def test_nick_text_non_printable():
+    """A non-printable character in nick text collapses the line to one nick=unparseable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        rc, out, _ = nick_line_result(tmpdir, b"NORTH STAR BLIND: nick=bad\x07bell\n")
+        return (rc == 0 and out == "NORTH STAR BLIND: nick=unparseable"), f"rc={rc}, out={out!r}"
+
+
+ok, detail = test_nick_text_non_printable()
+t("nick line: non-printable character in nick text -> one nick=unparseable, exit 0", ok, detail)
+
+
+def test_nick_line_undecodable_bytes():
+    """Undecodable bytes in Nick's output do not raise; the line is still handled."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        rc, out, err = nick_line_result(tmpdir, b"NORTH STAR BLIND: nick=caf\xff\n")
+        ok = rc == 0 and "Traceback" not in err and out.startswith("NORTH STAR BLIND: nick=caf")
+        return ok, f"rc={rc}, out={out!r}, err={err[-200:]!r}"
+
+
+ok, detail = test_nick_line_undecodable_bytes()
+t("nick line: undecodable bytes do not raise (exit 0, no traceback)", ok, detail)
 
 
 # ============================================================================
@@ -666,7 +802,7 @@ print("=" * 70)
 
 
 def test_snapshot_phase_no_side_effects():
-    """snapshot phase does not modify files on disk."""
+    """snapshot phase does not modify files on disk (names, bytes and mtimes unchanged)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         session_dir = tmpdir / "session"
@@ -675,22 +811,18 @@ def test_snapshot_phase_no_side_effects():
         (session_dir / "in-flight.md").write_text("# In-flight\n")
         (session_dir / "in-flight.err").write_text("issues: timeout\n")
 
-        # Snapshot the file state before
-        files_before = set(session_dir.glob("*"))
+        before = snapshot_state(session_dir)
 
         rc, out, err = run_preflight(["snapshot", "--dir", str(session_dir)])
 
-        # Snapshot after
-        files_after = set(session_dir.glob("*"))
+        after = snapshot_state(session_dir)
 
-        # Files should be unchanged
-        return (files_before == files_after), \
-               f"Files changed: before={files_before}, after={files_after}"
+        return (before == after), \
+               f"Files changed: before={sorted(before)}, after={sorted(after)}"
 
 
-t("snapshot phase: does not create or modify files",
-  test_snapshot_phase_no_side_effects(),
-  test_snapshot_phase_no_side_effects()[1])
+ok, detail = test_snapshot_phase_no_side_effects()
+t("snapshot phase: does not create or modify files (names, bytes, mtimes)", ok, detail)
 
 
 print()
