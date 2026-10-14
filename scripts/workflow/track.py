@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from . import git, worktrees
-from .cache import hash_cache_file, hash_file_content, write_cache
+from .cache import hash_cache_file, hash_file_content, write_cache, seed_worktree_cache
 from .safety import Unknown, fail_closed
 from .models import IssueInfo, GitHubCacheData
 from .providers.base import Provider
@@ -27,6 +27,7 @@ from .providers.base import Provider
 STEP_CREATE_ISSUE = "create_issue"
 STEP_CREATE_WORKTREE = "create_worktree"
 STEP_WRITE_CACHE = "write_cache"
+STEP_SEED_CACHE = "seed_cache"
 
 
 def slugify(title: str, max_len: int = 50) -> str:
@@ -185,6 +186,7 @@ class TrackApplyResult:
     branch: Optional[str] = None
     worktree_path: Optional[str] = None
     cache_written: bool = False
+    seed_errors: List[str] = field(default_factory=list)
     error: Optional[Unknown] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -487,6 +489,17 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
             result.error = Unknown(f"cache write failed: {e}")
             result.steps_failed.append(STEP_WRITE_CACHE)
             return result, result.error
+
+        # 7. Seed cache files from main worktree (non-fatal)
+        try:
+            seeded, skipped, seed_error = seed_worktree_cache(
+                Path(plan.main_worktree), real_worktree_path
+            )
+            result.steps_completed.append(STEP_SEED_CACHE)
+            if seed_error:
+                result.seed_errors.append(seed_error)
+        except Exception as e:
+            result.seed_errors.append(f"seed_worktree_cache failed: {e}")
 
         # Success!
         result.success = True

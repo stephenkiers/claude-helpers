@@ -9,6 +9,7 @@ plus lock-file helpers for coordinating concurrent writers.
 import json
 import hashlib
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -24,6 +25,9 @@ from .safety import Unknown
 
 # Lock file staleness threshold (10 minutes)
 LOCK_STALE_SECONDS = 600
+
+# Files to seed from main worktree to new worktree
+SEEDED_FILES = ("repo-cache.json", "project.yaml")
 
 
 class TrustedCacheResult(NamedTuple):
@@ -210,12 +214,7 @@ def read_repo_cache(path: Path) -> Tuple[Optional[RepoCacheData], Optional[Unkno
 
     Returns (RepoCacheData or None, Unknown error or None).
 
-    Implemented ahead of schedule relative to RepoCacheData's "future use;
-    stubbed for Phase 1" marker: no caller writes repo-cache.json yet, so
-    this has no test coverage against a real file today. Kept (not
-    removed) because the read path is simple, side-effect-free, and
-    follows the same contract as its two siblings above — Phase 2's
-    writer can add coverage when it lands.
+    Written by /shipit and seeded by track.seed_worktree_cache.
     """
     if not path.exists():
         return None, Unknown("repo-cache.json not found")
@@ -393,3 +392,100 @@ def write_local_tracker(path: Path, data: LocalTrackerData) -> Tuple[bool, Optio
     Delegates to write_cache, passing data.to_dict() which returns a top-level list.
     """
     return write_cache(path, data.to_dict())
+
+
+def seed_worktree_cache(main_worktree: Path, new_worktree: Path) -> Tuple[List[str], List[str], Optional[str]]:
+    """
+    Copy cache files (repo-cache.json, project.yaml) from main worktree to new worktree.
+
+    Atomically copies each file from main_worktree/.claude/ to new_worktree/.claude/,
+    using temp file + os.replace() pattern. Skips files that are absent in the source
+    or already exist in the destination (never overwrites). Verifies source paths are
+    contained within main_worktree/.claude (symlink escape check).
+
+    Args:
+        main_worktree: Path to the main worktree
+        new_worktree: Path to the new worktree
+
+    Returns:
+        (seeded, skipped, error_msg) where:
+        - seeded: list of file names successfully copied
+        - skipped: list of file names skipped (missing source or destination exists)
+        - error_msg: error string if a non-skippable error occurred, else None
+    """
+    seeded: List[str] = []
+    skipped: List[str] = []
+
+    main_cache_dir = main_worktree / ".claude"
+    new_cache_dir = new_worktree / ".claude"
+
+    # Ensure destination .claude directory exists
+    try:
+        new_cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return [], [], f"Failed to create .claude directory in new worktree: {e}"
+
+    for filename in SEEDED_FILES:
+        source_path = main_cache_dir / filename
+        dest_path = new_cache_dir / filename
+
+        # Skip if source is absent or is not a regular file
+        if not source_path.exists():
+            skipped.append(filename)
+            continue
+
+        if not source_path.is_file():
+            skipped.append(filename)
+            continue
+
+        # Skip if destination already exists
+        if dest_path.exists():
+            skipped.append(filename)
+            continue
+
+        # Symlink escape check: verify source resolves within main_worktree/.claude
+        try:
+            resolved_source = source_path.resolve()
+            resolved_main_cache = main_cache_dir.resolve()
+            if not str(resolved_source).startswith(str(resolved_main_cache)):
+                return [], [], f"Symlink escape detected: {filename} resolves outside {main_cache_dir}"
+        except (OSError, RuntimeError) as e:
+            return [], [], f"Failed to resolve symlink for {filename}: {e}"
+
+        # Atomic copy: write to temp file, then rename
+        try:
+            temp_dir = new_cache_dir
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix=".tmp",
+                prefix=f".{filename}.",
+                dir=str(temp_dir)
+            )
+            temp_file = Path(temp_path)
+
+            try:
+                # Copy file content and metadata
+                with os.fdopen(temp_fd, "wb") as f:
+                    with open(source_path, "rb") as src:
+                        f.write(src.read())
+
+                # Copy metadata (permissions, times)
+                stat_info = source_path.stat()
+                os.utime(temp_file, (stat_info.st_atime, stat_info.st_mtime))
+                os.chmod(temp_file, stat_info.st_mode)
+
+                # Atomic rename
+                os.replace(str(temp_file), str(dest_path))
+                seeded.append(filename)
+
+            except OSError as e:
+                # Clean up temp file on error
+                try:
+                    temp_file.unlink()
+                except OSError:
+                    pass
+                return [], [], f"Failed to copy {filename}: {e}"
+
+        except OSError as e:
+            return [], [], f"Failed to seed {filename}: {e}"
+
+    return seeded, skipped, None

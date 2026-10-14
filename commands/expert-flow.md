@@ -630,12 +630,7 @@ action plan for `/verify-queue` after merge.
 are all `0`. Otherwise `/implement-with-haiku <REVIEW_DIR>/claude-action-plan.md` with step name
 `fix` and receipt `05-fix.md`.
 
-**verify.** The check command is the project's `commands.check` from `<WORKTREE>/.claude/repo-cache.json`;
-if that key is null or the file is absent, fall back to running `commands.test` then
-`commands.lint` from the same file; if none exist, `FAILED` with reason `no check command
-configured — run /shipit once by hand to detect it`. The step prompt is the generic template with
-"Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the
-slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
+**verify.** Resolve the check command via `python3 -m scripts.workflow.cli checks resolve-check --worktree <WORKTREE>`: tries `commands.check` from `<WORKTREE>/.claude/repo-cache.json`, then `.claude/project.yaml`, then `justfile check`; if none exist, `FAILED` with reason `no check command configured (tried repo-cache.json, project.yaml, justfile check) — run /shipit once or add commands.check to .claude/project.yaml`. The repo-cache.json is seeded from main at worktree creation. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
 `CHECK: <command>`, `CHECK_EXIT: <n>`, `Decision: OK` when the exit is 0, else `FAILED` with reason
 `check failed (exit <n>)`. Verify is deliberately *only* the check command (epic decision 4):
 coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is

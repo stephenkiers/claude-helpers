@@ -7,6 +7,7 @@ executing something (unless explicitly configured to skip all checks,
 which is a hard error rather than a silent pass).
 """
 
+import json
 import os
 import signal
 import subprocess
@@ -15,6 +16,12 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any, Mapping
 
 from .safety import Unknown, fail_closed
+from .cache import read_repo_cache
+
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
 
 
 CHECK_ORDER = ("format", "check", "lint", "typecheck", "vet", "test", "build")
@@ -244,3 +251,80 @@ def run_checks(
         results.status = "passed"
 
     return results, None
+
+
+def resolve_check_command(
+    worktree: Path, main_worktree: Optional[Path] = None
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Resolve the check command with fallback logic.
+
+    Resolution order:
+    1. Try repo-cache.json commands.check
+    2. If missing or no check command, try project.yaml commands.check
+    3. If still missing, try justfile check recipe
+    4. Return (command, source, failure_reason) where:
+       - command: the resolved check command string, or None
+       - source: where it came from ("repo-cache", "project.yaml", "justfile"), or None
+       - failure_reason: descriptive reason if resolution failed (all sources exhausted), or None
+
+    Args:
+        worktree: Path to the worktree to check
+        main_worktree: Optional path to main worktree (for seeding fallback)
+
+    Returns:
+        (command, source, failure_reason) tuple
+    """
+    # 1. Try repo-cache.json
+    cache_file = worktree / ".claude" / "repo-cache.json"
+    if cache_file.exists():
+        cache_data, err = read_repo_cache(cache_file)
+        if not err and cache_data:
+            check_cmd = cache_data.commands.get("check")
+            if isinstance(check_cmd, str) and check_cmd.strip():
+                return check_cmd.strip(), "repo-cache", None
+
+    # 2. Try seeding from main if main_worktree provided and cache not found
+    if main_worktree and not cache_file.exists():
+        main_cache_file = main_worktree / ".claude" / "repo-cache.json"
+        if main_cache_file.exists():
+            cache_data, err = read_repo_cache(main_cache_file)
+            if not err and cache_data:
+                check_cmd = cache_data.commands.get("check")
+                if isinstance(check_cmd, str) and check_cmd.strip():
+                    return check_cmd.strip(), "repo-cache", None
+
+    # 3. Try project.yaml
+    project_yaml = worktree / ".claude" / "project.yaml"
+    if project_yaml.exists() and yaml is not None:
+        try:
+            with open(project_yaml, "r") as f:
+                project_data = yaml.safe_load(f)
+                if isinstance(project_data, dict):
+                    commands = project_data.get("commands", {})
+                    if isinstance(commands, dict):
+                        check_cmd = commands.get("check")
+                        if isinstance(check_cmd, str) and check_cmd.strip():
+                            return check_cmd.strip(), "project.yaml", None
+        except (OSError, Exception):
+            pass
+
+    # 4. Try justfile check recipe
+    justfile = worktree / "justfile"
+    if justfile.exists():
+        try:
+            summary = subprocess.run(
+                ["just", "-f", str(justfile), "--summary"],
+                cwd=str(worktree), capture_output=True, text=True, timeout=5
+            )
+            if summary.returncode == 0 and "check" in summary.stdout.split():
+                return "just check", "justfile", None
+        except Exception:
+            pass
+
+    # 5. No check command found
+    failure_msg = (
+        "no check command configured (tried repo-cache.json, project.yaml, justfile check) — "
+        "run /shipit once or add commands.check to .claude/project.yaml"
+    )
+    return None, None, failure_msg

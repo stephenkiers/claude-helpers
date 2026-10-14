@@ -1157,9 +1157,16 @@ if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
   exit 1
 fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
+
+# Seed cache files from main worktree (non-fatal)
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH")
+SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty')
+if [ -n "$SEED_ERROR" ]; then
+  echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+fi
 ```
 
-**Worktree location:** The CLI places the worktree at `${WORKTREE_PARENT}/{issue_number}-{slug}` (e.g., `~/Repositories/my-project/worktrees/42-add-feature`).
+**Worktree location:** The CLI places the worktree at `${WORKTREE_PARENT}/{issue_number}-{slug}` (e.g., `~/Repositories/my-project/worktrees/42-add-feature`); repo-cache.json and project.yaml are seeded from main at worktree creation.
 
 **GitHub Cache:** The CLI's `track apply` writes `.claude/github-cache.json` in the new worktree, populated with issue number, URL, title, body, and state. This file is read by downstream commands like `/shipit` and `/expert-review`.
 
