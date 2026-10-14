@@ -547,6 +547,14 @@ DEFAULT_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^r
 git fetch origin "$DEFAULT_BASE" || { echo "ERROR: git fetch origin $DEFAULT_BASE failed" >&2; python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true; python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true; exit 1; }
 cd "$MAIN_WORKTREE"
 git worktree add "$WORKTREE_PATH" -b "$BRANCH" "origin/${DEFAULT_BASE}" || { echo "ERROR: git worktree add failed for $WORKTREE_PATH" >&2; python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true; python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true; exit 1; }
+
+# Seed cache files from main worktree (non-fatal)
+if source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"; then
+  SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH") \
+    || echo "Note: Cache seeding failed (non-fatal): ${SEED_RESULT:-no output}" >&2
+else
+  echo "Note: Cache seeding skipped (non-fatal): could not resolve claude-helpers scripts directory" >&2
+fi
 ```
 
 **5. Write the per-worktree `.claude/github-cache.json`** in the same shape the normal path writes (`branch` plus `issue.number/url/title/body/state`). The `$ISSUE_BODY` value is the one read-only fetch from step 1 (no second `gh` call); nothing is written back to GitHub or to `$CACHE_FILE`. A failed write exits with telemetry closed; the worktree from step 4 then exists, so see the recovery note below:
