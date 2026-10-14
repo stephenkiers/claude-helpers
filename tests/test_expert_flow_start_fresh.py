@@ -12,7 +12,7 @@ tests/test_worktree_reference_detection.py and tests/test_workflow_worktrees_con
 3. allowed-tools carries the exact git grants, with no wildcard on git fetch/rebase.
 4. Newest-flow lookup uses sort_by([.updated, .dir]) at every consumer site.
 
-Run with: python3 tests/test_expert_flow_round2_spec_blind.py
+Run with: python3 tests/test_expert_flow_start_fresh.py
 """
 
 import re
