@@ -140,10 +140,25 @@ class RepoCacheData:
     commands: Dict[str, Optional[str]] = field(default_factory=dict)
     # Advisory metadata; not read by run_checks. Kept on-disk only to preserve cache round-tripping.
     parallelizable: List[str] = field(default_factory=list)
+    # Per-repo override for the per-check timeout (seconds), for projects whose suite outlasts the
+    # 300s default. None = no override. Written by hand/detection as "checkTimeoutSecs".
+    check_timeout_secs: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for JSON serialization."""
-        return asdict(self)
+        """Convert to dict for JSON serialization.
+
+        NOTE: Explicitly maps check_timeout_secs to "checkTimeoutSecs" (camelCase) for
+        round-trip consistency with from_dict(), which reads the "checkTimeoutSecs" key
+        from JSON. asdict() alone would produce "check_timeout_secs" (snake_case), breaking
+        the round-trip: to_dict(from_dict(data)) would lose the value if data was read back.
+        """
+        d = asdict(self)
+        # Map the snake_case field key to camelCase JSON key for round-trip consistency.
+        if "check_timeout_secs" in d:
+            check_timeout = d.pop("check_timeout_secs")
+            if check_timeout is not None:
+                d["checkTimeoutSecs"] = check_timeout
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RepoCacheData":
@@ -154,12 +169,17 @@ class RepoCacheData:
         parallelizable = data.get("parallelizable", [])
         if not isinstance(parallelizable, list):
             parallelizable = []
+        check_timeout_secs = data.get("checkTimeoutSecs")
+        # bool is an int subclass; reject it along with non-positive / non-integer values.
+        if isinstance(check_timeout_secs, bool) or not isinstance(check_timeout_secs, int) or check_timeout_secs <= 0:
+            check_timeout_secs = None
         return cls(
             schema_version=str(version),
             repo_path=data.get("repo_path", ""),
             worktree_parent=data.get("worktree_parent", ""),
             commands=dict(data.get("commands") or {}),
-            parallelizable=parallelizable
+            parallelizable=parallelizable,
+            check_timeout_secs=check_timeout_secs
         )
 
 

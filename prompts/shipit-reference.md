@@ -251,6 +251,11 @@ The common scenarios are in `shipit.md`'s Quick Reference. Additional cases:
 
 **Stacked branches** — push errors on a stacked branch (no upstream, tip behind remote) mean the parent was force-rebased by gh-stack. See the "Push a stacked branch (new local work)" block in `~/.claude/prompts/worktree-reference.md`.
 
+**Inside an `/expert-flow` run** (`FLOW_DIR` set — see `shipit.md` Step 0.5), a failure here that
+ends the run is a hard stop: write the FAILED receipt described there and leave the fix to the
+human. Nothing in this reference asks the user a question; if
+you add a site that does, route it through the Ask block in `~/.claude/prompts/flow-reference.md`.
+
 ### GitHub stack entity (optional)
 
 `/shipit` does **not** create a server-side GitHub "stack" entity. `gh pr create --base <parent>`

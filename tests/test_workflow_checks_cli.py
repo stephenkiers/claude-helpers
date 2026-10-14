@@ -187,4 +187,31 @@ if __name__ == "__main__":
         )
 
     print()
+    print("[Section 6] Timeout precedence: cache checkTimeoutSecs < env < --timeout")
+
+    def run_slow(extra_args, env_extra, cache_timeout):
+        import os
+        cache = {"commands": {"test": "sleep 3"}}
+        if cache_timeout is not None:
+            cache["checkTimeoutSecs"] = cache_timeout
+        env = {k: v for k, v in os.environ.items() if k != "SHIPIT_CHECK_TIMEOUT_SECS"}
+        env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.workflow.cli", "checks", "run", *extra_args, "-"],
+            input=json.dumps(cache), capture_output=True, text=True,
+            cwd=Path(__file__).parent.parent, env=env
+        )
+
+    proc = run_slow([], {}, 1)
+    test_result("cache checkTimeoutSecs=1 times out a 3s check", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
+    proc = run_slow([], {}, 10)
+    test_result("cache checkTimeoutSecs=10 lets a 3s check pass", proc.returncode == 0)
+    proc = run_slow([], {"SHIPIT_CHECK_TIMEOUT_SECS": "1"}, 10)
+    test_result("env overrides cache", proc.returncode == 1 and "timed out after 1s" in proc.stdout)
+    proc = run_slow(["--timeout", "10"], {"SHIPIT_CHECK_TIMEOUT_SECS": "1"}, 1)
+    test_result("--timeout overrides env and cache", proc.returncode == 0)
+    proc = run_slow([], {}, -5)
+    test_result("invalid cache checkTimeoutSecs falls back to default (3s check passes)", proc.returncode == 0)
+
+    print()
     h.summarize_and_exit()
