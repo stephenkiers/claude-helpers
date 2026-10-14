@@ -260,6 +260,7 @@ def resolve_check_command(
 
     Resolution order:
     1. Try repo-cache.json commands.check
+    1a. (if absent and main_worktree provided) Try reading repo-cache.json from main_worktree
     2. If missing or no check command, try project.yaml commands.check
     3. If still missing, try justfile check recipe
     4. Return (command, source, failure_reason) where:
@@ -269,7 +270,8 @@ def resolve_check_command(
 
     Args:
         worktree: Path to the worktree to check
-        main_worktree: Optional path to main worktree (for seeding fallback)
+        main_worktree: Optional path to main worktree (for seeding fallback); if provided and
+                       repo-cache.json is absent from worktree, attempts to read it from main_worktree
 
     Returns:
         (command, source, failure_reason) tuple
