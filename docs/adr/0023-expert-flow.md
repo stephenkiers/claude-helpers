@@ -94,8 +94,9 @@ question; it stops under §1 with Retry / Take over / Abort.
   question. Earlier markers are answered or stale.
 - `AWAITING` is not a receipt `Decision` value. A waiting step is identified by its marker, not its receipt.
 - The merge gate is the orchestrator's own question and is modeled in state: `gate_passed` records the
-  answer and `step: merge-gate` marks where the flow sits. `--resume` re-asks the gate whatever
-  `gate_passed` says. `auto_merge` is never restored from state; `--auto-merge` must be passed on each run.
+  answer and `step: merge-gate` marks where the flow sits. **`--resume` always re-asks the merge gate:**
+  `gate_passed` is reset to `false` on every resume, so a human reviewing a resumed flow can re-confirm
+  the merge decision. `auto_merge` is never restored from state; `--auto-merge` must be passed on each run.
 
 ### 3. State on disk, resumable, never auto-deleted
 
@@ -135,6 +136,9 @@ flow-side behaviour is recorded in §2 and §5.
 
 ## Consequences
 
+- **Epic mode is experimental** (shipped ahead of the #252 dogfooding gate). The proposal notes
+  (#245 §9) that a sequential epic needs one complete relay cycle; if a ticket encounters >1 Take over,
+  epic mode should defer until the relay's completeness is verified under #252 dogfooding.
 - One command, one conversation, and every human decision still made by the human. The cost of
   that is a strict discipline in the converted commands (end the turn, never guess), which the
   lint enforces structurally and the dogfooding (#252) must verify behaviourally.
@@ -151,4 +155,6 @@ flow-side behaviour is recorded in §2 and §5.
 - **Telemetry correlation (expected, to be confirmed in #252 dogfooding):** nested step-command
   telemetry lands under the long-lived `expert-flow` orchestrator record. ADR-0016 correlates
   telemetry only for sequential invocations, so this is a change to be checked, not assumed safe.
+- **Open work touching the same orchestrator surfaces:** #230 (decision-relay completion check),
+  #179 (receipt-path safety), and #217 (checkpoint hygiene). Sequencing and priority TBD.
 - `/expert-implement-with-haiku-and-ship` is superseded; its CLAUDE.md entry is removed.
