@@ -324,7 +324,6 @@ def main():
         h.test_result("No file write operations in AST", False)
 
     # Check that all subprocess.run calls are git commands
-    git_subprocess_pattern = re.compile(r'subprocess\.run\s*\(\s*\[.*?"git"')
     subprocess_calls = re.findall(r'subprocess\.run\s*\(\s*\[([^\]]+)\]', verifier_source)
     all_git = all('git' in call for call in subprocess_calls)
     h.test_result("All subprocess.run calls are git commands", all_git)
