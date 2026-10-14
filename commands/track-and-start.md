@@ -461,10 +461,14 @@ ISSUE_JSON=$(gh issue view "$ISSUE_FLAG" --repo "$REPO" --json state,title,url 2
 ISSUE_STATE=$(printf '%s' "$ISSUE_JSON" | jq -r '.state // empty')
 if [ -z "$ISSUE_STATE" ]; then
   echo "ERROR: --issue $ISSUE_FLAG not found in $REPO." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 if [ "$ISSUE_STATE" != "OPEN" ]; then
   echo "ERROR: --issue $ISSUE_FLAG is not open (state: $ISSUE_STATE) — cannot create a worktree for a closed issue." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 ISSUE_TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title')
@@ -480,6 +484,8 @@ done)
 if [ -n "$EXISTING_WTS" ]; then
   EXISTING_FIRST=$(printf '%s\n' "$EXISTING_WTS" | head -1)
   echo "ERROR: Worktree already exists at $EXISTING_FIRST. Use it or pick a different branch name." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 ```
@@ -487,11 +493,13 @@ fi
 **3. Derive the branch and worktree path** with the same rules as the CLI (`infer_type()`, `slugify()`, `build_branch_name()` in `scripts/workflow/track.py` — type from the issue title via the Type Inference table, slug from the title, max 50 chars). Call the Python helpers directly, since `track plan` requires a plan file:
 
 ```bash
-source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true; python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true; exit 1; }
 
 BRANCH=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -c 'import sys; from scripts.workflow.track import infer_type, slugify, build_branch_name; t = sys.argv[1]; print(build_branch_name(infer_type(t), sys.argv[2], slugify(t)))' "$ISSUE_TITLE" "$ISSUE_FLAG")
 if [ -z "$BRANCH" ]; then
   echo "ERROR: could not derive a branch name from issue #$ISSUE_FLAG title" >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 # Flat sibling directory: {issue#}-{slug} — the "/" in the branch name never reaches the path.
@@ -504,23 +512,29 @@ WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
 ```bash
 if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
   echo "ERROR: computed worktree path '$WORKTREE_PATH' is not a direct child of WORKTREE_PARENT ('$WORKTREE_PARENT') — refusing to create a nested worktree." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 case "$WORKTREE_PATH" in
   "$MAIN_WORKTREE"/*)
     echo "ERROR: computed worktree path '$WORKTREE_PATH' is inside the main worktree ('$MAIN_WORKTREE') — refusing to create it." >&2
+    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+    python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
     exit 1 ;;
 esac
 if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
   echo "ERROR: Branch ${BRANCH} already exists. Create a new plan with a different title or branch name." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
 DEFAULT_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
 [ -z "$DEFAULT_BASE" ] && DEFAULT_BASE="main"
-git fetch origin "$DEFAULT_BASE" || { echo "ERROR: git fetch origin $DEFAULT_BASE failed" >&2; exit 1; }
+git fetch origin "$DEFAULT_BASE" || { echo "ERROR: git fetch origin $DEFAULT_BASE failed" >&2; python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true; python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true; exit 1; }
 cd "$MAIN_WORKTREE"
-git worktree add "$WORKTREE_PATH" -b "$BRANCH" "origin/${DEFAULT_BASE}" || { echo "ERROR: git worktree add failed for $WORKTREE_PATH" >&2; exit 1; }
+git worktree add "$WORKTREE_PATH" -b "$BRANCH" "origin/${DEFAULT_BASE}" || { echo "ERROR: git worktree add failed for $WORKTREE_PATH" >&2; python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true; python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true; exit 1; }
 ```
 
 **5. Write the per-worktree `.claude/github-cache.json`** in the same shape the normal path writes (`branch` plus `issue.number/url/title/body/state`). The issue body is fetched read-only for this file only; nothing is written back to GitHub or to `$CACHE_FILE`:
