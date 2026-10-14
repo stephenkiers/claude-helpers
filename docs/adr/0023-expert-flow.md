@@ -69,7 +69,7 @@ Every converted command applies three blocks defined once in `prompts/flow-refer
   resumes the step with `SendMessage`. The step continues exactly as if the tool had returned.
 - **Receipt** — `steps/<NN>-<step>.md`: the command's existing final summary, unchanged, plus a
   `Decision: OK | FAILED` and `ATTEMPT: <k>` trailer and the one or two `KEY: value` lines the orchestrator
-  parses (`FINAL_PLAN_PATH`, `REVIEW_DIR` + `CONFIRMED` counts, `PR_URL`, `MERGED`).
+  parses (`FINAL_PLAN_PATH`, `REVIEW_DIR` + `CONFIRMED` counts, `PR_URL`, `MERGED`); verified against on-disk artifacts — see §2.2.
 
 **Behaviour-neutral outside a flow** is the invariant: every block starts by checking `FLOW_DIR`,
 and with it empty the commands are byte-for-byte the same behaviour they had before. The relay
@@ -100,6 +100,39 @@ gated Rebase amendment).
   answer and `step: merge-gate` marks where the flow sits. **`--resume` always re-asks the merge gate:**
   `gate_passed` is reset to `false` on every resume, so a human reviewing a resumed flow can re-confirm
   the merge decision. `auto_merge` is never restored from state; `--auto-merge` must be passed on each run.
+
+### 2.2 Receipts are verified against artifacts, not trusted (amendment 2026-10-14, #276)
+
+A receipt is a claim; disk and git are evidence. On `Decision: OK`, the orchestrator verifies the
+step's on-disk artifacts with `scripts/flow-verify-receipt.py` before the step advances. The verifier
+runs after validation rules 1–7 and before `live` is cleared or `PLAN_PATH` / `REVIEW_DIR` recorded,
+so a rejected step leaves no poisoned state for `--resume`.
+
+**Decision — A. Keep strict, record it:** The verifier rejects a plan step when any roster row (except `auditor` and `synthesis`) has a stand-in contribution (`## Decision` followed by `FAILED`), even though `/expert-plan` degrades gracefully on any single expert's absence. The rationale: #276 is about not trusting unverified work, so this stands closed on such evidence. Recovery cost: Retry (full plan re-run), Take over, or Abort. A future ruling (see #252 dogfooding) may relax this to a coverage-gap note if the cost proves real in practice.
+
+**Decision — A. Document all three in the ADR:** Three verifier details are now recorded here:
+
+1. **Mtime freshness:** For plan and review steps, the verifier checks that `context.md` (plan) and `claude-action-plan.md` (review) mtime are >= `--since` minus 5 seconds, to verify artifacts were written during this flow step's window. Timing is necessary because the session dir or review dir could theoretically be reused from an older run.
+
+2. **Roster exemptions:** The plan verifier skips `auditor` and `synthesis` roster rows when checking for contributions; only seated experts' contributions are verified.
+
+3. **Contribution filename fallback:** The verifier first looks for a contribution file named `<file_stem>-contribution.md` (where `file_stem` comes from the reviewer index), then falls back to `<kebab-cased expert name>-contribution.md` as a second candidate.
+
+The checks per step:
+- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row (except `auditor` and `synthesis`) must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`). Context mtime must be >= `--since` - 5 seconds.
+- **review**: `REVIEW_DIR` contains `claude-action-plan.md`, `final-report.md`, `findings.json`, and ≥2 reviewer checkpoints (`*-pass1.md` or `*-pod.md`). Action plan mtime must be >= `--since` - 5 seconds.
+- **implement**: ≥1 new commit on the branch since the step began (base SHA recorded at spawn).
+- **fix**: ≥1 new commit, with a carve-out: zero commits are accepted when `claude-action-plan.md` has no *Doing it* items. When a fix has nothing actionable, zero commits is correct.
+
+A deviation also fails an OK receipt: `Deviation:` at line start, or `NOT dispatched` outside fenced code blocks, blockquotes and backtick spans. The reserved line `Deviation:` is never written by a step; a command that cannot run as documented writes `Decision: FAILED` and never substitutes its own procedure.
+
+A missing artifact or deviation becomes a plain `FAILED` hard stop: `<step> artifacts missing (<what>)` or `receipt admits deviation`. The verifier lives in `scripts/flow-verify-receipt.py` (read-only, stdlib only, exit 0/1/2), and the orchestrator grants one `allowed-tools` entry to run it. No `PANEL:` line or `PLAN_SESSION_DIR:` key was added to the receipt grammar (Q3 in #276 proposal): the invocation id is derived from `FINAL_PLAN_PATH`'s basename, and the session dir is found by glob. No new required receipt keys.
+
+`--review-effort 1` is rejected by `/expert-flow`: swarm effort writes no `findings.json`, which the review check (and `/expert-review`'s own receipt) requires.
+
+**The strength stated plainly:** this catches honest drift and raises the cost of skipping. It does not prove a panel ran. Hand-written roster and contribution files with the sentinel would pass. It is not ADR-0008-style enforcement; a determined forger can work around it (the only defence for that is deployment controls outside this ADR). Stronger evidence (persona headers, a minimum size, `context.md` naming the issue URL) is deferred to future work.
+
+Nested `Skill` and `Agent` spawning from step agents is available (spike #246 Q1) and the step prompt template now names the `Skill` tool, forbidding substitution of hand-written procedures.
 
 ### 3. State on disk, resumable, never auto-deleted
 

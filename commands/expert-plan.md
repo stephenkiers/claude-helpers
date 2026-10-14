@@ -426,6 +426,8 @@ Write `{SESSION_DIR}/selected-experts.md` (expert, concern, model, reason). Exam
 | Contrarian Carl | Cost, premises, and smaller-is-better | opus | Always present, fresh pass over all input |
 ```
 
+The roster must be a markdown table whose header's first cell is `Expert`, with one row per seated contributor including Contrarian Carl. Each row's first cell is the persona's display name (an optional trailing parenthetical such as `(pinned)` is allowed). Define `{expert}` in the `{expert}-contribution.md` output name (`expert-plan.md` Step 3) as the persona's YAML file stem from `reviewers/index.yaml` (file: without .yaml), so Danielle the Designer is `danielle-designer-contribution.md` and Mozart is `mozart-eda-contribution.md`; `/expert-flow` reads this table to verify the panel ran. Do not list non-contributor roles (the auditor, synthesis) as rows.
+
 Tell the user who's participating — no approval gate for ordinary selection. Announce the tier split by contributor model assignment:
 
 ```
@@ -456,7 +458,7 @@ No proposed design, no other expert's report, no digest. Expected receipt format
 
 **Join barrier.** All Step 3 agents launched in one message apply `~/.claude/prompts/join-barrier-pattern.md`'s pattern: receipt validation, file existence, sentinel (`<!-- contribution-end -->`), retry once on failure, stand-in file on second failure. The orchestrator never hangs.
 
-If a contributor fails after two retries, write a stand-in `{SESSION_DIR}/{expert}-contribution.md` with `Decision: FAILED`. Report the missing domain. (Note: `Decision: FAILED` is a coverage gap indicating the expert's domain was not evaluated; treat it as a missing lens rather than skipping that file.)
+If a contributor fails after two retries, write a stand-in `{SESSION_DIR}/{expert}-contribution.md` with a `## Decision` heading followed by `FAILED`, per `~/.claude/prompts/join-barrier-pattern.md` § Stand-In File. Report the missing domain. (Note: `Decision: FAILED` is a coverage gap indicating the expert's domain was not evaluated; treat it as a missing lens rather than skipping that file.)
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage expert-contributions --outcome success 2>/dev/null || true

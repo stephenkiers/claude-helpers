@@ -67,6 +67,7 @@ READ_ONLY_BASH = (
     r"sed -n(?: .*)?",
     r".*run-metrics\.py['\"]?(?: .*)?",
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
+    r".*flow-verify-receipt\.py['\"]?(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -431,6 +432,88 @@ def main():
                   and "Bash(git fetch origin:*)" not in fm_tools and "Bash(git rebase origin/*:*)" not in fm_tools
                   and "Bash(git rebase --abort:*)" not in fm_tools
                   and "Bash(git fetch:*)" not in fm_tools and "Bash(git rebase:*)" not in fm_tools)
+
+    print("[Section 13] Receipt verification (#276)")
+
+    # Template test
+    template_match = re.search(r"Invoke the step's command with the Skill tool — `Skill\(skill='<SKILL>', args='<ARGS>'\)`", text)
+    h.test_result("step prompt template names Skill(skill='<SKILL>', args='<ARGS>')",
+                  bool(template_match), "Skill tool wording missing")
+    h.test_result("step prompt forbids reading the command file",
+                  "Do not read the command file" in text)
+    h.test_result("step prompt forbids substitution",
+                  "never substitute" in text)
+
+    # Rule 7 tests
+    h.test_result("validation rule 8 exists", "8. For `Decision: OK` only" in text)
+    h.test_result("rule 8 mentions receipt admits deviation", "receipt admits deviation" in text)
+    h.test_result("rule 8 mentions artifacts missing", "artifacts missing" in text)
+    h.test_result("rule 8 mentions artifact check could not run", "artifact check could not run" in text)
+    h.test_result("rule 8 runs after rules 1-7", "after rules 1–7" in text or "after rules 1-7" in text)
+    h.test_result("rule 8 runs before OK branch clears live",
+                  "before the `OK` branch clears `live`" in text)
+    h.test_result("rule 8 runs only on Decision: OK",
+                  "Decision: OK` only" in text or "For `Decision: OK` only" in text)
+
+    # Per-step artifact checks
+    steps_with_checks = [
+        ("plan", "session dir"),
+        ("track", "none needed"),
+        ("implement", "new commit"),
+        ("review", "checkpoints"),
+        ("fix", "new commit"),
+        ("verify", "none needed"),
+        ("ship", "OPEN"),
+        ("merge", "MERGED"),
+    ]
+    for step, keyword in steps_with_checks:
+        h.test_result(f"{step} step has Artifact check line",
+                      f"**{step}.**" in text and
+                      re.search(rf"\*\*{step}\.\*\*.*?Artifact check:", text, re.DOTALL) is not None,
+                      f"missing artifact check for {step}")
+
+    # Allowlist test for the new grant
+    h.test_result("allowed-tools grants flow-verify-receipt.py",
+                  "flow-verify-receipt.py" in tools, tools)
+    h.test_result("READ_ONLY_BASH allowlist updated for flow-verify-receipt",
+                  any("flow-verify-receipt" in pat for pat in READ_ONLY_BASH))
+
+    # ADR amendment test
+    h.test_result("ADR-0023 has section 2.2", "### 2.2" in adr and "#276" in adr)
+    h.test_result("ADR 2.2 says receipts are verified against artifacts",
+                  "Receipts are verified against artifacts" in adr or "verified against on-disk artifacts" in adr)
+    h.test_result("ADR 2.2 uses the word 'not' and 'prove'",
+                  ("not proof" in adr or "does not prove" in adr) and "#276" in adr)
+    h.test_result("ADR Receipt bullet points to 2.2",
+                  "verified against on-disk artifacts — see §2.2" in adr)
+
+    # flow-reference contract tests
+    h.test_result("flow-reference lists Deviation: under Forbidden trailer shapes",
+                  "a line beginning `Deviation:`" in flow_ref or "Deviation:" in flow_ref)
+    h.test_result("flow-reference has no PANEL: in receipt grammar",
+                  "PANEL:" not in flow_ref or "PANEL:" not in re.search(r"## Receipt.*?---", flow_ref, re.DOTALL).group(0) if re.search(r"## Receipt", flow_ref) else True)
+    h.test_result("flow-reference documents Deviation: is reserved",
+                  "Deviation:" in flow_ref and "reserved" in flow_ref)
+    h.test_result("flow-reference has Artifact verification paragraph",
+                  "Artifact verification" in flow_ref)
+
+    # Naming and format pins
+    h.test_result("expert-plan.md pins SESSION_DIR format",
+                  "SESSION_DIR=\"$HOME/.claude/plan-sessions/${REPO_KEY}/${SLUG}-${INVOCATION_ID}\"" in plan)
+    h.test_result("expert-plan.md pins FINAL_PLAN_PATH format",
+                  "FINAL_PLAN_PATH=\"$HOME/.claude/plans/${SLUG}-${INVOCATION_ID}.md\"" in plan)
+    h.test_result("expert-plan.md pins INVOCATION_ID format",
+                  "INVOCATION_ID=" in plan and "%Y%m%dT%H%M%S" in plan and "%05d" in plan and "$RANDOM" in plan)
+    h.test_result("expert-plan.md roster example has Expert header",
+                  "| Expert | Concern | Model | Reason |" in plan)
+    h.test_result("expert-plan.md Step 1 sentence pins roster format",
+                  "roster must be a markdown table" in plan or "table whose header's first cell is `Expert`" in plan)
+
+    join_barrier = (REPO_ROOT / "prompts" / "join-barrier-pattern.md").read_text()
+    h.test_result("join-barrier-pattern.md stand-in has ## Decision / FAILED",
+                  "## Decision" in join_barrier and re.search(r"## Decision.*?FAILED", join_barrier, re.DOTALL) is not None)
+    h.test_result("expert-plan.md stand-in sentence references join-barrier-pattern",
+                  "join-barrier-pattern.md" in plan and "Stand-In File" in plan)
 
     print()
     h.summarize_and_exit()
