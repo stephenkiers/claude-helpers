@@ -198,7 +198,7 @@ separate from the reviewer-context cascade.
   issue (or `--epic` **[experimental until #252 dogfood gate passes]** for an epic's sub-issues, sequentially), each step the existing command run as a subagent in the
   right worktree. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
   Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
-  references the Ask block). Failures are hard stops (Retry ≤2 / Take over / Abort, plus Rebase on a base-stale `verify` failure per ADR-0023's gated-Rebase amendment) — never auto-remediated. State
+  references the Ask block). Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment) — never auto-remediated. State
   under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
   (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
   scope: `FLOW_DIR` and the marker file). Its step agents are `general-purpose` subagents with full

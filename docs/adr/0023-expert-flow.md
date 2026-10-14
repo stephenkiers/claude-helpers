@@ -222,6 +222,28 @@ sanctions one narrow, human-gated git operation to close that gap.
   exception: this human-gated, mechanical rebase. Conflict resolution, automatic rebase retries, and any
   push remain out of scope and need a human decision.
 
+## Amendment (2026-10-14): base-stale Rebase is automatic, with an `/expert-rebase` worker fallback
+
+The gated Rebase amendment above made the human click Rebase at every base-stale `verify` stop. In
+dogfooding (#1777), main moved again before the human could act and verify stopped a second time; the
+human was being used as a retry button for a mechanical operation. This amendment supersedes the
+"explicit human confirmation" and "conflicts are never resolved" parts of that amendment.
+
+- **Automatic, not offered.** On a `verify` failure with `CHECK_CLASS: base-stale` (not stacked,
+  `failures[verify] < 2`), the orchestrator runs the same `git fetch origin` + `git rebase
+  origin/<default branch>` without asking. Clean: log `rebased` and re-run verify.
+- **Worker on conflict.** The orchestrator aborts the rebase and spawns one `general-purpose` Task
+  subagent that follows `/expert-rebase` with overrides: no push, no questions, apply panel consensus,
+  and abort with `NEEDS_HUMAN` on disagreement or intent-dependent conflicts. The orchestrator itself
+  still never resolves a conflict and holds no new git grants; the worker is a Task subagent like
+  every other step agent. `NEEDS_HUMAN`, a failed post-check, or an unreachable worker falls through to
+  the ordinary Retry / Take over / Abort menu.
+- **Still out of scope.** Pushing (ship pushes; `/shipit` owns the confirmed force-push after a
+  stale-base rebase), stacked branches (stop prints the `/expert-rebase` suggestion), and any
+  remediation of a non-base-stale failure.
+- **Bounded.** The two-attempt cap per step is unchanged, so a base that keeps moving ends at a human
+  stop rather than a loop.
+
 ## Amendment (2026-10-13): Start fresh deletes the old flow's worktree
 
 Before this amendment, a plain `/expert-flow <N>` that found an existing flow offered Resume, Start fresh,

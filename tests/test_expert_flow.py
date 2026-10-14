@@ -166,8 +166,8 @@ def main():
                   "▶️ expert-flow #<ISSUE> — paused at: <STEP>" in stop_sec
                   and "resume: /expert-flow --resume <ISSUE>" in stop_sec)
     rebase_sec = enclosing_section(text, "/expert-rebase")
-    h.test_result("/expert-rebase is suggested, never invoked",
-                  bool(re.search(r"never\s+invoked", rebase_sec)) and "/expert-rebase" in rebase_sec)
+    h.test_result("/expert-rebase is suggested, invoked only by the base-stale auto-rebase worker",
+                  bool(re.search(r"never\s+invoked outside", rebase_sec)) and "/expert-rebase" in rebase_sec)
     h.test_result("fix step skipped when every CONFIRMED count is 0",
                   "are all `0`" in text or "every CONFIRMED count is 0" in text)
     h.test_result("verify uses commands.check only", "commands.check" in text and "epic decision 4" in text)
@@ -414,14 +414,16 @@ def main():
         h.test_result(f"verify stale pattern {pat}", pat in vflat)
     h.test_result("verify reason says base stale", "base stale" in vflat)
     hard = sub("### Hard stop")
-    h.test_result("Hard stop offers Rebase only for base-stale verify",
-                  "**Rebase**" in hard and "CHECK_CLASS: base-stale" in " ".join(hard.replace("`", "").split()))
+    h.test_result("Hard stop auto-rebases only for base-stale verify",
+                  "Auto-rebase" in hard and "CHECK_CLASS: base-stale" in " ".join(hard.replace("`", "").split()))
+    h.test_result("Auto-rebase falls back to an /expert-rebase worker without pushing",
+                  "Worker fallback" in hard and "NEEDS_HUMAN" in hard and "do **not** push" in hard)
     h.test_result("Rebase aborts on conflicts", "git rebase --abort" in hard)
     h.test_result("Rebase is guarded by STACK_IS_STACKED", "STACK_IS_STACKED" in hard and "/expert-rebase" in hard)
     h.test_result("rebased is a log event", "`rebased`" in flow_state)
     h.test_result("Every Exit Path has both Rebase rows",
-                  re.search(r"^\| Hard stop → Rebase[^\n]*clean", exit_sec, re.M) is not None
-                  and re.search(r"^\| Hard stop → Rebase[^\n]*conflicts", exit_sec, re.M) is not None)
+                  re.search(r"^\| Hard stop → auto-Rebase[^\n]*clean", exit_sec, re.M) is not None
+                  and re.search(r"^\| Hard stop → auto-Rebase[^\n]*conflicts", exit_sec, re.M) is not None)
     fm_tools = frontmatter(text)
     h.test_result("allowed-tools grants only the exact git fetch origin / rebase grants for Rebase",
                   all(f"Bash({g})" in fm_tools for g in
