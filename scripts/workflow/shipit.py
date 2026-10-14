@@ -81,9 +81,26 @@ class ShipitPlan:
 
 @dataclass
 class ShipitResult:
-    """Result of applying a shipit plan."""
+    """
+    Result of applying a shipit plan.
+
+    Fields:
+        success: True when changes were pushed (even if the commit step was skipped
+                 because there were no staged changes).
+        committed: True if a commit was created (False if the index was clean and
+                   the commit step was skipped).
+        skipped_commit: True if the commit step was skipped due to no staged changes.
+        pushed: True if the branch was pushed to origin.
+        pr_created: True if a new PR was created.
+        pr_updated: True if an existing PR was edited.
+        pr_url: The URL of the created or edited PR, if applicable.
+        merged_pr_number: Set when the cached PR was MERGED and a new PR was created
+                          instead (issue #213).
+        error: Set if the operation failed.
+    """
     success: bool
     committed: bool = False
+    skipped_commit: bool = False
     pushed: bool = False
     pr_created: bool = False
     pr_updated: bool = False
@@ -354,6 +371,7 @@ def apply_shipit(plan_json: str, cwd: Optional[Path] = None) -> Tuple[ShipitResu
         try:
             if not git.has_staged_changes(cwd=repo_root):
                 success, err = True, None
+                result.skipped_commit = True
             else:
                 success, err = git.commit_with_message_file(Path(plan.commit_message_path), cwd=repo_root)
                 if success:
