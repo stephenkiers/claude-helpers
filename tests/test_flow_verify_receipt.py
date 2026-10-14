@@ -8,6 +8,7 @@ review dirs with checkpoints and action plans, and commit counts for implement/f
 Run with: python3 tests/test_flow_verify_receipt.py
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -57,11 +58,45 @@ def create_contribution(path: str, is_standin: bool = False) -> None:
     Path(path).write_text(content)
 
 
-def create_session(home: str, invocation_id: str) -> str:
-    """Create a plan session dir and return its path."""
+def create_session(home: str, invocation_id: str, briefs: int = 0) -> str:
+    """Create a plan session dir (with a decisions.md holding `briefs` decision briefs) and return its path."""
     session_dir = f"{home}/.claude/plan-sessions/repo_key/plan-{invocation_id}"
     Path(session_dir).mkdir(parents=True, exist_ok=True)
+    body = "# Decisions\n\n## Decision briefs\n\n"
+    for n in range(1, briefs + 1):
+        body += f"#### Q{n}. Question {n}\n\nWhy it matters: because.\n\n"
+    Path(f"{session_dir}/decisions.md").write_text(body)
     return session_dir
+
+
+def create_flow_questions(flow_dir: str, step: str, counts: list) -> None:
+    """Write questions/<step>-NN.json files under flow_dir, one per entry in counts (its question count)."""
+    qdir = Path(flow_dir) / "questions"
+    qdir.mkdir(parents=True, exist_ok=True)
+    for seq, count in enumerate(counts, start=1):
+        questions = [
+            {"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}
+            for i in range(1, count + 1)
+        ]
+        (qdir / f"{step}-{seq:02d}.json").write_text(json.dumps({
+            "step": step, "command": f"expert-{step}", "context_path": None, "summary": None, "questions": questions,
+        }))
+
+
+def create_plan_fixture(tmp_home: str, briefs: int) -> str:
+    """A complete, passing plan fixture with `briefs` decision briefs; returns the receipt path."""
+    create_reviewer_index(tmp_home)
+    invocation_id = "20261013T222013-30924"
+    session_dir = create_session(tmp_home, invocation_id, briefs=briefs)
+    plan_path = f"{tmp_home}/.claude/plans/issue-slug-{invocation_id}.md"
+    Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(plan_path).write_text("# Plan")
+    Path(f"{session_dir}/context.md").write_text("# Context")
+    Path(f"{session_dir}/selected-experts.md").write_text("| Expert |\n|--------|\n| Danielle the Designer |")
+    create_contribution(f"{session_dir}/danielle-designer-contribution.md")
+    receipt_path = f"{tmp_home}/receipt.md"
+    create_receipt(receipt_path, f"FINAL_PLAN_PATH: {plan_path}\nDecision: OK\n<!-- step-end -->")
+    return receipt_path
 
 
 def create_reviewer_index(home: str) -> None:
@@ -1369,6 +1404,103 @@ No items."""
             "plan", receipt_path, "2026-10-14T00:00:00Z", tmp_home
         )
         h.test_result("Mtime at since - 5s + 1 passes (within skew)", exit_code == 0 and "ARTIFACTS: ok" in stdout)
+
+    SINCE = "2026-10-14T00:00:00Z"
+
+    print()
+    print("[Test 52] Plan: 3 decision briefs, 2 questions relayed → checkpoint incomplete")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        create_flow_questions(flow_dir, "plan", [2])
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("3 briefs / 2 asked fails with 'plan checkpoint incomplete'",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 3, asked: 2)" in stdout, stdout)
+
+    print()
+    print("[Test 53] Plan: 3 briefs, 3 questions across two files → passes")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        create_flow_questions(flow_dir, "plan", [2, 1])
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("3 briefs / 3 asked (plan-01 + plan-02) passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 54] Plan: briefs but no --flow-dir and receipt not under steps/ → counts zero asked")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("1 brief / unknown flow dir fails closed",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0)" in stdout, stdout)
+
+    print()
+    print("[Test 55] Plan: flow dir derived from a receipt under <flow>/steps/")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        steps_receipt = f"{flow_dir}/steps/01-plan.md"
+        create_receipt(steps_receipt, Path(receipt_path).read_text())
+        create_flow_questions(flow_dir, "plan", [1])
+        exit_code, stdout, _ = run_verifier("plan", steps_receipt, SINCE, tmp_home)
+        h.test_result("receipt in steps/ finds questions/ without --flow-dir", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 56] Plan: decisions.md missing → plan artifacts missing (decisions.md)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        os.remove(f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924/decisions.md")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("missing decisions.md fails", exit_code == 1 and "plan artifacts missing (decisions.md)" in stdout, stdout)
+
+    print()
+    print("[Test 57] Plan: unparsable question file counts as zero asked")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        Path(f"{flow_dir}/questions").mkdir(parents=True)
+        Path(f"{flow_dir}/questions/plan-01.json").write_text("{not json")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("unparsable plan-01.json → asked: 0", exit_code == 1 and "(briefs: 1, asked: 0)" in stdout, stdout)
+
+    NEEDS_YOU_PLAN = (
+        "# Action Plan\n\n## Needs you\n\n### 1. First ruling\n\nWhere: a.py\n\n### 2. Second ruling\n\nWhere: b.py\n\n"
+        "## Needs measurement\n\n### 1. Measure this\n\n## Doing it\n\n### 1. Fix a\n### 2. Fix b\n### 3. Fix c\n"
+    )
+
+    print()
+    print("[Test 58] Review: 2 Needs-you items, 1 question relayed → rulings incomplete")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->")
+        flow_dir = f"{tmp_home}/flow"
+        create_flow_questions(flow_dir, "review", [1])
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("needs-you 2 / asked 1 fails with 'review rulings incomplete'",
+                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 1)" in stdout, stdout)
+
+    print()
+    print("[Test 59] Review: 2 Needs-you items, 2 questions relayed → passes (other sections' items not counted)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->")
+        flow_dir = f"{tmp_home}/flow"
+        create_flow_questions(flow_dir, "review", [2])
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("needs-you 2 / asked 2 passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 60] Review: no Needs you section and no questions → passes")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->")
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home)
+        h.test_result("needs-you 0 / asked 0 passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     h.summarize_and_exit()
 

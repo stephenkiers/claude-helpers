@@ -715,7 +715,18 @@ to finish first. A crash between batches must not leave an earlier batch's answe
 
 **In a flow (`FLOW_DIR` set):** each ≤4-question batch is one Ask — one question file
 (`questions/review-<SEQ>.json`, `context_path` = `{REVIEW_DIR}/claude-action-plan.md`) and its own
-interrupt/resume cycle. Before ending the turn, close the open stage with `stage-end --stage rulings
+interrupt/resume cycle. The human reads only what the file carries, so set `summary` to a triage
+digest in markdown — the North Star line, the counts line, the gut check, the *Doing it* titles,
+each *Needs measurement* item's **Command**, and the *Deferred* titles with their reasons — and set
+each question's `brief` to that item's whole *Needs you* block from `claude-action-plan.md`,
+verbatim (Where, Why this is yours, The finding, the Options with their Pro/Con, Recommendation).
+Never reduce a brief to its option labels. Every *Needs you* item is asked, across successive files
+(`review-01`, `review-02`, …) until none is left `pending-decision`; ruling on an item yourself, or
+dropping a later batch, is a reduced run — write `Decision: FAILED` with `Reason: reduced run:
+rulings dropped`. The orchestrator's verifier counts the *Needs you* items against the questions in
+`${FLOW_DIR}/questions/review-*.json` and rejects the step when fewer were asked. At `needs-you: 0`
+nothing is written; the orchestrator's own step gate shows the human the action plan.
+Before ending the turn, close the open stage with `stage-end --stage rulings
 --outcome interrupted` (then the Ask block's `command-end --outcome interrupted`); on resume, re-open
 it with `stage-begin --stage rulings`, record that batch's answers with the `Edit` mechanism below
 exactly as if the tool had returned them, then ask the next batch. The idempotency check below is what

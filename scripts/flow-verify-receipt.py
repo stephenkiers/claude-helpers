@@ -3,11 +3,13 @@
 
 Exit codes:
   0: artifacts OK
-  1: receipt admits deviation or artifact missing
+  1: receipt admits deviation, artifact missing, or a plan/review checkpoint was not fully relayed
+     (fewer questions in <flow-dir>/questions/<step>-*.json than decision briefs / Needs-you items)
   2: bad arguments or internal error (message on stderr)
 """
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -23,6 +25,12 @@ GIT_TIMEOUT_SECS = 5
 CONTRIB_ABSENT = "absent"
 CONTRIB_UNTERMINATED = "unterminated"
 CONTRIB_STANDIN = "stand-in"
+
+# A decision brief heading in a plan session's decisions.md (`#### Q1. …`, `#### Q2 — …`).
+BRIEF_HEADING_RE = re.compile(r"^####\s+Q\d+\b", re.MULTILINE)
+# A *Needs you* item heading in claude-action-plan.md (`### 1. Title`).
+NEEDS_YOU_ITEM_RE = re.compile(r"^###\s+\d+\.", re.MULTILINE)
+NEEDS_YOU_HEADING_RE = re.compile(r"^##\s+Needs you\b.*$", re.MULTILINE)
 
 
 def error(msg: str) -> NoReturn:
@@ -117,7 +125,7 @@ def scan_for_deviation(content: str) -> bool:
     return False
 
 
-def check_plan(receipt_file: Path, since: float, home: Path) -> Optional[str]:
+def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[Path]) -> Optional[str]:
     """Check plan artifacts. Return error reason or None."""
     receipt = read_file(receipt_file)
 
@@ -223,10 +231,21 @@ def check_plan(receipt_file: Path, since: float, home: Path) -> Optional[str]:
         if _is_standin(contrib):
             return f"plan artifacts missing (contribution: {name} {CONTRIB_STANDIN})"
 
+    # Checkpoint completeness: every decision brief in decisions.md must have been put to the
+    # human through the relay. decisions.md is written before the first Ask (even with zero
+    # briefs), so its absence means the checkpoint never ran.
+    decisions_file = session_dir / "decisions.md"
+    if not decisions_file.exists():
+        return "plan artifacts missing (decisions.md)"
+    briefs = count_briefs(read_file(decisions_file))
+    asked = count_relayed_questions(flow_dir, "plan")
+    if asked < briefs:
+        return f"plan checkpoint incomplete (briefs: {briefs}, asked: {asked})"
+
     return None
 
 
-def check_review(receipt_file: Path, since: float, home: Path) -> Optional[str]:
+def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optional[Path]) -> Optional[str]:
     """Check review artifacts. Return error reason or None."""
     receipt = read_file(receipt_file)
 
@@ -267,6 +286,61 @@ def check_review(receipt_file: Path, since: float, home: Path) -> Optional[str]:
     if len(checkpoints) < 2:
         return f"review artifacts missing (reviewer checkpoints: {len(checkpoints)})"
 
+    # Rulings completeness: every *Needs you* item must have been put to the human through the relay.
+    needs_you = count_needs_you_items(read_file(action_plan))
+    asked = count_relayed_questions(flow_dir, "review")
+    if asked < needs_you:
+        return f"review rulings incomplete (needs-you: {needs_you}, asked: {asked})"
+
+    return None
+
+
+def count_briefs(decisions: str) -> int:
+    """Count `#### Q<n>` decision-brief headings in a plan session's decisions.md."""
+    return len(BRIEF_HEADING_RE.findall(decisions))
+
+
+def count_needs_you_items(action_plan: str) -> int:
+    """Count `### N.` items under the `## Needs you` heading of claude-action-plan.md.
+
+    The section ends at the next `## ` heading. No section means zero items.
+    """
+    m = NEEDS_YOU_HEADING_RE.search(action_plan)
+    if not m:
+        return 0
+    rest = action_plan[m.end():]
+    nxt = re.search(r"^##\s", rest, re.MULTILINE)
+    section = rest[: nxt.start()] if nxt else rest
+    return len(NEEDS_YOU_ITEM_RE.findall(section))
+
+
+def count_relayed_questions(flow_dir: Optional[Path], step: str) -> int:
+    """Sum `questions[]` across `<flow_dir>/questions/<step>-*.json`.
+
+    An unknown flow dir, a missing questions/ dir, or an unparseable file counts as zero asked:
+    the check fails closed when briefs or items exist and nothing provably reached the human.
+    """
+    if flow_dir is None:
+        return 0
+    total = 0
+    for qfile in sorted((flow_dir / "questions").glob(f"{step}-*.json")):
+        try:
+            data = json.loads(qfile.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        questions = data.get("questions") if isinstance(data, dict) else None
+        if isinstance(questions, list):
+            total += len(questions)
+    return total
+
+
+def resolve_flow_dir(explicit: Optional[str], receipt_file: Path) -> Optional[Path]:
+    """`--flow-dir` when given; else the receipt's grandparent when the receipt sits in `steps/`."""
+    if explicit:
+        return canonicalize_path(explicit)
+    receipt = receipt_file.resolve()
+    if receipt.parent.name == "steps":
+        return receipt.parent.parent
     return None
 
 
@@ -520,6 +594,10 @@ def main() -> None:
     parser.add_argument("--branch", help="Branch name (for implement/fix)")
     parser.add_argument("--base", help="Base SHA (for implement/fix)")
     parser.add_argument("--review-dir", help="Review directory (for fix)")
+    parser.add_argument(
+        "--flow-dir",
+        help="Flow directory holding questions/ (plan/review); default: the receipt's grandparent when it sits in steps/",
+    )
 
     args = parser.parse_args()
 
@@ -545,10 +623,12 @@ def main() -> None:
     # Step-specific checks
     error_reason: Optional[str] = None
 
+    flow_dir = resolve_flow_dir(args.flow_dir, receipt_file)
+
     if args.step == "plan":
-        error_reason = check_plan(receipt_file, since_ts, home)
+        error_reason = check_plan(receipt_file, since_ts, home, flow_dir)
     elif args.step == "review":
-        error_reason = check_review(receipt_file, since_ts, home)
+        error_reason = check_review(receipt_file, since_ts, home, flow_dir)
     elif args.step == "implement":
         if not all([args.repo, args.branch, args.base]):
             error("--repo, --branch, --base required for implement")

@@ -42,7 +42,7 @@ SYNTH = REPO_ROOT / "prompts" / "plan-synthesize-and-check.md"
 STAGE_LINT = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 
 STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
-FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--from", "--resume", "--list", "--epic"]
+FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--no-gates", "--from", "--resume", "--list", "--epic"]
 
 # Allowlist for the orchestrator's allowed-tools grants. Bash grants must be read-only
 # git/gh, read/inspection utilities, or the run-metrics script. Matching is done on the
@@ -514,6 +514,68 @@ def main():
                   "## Decision" in join_barrier and re.search(r"## Decision.*?FAILED", join_barrier, re.DOTALL) is not None)
     h.test_result("expert-plan.md stand-in sentence references join-barrier-pattern",
                   "join-barrier-pattern.md" in plan and "Stand-In File" in plan)
+
+    print()
+    print("[Section 14] More human in the loop: context-carrying relay, full checkpoint relay, step gates")
+    review_cmd = (REPO_ROOT / "commands" / "expert-review.md").read_text()
+    ask_block = heading_section(flow_ref, "## Ask") or flow_ref
+    h.test_result("flow-reference Ask block defines top-level `summary` and per-question `brief`",
+                  '"summary"' in ask_block and '"brief"' in ask_block)
+    h.test_result("flow-reference requires summary/brief for expert-plan and expert-review",
+                  "**Required**" in ask_block and "/expert-plan" in ask_block and "/expert-review" in ask_block)
+    relay = sub("### Relaying a question")
+    h.test_result("relay reads `summary` and `brief`", "`summary`" in relay and "`brief`" in relay)
+    h.test_result("relay prints the context before the mandatory call",
+                  "Print the context, then call the form" in relay and "`AskUserQuestion` call is mandatory" in relay)
+    h.test_result("relay falls back to printing the whole context_path file",
+                  "print the\n   whole `context_path` file" in relay or "whole `context_path` file" in relay)
+    h.test_result("relay exception names both gates",
+                  "merge gate and the step gates, which are the orchestrator's own decision points" in relay)
+    gate = sub("### Step gate")
+    h.test_result("Step gate section exists", gate != "")
+    h.test_result("Step gate offers Continue / Pause / Abort",
+                  "**Continue**" in gate and "**Pause**" in gate and "**Abort**" in gate)
+    h.test_result("Step gate runs after plan, implement, review, fix, verify and never ship/merge",
+                  "`plan`,\n`implement`, `review`, `fix`, and `verify`" in gate and "never after `worktree`" in gate)
+    h.test_result("Step gate is skipped by flags.no_gates and a recorded continue",
+                  "`flags.no_gates` is true" in gate and "`gates[STEP]` is already `continue`" in gate)
+    h.test_result("Step gate prints each step's digest",
+                  "`decisions.md`" in gate and "claude-action-plan.md" in gate and "git log --oneline <bases[STEP]>..HEAD" in gate)
+    h.test_result("Step gate Pause closes the command as interrupted and resume re-asks",
+                  "command-end --outcome interrupted" in gate and "resume rule 3a" in gate)
+    h.test_result("free text at a gate is stored as gate_note", "`gate_note`" in gate)
+    h.test_result("OK branch runs the Step gate before STEP advances",
+                  'run the "Step gate" when `STEP` is' in text and "advance `STEP` to the next step" in text)
+    h.test_result("resume rule 3a re-asks a gate the human paused at", "3a. `status: paused` at a step gate" in text)
+    h.test_result("flags.no_gates is forced false on resume", "`flags.no_gates` is forced to `false`" in text)
+    h.test_result("state documents gates and flags.no_gates",
+                  re.search(r"^\| `gates` \|", flow_state, re.M) is not None
+                  and re.search(r"^\| `flags\.no_gates` \| boolean \| per-run", flow_state, re.M) is not None)
+    h.test_result("--no-gates is per-run only in Arguments", "--no-gates" in args_sec and "Per-run only" in args_sec)
+    h.test_result("--no-gates is rejected with --resume/--abandon/--retro/--list",
+                  text.count('|| [ "$NO_GATES" = yes ]') == 4)
+    h.test_result("Every Exit Path has Pause and Abort at a step gate rows",
+                  re.search(r"^\| Pause at a step gate", exit_sec, re.M) is not None
+                  and re.search(r"^\| Abort at a step gate", exit_sec, re.M) is not None)
+    h.test_result("verifier is invoked with --flow-dir", '--flow-dir "$FLOW_DIR"' in text)
+    h.test_result("verifier failure reasons for incomplete checkpoints are documented",
+                  "plan checkpoint incomplete" in text and "review rulings incomplete" in text)
+    audit = sub("### Fidelity audit")
+    h.test_result("fidelity audit compares briefs/Needs-you items with relayed question files",
+                  "questions/plan-*.json" in audit and "questions/review-*.json" in audit and "no checkpoint questions" in audit)
+    plan_step5 = plan.split("### Step 5", 1)[1].split("### Step 6", 1)[0] if "### Step 5" in plan else ""
+    h.test_result("expert-plan Step 5 fails a run that drops checkpoint questions",
+                  "reduced run: checkpoint questions dropped" in plan_step5)
+    h.test_result("expert-plan Step 5 relays every brief across successive files",
+                  "`plan-01`, `plan-02`" in plan_step5 and "`summary`" in plan_step5 and "`brief`" in plan_step5)
+    h.test_result("expert-plan Step 5 makes open-ended themes a free-text Ask unconditionally",
+                  "**must** become one free-text Ask" in plan_step5)
+    h.test_result("expert-review Step 12 carries summary/brief and fails dropped rulings",
+                  "reduced run:\nrulings dropped" in review_cmd and "`summary`" in review_cmd and "`review-01`, `review-02`" in review_cmd)
+    h.test_result("ADR has the more-human-in-the-loop amendment",
+                  "## Amendment (2026-10-14): more human in the loop" in adr and "`--no-gates`" in adr)
+    h.test_result("CLAUDE.md mentions step gates and --no-gates",
+                  "step gate" in CLAUDE_MD.read_text() and "--no-gates" in CLAUDE_MD.read_text())
 
     print()
     h.summarize_and_exit()

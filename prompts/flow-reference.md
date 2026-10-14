@@ -156,28 +156,41 @@ again there; `/expert-review` rulings are deterministic from checkpoints and usu
 2. **Write the question file** `${FLOW_DIR}/questions/<STEP_NAME>-<SEQ>.json` with the `Write`
    tool (not a shell redirect — the question text can derive from untrusted ticket or diff
    content, and `Write` keeps it out of a shell string). Its shape is the `AskUserQuestion` input
-   **verbatim**, plus three top-level fields the orchestrator needs and one `id` per question:
+   **verbatim**, plus four top-level fields the orchestrator needs (`summary` may be `null`), and
+   an `id` plus an optional `brief` per question:
 
    ```json
    {
      "step": "<STEP_NAME>",
      "command": "<slash command without the leading slash, e.g. expert-plan>",
      "context_path": "<absolute path of the file a human should skim before answering, or null>",
+     "summary": "<markdown the human reads before the questions, or null>",
      "questions": [
-       { "id": "q1", ...the question entry exactly as you would have passed it to AskUserQuestion... },
-       { "id": "q2", ...the next entry... }
+       { "id": "q1", "brief": "<markdown: the decision brief for this one question, or null>", ...the question entry exactly as you would have passed it to AskUserQuestion... },
+       { "id": "q2", "brief": null, ...the next entry... }
      ]
    }
    ```
 
-   `id` is `q1`, `q2`, … in the order asked, unique within the file. It is the only addition to
-   each `questions[]` entry, and it is the key the answers file uses. Each entry keeps the tool's
-   own schema — `question`, `header`, `options[]` with `label` and `description`, and
-   `multiSelect` — so the orchestrator can hand it to `AskUserQuestion` unchanged. For a free-text
-   question (an open-ended planning theme), give one option labelled `Answer in your own words` and
-   the orchestrator will put the human's "Other" text in the answer. `context_path` is the one file
-   worth opening first (the decision brief, the action plan, the diff index); it is a pointer, never
-   pasted content.
+   `id` is `q1`, `q2`, … in the order asked, unique within the file, and it is the key the answers
+   file uses. `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
+   strips both before the call. Each entry otherwise keeps the tool's own schema — `question`,
+   `header`, `options[]` with `label` and `description`, and `multiSelect` — so the orchestrator can
+   hand it to `AskUserQuestion` unchanged. For a free-text question (an open-ended planning theme),
+   give one option labelled `Answer in your own words` and the orchestrator will put the human's
+   "Other" text in the answer. `context_path` is the one file worth opening first (the decision
+   brief, the action plan, the diff index); it is a pointer, never pasted content.
+
+   **Context travels with the question.** The human answers in the orchestrator's conversation and
+   never sees this command's output, so a bare option list is not enough to decide on. `summary` and
+   `brief` are markdown the orchestrator prints verbatim above the form (`summary` once, then each
+   question's `brief` under its `id`): put in them what the human would have read in chat outside a
+   flow, not a pointer to it, written for a reader who has lost all context. **Required** for
+   `/expert-plan`'s checkpoint (`summary` = the ticket refresher, the North Star line, and the expert
+   round-up; `brief` = that question's `#### Q[n]` decision brief, verbatim) and `/expert-review`'s
+   rulings (`summary` = the triage digest; `brief` = that item's *Needs you* block, verbatim). Other
+   commands may set both to `null`; when a file has neither, the orchestrator prints the whole
+   `context_path` file instead, so a question is never shown bare.
 
 3. **Record the awaiting marker in the step receipt.** The receipt path is the one in the Receipt
    block. The receipt may not exist yet, because the command has not finished. Do this as a
@@ -251,7 +264,9 @@ again there; `/expert-review` rulings are deterministic from checkpoints and usu
    The rest of the command is unchanged.
 
 A step may ask more than once (`-01`, `-02`, …); each ask is its own interrupt/resume cycle. Keep
-asks to what the existing command already asked — the relay never adds questions.
+asks to what the existing command already asked — the relay never adds questions. (The
+orchestrator's own gates — the merge gate and the per-step gates in `/expert-flow` — are its
+decision points, not relayed asks.)
 
 **What is never relayed.** Needs-measurement items from `/expert-review` (nothing to choose until a
 command has been run), `/cleanup`'s verify-queue `done|defer|ignore` (defaults to `defer`), and
