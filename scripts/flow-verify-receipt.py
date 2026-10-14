@@ -489,9 +489,7 @@ def _count_doing_it_items(action_plan: str) -> int:
             if table_started and stripped.startswith("|"):
                 # Skip separator rows (all dashes and pipes)
                 if not re.match(r"^\|\s*-+\s*(\|\s*-+\s*)*\|$", stripped):
-                    # Skip table header row (ends with |---|)
-                    if not re.search(r"\|\s*-+\s*\|", stripped):
-                        count += 1
+                    count += 1
             elif table_started and not stripped.startswith("|"):
                 # Table ended
                 table_started = False

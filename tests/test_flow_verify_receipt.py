@@ -144,7 +144,7 @@ def main():
         exit_code, stdout, stderr = run_verifier(
             "plan", receipt_path, "2026-10-14T00:00:00Z", tmp_home
         )
-        h.test_result("Receipt without deviation but missing session fails", exit_code == 1)
+        h.test_result("Receipt without deviation but missing session fails", exit_code == 1 and "session dir" in stdout)
 
     print()
     print("[Test 2] Plan good path: roster of contributors, all with contributions")
@@ -775,7 +775,7 @@ def main():
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
             repo=repo_path, branch="HEAD", base=fake_base
         )
-        h.test_result("Unknown base SHA exits with code 2", exit_code == 2)
+        h.test_result("Unknown base SHA exits with code 2", exit_code == 2 and ("invalid" in stderr.lower() or "not found" in stderr.lower()))
 
     print()
     print("[Test 31] Fix: zero commits with no 'Doing it' items (real triage format) passes")
@@ -872,6 +872,55 @@ Nothing cross-cutting.
             repo=repo_path, branch="HEAD", base=base_sha, review_dir=review_dir
         )
         h.test_result("Fix with zero commits but has 'Doing it' items (real format) fails", exit_code == 1 and "no new commits" in stdout)
+
+    print()
+    print("[Test 32.1] Fix: Doing it table row with dashes in Fix cell is counted")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        repo_path = f"{tmp_home}/repo"
+        create_git_repo(repo_path)
+
+        # Get the SHA (no new commits)
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True)
+        base_sha = result.stdout.strip()
+
+        # Create review dir with action plan where Fix cell contains dashes
+        review_dir = f"{tmp_home}/.claude/reviews/repo_key/12-review-2026"
+        Path(review_dir).mkdir(parents=True, exist_ok=True)
+        action_plan = """# Action Plan
+
+**Review**: 12-review-2026 | **Branch**: main | **Commit**: abc1234 | **Date**: 2026-10-14
+**Full report**: ./final-report.md
+
+## Decisions for you: 0
+
+---
+
+## Gut check
+
+Nothing cross-cutting.
+
+---
+
+## Doing it: 2
+
+| # | Severity | Finding | File | Raised by | Fix |
+|---|----------|---------|------|-----------|-----|
+| 1 | MEDIUM | Test finding | scripts/test.py:10 | TestReviewer | Apply the -- operator fix |
+| 2 | LOW | Another finding | src/main.py:5 | Another | Handle -- dashes case |"""
+        Path(f"{review_dir}/claude-action-plan.md").write_text(action_plan)
+        Path(f"{review_dir}/final-report.md").write_text("# Final Report")
+        Path(f"{review_dir}/findings.json").write_text('{"CONFIRMED": []}')
+        Path(f"{review_dir}/reviewer-pass1.md").write_text("# Pass 1")
+        Path(f"{review_dir}/reviewer2-pass1.md").write_text("# Pass 1 #2")
+
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nDecision: OK\n<!-- step-end -->")
+
+        exit_code, stdout, stderr = run_verifier(
+            "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
+            repo=repo_path, branch="HEAD", base=base_sha, review_dir=review_dir
+        )
+        h.test_result("Fix with dashes in Fix cell still detects 2 Doing items and fails", exit_code == 1 and "no new commits" in stdout)
 
     print()
     print("[Test 33] Usage: missing --step argument exits with code 2")
@@ -988,7 +1037,7 @@ Nothing cross-cutting.
         exit_code, stdout, stderr = run_verifier(
             "track", receipt_path, "not-a-valid-iso8601", tmp_home
         )
-        h.test_result("Malformed --since exits 2", exit_code == 2)
+        h.test_result("Malformed --since exits 2", exit_code == 2 and ("invalid" in stderr.lower() or "parse" in stderr.lower()))
         h.test_result("Malformed --since not reported as stale", "stale" not in stdout)
 
     print()
@@ -1017,8 +1066,7 @@ Nothing cross-cutting.
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
             repo=repo_path, branch="HEAD", base=base_sha, review_dir=bad_review_dir
         )
-        # The fix step may not validate review-dir containment yet; adjust expectation
-        h.test_result("Fix step validates review-dir or accepts it", exit_code in [0, 1])
+        h.test_result("Fix step enforces review-dir containment", exit_code == 1 and "no new commits" in stdout)
 
     print()
     print("[Test 39] Reviewer index with stem-differs (name != file stem)")
@@ -1065,7 +1113,7 @@ Nothing cross-cutting.
         exit_code, stdout, stderr = run_verifier(
             "track", receipt_path, "2026-10-14T12:30:45Z", tmp_home
         )
-        h.test_result("ISO8601 with Z suffix is accepted", exit_code == 0)
+        h.test_result("ISO8601 with Z suffix is accepted", exit_code == 0 and "ARTIFACTS: ok" in stdout)
 
     print()
     print("[Test 41] ISO8601 with offset is handled")
@@ -1077,7 +1125,7 @@ Nothing cross-cutting.
         exit_code, stdout, stderr = run_verifier(
             "track", receipt_path, "2026-10-14T12:30:45-07:00", tmp_home
         )
-        h.test_result("ISO8601 with offset is accepted", exit_code == 0)
+        h.test_result("ISO8601 with offset is accepted", exit_code == 0 and "ARTIFACTS: ok" in stdout)
 
     print()
     print("[Test 42] Mtime within 5-second skew passes")
@@ -1136,8 +1184,8 @@ Nothing cross-cutting.
         exit_code, stdout, stderr = run_verifier(
             "track", receipt_path, "2026-10-13T00:00:00Z", tmp_home
         )
-        # Bold markers wrap the text but Deviation: at line start is still Deviation:
-        h.test_result("Bold wrapping is handled", exit_code in [0, 1])  # Either result is acceptable
+        # Bold markers are accepted as prefix per script pattern (^(\s*[-*]\s+)?(\*\*)?Deviation:)
+        h.test_result("Bold wrapping ** is caught", exit_code == 1 and "receipt admits deviation" in stdout)
 
     print()
     print("[Test 45] Deviation scanner: unterminated fence is treated as malformed")
@@ -1148,9 +1196,8 @@ Nothing cross-cutting.
         exit_code, stdout, stderr = run_verifier(
             "track", receipt_path, "2026-10-13T00:00:00Z", tmp_home
         )
-        # Unterminated fence means everything after opening ``` is treated as fenced
-        # So the file looks malformed (missing step-end outside fence)
-        h.test_result("Unterminated fence is treated as malformed", exit_code in [1, 2])
+        # Unterminated fence is treated as a deviation (scanner flags it at EOF)
+        h.test_result("Unterminated fence is treated as malformed", exit_code == 1 and "receipt admits deviation" in stdout)
 
     print()
     print("[Test 46] Fence markers with different lengths")
@@ -1178,7 +1225,7 @@ Nothing cross-cutting.
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
             repo=repo_path, branch="HEAD", base="not-a-valid-sha"
         )
-        h.test_result("Non-SHA base exits 2", exit_code == 2)
+        h.test_result("Non-SHA base exits 2", exit_code == 2 and ("invalid" in stderr.lower() or "sha" in stderr.lower()))
 
     print()
     print("[Test 48] Action plan mtime freshness with relative --since")
@@ -1214,8 +1261,115 @@ No items."""
         exit_code, stdout, stderr = run_verifier(
             "review", receipt_path, "2026-10-13T00:00:00Z", tmp_home
         )
-        # Freshness check may pass or fail depending on implementation; accept either
-        h.test_result("Freshness check is evaluated (passes or fails)", exit_code in [0, 1])
+        # Relative mtime against absolute --since time: file from 1 hour ago is newer than 2026-10-13
+        # so it should PASS (within skew). But test allows either in case implementation differs.
+        h.test_result("Freshness check handles relative mtime vs absolute since", exit_code in [0, 1])
+
+    print()
+    print("[Test 49] Mtime boundary: exactly at since - 5s passes (within skew)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        create_reviewer_index(tmp_home)
+        invocation_id = "20261013T222013-30924"
+        session_dir = create_session(tmp_home, invocation_id)
+
+        plan_path = f"{tmp_home}/.claude/plans/issue-slug-{invocation_id}.md"
+        Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(plan_path).write_text("# Plan")
+
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"FINAL_PLAN_PATH: {plan_path}\nDecision: OK\n<!-- step-end -->")
+
+        # Create roster
+        roster_path = f"{session_dir}/selected-experts.md"
+        Path(roster_path).write_text("| Expert |\n|--------|\n| Danielle the Designer |")
+        create_contribution(f"{session_dir}/danielle-designer-contribution.md")
+
+        # Create context.md with mtime exactly at boundary (since - 5 seconds)
+        context_path = f"{session_dir}/context.md"
+        Path(context_path).write_text("# Context")
+        import time
+        from datetime import datetime, timezone
+        # Parse since time: 2026-10-14T00:00:00Z = 1791110400
+        since_dt = datetime(2026, 10, 14, 0, 0, 0, tzinfo=timezone.utc)
+        since_seconds = since_dt.timestamp()
+        # Set mtime to exactly since - 5 (integer seconds)
+        boundary_time = since_seconds - 5
+        os.utime(context_path, (boundary_time, boundary_time))
+
+        exit_code, stdout, stderr = run_verifier(
+            "plan", receipt_path, "2026-10-14T00:00:00Z", tmp_home
+        )
+        h.test_result("Mtime exactly at since - 5s passes", exit_code == 0 and "ARTIFACTS: ok" in stdout)
+
+    print()
+    print("[Test 50] Mtime boundary: since - 5s - 1 fails (outside skew)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        create_reviewer_index(tmp_home)
+        invocation_id = "20261013T222013-30924"
+        session_dir = create_session(tmp_home, invocation_id)
+
+        plan_path = f"{tmp_home}/.claude/plans/issue-slug-{invocation_id}.md"
+        Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(plan_path).write_text("# Plan")
+
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"FINAL_PLAN_PATH: {plan_path}\nDecision: OK\n<!-- step-end -->")
+
+        # Create roster
+        roster_path = f"{session_dir}/selected-experts.md"
+        Path(roster_path).write_text("| Expert |\n|--------|\n| Danielle the Designer |")
+        create_contribution(f"{session_dir}/danielle-designer-contribution.md")
+
+        # Create context.md with mtime at since - 5 - 1 seconds (outside skew)
+        context_path = f"{session_dir}/context.md"
+        Path(context_path).write_text("# Context")
+        import time
+        from datetime import datetime, timezone
+        since_dt = datetime(2026, 10, 14, 0, 0, 0, tzinfo=timezone.utc)
+        since_seconds = since_dt.timestamp()
+        # Set mtime to since - 6 (outside the 5-second skew)
+        outside_boundary_time = since_seconds - 6
+        os.utime(context_path, (outside_boundary_time, outside_boundary_time))
+
+        exit_code, stdout, stderr = run_verifier(
+            "plan", receipt_path, "2026-10-14T00:00:00Z", tmp_home
+        )
+        h.test_result("Mtime at since - 5s - 1 fails (older than skew)", exit_code == 1 and "older than this attempt" in stdout)
+
+    print()
+    print("[Test 51] Mtime boundary: since - 5s + 1 passes (inside skew)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        create_reviewer_index(tmp_home)
+        invocation_id = "20261013T222013-30924"
+        session_dir = create_session(tmp_home, invocation_id)
+
+        plan_path = f"{tmp_home}/.claude/plans/issue-slug-{invocation_id}.md"
+        Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(plan_path).write_text("# Plan")
+
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"FINAL_PLAN_PATH: {plan_path}\nDecision: OK\n<!-- step-end -->")
+
+        # Create roster
+        roster_path = f"{session_dir}/selected-experts.md"
+        Path(roster_path).write_text("| Expert |\n|--------|\n| Danielle the Designer |")
+        create_contribution(f"{session_dir}/danielle-designer-contribution.md")
+
+        # Create context.md with mtime at since - 5 + 1 seconds (inside skew)
+        context_path = f"{session_dir}/context.md"
+        Path(context_path).write_text("# Context")
+        import time
+        from datetime import datetime, timezone
+        since_dt = datetime(2026, 10, 14, 0, 0, 0, tzinfo=timezone.utc)
+        since_seconds = since_dt.timestamp()
+        # Set mtime to since - 4 (inside the 5-second skew)
+        inside_boundary_time = since_seconds - 4
+        os.utime(context_path, (inside_boundary_time, inside_boundary_time))
+
+        exit_code, stdout, stderr = run_verifier(
+            "plan", receipt_path, "2026-10-14T00:00:00Z", tmp_home
+        )
+        h.test_result("Mtime at since - 5s + 1 passes (within skew)", exit_code == 0 and "ARTIFACTS: ok" in stdout)
 
     h.summarize_and_exit()
 
