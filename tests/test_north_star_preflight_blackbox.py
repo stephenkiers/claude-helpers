@@ -144,7 +144,8 @@ def main():
         empty_claude = Path(tmp) / "empty-claude"
         empty_claude.mkdir()
 
-        rc, out, err = run_preflight(["files", "--claude-dir", str(empty_claude)])
+        rc, out, err = run_preflight(
+            ["files", "--claude-dir", str(empty_claude)], path_value=fake_gh_dir(tmp, 0))
         combined = out + err
         t("files: missing installs hard-fail with exit 3",
           rc == 3, f"rc={rc}")
@@ -158,7 +159,8 @@ def main():
           "/setup-local" in combined or "install.sh" in combined, combined.strip()[:300])
 
         rc, out, err = run_preflight(
-            ["files", "--claude-dir", str(empty_claude), "--allow-degraded"])
+            ["files", "--claude-dir", str(empty_claude), "--allow-degraded"],
+            path_value=fake_gh_dir(tmp, 0))
         t("files: --allow-degraded turns a missing install into a blind run (exit 0)",
           rc == 0, f"rc={rc}")
         t("files: blind run reports the missing items in a BLIND line",
