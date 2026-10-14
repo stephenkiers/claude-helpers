@@ -17,7 +17,9 @@ read this file and follow these steps.
 - `WORKTREE_PATH` — path to the code-under-review checkout (coworker mode: guides project-context and source reads; unset in `/expert-review` mode → reads default to orchestrator cwd) (OPTIONAL)
 - `FLOW_DIR` — the `/expert-flow` run directory when the caller is running as a flow step, resolved by the caller's Resolve FLOW_DIR step (`~/.claude/prompts/flow-reference.md`) (OPTIONAL, default empty; empty ≡ not in a flow ≡ every ask in this file behaves exactly as written)
 - `STEP_NAME` — the flow step name used for question files (OPTIONAL, default empty; `/expert-review` sets `review`; only meaningful when `FLOW_DIR` is set)
+- `ALLOW_DEGRADED` — `true` when the caller passed `--allow-degraded`, else `false` (OPTIONAL, default `false`; the deprecated coworker callers never set it)
 - Reviewer index (`~/.claude/reviewers/index.yaml`) already discovered (REQUIRED)
+- `{REVIEW_DIR}/north-star-preflight.files` — written by `/expert-review` Step 3 when `EFFORT` is 3-5. **Panel-entry fallback:** when `EFFORT` (unset ≡ 4) is 3, 4 or 5 and that file is absent (a caller that does not run the preflight, such as the deprecated coworker commands), run the `files` phase now, before any dispatch: `test -f "$HOME/.claude/scripts/north-star-preflight.py"` first (stop with "run /setup-local" if absent), then `python3 "$HOME/.claude/scripts/north-star-preflight.py" files [--allow-degraded]`; on exit 3 stop with its stderr remedy, otherwise write stdout to `north-star-preflight.files` and append any `BLIND` tokens (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`. The gate is a function of `EFFORT`, never of the Router's roster.
 
 All I/O is through `REVIEW_DIR` paths. Reviewer YAMLs live in `~/.claude/reviewers/` regardless of
 which repo is under review — this panel is completely repo-agnostic. When `WORKTREE_PATH` is set (coworker mode), project-context reads (`.claude/project.yaml`, `.claude/reviewers/*-local.yaml`) and source-file reads are rooted at `${WORKTREE_PATH}`; when unset, they default to the orchestrator's cwd.
@@ -354,24 +356,40 @@ and pull requests. Reviewer subagents have no `gh` access and cannot read all of
 before launching Pass 1 gather it for him. First write the snapshot once:
 
 ```bash
-CURRENT_BRANCH=$(git -C "${WORKTREE_PATH:-.}" branch --show-current)
-SNAPSHOT_FLAGS="--repo-dir ${WORKTREE_PATH:-.} --out $REVIEW_DIR/in-flight.md --bodies-out $REVIEW_DIR/in-flight-issues.md"
-[ "$PR_MODE" = "true" ] && SNAPSHOT_FLAGS="$SNAPSHOT_FLAGS --no-worktrees"
-[ -n "$CURRENT_BRANCH" ] && SNAPSHOT_FLAGS="$SNAPSHOT_FLAGS --current-branch $CURRENT_BRANCH"
-python3 "$HOME/.claude/scripts/in-flight-snapshot.py" $SNAPSHOT_FLAGS 2>"$REVIEW_DIR/in-flight.err" || true
-
-# Verify snapshot files exist and are non-empty
-if [ ! -s "$REVIEW_DIR/in-flight.md" ] || [ ! -s "$REVIEW_DIR/in-flight-issues.md" ]; then
-  SNAPSHOT_FAILURE=$(cat "$REVIEW_DIR/in-flight.err" 2>/dev/null || echo "unknown failure")
-  echo "Warning: snapshot failed or produced empty output; reason: $SNAPSHOT_FAILURE"
-  echo "Proceeding without snapshot (non-blocking)"
+# Clear any previous run's snapshot outputs so a reused REVIEW_DIR cannot cause a stale failure
+rm -f "$REVIEW_DIR/in-flight.md" "$REVIEW_DIR/in-flight.err" "$REVIEW_DIR/in-flight-issues.md"
+SNAP_SCRIPT_OK=true
+case "$(cat "$REVIEW_DIR/north-star-preflight.files" 2>/dev/null)" in *snapshot-script*) SNAP_SCRIPT_OK=false ;; esac
+SNAPSHOT_RC=0
+if [ "$SNAP_SCRIPT_OK" = "true" ]; then
+  CURRENT_BRANCH=$(git -C "${WORKTREE_PATH:-.}" branch --show-current)
+  SNAPSHOT_FLAGS="--repo-dir ${WORKTREE_PATH:-.} --out $REVIEW_DIR/in-flight.md --bodies-out $REVIEW_DIR/in-flight-issues.md"
+  [ "$PR_MODE" = "true" ] && SNAPSHOT_FLAGS="$SNAPSHOT_FLAGS --no-worktrees"
+  [ -n "$CURRENT_BRANCH" ] && SNAPSHOT_FLAGS="$SNAPSHOT_FLAGS --current-branch $CURRENT_BRANCH"
+  python3 "$HOME/.claude/scripts/in-flight-snapshot.py" $SNAPSHOT_FLAGS 2>"$REVIEW_DIR/in-flight.err" || SNAPSHOT_RC=$?
+fi
+# Always classify, even after a skipped or crashed snapshot (a missing in-flight.md is snapshot-empty)
+NS_FLAG=""; [ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
+NS_SNAP_RC=0
+NS_SNAP=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$REVIEW_DIR" $NS_FLAG) || NS_SNAP_RC=$?
+if [ "$NS_SNAP_RC" -ne 0 ]; then
+  echo "North Star snapshot preflight failed ($NS_SNAP) — deterministic and not retryable; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
+else
+  case "$NS_SNAP" in
+    BLIND\ *) printf '%s\n' "${NS_SNAP#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "$REVIEW_DIR/north-star-blind.tokens" ;;
+  esac
 fi
 ```
 
-The script is fail-open (an unreachable `gh` becomes an `unavailable:` line, never a failed run).
-On failure, the reason is written to `in-flight.err` next to the output files, and the run proceeds
-without the snapshot.
-Then launch **three** `subagent_type: "expert-scout"` agents in ONE message (pinned Haiku by the
+`NS_FLAG` is set to `--allow-degraded` only when `ALLOW_DEGRADED=true`, else left empty. On any non-zero `NS_SNAP_RC` (3, or 2 for a usage error), stop the run
+(stage and command failure telemetry, `--failure-class other`) with the preflight's stderr remedy. This is a deterministic, non-retryable FAILED: Retry will not help until the cause is fixed.
+A non-zero `SNAPSHOT_RC` is reported alongside it. Otherwise, for a `BLIND ...` stdout, the tokens are whitespace-split and appended (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`
+(the `tr` + `sed` split above, not an unquoted `for` loop, which zsh does not word-split). The snapshot script itself is
+fail-open (exit 0, an `unavailable:` line in the output and keys in `in-flight.err`); the preflight
+is what classifies that into a hard stop or a notice. FAIL stdout lists hard tokens only (a failed `gh auth` is the hard token `gh-auth`); BLIND lists hard then notice tokens, and the stop remedy is printed on stderr only on the FAIL path (BLIND prints an advisory note that the run continues).
+
+If `north-star-preflight.files` named `scout-prompt`, skip the scouts entirely and append
+`scout-failed=all` to the tokens file. Otherwise launch **three** `subagent_type: "expert-scout"` agents in ONE message (pinned Haiku by the
 agent definition, independent of `PANEL_MODEL`), one per lens — `adrs`, `docs`, `in-flight`. Each
 prompt is only:
 
@@ -386,13 +404,16 @@ Output path: {REVIEW_DIR}/north-star-{lens}.md
 ```
 
 Join on file-exists + the `north-star-scout | …` receipt; retry a failed scout once, then proceed
-without it — a missing brief never blocks the review. After all scouts finish, verify each wrote
+without it, appending `scout-failed=<lens>` to `{REVIEW_DIR}/north-star-blind.tokens` — a failed scout is a
+notice on the report, not a hard stop. After all scouts finish, verify each wrote
 only to its assigned output path (`north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`);
 if any unexpected files were written, treat that run as compromised and report it.
 
 In `north-star-nick`'s Pass 1 prompt — and no other reviewer's — list the paths that exist 
-(`north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`, `in-flight.md`), name any 
-that are missing as missing, and tell him to read `{REVIEW_DIR}/full-diff.patch` in full rather than 
+(`north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`, `in-flight.md`,
+`in-flight-issues.md`), name any that are missing as missing, give him the path
+`{REVIEW_DIR}/north-star-blind.tokens` so his blind line can state `NORTH STAR BLIND: nick=<what>` (within
+the first few lines, after any output heading) when his inputs are thin, and tell him to read `{REVIEW_DIR}/full-diff.patch` in full rather than 
 line ranges, like the other always-run reviewers. Also add this rule to Nick's persona-facing text: 
 local worktree paths and branch names from `in-flight.md` must not be cited in his findings 
 (they reveal the reviewer's local checkout structure and leak review information).
@@ -630,6 +651,20 @@ It writes `{REVIEW_DIR}/final-report.md` and `{REVIEW_DIR}/findings.json`, retur
 ```
 amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | low: {n} | wrote: {path} | findings-json: {path}
 ```
+
+**North Star blind line.** After `final-report.md` is written, when `EFFORT` is 3-5, build the
+line from `{REVIEW_DIR}/north-star-blind.tokens` plus any `nick=` tokens parsed from the blind line
+in `north-star-nick-pass1.md` (`NORTH STAR BLIND: nick=...`), and prepend it to `final-report.md`
+(mechanical; no change to the Amalgamator prompt):
+```bash
+NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$REVIEW_DIR/north-star-blind.tokens" --nick-file "$REVIEW_DIR/north-star-nick-pass1.md") || NS_LINE=""
+if [ -n "$NS_LINE" ]; then
+  { printf '%s\n\n' "$NS_LINE"; cat "$REVIEW_DIR/final-report.md"; } > "$REVIEW_DIR/final-report.md.tmp" && mv "$REVIEW_DIR/final-report.md.tmp" "$REVIEW_DIR/final-report.md"
+fi
+```
+`--nick-file` reads the first line that starts with `NORTH STAR BLIND: ` within the first five lines of Nick's
+output (after any heading). Any malformed piece, or a `NORTH STAR BLIND:` marker elsewhere that is not such a
+line, becomes `nick=unparseable`; when the union is empty `NS_LINE` is empty and nothing is prepended.
 
 ```bash
 # Extract findings metrics from findings.json for reporting
@@ -932,3 +967,7 @@ QUESTION in the Amalgamator's report — are NOT triaged into decision buckets. 
 surfaced downstream by the PR Comment Guide (`prompts/pr-comment-guide.md`) as collegial questions
 for the author, rather than silently dropped. This is deliberate, not accidental: the guide ensures
 these escalations reach the reviewer and author, even without a dedicated triage step.
+
+For a blind run (#273) the surface is `final-report.md` (the line is prepended there, above) plus the
+first body line of the caller's closing summary: the caller prints the `NORTH STAR BLIND:` line
+first, since no `claude-action-plan.md` exists in this mode.

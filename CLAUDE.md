@@ -26,7 +26,8 @@ own personal or project-specific files coexist in `~/.claude/{dir}/` alongside t
   (never overwrites an existing user file).
 
 Re-running after new files are added just creates the missing symlinks and leaves everything else
-untouched.
+untouched. `./install.sh --check` (or `/setup-local --check`) is the read-only drift report: it lists
+repo files not linked into `~/.claude` (`unlinked:`, `wrong-link:`, `stale:`) and exits 1 on drift.
 
 Optional (opt-in, zsh + macOS only): Option+Arrow word jumping via
 `./install.sh --with-zsh-keybindings`. Never added by default.
@@ -245,7 +246,9 @@ with their triggers, participation contexts (`review`, `plan`, `write`), and str
   docs, open issues/epics/PRs), so three Haiku scouts (`prompts/north-star-scout.md`) find the
   related material per run, fed by `scripts/in-flight-snapshot.py`, and Nick judges the change
   against it. Always-run in `/expert-review` at efforts 3–5 and always seated
-  in `/expert-plan` (ADR-0003 and ADR-0020, 2026-10-09 amendments)
+  in `/expert-plan` (ADR-0003 and ADR-0020, 2026-10-09 amendments). His inputs are preflighted
+  (`scripts/north-star-preflight.py`): missing inputs fail the run unless `--allow-degraded`, and a
+  blind run carries a `NORTH STAR BLIND:` line (2026-10-13 amendments)
 - **Fragile Feynman** — pre-mortem fragility analysis
 - **Contract Chris** — contract completeness, docstrings, silenced errors
 - **Code Rot Cody** — dead code / orphaned-symbol detection (Haiku, full-repo grep)

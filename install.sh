@@ -1,20 +1,81 @@
 #!/bin/bash
 set -e
 
-# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry]
+# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry] [--check]
+#   --check                  Read-only drift report: repo files not linked into ~/.claude, wrong or
+#                            stale links. Exit 0 = no drift, 1 = drift. Changes nothing.
 #   --with-zsh-keybindings   Also add Option+Arrow word jumping to ~/.zshrc (opt-in).
 #   --with-telemetry         Register telemetry hooks in ~/.claude/settings.json (opt-in).
 WITH_ZSH_KEYBINDINGS=0
 WITH_TELEMETRY=0
+CHECK_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --with-zsh-keybindings) WITH_ZSH_KEYBINDINGS=1 ;;
         --with-telemetry) WITH_TELEMETRY=1 ;;
+        --check) CHECK_ONLY=1 ;;
     esac
 done
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
+
+# The one enumeration of repo files that get linked; install and --check both use it.
+# A real file at a managed path is informational only (reported as not-ours, not drift):
+# install backs it up to .bak, --check just reports it. The exit code ignores it.
+list_source_files() {
+    find "$1" -type f -not -path '*/__pycache__/*'
+}
+
+# --check: read-only. Reports drift, creates/removes/moves nothing.
+if [ "$CHECK_ONLY" -eq 1 ]; then
+    drift=0
+    for dir in commands reviewers prompts agents scripts; do
+        target_dir="$CLAUDE_DIR/$dir"
+        source_dir="$REPO_DIR/$dir"
+        [ -d "$source_dir" ] || continue
+        if [ -L "$target_dir" ]; then
+            echo "dir-symlink: $target_dir (./install.sh replaces it with a real directory)"
+            drift=1
+            # Report once per directory: the per-file checks would only repeat the same drift.
+            continue
+        fi
+        while IFS= read -r source_file; do
+            rel_path="${source_file#"$source_dir"/}"
+            target_file="$target_dir/$rel_path"
+            if [ -L "$target_file" ]; then
+                if [ "$(readlink "$target_file")" != "$source_file" ]; then
+                    echo "wrong-link: $target_file"
+                    drift=1
+                fi
+            elif [ -e "$target_file" ]; then
+                echo "not-ours: $target_file"
+            else
+                echo "unlinked: $target_file"
+                drift=1
+            fi
+        done < <(list_source_files "$source_dir")
+        if [ -d "$target_dir" ]; then
+            while IFS= read -r entry; do
+                link_target=$(readlink "$entry")
+                case "$link_target" in
+                    "$REPO_DIR"/*)
+                        if [ ! -f "$link_target" ]; then
+                            echo "stale: $entry"
+                            drift=1
+                        fi
+                        ;;
+                esac
+            done < <(find "$target_dir" -type l)
+        fi
+    done
+    if [ "$drift" -eq 0 ]; then
+        echo "No drift: every repo file is linked into $CLAUDE_DIR"
+    else
+        echo "Drift found: run ./install.sh (or /setup-local) to fix" >&2
+    fi
+    exit "$drift"
+fi
 
 # scripts/workflow/ (ADR-0013) requires python3 3.8+. Fail loudly and early rather than
 # mid-workflow with an opaque "command not found" or traceback.
@@ -88,7 +149,7 @@ for dir in commands reviewers prompts agents scripts; do
 
         ln -sf "$source_file" "$target_file"
         echo "Linked $target_file -> $source_file"
-    done < <(find "$source_dir" -type f -not -path '*/__pycache__/*')
+    done < <(list_source_files "$source_dir")
 
     # Prune stale symlinks that point into this repo (including nested ones)
     while IFS= read -r entry; do

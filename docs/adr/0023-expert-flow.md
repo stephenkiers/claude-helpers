@@ -139,6 +139,13 @@ flow-side behaviour is recorded in §2 and §5.
 - **Epic mode is experimental** (shipped ahead of the #252 dogfooding gate). The proposal notes
   (#245 §9) that a sequential epic needs one complete relay cycle; if a ticket encounters >1 Take over,
   epic mode should defer until the relay's completeness is verified under #252 dogfooding.
+- **Deterministic failures are still offered Retry.** The stop menu (§1) does not distinguish
+  retryable from non-retryable failures, and it counts both toward the two-attempt cap. A
+  step whose `Reason:` says it is deterministic and not retryable (the North Star preflight, #273:
+  missing install or `gh` auth, empty snapshot) will fail identically on Retry; the reason text
+  steers the human to Take over (fix the cause, then `--resume`) or `--allow-degraded`, which
+  `/expert-flow` never forwards. Classifying failures as non-retryable in the menu itself is left
+  open.
 - One command, one conversation, and every human decision still made by the human. The cost of
   that is a strict discipline in the converted commands (end the turn, never guess), which the
   lint enforces structurally and the dogfooding (#252) must verify behaviourally.

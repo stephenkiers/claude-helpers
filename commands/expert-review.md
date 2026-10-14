@@ -1,6 +1,6 @@
 ---
 description: Smart expert code review with triage - works across all projects
-argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--effort 1|2|3|4|5] [--all] [--force] | <github-pr-url> [--effort 1|2|3|4|5]
+argument-hint: [reviewers...] [--model haiku|sonnet|opus|fable] [--effort 1|2|3|4|5] [--all] [--force] [--allow-degraded] | <github-pr-url> [--effort 1|2|3|4|5] [--allow-degraded]
 allowed-tools: Bash(git diff:*), Bash(git branch:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git status:*), Bash(git -C:*), Bash(git worktree:*), Bash(mkdir:*), Bash(rm:*), Bash(echo:*), Bash(cat:*), Bash(jq:*), Bash(gh:*), Bash(ls:*), Bash(tr:*), Bash(mktemp:*), Bash(mv:*), Bash(eval:*), Bash(bash:*), Bash(BRANCH=:*), Bash(HASH=:*), Bash(PROJECT=:*), Bash(PROJECT_ROOT=:*), Bash(REPO_KEY=:*), Bash(TIMESTAMP=:*), Bash(REVIEW_DIR=:*), Read, Glob, Grep, Task, Write, Edit, AskUserQuestion
 model: sonnet
 ---
@@ -98,6 +98,15 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   a repo you don't own. No pr-comment-guide, walkthrough, or posted-comments: the closing message lists the *Needs you*
   items verbatim (the candidate PR comments — you post them on GitHub yourself) plus links, then
   offers the worktree-cleanup question. Mutually exclusive with named reviewers and `--force`.
+- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot
+  script or scout prompt not installed, empty or fully unavailable in-flight snapshot). Sets
+  `ALLOW_DEGRADED=true`, passed through to the shared panel. It suppresses only the hard stop,
+  never the notice: the run carries a `NORTH STAR BLIND:` line. Only meaningful at effort 3-5
+  (where Nick is seated); `/expert-flow` does not forward it. Accepted in local and PR-URL forms.
+  A missing, failed or timed-out `gh auth` is a hard stop (`gh-auth`, `files` phase), and the snapshot phase
+  gates the fetch outcome (`snapshot-unavailable`, `snapshot-empty`). A preflight stop is a
+  deterministic, non-retryable failure: Retry will not help until the installed files (`/setup-local`)
+  or the snapshot's GitHub context is fixed, so the human takes over or re-runs with `--allow-degraded`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
@@ -431,6 +440,17 @@ exit 1
 The prior-review cache check (Step 0 sub-step 1), Step 12, and Step 13 are skipped in
 PR mode (ADR-0009 write boundary); see the PR Mode section below.
 
+**`--allow-degraded`.** Pre-scan the raw arguments (mirrors `/expert-plan`): set `ALLOW_DEGRADED=true`
+if `--allow-degraded` is present, else `ALLOW_DEGRADED=false`. It is a flag, not a reviewer name, so it
+is never passed to reviewer matching. The North Star preflight block below and the snapshot call in the
+shared panel read `ALLOW_DEGRADED` to set `NS_FLAG`:
+```bash
+ALLOW_DEGRADED=false
+for arg in "$@"; do
+  [ "$arg" = "--allow-degraded" ] && ALLOW_DEGRADED=true
+done
+```
+
 **Effort.** `--effort <1|2|3|4|5>` → `EFFORT`; error on any other value (including `--effort 0` and
 `--effort 6`). When `--effort` is passed, set `EFFORT_EXPLICIT=true`, use that effort directly, and skip
 the heuristic entirely. When `--effort` is not passed, set `EFFORT_EXPLICIT=false` and apply the **effort
@@ -525,6 +545,40 @@ fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end "${STAGE_END_ARGS[@]}" 2>/dev/null || true
 ```
 
+**North Star preflight (#273).** Nick is seated at `EFFORT` 3, 4 and 5 (an unset `EFFORT` counts
+as 4); effort 1 and 2 skip this block entirely. The gate is a function of `EFFORT`, never of the
+Router's roster. When it holds, run this before the PR Mode hand-off and before any Summarizer,
+Router, scout or reviewer dispatch (substitute the literal `REVIEW_DIR`; pass `--allow-degraded`
+only when `ALLOW_DEGRADED=true`):
+```bash
+if [ ! -f "$HOME/.claude/scripts/north-star-preflight.py" ]; then
+  echo "North Star preflight missing — run /setup-local (or ./install.sh) in claude-helpers. Deterministic and not retryable: fix the install, then re-run (under /expert-flow, Take over or use --allow-degraded; do not Retry)." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
+fi
+NS_FILES_RC=0
+NS_FLAG=""; [ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
+NS_FILES_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_FILES_RC=$?
+if [ "$NS_FILES_RC" -ne 0 ]; then
+  echo "North Star preflight failed ($NS_FILES_OUT) — deterministic and not retryable: fix the install (/setup-local), then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
+fi
+printf '%s\n' "$NS_FILES_OUT" > "<REVIEW_DIR>/north-star-preflight.files"
+# Tokens file is truncated, then appended; stdout tokens are whitespace-split via tr + sed (zsh-safe).
+: > "<REVIEW_DIR>/north-star-blind.tokens"
+case "$NS_FILES_OUT" in
+  BLIND\ *) printf '%s\n' "${NS_FILES_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "<REVIEW_DIR>/north-star-blind.tokens" ;;
+esac
+```
+On exit 3, stop with the remedy (stderr, verbatim). FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens, and its stderr carries an advisory note (the run continues; `gh-auth` is a hard token and stops the run without `--allow-degraded`). Preflight stdout tokens are whitespace-split; `blind-line`
+never fails on a bad token (an invalid one prints `nick=unparseable` with a stderr warning, exit 0). **Residual, stated rather than hidden:**
+`REVIEW_DIR` exists already (Step 0), in PR mode the PR worktree exists too (created by
+`scripts/setup-pr-worktree.sh` in place of Step 1), and the Effort Scout may have run, because
+effort resolution needs the diff. A hard failure leaves no checkpoint but does leave that
+directory; in PR mode the stop message also prints the worktree path and the PR-mode cleanup
+commands below (`git worktree remove` / `branch -D`).
+
 ### PR Mode (positional `<github-pr-url>`)
 
 When `PR_MODE=true`:
@@ -541,7 +595,8 @@ When `PR_MODE=true`:
 - **Closing message (PR-mode variant):** list the *Needs you* items from `claude-action-plan.md`
   **verbatim** — they are the candidate PR comments, and the user posts them on GitHub themselves —
   then the needs-measurement block (unchanged), then the links to `claude-action-plan.md` and
-  `final-report.md`. After the links, offer the worktree-cleanup question, applying the Ask block from
+  `final-report.md`. When a `NORTH STAR BLIND:` line exists (Step 11), print it as the first body
+  line of this closing message. After the links, offer the worktree-cleanup question, applying the Ask block from
   `prompts/flow-reference.md` (PR mode never runs inside a flow, so in practice this is always a direct call):
 
   ```
@@ -569,7 +624,7 @@ When `PR_MODE=true`:
 
 Read `~/.claude/prompts/expert-review-panel.md` and follow those steps exactly. `REVIEW_DIR`,
 `PANEL_MODEL`, `MODEL_EXPLICIT`, `EFFORT`, `EFFORT_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`,
-`PR_MODE`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, `FLOW_DIR` and `STEP_NAME` (both empty when not
+`PR_MODE`, `ALLOW_DEGRADED`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, `FLOW_DIR` and `STEP_NAME` (both empty when not
 in a flow), and all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
 At `EFFORT=1` the panel's Swarm Path replaces Steps 4–10; at `EFFORT=5` Step 3 has already lowered
 the run to named selection over the full index.
@@ -603,6 +658,18 @@ It writes `{REVIEW_DIR}/claude-action-plan.md`. It returns:
 ```
 triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: {n} | clusters: {n} | clusters-escalated: {n} | collapsed: {n} | wrote-plan: {claude-action-plan path}
 ```
+
+**North Star blind line.** After the Triage Chief writes `claude-action-plan.md`, the orchestrator
+prepends the canonical line, rebuilt from the token file (no change to the Amalgamator or Triage
+prompts), and prints it as the first body line of the in-conversation summary:
+```bash
+NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "<REVIEW_DIR>/north-star-blind.tokens" --nick-file "<REVIEW_DIR>/north-star-nick-pass1.md") || NS_LINE=""
+```
+`--nick-file` reads the first line that starts with `NORTH STAR BLIND: ` within the first five lines of Nick's
+output (after any heading). Any malformed piece, or a `NORTH STAR BLIND:` marker elsewhere that is not such a
+line, becomes `nick=unparseable`, so the line is never dropped. When `NS_LINE` is non-empty, prepend it (a mechanical
+prepend: `{ printf '%s\n\n' "$NS_LINE"; cat claude-action-plan.md; } > tmp && mv tmp claude-action-plan.md`).
+Skip when the token file is absent or empty and Nick reported nothing.
 
 **Over-escalation guard.** Let `confirmed = doing + needs-you + deferred` (excluding `measure` —
 measurement items aren't something the human is being asked to *decide*, so they don't count against
@@ -878,6 +945,9 @@ print. Resolve `{REVIEW_DIR}` to the actual absolute path from Step 1 before pri
 never emit the literal string `{REVIEW_DIR}` to the user.
 
 ```
+{If a North Star blind line exists (Step 11), print it verbatim as the first body line:}
+NORTH STAR BLIND: {tokens}
+
 {One sentence: does anything here need you, and is this ship-blocking or polish?}
 
 **Run summary**

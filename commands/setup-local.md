@@ -1,5 +1,6 @@
 ---
 name: setup-local
+argument-hint: [--check]
 description: Use when the user says "/setup-local", "setup this machine", "re-sync", or "install claude-helpers". Symlinks this repo's commands, reviewers, prompts, agents, and scripts into ~/.claude/ so they're available everywhere. Idempotent and safe to re-run.
 ---
 
@@ -43,6 +44,15 @@ tracked. See `~/.claude/reviewers/README.md` for the full context on local overr
 3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
 4. Report a concise summary: how many files were linked, how many were pruned, how many were backed
    up, and whether `preferences.yaml` was created.
+
+## `/setup-local --check` (read-only drift report)
+
+When the argument is `--check`, run `./install.sh --check` from the repo root instead of installing
+and report its output verbatim. It creates, removes and moves nothing. Lines: `unlinked:` (repo file
+with no link in `~/.claude`), `wrong-link:` (link points elsewhere), `stale:` (link into this repo
+whose target is gone), `not-ours:` (a real user file in the way; informational). Exit 0 means no
+drift, 1 means drift: tell the user to re-run `/setup-local`. Missing links are the usual reason
+North Star Nick's inputs are absent.
 
 ## Optional: Option+Arrow word jumping (opt-in)
 
