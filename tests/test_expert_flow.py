@@ -9,7 +9,7 @@ section). They do not verify that the described orchestration behaves correctly 
 
 Covers:
 1. Command existence, frontmatter model: sonnet, documented flags
-2. Telemetry: stage-pairing linter clean; all eight stage names listed; Every Exit Path section
+2. Telemetry: stage-pairing linter clean; all nine stage names listed; Every Exit Path section
 3. Relay contract: references flow-reference.md, verifies the answers file before SendMessage,
    never passes --pause, no auto-remediation wording, stop-line format
 4. Orchestrator capability: allowed-tools is an allowlist of read-only Bash plus the
@@ -41,7 +41,7 @@ CONTRACT = REPO_ROOT / "prompts" / "plan-contribution-contract.md"
 SYNTH = REPO_ROOT / "prompts" / "plan-synthesize-and-check.md"
 STAGE_LINT = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 
-STAGES = ["plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
+STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
 FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--from", "--resume", "--list", "--epic"]
 
 # Allowlist for the orchestrator's allowed-tools grants. Bash grants must be read-only
@@ -128,7 +128,7 @@ def main():
                   begins == ends == {"<STEP>"}, f"begins={sorted(begins)} ends={sorted(ends)}")
     stage_list = re.search(r"Stage names \(one `stage-begin`/`stage-end` pair each[^\n]*\):\s*([^\n]+(?:\n[^\n]+)?)", text)
     listed = set(re.findall(r"`([a-z]+)`", stage_list.group(1))) if stage_list else set()
-    h.test_result("all eight stage names are listed", set(STAGES) <= listed,
+    h.test_result("all nine stage names are listed", set(STAGES) <= listed,
                   f"missing: {sorted(set(STAGES) - listed)}")
     h.test_result("has an Every Exit Path section", "## Every Exit Path" in text)
     h.test_result("command-begin names expert-flow", "command-begin --command expert-flow" in text)
@@ -287,6 +287,27 @@ def main():
             else:
                 h.test_result(f"slug {case_desc}: empty when no alphanumeric",
                               len(expected_words) == 0, title)
+
+    print()
+    print("[Section 8] Worktree-first invocation")
+    h.test_result("step table has a 00 | worktree row using --worktree-only",
+                  "worktree" in rows and rows["worktree"].startswith("| 00 |") and "--worktree-only" in rows["worktree"],
+                  rows.get("worktree", "missing"))
+    h.test_result("plan row runs in the ticket worktree", "plan" in rows and "ticket worktree" in rows["plan"])
+    h.test_result("hand-off lines are present",
+                  "worktree ready: <WORKTREE>" in text and "then run: /expert-flow <ISSUE>" in text)
+    exit_sec = heading_section(text, "## Every Exit Path")
+    h.test_result("Every Exit Path mentions the hand-off", "hand-off" in exit_sec.lower())
+    h.test_result("worktree is a telemetry stage name", "worktree" in STAGES and "`worktree`" in exit_sec)
+    h.test_result("handoff is in the closed log-event list", "`handoff`" in text)
+    h.test_result("old main-worktree-only guard sentence is gone",
+                  "Run /expert-flow from the main worktree:" not in text)
+    h.test_result("verify-before-create ordering is documented",
+                  "Verify with git before creating" in text)
+    h.test_result("epic mode keeps main worktree with no hand-off",
+                  "no hand-off" in heading_section(text, "## Epic mode"))
+    h.test_result("done line points back at the main worktree", "next:  cd <MAIN_WORKTREE>" in text)
+    h.test_result("ADR has the worktree-first amendment", "## Amendment: worktree-first invocation" in adr)
 
     print()
     h.summarize_and_exit()

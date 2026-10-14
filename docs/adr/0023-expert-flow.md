@@ -165,3 +165,26 @@ flow-side behaviour is recorded in §2 and §5.
 - **Open work touching the same orchestrator surfaces:** #230 (decision-relay completion check),
   #179 (receipt-path safety), and #217 (checkpoint hygiene). Sequencing and priority TBD.
 - `/expert-implement-with-haiku-and-ship` is superseded; its CLAUDE.md entry is removed.
+
+## Amendment: worktree-first invocation
+
+The first dogfood runs kept the orchestrator in the main worktree for the whole flow, so the user's
+session, its cwd, PR detection and metadata lived in `main` while the work happened in the ticket
+worktree. `/expert-flow` is now worktree-first:
+
+- A new first step `worktree` (receipt `steps/00-worktree.md`) runs
+  `/track-and-start --issue <N> --worktree-only` in the main worktree. The receipt is
+  orchestrator-written and verified against `git worktree list --porcelain` **before** anything is
+  created at the reported path; only then are the flow marker and local-exclude line written (they
+  moved here from the track step, which now only re-asserts the marker).
+- A fresh single-ticket run started from main hands off after that step: state is
+  `step: plan, status: paused`, event `handoff`, telemetry closed `interrupted`, and the orchestrator
+  prints `cd <WORKTREE> && claude` then `/expert-flow <N>`. Run inside the worktree, a plain
+  `/expert-flow <N>` with an existing flow behaves as `--resume <N>`, so no duplicate flow directory
+  is created.
+- Any invocation from main for a flow whose worktree exists prints the same hand-off and stops
+  (`guard_block`); running from some other worktree is an error. Epic mode keeps running child flows
+  from main with no hand-off.
+- `plan` now runs in the ticket worktree; `track` (plan attach, reusing the worktree) and `merge`
+  still run in the main worktree. `/cleanup` removes the worktree the orchestrator sits in, so after
+  `merge` it runs no cwd-relative command and the done line adds `next: cd <MAIN_WORKTREE>`.

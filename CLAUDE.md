@@ -194,7 +194,7 @@ separate from the reviewer-context cascade.
   spec-blind test author + adversary + duplication/doc-drift sweeps
 - `/shipit` — run CI checks locally, commit, open a PR (`prompts/shipit-reference.md` for details)
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
-- `/expert-flow` — lifecycle orchestrator: plan → track → implement → review → fix → verify → ship → merge for one
+- `/expert-flow` — lifecycle orchestrator (worktree-first: creates the ticket worktree, hands off, then runs from inside it): worktree → plan → track → implement → review → fix → verify → ship → merge for one
   issue (or `--epic` **[experimental until #252 dogfood gate passes]** for an epic's sub-issues, sequentially), each step the existing command run as a subagent in the
   right worktree. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
   Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command

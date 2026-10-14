@@ -38,7 +38,7 @@ Precedence, first match wins:
    carries one, it is authoritative: it overrides the marker, even if the marker names another flow.
    Explicit.
 3. **`.claude/flow-run` marker.** A one-line file containing the absolute path of the flow
-   directory, written by the orchestrator into the ticket worktree after the track step. Every
+   directory, written by the orchestrator into the ticket worktree by the worktree step (step 00, before `plan`). Every
    command that runs inside that worktree picks it up with no flag at all — this is what lets a
    nested `Skill` invocation (`/merge-and-cleanup` → `/cleanup`, `/shipit` → `/stack-sync`) inherit
    the flow without the caller forwarding anything.
