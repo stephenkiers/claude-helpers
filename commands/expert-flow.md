@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
 argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 1-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch:*), Bash(git rebase:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
 
@@ -434,7 +434,7 @@ printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<STEP>" "<EVENT>" >> "$FLO
 ```
 
 where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `awaiting`, `resumed`, `gate`, `paused`,
-`skipped`, `aborted`, `abandoned`, `handoff`, `done`. (`handoff` is logged once, by the fresh-run hand-off.)
+`skipped`, `rebased`, `aborted`, `abandoned`, `handoff`, `done`. (`handoff` is logged once, by the fresh-run hand-off.)
 
 ## Steps
 
@@ -741,10 +741,21 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
    - **Take over** — leave everything as is; `status: paused`; if the failed step is `merge`, reset
      `gate_passed: false`; print the stop lines again; close telemetry (`command-end --outcome
      interrupted`); end the turn.
+   - **Rebase** — offered only when the failed step is `verify` and its receipt has `CHECK_CLASS:
+     base-stale`. First run the "Is-stacked (this branch)" block from `prompts/worktree-reference.md`
+     in `WORKTREE`; if `STACK_IS_STACKED` is true, do not offer Rebase and print the `/expert-rebase`
+     suggestion line instead. Otherwise, in `WORKTREE`: `git fetch origin`, then `git rebase
+     origin/<default branch>` (from `gh repo view --json defaultBranchRef -q
+     .defaultBranchRef.name`, fallback `main`). On conflicts: `git rebase --abort`, print `rebase
+     conflicts — run /expert-rebase by hand in <WORKTREE>`, and take the **Take over** outcome
+     (`status: paused`, `command-end --outcome interrupted`). On a clean rebase: log `rebased`, do
+     not push (the ship step pushes), and re-run verify through the normal loop (not a FAILED
+     outcome; `attempts` increments as usual).
    - **Abort** — `status: failed`, log `aborted`, `command-end --outcome failure --failure-class
      other`; end the turn. Nothing is deleted.
 
-No other option exists. The orchestrator never fixes a failing check, never resolves a rebase,
+No other option exists. The orchestrator never fixes a failing check, never resolves a rebase
+conflict (a clean mechanical rebase, only after the human chose Rebase, is its one git mutation),
 never edits a plan. Hard stops clear `live` (the step has finished).
 
 ### Stop lines
@@ -854,9 +865,14 @@ This prints a JSON object with keys `command`, `source`, and `failure_reason`. R
 4. main worktree project.yaml
 5. worktree justfile check recipe
 
-If none exist, `failure_reason` is set to `no check command configured — run /shipit once or add commands.check to .claude/project.yaml (commands.check only per ADR-0023 Decision 4)` followed by the sources tried and why each failed. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
-`CHECK: <command>`, `CHECK_EXIT: <n>`, `Decision: OK` when the exit is 0, else `FAILED` with reason
-`check failed (exit <n>)`. Verify is deliberately *only* the check command (epic decision 4, ADR-0023 Decision 4):
+If none exist, `failure_reason` is set to `no check command configured — run /shipit once or add commands.check to .claude/project.yaml (commands.check only per ADR-0023 Decision 4)` followed by the sources tried and why each failed. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; reply with the exit code and the last 40 lines of output" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
+`CHECK: <command>`, `CHECK_EXIT: <n>`, optional `CHECK_SOURCE: <path>` (the resolver's `source`; not
+required by validation), `Decision: OK` when the exit is 0, else `FAILED`. On a non-zero exit the
+orchestrator greps the agent's reported output (case-insensitive) for `behind origin/`, `Branch is
+stale`, `needs rebase`, or `base-fresh`. A match sets the reason `check failed (exit <n>) — base
+stale` and `CHECK_CLASS: base-stale`; otherwise `CHECK_CLASS: other` and the reason is `check failed
+(exit <n>)`. The output itself is never written to the receipt. Verify is deliberately *only* the
+check command (epic decision 4, ADR-0023 Decision 4):
 coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is
 reported by the step agent, not measured by the orchestrator, so verify is **advisory**: the
 authoritative gate is `/shipit`'s own local CI run in the ship step.
@@ -965,6 +981,8 @@ FAILED outcome is issued in loop step 5, so no later exit closes that stage agai
 | Invoked from main for a flow whose worktree exists (hand-off lines printed, `guard_block`) | none | none (no telemetry opened) |
 | Hold at the merge gate | none (merge stage not yet opened) | `command-end --outcome interrupted` |
 | Hard stop → Take over | none (FAILED already closed it as `failure`) | `command-end --outcome interrupted` |
+| Hard stop → Rebase (verify base-stale), clean → verify re-run | verify re-opened by the loop (no stage open in between) | none extra |
+| Hard stop → Rebase, conflicts → `git rebase --abort`, Take over outcome | none (FAILED already closed it as `failure`) | `command-end --outcome interrupted` |
 | Hard stop → Abort | none (already closed as `failure`) | `command-end --outcome failure --failure-class other` |
 | Attempts exhausted, `live` set, worktree missing, PR closed (`STOP`) | none (no spawn in this run) | `command-end --outcome interrupted` |
 | Step agent unreachable (`STOP`) | stays open (`live` stays set) | `command-end --outcome interrupted` |

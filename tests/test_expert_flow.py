@@ -55,6 +55,9 @@ READ_ONLY_BASH = (
     r"|describe|symbolic-ref|worktree list|branch --show-current|config --get)(?: .*)?",
     r"gh (?:pr|issue|repo|run) (?:view|list|checks|diff|status)(?: .*)?",
     r"(?:ls|cat|grep|jq|date|printf|mkdir)(?: .*)?",
+    # Named exceptions: mutating git grants that exist for the confirmation-gated Rebase action
+    # in the Hard stop only (verify base-stale). Exactly these two, nothing broader.
+    r"git (?:fetch|rebase)",
     r"sed -n(?: .*)?",
     r".*run-metrics\.py['\"]?(?: .*)?",
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
@@ -389,6 +392,31 @@ def main():
     h.test_result("--retro spawns one Opus general-purpose agent writing retro.md",
                   '"opus"' in retro_sec and "general-purpose" in retro_sec and "retro.md" in retro_sec)
     h.test_result("--retro exit row in Every Exit Path", re.search(r"^\| `--retro`", exit_sec, re.M) is not None)
+
+    print()
+    print("[Section 12] Verify check fallback, base-stale class, Rebase action (B4)")
+    verify_sec = text.split("**verify.**", 1)[1].split("**ship.**", 1)[0] if "**verify.**" in text else ""
+    vflat = " ".join(verify_sec.split())
+    h.test_result("verify resolves the check via resolve-check with the main worktree fallback",
+                  "checks resolve-check" in verify_sec and '--main-worktree "<MAIN_WORKTREE>"' in verify_sec)
+    h.test_result("verify records CHECK_SOURCE", "CHECK_SOURCE" in verify_sec)
+    h.test_result("verify classifies with CHECK_CLASS base-stale|other",
+                  "CHECK_CLASS: base-stale" in verify_sec and "CHECK_CLASS: other" in verify_sec)
+    for pat in ("behind origin/", "Branch is stale", "needs rebase", "base-fresh"):
+        h.test_result(f"verify stale pattern {pat}", pat in vflat)
+    h.test_result("verify reason says base stale", "base stale" in vflat)
+    hard = sub("### Hard stop")
+    h.test_result("Hard stop offers Rebase only for base-stale verify",
+                  "**Rebase**" in hard and "CHECK_CLASS: base-stale" in " ".join(hard.replace("`", "").split()))
+    h.test_result("Rebase aborts on conflicts", "git rebase --abort" in hard)
+    h.test_result("Rebase is guarded by STACK_IS_STACKED", "STACK_IS_STACKED" in hard and "/expert-rebase" in hard)
+    h.test_result("rebased is a log event", "`rebased`" in flow_state)
+    h.test_result("Every Exit Path has both Rebase rows",
+                  re.search(r"^\| Hard stop → Rebase[^\n]*clean", exit_sec, re.M) is not None
+                  and re.search(r"^\| Hard stop → Rebase[^\n]*conflicts", exit_sec, re.M) is not None)
+    fm_tools = frontmatter(text)
+    h.test_result("allowed-tools grants git fetch and git rebase for Rebase only",
+                  "Bash(git fetch:*)" in fm_tools and "Bash(git rebase:*)" in fm_tools)
 
     print()
     h.summarize_and_exit()
