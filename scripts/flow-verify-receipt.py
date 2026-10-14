@@ -179,7 +179,10 @@ def check_plan(receipt_file: Path, since: str, home: Path) -> Optional[str]:
             file_stem = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
         # Try {stem}-contribution.md or kebab-name form
+        kebab = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
         contrib_file = session_dir / f"{file_stem}-contribution.md"
+        if not contrib_file.exists():
+            contrib_file = session_dir / f"{kebab}-contribution.md"
         if not contrib_file.exists():
             return f"plan artifacts missing (contribution: {name} absent|unterminated|stand-in)"
 
