@@ -39,14 +39,16 @@ frontmatter model.
 
 The orchestrator does no engineering work. Its `allowed-tools` grant read-only `git`/`gh`, `Write`
 (for files under the flow directory and one marker file), `Task`, `SendMessage`, and
-`AskUserQuestion`. No `Edit`, no write-capable git, no `gh` mutation. Its `Write` grant is not
+`AskUserQuestion`. No `Edit`, no write-capable git (one human-gated exception, the Rebase option in
+the gated Rebase amendment below), no `gh` mutation. Its `Write` grant is not
 path-scoped; the intended scope is files under the flow directory and the one marker file (a
 prompt-level rule, see Consequences). Step agents are `general-purpose` Task subagents and run with
 full capability: they are not panel agents and carry none of the `tools:` restriction that
 `CLAUDE.md` describes for them. ADR-0008 (machine-enforced guardrails) was considered for
 expert-flow and deferred. A step that fails produces a
 hard stop with three options — Retry (capped at two attempts per step), Take over, Abort — and
-nothing else. `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
+nothing else, except that base-stale verify failures also offer a fourth, human-gated option, Rebase
+(see the gated Rebase amendment below). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
 never invoked. This is the same stance ADR-0021 took for the merge queue: no auto-remediation,
 because remediation is where an orchestrator starts making engineering decisions nobody reviewed.
 
@@ -82,7 +84,8 @@ items (there is nothing to choose until a command has been run; they wait for `/
 `/cleanup`'s verify-queue `done|defer|ignore` batch (defaults to `defer`), `/implement-with-haiku`'s
 `--pause` checkpoint (the flow never passes `--pause`), and decision points that became FAILED hard
 stops in a flow. When a step fails, the flow does not turn the failed decision into a relayed
-question; it stops under §1 with Retry / Take over / Abort.
+question; it stops under §1 with Retry / Take over / Abort (plus Rebase on base-stale verify failures, see the
+gated Rebase amendment).
 
 ### 2.1 Receipt and marker lifecycle
 
@@ -156,7 +159,8 @@ flow-side behaviour is recorded in §2 and §5.
   orchestrator call the CLI directly, and nothing in this ADR depends on which it is.
 - The orchestrator's `Write` is not path-scoped (the same residual noted for panel agents in
   `CLAUDE.md`); "writes only under `FLOW_DIR` and the marker" is a prompt-level rule. The real
-  control is the absence of `Edit` and write-capable git.
+  control is the absence of `Edit` and write-capable git, bar the one human-gated Rebase in the gated
+Rebase amendment.
 - Step agents run with full capability (§1). No machine-enforced guardrail applies to them; ADR-0008
   was considered and deferred for expert-flow.
 - **Telemetry correlation (expected, to be confirmed in #252 dogfooding):** nested step-command
@@ -188,3 +192,29 @@ worktree. `/expert-flow` is now worktree-first:
 - `plan` now runs in the ticket worktree; `track` (plan attach, reusing the worktree) and `merge`
   still run in the main worktree. `/cleanup` removes the worktree the orchestrator sits in, so after
   `merge` it runs no cwd-relative command and the done line adds `next: cd <MAIN_WORKTREE>`.
+
+## Amendment (2026-10-13): gated Rebase on base-stale failures
+
+The original §1 hard stop offered Retry / Take over / Abort and nothing else, and the orchestrator held
+no write-capable git. In dogfooding, a `verify` failure caused only by a stale base (the receipt carries
+`CHECK_CLASS: base-stale`) had no recovery path short of a hand-run `/expert-rebase`. This amendment
+sanctions one narrow, human-gated git operation to close that gap.
+
+- **Fourth option.** The hard stop menu gains **Rebase**, offered only when the failed step is `verify`
+  and its receipt carries `CHECK_CLASS: base-stale`. It is not offered on stacked branches (the
+  "Is-stacked" check in `prompts/worktree-reference.md`); there the stop prints the `/expert-rebase`
+  suggestion instead.
+- **Runs only after explicit human confirmation.** On confirmation, in the ticket worktree, the
+  orchestrator runs `git fetch origin` and then `git rebase origin/<default branch>`. It does not push;
+  the ship step pushes. A clean rebase is logged as `rebased` and verify re-runs through the normal loop.
+  On conflicts the orchestrator runs `git rebase --abort`, prints the `/expert-rebase` hand-off line,
+  and takes the Take over outcome. It never resolves conflicts.
+- **Narrowed grants.** The git grants for this purpose are exactly `Bash(git fetch origin:*)` and
+  `Bash(git rebase origin/*:*)`. The command's `allowed-tools` is to carry only these two patterns in
+  place of the broader `Bash(git fetch:*)` and `Bash(git rebase:*)`; until that command-doc change lands,
+  the broader patterns remain in the command and this amendment is the record of the intended scope.
+- **Rationale.** The orchestrator already holds unscoped `Write` and `Task`, so the gap was never a
+  capability the flow lacked; it was the missing record of what the orchestrator is allowed to do with
+  git. The "orchestrator does not mutate git" stance in §1 and the Consequences now has one explicit
+  exception: this human-gated, mechanical rebase. Conflict resolution, automatic rebase retries, and any
+  push remain out of scope and need a human decision.
