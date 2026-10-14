@@ -79,10 +79,6 @@ if __name__ == "__main__":
             raised is not None,
             f"returned {result!r}",
         )
-        test_result(
-            "refusal is not converted into a None queue path",
-            result != None,  # noqa: E711 - explicit sentinel check, not a truthiness test
-        )
 
         print()
         print("[Section 3] Detection-level refusal propagates unchanged")

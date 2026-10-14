@@ -306,7 +306,8 @@ Each state's meaning:
 - `FAILED` — the command stopped at a hard stop (check gate failed, rebase conflict, gate not
   converged, layout unknown, queue kickback). The reason line names it and, where the command
   already suggests a remedy (`/expert-rebase`), repeats that suggestion. The orchestrator never
-  remediates; it offers Retry / Take over / Abort to the human.
+  remediates; it offers Retry / Take over / Abort to the human (plus Rebase on a base-stale `verify`
+  failure, see ADR-0023's gated-Rebase amendment).
   Some FAILED reasons are deterministic and not retryable (for example the North Star preflight
   stop from #273: a missing install or `gh` auth). Their reason line says so; Retry will fail the
   same way until the cause is fixed, so the human should Take over (fix it, then `--resume`).

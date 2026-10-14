@@ -160,7 +160,7 @@ flow-side behaviour is recorded in §2 and §5.
 - The orchestrator's `Write` is not path-scoped (the same residual noted for panel agents in
   `CLAUDE.md`); "writes only under `FLOW_DIR` and the marker" is a prompt-level rule. The real
   control is the absence of `Edit` and write-capable git, bar the one human-gated Rebase in the gated
-Rebase amendment.
+  Rebase amendment.
 - Step agents run with full capability (§1). No machine-enforced guardrail applies to them; ADR-0008
   was considered and deferred for expert-flow.
 - **Telemetry correlation (expected, to be confirmed in #252 dogfooding):** nested step-command

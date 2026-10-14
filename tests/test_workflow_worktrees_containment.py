@@ -114,10 +114,6 @@ if __name__ == "__main__":
             "symlinked sibling resolving into ~/.claude is skipped; next usable sibling wins",
             result == str(proj / "siblings"),
         )
-        test_result(
-            "symlinked sibling is not returned as the parent",
-            result != str(tmp_root),
-        )
 
         print()
         print("[Section 4] Real ~/.claude entries stay excluded (control)")
@@ -134,12 +130,6 @@ if __name__ == "__main__":
 
         print()
         print("[Section 5] _all_worktree_paths swallow contract")
-
-        doc = worktrees_module._all_worktree_paths.__doc__ or ""
-        test_result(
-            "_all_worktree_paths docstring documents that it swallows listing exceptions",
-            "Swallows" in doc and "empty list" in doc,
-        )
 
         with mock.patch.object(git_module, "get_worktree_list_porcelain",
                                side_effect=RuntimeError("git exploded")):

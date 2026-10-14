@@ -150,6 +150,8 @@ def plan_cleanup(
     worktrees.detect_worktree_parent is reported as an Unknown, never as an empty
     stacked-children list).
     """
+    from . import worktrees
+
     try:
         target_worktree = Path(target_path).resolve()
         if not target_worktree.exists():
@@ -216,6 +218,8 @@ def plan_cleanup(
 
         return plan, None
 
+    except worktrees.WorktreeParentError as e:
+        return None, Unknown(str(e))
     except Exception as e:
         return None, Unknown(f"plan_cleanup failed: {e}")
 

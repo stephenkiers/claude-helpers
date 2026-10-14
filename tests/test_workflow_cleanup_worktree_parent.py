@@ -104,7 +104,7 @@ if __name__ == "__main__":
         )
         test_result(
             "Unknown error carries the WorktreeParentError refusal reason",
-            isinstance(err, Unknown) and "refusing unsafe WORKTREE_PARENT" in str(err),
+            isinstance(err, Unknown) and err.reason.startswith("refusing unsafe WORKTREE_PARENT"),
             f"err={err!r}",
         )
 
@@ -121,7 +121,7 @@ if __name__ == "__main__":
         )
         test_result(
             "WorktreeParentError from detection yields an Unknown error naming the refusal",
-            isinstance(err, Unknown) and "sentinel refusal" in str(err),
+            isinstance(err, Unknown) and err.reason.startswith("sentinel refusal"),
             f"err={err!r}",
         )
     finally:

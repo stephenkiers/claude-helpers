@@ -154,7 +154,7 @@ def main():
     h.test_result("merge gate offers Merge / Hold / Take over in one section",
                   all(s in merge_sec for s in ("**Merge**", "**Hold**", "**Take over**")))
     hard_sec = enclosing_section(text, "No other option exists")
-    h.test_result("hard stop offers Retry / Abort in the same section as 'No other option exists'",
+    h.test_result("hard stop offers Retry / Take over / Abort in the same section as 'No other option exists'",
                   all(s in hard_sec for s in ("**Retry**", "**Take over**", "**Abort**")))
     h.test_result("attempts capped at two per step", "two attempts per step" in text)
     stop_sec = enclosing_section(text, "paused at: <STEP>")
