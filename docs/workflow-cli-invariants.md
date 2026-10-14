@@ -124,8 +124,8 @@ git.run_git_command(f"merge-base --is-ancestor {ancestor} {descendant}")
 **`checks run` CLI exit codes:** `0` = all executed checks passed, `1` = a check failed, `2` = nothing
 ran (empty/all-null `commands`) or the coverage assertion below was violated. `--allow-no-checks`
 converts `2` → `0` while still reporting `status` in the JSON output, for callers that have
-independently confirmed no checks apply. `--timeout` bounds the whole run (default from
-`SHIPIT_CHECK_TIMEOUT_SECS`).
+independently confirmed no checks apply. `--timeout` bounds each check (precedence: `--timeout`, then
+`SHIPIT_CHECK_TIMEOUT_SECS`, then the repo cache's `checkTimeoutSecs`, then 300s).
 
 ## Check Gate Coverage (ADR-0013 Amendment 3)
 

@@ -274,7 +274,7 @@ def main() -> None:
     checks_run_parser.add_argument(
         "--timeout",
         type=int,
-        help="Timeout per check in seconds (default from SHIPIT_CHECK_TIMEOUT_SECS or 300)"
+        help="Timeout per check in seconds (default: SHIPIT_CHECK_TIMEOUT_SECS, then the cache's checkTimeoutSecs, then 300)"
     )
 
     args = parser.parse_args()
@@ -483,7 +483,11 @@ def main() -> None:
                 repo_cache = RepoCacheData.from_dict(cache_data)
                 timeout = args.timeout
                 if timeout is None:
-                    timeout = int(os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS", "300"))
+                    env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
+                    if env_timeout:
+                        timeout = int(env_timeout)
+                    else:
+                        timeout = repo_cache.check_timeout_secs or 300
                 result, err = checks.run_checks(
                     commands=repo_cache.commands,
                     repo_root=Path.cwd(),
