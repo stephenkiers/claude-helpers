@@ -103,6 +103,8 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   Sets `ALLOW_DEGRADED=true`, passed through to the shared panel. It suppresses only the hard stop,
   never the notice: the run carries a `NORTH STAR BLIND:` line. Only meaningful at effort 3-5
   (where Nick is seated); `/expert-flow` does not forward it. Accepted in local and PR-URL forms.
+  A preflight stop is a deterministic, non-retryable failure: Retry will not help until `/setup-local`
+  or `gh auth` is fixed, so the human takes over or re-runs with `--allow-degraded`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
@@ -436,6 +438,17 @@ exit 1
 The prior-review cache check (Step 0 sub-step 1), Step 12, and Step 13 are skipped in
 PR mode (ADR-0009 write boundary); see the PR Mode section below.
 
+**`--allow-degraded`.** Pre-scan the raw arguments (mirrors `/expert-plan`): set `ALLOW_DEGRADED=true`
+if `--allow-degraded` is present, else `ALLOW_DEGRADED=false`. It is a flag, not a reviewer name, so it
+is never passed to reviewer matching. The North Star preflight block below and the snapshot call in the
+shared panel read `ALLOW_DEGRADED` to set `NS_FLAG`:
+```bash
+ALLOW_DEGRADED=false
+for arg in "$@"; do
+  [ "$arg" = "--allow-degraded" ] && ALLOW_DEGRADED=true
+done
+```
+
 **Effort.** `--effort <1|2|3|4|5>` → `EFFORT`; error on any other value (including `--effort 0` and
 `--effort 6`). When `--effort` is passed, set `EFFORT_EXPLICIT=true`, use that effort directly, and skip
 the heuristic entirely. When `--effort` is not passed, set `EFFORT_EXPLICIT=false` and apply the **effort
@@ -537,25 +550,27 @@ Router, scout or reviewer dispatch (substitute the literal `REVIEW_DIR`; pass `-
 only when `ALLOW_DEGRADED=true`):
 ```bash
 if [ ! -f "$HOME/.claude/scripts/north-star-preflight.py" ]; then
-  echo "North Star preflight missing — run /setup-local (or ./install.sh) in claude-helpers" >&2
+  echo "North Star preflight missing — run /setup-local (or ./install.sh) in claude-helpers. Deterministic and not retryable: fix the install, then re-run (under /expert-flow, Take over or use --allow-degraded; do not Retry)." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 NS_RC=0
-NS_FLAG=""  # set to --allow-degraded only when ALLOW_DEGRADED=true
+NS_FLAG=""; [ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
 NS_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_RC=$?
 if [ "$NS_RC" -ne 0 ]; then
-  echo "North Star preflight failed ($NS_OUT) — Retry will not help until fixed; see the remedy above" >&2
+  echo "North Star preflight failed ($NS_OUT) — deterministic and not retryable: fix the install (/setup-local) or gh auth, then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 printf '%s\n' "$NS_OUT" > "<REVIEW_DIR>/north-star-preflight.files"
-: >> "<REVIEW_DIR>/north-star-blind.tokens"
+# Tokens file is truncated, then appended; stdout tokens are whitespace-split via tr + sed (zsh-safe).
+: > "<REVIEW_DIR>/north-star-blind.tokens"
 case "$NS_OUT" in
-  BLIND\ *) for t in ${NS_OUT#BLIND }; do printf '%s\n' "$t" >> "<REVIEW_DIR>/north-star-blind.tokens"; done ;;
+  BLIND\ *) printf '%s\n' "${NS_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "<REVIEW_DIR>/north-star-blind.tokens" ;;
 esac
 ```
-On exit 3, stop with the remedy (stderr, verbatim). **Residual, stated rather than hidden:**
+On exit 3, stop with the remedy (stderr, verbatim). Preflight stdout tokens are whitespace-split; `blind-line`
+never fails on a bad token (an invalid one prints `nick=unparseable` with a stderr warning, exit 0). **Residual, stated rather than hidden:**
 `REVIEW_DIR` exists already (Step 0), in PR mode the PR worktree exists too (created by
 `scripts/setup-pr-worktree.sh` in place of Step 1), and the Effort Scout may have run, because
 effort resolution needs the diff. A hard failure leaves no checkpoint but does leave that

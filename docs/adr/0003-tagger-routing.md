@@ -95,7 +95,7 @@ What changes with it:
   (`prompts/north-star-scout.md`), one each for ADRs, repo docs, and in-flight work, which quote
   and locate what relates to the change. Nick reads the briefs, opens the sources they cite, and
   judges. Scouts never issue verdicts (ADR-0004: mechanical work on the cheap model, judgment on
-  the panel model). Every piece is fail-open; a source that could not be read is reported as
+  the panel model). Every piece is fail-open (superseded for the orchestrator by the 2026-10-13 amendment below); a source that could not be read is reported as
   unchecked, never as "no conflicts".
 - A maintained north-star index — one roadmap document pointing at everything — was considered and
   deferred. The scouts rediscover the material each run; an index would only be worth its upkeep if
@@ -269,10 +269,10 @@ to a follow-up tied to #196 and must land before Phase 3 tuning relies on the ra
 The 2026-10-09 amendment said "Every piece is fail-open; a source that could not be read is reported as
 unchecked". That sentence is **superseded** for the orchestrator. A run in which Nick is seated (effort
 3-5) now fails loudly before any panel dispatch when his inputs are missing: `scripts/in-flight-snapshot.py`
-or `prompts/north-star-scout.md` not installed, no `gh` auth, or an empty or fully unavailable snapshot
-(`scripts/north-star-preflight.py` defines the predicate). Pass `--allow-degraded` to proceed blind on
+or `prompts/north-star-scout.md` not installed, or an empty or fully unavailable snapshot
+(`scripts/north-star-preflight.py` defines the predicate). A missing `gh` auth is advisory (a `BLIND gh-auth` notice, exit 0), not a stop. Pass `--allow-degraded` to proceed blind on
 purpose. Partial degradation (one snapshot section down, a failed scout, a Nick-reported gap) is a
 notice, not a stop. Any blind run carries a `NORTH STAR BLIND: ...` line as the first body line of
 `final-report.md`, `claude-action-plan.md` and the closing summary. The snapshot script itself stays
 fail-open (always exits 0); classification lives in the preflight. `/setup-local --check` reports repo
-files not linked into `~/.claude`, the usual cause of a missing input.
+files not linked into `~/.claude`, the usual cause of a missing input. Scout output quality (empty or garbage `north-star-*.md` scout files, and Nick's self-reported `NORTH STAR BLIND:` line) is NOT gated by the preflight and is out of scope for #273; a `scouts --dir` phase is a possible follow-up.

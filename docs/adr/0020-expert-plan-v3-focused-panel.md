@@ -105,16 +105,16 @@ specialist per plan.
 Because plan contributors read only their persona, the contribution contract, and `context.md`,
 Nick's persona now carries a `planReview.contextLoad` block. Step 1 writes
 `{SESSION_DIR}/in-flight.md` with `scripts/in-flight-snapshot.py`, and Step 2 dispatches three Haiku
-North Star scouts (ADRs, repo docs, in-flight work) whose briefs he reads before contributing. These
+North Star scouts (ADRs, repo docs, in-flight work) whose briefs he reads before contributing (superseded for the orchestrator by the 2026-10-13 amendment below). These
 are the only subagents added to the pipeline, and they are Haiku. See ADR-0003's amendment of the same date for the review side.
 
 ## Amendment (2026-10-13) — North Star Nick's inputs are preflighted (#273)
 
 Nick is always seated, so `/expert-plan` now runs `scripts/north-star-preflight.py` before creating the
-session directory or dispatching anything. Missing installed inputs, no `gh` auth, or an empty or fully
-unavailable snapshot stop the run with a remedy; `--allow-degraded` proceeds blind on purpose. A blind
+session directory or dispatching anything. Missing installed inputs or an empty or fully
+unavailable snapshot stop the run with a remedy (a missing `gh` auth is only an advisory `BLIND gh-auth` notice); `--allow-degraded` proceeds blind on purpose. A blind
 plan carries `NORTH STAR BLIND: ...` as the first line of the final plan and its summary. See ADR-0003's
-2026-10-13 amendment, which supersedes the fail-open wording of the 2026-10-09 one.
+2026-10-13 amendment, which supersedes the fail-open wording of the 2026-10-09 one. Scout output quality (empty or garbage `north-star-*.md` scout files, and Nick's self-reported `NORTH STAR BLIND:` line) is NOT gated by the preflight and is out of scope for #273; a `scouts --dir` phase is a possible follow-up.
 
 ## References
 

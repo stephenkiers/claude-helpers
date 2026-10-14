@@ -42,7 +42,7 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 - `--epic`: epic mode (ADR-0023 §5). Writes the line `EPIC_MODE: true` into `{SESSION_DIR}/context.md` in Step 1, which switches on the `## Sub-tickets (epic mode only)` section of `prompts/plan-contribution-contract.md` and the `## Sub-tickets` section of the final plan in `prompts/plan-synthesize-and-check.md` — an ordered split of the epic into 3–8 sub-tickets, each with a title, a 2–5 line scope, and backwards-only `depends-on`. Passed by `/expert-flow --epic`; usable standalone. Without it, no planning prompt mentions sub-tickets and the plan is unchanged.
 
-- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, no `gh` auth, empty or fully unavailable in-flight snapshot). It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is FAILED and a human takes over.
+- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, no `gh` auth, empty or fully unavailable in-flight snapshot). It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is a deterministic, non-retryable FAILED (receipt Reason `north-star-preflight: <tokens>`), so the human takes over or re-runs with `--allow-degraded` rather than Retrying.
 
 Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels.
 
@@ -58,7 +58,7 @@ All artifacts live in `{SESSION_DIR}` = `~/.claude/plan-sessions/{REPO_KEY}/{SLU
 | File | Written by | When |
 |------|-----------|------|
 | `context.md` | Orchestrator (Step 1) | Requirements, constraints, scope, unknowns |
-| `north-star-blind.tokens` | Orchestrator (Steps 0-2) | One `NORTH STAR BLIND` token per line, appended in the same bash block that produced it; read by `north-star-preflight.py blind-line` |
+| `north-star-blind.tokens` | Orchestrator (Steps 0-2) | One `NORTH STAR BLIND` token per line, appended in the same bash block that produced it; read by `north-star-preflight.py blind-line`. Preflight stdout tokens are whitespace-split; `blind-line` never fails on a bad token (an invalid one prints `nick=unparseable` with a stderr warning, exit 0) |
 | `in-flight.md` | `scripts/in-flight-snapshot.py` (Step 1) | Open issues, epics, pull requests, worktrees — North Star Nick's view of other work |
 | `in-flight-issues.md` | `scripts/in-flight-snapshot.py` (Step 1) | The same open issues with bodies — input to the `in-flight` scout only |
 | `north-star-{adrs,docs,in-flight}.md` | Three Haiku North Star scouts (Step 2) | Quoted related material from ADRs, repo docs, and in-flight work — North Star Nick's reading list |
@@ -139,22 +139,24 @@ SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0
 # North Star preflight (#273): pre-scan for --allow-degraded (full flag parsing happens below,
 # after the session dir exists), guard the preflight script's own absence, then run the `files`
 # phase before any session dir is created or subagent dispatched.
+# Ordering is deliberate: the preflight needs only --allow-degraded (pre-scanned here), while full
+# flag validation below needs the session dir. So a typo'd other flag is reported after preflight passes.
 ALLOW_DEGRADED=false
 for arg in "$@"; do
   [ "$arg" = "--allow-degraded" ] && ALLOW_DEGRADED=true
 done
 if [ ! -f "$HOME/.claude/scripts/north-star-preflight.py" ]; then
-  echo "North Star preflight missing — run /setup-local (or ./install.sh) in claude-helpers" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class north-star-preflight-missing 2>/dev/null || true
+  echo "North Star preflight missing — run /setup-local (or ./install.sh) in claude-helpers. Deterministic and not retryable: fix the install, then re-run (under /expert-flow, Take over or use --allow-degraded; do not Retry)." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
-NS_DEGRADED_FLAG=""
-[ "$ALLOW_DEGRADED" = "true" ] && NS_DEGRADED_FLAG="--allow-degraded"
+NS_FLAG=""
+[ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
 NS_FILES_RC=0
-NS_FILES_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_DEGRADED_FLAG) || NS_FILES_RC=$?
+NS_FILES_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_FILES_RC=$?
 if [ "$NS_FILES_RC" -ne 0 ]; then
-  echo "North Star preflight failed ($NS_FILES_OUT) — fix the install (Retry will not help until fixed); see the remedy above" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class north-star-preflight 2>/dev/null || true
+  echo "North Star preflight failed ($NS_FILES_OUT) — deterministic and not retryable: fix the install (/setup-local) or gh auth, then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
 
@@ -167,10 +169,11 @@ if ! mkdir -p "$SESSION_DIR"; then
   exit 1
 fi
 
-# Record the `files` phase's BLIND tokens (if any) in the same block that produced them
+# Record the `files` phase's BLIND tokens (if any) in the same block that produced them.
+# Stdout tokens are whitespace-split; split with tr + sed rather than an unquoted for-loop (zsh does not word-split).
 : > "$SESSION_DIR/north-star-blind.tokens"
 case "$NS_FILES_OUT" in
-  BLIND\ *) for t in ${NS_FILES_OUT#BLIND }; do printf '%s\n' "$t" >> "$SESSION_DIR/north-star-blind.tokens"; done ;;
+  BLIND\ *) printf '%s\n' "${NS_FILES_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "$SESSION_DIR/north-star-blind.tokens" ;;
 esac
 printf '%s\n' "$NS_FILES_OUT" > "$SESSION_DIR/north-star-preflight.files"
 
@@ -314,6 +317,7 @@ Collect the input to plan against:
      dying on) a non-zero exit, then always run the `snapshot` phase and append its tokens to
      `north-star-blind.tokens` in the same block:
      ```bash
+     rm -f "$SESSION_DIR/in-flight.md" "$SESSION_DIR/in-flight.err" "$SESSION_DIR/in-flight-issues.md"
      NS_SNAPSHOT_RC=0
      if ! grep -q 'snapshot-script' "$SESSION_DIR/north-star-preflight.files"; then
        CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" branch --show-current)
@@ -321,21 +325,22 @@ Collect the input to plan against:
          --out "$SESSION_DIR/in-flight.md" --bodies-out "$SESSION_DIR/in-flight-issues.md" \
          --current-branch "$CURRENT_BRANCH" 2>"$SESSION_DIR/in-flight.err" || NS_SNAPSHOT_RC=$?
      fi
-     NS_SNAP_FLAG=""
-     [ "$ALLOW_DEGRADED" = "true" ] && NS_SNAP_FLAG="--allow-degraded"
+     NS_FLAG=""
+     [ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
      NS_SNAP_RC=0
-     NS_SNAP_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$SESSION_DIR" $NS_SNAP_FLAG) || NS_SNAP_RC=$?
+     NS_SNAP_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$SESSION_DIR" $NS_FLAG) || NS_SNAP_RC=$?
      if [ "$NS_SNAP_RC" -ne 0 ]; then
-       echo "North Star snapshot preflight failed ($NS_SNAP_OUT) — Retry will not help until fixed; see the remedy above" >&2
+       echo "North Star snapshot preflight failed ($NS_SNAP_OUT) — deterministic and not retryable; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
      else
        case "$NS_SNAP_OUT" in
-         BLIND\ *) for t in ${NS_SNAP_OUT#BLIND }; do printf '%s\n' "$t" >> "$SESSION_DIR/north-star-blind.tokens"; done ;;
+         BLIND\ *) printf '%s\n' "${NS_SNAP_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "$SESSION_DIR/north-star-blind.tokens" ;;
        esac
      fi
      ```
      On a non-zero `NS_SNAP_RC`, stop the run (close the `gather-context` stage and the command as a
-     failure) before any scout or expert dispatch; with `--allow-degraded` the phase exits 0 and the
-     run continues blind.
+     failure with `--failure-class other`, via `stage-end` and `command-end`) before any scout or expert
+     dispatch. This is a deterministic, non-retryable FAILED: Retry will not help until the cause is fixed
+     (`/setup-local`, `gh auth`). With `--allow-degraded` the phase exits 0 and the run continues blind.
 
 3. **Summarize** what you've gathered:
    - **Goal**: What the ticket wants achieved (1-2 sentences)

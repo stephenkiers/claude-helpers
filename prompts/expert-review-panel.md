@@ -356,6 +356,8 @@ and pull requests. Reviewer subagents have no `gh` access and cannot read all of
 before launching Pass 1 gather it for him. First write the snapshot once:
 
 ```bash
+# Clear any previous run's snapshot outputs so a reused REVIEW_DIR cannot cause a stale failure
+rm -f "$REVIEW_DIR/in-flight.md" "$REVIEW_DIR/in-flight.err" "$REVIEW_DIR/in-flight-issues.md"
 SNAP_SCRIPT_OK=true
 case "$(cat "$REVIEW_DIR/north-star-preflight.files" 2>/dev/null)" in *snapshot-script*) SNAP_SCRIPT_OK=false ;; esac
 SNAPSHOT_RC=0
@@ -367,14 +369,22 @@ if [ "$SNAP_SCRIPT_OK" = "true" ]; then
   python3 "$HOME/.claude/scripts/in-flight-snapshot.py" $SNAPSHOT_FLAGS 2>"$REVIEW_DIR/in-flight.err" || SNAPSHOT_RC=$?
 fi
 # Always classify, even after a skipped or crashed snapshot (a missing in-flight.md is snapshot-empty)
+NS_FLAG=""; [ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
 NS_SNAP_RC=0
 NS_SNAP=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$REVIEW_DIR" $NS_FLAG) || NS_SNAP_RC=$?
+if [ "$NS_SNAP_RC" -ne 0 ]; then
+  echo "North Star snapshot preflight failed ($NS_SNAP) — deterministic and not retryable; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
+else
+  case "$NS_SNAP" in
+    BLIND\ *) printf '%s\n' "${NS_SNAP#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "$REVIEW_DIR/north-star-blind.tokens" ;;
+  esac
+fi
 ```
 
-Set `NS_FLAG=--allow-degraded` only when `ALLOW_DEGRADED=true`, else leave it empty. On any non-zero `NS_SNAP_RC` (3, or 2 for a usage error), stop the run
-(stage and command failure telemetry, `--failure-class other`) with the preflight's stderr remedy;
-a non-zero `SNAPSHOT_RC` is reported alongside it. Otherwise, for a `BLIND ...` stdout, append each
-token (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`. The snapshot script itself is
+`NS_FLAG` is set to `--allow-degraded` only when `ALLOW_DEGRADED=true`, else left empty. On any non-zero `NS_SNAP_RC` (3, or 2 for a usage error), stop the run
+(stage and command failure telemetry, `--failure-class other`) with the preflight's stderr remedy. This is a deterministic, non-retryable FAILED: Retry will not help until the cause is fixed.
+A non-zero `SNAPSHOT_RC` is reported alongside it. Otherwise, for a `BLIND ...` stdout, the tokens are whitespace-split and appended (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`
+(the `tr` + `sed` split above, not an unquoted `for` loop, which zsh does not word-split). The snapshot script itself is
 fail-open (exit 0, an `unavailable:` line in the output and keys in `in-flight.err`); the preflight
 is what classifies that into a hard stop or a notice.
 
