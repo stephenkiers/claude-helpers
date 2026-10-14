@@ -79,6 +79,10 @@ class WorktreeParentError(RuntimeError):
     """Detected WORKTREE_PARENT is unsafe (main worktree itself or under ~/.claude)."""
 
 
+class WorktreeListError(WorktreeParentError):
+    """git could not list worktrees at all (not runnable, not a repo, non-zero exit)."""
+
+
 def _home_claude() -> str:
     """Resolved (os.path.realpath) path of ~/.claude."""
     home = os.environ.get("HOME") or os.path.expanduser("~")
@@ -103,14 +107,14 @@ def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     3. Else fall back to '<main>/worktrees' (legit only for a bare top-level
        clone with no 'worktrees/' parent).
 
-    Fail closed: raises WorktreeParentError if git could not list worktrees
-    (list_worktrees returned None), or if the result is the main worktree
+    Fail closed: raises WorktreeListError (a WorktreeParentError subclass) if git
+    could not list worktrees (list_worktrees returned None), and WorktreeParentError if the result is the main worktree
     itself or lies under ~/.claude/. Returns "" only when git succeeded and
     reported no worktrees at all.
     """
     listed = list_worktrees(cwd=cwd)
     if listed is None:
-        raise WorktreeParentError("could not list git worktrees")
+        raise WorktreeListError("could not list git worktrees")
     if not listed:
         return ""
     main = listed[0].rstrip("/") or listed[0]

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Structural test: the Project Detection bash block keeps the worktree-parent safety rules.
+"""Structural test: worktree-parent detection has ONE implementation (the Python), and the
+Project Detection bash block in prompts/worktree-reference.md only calls it.
 
 Run with: python3 tests/test_worktree_reference_detection.py
 """
@@ -13,7 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
 
-text = (REPO_ROOT / "prompts" / "worktree-reference.md").read_text()
+DOC = REPO_ROOT / "prompts" / "worktree-reference.md"
+text = DOC.read_text()
 section = text[text.index("## Project Detection"):text.index("## Stack Detection")]
 block = re.search(r"```bash\n(.*?)```", section, re.S).group(1)
 step3 = block[block.index("# 3."):block.index("# 4.")]
@@ -21,29 +23,33 @@ step3 = block[block.index("# 3."):block.index("# 4.")]
 h = Harness("WORKTREE REFERENCE DETECTION STRUCTURE")
 t = h.test_result
 
-canon = step3.index('= "worktrees"')
-t("canonical-layout rule precedes the candidate loop", canon < step3.index("read -r"))
-t("block skips $HOME/.claude/ entries", '"$HOME/.claude/"*' in step3)
-t("block skips entries nested under main", '"${MAIN_WORKTREE}/"*' in step3)
-t("block skips type-prefixed parents", "feature|fix|chore" in step3)
-t("block falls back to ${MAIN_WORKTREE}/worktrees", '"${MAIN_WORKTREE}/worktrees"' in step3)
-t("block fails closed on unsafe parent", "unsafe WORKTREE_PARENT" in step3 and "exit 1" in step3)
-t("block avoids bash arrays", "=(" not in step3 and "mapfile" not in step3)
+t("block calls the detect-parent CLI",
+  "scripts.workflow.cli worktree detect-parent" in step3)
+t("block fails closed when the CLI fails", "exit 1" in step3)
+t("block does not re-implement the heuristic (no candidate loop / type-prefix case)",
+  "read -r" not in step3 and "feature|fix|chore" not in step3 and "CANDIDATE" not in step3)
+t("block keeps no worktree-list parsing in step 3", "git worktree list" not in step3)
+t("no other doc restates the type-prefix case pattern",
+  not any("feature|fix|chore" in p.read_text()
+          for p in list((REPO_ROOT / "commands").glob("*.md")) + list((REPO_ROOT / "prompts").glob("*.md"))))
 
-# Behavioural: run step 3 under sh with a stubbed `git` and fake HOME.
-def run_step3(main, entries, home):
-    stub = "git() { printf '%s\\n' " + " ".join(f"'worktree {e}'" for e in [main] + entries) + "; }\n"
-    script = stub + f"HOME='{home}'\nMAIN_WORKTREE='{main}'\n" + step3 + 'echo "$WORKTREE_PARENT"\n'
-    with tempfile.TemporaryDirectory() as d:
-        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=d)
-
-r = run_step3("/r/worktrees/main", ["/h/.claude/merge-queue-scratch/ab/scratch"], "/h")
-t("bash: canonical layout wins over scratch", r.stdout.strip() == "/r/worktrees", r.stderr)
-r = run_step3("/r/main", ["/h/.claude/merge-queue-scratch/ab/scratch", "/r/main/worktrees/1-x", "/r/sib/2-y"], "/h")
-t("bash: scratch and nested entries skipped", r.stdout.strip() == "/r/sib", r.stderr)
-r = run_step3("/r", [], "/h")
-t("bash: plain clone fallback", r.stdout.strip() == "/r/worktrees", r.stderr)
-r = run_step3("/h/.claude/x", [], "/h")
-t("bash: fail-closed exits nonzero", r.returncode != 0 and "unsafe" in r.stderr, r.stderr)
+# Behavioural: the CLI the doc calls prints the sibling parent and fails closed.
+with tempfile.TemporaryDirectory() as d:
+    root = Path(d).resolve()
+    main = root / "repo" / "worktrees" / "main"
+    main.mkdir(parents=True)
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "HOME": str(root / "home"),
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+    for cmd in (["git", "init", "-q"], ["git", "commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(cmd, cwd=main, env=env, check=True, capture_output=True)
+    run = lambda cwd: subprocess.run(  # noqa: E731
+        [sys.executable, "-m", "scripts.workflow.cli", "worktree", "detect-parent", "--cwd", str(cwd)],
+        cwd=REPO_ROOT, env={**env, "PYTHONPATH": str(REPO_ROOT)}, capture_output=True, text=True)
+    r = run(main)
+    t("CLI: canonical layout prints the worktrees dir", r.returncode == 0 and r.stdout.strip() == str(main.parent), r.stderr)
+    r = run(root / "not-a-repo")
+    t("CLI: git failure exits 1 with ERROR on stderr and empty stdout",
+      r.returncode == 1 and r.stdout == "" and r.stderr.startswith("ERROR:"), r.stderr)
 
 h.summarize_and_exit()

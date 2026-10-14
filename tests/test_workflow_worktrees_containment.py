@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Test suite for worktree-parent containment, the swallow contract of
-_all_worktree_paths, and removal of the orphaned detect_second_worktree.
+list_worktrees, and removal of the orphaned detect_second_worktree.
 
 Covers:
 - realpath-based ~/.claude containment (symlinked main worktree and sibling entries)
 - WorktreeParentError as the fail-closed signal from detect_worktree_parent
-- _all_worktree_paths documents and implements its swallow-everything contract
+- list_worktrees documents and implements its swallow-everything contract
 - detect_second_worktree is gone from the workflow package
 
 Run with: python3 tests/test_workflow_worktrees_containment.py
@@ -129,24 +129,36 @@ if __name__ == "__main__":
         )
 
         print()
-        print("[Section 5] _all_worktree_paths swallow contract")
+        print("[Section 5] list_worktrees failure contract")
 
         with mock.patch.object(git_module, "get_worktree_list_porcelain",
                                side_effect=RuntimeError("git exploded")):
             try:
-                paths = worktrees_module._all_worktree_paths(tmp_root)
+                paths = worktrees_module.list_worktrees(tmp_root)
                 no_raise = True
             except Exception:
-                paths = None
+                paths = "raised"
                 no_raise = False
+            try:
+                worktrees_module.detect_worktree_parent(tmp_root)
+                parent_err = None
+            except worktrees_module.WorktreeListError as e:
+                parent_err = e
+        test_result("list_worktrees does not raise when git listing fails", no_raise)
+        test_result("list_worktrees returns None (not []) when git listing fails", paths is None)
         test_result(
-            "_all_worktree_paths does not raise when git listing fails",
-            no_raise,
+            "detect_worktree_parent raises WorktreeListError when git listing fails",
+            parent_err is not None and isinstance(parent_err, worktrees_module.WorktreeParentError),
         )
-        test_result(
-            "_all_worktree_paths returns an empty list when git listing fails",
-            paths == [],
-        )
+        with mock.patch.object(git_module, "get_worktree_list_porcelain", return_value=""):
+            test_result(
+                "list_worktrees returns [] when git succeeds with no worktrees",
+                worktrees_module.list_worktrees(tmp_root) == [],
+            )
+            test_result(
+                "detect_worktree_parent returns '' when git succeeds with no worktrees",
+                worktrees_module.detect_worktree_parent(tmp_root) == "",
+            )
 
         print()
         print("[Section 6] detect_second_worktree is removed")

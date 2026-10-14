@@ -167,11 +167,15 @@ def resolve_queue_path(cwd: Optional[Path] = None) -> Optional[Path]:
     """
     <worktree-parent>/verify-queue.jsonl. Detached worktrees (merge-queue scratch) are ignored.
 
-    Returns None only when no worktree parent can be determined. Raises
+    Returns None only when no worktree parent can be determined (including git
+    being unable to list worktrees). Raises
     worktrees.WorktreeParentError (a RuntimeError) when the detected parent is unsafe
     (the main worktree itself or under ~/.claude); it is not converted to None.
     """
-    parent = worktrees.detect_worktree_parent(cwd=cwd)
+    try:
+        parent = worktrees.detect_worktree_parent(cwd=cwd)
+    except worktrees.WorktreeListError:
+        return None
     return Path(parent) / QUEUE_FILENAME if parent else None
 
 

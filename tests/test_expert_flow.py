@@ -58,7 +58,11 @@ READ_ONLY_BASH = (
     # Named exceptions: mutating git grants that exist for the confirmation-gated Rebase action
     # in the Hard stop only (verify base-stale), narrowed per ADR-0023's gated-Rebase amendment.
     r"git fetch origin",
-    r"git rebase (?:origin/\*|--abort)",
+    r"git rebase (?:origin/main|origin/master|--abort)",
+    # Named exceptions for Start fresh: resolve the helpers dir, then delete the old worktree
+    # through the /cleanup helper (ADR-0023 Start-fresh amendment); human-gated.
+    r"source \"\$HOME/\.claude/scripts/resolve-claude-helpers-dir\.sh\"(?::\*)?",
+    r"python3 -m scripts\.workflow\.cli cleanup(?::\*)?",
     r"realpath(?: .*)?",
     r"sed -n(?: .*)?",
     r".*run-metrics\.py['\"]?(?: .*)?",
@@ -419,8 +423,11 @@ def main():
                   re.search(r"^\| Hard stop → Rebase[^\n]*clean", exit_sec, re.M) is not None
                   and re.search(r"^\| Hard stop → Rebase[^\n]*conflicts", exit_sec, re.M) is not None)
     fm_tools = frontmatter(text)
-    h.test_result("allowed-tools grants only the narrowed git fetch origin / rebase origin/* for Rebase",
-                  "Bash(git fetch origin:*)" in fm_tools and "Bash(git rebase origin/*:*)" in fm_tools
+    h.test_result("allowed-tools grants only the exact git fetch origin / rebase grants for Rebase",
+                  all(f"Bash({g})" in fm_tools for g in
+                      ("git fetch origin", "git rebase --abort", "git rebase origin/main", "git rebase origin/master"))
+                  and "Bash(git fetch origin:*)" not in fm_tools and "Bash(git rebase origin/*:*)" not in fm_tools
+                  and "Bash(git rebase --abort:*)" not in fm_tools
                   and "Bash(git fetch:*)" not in fm_tools and "Bash(git rebase:*)" not in fm_tools)
 
     print()
