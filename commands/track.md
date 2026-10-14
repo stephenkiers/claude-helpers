@@ -230,7 +230,7 @@ printf '%s' "$EXISTING" | jq --arg branch "$BRANCH" \
 ## Workflow Integration
 
 After creating/linking an issue:
-1. Suggest creating a worktree: `git worktree add ../{issue#}-{desc} -b {issue#}-{desc}`
+1. Use `/track-and-start` to create both a branch and worktree together (worktree will have cache files seeded from main); alternatively, create a worktree manually with `git worktree add ../{issue#}-{desc} -b {issue#}-{desc}` and run `PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from <main-worktree-path> --to <new-worktree-path>` to seed cache files
 2. Work is tracked in issue comments
 3. `/shipit` will link PR to issue with "Closes #N"
 4. `/cleanup` will verify issue is closed

@@ -2,3 +2,5 @@
 # Configuration: see mypy.ini
 # Run via: just typecheck
 mypy==1.16.1
+PyYAML>=6.0
+types-PyYAML>=6.0
