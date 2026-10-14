@@ -4,9 +4,11 @@ Worktree parent detection.
 Ports ADR-0010's worktree-parent detection logic verbatim.
 """
 
+import os
 from pathlib import Path
 from typing import Optional, Tuple, List
 from . import git
+from .paths import is_within
 
 
 def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
@@ -38,59 +40,109 @@ def parse_worktree_list(porcelain_output: str) -> List[Tuple[str, str]]:
     return worktrees
 
 
+def list_worktrees(cwd: Optional[Path] = None) -> Optional[List[str]]:
+    """
+    All worktree paths in `git worktree list` order, including detached entries.
+
+    Returns None when git could not produce a listing: git not runnable, not
+    inside a repository, or a non-zero exit. Returns [] only when git succeeded
+    and reported no worktrees. A failure is never reported as an empty list,
+    so callers must check for None explicitly.
+    """
+    try:
+        porcelain = git.get_worktree_list_porcelain(cwd=cwd)
+    except Exception:
+        return None
+    return [
+        line[9:].strip()
+        for line in porcelain.split("\n")
+        if line.startswith("worktree ")
+    ]
+
+
 def detect_main_worktree(cwd: Optional[Path] = None) -> Optional[str]:
-    """Get the main worktree path (first entry from git worktree list)."""
-    try:
-        porcelain = git.get_worktree_list_porcelain(cwd=cwd)
-        worktrees = parse_worktree_list(porcelain)
-        if worktrees:
-            return worktrees[0][0]
-    except Exception:
-        pass
-    return None
+    """
+    Get the main worktree path (first entry from git worktree list).
 
-
-def detect_second_worktree(cwd: Optional[Path] = None) -> Optional[str]:
-    """Get the second worktree path, if it exists."""
-    try:
-        porcelain = git.get_worktree_list_porcelain(cwd=cwd)
-        worktrees = parse_worktree_list(porcelain)
-        if len(worktrees) > 1:
-            return worktrees[1][0]
-    except Exception:
-        pass
+    Returns the first listed entry regardless of its branch state, so a detached main worktree is returned too.
+    Returns None when the listing fails or reports no worktrees.
+    """
+    listed = list_worktrees(cwd=cwd)
+    if listed:
+        return listed[0]
     return None
 
 
 _TYPE_PREFIXES = {"feature", "fix", "chore"}
 
 
+class WorktreeParentError(RuntimeError):
+    """Detected WORKTREE_PARENT is unsafe (main worktree itself or under ~/.claude)."""
+
+
+class WorktreeListError(WorktreeParentError):
+    """git could not list worktrees at all (not runnable, not a repo, non-zero exit)."""
+
+
+def _home_claude() -> str:
+    """Resolved (os.path.realpath) path of ~/.claude."""
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.realpath(os.path.join(home, ".claude"))
+
+
 def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     """
     Detect the worktree parent directory.
 
-    Logic from ADR-0010 Project Detection, step 3:
-    1. If a second worktree exists, use its parent directory — unless that
-       parent is itself a type-prefixed folder (feature/fix/chore), which
-       means the second worktree is nested and this candidate is poisoned;
-       fall through to steps 2/3 instead of trusting it.
-    2. Else if main worktree is already under 'worktrees/', use that directory.
-    3. Else create 'worktrees' as a sibling directory to main worktree.
+    This function is the single implementation; prompts/worktree-reference.md
+    calls it via `python3 -m scripts.workflow.cli worktree detect-parent`.
+
+    Precedence (ADR-0010 Project Detection, step 3):
+    1. Canonical layout first: if main worktree's parent dir is named
+       'worktrees', use that directory. No other heuristic applies.
+    2. Else take the first non-main worktree that is a usable sibling
+       candidate and use its parent directory. Skipped candidates: anything
+       under ~/.claude/ (merge-queue scratch, .claude/worktrees, PR-review
+       worktrees), anything nested under the main worktree, and any whose
+       parent dir is a type prefix (feature/fix/chore).
+    3. Else fall back to '<main>/worktrees' (legit only for a bare top-level
+       clone with no 'worktrees/' parent).
+
+    Fail closed: raises WorktreeListError (a WorktreeParentError subclass) if git
+    could not list worktrees (list_worktrees returned None), and WorktreeParentError if the result is the main worktree
+    itself or lies under ~/.claude/. Returns "" only when git succeeded and
+    reported no worktrees at all.
     """
-    second = detect_second_worktree(cwd=cwd)
-    if second:
-        candidate = Path(second).parent
-        if candidate.name not in _TYPE_PREFIXES:
-            return str(candidate)
+    listed = list_worktrees(cwd=cwd)
+    if listed is None:
+        raise WorktreeListError("could not list git worktrees")
+    if not listed:
+        return ""
+    main = listed[0].rstrip("/") or listed[0]
+    real_main = os.path.realpath(main)
+    home_claude = _home_claude()
 
-    main = detect_main_worktree(cwd=cwd)
-    if main:
-        main_path = Path(main)
-        if main_path.parent.name == "worktrees":
-            return str(main_path.parent)
-        return str(main_path.parent / "worktrees")
+    parent = ""
+    if os.path.basename(os.path.dirname(main)) == "worktrees":
+        parent = os.path.dirname(main)
+    else:
+        for cand in listed[1:]:
+            if os.path.realpath(cand) == real_main or is_within(cand, home_claude) or is_within(cand, main):
+                continue
+            cand_parent = os.path.dirname(cand)
+            if os.path.basename(cand_parent) in _TYPE_PREFIXES:
+                continue
+            parent = cand_parent
+            break
+        else:
+            parent = main + "/worktrees"
 
-    return ""
+    real_parent = os.path.realpath(parent)
+    if real_parent == real_main or real_parent == home_claude or is_within(parent, home_claude):
+        raise WorktreeParentError(
+            f"refusing unsafe WORKTREE_PARENT {parent!r} (main worktree {main!r})"
+        )
+    return parent
 
 
 def detect_project_root(cwd: Optional[Path] = None) -> str:

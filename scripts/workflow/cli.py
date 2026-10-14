@@ -14,6 +14,7 @@ Usage:
   python3 -m scripts.workflow.cli track plan --mode github --plan-file <path> --title <title> [--assignee <a>]
   python3 -m scripts.workflow.cli track apply <plan_json_or_->
   python3 -m scripts.workflow.cli track seed-cache --from <main> --to <worktree>
+  python3 -m scripts.workflow.cli worktree detect-parent [--cwd <dir>]
 """
 
 import sys
@@ -304,6 +305,18 @@ def main() -> None:
         help="Main worktree path for fallback (optional)"
     )
 
+    worktree_parser = subparsers.add_parser("worktree", help="Worktree layout detection")
+    worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_action")
+
+    worktree_detect_parent_parser = worktree_subparsers.add_parser(
+        "detect-parent",
+        help="Print the detected worktree parent directory as plain text (exit 1 with ERROR on stderr on failure)"
+    )
+    worktree_detect_parent_parser.add_argument(
+        "--cwd", default=None,
+        help="Directory inside the repo (defaults to current directory)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "cleanup":
@@ -522,6 +535,21 @@ def main() -> None:
                 sys.exit(1)
         else:
             track_parser.print_help()
+            sys.exit(1)
+    elif args.command == "worktree":
+        if args.worktree_action == "detect-parent":
+            cwd_arg = Path(args.cwd) if args.cwd else None
+            try:
+                detected_parent = worktrees.detect_worktree_parent(cwd=cwd_arg)
+            except worktrees.WorktreeParentError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
+            if not detected_parent:
+                print("ERROR: no worktree parent could be determined", file=sys.stderr)
+                sys.exit(1)
+            print(detected_parent)
+        else:
+            worktree_parser.print_help()
             sys.exit(1)
     elif args.command == "checks":
         if args.checks_action == "run":

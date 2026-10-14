@@ -100,7 +100,7 @@ def _plan_from_cache(root, data=None, raw=None, branch="feature/test"):
 def _apply_env(branch, view_result=None, create_result=(None, None)):
     """Patch every git and gh call apply_shipit can make; yield the mocks by name."""
     names = (
-        "get_current_branch", "get_head_sha", "stage_all", "commit_with_message_file",
+        "get_current_branch", "get_head_sha", "stage_all", "has_staged_changes", "commit_with_message_file",
         "push_upstream", "pr_create", "pr_edit", "pr_view_json",
     )
     with contextlib.ExitStack() as stack:
@@ -108,6 +108,7 @@ def _apply_env(branch, view_result=None, create_result=(None, None)):
         mocks["get_current_branch"].return_value = branch
         mocks["get_head_sha"].return_value = "abc123"
         mocks["stage_all"].return_value = (True, None)
+        mocks["has_staged_changes"].return_value = True
         mocks["commit_with_message_file"].return_value = (True, None)
         mocks["push_upstream"].return_value = (True, None)
         mocks["pr_create"].return_value = create_result
@@ -493,6 +494,33 @@ if __name__ == "__main__":
             "apply_shipit: does not call pr_create when pr_exists=True",
             not mocks["pr_create"].called
         )
+
+    print()
+    print("[Section 7b] apply_shipit skips the commit when the index is clean")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        msg_file, body_file = _apply_files(tmppath)
+        plan = ShipitPlan(
+            branch="feature/test",
+            expected_head_sha="abc123",
+            cache_hash=None,
+            commit_message_path=str(msg_file),
+            pr_body_path=str(body_file),
+            pr_title="Title",
+            pr_number=None,
+            pr_exists=False,
+            stack=None,
+            base_branch=None,
+            plan_hash="plan123"
+        )
+        with _apply_env("feature/test", create_result=("https://github.com/o/r/pull/9", None)) as mocks:
+            mocks["has_staged_changes"].return_value = False
+            result, err = apply_shipit(json.dumps(plan.to_dict()), cwd=tmppath)
+
+        test_result("apply_shipit: clean index does not call commit", not mocks["commit_with_message_file"].called)
+        test_result("apply_shipit: clean index still pushes and succeeds", result.pushed and result.success and err is None, f"error: {err}")
+        test_result("apply_shipit: clean index reports committed=False", result.committed is False)
 
     print()
     print("[Section 8] plan_shipit reads existing PR from github-cache.json (no PR case)")

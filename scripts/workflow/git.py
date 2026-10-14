@@ -565,6 +565,31 @@ def stage_all(cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
         return False, Unknown(f"Failed to stage all changes: {e}")
 
 
+def has_staged_changes(cwd: Optional[Path] = None) -> bool:
+    """
+    True when the index differs from HEAD (read-only; 'git diff --cached --quiet').
+
+    Returns:
+        False if 'git diff --cached --quiet' exits with rc=0 (no staged changes).
+        True if 'git diff --cached --quiet' exits with rc=1 (staged changes exist).
+        Conservative True for any other return code (e.g., not in a git repo):
+        err on the side of caution and assume there may be changes that should be
+        committed. This handles the case where the caller is not in a git repository.
+    """
+    try:
+        run_git_command(["diff", "--cached", "--quiet"], cwd=cwd, check=True)
+        return False
+    except GitCommandError as e:
+        if e.returncode == 1:
+            return True
+        # For any other return code (e.g., not in a git repo, rc=129), conservatively
+        # assume there may be changes. Callers should handle missing git gracefully.
+        return True
+    except RuntimeError:
+        # Timeout or other runtime error; conservatively assume there are changes
+        return True
+
+
 def commit_with_message_file(message_path: Path, cwd: Optional[Path] = None) -> Tuple[bool, Optional[Unknown]]:
     """
     Commit with message from file via 'git commit -F <path>' through the mutation funnel.

@@ -38,7 +38,7 @@ Precedence, first match wins:
    carries one, it is authoritative: it overrides the marker, even if the marker names another flow.
    Explicit.
 3. **`.claude/flow-run` marker.** A one-line file containing the absolute path of the flow
-   directory, written by the orchestrator into the ticket worktree after the track step. Every
+   directory, written by the orchestrator into the ticket worktree by the worktree step (step 00, before `plan`). Every
    command that runs inside that worktree picks it up with no flag at all — this is what lets a
    nested `Skill` invocation (`/merge-and-cleanup` → `/cleanup`, `/shipit` → `/stack-sync`) inherit
    the flow without the caller forwarding anything.
@@ -141,6 +141,18 @@ this block applies.
    (`set -C` in bash, or `>|` redirection to bypass `noclobber`); if the file already exists, fail
    immediately rather than overwriting it — a collision signals a concurrent asker bug.
 
+**Prior answers.** When the step prompt carries one or more `PRIOR_ANSWERS:
+questions/<STEP_NAME>-<SEQ>.json` lines (a resumed step whose question was already answered) and the
+command is about to ask a question set whose `question` texts and option `label`s are identical to one
+of those files (compare as data, after reading it with `Read`), do not write a new question file and
+do not interrupt: read `${FLOW_DIR}/answers/<STEP_NAME>-<SEQ>.json`, run the "On resume" step 2 key
+check and step 3 against that pair, and record `<!-- reused-answers: questions/<STEP_NAME>-<SEQ>.json -->`
+in the receipt instead of an awaiting marker. Each `PRIOR_ANSWERS` file may be reused at most once per
+attempt. Any difference in question text or labels means it is a new question: ask normally with the
+next `SEQ`. The match must be exact because the human answered that question, not a similar one.
+`/expert-plan` questions are derived from a fresh panel and often differ, so the human may be asked
+again there; `/expert-review` rulings are deterministic from checkpoints and usually match.
+
 2. **Write the question file** `${FLOW_DIR}/questions/<STEP_NAME>-<SEQ>.json` with the `Write`
    tool (not a shell redirect — the question text can derive from untrusted ticket or diff
    content, and `Write` keeps it out of a shell string). Its shape is the `AskUserQuestion` input
@@ -197,7 +209,8 @@ this block applies.
 
 5. **END THE TURN.** Print one line — `AWAITING ANSWERS: questions/<STEP_NAME>-<SEQ>.json` — and
    stop. Do not poll, do not sleep, do not schedule a wakeup, do not guess an answer, do not pick
-   the default. The orchestrator reads the question file, asks the human in its own conversation,
+   the default. The orchestrator reads the question file, asks the human with `AskUserQuestion` (mandatory;
+   prose replies are mapped to question `id`s, see `/expert-flow` "Relaying a question"),
    writes `${FLOW_DIR}/answers/<STEP_NAME>-<SEQ>.json`, and resumes you with `SendMessage`.
 
 **On resume** (the orchestrator's message says "Answers written to `answers/<STEP_NAME>-<SEQ>.json`
@@ -277,6 +290,7 @@ Reason: <one line — why it failed, or "completed">
 ```
 
 `<k>` is the attempt number from the step prompt (`ATTEMPT=<k>`); use `1` when the prompt gives none.
+A reused prior answer (see Ask → "Prior answers") adds a `<!-- reused-answers: questions/<STEP_NAME>-<SEQ>.json -->` line in the body; it is not a trailer shape.
 
 Exactly three trailer shapes are valid:
 
@@ -292,7 +306,8 @@ Each state's meaning:
 - `FAILED` — the command stopped at a hard stop (check gate failed, rebase conflict, gate not
   converged, layout unknown, queue kickback). The reason line names it and, where the command
   already suggests a remedy (`/expert-rebase`), repeats that suggestion. The orchestrator never
-  remediates; it offers Retry / Take over / Abort to the human.
+  remediates; it offers Retry / Take over / Abort to the human (a base-stale `verify` failure is
+  auto-rebased first, see ADR-0023's auto-Rebase amendment).
   Some FAILED reasons are deterministic and not retryable (for example the North Star preflight
   stop from #273: a missing install or `gh` auth). Their reason line says so; Retry will fail the
   same way until the cause is fixed, so the human should Take over (fix it, then `--resume`).
@@ -313,14 +328,14 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 
 | Step | Required lines | Informational |
 |---|---|---|
-| plan | `FINAL_PLAN_PATH: <abs path>` | (the command's existing final summary) |
-| track | `WORKTREE: <abs path>`, `BRANCH: <name>` | (written by the orchestrator) |
-| implement | `^ROUND 1\b` (and ROUND 2–4) | (unchanged from command's final summary; no `ACTION PLAN SOURCE:` for plan-file source) |
-| fix | `^ROUND 1\b` (and ROUND 2–4), `ACTION PLAN SOURCE: …` | (unchanged from command's final summary, source is `claude-action-plan.md`) |
-| review | `REVIEW_DIR: <abs path>`, `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>` | (counts from `claude-action-plan.md`) |
-| verify | `CHECK: <command>`, `CHECK_EXIT: <n>` | (written by the orchestrator) |
-| ship | `PR_URL: <url>` | (e.g. `https://github.com/o/r/pull/123`) |
-| merge | `MERGED: yes` | (from `gh pr view --json state`; omitted if not merged) |
+| plan | `FINAL_PLAN_PATH: <abs path>` | `FINAL_PLAN_PATH: /Users/me/.claude/plans/add-relay-20261009T101500-00042.md` |
+| track | `WORKTREE: <abs path>` and `BRANCH: <name>` | written by the orchestrator itself (see `commands/expert-flow.md`) |
+| implement | the existing `ROUND 1`…`ROUND 4` lines | unchanged from the command's final summary; there is no `ACTION PLAN SOURCE:` line for a plan-file source |
+| fix | the existing `ROUND 1`…`ROUND 4` lines and `ACTION PLAN SOURCE: …` | unchanged from the command's final summary (the source is the review's `claude-action-plan.md`) |
+| review | `REVIEW_DIR: <abs path>` and `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>` | counts of CONFIRMED findings by severity from `claude-action-plan.md` |
+| verify | `CHECK: <command>` and `CHECK_EXIT: <n>` | written by the orchestrator itself |
+| ship | `PR_URL: <url>` | `PR_URL: https://github.com/o/r/pull/123` |
+| merge | `MERGED: yes` | from `gh pr view --json state`; written only when the state is `MERGED`, otherwise the line is omitted |
 
 Write the receipt with the `Write` tool (one file, one path, the path the orchestrator gave you).
 Copy that path **character for character** — never retype, shorten, or "correct" it from the
