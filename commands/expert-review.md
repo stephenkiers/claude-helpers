@@ -542,7 +542,8 @@ if [ ! -f "$HOME/.claude/scripts/north-star-preflight.py" ]; then
   exit 1
 fi
 NS_RC=0
-NS_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files [--allow-degraded]) || NS_RC=$?
+NS_FLAG=""  # set to --allow-degraded only when ALLOW_DEGRADED=true
+NS_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_RC=$?
 if [ "$NS_RC" -ne 0 ]; then
   echo "North Star preflight failed ($NS_OUT) — Retry will not help until fixed; see the remedy above" >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
@@ -645,10 +646,10 @@ triage | doing: {n} | needs-you: {n} | measure: {n} | deferred: {n} | declined: 
 prepends the canonical line, rebuilt from the token file (no change to the Amalgamator or Triage
 prompts), and prints it as the first body line of the in-conversation summary:
 ```bash
-NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "<REVIEW_DIR>/north-star-blind.tokens" [nick= tokens from Nick's first line]) || NS_LINE=""
+NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "<REVIEW_DIR>/north-star-blind.tokens" --nick-file "<REVIEW_DIR>/north-star-nick-pass1.md") || NS_LINE=""
 ```
-If `blind-line` exits 2 because Nick's text breaks the grammar, re-run it with the token file plus
-`nick=unparseable` — never drop the line. When `NS_LINE` is non-empty, prepend it (a mechanical
+`--nick-file` reads only the first line of Nick's output and turns anything malformed into
+`nick=unparseable`, so the line is never dropped. When `NS_LINE` is non-empty, prepend it (a mechanical
 prepend: `{ printf '%s\n\n' "$NS_LINE"; cat claude-action-plan.md; } > tmp && mv tmp claude-action-plan.md`).
 Skip when the token file is absent or empty and Nick reported nothing.
 

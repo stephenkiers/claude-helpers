@@ -483,7 +483,7 @@ Main thread reads all contribution files once, builds a compact decision index d
 Present to the user, **as chat message text in this step** (not summarized away, not deferred to
 the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book.
 
-**North Star blind line (first body line).** If `$SESSION_DIR/north-star-blind.tokens` is non-empty, or Nick's contribution starts with a `NORTH STAR BLIND:` line, build the line with `python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" <nick= tokens from Nick's line as extra args>` (the union; Nick's tokens are appended, never substituted). If `blind-line` exits 2 because Nick's text breaks the grammar (for example, a comma), re-run it with the file plus `nick=unparseable` — never drop the line. Print the result as the first body line of this checkpoint, above the ticket refresher. Keep the line in `NORTH_STAR_BLIND_LINE` for Step 9.
+**North Star blind line (first body line).** If `$SESSION_DIR/north-star-blind.tokens` is non-empty, or Nick's contribution starts with a `NORTH STAR BLIND:` line, build the line with `python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" --nick-file "$SESSION_DIR/north-star-nick-contribution.md"` (the union; Nick's tokens are appended, never substituted; malformed text becomes `nick=unparseable`, so the line is never dropped). Print the result as the first body line of this checkpoint, above the ticket refresher. Keep the line in `NORTH_STAR_BLIND_LINE` for Step 9.
 
 **Open with a ticket refresher** — one line, before anything else, so a user juggling many sessions
 can re-orient without scrolling: `**Ticket**: #<n> <title> — WHAT: <what it is, ≤15 words>. WHY: <the
@@ -701,13 +701,13 @@ if ! cp "$SESSION_DIR/plan.md" "$FINAL_PLAN_PATH"; then
 fi
 
 # North Star blind line: mechanically prepend (orchestrator copy step, not a synthesis rewrite)
-NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens") || NS_LINE=""
+NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" --nick-file "$SESSION_DIR/north-star-nick-contribution.md") || NS_LINE=""
 if [ -n "$NS_LINE" ]; then
   { printf '%s\n\n' "$NS_LINE"; cat "$FINAL_PLAN_PATH"; } > "$FINAL_PLAN_PATH.tmp" && mv "$FINAL_PLAN_PATH.tmp" "$FINAL_PLAN_PATH"
 fi
 ```
 
-If Step 5 built a blind line that includes Nick's `nick=` tokens (or `nick=unparseable`), prepend that line instead of the bare token-file line. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key).
+The `--nick-file` argument folds Nick's `nick=` tokens (or `nick=unparseable`) into that line, matching Step 5. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key).
 
 Print the path, selected scope, effort, panel + model choices, and review status (one of: "main-thread consistency check only," "targeted independent check: <question>," "independent final audit"). Suggest `/track-and-start` or `/expert-review-plan` as next steps.
 

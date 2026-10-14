@@ -17,7 +17,6 @@ Run with: python3 tests/test_north_star_preflight_spec.py
 """
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile

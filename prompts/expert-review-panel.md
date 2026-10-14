@@ -368,10 +368,10 @@ if [ "$SNAP_SCRIPT_OK" = "true" ]; then
 fi
 # Always classify, even after a skipped or crashed snapshot (a missing in-flight.md is snapshot-empty)
 NS_SNAP_RC=0
-NS_SNAP=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$REVIEW_DIR" [--allow-degraded]) || NS_SNAP_RC=$?
+NS_SNAP=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" snapshot --dir "$REVIEW_DIR" $NS_FLAG) || NS_SNAP_RC=$?
 ```
 
-Substitute `[--allow-degraded]` only when `ALLOW_DEGRADED=true`. On `NS_SNAP_RC` 3, stop the run
+Set `NS_FLAG=--allow-degraded` only when `ALLOW_DEGRADED=true`, else leave it empty. On any non-zero `NS_SNAP_RC` (3, or 2 for a usage error), stop the run
 (stage and command failure telemetry, `--failure-class other`) with the preflight's stderr remedy;
 a non-zero `SNAPSHOT_RC` is reported alongside it. Otherwise, for a `BLIND ...` stdout, append each
 token (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`. The snapshot script itself is
@@ -647,14 +647,13 @@ line from `{REVIEW_DIR}/north-star-blind.tokens` plus any `nick=` tokens parsed 
 of `north-star-nick-pass1.md` (`NORTH STAR BLIND: nick=...`), and prepend it to `final-report.md`
 (mechanical; no change to the Amalgamator prompt):
 ```bash
-NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$REVIEW_DIR/north-star-blind.tokens" NICK_TOKENS...) \
-  || NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$REVIEW_DIR/north-star-blind.tokens" nick=unparseable)
+NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$REVIEW_DIR/north-star-blind.tokens" --nick-file "$REVIEW_DIR/north-star-nick-pass1.md") || NS_LINE=""
 if [ -n "$NS_LINE" ]; then
   { printf '%s\n\n' "$NS_LINE"; cat "$REVIEW_DIR/final-report.md"; } > "$REVIEW_DIR/final-report.md.tmp" && mv "$REVIEW_DIR/final-report.md.tmp" "$REVIEW_DIR/final-report.md"
 fi
 ```
-(`NICK_TOKENS...` is the literal list of `nick=` tokens, or nothing.) `blind-line` exits 2 on a token
-outside its vocabulary, hence the `nick=unparseable` fallback; the line is never dropped.
+`--nick-file` reads only the first line of Nick's output and turns anything malformed into
+`nick=unparseable`; when the union is empty `NS_LINE` is empty and nothing is prepended.
 
 ```bash
 # Extract findings metrics from findings.json for reporting

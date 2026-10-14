@@ -47,7 +47,7 @@ add a per-persona "Load Project Context" / STEP 1 block; that duplication is wha
 now owns (and contradicts the "Adding a New Reviewer" checklist).
 
 Add a context block to a persona **only** when it loads context *differently* from the default
-— e.g. North Star Nick, which additionally reads strategic documents (ADR index, issues index)
+— e.g. North Star Nick, which additionally reads strategic documents (ADRs, docs, in-flight issues and PRs)
 whose paths come from its local override. In that case, reference the already-loaded context
 rather than re-listing the generic files.
 

@@ -199,6 +199,20 @@ def section_blind_line(h, t):
         rc, out, _ = blind(Path(tmp) / "missing", "scout-failed=all", "nick=unparseable")
         t("blind-line: scout-failed=all and nick=unparseable accepted",
           (rc, out) == (0, "NORTH STAR BLIND: scout-failed=all, nick=unparseable"), out)
+        nf = Path(tmp) / "nick.md"
+        nf.write_text("NORTH STAR BLIND: nick=no ADR index\nbody\n")
+        rc, out, _ = blind(tf, "--nick-file", str(nf))
+        t("blind-line --nick-file: Nick's nick= token joins the union",
+          (rc, out) == (0, "NORTH STAR BLIND: gh-auth, scout-failed=docs, nick=no ADR index"), out)
+        nf.write_text("NORTH STAR BLIND: nick=a, b\n")
+        rc, out, _ = blind(Path(tmp) / "missing", "--nick-file", str(nf))
+        t("blind-line --nick-file: a comma in Nick's text becomes nick=unparseable, exit 0",
+          (rc, out) == (0, "NORTH STAR BLIND: nick=a, nick=unparseable"), out)
+        nf.write_text("Plain contribution, no blind line\n")
+        rc, out, _ = blind(Path(tmp) / "missing", "--nick-file", str(nf))
+        t("blind-line --nick-file: no blind line from Nick prints nothing", (rc, out) == (0, ""), out)
+        rc, out, _ = blind(Path(tmp) / "missing", "--nick-file", str(Path(tmp) / "absent.md"))
+        t("blind-line --nick-file: missing file prints nothing", (rc, out) == (0, ""), out)
 
 
 def section_contract(h, t):

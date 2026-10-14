@@ -16,12 +16,14 @@ Subcommands:
         `in-flight.err`, `in-flight-issues.md`).
           hard:    `in-flight.md` missing or empty -> snapshot-empty
                    `in-flight.err` has both `issues:` and `prs:` keys -> snapshot-unavailable
-          notice:  exactly one of `issues:` / `prs:`, an `epics:` key, or an empty
+          notice:  exactly one of `issues:` / `prs:`, an `epics:` key, or a missing or empty
                    `in-flight-issues.md` -> snapshot-partial=<issues|prs|epics|issue-bodies>
-    blind-line --tokens-file PATH [token ...]
+    blind-line --tokens-file PATH [--nick-file PATH] [token ...]
         Prints the canonical blind line for the de-duplicated union (first-seen order) of the
         tokens in PATH (one per line; a missing file is empty) and any extra tokens. Prints nothing
         and exits 0 when the union is empty. Exit 2 on any token outside the vocabulary.
+        --nick-file adds the `nick=` tokens from the first line of Nick's output (only when that
+        line starts with the blind prefix; a malformed piece becomes `nick=unparseable`, never an error).
 
 Blind grammar: one line, exact prefix `NORTH STAR BLIND: `, then comma-space-separated tokens from
 the closed vocabulary: snapshot-script, scout-prompt, gh-auth, snapshot-empty,
@@ -156,14 +158,35 @@ def phase_snapshot(directory: Path, allow_degraded: bool) -> int:
         notice.append("snapshot-partial=epics")
     bodies = directory / "in-flight-issues.md"
     try:
-        if md_nonempty and bodies.is_file() and bodies.stat().st_size == 0:
+        if md_nonempty and (not bodies.is_file() or bodies.stat().st_size == 0):
             notice.append("snapshot-partial=issue-bodies")
     except OSError:
         pass
     return _emit(hard, notice, allow_degraded)
 
 
-def phase_blind_line(tokens_file: Path, extra: Sequence[str]) -> int:
+def parse_nick_file(path: Path) -> List[str]:
+    """`nick=` tokens from the first line of Nick's output; `nick=unparseable` if that line breaks the grammar."""
+    try:
+        with path.open(encoding="utf-8") as handle:
+            first = handle.readline().rstrip("\r\n")
+    except OSError:
+        return []
+    if not first.startswith(BLIND_PREFIX):
+        return []
+    found: List[str] = []
+    for piece in first[len(BLIND_PREFIX):].split(", "):
+        piece = piece.strip()
+        if valid_token(piece) and piece.startswith("nick="):
+            found.append(piece)
+        elif piece:
+            found.append("nick=unparseable")
+    return found
+
+
+def phase_blind_line(tokens_file: Path, extra: Sequence[str], nick_file: Optional[Path] = None) -> int:
+    if nick_file is not None:
+        extra = list(extra) + parse_nick_file(nick_file)
     tokens: List[str] = []
     try:
         file_tokens = tokens_file.read_text(encoding="utf-8").splitlines()
@@ -194,13 +217,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_snap.add_argument("--allow-degraded", action="store_true")
     p_line = sub.add_parser("blind-line")
     p_line.add_argument("--tokens-file", required=True)
+    p_line.add_argument("--nick-file", default=None)
     p_line.add_argument("tokens", nargs="*")
     args = parser.parse_args(argv)
     if args.phase == "files":
         return phase_files(Path(args.claude_dir), args.allow_degraded)
     if args.phase == "snapshot":
         return phase_snapshot(Path(args.dir), args.allow_degraded)
-    return phase_blind_line(Path(args.tokens_file), args.tokens)
+    return phase_blind_line(Path(args.tokens_file), args.tokens, Path(args.nick_file) if args.nick_file else None)
 
 
 if __name__ == "__main__":

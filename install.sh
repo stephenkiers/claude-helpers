@@ -33,6 +33,10 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
         target_dir="$CLAUDE_DIR/$dir"
         source_dir="$REPO_DIR/$dir"
         [ -d "$source_dir" ] || continue
+        if [ -L "$target_dir" ]; then
+            echo "dir-symlink: $target_dir (./install.sh replaces it with a real directory)"
+            drift=1
+        fi
         while IFS= read -r source_file; do
             rel_path="${source_file#"$source_dir"/}"
             target_file="$target_dir/$rel_path"
