@@ -110,7 +110,7 @@ error: `"ERROR: --issue must be a GitHub issue number or a tracker ticket ID (e.
 
 **`--worktree-only` validation:** If `$WORKTREE_ONLY_FLAG` is `1`, all of these must hold, else a hard error (checked before anything else in the dispatch):
 
-- `$ISSUE_FLAG` is set and matches `^[0-9]+$`. Missing: `"ERROR: --worktree-only requires --issue <N> (a GitHub issue number)"`. A tracker ticket ID: `"ERROR: --worktree-only does not support tracker ticket IDs ($ISSUE_FLAG) — use a bare GitHub issue number."`
+- `$ISSUE_FLAG` is set and matches `^[0-9]+$`. Missing: `"ERROR: --worktree-only requires --issue <N>, where <N> must be a GitHub issue number."`. A tracker ticket ID: `"ERROR: --worktree-only --issue must be a GitHub issue number, not a tracker ticket ID ($ISSUE_FLAG)."`. Any other non-numeric value: `"ERROR: --worktree-only --issue must be a GitHub issue number, got: $ISSUE_FLAG"`.
 - `$PLAN_FILE_FLAG` is empty. Otherwise: `"ERROR: --worktree-only cannot be combined with --plan-file (it creates the worktree only; attach the plan later with --issue <N> --plan-file <path>)."`
 - `$ARG1` and `$ARG2` are empty. Otherwise: `"ERROR: --worktree-only takes no positional arguments, got: $ARG1 $ARG2"`
 - Plan mode is irrelevant: it is neither required nor used, and `ExitPlanMode` is never called.
@@ -118,15 +118,15 @@ error: `"ERROR: --issue must be a GitHub issue number or a tracker ticket ID (e.
 ```bash
 if [ "$WORKTREE_ONLY_FLAG" = "1" ]; then
   if [ -z "$ISSUE_FLAG" ]; then
-    echo "ERROR: --worktree-only requires --issue <N> (a GitHub issue number)" >&2
+    echo "ERROR: --worktree-only requires --issue <N>, where <N> must be a GitHub issue number." >&2
     exit 1
   fi
   if printf '%s' "$ISSUE_FLAG" | grep -qE '^[A-Z]+-[0-9]+$'; then
-    echo "ERROR: --worktree-only does not support tracker ticket IDs ($ISSUE_FLAG) — use a bare GitHub issue number." >&2
+    echo "ERROR: --worktree-only --issue must be a GitHub issue number, not a tracker ticket ID ($ISSUE_FLAG)." >&2
     exit 1
   fi
   if ! printf '%s' "$ISSUE_FLAG" | grep -qE '^[0-9]+$'; then
-    echo "ERROR: --issue must be a GitHub issue number or a tracker ticket ID (e.g. 59 or PPS-166), got: $ISSUE_FLAG" >&2
+    echo "ERROR: --worktree-only --issue must be a GitHub issue number, got: $ISSUE_FLAG" >&2
     exit 1
   fi
   if [ -n "$PLAN_FILE_FLAG" ]; then
@@ -452,19 +452,30 @@ Runs only for `ENTRY_MODE=worktree-only`, immediately after Project Detection ab
 
 **Never mutates the issue.** This flow must not call `gh issue create`, `gh issue comment`, or `gh issue edit`, and must not write the issue body into `$CACHE_FILE` (the project-level issue cache) or anywhere else. `gh issue view` is the only `gh` call. If `REPO` is empty, error: "No GitHub remote found." (this flow needs one).
 
-**1. Validate the issue exists and is open, and fetch its title:**
+**Known duplication:** Steps 2–4 repeat logic from the normal path (existing-worktree lookup, branch and path derivation, stage telemetry). That duplication is tracked in #262, and consolidating it with the shared worktree-creation path is #275. Keep the two in sync until then.
+
+**1. Validate the issue exists and is open, and fetch its title and body (one `gh` call, so a fetch failure aborts before anything is created):**
 
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage create-worktree >/dev/null 2>&1 || true
 
-ISSUE_JSON=$(gh issue view "$ISSUE_FLAG" --repo "$REPO" --json state,title,url 2>/dev/null)
-ISSUE_STATE=$(printf '%s' "$ISSUE_JSON" | jq -r '.state // empty')
-if [ -z "$ISSUE_STATE" ]; then
-  echo "ERROR: --issue $ISSUE_FLAG not found in $REPO." >&2
+ISSUE_ERR=$(mktemp)
+ISSUE_JSON=$(gh issue view "$ISSUE_FLAG" --repo "$REPO" --json state,title,url,body 2>"$ISSUE_ERR")
+GH_RC=$?
+if [ "$GH_RC" -ne 0 ]; then
+  if grep -qiE 'could not resolve to an issue|not found|HTTP 404' "$ISSUE_ERR"; then
+    echo "ERROR: --issue $ISSUE_FLAG not found in $REPO." >&2
+  else
+    echo "ERROR: could not read --issue $ISSUE_FLAG from $REPO — gh failed (check gh authentication and network):" >&2
+    cat "$ISSUE_ERR" >&2
+  fi
+  rm -f "$ISSUE_ERR"
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
+rm -f "$ISSUE_ERR"
+ISSUE_STATE=$(printf '%s' "$ISSUE_JSON" | jq -r '.state // empty')
 if [ "$ISSUE_STATE" != "OPEN" ]; then
   echo "ERROR: --issue $ISSUE_FLAG is not open (state: $ISSUE_STATE) — cannot create a worktree for a closed issue." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
@@ -473,6 +484,7 @@ if [ "$ISSUE_STATE" != "OPEN" ]; then
 fi
 ISSUE_TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title')
 ISSUE_URL=$(printf '%s' "$ISSUE_JSON" | jq -r '.url')
+ISSUE_BODY=$(printf '%s' "$ISSUE_JSON" | jq -r '.body // ""')
 ```
 
 **2. Refuse if a worktree for this issue already exists** (shared "Existing worktree lookup" from Step 4-pre):
@@ -537,20 +549,26 @@ cd "$MAIN_WORKTREE"
 git worktree add "$WORKTREE_PATH" -b "$BRANCH" "origin/${DEFAULT_BASE}" || { echo "ERROR: git worktree add failed for $WORKTREE_PATH" >&2; python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true; python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true; exit 1; }
 ```
 
-**5. Write the per-worktree `.claude/github-cache.json`** in the same shape the normal path writes (`branch` plus `issue.number/url/title/body/state`). The issue body is fetched read-only for this file only; nothing is written back to GitHub or to `$CACHE_FILE`:
+**5. Write the per-worktree `.claude/github-cache.json`** in the same shape the normal path writes (`branch` plus `issue.number/url/title/body/state`). The `$ISSUE_BODY` value is the one read-only fetch from step 1 (no second `gh` call); nothing is written back to GitHub or to `$CACHE_FILE`. A failed write exits with telemetry closed; the worktree from step 4 then exists, so see the recovery note below:
 
 ```bash
-ISSUE_BODY=$(gh issue view "$ISSUE_FLAG" --repo "$REPO" --json body -q '.body' 2>/dev/null)
-mkdir -p "${WORKTREE_PATH}/.claude"
-jq -n \
+mkdir -p "${WORKTREE_PATH}/.claude" && jq -n \
   --arg branch "$BRANCH" \
   --argjson number "$ISSUE_FLAG" \
   --arg url "$ISSUE_URL" \
   --arg title "$ISSUE_TITLE" \
   --arg body "$ISSUE_BODY" \
   '{branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' \
-  > "${WORKTREE_PATH}/.claude/github-cache.json"
+  > "${WORKTREE_PATH}/.claude/github-cache.json" || {
+  rm -f "${WORKTREE_PATH}/.claude/github-cache.json"
+  echo "ERROR: failed to write ${WORKTREE_PATH}/.claude/github-cache.json — the worktree from step 4 exists (see recovery note)." >&2
+  python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage create-worktree --outcome failure --failure-class other 2>/dev/null || true
+  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-start --outcome failure --failure-class other 2>/dev/null || true
+  exit 1
+}
 ```
+
+**Recovery after a step 4–5 failure.** Step 4 creates the branch and worktree before the cache is written, so a later failure leaves both behind. The issue is untouched. A rerun of `--worktree-only` would refuse with "Worktree already exists" (step 2), so remove the orphan first, from the main worktree. Inspect the worktree and remove it only if it holds no work you want: `git worktree remove "<worktree-path>"` (add `--force` only after inspecting it), then `git branch -D "<branch>"` for the branch derived in step 3. Then rerun.
 
 **6. Handoff:**
 
@@ -1533,8 +1551,10 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-s
 | Issue cache missing/empty | Skip duplicate detection, proceed to create issue |
 | Issue creation succeeded, worktree creation failed | Error + warning: "GitHub issue #N was created (URL) but worktree creation failed. The issue is orphaned. Resolve the error, retry, or delete the issue and start over." |
 | Worktree already exists | Error: "Worktree already exists at `<path>`. Use it or pick a different branch name." Applies when there is no `--issue` (the CLI would create a colliding worktree), the existing worktree is for a different issue, or `--worktree-only` finds a worktree for `<N>-`. With `--issue <N>` plus a plan and exactly one existing worktree for `<N>-`, this is NOT an error: that worktree is reused. |
-| `--worktree-only` without `--issue <N>` | Error: "--worktree-only requires --issue <N> (a GitHub issue number)" |
-| `--worktree-only` with a tracker ticket ID | Error: "--worktree-only does not support tracker ticket IDs ({id}) — use a bare GitHub issue number." |
+| `--worktree-only` without `--issue <N>` | Error: "--worktree-only requires --issue <N>, where <N> must be a GitHub issue number." |
+| `--worktree-only` with a tracker ticket ID | Error: "--worktree-only --issue must be a GitHub issue number, not a tracker ticket ID ({id})." |
+| `--worktree-only` `gh issue view` fails (other than not found) | Error: "could not read --issue {n} from {repo} — gh failed (check gh authentication and network)", followed by gh's stderr. Fails before any worktree is created. |
+| `--worktree-only` cache write fails (after the worktree exists) | Error: "failed to write {path}/.claude/github-cache.json". Remove the orphan worktree and branch per the recovery note in the `--worktree-only` Flow. |
 | `--worktree-only` with `--plan-file` | Error: "--worktree-only cannot be combined with --plan-file (it creates the worktree only; attach the plan later with --issue <N> --plan-file <path>)." |
 | `--worktree-only` with positional arguments | Error: "--worktree-only takes no positional arguments, got: {args}" |
 | `--issue` matches several existing worktrees | Error: "Multiple worktrees match issue #N: {paths}. Remove or rename all but one, then retry." |
