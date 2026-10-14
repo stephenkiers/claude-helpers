@@ -8,12 +8,11 @@ Exit codes:
 """
 
 import argparse
-import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Optional
 
 
 def error(msg: str) -> None:
@@ -31,13 +30,8 @@ def read_file(path: Path) -> str:
 
 
 def canonicalize_path(path: str, home: Path) -> Path:
-    """Canonicalize path under HOME; error if outside it."""
-    p = Path(path).expanduser().resolve()
-    try:
-        p.relative_to(home)
-    except ValueError:
-        error(f"Path {path} escapes {home}")
-    return p
+    """Canonicalize a path (symlinks and .. resolved). Containment is checked by callers."""
+    return Path(path).expanduser().resolve()
 
 
 def scan_for_deviation(content: str) -> bool:
@@ -192,7 +186,7 @@ def check_plan(receipt_file: Path, since: str, home: Path) -> Optional[str]:
         contrib = read_file(contrib_file)
 
         # Check sentinel: last non-empty line
-        lines = [l for l in contrib.split("\n") if l.strip()]
+        lines = [ln for ln in contrib.split("\n") if ln.strip()]
         if not lines or lines[-1] != "<!-- contribution-end -->":
             return f"plan artifacts missing (contribution: {name} absent|unterminated|stand-in)"
 
@@ -268,7 +262,7 @@ def check_implement(
 
         count = int(result.stdout.strip())
         if count < 1:
-            return "implement artifacts missing (no new commits on <branch> since step began)"
+            return f"implement artifacts missing (no new commits on {branch} since step began)"
     except (subprocess.TimeoutExpired, ValueError) as e:
         error(f"Git operation failed: {e}")
 
@@ -304,13 +298,13 @@ def check_fix(
                 home
             )
             if not action_plan_path.exists():
-                return "fix artifacts missing (no new commits on <branch> since step began)"
+                return f"fix artifacts missing (no new commits on {branch} since step began)"
 
             action_plan = read_file(action_plan_path)
             doing_it_count = _count_doing_it_items(action_plan)
 
             if doing_it_count >= 1:
-                return "fix artifacts missing (no new commits on <branch> since step began)"
+                return f"fix artifacts missing (no new commits on {branch} since step began)"
     except (subprocess.TimeoutExpired, ValueError) as e:
         error(f"Git operation failed: {e}")
 
@@ -322,8 +316,8 @@ def _parse_iso8601(iso_str: str) -> float:
     # Simple parser for format like "2026-10-14T22:20:13Z" or "2026-10-14T22:20:13+00:00"
     iso_str = iso_str.rstrip("Z").split("+")[0]
     try:
-        from datetime import datetime
-        dt = datetime.fromisoformat(iso_str)
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso_str).replace(tzinfo=timezone.utc)
         return dt.timestamp()
     except ValueError:
         raise ValueError(f"Could not parse ISO timestamp: {iso_str}")
@@ -332,13 +326,11 @@ def _parse_iso8601(iso_str: str) -> float:
 def _parse_roster_table(content: str) -> list:
     """Parse markdown roster table and return list of Expert names."""
     rows = []
-    in_table = False
     header_seen = False
 
     for line in content.split("\n"):
         # Table lines start with |
         if not line.strip().startswith("|"):
-            in_table = False
             if rows:  # Found table, return it
                 return rows
             continue
@@ -354,7 +346,9 @@ def _parse_roster_table(content: str) -> list:
                 header_seen = True
             continue
 
-        # Collect rows after header
+        # Skip the separator row, collect the rest
+        if cells[0] and set(cells[0]) <= set("-: "):
+            continue
         if header_seen and cells:
             rows.append(cells[0])
 
@@ -387,7 +381,7 @@ def _load_reviewer_index(index_file: Path) -> dict:
 
 def _is_standin(content: str) -> bool:
     """Check if contribution is a stand-in (## Decision / FAILED or Decision: FAILED)."""
-    lines = [l.strip() for l in content.split("\n")]
+    lines = [ln.strip() for ln in content.split("\n")]
 
     # Check for ## Decision followed by FAILED
     for i, line in enumerate(lines):
@@ -464,7 +458,7 @@ def main() -> None:
         sys.exit(1)
 
     # Home directory for artifact roots
-    home = Path.home()
+    home = Path.home().resolve()
 
     # Step-specific checks
     error_reason = None

@@ -8,7 +8,6 @@ review dirs with checkpoints and action plans, and commit counts for implement/f
 Run with: python3 tests/test_flow_verify_receipt.py
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -270,7 +269,7 @@ def main():
 
         exit_code, stdout, stderr = run_verifier(
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
-            repo=repo_path, branch="master", base=base_sha
+            repo=repo_path, branch="HEAD", base=base_sha
         )
         h.test_result("Implement with one new commit passes", exit_code == 0 and "ARTIFACTS: ok" in stdout)
 
@@ -289,7 +288,7 @@ def main():
 
         exit_code, stdout, stderr = run_verifier(
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
-            repo=repo_path, branch="master", base=base_sha
+            repo=repo_path, branch="HEAD", base=base_sha
         )
         h.test_result("Implement with no new commits fails", exit_code == 1 and "no new commits" in stdout)
 
@@ -303,7 +302,7 @@ def main():
         if "[" in line and "git" not in line  # Check subprocess.run calls
     ) if "subprocess.run" in verifier_source else True)
 
-    h.summarize()
+    h.summarize_and_exit()
 
 
 if __name__ == "__main__":

@@ -445,13 +445,13 @@ def main():
                   "never substitute" in text)
 
     # Rule 7 tests
-    h.test_result("validation rule 7 exists", "### 7. For `Decision: OK` only" in text or "rule 7" in text.lower())
+    h.test_result("validation rule 7 exists", "7. For `Decision: OK` only" in text)
     h.test_result("rule 7 mentions receipt admits deviation", "receipt admits deviation" in text)
     h.test_result("rule 7 mentions artifacts missing", "artifacts missing" in text)
     h.test_result("rule 7 mentions artifact check could not run", "artifact check could not run" in text)
     h.test_result("rule 7 runs after rules 1-6", "after rules 1–6" in text or "after rules 1-6" in text)
     h.test_result("rule 7 runs before OK branch clears live",
-                  "before" in text and "`live` is cleared" in text)
+                  "before the `OK` branch clears `live`" in text)
     h.test_result("rule 7 runs only on Decision: OK",
                   "Decision: OK` only" in text or "For `Decision: OK` only" in text)
 
@@ -469,15 +469,14 @@ def main():
     for step, keyword in steps_with_checks:
         h.test_result(f"{step} step has Artifact check line",
                       f"**{step}.**" in text and
-                      re.search(rf"**{step}\.\*\*.*?Artifact check:", text, re.DOTALL) is not None,
+                      re.search(rf"\*\*{step}\.\*\*.*?Artifact check:", text, re.DOTALL) is not None,
                       f"missing artifact check for {step}")
 
     # Allowlist test for the new grant
     h.test_result("allowed-tools grants flow-verify-receipt.py",
                   "flow-verify-receipt.py" in tools, tools)
     h.test_result("READ_ONLY_BASH allowlist updated for flow-verify-receipt",
-                  r"flow-verify-receipt\.py" in
-                  open(REPO_ROOT / "tests" / "_test_harness.py").read() if (REPO_ROOT / "tests" / "_test_harness.py").exists() else True)
+                  any("flow-verify-receipt" in pat for pat in READ_ONLY_BASH))
 
     # ADR amendment test
     h.test_result("ADR-0023 has section 2.2", "### 2.2" in adr and "#276" in adr)
