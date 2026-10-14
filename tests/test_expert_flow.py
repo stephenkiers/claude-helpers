@@ -445,14 +445,14 @@ def main():
                   "never substitute" in text)
 
     # Rule 7 tests
-    h.test_result("validation rule 7 exists", "7. For `Decision: OK` only" in text)
-    h.test_result("rule 7 mentions receipt admits deviation", "receipt admits deviation" in text)
-    h.test_result("rule 7 mentions artifacts missing", "artifacts missing" in text)
-    h.test_result("rule 7 mentions artifact check could not run", "artifact check could not run" in text)
-    h.test_result("rule 7 runs after rules 1-6", "after rules 1–6" in text or "after rules 1-6" in text)
-    h.test_result("rule 7 runs before OK branch clears live",
+    h.test_result("validation rule 8 exists", "8. For `Decision: OK` only" in text)
+    h.test_result("rule 8 mentions receipt admits deviation", "receipt admits deviation" in text)
+    h.test_result("rule 8 mentions artifacts missing", "artifacts missing" in text)
+    h.test_result("rule 8 mentions artifact check could not run", "artifact check could not run" in text)
+    h.test_result("rule 8 runs after rules 1-7", "after rules 1–7" in text or "after rules 1-7" in text)
+    h.test_result("rule 8 runs before OK branch clears live",
                   "before the `OK` branch clears `live`" in text)
-    h.test_result("rule 7 runs only on Decision: OK",
+    h.test_result("rule 8 runs only on Decision: OK",
                   "Decision: OK` only" in text or "For `Decision: OK` only" in text)
 
     # Per-step artifact checks

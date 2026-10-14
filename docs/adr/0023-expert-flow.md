@@ -105,7 +105,7 @@ gated Rebase amendment).
 
 A receipt is a claim; disk and git are evidence. On `Decision: OK`, the orchestrator verifies the
 step's on-disk artifacts with `scripts/flow-verify-receipt.py` before the step advances. The verifier
-runs after validation rules 1–6 and before `live` is cleared or `PLAN_PATH` / `REVIEW_DIR` recorded,
+runs after validation rules 1–7 and before `live` is cleared or `PLAN_PATH` / `REVIEW_DIR` recorded,
 so a rejected step leaves no poisoned state for `--resume`.
 
 The checks per step:
