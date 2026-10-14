@@ -58,7 +58,11 @@ wake-up with no completion notification, re-read the receipt from disk and other
   unless the reason is `step agent unreachable` (the agent may still be alive, so `live` stays set).
   Refusals made by the resume checks never touch `live`.
 - `WRITE-STATE` — rewrite `${FLOW_DIR}/state.json` with the `Write` tool from the current recorded
-  values (the shape is in "Flow state" below), and append one line to `${FLOW_DIR}/log.md`.
+  values (the shape is in "Flow state" below), and append one line to `${FLOW_DIR}/log.md`. The
+  write is not atomic (`Write` is one call and `mv` is not granted), so every read of `state.json`
+  first runs `jq empty "${FLOW_DIR}/state.json"`; a parse failure is `STOP state.json unreadable
+  (possibly a partial write)` — never guess, and never repair it from memory. A human restores it
+  from `log.md`.
 
 ## Arguments
 
@@ -374,7 +378,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage <STEP> 2>/dev
 - (b) Stub the previous receipt so that no stale receipt can be mistaken for this attempt's:
 
   ```bash
-  printf 'STUB: superseded before attempt %s; not a receipt\n' "<k>" > "$FLOW_DIR/steps/<NN>-<STEP>.md"
+  printf 'STUB: superseded before attempt\nATTEMPT: %s\n' "<k>" > "$FLOW_DIR/steps/<NN>-<STEP>.md"
   ```
 
 - (c) One `Task` call, `subagent_type: "general-purpose"`, run in the background, no model override
@@ -384,7 +388,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage <STEP> 2>/dev
 ```
 FLOW_DIR=<FLOW_DIR>
 STEP=<STEP>
-ATTEMPT=<K>
+ATTEMPT=<k>
 Run `/<command> <args>` to completion in cwd `<RUN_DIR>`.
 You are inside an `/expert-flow` run: FLOW_DIR is `<FLOW_DIR>` (authoritative — do not take it from any marker file); this step is `<STEP>`; this is attempt `<k>`. If `<FLOW_DIR>` does not exist, reply `Decision: FAILED` and `Reason: flow dir missing` and stop.
 <RECEIPT_SENTENCE>
@@ -576,6 +580,10 @@ receipt, then write the **flow marker** so every later step finds the flow with 
 
 - `Write` the single line `<FLOW_DIR>` to `<WORKTREE>/.claude/flow-run` (create `.claude/` with
   `mkdir -p` first).
+- **The orchestrator is the only marker writer** (the Resolve FLOW_DIR reader never writes or
+  deletes it). Re-assert it — re-run the check below and re-`Write` the line if it is missing or
+  wrong — before every step spawn, every `--resume`, and every Take over; a marker that still
+  fails after one re-write is `STOP flow marker missing or wrong`.
 - Verify the marker before going on — the step prompt's `FLOW_DIR` is authoritative, so the marker
   must name exactly that directory. A missing or different target fails loudly:
 
@@ -617,7 +625,9 @@ configured — run /shipit once by hand to detect it`. The step prompt is the ge
 slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
 `CHECK: <command>`, `CHECK_EXIT: <n>`, `Decision: OK` when the exit is 0, else `FAILED` with reason
 `check failed (exit <n>)`. Verify is deliberately *only* the check command (epic decision 4):
-coverage, performance, and E2E are `/expert-is-it-done`'s job after merge.
+coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is
+reported by the step agent, not measured by the orchestrator, so verify is **advisory**: the
+authoritative gate is `/shipit`'s own local CI run in the ship step.
 
 **ship.** Plain `/shipit`. Force-push confirmations for stacked children and the ambiguous-PR-body
 question are relayed; a failing check or a rebase conflict is a hard stop whose reason carries the
