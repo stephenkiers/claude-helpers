@@ -339,7 +339,7 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 
 **Artifact verification.** A receipt is a claim. On `OK`, the orchestrator verifies the step's on-disk artifacts with
 `scripts/flow-verify-receipt.py`. For plan, that is the session dir named by `FINAL_PLAN_PATH`'s
-invocation id, with every `selected-experts.md` row's contribution. For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. Point to `commands/expert-flow.md` loop step 5, rule 8.
+invocation id, with every `selected-experts.md` row's contribution (except `auditor` and `synthesis` rows). For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. The verifier's exit codes: 0 = artifacts OK; 1 = receipt admits deviation or artifact missing; 2 = bad arguments or internal error. The fix step accepts zero commits if the action plan has no *Doing it* items. All steps check mtime freshness: artifact mtimes must be >= `--since` minus 5 seconds. Point to `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2.
 
 Write the receipt with the `Write` tool (one file, one path, the path the orchestrator gave you).
 Copy that path **character for character** — never retype, shorten, or "correct" it from the

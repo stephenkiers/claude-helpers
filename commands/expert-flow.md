@@ -1,6 +1,6 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
-argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 1-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
+argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
 allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
@@ -81,9 +81,9 @@ wake-up with no completion notification, re-read the receipt from disk and other
   `--abandon`, `--retro`, or `--list` is given.
 - `--plan-effort 2|3` — forwarded to `/expert-plan --effort`. Default: omitted, so `/expert-plan`
   sizes it with its own heuristic (`scripts/plan-effort.py`).
-- `--review-effort 1-5` — forwarded to `/expert-review --effort`. Default: omitted, so
+- `--review-effort 2-5` — forwarded to `/expert-review --effort`. Default: omitted, so
   `/expert-review` sizes it with its heuristic; the Opus-escalation question that heuristic can
-  raise is relayed to you like any other.
+  raise is relayed to you like any other. Effort 1 (swarm) produces no per-reviewer checkpoints for the verifier to check.
 - `--auto-merge` — skip the human merge gate and go straight from ship to merge. **Per-run only;
   never a stored default, and never restored from `state.json` on `--resume`.** Never use with
   third-party PR comments or untrusted issue content — the merge gate is the human's chance to review
@@ -149,8 +149,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$PLAN_EFFORT" in ""|2|3) ;; *) flag_bad "--plan-effort must be 2 or 3" ;; esac
-case "$REVIEW_EFFORT" in ""|1|2|3|4|5) ;; *) flag_bad "--review-effort must be 1-5" ;; esac
-[ "$REVIEW_EFFORT" = 1 ] && flag_bad "effort 1 (swarm) writes no findings.json, which the review step requires; use 2-5"
+case "$REVIEW_EFFORT" in ""|2|3|4|5) ;; *) flag_bad "--review-effort must be 2-5" ;; esac
 case "$FROM_STEP" in ""|implement|review|verify|ship|merge) ;; *) flag_bad "--from must be one of implement review verify ship merge" ;; esac
 [ "$FROM_STEP" = implement ] && [ -z "$PLAN_FILE_FLAG" ] && flag_bad "--from implement requires --plan-file <path>"
 [ -n "$PLAN_FILE_FLAG" ] && [ "$FROM_STEP" != implement ] && flag_bad "--plan-file requires --from implement"
@@ -539,7 +538,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |
 | `started`, `updated` | ISO-8601 UTC | `updated` is set on every `WRITE-STATE` |
 | `flags.plan_effort` | `null`, `2`, `3` | forwarded to plan |
-| `flags.review_effort` | `null`, `1`–`5` | forwarded to review |
+| `flags.review_effort` | `null`, `2`–`5` | forwarded to review |
 | `flags.auto_merge` | boolean | per-run; never restored on resume |
 | `flags.from` | `null`, `implement`, `review`, `verify`, `ship`, `merge` | the `--from` start point |
 | `epic` | `null` or the epic object | see "Epic mode" |
@@ -603,8 +602,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage <STEP> 2>/dev
 
 **3. Spawn the step.**
 
-- (a) Record `live: {step: <STEP>, attempt: <k>, since: <now>}` and `WRITE-STATE`. If `live` was
-  already set when this step begins, `STOP step may still be running (state.live set)`.
+- (a) For `implement` and `fix`: if `bases[<STEP>]` is unset, record it from `git rev-parse <BRANCH>` before the next step. Then record `live: {step: <STEP>, attempt: <k>, since: <now>}` and `WRITE-STATE`. If `live` was already set when this step begins, `STOP step may still be running (state.live set)`.
 - (b) Stub the previous receipt so that no stale receipt can be mistaken for this attempt's:
 
   ```bash
@@ -1023,7 +1021,7 @@ Artifact check: none needed. The receipt is orchestrator-written after `git work
 **implement.** Args: `<PLAN_PATH>`. Never pass `--pause`. The required `ROUND 1` line comes from
 the command's own final summary (`fix` also requires `ACTION PLAN SOURCE:`). Gate-not-converged and
 shared-file conflicts arrive as `FAILED` receipts — hard stop, no remediation.
-Artifact check: ≥1 new commit since `bases.implement` (script). Before spawning, if `bases.implement` is unset, record it from `git rev-parse <BRANCH>` before `WRITE-STATE`.
+Artifact check: ≥1 new commit since `bases.implement` (script).
 
 **review.** Args: `--force` always (so a prior review of the same tree is re-run instead of asking)
 plus `--effort <REVIEW_EFFORT>` when set. On `OK`, record `REVIEW_DIR` and the four `CONFIRMED`
@@ -1035,7 +1033,7 @@ Artifact check: `REVIEW_DIR` files and checkpoints (script).
 **fix.** Skipped (log `skipped`, no stage opened) when `critical`, `high`, `medium`, and `low`
 are all `0`. Otherwise `/implement-with-haiku <REVIEW_DIR>/claude-action-plan.md` with step name
 `fix` and receipt `05-fix.md`.
-Artifact check: ≥1 new commit since `bases.fix`, unless the review's `claude-action-plan.md` has no *Doing it* items (script, `--review-dir`). If it still fails on a legitimate no-op, the stop text names `--from verify` as the way forward. Before spawning, if `bases.fix` is unset, record it from `git rev-parse <BRANCH>` before `WRITE-STATE`.
+Artifact check: ≥1 new commit since `bases.fix`, unless the review's `claude-action-plan.md` has no *Doing it* items (script, `--review-dir`). If it still fails on a legitimate no-op, the stop text names `--from verify` as the way forward.
 
 **verify.** Resolve the check command by running:
 

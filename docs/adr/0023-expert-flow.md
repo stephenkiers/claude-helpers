@@ -108,9 +108,19 @@ step's on-disk artifacts with `scripts/flow-verify-receipt.py` before the step a
 runs after validation rules 1–7 and before `live` is cleared or `PLAN_PATH` / `REVIEW_DIR` recorded,
 so a rejected step leaves no poisoned state for `--resume`.
 
+**Decision — A. Keep strict, record it:** The verifier rejects a plan step when any roster row (except `auditor` and `synthesis`) has a stand-in contribution (`## Decision` followed by `FAILED`), even though `/expert-plan` degrades gracefully on any single expert's absence. The rationale: #276 is about not trusting unverified work, so this stands closed on such evidence. Recovery cost: Retry (full plan re-run), Take over, or Abort. A future ruling (see #252 dogfooding) may relax this to a coverage-gap note if the cost proves real in practice.
+
+**Decision — A. Document all three in the ADR:** Three verifier details are now recorded here:
+
+1. **Mtime freshness:** For plan and review steps, the verifier checks that `context.md` (plan) and `claude-action-plan.md` (review) mtime are >= `--since` minus 5 seconds, to verify artifacts were written during this flow step's window. Timing is necessary because the session dir or review dir could theoretically be reused from an older run.
+
+2. **Roster exemptions:** The plan verifier skips `auditor` and `synthesis` roster rows when checking for contributions; only seated experts' contributions are verified.
+
+3. **Contribution filename fallback:** The verifier first looks for a contribution file named `<file_stem>-contribution.md` (where `file_stem` comes from the reviewer index), then falls back to `<kebab-cased expert name>-contribution.md` as a second candidate.
+
 The checks per step:
-- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`).
-- **review**: `REVIEW_DIR` contains `claude-action-plan.md`, `final-report.md`, `findings.json`, and ≥2 reviewer checkpoints (`*-pass1.md` or `*-pod.md`).
+- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row (except `auditor` and `synthesis`) must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`). Context mtime must be >= `--since` - 5 seconds.
+- **review**: `REVIEW_DIR` contains `claude-action-plan.md`, `final-report.md`, `findings.json`, and ≥2 reviewer checkpoints (`*-pass1.md` or `*-pod.md`). Action plan mtime must be >= `--since` - 5 seconds.
 - **implement**: ≥1 new commit on the branch since the step began (base SHA recorded at spawn).
 - **fix**: ≥1 new commit, with a carve-out: zero commits are accepted when `claude-action-plan.md` has no *Doing it* items. When a fix has nothing actionable, zero commits is correct.
 
