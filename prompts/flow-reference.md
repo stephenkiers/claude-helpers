@@ -308,17 +308,24 @@ its own line). When paths are read from receipts, canonicalize them (resolve `..
 and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.claude/plans/`,
 `REVIEW_DIR` under `$HOME/.claude/reviews/`, `WORKTREE` under the layout's worktrees parent:
 
-| Step | Line | Example |
+| Step | Required lines | Informational |
 |---|---|---|
-| plan | `FINAL_PLAN_PATH: <abs path>` | `FINAL_PLAN_PATH: /Users/me/.claude/plans/add-relay-20261009T101500-00042.md` |
-| track | `WORKTREE: <abs path>` and `BRANCH: <name>` | written by the orchestrator itself (see `commands/expert-flow.md`) |
-| implement / fix | the existing `ROUND 1`…`ROUND 4` lines and `ACTION PLAN SOURCE: …` | unchanged from the command's final summary |
-| review | `REVIEW_DIR: <abs path>` and `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>` | counts of CONFIRMED findings by severity from `claude-action-plan.md` |
-| verify | `CHECK: <command>` and `CHECK_EXIT: <n>` | written by the orchestrator itself |
-| ship | `PR_URL: <url>` | `PR_URL: https://github.com/o/r/pull/123` |
-| merge | `MERGED: yes` | from `gh pr view --json state`; written only when the state is `MERGED`, otherwise the line is omitted |
+| plan | `FINAL_PLAN_PATH: <abs path>` | (the command's existing final summary) |
+| track | `WORKTREE: <abs path>`, `BRANCH: <name>` | (written by the orchestrator) |
+| implement | `^ROUND 1\b` (and ROUND 2–4) | (unchanged from command's final summary; no `ACTION PLAN SOURCE:` for plan-file source) |
+| fix | `^ROUND 1\b` (and ROUND 2–4), `ACTION PLAN SOURCE: …` | (unchanged from command's final summary, source is `claude-action-plan.md`) |
+| review | `REVIEW_DIR: <abs path>`, `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>` | (counts from `claude-action-plan.md`) |
+| verify | `CHECK: <command>`, `CHECK_EXIT: <n>` | (written by the orchestrator) |
+| ship | `PR_URL: <url>` | (e.g. `https://github.com/o/r/pull/123`) |
+| merge | `MERGED: yes` | (from `gh pr view --json state`; omitted if not merged) |
 
 Write the receipt with the `Write` tool (one file, one path, the path the orchestrator gave you).
+Copy that path **character for character** — never retype, shorten, or "correct" it from the
+worktree name or branch. `Write` creates missing parent directories silently, so a one-character slip
+does not fail: it creates a stray sibling flow directory and the real receipt stays a stub. Before
+writing, confirm `${FLOW_DIR}/steps/` exists with `ls -d` (the orchestrator created it); if it does
+not, the path is wrong — stop and reply `Decision: FAILED` `Reason: flow dir missing` rather than
+writing.
 Never write anything else under `FLOW_DIR` — `state.json`, `log.md`, `answers/` belong to the
 orchestrator alone. The one exception is the read-then-write of this step's own receipt in the Ask
 block.

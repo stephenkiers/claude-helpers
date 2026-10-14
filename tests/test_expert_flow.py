@@ -225,6 +225,70 @@ def main():
     h.test_result("expert-plan.md parses --flow", "--flow" in plan)
 
     print()
+    print("[Section 7] Receipt hardening (spike #246 / #252, #245 dogfood)")
+    rows = {m.group(1): m.group(0) for m in re.finditer(r"^\| \d\d \| (\w+) \|.*$", text, re.M)}
+    h.test_result("implement row does not require ACTION PLAN SOURCE",
+                  "implement" in rows and "`ACTION PLAN SOURCE:`" not in rows["implement"].split("|")[5],
+                  "implement-with-haiku prints it only for a claude-action-plan source")
+    h.test_result("fix row requires ACTION PLAN SOURCE",
+                  "fix" in rows and "`ACTION PLAN SOURCE:`" in rows["fix"].split("|")[5])
+    impl_cmd = (REPO_ROOT / "commands" / "implement-with-haiku.md").read_text()
+    h.test_result("implement-with-haiku emits ACTION PLAN SOURCE only for an action-plan source",
+                  "ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]" in impl_cmd)
+    flow_ref = FLOW_REF.read_text()
+    h.test_result("flow-reference splits implement and fix required lines",
+                  re.search(r"^\| implement \|[^\n]*\n\| fix \|[^\n]*ACTION PLAN SOURCE", flow_ref, re.M) is not None)
+    h.test_result("validation rule 1 detects a misplaced receipt",
+                  "misplaced receipt" in text and "wrong FLOW_DIR" in text)
+    h.test_result("step prompt tells agents to copy FLOW_DIR verbatim", "character for character" in text)
+    h.test_result("flow-reference tells agents to copy the receipt path verbatim and check steps/ exists",
+                  "character for character" in flow_ref and "ls -d" in flow_ref)
+    slug_filter = re.search(r"SLUG=\$\(printf '%s' \"\$ISSUE_TITLE\" \| jq -R -r '(.*)'\)", text)
+    h.test_result("slug derivation is present", bool(slug_filter))
+    if slug_filter:
+        jq_expr = slug_filter.group(1)
+        # Test cases: (title, description)
+        test_cases = [
+            ("North Star Nick runs blind when in-flight snapshot/scout files are unlinked; fail loudly instead",
+             "normal title"),
+            ("!!!", "non-alphanumeric only"),
+            ("a" * 60 + " word", "first word exceeds 40 chars, should cap"),
+            ("foo bar baz qux quux corge grault garply waldo",
+             "multiple words, cut before final"),
+        ]
+
+        for title, case_desc in test_cases:
+            res = subprocess.run(["jq", "-R", "-r", jq_expr], input=title, capture_output=True, text=True)
+            slug = res.stdout.strip()
+            # Oracle: extract alphanumeric sequences
+            expected_words = re.findall(r"[a-z0-9]+", title.lower())
+
+            # Basic validity checks
+            if len(slug) > 0:
+                h.test_result(f"slug {case_desc}: length <= 40",
+                              len(slug) <= 40, slug)
+                # For non-empty slugs, verify it's composed of words from the title
+                slug_words = slug.split("-")
+                # Check that slug words match the start of expected_words (up to capping)
+                # For words capped at 40 chars, the first word may be truncated
+                first_word_expected = expected_words[0] if expected_words else ""
+                first_word_slug = slug_words[0] if slug_words else ""
+                if len(first_word_expected) > 40:
+                    # First word was capped, check it's exactly the first 40 chars
+                    h.test_result(f"slug {case_desc} first word capped",
+                                  first_word_slug == first_word_expected[:40] and len(slug_words) == 1,
+                                  f"{first_word_slug}")
+                else:
+                    # Check that slug is built from complete words in order
+                    reconstructed = "-".join(expected_words[:len(slug_words)])
+                    h.test_result(f"slug {case_desc} uses complete words",
+                                  slug == reconstructed,
+                                  f"slug={slug} vs reconstructed={reconstructed}")
+            else:
+                h.test_result(f"slug {case_desc}: empty when no alphanumeric",
+                              len(expected_words) == 0, title)
+
+    print()
     h.summarize_and_exit()
 
 
