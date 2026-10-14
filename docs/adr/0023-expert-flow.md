@@ -209,12 +209,41 @@ sanctions one narrow, human-gated git operation to close that gap.
   the ship step pushes. A clean rebase is logged as `rebased` and verify re-runs through the normal loop.
   On conflicts the orchestrator runs `git rebase --abort`, prints the `/expert-rebase` hand-off line,
   and takes the Take over outcome. It never resolves conflicts.
-- **Narrowed grants.** The git grants for this purpose are `Bash(git fetch origin:*)`,
-  `Bash(git rebase origin/*:*)`, and `Bash(git rebase --abort:*)` (used only to back out a conflicted
-  rebase). The command's `allowed-tools` carries only these patterns in place of the broader
-  `Bash(git fetch:*)` and `Bash(git rebase:*)`.
+- **Narrowed grants.** The git grants for this purpose are the exact forms `Bash(git fetch origin)`,
+  `Bash(git rebase origin/main)`, `Bash(git rebase origin/master)`, and `Bash(git rebase --abort)` (the
+  last used only to back out a conflicted rebase). The command's `allowed-tools` carries only these
+  forms in place of the broader `Bash(git fetch:*)` and `Bash(git rebase:*)`. A repo whose default branch
+  is neither `main` nor `master` gets a permission prompt for the rebase. Any remaining glob grant (such
+  as `Bash(grep:*)` or `Bash(jq:*)`) is prompt-scoped beyond its literal prefix: the grant does not
+  restrict the arguments a command is given.
 - **Rationale.** The orchestrator already holds unscoped `Write` and `Task`, so the gap was never a
   capability the flow lacked; it was the missing record of what the orchestrator is allowed to do with
   git. The "orchestrator does not mutate git" stance in §1 and the Consequences now has one explicit
   exception: this human-gated, mechanical rebase. Conflict resolution, automatic rebase retries, and any
   push remain out of scope and need a human decision.
+
+## Amendment (2026-10-13): Start fresh deletes the old flow's worktree
+
+Before this amendment, a plain `/expert-flow <N>` that found an existing flow offered Resume, Start fresh,
+and Abort, and "Start fresh" only created a new flow directory and marked the old one abandoned. Its
+worktree was left in place, so the new run's `worktree` step found two worktrees matching `<N>-` and could
+not proceed. That was a dogfooding defect, not a design choice.
+
+- **Start fresh deletes the old worktree.** The Start fresh option now names the old worktree, and it is
+  the orchestrator's one sanctioned destructive action. It runs only after the human chose Start fresh,
+  in this order: check the old worktree for uncommitted changes or unpushed commits (any found are listed,
+  and a single `Delete worktree` question must be answered `Delete anyway`); delete it through the
+  `/cleanup` helper's `cleanup plan` and `cleanup apply` (not a raw `git worktree remove`); create the
+  new flow; then mark the old flow `abandoned`. A failed deletion is a hard stop with the existing flow
+  untouched.
+- **The abandon write does not bump `updated`.** The old flow's `state.json` is marked `abandoned` after
+  the fresh run's is written, and leaving `updated` alone keeps the fresh run the newest flow, so the
+  shared newest-flow lookup and a bare `--resume <N>` pick it.
+- **Newest-flow lookup.** Every newest-flow selection (`--list`, `--resume <N>`, `--abandon <N>`,
+  `--retro <N>`, and the Existing-flow check) uses one shared lookup: a `state.json` whose `updated` is
+  not ISO-8601 is skipped with a stderr note, and the selection is `sort_by([.updated, .dir]) | last`, so
+  ties break by directory name.
+- **Rationale.** The orchestrator's rule that it never mutates git or the filesystem was always stated as
+  having exactly one exception, the human-gated rebase. Deleting a worktree the human has asked to replace
+  is a second, equally human-gated exception, and it goes through the existing `/cleanup` helper so
+  the deletion logic is not duplicated.

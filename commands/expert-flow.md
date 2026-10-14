@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
 argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 1-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin:*), Bash(git rebase origin/*:*), Bash(git rebase --abort:*), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh":*), Bash(python3 -m scripts.workflow.cli cleanup:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
 
@@ -37,8 +37,10 @@ a literal and substituted into later blocks and into the step prompts. Angle-bra
 files under `FLOW_DIR` and the one marker file), `Task` (to spawn a step), `SendMessage` (to resume
 a step with answers), and `AskUserQuestion`. Shell writes are limited to: `printf >` receipt stubs and
 `printf >>` log lines under `FLOW_DIR`, and the one marker-exclude line described in the worktree step.
-The `printf >` writes include the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`).
-There is no `Edit`, no write-capable git, no `gh` mutation. (`Bash(sed -n:*)` and similar read-only
+The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`).
+There is no `Edit`, no write-capable git, no `gh` mutation. The one destructive action is the
+**Start fresh** deletion of the old flow's worktree through the `/cleanup` helper: the orchestrator's
+only sanctioned destructive action, run only after the human chose Start fresh (see "Existing flow"). (`Bash(sed -n:*)` and similar read-only
 Bash grants are not write boundaries; prefer `head -n 1` or `Read` for simple reads where possible.)
 If a step fails, the orchestrator offers Retry / Take over / Abort and nothing else, except that a base-stale `verify` failure also offers Rebase (the gated-Rebase amendment in ADR-0023). `/expert-rebase`
 is *suggested* in a stop message when a step's receipt suggests it; it is never invoked.
@@ -206,17 +208,38 @@ plain `/expert-flow <N>` (which first asks, see "Existing flow"; Resume or Start
 issue" for the one question it asks. With no such flow it is a fresh run (from Main, the `worktree`
 step then hands off; from the ticket worktree, the run continues in place).
 
+### Newest-flow lookup (shared)
+
+Every "newest flow" selection in this command uses this one lookup: `--resume <N>`, `--abandon <N>`,
+`--retro <N>`, and the Existing-flow check (`PREFIX` `<ISSUE>-`). Substitute `<PREFIX>` with `<N>-` (or
+`<ISSUE>-`) for one issue; an empty `PREFIX` scans every flow in the repo. Each `state.json` is checked
+on its own: one that does not parse, or whose `updated` is not ISO-8601 (`fromdateiso8601` fails), is
+skipped with a note on stderr and never aborts the lookup. The selection is `sort_by([.updated, .dir]) |
+last`, so equal `updated` values break by directory name and the result is deterministic. It prints the
+chosen flow directory, or nothing when no valid flow matches.
+
+```bash
+for d in "$FLOWS_ROOT"/<PREFIX>*/; do
+  [ -f "$d/state.json" ] || continue
+  if ROW=$(jq -c --arg d "${d%/}" '. + {dir: $d} | if (try (.updated | fromdateiso8601) catch null) == null then error("bad updated") else . end' "$d/state.json" 2>/dev/null); then
+    printf '%s\n' "$ROW"
+  else
+    printf 'skipped unreadable state.json or malformed updated: %s\n' "${d%/}" >&2
+  fi
+done | jq -s -r 'sort_by([.updated, .dir]) | last | .dir // empty'
+```
+
 ### `--list`
 
 ```bash
 for d in "$FLOWS_ROOT"/*/; do
   [ -f "$d/state.json" ] || continue
-  if ROW=$(jq -c --arg d "${d%/}" '. + {dir: $d} | (.updated | fromdateiso8601) as $t | .' "$d/state.json" 2>/dev/null); then
+  if ROW=$(jq -c --arg d "${d%/}" '. + {dir: $d} | if (try (.updated | fromdateiso8601) catch null) == null then error("bad updated") else . end' "$d/state.json" 2>/dev/null); then
     printf '%s\n' "$ROW"
   else
     printf 'skipped unreadable state.json or malformed updated: %s\n' "${d%/}" >&2
   fi
-done | jq -s -r 'sort_by(.updated) | reverse | .[] | "#\(.issue)\t\(.status)\(if (.status == "running" or .status == "awaiting") and ((now - (.updated | fromdateiso8601)) > 10800) then " (stale)" else "" end)\t\(.step)\t\(.updated)\t\(.dir)"'
+done | jq -s -r 'sort_by([.updated, .dir]) | reverse | .[] | "#\(.issue)\t\(.status)\(if (.status == "running" or .status == "awaiting") and ((now - (.updated | fromdateiso8601)) > 10800) then " (stale)" else "" end)\t\(.step)\t\(.updated)\t\(.dir)"'
 ```
 
 Each entry is checked on its own, so one damaged `state.json` (unparseable, or an `updated` that is not
@@ -237,14 +260,9 @@ is not touched by `--list`; `--resume` or `--abandon` is the human's call.
 ### `--resume`
 
 Resolve `FLOW_DIR`: if `RESUME_REF` is a directory containing `state.json`, use its absolute path;
-if it is a bare number, pick the `$FLOWS_ROOT/<N>-*` directory whose `state.json` `updated` is
-newest; otherwise error (`guard_block`).
-
-```bash
-for d in "$FLOWS_ROOT"/<N>-*/; do
-  [ -f "$d/state.json" ] && jq -c --arg d "${d%/}" '. + {dir: $d}' "$d/state.json"
-done | jq -s -r 'sort_by(.updated) | last | .dir // empty'
-```
+if it is a bare number, run the shared lookup above with `<PREFIX>` = `<N>-` and use its output (the
+newest valid flow for that issue by `updated`, ties by directory name); empty output, or any other
+reference, is an error (`guard_block`).
 
 Then **re-verify from disk** — nothing in the conversation is trusted:
 
@@ -310,8 +328,8 @@ Set `RUN_MODE=resume`, status `running` (this also makes the flow marker valid a
 
 ### `--abandon`
 
-Resolve `FLOW_DIR` exactly as `--resume` does (a directory containing `state.json`, or the newest
-`$FLOWS_ROOT/<N>-*` by `updated`; otherwise `guard_block`) and run `jq empty` on `state.json`. If
+Resolve `FLOW_DIR` exactly as `--resume` does (a directory containing `state.json`, or the shared
+lookup's newest `<N>-` flow; otherwise `guard_block`) and run `jq empty` on `state.json`. If
 `status` is already `abandoned`, print `flow already abandoned` and stop (no telemetry, state untouched).
 
 Liveness is checked first, the same way resume rule 1 checks it, and applies to abandoned flows too:
@@ -376,18 +394,56 @@ is the `EXISTING_DIR`) and read its `status`, `step`, and `live` with `jq`. Then
 2. Ask once with `AskUserQuestion` (header `Existing flow`): "`#<ISSUE>` already has a flow at
    `<EXISTING step>` (`<EXISTING status>`, updated `<EXISTING updated>`). What should this run do?"
    Options: `Resume (Recommended)` — continue the existing flow exactly as `--resume <ISSUE>` does;
-   `Start fresh` — create a new flow directory (step 3); `Abort` — stop, no telemetry, state untouched.
+   `Start fresh` — delete the old flow's worktree at `<EXISTING worktree path>` (the `worktree` field of
+   its `state.json`; say so in the option if it is `null`) and create a new flow directory (step 3);
+   `Abort` — stop, no telemetry, state untouched.
    If the existing flow is `abandoned`, say so in the question text. On `Abort` (or no answer), print
    `flow not started` and stop (`guard_block`, no telemetry, state untouched).
-3. **Start fresh.** Create the new flow first (the section below, "Only when no existing flow is found").
-   Only after the new `state.json` is written, mark the existing flow abandoned: run `jq` to print the
-   existing `EXISTING_DIR/state.json` object with `status` set to `abandoned` (`live` is already `null`)
-   and `updated` set to now, then `Write` that printed JSON back to `EXISTING_DIR/state.json` unchanged
-   (no other field is retyped), and append `abandoned` to `EXISTING_DIR/log.md` with the log procedure.
-   If the new flow cannot be created, the existing flow is left untouched. The abandoned flow
-   is left on disk; a fresh run supersedes it because its `state.json` is written newer, so a bare
-   `--resume <ISSUE>` and the newest-flow lookups pick the fresh one. An already-`abandoned` flow needs
-   no status change.
+3. **Start fresh.** This is the orchestrator's one sanctioned destructive action: deleting the old
+   flow's worktree. It runs only after the human chose **Start fresh**, and in this order:
+   a. **Check the old worktree.** `EXISTING_WT=$(jq -r '.worktree // empty' "$EXISTING_DIR/state.json")`.
+      If it is empty or the directory no longer exists, skip (a) and (b) and go to (c): nothing is lost.
+      Otherwise check it for uncommitted changes and unpushed commits:
+
+      ```bash
+      git -C "$EXISTING_WT" status --porcelain
+      git -C "$EXISTING_WT" log "@{u}..HEAD" --oneline 2>/dev/null || git -C "$EXISTING_WT" log "origin/$DEFAULT_BRANCH..HEAD" --oneline
+      ```
+
+      `DEFAULT_BRANCH` is `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` (fallback
+      `main`). If either output is non-empty, list what would be lost (the status lines and commit lines)
+      and ask once with `AskUserQuestion` (header `Delete worktree`): "Deleting `<EXISTING_WT>` loses the
+      uncommitted changes or unpushed commits listed above. Delete it anyway?" — options `Delete anyway`
+      and `Keep and abort`. `Keep and abort` (or no answer) prints `flow not started` and stops
+      (`guard_block`, no telemetry, state untouched). A clean, fully pushed worktree needs no question.
+   b. **Delete the old worktree** through the `/cleanup` helper, with the same `cleanup plan` then
+      `cleanup apply` pattern `/cleanup` uses (not a raw `git worktree remove`):
+
+      ```bash
+      source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory" >&2; exit 1; }
+      PLAN_JSON=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup plan "$EXISTING_WT") && printf '%s' "$PLAN_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli cleanup apply -
+      ```
+
+      If either command exits non-zero, print its output and hard stop with `Retry` (re-run (b)),
+      `Take over`, or `Abort`. `Take over` and `Abort` both print `flow not started` and stop. The
+      existing flow and its state stay untouched, and no new flow is created. As with `/cleanup`, the
+      removal may take the directory this session is sitting in.
+   c. **Create the new flow**, using the section below ("Only when no existing flow is found, or the
+      answer was **Start fresh**"). The old worktree is gone by now, so the new `worktree` step does not
+      match it. If the new flow cannot be created, print the removed path and hard stop with the existing
+      `state.json` untouched; the deletion in (b) cannot be undone.
+   d. **Mark the old flow abandoned**, only after the new `state.json` is written (its `WRITE-STATE` in
+      "Fresh run: resolve the issue"). Print the existing object with `status` set to `abandoned`, then
+      `Write` that printed JSON back to `EXISTING_DIR/state.json` unchanged (no other field is retyped):
+
+      ```bash
+      jq '.status="abandoned"' "$EXISTING_DIR/state.json"
+      ```
+
+      `live` is already `null`. `updated` is deliberately not changed: the fresh run's `state.json` must
+      stay the newest, so the shared lookup and a bare `--resume <ISSUE>` pick it. Append `abandoned` to
+      `EXISTING_DIR/log.md` with the log procedure. An already-`abandoned` flow needs no status change.
+      The abandoned flow stays on disk.
 4. **Resume.** Continue as that resume — from Main this is the hand-off stop, from the ticket
    worktree it continues the flow. From Main with a Resume answer, the hand-off lines are printed and
    the run stops (`guard_block`, state untouched).
@@ -823,8 +879,12 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
      explicit `CHECK_CLASS: base-stale` (absent means `other`, so no Rebase). First run the "Is-stacked
      (this branch)" block from `prompts/worktree-reference.md` in `WORKTREE`; if `STACK_IS_STACKED` is
      true, do not offer Rebase and print the `/expert-rebase` suggestion line instead. Otherwise the
-     only git commands run, in `WORKTREE`, are `git fetch origin` and `git rebase origin/<default
-     branch>` (from `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`, fallback `main`).
+     only git commands run, in `WORKTREE`, are exactly `git fetch origin` and `git rebase origin/main`
+     (or `git rebase origin/master`, when the default branch is `master`; the default branch comes from
+     `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`, fallback `main`), and on conflicts
+     `git rebase --abort` with no other arguments. These are the only four git forms granted in
+     `allowed-tools`. A repo whose default branch is neither `main` nor `master` gets a permission prompt
+     for the rebase; the orchestrator does not work around it.
      The rebase is onto `origin/<default branch>` only, never another ref. On conflicts: `git rebase --abort`, print `rebase
      conflicts — run /expert-rebase by hand in <WORKTREE>`, and take the **Take over** outcome
      (`status: paused`, `command-end --outcome interrupted`). On a clean rebase: log `rebased`, do
@@ -1095,7 +1155,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-flow
   queue kickback: all stop. The human retries, takes over, or aborts. The one exception is the
   **Rebase** option at a base-stale verify stop, and only after the human chose it.
 - **No git mutations, no code edits, no `gh` writes** from the orchestrator — except that clean
-  mechanical rebase (never a conflict resolution, never a push). The only files it writes are under
+  mechanical rebase (never a conflict resolution, never a push), and the **Start fresh** deletion of the
+  old flow's worktree through the `/cleanup` helper (after the human chose it and confirmed any dirty or
+  unpushed state). The only files it writes are under
   `FLOW_DIR` (receipts, `*.audit.md`, `retro.md`), the repo-level `$FLOWS_ROOT/audits.jsonl`, the
   one-line marker `<WORKTREE>/.claude/flow-run`, and one fixed line appended to the repo's local git
   exclude file (`$(git rev-parse --git-common-dir)/info/exclude`) to keep that marker out of
