@@ -99,12 +99,14 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   items verbatim (the candidate PR comments — you post them on GitHub yourself) plus links, then
   offers the worktree-cleanup question. Mutually exclusive with named reviewers and `--force`.
 - `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot
-  script or scout prompt not installed, no `gh` auth, empty or fully unavailable in-flight snapshot).
-  Sets `ALLOW_DEGRADED=true`, passed through to the shared panel. It suppresses only the hard stop,
+  script or scout prompt not installed, empty or fully unavailable in-flight snapshot). Sets
+  `ALLOW_DEGRADED=true`, passed through to the shared panel. It suppresses only the hard stop,
   never the notice: the run carries a `NORTH STAR BLIND:` line. Only meaningful at effort 3-5
   (where Nick is seated); `/expert-flow` does not forward it. Accepted in local and PR-URL forms.
-  A preflight stop is a deterministic, non-retryable failure: Retry will not help until `/setup-local`
-  or `gh auth` is fixed, so the human takes over or re-runs with `--allow-degraded`.
+  A missing or failed `gh auth` is only a notice (`BLIND gh-auth`, exit 0); the hard gate for GitHub
+  context is the snapshot phase (`snapshot-unavailable`, `snapshot-empty`). A preflight stop is a
+  deterministic, non-retryable failure: Retry will not help until the installed files (`/setup-local`)
+  or the snapshot's GitHub context is fixed, so the human takes over or re-runs with `--allow-degraded`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
   Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
@@ -554,22 +556,22 @@ if [ ! -f "$HOME/.claude/scripts/north-star-preflight.py" ]; then
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
-NS_RC=0
+NS_FILES_RC=0
 NS_FLAG=""; [ "$ALLOW_DEGRADED" = "true" ] && NS_FLAG="--allow-degraded"
-NS_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_RC=$?
-if [ "$NS_RC" -ne 0 ]; then
-  echo "North Star preflight failed ($NS_OUT) — deterministic and not retryable: fix the install (/setup-local) or gh auth, then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
+NS_FILES_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_FILES_RC=$?
+if [ "$NS_FILES_RC" -ne 0 ]; then
+  echo "North Star preflight failed ($NS_FILES_OUT) — deterministic and not retryable: fix the install (/setup-local), then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-review --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
-printf '%s\n' "$NS_OUT" > "<REVIEW_DIR>/north-star-preflight.files"
+printf '%s\n' "$NS_FILES_OUT" > "<REVIEW_DIR>/north-star-preflight.files"
 # Tokens file is truncated, then appended; stdout tokens are whitespace-split via tr + sed (zsh-safe).
 : > "<REVIEW_DIR>/north-star-blind.tokens"
-case "$NS_OUT" in
-  BLIND\ *) printf '%s\n' "${NS_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "<REVIEW_DIR>/north-star-blind.tokens" ;;
+case "$NS_FILES_OUT" in
+  BLIND\ *) printf '%s\n' "${NS_FILES_OUT#BLIND }" | tr -s ' \t\n' '\n' | sed '/^$/d' >> "<REVIEW_DIR>/north-star-blind.tokens" ;;
 esac
 ```
-On exit 3, stop with the remedy (stderr, verbatim). Preflight stdout tokens are whitespace-split; `blind-line`
+On exit 3, stop with the remedy (stderr, verbatim). FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens, and its stderr carries an advisory note (the run continues; `gh auth` is a notice here, never a stop). Preflight stdout tokens are whitespace-split; `blind-line`
 never fails on a bad token (an invalid one prints `nick=unparseable` with a stderr warning, exit 0). **Residual, stated rather than hidden:**
 `REVIEW_DIR` exists already (Step 0), in PR mode the PR worktree exists too (created by
 `scripts/setup-pr-worktree.sh` in place of Step 1), and the Effort Scout may have run, because
@@ -663,8 +665,9 @@ prompts), and prints it as the first body line of the in-conversation summary:
 ```bash
 NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "<REVIEW_DIR>/north-star-blind.tokens" --nick-file "<REVIEW_DIR>/north-star-nick-pass1.md") || NS_LINE=""
 ```
-`--nick-file` reads only the first line of Nick's output and turns anything malformed into
-`nick=unparseable`, so the line is never dropped. When `NS_LINE` is non-empty, prepend it (a mechanical
+`--nick-file` reads the first line that starts with `NORTH STAR BLIND: ` within the first five lines of Nick's
+output (after any heading). Any malformed piece, or a `NORTH STAR BLIND:` marker elsewhere that is not such a
+line, becomes `nick=unparseable`, so the line is never dropped. When `NS_LINE` is non-empty, prepend it (a mechanical
 prepend: `{ printf '%s\n\n' "$NS_LINE"; cat claude-action-plan.md; } > tmp && mv tmp claude-action-plan.md`).
 Skip when the token file is absent or empty and Nick reported nothing.
 

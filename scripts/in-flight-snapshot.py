@@ -311,6 +311,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--current-branch", help="Mark rows matching this branch with (this change)")
     args = parser.parse_args(argv)
 
+    # A reused output dir must not yield a false failure from an earlier run. Cleared before any
+    # write, so every exit path (including a write error or a crash) leaves no stale in-flight.err.
+    try:
+        os.unlink(Path(args.out).parent / "in-flight.err")
+    except OSError:
+        pass
+
     snapshot, bodies, failures = build_snapshot(
         args.repo_dir, args.issue_limit, args.pr_limit,
         no_worktrees=args.no_worktrees,
@@ -364,12 +371,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 raise
         except OSError:
             # Silently skip error logging if it fails
-            pass
-    else:
-        # A reused output dir must not yield a false failure from an earlier run.
-        try:
-            os.unlink(Path(args.out).parent / "in-flight.err")
-        except OSError:
             pass
 
     print("in-flight-snapshot | wrote: {}".format(args.out))

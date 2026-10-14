@@ -30,6 +30,9 @@ Subcommands:
         --nick-file adds the `nick=` tokens from Nick's output: the first line that starts with the
         blind prefix within the first few lines (so a Pass 1 heading above it does not hide it).
         Any malformed piece collapses the whole line to a single `nick=unparseable`; never an error.
+        A `NORTH STAR BLIND:` text anywhere in the file that is not such a line (bold-wrapped,
+        indented, quoted, or placed after the scan window) also yields `nick=unparseable`, so the
+        signal is never silently dropped.
 
 Blind grammar: one line, exact prefix `NORTH STAR BLIND: `, then comma-space-separated tokens from
 the closed vocabulary: snapshot-script, scout-prompt, gh-auth, snapshot-empty,
@@ -42,7 +45,8 @@ Output and exit codes (files, snapshot): stdout carries exactly one line: `OK`, 
 or `FAIL <tokens>`. Tokens are space-separated, so callers consuming this stdout whitespace-split
 it into tokens. `BLIND` lists the hard tokens first, then the notice tokens (hard tokens appear
 only under --allow-degraded). `FAIL` lists hard tokens only: notice tokens are omitted. stderr
-carries a human remedy.
+carries the stop remedy (hard tokens) on FAIL, and an advisory note (notice tokens, stating the
+run continues) on BLIND.
     0  OK, or BLIND (notice only, or a hard failure downgraded by --allow-degraded)
     3  hard failure without --allow-degraded
     2  argparse usage error only
@@ -57,6 +61,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 BLIND_PREFIX = "NORTH STAR BLIND: "
+BLIND_MARKER = "NORTH STAR BLIND:"
 BLIND_SCAN_LINES = 5
 NICK_MAX_CHARS = 200
 UNPARSEABLE_TOKEN = "nick=unparseable"
@@ -76,15 +81,21 @@ _ERR_KEY = re.compile(r"^(issues|prs|epics):")
 
 FILES_REMEDY = ("North Star inputs are not installed in ~/.claude: run /setup-local "
                 "(or ./install.sh) in claude-helpers. Retry will not help until fixed.")
-GH_REMEDY = {
-    "timeout": "gh auth status timed out; check network, retry may help.",
-    "missing": "gh is not installed: install the GitHub CLI, then run `gh auth login`. "
-               "Retry will not help until fixed.",
-    "unauth": "run `gh auth login` for GitHub issue and PR context. Retry will not help until fixed.",
+NOTICE_PREFIX = "notice: the run continues; --allow-degraded is not required for these."
+GH_NOTICE = {
+    "timeout": "gh auth status timed out: GitHub context may be missing; check the network to restore it.",
+    "missing": "gh is not installed: GitHub context may be missing; install the GitHub CLI and run "
+               "`gh auth login` to restore it.",
+    "unrunnable": "gh could not be run: GitHub context may be missing; check the gh install and its "
+                  "permissions.",
+    "unauth": "gh is not authenticated: GitHub context may be missing; run `gh auth login` to restore it.",
 }
+PARTIAL_NOTICE = ("GitHub context is partial: run `gh auth login` (or check the network if the fetch "
+                  "timed out) to restore it.")
 CONTEXT_REMEDY = ("North Star Nick needs GitHub issue and PR context: run `gh auth login` "
-                  "(and check the repo's Issues/PRs are reachable), or pass --allow-degraded "
-                  "to run blind on purpose. Retry will not help until fixed.")
+                  "(or check the network if the fetch timed out), and check the repo's Issues/PRs "
+                  "are reachable, or pass --allow-degraded to run blind on purpose. Retry will not "
+                  "help until fixed.")
 EMPTY_REMEDY = ("in-flight.md was empty: the snapshot script produced no output; check in-flight.err "
                 "in the run dir for the reason. Retry may help.")
 
@@ -116,37 +127,46 @@ def _usable_file(path: Path) -> bool:
 
 
 def _gh_ok() -> str:
-    """Status of `gh auth status`: "ok", "missing" (no gh binary), "timeout" or "unauth"."""
+    """Status of `gh auth status`: "ok", "missing" (no gh binary), "timeout", "unrunnable" or "unauth"."""
     try:
         result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
         return "missing"
     except subprocess.TimeoutExpired:
         return "timeout"
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
+        return "unrunnable"
+    except subprocess.SubprocessError:
         return "unauth"
     return "ok" if result.returncode == 0 else "unauth"
 
 
 def _remedy(tokens: Sequence[str], gh_status: str = "unauth") -> str:
+    """Remedy lines per token. Hard tokens get stop remedies; notice tokens get advisory text.
+
+    _emit passes only the hard tokens on the FAIL path and only the notice tokens on the BLIND path,
+    so stop language never reaches a run that continues.
+    """
     lines = []
     if any(t in FILE_TOKENS for t in tokens):
         lines.append(FILES_REMEDY)
     if "gh-auth" in tokens:
-        lines.append(GH_REMEDY.get(gh_status, GH_REMEDY["unauth"]))
+        lines.append(GH_NOTICE.get(gh_status, GH_NOTICE["unauth"]))
     # Only the GitHub-context tokens get the gh auth login remedy. FILE_TOKENS never do.
-    if "snapshot-unavailable" in tokens or any(t.startswith("snapshot-partial=") for t in tokens):
+    if "snapshot-unavailable" in tokens:
         lines.append(CONTEXT_REMEDY)
+    if any(t.startswith("snapshot-partial=") for t in tokens):
+        lines.append(PARTIAL_NOTICE)
     if "snapshot-empty" in tokens:
         lines.append(EMPTY_REMEDY)
     return "\n".join(lines)
 
 
 def _emit(hard: List[str], notice: List[str], allow_degraded: bool, gh_status: str = "unauth") -> int:
-    remedy = _remedy(list(hard) + list(notice), gh_status)
     if hard and not allow_degraded:
         print("FAIL " + " ".join(hard))
-        sys.stderr.write("north-star-preflight: FAIL " + " ".join(hard) + "\n" + remedy + "\n")
+        sys.stderr.write("north-star-preflight: FAIL " + " ".join(hard) + "\n"
+                         + _remedy(hard, gh_status) + "\n")
         return 3
     tokens = hard + notice
     if tokens:
@@ -154,8 +174,9 @@ def _emit(hard: List[str], notice: List[str], allow_degraded: bool, gh_status: s
         if hard:
             sys.stderr.write("north-star-preflight: continuing blind (--allow-degraded): "
                              + " ".join(hard) + "\n")
-        if remedy:
-            sys.stderr.write(remedy + "\n")
+        advisory = _remedy(notice, gh_status)
+        if advisory:
+            sys.stderr.write(NOTICE_PREFIX + "\n" + advisory + "\n")
         return 0
     print("OK")
     return 0
@@ -219,19 +240,22 @@ def parse_nick_file(path: Path) -> List[str]:
     """
     line: Optional[str] = None
     try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            for _ in range(BLIND_SCAN_LINES):
-                raw = handle.readline()
-                if not raw:
-                    break
-                if raw.startswith(BLIND_PREFIX):
-                    line = raw.rstrip("\r\n")
-                    break
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
+    raw_lines = [raw.rstrip("\r") for raw in text.split("\n")]
+    for raw in raw_lines[:BLIND_SCAN_LINES]:
+        if raw.startswith(BLIND_PREFIX):
+            line = raw
+            break
     if line is None:
+        # A blind marker that is not in the exact line-start form (bold, quoted, indented, or past
+        # the scan window) must not vanish silently: it is reported as the sentinel.
+        if any(BLIND_MARKER in raw for raw in raw_lines):
+            return [UNPARSEABLE_TOKEN]
         return []
-    pieces = [piece.strip() for piece in line[len(BLIND_PREFIX):].split(",")]
+    # Pieces are comma-space separated, per the grammar. A bare comma yields one malformed piece.
+    pieces = [piece.strip() for piece in line[len(BLIND_PREFIX):].split(", ")]
     # Guard: any malformed piece (including an empty one) collapses the line to the sentinel.
     if not all(piece.startswith("nick=") and valid_token(piece) for piece in pieces):
         return [UNPARSEABLE_TOKEN]

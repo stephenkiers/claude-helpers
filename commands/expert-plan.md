@@ -42,7 +42,7 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 - `--epic`: epic mode (ADR-0023 §5). Writes the line `EPIC_MODE: true` into `{SESSION_DIR}/context.md` in Step 1, which switches on the `## Sub-tickets (epic mode only)` section of `prompts/plan-contribution-contract.md` and the `## Sub-tickets` section of the final plan in `prompts/plan-synthesize-and-check.md` — an ordered split of the epic into 3–8 sub-tickets, each with a title, a 2–5 line scope, and backwards-only `depends-on`. Passed by `/expert-flow --epic`; usable standalone. Without it, no planning prompt mentions sub-tickets and the plan is unchanged.
 
-- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, no `gh` auth, empty or fully unavailable in-flight snapshot). It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is a deterministic, non-retryable FAILED (receipt Reason `north-star-preflight: <tokens>`), so the human takes over or re-runs with `--allow-degraded` rather than Retrying.
+- `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, empty or fully unavailable in-flight snapshot). A missing or failed `gh auth` is only a notice (`BLIND gh-auth`, exit 0); the GitHub-context hard gate is the snapshot phase. It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is a deterministic, non-retryable FAILED (receipt Reason `north-star-preflight: <tokens>`), so the human takes over or re-runs with `--allow-degraded` rather than Retrying.
 
 Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels.
 
@@ -155,7 +155,7 @@ NS_FLAG=""
 NS_FILES_RC=0
 NS_FILES_OUT=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" files $NS_FLAG) || NS_FILES_RC=$?
 if [ "$NS_FILES_RC" -ne 0 ]; then
-  echo "North Star preflight failed ($NS_FILES_OUT) — deterministic and not retryable: fix the install (/setup-local) or gh auth, then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
+  echo "North Star preflight failed ($NS_FILES_OUT) — deterministic and not retryable: fix the install (/setup-local), then re-run; see the remedy above. Under /expert-flow, Take over or use --allow-degraded; do not Retry." >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome failure --failure-class other 2>/dev/null || true
   exit 1
 fi
@@ -170,6 +170,7 @@ if ! mkdir -p "$SESSION_DIR"; then
 fi
 
 # Record the `files` phase's BLIND tokens (if any) in the same block that produced them.
+# FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens (its stderr is advisory: the run continues).
 # Stdout tokens are whitespace-split; split with tr + sed rather than an unquoted for-loop (zsh does not word-split).
 : > "$SESSION_DIR/north-star-blind.tokens"
 case "$NS_FILES_OUT" in
@@ -340,7 +341,8 @@ Collect the input to plan against:
      On a non-zero `NS_SNAP_RC`, stop the run (close the `gather-context` stage and the command as a
      failure with `--failure-class other`, via `stage-end` and `command-end`) before any scout or expert
      dispatch. This is a deterministic, non-retryable FAILED: Retry will not help until the cause is fixed
-     (`/setup-local`, `gh auth`). With `--allow-degraded` the phase exits 0 and the run continues blind.
+     (`/setup-local`, or the snapshot's GitHub context via `gh auth`). FAIL stdout lists hard tokens only; BLIND
+     lists hard then notice tokens, and its stderr is advisory. With `--allow-degraded` the phase exits 0 and the run continues blind.
 
 3. **Summarize** what you've gathered:
    - **Goal**: What the ticket wants achieved (1-2 sentences)
@@ -488,7 +490,7 @@ Main thread reads all contribution files once, builds a compact decision index d
 Present to the user, **as chat message text in this step** (not summarized away, not deferred to
 the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book.
 
-**North Star blind line (first body line).** If `$SESSION_DIR/north-star-blind.tokens` is non-empty, or Nick's contribution starts with a `NORTH STAR BLIND:` line, build the line with `python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" --nick-file "$SESSION_DIR/north-star-nick-contribution.md"` (the union; Nick's tokens are appended, never substituted; malformed text becomes `nick=unparseable`, so the line is never dropped). Print the result as the first body line of this checkpoint, above the ticket refresher. Keep the line in `NORTH_STAR_BLIND_LINE` for Step 9.
+**North Star blind line (first body line).** If `$SESSION_DIR/north-star-blind.tokens` is non-empty, or Nick's contribution has a `NORTH STAR BLIND:` line within its first few lines (after any heading), build the line with `python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" --nick-file "$SESSION_DIR/north-star-nick-contribution.md"` (the union; Nick's tokens are appended, never substituted; malformed text becomes `nick=unparseable`, so the line is never dropped). Print the result as the first body line of this checkpoint, above the ticket refresher. Keep the line in `NORTH_STAR_BLIND_LINE` for Step 9.
 
 **Open with a ticket refresher** — one line, before anything else, so a user juggling many sessions
 can re-orient without scrolling: `**Ticket**: #<n> <title> — WHAT: <what it is, ≤15 words>. WHY: <the

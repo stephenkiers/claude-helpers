@@ -60,6 +60,16 @@ def empty_path_dir(tmp):
     return str(d)
 
 
+def fake_gh_dir(tmp, exit_code=0):
+    """A PATH directory holding a stub `gh` that exits with `exit_code`, so gh status is hermetic."""
+    d = Path(tmp) / "fake-gh-bin-{}".format(exit_code)
+    d.mkdir(exist_ok=True)
+    gh = d / "gh"
+    gh.write_text("#!/bin/sh\nexit {}\n".format(exit_code), encoding="utf-8")
+    gh.chmod(0o755)
+    return str(d)
+
+
 def run_preflight(args, path_value=None, cwd=None):
     env = dict(os.environ)
     if path_value is not None:
@@ -85,12 +95,16 @@ def populated_claude_dir(tmp):
 
 
 def blind_tokens(stdout):
-    """Tokens from the last 'NORTH STAR BLIND: ' line, split on commas or whitespace."""
+    """Tokens from the last 'NORTH STAR BLIND: ' line, split on the grammar's comma-space.
+
+    Splitting on whitespace too would break free-text nick= tokens that contain spaces, so a
+    token with an internal space stays whole and the exact-list assertions can see it.
+    """
     lines = [line for line in stdout.splitlines() if line.startswith(BLIND_PREFIX)]
     if not lines:
         return None
     body = lines[-1][len(BLIND_PREFIX):]
-    return [t for t in re.split(r"[,\s]+", body) if t]
+    return [t.strip() for t in body.split(", ") if t.strip()]
 
 
 def status_tokens(stdout, status):
@@ -153,10 +167,11 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         claude = populated_claude_dir(tmp)
-        rc, out, err = run_preflight(["files", "--claude-dir", str(claude)])
+        rc, out, err = run_preflight(
+            ["files", "--claude-dir", str(claude)], path_value=fake_gh_dir(tmp, 0))
         t("files: complete install passes with exit 0 (happy path)", rc == 0, f"rc={rc}")
-        t("files: complete install prints OK, not FAIL",
-          "OK" in out and "FAIL" not in out, out.strip()[:200])
+        t("files: complete install with authenticated gh prints exactly OK on stdout",
+          out.strip() == "OK", out.strip()[:200])
 
     with tempfile.TemporaryDirectory() as tmp:
         claude = populated_claude_dir(tmp)
@@ -166,6 +181,21 @@ def main():
           rc == 0, f"rc={rc} stderr={err.strip()[:200]}")
         t("files: missing gh is reported as the gh-auth token (F3)",
           "gh-auth" in (status_tokens(out, "BLIND") or []), out.strip()[:300])
+        t("files: missing gh notice is advisory: no stop language on stderr (#2)",
+          "Retry will not help" not in err and "continues" in err, err.strip()[:300])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        claude = populated_claude_dir(tmp)
+        unrunnable_dir = Path(tmp) / "unrunnable-bin"
+        unrunnable_dir.mkdir()
+        (unrunnable_dir / "gh").write_text("not executable\n", encoding="utf-8")
+        (unrunnable_dir / "gh").chmod(0o644)
+        rc, out, err = run_preflight(
+            ["files", "--claude-dir", str(claude)], path_value=str(unrunnable_dir))
+        t("files: a gh that exists but cannot run is a gh-auth notice, exit 0 (#11)",
+          rc == 0 and "gh-auth" in (status_tokens(out, "BLIND") or []), f"rc={rc} out={out.strip()[:200]!r}")
+        t("files: a gh that cannot run is remedied as 'could not be run', not 'not authenticated' (#11)",
+          "could not be run" in err and "not authenticated" not in err, err.strip()[:300])
 
     # ------------------------------------------------------------------
     print("[Section 2] snapshot phase: empty, partial, complete")
@@ -197,6 +227,22 @@ def main():
         t("snapshot-partial: remedy mentions --allow-degraded (F2)",
           "--allow-degraded" in (out + err), (out + err).strip()[:300])
 
+    with tempfile.TemporaryDirectory() as tmp:
+        # The snapshot script must clear a stale in-flight.err on every exit path, including a
+        # write error (here the --out target is a directory, so the atomic replace fails).
+        run_dir = Path(tmp) / "run"
+        run_dir.mkdir()
+        (run_dir / "in-flight.err").write_text("issues: stale from an earlier run\n", encoding="utf-8")
+        (run_dir / "in-flight.md").mkdir()
+        env = {"PATH": empty_path_dir(tmp), "HOME": tmp}
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "in-flight-snapshot.py"),
+             "--out", str(run_dir / "in-flight.md"), "--repo-dir", tmp],
+            capture_output=True, text=True, env=env, cwd=tmp)
+        t("in-flight-snapshot: a stale in-flight.err is cleared even when the output write fails (#10)",
+          not (run_dir / "in-flight.err").exists(),
+          f"rc={result.returncode} stderr={result.stderr.strip()[:200]!r}")
+
     # Not covered here: a black-box "complete snapshot prints OK" happy path. Even a stub `gh`
     # returning a real issue with a body still yields snapshot-partial=issue-bodies, and the
     # complete-state contract is not described by the plan, so no honest fixture was found.
@@ -206,11 +252,15 @@ def main():
         run_dir.mkdir()
         (run_dir / "in-flight.md").write_text("# In-flight\n\n- row\n", encoding="utf-8")
         rc, out, err = run_preflight(["snapshot", "--dir", str(run_dir)])
-        # CLAUDE.md (project spec, not the plan): "missing inputs fail the run unless
-        # --allow-degraded". A partial snapshot is a missing input, so it should not pass.
-        t("snapshot-partial without --allow-degraded hard-stops with non-zero exit "
-          "(CLAUDE.md: missing inputs fail the run unless --allow-degraded)",
-          rc != 0, f"rc={rc} out={out.strip()[:200]!r}")
+        # Plan / ADR-0003 2026-10-13 amendment: a partial snapshot is a notice, not a hard stop.
+        # Only an empty or fully unavailable snapshot stops the run.
+        t("snapshot-partial without --allow-degraded is a notice: exit 0",
+          rc == 0, f"rc={rc} out={out.strip()[:200]!r}")
+        t("snapshot-partial without --allow-degraded prints a BLIND line with the partial token",
+          status_tokens(out, "BLIND") == ["snapshot-partial=issue-bodies"], out.strip()[:200])
+        t("snapshot-partial notice remedy says --allow-degraded is not required, with no stop language",
+          "--allow-degraded is not required" in err and "Retry will not help" not in err,
+          err.strip()[:300])
 
     # ------------------------------------------------------------------
     print("[Section 3] blind-line: token output and ordering")
@@ -287,8 +337,8 @@ def main():
         rc, out, err = blind_with_nick(b"NORTH STAR BLIND: nick=\xff\xfe bad\n")
         t("nick: invalid UTF-8 in the nick file does not crash (F15) — exit 0, no traceback",
           rc == 0 and "Traceback" not in err, f"rc={rc} err={err.strip()[:200]}")
-        t("nick: invalid UTF-8 still yields a NORTH STAR BLIND line (F15)",
-          blind_tokens(out) is not None, out.strip()[:200])
+        t("nick: invalid UTF-8 is decoded with replacement characters into the nick token (F15)",
+          blind_tokens(out) == ["snapshot-empty", "nick=�� bad"], str(blind_tokens(out)))
 
         rc, out, err = blind_with_nick(
             b"## Pass 1\n\nNORTH STAR BLIND: nick=after-heading\n")
@@ -297,6 +347,33 @@ def main():
 
         rc, out, err = blind_with_nick(b"NORTH STAR BLIND: nick=unparseable\n")
         t("nick: an explicit nick=unparseable from Nick is emitted as the sentinel (F17)",
+          blind_tokens(out) == ["snapshot-empty", "nick=unparseable"], str(blind_tokens(out)))
+        t("nick: an explicit nick=unparseable is a valid token, so it draws no invalid-token warning (F17)",
+          "invalid blind token" not in err and rc == 0, err.strip()[:200])
+
+        rc, out, err = blind_with_nick(b"NORTH STAR BLIND: nick=a,nick=b\n")
+        t("nick: two nick= pieces joined by a bare comma (no space) collapse to nick=unparseable (#13)",
+          blind_tokens(out) == ["snapshot-empty", "nick=unparseable"], str(blind_tokens(out)))
+
+        rc, out, err = blind_with_nick(b"**NORTH STAR BLIND:** nick=bold\n")
+        t("nick: a bold-wrapped blind marker is not silently dropped: nick=unparseable (#1)",
+          blind_tokens(out) == ["snapshot-empty", "nick=unparseable"], str(blind_tokens(out)))
+
+        rc, out, err = blind_with_nick(b"l1\nl2\nl3\nl4\nl5\nNORTH STAR BLIND: nick=late\n")
+        t("nick: a blind line placed after the five-line scan window is not silently dropped (#1)",
+          blind_tokens(out) == ["snapshot-empty", "nick=unparseable"], str(blind_tokens(out)))
+
+        rc, out, err = blind_with_nick(b"Some body text with no marker.\n")
+        t("nick: a file with no blind marker anywhere adds no nick token (#1 negative control)",
+          blind_tokens(out) == ["snapshot-empty"], str(blind_tokens(out)))
+
+        preflight_mod = load_module("north_star_preflight", PREFLIGHT)
+        max_chars = preflight_mod.NICK_MAX_CHARS
+        rc, out, err = blind_with_nick(b"NORTH STAR BLIND: nick=" + b"z" * max_chars + b"\n")
+        t(f"nick: a nick of exactly NICK_MAX_CHARS ({max_chars}) characters is accepted verbatim",
+          blind_tokens(out) == ["snapshot-empty", "nick=" + "z" * max_chars], out.strip()[:200])
+        rc, out, err = blind_with_nick(b"NORTH STAR BLIND: nick=" + b"z" * (max_chars + 1) + b"\n")
+        t(f"nick: a nick of NICK_MAX_CHARS+1 ({max_chars + 1}) characters collapses to nick=unparseable",
           blind_tokens(out) == ["snapshot-empty", "nick=unparseable"], str(blind_tokens(out)))
 
         tokens.write_bytes(b"\xff\xfesnapshot-empty\n")
@@ -396,16 +473,12 @@ def main():
 
     # F10 offers two fixes: remove the stale outputs before the snapshot, or unlink a stale err.
     # Accept either primitive within a few lines of an in-flight.err reference.
+    # The clearing command must name in-flight.err on the same line (not merely sit nearby).
     stale_primitives = ("rm -f", "unlink", "truncat", ": >")
     for name, text in (("commands/expert-plan.md", expert_plan),
-                       ("commands/expert-review.md", expert_review)):
-        lines = text.splitlines()
-        ok = False
-        for i, line in enumerate(lines):
-            if "in-flight.err" in line:
-                window = " ".join(lines[max(0, i - 3): i + 4])
-                if any(p in window for p in stale_primitives):
-                    ok = True
+                       ("prompts/expert-review-panel.md", panel)):
+        ok = any("in-flight.err" in line and any(p in line for p in stale_primitives)
+                 for line in text.splitlines())
         t(f"docs: {name} clears a stale in-flight.err before the snapshot runs (F10)", ok)
 
     # ------------------------------------------------------------------

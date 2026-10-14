@@ -732,7 +732,8 @@ print("=" * 70)
 
 
 def test_nick_line_within_first_five_lines():
-    """The blind line is found on line 5 and ignored from line 6 on."""
+    """The blind line is found on line 5. From line 6 on it is not parsed, but never silently dropped:
+    it is reported as nick=unparseable (round-3 finding #1, which replaced the earlier silent drop)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         found_rc, found_out, _ = nick_line_result(
@@ -741,12 +742,12 @@ def test_nick_line_within_first_five_lines():
             tmpdir, b"one\ntwo\nthree\nfour\nfive\nNORTH STAR BLIND: nick=on line six\n")
 
         ok = (found_rc == 0 and found_out == "NORTH STAR BLIND: nick=on line five"
-              and missed_rc == 0 and missed_out == "")
+              and missed_rc == 0 and missed_out == "NORTH STAR BLIND: nick=unparseable")
         return ok, f"found={found_out!r}, missed={missed_out!r}"
 
 
 ok, detail = test_nick_line_within_first_five_lines()
-t("nick line: found within the first 5 lines, ignored from line 6", ok, detail)
+t("nick line: found within the first 5 lines; from line 6 reported as nick=unparseable", ok, detail)
 
 
 def test_nick_text_length_cap():

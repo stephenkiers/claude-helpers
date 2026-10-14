@@ -173,9 +173,10 @@ planReview:
     2. Open the ADRs, docs, and plans they point at before relying on them, and read the ADR
        index yourself (`.claude/reviewers/north-star-nick-local.yaml`'s `strategicDocuments`,
        else `docs/adr/`).
-    3. If a brief, `in-flight.md` or `in-flight-issues.md` is missing or empty, make the first
-       line of your contribution exactly `NORTH STAR BLIND: nick=<what you could not check>`
-       (plain text, no commas) — never report "no conflicts" for something you could not read.
+    3. If a brief, `in-flight.md` or `in-flight-issues.md` is missing or empty, put the line
+       `NORTH STAR BLIND: nick=<what you could not check>` first in your contribution, directly
+       after any required output heading and within the first few lines (plain text, no commas)
+       — never report "no conflicts" for something you could not read.
   focusAreas:
     - "Direction: Does this plan move the project the way its ADRs, root docs, and open epics say it is going? Quote the line it serves or strays from."
     - "In-Flight Conflicts: Does this plan collide with, duplicate, or pre-empt an open issue, epic, or pull request? Name the number."

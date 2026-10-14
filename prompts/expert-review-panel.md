@@ -386,7 +386,7 @@ fi
 A non-zero `SNAPSHOT_RC` is reported alongside it. Otherwise, for a `BLIND ...` stdout, the tokens are whitespace-split and appended (one per line) to `{REVIEW_DIR}/north-star-blind.tokens`
 (the `tr` + `sed` split above, not an unquoted `for` loop, which zsh does not word-split). The snapshot script itself is
 fail-open (exit 0, an `unavailable:` line in the output and keys in `in-flight.err`); the preflight
-is what classifies that into a hard stop or a notice.
+is what classifies that into a hard stop or a notice. FAIL stdout lists hard tokens only; BLIND lists hard then notice tokens, and the stop remedy is printed on stderr only on the FAIL path (BLIND prints an advisory note that the run continues).
 
 If `north-star-preflight.files` named `scout-prompt`, skip the scouts entirely and append
 `scout-failed=all` to the tokens file. Otherwise launch **three** `subagent_type: "expert-scout"` agents in ONE message (pinned Haiku by the
@@ -412,8 +412,8 @@ if any unexpected files were written, treat that run as compromised and report i
 In `north-star-nick`'s Pass 1 prompt — and no other reviewer's — list the paths that exist 
 (`north-star-adrs.md`, `north-star-docs.md`, `north-star-in-flight.md`, `in-flight.md`,
 `in-flight-issues.md`), name any that are missing as missing, give him the path
-`{REVIEW_DIR}/north-star-blind.tokens` so his first line can state `NORTH STAR BLIND: nick=<what>` when
-his inputs are thin, and tell him to read `{REVIEW_DIR}/full-diff.patch` in full rather than 
+`{REVIEW_DIR}/north-star-blind.tokens` so his blind line can state `NORTH STAR BLIND: nick=<what>` (within
+the first few lines, after any output heading) when his inputs are thin, and tell him to read `{REVIEW_DIR}/full-diff.patch` in full rather than 
 line ranges, like the other always-run reviewers. Also add this rule to Nick's persona-facing text: 
 local worktree paths and branch names from `in-flight.md` must not be cited in his findings 
 (they reveal the reviewer's local checkout structure and leak review information).
@@ -653,8 +653,8 @@ amalgamator | final-report written | critical: {n} | high: {n} | medium: {n} | l
 ```
 
 **North Star blind line.** After `final-report.md` is written, when `EFFORT` is 3-5, build the
-line from `{REVIEW_DIR}/north-star-blind.tokens` plus any `nick=` tokens parsed from the first line
-of `north-star-nick-pass1.md` (`NORTH STAR BLIND: nick=...`), and prepend it to `final-report.md`
+line from `{REVIEW_DIR}/north-star-blind.tokens` plus any `nick=` tokens parsed from the blind line
+in `north-star-nick-pass1.md` (`NORTH STAR BLIND: nick=...`), and prepend it to `final-report.md`
 (mechanical; no change to the Amalgamator prompt):
 ```bash
 NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$REVIEW_DIR/north-star-blind.tokens" --nick-file "$REVIEW_DIR/north-star-nick-pass1.md") || NS_LINE=""
@@ -662,8 +662,9 @@ if [ -n "$NS_LINE" ]; then
   { printf '%s\n\n' "$NS_LINE"; cat "$REVIEW_DIR/final-report.md"; } > "$REVIEW_DIR/final-report.md.tmp" && mv "$REVIEW_DIR/final-report.md.tmp" "$REVIEW_DIR/final-report.md"
 fi
 ```
-`--nick-file` reads only the first line of Nick's output and turns anything malformed into
-`nick=unparseable`; when the union is empty `NS_LINE` is empty and nothing is prepended.
+`--nick-file` reads the first line that starts with `NORTH STAR BLIND: ` within the first five lines of Nick's
+output (after any heading). Any malformed piece, or a `NORTH STAR BLIND:` marker elsewhere that is not such a
+line, becomes `nick=unparseable`; when the union is empty `NS_LINE` is empty and nothing is prepended.
 
 ```bash
 # Extract findings metrics from findings.json for reporting
