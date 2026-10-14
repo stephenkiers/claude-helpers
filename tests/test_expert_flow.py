@@ -225,7 +225,7 @@ def main():
     h.test_result("expert-plan.md parses --flow", "--flow" in plan)
 
     print()
-    print("[Section 7] Receipt hardening (spike #246 / #252, #245 dogfood)")
+    print("[Section 7] Receipt hardening (#273 dogfood)")
     rows = {m.group(1): m.group(0) for m in re.finditer(r"^\| \d\d \| (\w+) \|.*$", text, re.M)}
     h.test_result("implement row does not require ACTION PLAN SOURCE",
                   "implement" in rows and "`ACTION PLAN SOURCE:`" not in rows["implement"].split("|")[5],
