@@ -74,6 +74,19 @@ _parse_event_timestamp = telemetry_schema._parse_iso_or_none
 # instant predate the #267 hook fix, so the guard ignores them. The prose home of this value
 # is docs/metrics.md, "Telemetry Health Check" — keep the two in sync.
 AGENT_GUARD_CUTOFF = datetime(2026, 10, 13, 18, 58, 25, tzinfo=timezone.utc)
+
+# session_ids of legacy test-fixture rows already sitting in the append-only log. They came from
+# tests/test_usage_gate_cli_contract.py::run_agent_lifecycle (before #280 it wrote to the real log:
+# floor-latch-sess, next-ask-sess, fresh-budget-sess) and from the smoketest* rows of a 2026-09-10
+# manual smoke run that no file in the repo reproduces. `diagnose` drops exactly these ids.
+# This list is CLOSED TO ADDITIONS: a new leak is fixed at source and caught by the temp-HOME guard
+# in tests/run_all.py, never added here. See the #280 amendment in docs/adr/0016-usage-yield-telemetry.md.
+# The default 30-day window still includes the 2026-10-13 leak rows until about 2026-11-12; after
+# that the exclusion only matters for wider windows. Deletable with the pinned test once they age out.
+KNOWN_FIXTURE_SESSION_IDS = frozenset({
+    "floor-latch-sess", "next-ask-sess", "fresh-budget-sess",
+    "smoketest1", "smoketest2", "smoketest3", "smoketest4", "smoketest5",
+})
 if AGENT_GUARD_CUTOFF.tzinfo is None:
     raise RuntimeError("AGENT_GUARD_CUTOFF must be timezone-aware")
 
@@ -965,6 +978,10 @@ def cmd_diagnose(args):
     with an effective lower bound of max(--agent-guard-since, now - --window-days). Guard
     violations fail diagnose. The hook-provenance line is always printed so that a stale
     hook (pre-#267 code still installed) can be identified.
+
+    Rows whose session_id is in KNOWN_FIXTURE_SESSION_IDS (legacy test-fixture rows, #280) are
+    dropped once, after the window filter, so every computation sees the same real-data population.
+    The dropped count is always printed.
     """
     log_path = Path(args.log)
 
@@ -999,6 +1016,17 @@ def cmd_diagnose(args):
         elif ts is None:
             # Track events with unparseable/naive timestamps at window-filter stage
             unparseable_timestamp_count += 1
+
+    # Drop legacy test-fixture rows (once, after the window filter; see KNOWN_FIXTURE_SESSION_IDS).
+    # A non-str session_id (e.g. unhashable) is never a fixture id and must be kept.
+    def _is_fixture_row(event):
+        sid = event.get("session_id")
+        return isinstance(sid, str) and sid in KNOWN_FIXTURE_SESSION_IDS
+
+    real_events = [e for e in filtered_events if not _is_fixture_row(e)]
+    excluded_fixture_rows = len(filtered_events) - len(real_events)
+    excluded_fixture_ids = sorted({e["session_id"] for e in filtered_events if _is_fixture_row(e)})
+    filtered_events = real_events
 
     # Reconcile begin/end pairs by type and correlating id
     sessions = {}  # session_id -> (begin, end or None)
@@ -1080,6 +1108,11 @@ def cmd_diagnose(args):
     # Report
     print(f"Match rate: {match_rate:.1%} ({total_matched}/{total_begins} begin/end pairs matched)")
     print(f"Unknown token fields: {unknown_pct:.1%}")
+    print(f"Excluded fixture rows: {excluded_fixture_rows} (known test-fixture session_ids; see ADR-0016)")
+    if excluded_fixture_ids:
+        # Separate line so the count line above keeps its format; lists which ids were dropped
+        # so the drop is auditable (it does not detect a real row reusing a fixture id).
+        print(f"Excluded fixture session_ids: {', '.join(excluded_fixture_ids)}")
 
     # Per-stage match rate breakdown
     stage_name_totals = {}  # stage_name -> [begins, matched]

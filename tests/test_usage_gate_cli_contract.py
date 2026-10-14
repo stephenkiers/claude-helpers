@@ -17,6 +17,7 @@ Run with: python3 tests/test_usage_gate_cli_contract.py
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -395,46 +396,93 @@ def test_session_id_env_fallback():
         return True, ""
 
 
-def run_agent_lifecycle(state_dir, session_id, agent_id, transcript_path=None):
-    """Run agent-begin then agent-end (with optional transcript) via stdin JSON payloads."""
-    begin_payload = json.dumps({"session_id": session_id, "agent_id": agent_id})
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--state-dir", state_dir, "agent-begin"],
-        input=begin_payload, capture_output=True, text=True,
-    )
-    end_obj = {"session_id": session_id, "agent_id": agent_id}
-    if transcript_path:
-        end_obj["agent_transcript_path"] = transcript_path
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--state-dir", state_dir, "agent-end"],
-        input=json.dumps(end_obj), capture_output=True, text=True,
-    )
+def run_agent_lifecycle(state_dir, session_id, agent_id, transcript_path=None, env=None):
+    """Run agent-begin then agent-end (with optional transcript) via stdin JSON payloads.
+
+    Events go to ``<state_dir>/events.jsonl`` (via --log), never the real telemetry log. As a second
+    line of defence the children also run under a private temp HOME unless ``env`` is passed.
+
+    Returns "" when both children exit 0, else a failure message naming the failing child with its
+    returncode and stderr. Callers must check it, so a child failure is not silently swallowed.
+    """
+    log_path = os.path.join(state_dir, "events.jsonl")
+    errors = []
+    with tempfile.TemporaryDirectory() as private_home:
+        child_env = env if env is not None else {**os.environ, "HOME": private_home}
+        begin_payload = json.dumps({"session_id": session_id, "agent_id": agent_id})
+        begin = subprocess.run(
+            [sys.executable, str(SCRIPT), "--state-dir", state_dir, "--log", log_path, "agent-begin"],
+            input=begin_payload, capture_output=True, text=True, env=child_env,
+        )
+        if begin.returncode != 0:
+            errors.append(f"agent-begin rc={begin.returncode} stderr={begin.stderr!r}")
+        end_obj = {"session_id": session_id, "agent_id": agent_id}
+        if transcript_path:
+            end_obj["agent_transcript_path"] = transcript_path
+        end = subprocess.run(
+            [sys.executable, str(SCRIPT), "--state-dir", state_dir, "--log", log_path, "agent-end"],
+            input=json.dumps(end_obj), capture_output=True, text=True, env=child_env,
+        )
+        if end.returncode != 0:
+            errors.append(f"agent-end rc={end.returncode} stderr={end.stderr!r}")
+    if errors:
+        return f"run_agent_lifecycle({agent_id}) child failed: " + "; ".join(errors)
+    return ""
+
+
+def test_agent_lifecycle_does_not_leak_to_real_log():
+    """run_agent_lifecycle writes only to its --log file, never <HOME>/.claude/telemetry (#280)."""
+    with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as state_dir:
+        err = run_agent_lifecycle(
+            state_dir, "leak-check-sess", "agent1",
+            env={**os.environ, "HOME": tmp_home},
+        )
+        if err:
+            return False, err
+        leaked = Path(tmp_home) / ".claude" / "telemetry" / "events.jsonl"
+        if leaked.exists():
+            return False, f"default telemetry log was written: {leaked}"
+        log = Path(state_dir) / "events.jsonl"
+        if not log.exists():
+            return False, "--log file was not written"
+        events = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+        mine = [e for e in events if e.get("session_id") == "leak-check-sess"]
+        kinds = sorted(e.get("event_type", "") for e in mine)
+        if len(mine) != 2 or kinds != ["agent.begin", "agent.end"]:
+            return False, f"expected one agent.begin and one agent.end, got {mine}"
+        return True, ""
 
 
 def test_floor_ask_latches_until_new_unparseable_agent():
     """An unparseable agent asks once; --mark-reported latches it until a NEW one appears (fix 12)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         session_id = "floor-latch-sess"
-        run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path="/nonexistent/path.jsonl")
+        err = run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path="/nonexistent/path.jsonl")
+        if err:
+            return False, err
 
-        code1, stdout1, _ = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+        code1, stdout1, stderr1 = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
         if "DECISION: ask" not in stdout1 or code1 != 10:
-            return False, f"first check with unparseable agent should ask, got code={code1} stdout={stdout1}"
+            return False, (f"first check with unparseable agent should ask, got code={code1} "
+                           f"stdout={stdout1} stderr={stderr1!r}")
 
-        code2, stdout2, _ = run_usage_check(
+        code2, stdout2, stderr2 = run_usage_check(
             ["--seam", "round1-join", "--session-id", session_id, "--mark-reported"], state_dir=tmpdir
         )
         if "DECISION: proceed" not in stdout2:
-            return False, f"--mark-reported should latch and proceed immediately, got: {stdout2}"
+            return False, f"--mark-reported should latch and proceed immediately, got: {stdout2} rc={code2} stderr={stderr2!r}"
 
-        code3, stdout3, _ = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
+        code3, stdout3, stderr3 = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
         if "DECISION: ask" in stdout3:
-            return False, f"same unparseable agent must not re-ask after latching, got: {stdout3}"
+            return False, f"same unparseable agent must not re-ask after latching, got: {stdout3} rc={code3} stderr={stderr3!r}"
 
-        run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path="/nonexistent/path2.jsonl")
-        code4, stdout4, _ = run_usage_check(["--seam", "post-fanout", "--session-id", session_id], state_dir=tmpdir)
+        err = run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path="/nonexistent/path2.jsonl")
+        if err:
+            return False, err
+        code4, stdout4, stderr4 = run_usage_check(["--seam", "post-fanout", "--session-id", session_id], state_dir=tmpdir)
         if "DECISION: ask" not in stdout4 or code4 != 10:
-            return False, f"a NEW unparseable agent must re-trigger the ask, got code={code4} stdout={stdout4}"
+            return False, (f"a NEW unparseable agent must re-trigger the ask, got code={code4} "
+                           f"stdout={stdout4} stderr={stderr4!r}")
 
         return True, ""
 
@@ -452,23 +500,29 @@ def test_over_threshold_reported_shows_next_ask_boundary():
             }},
         }) + "\n")
 
-        run_usage_check(["--seam", "round1-join", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir)
-        run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path=str(transcript))
+        rc_join, _, stderr_join = run_usage_check(
+            ["--seam", "round1-join", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir
+        )
+        err = run_agent_lifecycle(tmpdir, session_id, "agent2", transcript_path=str(transcript))
+        if err:
+            return False, err
 
-        run_usage_check(
+        rc_mark, _, stderr_mark = run_usage_check(
             ["--seam", "pre-fanout", "--session-id", session_id, "--threshold", "100000", "--mark-reported"],
             state_dir=tmpdir,
         )
-        code, stdout, _ = run_usage_check(
+        earlier = (f"[earlier calls: round1-join rc={rc_join} stderr={stderr_join!r}; "
+                   f"pre-fanout --mark-reported rc={rc_mark} stderr={stderr_mark!r}]")
+        code, stdout, stderr = run_usage_check(
             ["--seam", "post-fanout", "--session-id", session_id, "--threshold", "100000"], state_dir=tmpdir
         )
 
         if "state=over-threshold-reported" not in stdout:
-            return False, f"expected over-threshold-reported state, got: {stdout}"
+            return False, f"expected over-threshold-reported state, got: {stdout} rc={code} stderr={stderr!r} {earlier}"
         if "already reported at 155,000" not in stdout or "next ask at 255,000" not in stdout:
-            return False, f"expected last-reported/next-ask boundary text, got: {stdout}"
+            return False, f"expected last-reported/next-ask boundary text, got: {stdout} stderr={stderr!r} {earlier}"
         if code != 0:
-            return False, f"already-reported crossing should proceed, got exit {code}"
+            return False, f"already-reported crossing should proceed, got exit {code} stdout={stdout} stderr={stderr!r}"
 
         return True, ""
 
@@ -486,16 +540,18 @@ def test_round1_join_reinvocation_shows_fresh_budget():
             }},
         }) + "\n")
 
-        run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path=str(transcript))
-        run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+        err = run_agent_lifecycle(tmpdir, session_id, "agent1", transcript_path=str(transcript))
+        if err:
+            return False, err
+        rc_first, _, stderr_first = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
 
-        _, stdout_mid, _ = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
+        _, stdout_mid, stderr_mid = run_usage_check(["--seam", "pre-fanout", "--session-id", session_id], state_dir=tmpdir)
         if "counted=0" not in stdout_mid:
-            return False, f"pre-fanout right after round1-join with no further spend should show 0, got: {stdout_mid}"
+            return False, f"pre-fanout right after round1-join with no further spend should show 0, got: {stdout_mid} stderr={stderr_mid!r} (first round1-join rc={rc_first} stderr={stderr_first!r})"
 
-        _, stdout_reinvoke, _ = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
+        _, stdout_reinvoke, stderr_reinvoke = run_usage_check(["--seam", "round1-join", "--session-id", session_id], state_dir=tmpdir)
         if "counted=0" not in stdout_reinvoke:
-            return False, f"re-invocation's round1-join must show a fresh (0) budget, got: {stdout_reinvoke}"
+            return False, f"re-invocation's round1-join must show a fresh (0) budget, got: {stdout_reinvoke} stderr={stderr_reinvoke!r} (first round1-join rc={rc_first} stderr={stderr_first!r})"
 
         return True, ""
 
@@ -523,6 +579,7 @@ def main():
     h.test_result("floor ask latches until new unparseable agent", *test_floor_ask_latches_until_new_unparseable_agent())
     h.test_result("over-threshold-reported shows next-ask boundary", *test_over_threshold_reported_shows_next_ask_boundary())
     h.test_result("round1-join re-invocation shows fresh budget", *test_round1_join_reinvocation_shows_fresh_budget())
+    h.test_result("agent lifecycle does not leak to real log", *test_agent_lifecycle_does_not_leak_to_real_log())
 
     print()
     h.summarize_and_exit()
