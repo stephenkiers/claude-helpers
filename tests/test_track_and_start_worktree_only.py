@@ -60,7 +60,7 @@ def main():
       and chain.find("W. If `$WORKTREE_ONLY_FLAG`") < chain.find("0. Else if `$PLAN_FILE_FLAG`"))
     t("validation requires --issue and rejects ticket ids, --plan-file, positionals",
       "--worktree-only requires --issue" in text
-      and "does not support tracker ticket IDs" in text
+      and "not a tracker ticket ID" in text
       and "cannot be combined with --plan-file" in text
       and "takes no positional arguments" in text)
 
