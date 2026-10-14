@@ -329,6 +329,34 @@ def main():
                   "`AskUserQuestion` (mandatory" in FLOW_REF.read_text())
 
     print()
+    print("[Section 10] Stale/abandoned flows, resume re-asks, receipt-first (B2)")
+    def sub(heading):
+        return text.split(heading + "\n", 1)[1].split("\n### ", 1)[0] if heading + "\n" in text else ""
+    flow_state = heading_section(text, "## Flow state")
+    h.test_result("abandoned is in the status enum",
+                  re.search(r"\| `status` \| enum \|[^\n]*`abandoned`", flow_state) is not None)
+    h.test_result("abandoned is in the log-event list", "`aborted`, `abandoned`, `handoff`" in " ".join(flow_state.split()))
+    args_sec = heading_section(text, "## Arguments")
+    h.test_result("Arguments documents --abandon", "--abandon <flow-dir|issue#>" in args_sec)
+    h.test_result("--abandon with another flag is a guard error", "--abandon takes no other flags" in text)
+    h.test_result("--abandon is exempt from the location check", "`--list` and `--abandon` are exempt" in text)
+    h.test_result("--abandon exit row in Every Exit Path", re.search(r"^\| `--abandon`", exit_sec, re.M) is not None)
+    h.test_result("abandon section sets abandoned and live null",
+                  "status: abandoned" in text and "live: null" in sub("### `--abandon`"))
+    h.test_result("resume rule asks about an abandoned flow",
+                  "Resume it?" in text and "Yes — resume (Recommended)" in text)
+    list_sec = sub("### `--list`")
+    h.test_result("--list marks stale flows", "stale" in list_sec and ("10800" in list_sec or "3 hours" in list_sec))
+    h.test_result("--list jq uses 10800 seconds", "10800" in list_sec)
+    h.test_result("resume relays the pending question before re-running",
+                  "re-ask the pending question" in text and "PRIOR_ANSWERS" in text and "**not** step 6" in text)
+    ask_sec = heading_section(FLOW_REF.read_text(), "## Ask")
+    h.test_result("flow-reference Ask has Prior answers rule",
+                  "Prior answers" in ask_sec and "reused-answers" in ask_sec and "PRIOR_ANSWERS" in ask_sec)
+    h.test_result("receipt read is the first action after a hand-back",
+                  "first action" in text and "leaves the flow `running`" in " ".join(text.split()))
+
+    print()
     h.summarize_and_exit()
 
 

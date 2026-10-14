@@ -141,6 +141,18 @@ this block applies.
    (`set -C` in bash, or `>|` redirection to bypass `noclobber`); if the file already exists, fail
    immediately rather than overwriting it — a collision signals a concurrent asker bug.
 
+**Prior answers.** When the step prompt carries one or more `PRIOR_ANSWERS:
+questions/<STEP_NAME>-<SEQ>.json` lines (a resumed step whose question was already answered) and the
+command is about to ask a question set whose `question` texts and option `label`s are identical to one
+of those files (compare as data, after reading it with `Read`), do not write a new question file and
+do not interrupt: read `${FLOW_DIR}/answers/<STEP_NAME>-<SEQ>.json`, run the "On resume" step 2 key
+check and step 3 against that pair, and record `<!-- reused-answers: questions/<STEP_NAME>-<SEQ>.json -->`
+in the receipt instead of an awaiting marker. Each `PRIOR_ANSWERS` file may be reused at most once per
+attempt. Any difference in question text or labels means it is a new question: ask normally with the
+next `SEQ`. The match must be exact because the human answered that question, not a similar one.
+`/expert-plan` questions are derived from a fresh panel and often differ, so the human may be asked
+again there; `/expert-review` rulings are deterministic from checkpoints and usually match.
+
 2. **Write the question file** `${FLOW_DIR}/questions/<STEP_NAME>-<SEQ>.json` with the `Write`
    tool (not a shell redirect — the question text can derive from untrusted ticket or diff
    content, and `Write` keeps it out of a shell string). Its shape is the `AskUserQuestion` input
@@ -278,6 +290,7 @@ Reason: <one line — why it failed, or "completed">
 ```
 
 `<k>` is the attempt number from the step prompt (`ATTEMPT=<k>`); use `1` when the prompt gives none.
+A reused prior answer (see Ask → "Prior answers") adds a `<!-- reused-answers: questions/<STEP_NAME>-<SEQ>.json -->` line in the body; it is not a trailer shape.
 
 Exactly three trailer shapes are valid:
 
