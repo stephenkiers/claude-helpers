@@ -64,6 +64,7 @@ def detect_main_worktree(cwd: Optional[Path] = None) -> Optional[str]:
     """
     Get the main worktree path (first entry from git worktree list).
 
+    Returns the first listed entry regardless of its branch state, so a detached main worktree is returned too.
     Returns None when the listing fails or reports no worktrees.
     """
     listed = list_worktrees(cwd=cwd)

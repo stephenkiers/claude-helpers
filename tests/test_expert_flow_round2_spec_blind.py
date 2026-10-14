@@ -100,7 +100,7 @@ if __name__ == "__main__":
     # stacked-branch detection); only the detect-parent step is single-implementation,
     # and test_worktree_reference_detection.py scopes its no-duplication check to that step.
     t("worktree-reference.md calls the detect-parent CLI",
-      "scripts.workflow.cli worktree detect-parent" in wt_text)
+      "scripts.workflow.cli worktree detect-parent" in all_bash)
 
     print()
     print("[Section 3] allowed-tools exact git grants")

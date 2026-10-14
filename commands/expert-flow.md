@@ -159,6 +159,8 @@ case "$FROM_STEP" in ""|implement|review|verify|ship|merge) ;; *) flag_bad "--fr
 [ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
 [ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ]; } && flag_bad "--list takes no other flags"
 [ "$LIST" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ] && flag_bad "an issue URL or number is required"
+[ -n "$RESUME_REF" ] && [ ! -f "$RESUME_REF/state.json" ] && case "$RESUME_REF" in *[!0-9]*) flag_bad "--resume requires an issue number or a flow directory" ;; esac
+[ -n "$ABANDON_REF" ] && [ ! -f "$ABANDON_REF/state.json" ] && case "$ABANDON_REF" in *[!0-9]*) flag_bad "--abandon requires an issue number or a flow directory" ;; esac
 [ -n "$BAD" ] && printf 'ERROR: %s\n' "$BAD" >&2
 ```
 
