@@ -124,7 +124,7 @@ def main():
       and '--repo-dir ${WORKTREE_PATH:-.}' in panel)
     t("panel launches the three Haiku North Star scouts as expert-scout",
       "prompts/north-star-scout.md" in panel and "Lens: {adrs|docs|in-flight}" in panel
-      and 'Then launch **three** `subagent_type: "expert-scout"` agents in ONE message' in panel)
+      and 'launch **three** `subagent_type: "expert-scout"` agents in ONE message' in panel)
 
     review = read("commands/expert-review.md")
     t("expert-review reviewer-count dedup loop includes north-star-nick",
