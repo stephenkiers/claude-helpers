@@ -155,6 +155,23 @@ def main():
         )
 
     print()
+    print("[Section 6] Command doc fence parity (balanced markdown code blocks)")
+
+    # Test cleanup.md specifically for fence parity (owned file; other files may have
+    # pre-existing unbalanced fences not yet fixed).
+    cleanup_doc = commands_dir / "cleanup.md"
+    if cleanup_doc.exists():
+        content = cleanup_doc.read_text()
+        fence_count = content.count("```")
+        h.test_result(
+            "cleanup.md has balanced markdown fences (even count of ``` lines)",
+            fence_count % 2 == 0,
+            f"found {fence_count} fence lines (unbalanced)" if fence_count % 2 != 0 else "",
+        )
+    else:
+        h.test_result("cleanup.md exists", False, "cleanup.md not found")
+
+    print()
     h.summarize_and_exit()
 
 

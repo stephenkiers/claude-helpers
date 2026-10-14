@@ -145,8 +145,20 @@ class RepoCacheData:
     check_timeout_secs: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for JSON serialization."""
-        return asdict(self)
+        """Convert to dict for JSON serialization.
+
+        NOTE: Explicitly maps check_timeout_secs to "checkTimeoutSecs" (camelCase) for
+        round-trip consistency with from_dict(), which reads the "checkTimeoutSecs" key
+        from JSON. asdict() alone would produce "check_timeout_secs" (snake_case), breaking
+        the round-trip: to_dict(from_dict(data)) would lose the value if data was read back.
+        """
+        d = asdict(self)
+        # Map the snake_case field key to camelCase JSON key for round-trip consistency.
+        if "check_timeout_secs" in d:
+            check_timeout = d.pop("check_timeout_secs")
+            if check_timeout is not None:
+                d["checkTimeoutSecs"] = check_timeout
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RepoCacheData":

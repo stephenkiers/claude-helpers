@@ -127,6 +127,21 @@ converts `2` → `0` while still reporting `status` in the JSON output, for call
 independently confirmed no checks apply. `--timeout` bounds each check (precedence: `--timeout`, then
 `SHIPIT_CHECK_TIMEOUT_SECS`, then the repo cache's `checkTimeoutSecs`, then 300s).
 
+## Change Note: checkTimeoutSecs Semantics (2026-10-13)
+
+**Scope:** The `checkTimeoutSecs` per-repo override is honored only by `checks run` (`scripts/workflow/cli.py`);
+the cleanup path uses its own timeout logic (`scripts/workflow/cleanup.py`) and does not read `checkTimeoutSecs`.
+To ensure future compatibility and correct caching, `RepoCacheData.to_dict()` now explicitly maps the
+internal `check_timeout_secs` field to the JSON key `checkTimeoutSecs` (camelCase), matching what
+`from_dict()` reads. This fixes a round-trip inconsistency where to_dict() would have output `check_timeout_secs`
+(snake_case), breaking the cache's ability to preserve the value across a read-and-rewrite cycle.
+
+**Timeout precedence** (applies to `checks run` only):
+1. `--timeout` command-line flag (highest priority)
+2. `SHIPIT_CHECK_TIMEOUT_SECS` environment variable
+3. Cache's `checkTimeoutSecs` field (repo-level override)
+4. 300 seconds (default)
+
 ## Check Gate Coverage (ADR-0013 Amendment 3)
 
 **Invariant:** A check gate must never report success without having executed at least one check.

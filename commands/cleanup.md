@@ -311,6 +311,13 @@ fi
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage check-merge-status >/dev/null 2>&1 || true
 ```
 
+<!-- Step 1 fence ends here after the metrics/telemetry block.
+The Step 1 fence (lines 144-312) includes the resolve-claude-helpers-dir.sh source call and the
+cleanup plan extraction (PLAN_JSON), which are together complete enough that Step 1a (Resolve FLOW_DIR)
+can run independently. Splitting them here allows Step 1a to apply its own FLOW_DIR resolution and
+confirmation logic before Step 2 proceeds. This boundary was re-defined to separate the "context
+capture and plan resolution" part of Step 1 from the "flow orchestration" part that Step 1a handles. -->
+
 ### 1a. Resolve FLOW_DIR and handle NEEDS_CONFIRMATION
 
 Step 1a runs immediately after Step 1 (which prints `CURRENT_WORKTREE` and any `NEEDS_CONFIRMATION=`
