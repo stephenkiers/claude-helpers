@@ -73,8 +73,8 @@ wake-up with no completion notification, re-read the receipt from disk and other
   worktree and hands off (see "Where the orchestrator runs"). Run from inside the ticket worktree
   it continues there; if a flow for the issue already exists it behaves exactly as `--resume <N>`.
   A bare number is resolved to a URL with
-  `gh issue view <n> --json url -q .url` (it must exist and be open). Required unless `--resume`
-  or `--list` is given.
+  `gh issue view <n> --json url -q .url` (it must exist and be open). Required unless `--resume`,
+  `--abandon`, `--retro`, or `--list` is given.
 - `--plan-effort 2|3` — forwarded to `/expert-plan --effort`. Default: omitted, so `/expert-plan`
   sizes it with its own heuristic (`scripts/plan-effort.py`).
 - `--review-effort 1-5` — forwarded to `/expert-review --effort`. Default: omitted, so
@@ -1010,11 +1010,14 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-flow
 ## What this command deliberately does not do
 
 - **No auto-remediation.** A failing check, a rebase conflict, a gate that will not converge, a
-  queue kickback: all stop. The human retries, takes over, or aborts.
-- **No git mutations, no code edits, no `gh` writes** from the orchestrator. The only files it
-  writes are under `FLOW_DIR`, the one-line marker `<WORKTREE>/.claude/flow-run`, and one fixed
-  line appended to the repo's local git exclude file (`$(git rev-parse --git-common-dir)/info/exclude`)
-  to keep that marker out of commits. Nothing else is written outside `FLOW_DIR`.
+  queue kickback: all stop. The human retries, takes over, or aborts. The one exception is the
+  **Rebase** option at a base-stale verify stop, and only after the human chose it.
+- **No git mutations, no code edits, no `gh` writes** from the orchestrator — except that clean
+  mechanical rebase (never a conflict resolution, never a push). The only files it writes are under
+  `FLOW_DIR` (receipts, `*.audit.md`, `retro.md`), the repo-level `$FLOWS_ROOT/audits.jsonl`, the
+  one-line marker `<WORKTREE>/.claude/flow-run`, and one fixed line appended to the repo's local git
+  exclude file (`$(git rev-parse --git-common-dir)/info/exclude`) to keep that marker out of
+  commits. Nothing else is written outside `FLOW_DIR`.
 - **No stored defaults for `--auto-merge`.** It is typed every run or not at all, and resume never
   restores it.
 - **No parallel steps.** One subagent at a time; the concurrency cap (20, including this agent)
