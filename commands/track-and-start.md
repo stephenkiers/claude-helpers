@@ -669,11 +669,20 @@ fi
 ```
 
 ```bash
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
 if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
   echo "ERROR: computed worktree path '$WORKTREE_PATH' is not a direct child of WORKTREE_PARENT ('$WORKTREE_PARENT') — refusing to create a nested worktree." >&2
   exit 1
 fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
+
+# Seed cache files from main worktree (non-fatal)
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH") || true
+SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty')
+if [ -n "$SEED_ERROR" ]; then
+  echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
+fi
 ```
 
 #### Cache Write
@@ -1150,6 +1159,9 @@ For **Tracker Ticket mode**, which does NOT use the CLI, a plain-git worktree cr
 
 ```bash
 # ONLY for Tracker Ticket mode (step 248 in that section):
+source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { echo "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+
+MAIN_WORKTREE=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
 cd "$MAIN_WORKTREE"
 WORKTREE_PATH="${WORKTREE_PARENT}/${WORKTREE_DIR}"
 if [ "$(dirname "$WORKTREE_PATH")" != "$WORKTREE_PARENT" ]; then
@@ -1159,7 +1171,7 @@ fi
 git worktree add "$WORKTREE_PATH" -b "${BRANCH}" "${BASE_BRANCH}"
 
 # Seed cache files from main worktree (non-fatal)
-SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH")
+SEED_RESULT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli track seed-cache --from "$MAIN_WORKTREE" --to "$WORKTREE_PATH") || true
 SEED_ERROR=$(printf '%s' "$SEED_RESULT" | jq -r '.error // empty')
 if [ -n "$SEED_ERROR" ]; then
   echo "Note: Cache seeding failed (non-fatal): $SEED_ERROR" >&2
