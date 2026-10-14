@@ -11,11 +11,21 @@ import argparse
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, NoReturn, Optional
+
+# Constants for timeouts and mtime skew tolerance
+MTIME_SKEW_SECS = 5
+GIT_TIMEOUT_SECS = 5
+
+# Contribution failure reasons
+CONTRIB_ABSENT = "absent"
+CONTRIB_UNTERMINATED = "unterminated"
+CONTRIB_STANDIN = "stand-in"
 
 
-def error(msg: str) -> None:
+def error(msg: str) -> NoReturn:
     """Print error to stderr and exit with code 2."""
     print(msg, file=sys.stderr)
     sys.exit(2)
@@ -25,11 +35,13 @@ def read_file(path: Path) -> str:
     """Read file contents; error on missing/unreadable."""
     try:
         return path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError) as e:
+    except FileNotFoundError as e:
+        error(f"Could not read {path}: {e}")
+    except (OSError, UnicodeDecodeError) as e:
         error(f"Could not read {path}: {e}")
 
 
-def canonicalize_path(path: str, home: Path) -> Path:
+def canonicalize_path(path: str) -> Path:
     """Canonicalize a path (symlinks and .. resolved). Containment is checked by callers."""
     return Path(path).expanduser().resolve()
 
@@ -38,23 +50,36 @@ def scan_for_deviation(content: str) -> bool:
     """Scan for Deviation: or NOT dispatched outside fenced blocks, blockquotes, backticks.
 
     Returns True if deviation found (should reject).
+
+    Accepts list/bold prefixes before Deviation: (e.g. "- Deviation:", "**Deviation:**").
+    Tracks code fences by marker character and length (``` vs ~~~). Treats an unterminated
+    fence as malformed (flags deviation).
     """
     lines = content.split("\n")
     in_fence = False
     fence_marker = ""
+    fence_length = 0
 
     i = 0
     while i < len(lines):
         line = lines[i]
 
-        # Handle fenced code blocks (triple backticks)
-        if line.lstrip().startswith("```"):
+        # Handle fenced code blocks (triple backticks or tildes)
+        # Match opening fence: at least 3 backticks or tildes, possibly with language tag
+        fence_match = re.match(r"^(\s*)(```+|~~~+)", line)
+        if fence_match:
+            marker = line[fence_match.start(2):fence_match.end(2)]
+            marker_char = marker[0]
+            marker_len = len(marker)
+
             if not in_fence:
                 in_fence = True
-                fence_marker = "```"
-            elif fence_marker == "```":
+                fence_marker = marker_char
+                fence_length = marker_len
+            elif fence_marker == marker_char and marker_len >= fence_length:
                 in_fence = False
                 fence_marker = ""
+                fence_length = 0
             i += 1
             continue
 
@@ -63,13 +88,18 @@ def scan_for_deviation(content: str) -> bool:
             i += 1
             continue
 
+        # If unterminated fence at EOF, treat as malformed
+        if i == len(lines) - 1 and in_fence:
+            return True
+
         # Check for blockquote line (starts with >)
         if line.lstrip().startswith(">"):
             i += 1
             continue
 
-        # Check for Deviation: at line start (outside backticks)
-        if re.match(r"^Deviation:", line):
+        # Check for Deviation: at line start, possibly with list/bold prefix
+        # Patterns: "Deviation:", "- Deviation:", "* Deviation:", "**Deviation:**"
+        if re.match(r"^(\s*[-*]\s+)?(\*\*)?Deviation:", line):
             return True
 
         # Check for NOT dispatched outside backticks
@@ -80,17 +110,14 @@ def scan_for_deviation(content: str) -> bool:
 
         i += 1
 
+    # Check if fence was left unterminated at end
+    if in_fence:
+        return True
+
     return False
 
 
-def load_yaml_key_value(content: str, key: str) -> Optional[str]:
-    """Extract value for a simple YAML key (assumes key: value format)."""
-    pattern = f"^{re.escape(key)}:\\s*(.+)$"
-    match = re.search(pattern, content, re.MULTILINE)
-    return match.group(1).strip() if match else None
-
-
-def check_plan(receipt_file: Path, since: str, home: Path) -> Optional[str]:
+def check_plan(receipt_file: Path, since: float, home: Path) -> Optional[str]:
     """Check plan artifacts. Return error reason or None."""
     receipt = read_file(receipt_file)
 
@@ -103,8 +130,8 @@ def check_plan(receipt_file: Path, since: str, home: Path) -> Optional[str]:
     if not plan_path_str:
         return "plan artifacts missing (FINAL_PLAN_PATH not under plans/ or no invocation id)"
 
-    plan_path = canonicalize_path(plan_path_str, home)
-    plans_dir = home / ".claude" / "plans"
+    plan_path = canonicalize_path(plan_path_str)
+    plans_dir = (home / ".claude" / "plans").resolve()
 
     # Check path is under plans/
     try:
@@ -141,10 +168,9 @@ def check_plan(receipt_file: Path, since: str, home: Path) -> Optional[str]:
 
     try:
         context_mtime = context_file.stat().st_mtime
-        since_ts = _parse_iso8601(since)
-        if context_mtime < since_ts - 5:
+        if context_mtime < since - MTIME_SKEW_SECS:
             return "plan artifacts missing (session dir older than this attempt)"
-    except (OSError, ValueError):
+    except OSError:
         return "plan artifacts missing (session dir older than this attempt)"
 
     # Check selected-experts.md
@@ -184,23 +210,23 @@ def check_plan(receipt_file: Path, since: str, home: Path) -> Optional[str]:
         if not contrib_file.exists():
             contrib_file = session_dir / f"{kebab}-contribution.md"
         if not contrib_file.exists():
-            return f"plan artifacts missing (contribution: {name} absent|unterminated|stand-in)"
+            return f"plan artifacts missing (contribution: {name} {CONTRIB_ABSENT})"
 
         contrib = read_file(contrib_file)
 
         # Check sentinel: last non-empty line
         lines = [ln for ln in contrib.split("\n") if ln.strip()]
         if not lines or lines[-1] != "<!-- contribution-end -->":
-            return f"plan artifacts missing (contribution: {name} absent|unterminated|stand-in)"
+            return f"plan artifacts missing (contribution: {name} {CONTRIB_UNTERMINATED})"
 
         # Check for stand-in
         if _is_standin(contrib):
-            return f"plan artifacts missing (contribution: {name} absent|unterminated|stand-in)"
+            return f"plan artifacts missing (contribution: {name} {CONTRIB_STANDIN})"
 
     return None
 
 
-def check_review(receipt_file: Path, since: str, home: Path) -> Optional[str]:
+def check_review(receipt_file: Path, since: float, home: Path) -> Optional[str]:
     """Check review artifacts. Return error reason or None."""
     receipt = read_file(receipt_file)
 
@@ -213,8 +239,8 @@ def check_review(receipt_file: Path, since: str, home: Path) -> Optional[str]:
     if not review_dir_str:
         return "review artifacts missing (REVIEW_DIR not under reviews/)"
 
-    review_dir = canonicalize_path(review_dir_str, home)
-    reviews_root = home / ".claude" / "reviews"
+    review_dir = canonicalize_path(review_dir_str)
+    reviews_root = (home / ".claude" / "reviews").resolve()
 
     # Check path is under reviews/
     try:
@@ -231,10 +257,9 @@ def check_review(receipt_file: Path, since: str, home: Path) -> Optional[str]:
     action_plan = review_dir / "claude-action-plan.md"
     try:
         mtime = action_plan.stat().st_mtime
-        since_ts = _parse_iso8601(since)
-        if mtime < since_ts - 5:
+        if mtime < since - MTIME_SKEW_SECS:
             return "review artifacts missing (action plan older than this attempt)"
-    except (OSError, ValueError):
+    except OSError:
         return "review artifacts missing (action plan older than this attempt)"
 
     # Check for reviewer checkpoints: >=2 *-pass1.md or *-pod.md
@@ -245,6 +270,25 @@ def check_review(receipt_file: Path, since: str, home: Path) -> Optional[str]:
     return None
 
 
+def _count_commits(repo: str, base: str, branch: str) -> int:
+    """Count commits from base to branch. Return commit count; error on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "rev-list", "--count", "--", base + ".." + branch],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+        if result.returncode != 0:
+            error(f"Could not count commits: {result.stderr.strip()}")
+
+        return int(result.stdout.strip())
+    except subprocess.TimeoutExpired as e:
+        error(f"Git operation failed: {e}")
+    except ValueError as e:
+        error(f"Git operation failed: {e}")
+
+
 def check_implement(
     receipt_file: Path,
     repo: str,
@@ -252,22 +296,9 @@ def check_implement(
     base: str,
 ) -> Optional[str]:
     """Check implement artifacts. Return error reason or None."""
-    try:
-        # Count commits base..branch
-        result = subprocess.run(
-            ["git", "-C", repo, "rev-list", "--count", f"{base}..{branch}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            error(f"Could not count commits: {result.stderr.strip()}")
-
-        count = int(result.stdout.strip())
-        if count < 1:
-            return f"implement artifacts missing (no new commits on {branch} since step began)"
-    except (subprocess.TimeoutExpired, ValueError) as e:
-        error(f"Git operation failed: {e}")
+    count = _count_commits(repo, base, branch)
+    if count < 1:
+        return f"implement artifacts missing (no new commits on {branch} since step began)"
 
     return None
 
@@ -281,54 +312,61 @@ def check_fix(
     home: Path,
 ) -> Optional[str]:
     """Check fix artifacts with zero-commit carve-out. Return error reason or None."""
-    try:
-        # Count commits base..branch
-        result = subprocess.run(
-            ["git", "-C", repo, "rev-list", "--count", f"{base}..{branch}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            error(f"Could not count commits: {result.stderr.strip()}")
+    count = _count_commits(repo, base, branch)
 
-        count = int(result.stdout.strip())
+    # If zero commits, check for zero "Doing it" items in action plan
+    if count == 0:
+        action_plan_path = canonicalize_path(review_dir)
+        action_plan_path = action_plan_path / "claude-action-plan.md"
+        reviews_root = (home / ".claude" / "reviews").resolve()
 
-        # If zero commits, check for zero "Doing it" items in action plan
-        if count == 0:
-            action_plan_path = canonicalize_path(
-                str(Path(review_dir) / "claude-action-plan.md"),
-                home
-            )
-            if not action_plan_path.exists():
-                return f"fix artifacts missing (no new commits on {branch} since step began)"
+        # Check path is under reviews/
+        try:
+            action_plan_path.relative_to(reviews_root)
+        except ValueError:
+            return f"fix artifacts missing (no new commits on {branch} since step began)"
 
-            action_plan = read_file(action_plan_path)
-            doing_it_count = _count_doing_it_items(action_plan)
+        if not action_plan_path.exists():
+            return f"fix artifacts missing (no new commits on {branch} since step began)"
 
-            if doing_it_count >= 1:
-                return f"fix artifacts missing (no new commits on {branch} since step began)"
-    except (subprocess.TimeoutExpired, ValueError) as e:
-        error(f"Git operation failed: {e}")
+        action_plan = read_file(action_plan_path)
+        doing_it_count = _count_doing_it_items(action_plan)
+
+        if doing_it_count >= 1:
+            return f"fix artifacts missing (no new commits on {branch} since step began)"
 
     return None
 
 
 def _parse_iso8601(iso_str: str) -> float:
-    """Parse ISO-8601 UTC timestamp to float (epoch seconds)."""
-    # Simple parser for format like "2026-10-14T22:20:13Z" or "2026-10-14T22:20:13+00:00"
-    iso_str = iso_str.rstrip("Z").split("+")[0]
+    """Parse ISO-8601 UTC timestamp to float (epoch seconds).
+
+    Handles formats like "2026-10-14T22:20:13Z" and "2026-10-14T22:20:13+00:00"
+    with or without timezone offsets.
+    """
     try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(iso_str).replace(tzinfo=timezone.utc)
+        # Normalize trailing Z to +00:00 for fromisoformat
+        normalized = iso_str.rstrip("Z")
+        if normalized == iso_str:
+            # Z was not present, so no normalization needed
+            dt = datetime.fromisoformat(iso_str)
+        else:
+            # Z was present, add +00:00
+            normalized = normalized + "+00:00"
+            dt = datetime.fromisoformat(normalized)
+
+        # Ensure timezone-aware, defaulting to UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
         return dt.timestamp()
     except ValueError:
         raise ValueError(f"Could not parse ISO timestamp: {iso_str}")
 
 
-def _parse_roster_table(content: str) -> list:
+def _parse_roster_table(content: str) -> List[str]:
     """Parse markdown roster table and return list of Expert names."""
-    rows = []
+    rows: List[str] = []
     header_seen = False
 
     for line in content.split("\n"):
@@ -358,9 +396,14 @@ def _parse_roster_table(content: str) -> list:
     return rows if rows else []
 
 
-def _load_reviewer_index(index_file: Path) -> dict:
-    """Load reviewer index YAML and return {name.lower(): file_stem} mapping."""
-    result = {}
+def _load_reviewer_index(index_file: Path) -> Dict[str, str]:
+    """Load reviewer index YAML and return {name.lower(): file_stem} mapping.
+
+    Parses simple YAML format with "- name:" and "file:" pairs. On parse errors
+    or missing file, returns an empty dict (fallback behavior).
+    """
+    result: Dict[str, str] = {}
+    current_name: Optional[str] = None
     try:
         content = index_file.read_text(encoding="utf-8")
         for line in content.split("\n"):
@@ -372,11 +415,11 @@ def _load_reviewer_index(index_file: Path) -> dict:
 
             # Parse lines like: "file: danielle-designer.yaml"
             file_match = re.search(r'^\s+file:\s*(.+?)\.yaml\s*$', line)
-            if file_match and 'current_name' in locals():
+            if file_match and current_name is not None:
                 file_stem = file_match.group(1).strip()
                 result[current_name.lower()] = file_stem
-                del current_name
-    except Exception:
+                current_name = None
+    except OSError:
         pass
 
     return result
@@ -405,32 +448,59 @@ def _is_standin(content: str) -> bool:
 
 
 def _count_doing_it_items(action_plan: str) -> int:
-    """Count non-placeholder items under 'Doing it' section."""
+    """Count items in the 'Doing it' section by parsing table rows.
+
+    Parses the "## Doing it: N" section, bounded by the next ## heading.
+    Counts data rows in the table (excluding header and separator rows).
+    Returns 0 if section not found (fail closed).
+
+    Use with --from verify to check against the real claude-action-plan.md template.
+    """
+    lines = action_plan.split("\n")
     count = 0
     in_doing_it = False
+    table_started = False
 
-    for line in action_plan.split("\n"):
-        # Check for "Doing it" heading
-        if "Doing it" in line and "#" in line:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Match "## Doing it:" heading (could have :N at the end)
+        if re.match(r"^##\s+Doing it:", line):
             in_doing_it = True
+            table_started = False
+            i += 1
             continue
 
-        # Stop at next heading
-        if in_doing_it and re.match(r"^#+\s+", line):
+        # Stop at next ## heading (same or higher level)
+        if in_doing_it and re.match(r"^##\s+", line):
             break
 
-        # Count non-empty lines that are list/table items
         if in_doing_it:
             stripped = line.strip()
-            # Skip empty lines, placeholders, and non-items
-            if stripped and not stripped.startswith("#"):
-                # Check if it's a list item (-, *) or table line (|)
-                if stripped.startswith("-") or stripped.startswith("*") or stripped.startswith("|"):
-                    # Skip placeholder entries
-                    if stripped not in ["- none", "* none", "- (none)", "* (none)", "- _none_", "* _none_"]:
-                        # Skip table separator lines
-                        if not re.match(r"^\|\s*-+\s*(\|\s*-+\s*)*\|$", stripped):
-                            count += 1
+
+            # Check for table start (lines starting with |)
+            if stripped.startswith("|") and not table_started:
+                table_started = True
+                i += 1
+                continue
+
+            # In table: count data rows, skip header and separator
+            if table_started and stripped.startswith("|"):
+                # Skip separator rows (all dashes and pipes)
+                if not re.match(r"^\|\s*-+\s*(\|\s*-+\s*)*\|$", stripped):
+                    # Skip table header row (ends with |---|)
+                    if not re.search(r"\|\s*-+\s*\|", stripped):
+                        count += 1
+            elif table_started and not stripped.startswith("|"):
+                # Table ended
+                table_started = False
+
+        i += 1
+
+    # If section never found, fail closed
+    if not in_doing_it:
+        return 0
 
     return count
 
@@ -440,7 +510,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Verify step receipts against on-disk artifacts"
     )
-    parser.add_argument("--step", required=True, help="Step name")
+    parser.add_argument(
+        "--step",
+        required=True,
+        choices=["plan", "review", "implement", "fix", "track", "verify", "ship", "merge"],
+        help="Step name",
+    )
     parser.add_argument("--receipt", required=True, help="Path to receipt file")
     parser.add_argument("--since", required=True, help="ISO-8601 UTC timestamp")
     parser.add_argument("--repo", help="Repo directory (for implement/fix)")
@@ -449,6 +524,12 @@ def main() -> None:
     parser.add_argument("--review-dir", help="Review directory (for fix)")
 
     args = parser.parse_args()
+
+    # Parse --since once; bad value exits with code 2
+    try:
+        since_ts = _parse_iso8601(args.since)
+    except ValueError as e:
+        error(str(e))
 
     # Deviation scan applies to all steps
     receipt_file = Path(args.receipt)
@@ -464,27 +545,31 @@ def main() -> None:
     home = Path.home().resolve()
 
     # Step-specific checks
-    error_reason = None
+    error_reason: Optional[str] = None
 
     if args.step == "plan":
-        error_reason = check_plan(receipt_file, args.since, home)
+        error_reason = check_plan(receipt_file, since_ts, home)
     elif args.step == "review":
-        error_reason = check_review(receipt_file, args.since, home)
+        error_reason = check_review(receipt_file, since_ts, home)
     elif args.step == "implement":
         if not all([args.repo, args.branch, args.base]):
             error("--repo, --branch, --base required for implement")
+        # Validate base as hex SHA (7-40 chars)
+        if not re.match(r"^[0-9a-f]{7,40}$", args.base):
+            error(f"Invalid base SHA: {args.base}")
         error_reason = check_implement(receipt_file, args.repo, args.branch, args.base)
     elif args.step == "fix":
         if not all([args.repo, args.branch, args.base, args.review_dir]):
             error("--repo, --branch, --base, --review-dir required for fix")
+        # Validate base as hex SHA (7-40 chars)
+        if not re.match(r"^[0-9a-f]{7,40}$", args.base):
+            error(f"Invalid base SHA: {args.base}")
         error_reason = check_fix(
             receipt_file, args.repo, args.branch, args.base, args.review_dir, home
         )
     elif args.step in ["track", "verify", "ship", "merge"]:
         # No artifact checks
         error_reason = None
-    else:
-        error(f"Unknown step: {args.step}")
 
     if error_reason:
         print(f"Reason: {error_reason}")
@@ -495,4 +580,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        error(f"Unexpected error: {e}")
