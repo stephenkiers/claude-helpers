@@ -812,7 +812,10 @@ def run_step(
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
                 signal.signal(signal.SIGINT, signal.SIG_IGN)
                 time.sleep(5.0)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
+                # Group already gone. macOS raises EPERM (not ESRCH) for killpg on a group
+                # holding only exited/zombie processes; treating it as fatal would turn a
+                # passing gate into an INTERNAL_ERROR.
                 pass
             finally:
                 # Restore original handlers
@@ -821,7 +824,7 @@ def run_step(
 
             try:
                 os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
         else:
             # Restore handlers if we never got pgid
