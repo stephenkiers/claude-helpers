@@ -48,10 +48,14 @@ own PR bot — not a lint/test gate). The `justfile` at the repo root is the act
 
 This is wired into `.claude/repo-cache.json` (`commands.check` = `"just check"`, etc.), the same
 cache `/shipit`, `/cleanup`, and `/merge-and-cleanup` already read generically for any project — so
-those commands run the local CI here with no per-command changes needed. `typecheck` is covered by
-`check`, not as a separate cache entry. `.claude/repo-cache.json` is gitignored per-machine state;
-if it's ever regenerated from scratch (e.g. `/shipit`'s detection step), re-point `lint`/`test`/`check`
-at the `just` targets above rather than the raw commands.
+those commands run the local CI here with no per-command changes needed. `just check` already runs
+lint + typecheck + test, so `typecheck` and `test` must be `null` in the cache, not separate
+entries: the executor only supersedes `lint`/`typecheck` by `check`, so a cached `"test": "just test"`
+runs the whole suite a second time. The suite takes several minutes under load, past the 300s
+per-command default, so the cache also needs a top-level `"checkTimeoutSecs": 900`. `.claude/repo-cache.json` is gitignored
+per-machine state; if it's ever regenerated from scratch (e.g. `/shipit`'s detection step), write
+`commands.check = "just check"`, `commands.test = null`, `commands.typecheck = null`, and
+`checkTimeoutSecs = 900` rather than pointing every key at its own `just` target.
 
 ## How the review system works
 
