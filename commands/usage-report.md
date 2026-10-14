@@ -45,5 +45,6 @@ match rate because nothing has been recorded, say so plainly — for example:
 > No telemetry recorded yet — hooks may not be registered. See `docs/metrics.md` for setup.
 
 Do not invent example token counts, costs, or match-rate numbers to fill the gap. If `diagnose`
-exits non-zero (FAIL), report that plainly too — it means match rate or unknown-token thresholds
-weren't met, not that the command itself failed.
+exits non-zero (FAIL), report that plainly too — it means match rate, unknown-token, or agent-guard
+thresholds weren't met, not that the command itself failed. If the output shows an agent-guard
+violation, copy the `Hook target` line from the output to the user verbatim, without rewording it.
