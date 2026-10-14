@@ -319,7 +319,7 @@ Each state's meaning:
 **Forbidden trailer shapes** (the orchestrator rejects these): `Decision: AWAITING`; `MERGED: no`
 (omit the line instead); `MERGED: yes` with any `Decision` other than `OK`; a `Decision:` line
 together with an awaiting marker; `<!-- step-end -->` without a `Decision:` line; any receipt
-without an `ATTEMPT:` line.
+without an `ATTEMPT:` line; a line beginning `Deviation:` (any `Decision`).
 
 **Required lines per step** (the orchestrator parses these; keep the exact `KEY: value` form on
 its own line). When paths are read from receipts, canonicalize them (resolve `..` and symlinks)
@@ -337,6 +337,10 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 | ship | `PR_URL: <url>` | `PR_URL: https://github.com/o/r/pull/123` |
 | merge | `MERGED: yes` | from `gh pr view --json state`; written only when the state is `MERGED`, otherwise the line is omitted |
 
+**Artifact verification.** A receipt is a claim. On `OK`, the orchestrator verifies the step's on-disk artifacts with
+`scripts/flow-verify-receipt.py`. For plan, that is the session dir named by `FINAL_PLAN_PATH`'s
+invocation id, with every `selected-experts.md` row's contribution (except `auditor` and `synthesis` rows). For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. The verifier's exit codes: 0 = artifacts OK; 1 = receipt admits deviation or artifact missing; 2 = bad arguments or internal error. The fix step accepts zero commits if the action plan has no *Doing it* items. All steps check mtime freshness: artifact mtimes must be >= `--since` minus 5 seconds. Point to `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2.
+
 Write the receipt with the `Write` tool (one file, one path, the path the orchestrator gave you).
 Copy that path **character for character** — never retype, shorten, or "correct" it from the
 worktree name or branch. `Write` creates missing parent directories silently, so a one-character slip
@@ -347,6 +351,11 @@ writing.
 Never write anything else under `FLOW_DIR` — `state.json`, `log.md`, `answers/` belong to the
 orchestrator alone. The one exception is the read-then-write of this step's own receipt in the Ask
 block.
+
+**`Deviation:` is reserved.** A step never writes a line beginning `Deviation:`. A command that
+cannot run as documented writes `Decision: FAILED` with the reason, and never substitutes its
+own procedure. The orchestrator rejects an OK receipt that admits a deviation (`Deviation:` at line start, or
+`NOT dispatched` outside fenced code blocks, blockquotes and backtick spans) as `receipt admits deviation`.
 
 ### Lifecycle (defined once; Resolve, Ask, and Receipt all rely on this)
 

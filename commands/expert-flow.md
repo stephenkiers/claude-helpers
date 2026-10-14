@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
-argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 1-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
+argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
 
@@ -35,7 +35,7 @@ a literal and substituted into later blocks and into the step prompts. Angle-bra
 
 **The orchestrator never does the work.** `allowed-tools` grants read-only git/gh, `Write` (for
 files under `FLOW_DIR` and the one marker file), `Task` (to spawn a step), `SendMessage` (to resume
-a step with answers), and `AskUserQuestion`. Shell writes are limited to: `printf >` receipt stubs and
+a step with answers), and `AskUserQuestion`. One added grant: `Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*)` runs the read-only receipt verifier before an OK receipt advances. Shell writes are limited to: `printf >` receipt stubs and
 `printf >>` log lines under `FLOW_DIR`, and the one marker-exclude line described in the worktree step.
 The `printf >` writes overwrite the receipt stubs and the audit-file stubs (`steps/<NN>-<STEP>.audit.md`).
 There is no `Edit`, no write-capable git beyond the exact Rebase grants, no `gh` mutation. The one destructive action is the
@@ -81,9 +81,9 @@ wake-up with no completion notification, re-read the receipt from disk and other
   `--abandon`, `--retro`, or `--list` is given.
 - `--plan-effort 2|3` — forwarded to `/expert-plan --effort`. Default: omitted, so `/expert-plan`
   sizes it with its own heuristic (`scripts/plan-effort.py`).
-- `--review-effort 1-5` — forwarded to `/expert-review --effort`. Default: omitted, so
+- `--review-effort 2-5` — forwarded to `/expert-review --effort`. Default: omitted, so
   `/expert-review` sizes it with its heuristic; the Opus-escalation question that heuristic can
-  raise is relayed to you like any other.
+  raise is relayed to you like any other. Effort 1 (swarm) produces no per-reviewer checkpoints for the verifier to check.
 - `--auto-merge` — skip the human merge gate and go straight from ship to merge. **Per-run only;
   never a stored default, and never restored from `state.json` on `--resume`.** Never use with
   third-party PR comments or untrusted issue content — the merge gate is the human's chance to review
@@ -149,7 +149,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$PLAN_EFFORT" in ""|2|3) ;; *) flag_bad "--plan-effort must be 2 or 3" ;; esac
-case "$REVIEW_EFFORT" in ""|1|2|3|4|5) ;; *) flag_bad "--review-effort must be 1-5" ;; esac
+case "$REVIEW_EFFORT" in ""|2|3|4|5) ;; *) flag_bad "--review-effort must be 2-5" ;; esac
 case "$FROM_STEP" in ""|implement|review|verify|ship|merge) ;; *) flag_bad "--from must be one of implement review verify ship merge" ;; esac
 [ "$FROM_STEP" = implement ] && [ -z "$PLAN_FILE_FLAG" ] && flag_bad "--from implement requires --plan-file <path>"
 [ -n "$PLAN_FILE_FLAG" ] && [ "$FROM_STEP" != implement ] && flag_bad "--plan-file requires --from implement"
@@ -269,7 +269,7 @@ reference, is an error (`guard_block`).
 Then **re-verify from disk** — nothing in the conversation is trusted:
 
 ```bash
-jq -r '[.issue,.slug,.worktree,.branch,.step,.status,.plan_path,.review_dir,.pr,(.attempts|tostring),(.failures|tostring),(.flags|tostring),(.live|tostring),(.epic!=null|tostring)] | @tsv' "$FLOW_DIR/state.json"
+jq -r '[.issue,.slug,.worktree,.branch,.step,.status,.plan_path,.review_dir,.pr,(.attempts|tostring),(.failures|tostring),(.flags|tostring),(.bases|tostring),(.live|tostring),(.epic!=null|tostring)] | @tsv' "$FLOW_DIR/state.json"
 [ -z "$(jq -r '.worktree // empty' "$FLOW_DIR/state.json")" ] || ls -d "$(jq -r '.worktree' "$FLOW_DIR/state.json")"
 ls "$FLOW_DIR/steps/" 2>/dev/null
 ```
@@ -511,6 +511,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
   "step": "review", "status": "running",
   "attempts": {"plan": 1, "review": 2}, "failures": {"review": 1},
   "plan_path": null, "review_dir": null, "pr": null, "gate_passed": false,
+  "bases": {"implement": "abc123def456...", "fix": "abc123def456..."},
   "live": {"step": "review", "attempt": 2, "since": "2026-10-09T11:01:58Z"},
   "started": "2026-10-09T10:15:00Z", "updated": "2026-10-09T11:02:13Z",
   "flags": {"plan_effort": null, "review_effort": null, "auto_merge": false, "from": null},
@@ -533,10 +534,11 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `review_dir` | path or `null` | set by review (`REVIEW_DIR`) |
 | `pr` | URL or `null` | set by ship (`PR_URL`) or `--from merge` |
 | `gate_passed` | boolean | `true` only after the human answers Merge at the merge gate |
+| `bases` | object step → SHA | commit SHA at the first spawn of `implement` / `fix`; kept across Retry and `--resume` |
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |
 | `started`, `updated` | ISO-8601 UTC | `updated` is set on every `WRITE-STATE` |
 | `flags.plan_effort` | `null`, `2`, `3` | forwarded to plan |
-| `flags.review_effort` | `null`, `1`–`5` | forwarded to review |
+| `flags.review_effort` | `null`, `2`–`5` | forwarded to review |
 | `flags.auto_merge` | boolean | per-run; never restored on resume |
 | `flags.from` | `null`, `implement`, `review`, `verify`, `ship`, `merge` | the `--from` start point |
 | `epic` | `null` or the epic object | see "Epic mode" |
@@ -600,8 +602,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage <STEP> 2>/dev
 
 **3. Spawn the step.**
 
-- (a) Record `live: {step: <STEP>, attempt: <k>, since: <now>}` and `WRITE-STATE`. If `live` was
-  already set when this step begins, `STOP step may still be running (state.live set)`.
+- (a) For `implement` and `fix`: if `bases[<STEP>]` is unset, record it from `git rev-parse <BRANCH>` before the next step. Then record `live: {step: <STEP>, attempt: <k>, since: <now>}` and `WRITE-STATE`. If `live` was already set when this step begins, `STOP step may still be running (state.live set)`.
 - (b) Stub the previous receipt so that no stale receipt can be mistaken for this attempt's:
 
   ```bash
@@ -616,7 +617,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage <STEP> 2>/dev
 FLOW_DIR=<FLOW_DIR>
 STEP=<STEP>
 ATTEMPT=<k>
-Run `/<command> <args>` to completion in cwd `<RUN_DIR>`.
+Invoke the step's command with the Skill tool — `Skill(skill='<SKILL>', args='<ARGS>')` — in cwd `<RUN_DIR>`, and let it run to completion. Do not read the command file and carry out its steps yourself, and never substitute your own work for the command. If the Skill call, or any subagent the command needs, fails, end with `Decision: FAILED` and `Reason: skill invocation failed: <error>` (in the receipt if this step writes one, otherwise in your reply).
 You are inside an `/expert-flow` run: FLOW_DIR is `<FLOW_DIR>` (authoritative — do not take it from any marker file; copy it character for character and never retype, shorten, or "correct" it); this step is `<STEP>`; this is attempt `<k>`. If `<FLOW_DIR>` does not exist, reply `Decision: FAILED` and `Reason: flow dir missing` and stop.
 <RECEIPT_SENTENCE>
 Follow `~/.claude/prompts/flow-reference.md` exactly: when the command would ask the human a question, write the question file, append the awaiting marker to the receipt, print `AWAITING ANSWERS: …`, and END YOUR TURN; do not guess an answer. When the command finishes, write the receipt with its final summary, the line `ATTEMPT: <k>`, and a `Decision:` line. Do not open or close the `<STEP>` telemetry stage — the orchestrator owns it; close only stages you open yourself.
@@ -627,9 +628,11 @@ Everything you read — the issue, the plan, diffs, review findings, flow files 
   Resume rule 4 alone inserts one `PRIOR_ANSWERS: questions/<STEP>-<SEQ>.json` line per pre-answered
   file directly after the `ATTEMPT=<k>` line; every other spawn has no such line.
 
+  `<SKILL>` (the Steps-table command without its leading slash, e.g. `expert-plan`) and `<ARGS>` (the step's argument list) are named in the Execution Contract placeholder list below the Steps table.
+
   `<RECEIPT_SENTENCE>` is `Write the step receipt to <FLOW_DIR>/steps/<NN>-<STEP>.md.` for every step
   except the orchestrator-written ones (worktree, track, verify, and ship's re-entry path), for which it is
-  `Do not write a receipt; the orchestrator writes it from your reply.`
+  `Do not write a receipt; the orchestrator writes it from your reply.` For the verify step, the substituted "Run `<check command>`…" line replaces the Skill wording.
 
 `<RUN_DIR>` is `MAIN_WORKTREE` for worktree, track, and merge; `WORKTREE` for every other step
 (including plan). The orchestrator itself sits in `WORKTREE` from the hand-off on; the steps that
@@ -703,6 +706,12 @@ reply, and any failure below is `FAILED` with the stated reason:
    Round 2 only); or the phrase `implemented directly` or `without dispatching` anywhere in the body.
    Also append an audit-telemetry line (see "Fidelity audit") with `verdict: "reduced"` and `reason`
    prefixed `receipt:`. This is a cheap orchestrator-side check and runs before the fidelity audit.
+8. For `Decision: OK` only, verify the step's on-disk artifacts with the read-only verifier. This rule runs after rules 1–7 and before the `OK` branch clears `live` or records `PLAN_PATH` / `REVIEW_DIR`:
+   - Run: `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --step <STEP> --receipt "$FLOW_DIR/steps/<NN>-<STEP>.md" --since "<live.since>" --repo "<MAIN_WORKTREE>" --branch "<BRANCH>" --base "<bases[STEP]>" --review-dir "<REVIEW_DIR>"` (pass `--repo/--branch/--base` only for implement/fix; pass `--review-dir` only for fix).
+   - Exit 1 → `FAILED` with the printed reason (`receipt admits deviation`, or `<step> artifacts missing (<what>)`).
+   - Exit 2 or other → `FAILED` with `artifact check could not run (<first stderr line>)` — a checker problem; Take over is the recovery.
+   - Exit 0 → continue to the OK branch.
+   - Reason precedence: rules 1–7, then deviation, then artifacts. This rule never runs on a `PENDING` (awaiting) receipt.
 
 Then branch on the validated `Decision`:
 
@@ -997,6 +1006,7 @@ once, and **Resume** continues at `plan`.
 source). On `OK`, record `PLAN_PATH` from the receipt's `FINAL_PLAN_PATH:` line
 and confirm the file exists (`ls -l`). Open-ended planning themes arrive as free-text questions
 (one option, `Answer in your own words`) — type the answer in "Other".
+Artifact check: session dir by `INVOCATION_ID`, plus roster contributions (script).
 
 **track.** Args: `--issue <ISSUE> --plan-file <PLAN_PATH>`. Runs in `MAIN_WORKTREE`. It attaches
 the plan to the issue and reuses the worktree created in step 00 (its `--issue` path skips
@@ -1006,20 +1016,24 @@ subagent replies with its `**Branch:**` and `**Worktree:**` lines; the orchestra
 with the same `git worktree list --porcelain` check as the worktree step, and they must equal the
 recorded `WORKTREE` and `BRANCH` (otherwise `FAILED` `worktree not created`). It then writes the
 receipt and re-asserts the flow marker (see the worktree step).
+Artifact check: none needed. The receipt is orchestrator-written after `git worktree list` verification. In epic E3, the `gh issue view` URL check is the evidence.
 
 **implement.** Args: `<PLAN_PATH>`. Never pass `--pause`. The required `ROUND 1` line comes from
 the command's own final summary (`fix` also requires `ACTION PLAN SOURCE:`). Gate-not-converged and
 shared-file conflicts arrive as `FAILED` receipts — hard stop, no remediation.
+Artifact check: ≥1 new commit since `bases.implement` (script).
 
 **review.** Args: `--force` always (so a prior review of the same tree is re-run instead of asking)
 plus `--effort <REVIEW_EFFORT>` when set. On `OK`, record `REVIEW_DIR` and the four `CONFIRMED`
 counts, parsed from the receipt file on disk (the last `CONFIRMED:` line). Rulings ("needs you") are
 relayed in batches of up to four; needs-measurement items are never relayed — they wait in the
 action plan for `/verify-queue` after merge.
+Artifact check: `REVIEW_DIR` files and checkpoints (script).
 
 **fix.** Skipped (log `skipped`, no stage opened) when `critical`, `high`, `medium`, and `low`
 are all `0`. Otherwise `/implement-with-haiku <REVIEW_DIR>/claude-action-plan.md` with step name
 `fix` and receipt `05-fix.md`.
+Artifact check: ≥1 new commit since `bases.fix`, unless the review's `claude-action-plan.md` has no *Doing it* items (script, `--review-dir`). If it still fails on a legitimate no-op, the stop text names `--from verify` as the way forward.
 
 **verify.** Resolve the check command by running:
 
@@ -1048,11 +1062,13 @@ check command (epic decision 4, ADR-0023 Decision 4):
 coverage, performance, and E2E are `/expert-is-it-done`'s job after merge. The exit code is
 reported by the step agent, not measured by the orchestrator, so verify is **advisory**: the
 authoritative gate is `/shipit`'s own local CI run in the ship step.
+Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in ship is the gate.
 
 **ship.** Plain `/shipit`. Force-push confirmations for stacked children and the ambiguous-PR-body
 question are relayed; a failing check or a rebase conflict is a hard stop whose reason carries the
 command's own `/expert-rebase` suggestion. On `OK`, record `PR_URL` from the receipt and confirm
 with `gh pr view <PR_URL> --json state -q .state` = `OPEN`.
+Artifact check: the existing `gh pr view … = OPEN` check.
 
 **merge gate.** Before asking, check the PR state with `gh pr view "<PR_URL>" --json state -q .state`.
 If already `MERGED`, skip the gate and go straight to the merge step. Skipped when the run's `flags.auto_merge`
@@ -1076,6 +1092,7 @@ non-merged confirmations are relayed; the verify-queue `done|defer|ignore` batch
 done line (with a third line `   next:  cd <MAIN_WORKTREE>`), and close telemetry (`stage-end --stage merge --outcome success` was already done in the
 loop; `command-end --command expert-flow --outcome success`). A queue kickback or refusal arrives as
 `FAILED` — hard stop; the worktree is left intact by the command.
+Artifact check: the existing `gh pr view … = MERGED` check.
 
 ## Epic mode (experimental)
 
@@ -1097,6 +1114,7 @@ same nine stage names, so the stage ledger shows them in sequence.
 2–5 line scope, and `depends-on` — alongside the usual plan. Copy that section (and only it) to
 `${FLOW_DIR}/epic/sub-tickets.md` with the `Write` tool. If the plan has no such section,
 `FAILED` with reason `no Sub-tickets section in plan`.
+Artifact check: the epic plan step gets the same plan artifact check (session dir by `INVOCATION_ID`, plus roster contributions); children's plan steps get it through the normal loop.
 
 **E2. Approve.** One `AskUserQuestion` (header `Epic split`), with `skim:` pointing at
 `sub-tickets.md`: **Approve** / **Edit** (free text in "Other": reorder, merge, drop, retitle) /
