@@ -209,10 +209,10 @@ sanctions one narrow, human-gated git operation to close that gap.
   the ship step pushes. A clean rebase is logged as `rebased` and verify re-runs through the normal loop.
   On conflicts the orchestrator runs `git rebase --abort`, prints the `/expert-rebase` hand-off line,
   and takes the Take over outcome. It never resolves conflicts.
-- **Narrowed grants.** The git grants for this purpose are exactly `Bash(git fetch origin:*)` and
-  `Bash(git rebase origin/*:*)`. The command's `allowed-tools` is to carry only these two patterns in
-  place of the broader `Bash(git fetch:*)` and `Bash(git rebase:*)`; until that command-doc change lands,
-  the broader patterns remain in the command and this amendment is the record of the intended scope.
+- **Narrowed grants.** The git grants for this purpose are `Bash(git fetch origin:*)`,
+  `Bash(git rebase origin/*:*)`, and `Bash(git rebase --abort:*)` (used only to back out a conflicted
+  rebase). The command's `allowed-tools` carries only these patterns in place of the broader
+  `Bash(git fetch:*)` and `Bash(git rebase:*)`.
 - **Rationale.** The orchestrator already holds unscoped `Write` and `Task`, so the gap was never a
   capability the flow lacked; it was the missing record of what the orchestrator is allowed to do with
   git. The "orchestrator does not mutate git" stance in §1 and the Consequences now has one explicit
