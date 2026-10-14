@@ -543,6 +543,10 @@ python3 scripts/run-metrics.py [--log PATH] diagnose [--window-days N] \
 The agent guard is a third PASS condition in this health check. It does not feed the usage gate
 (see [Usage Gate](#usage-gate-per-subagent-token-accounting)).
 
+Every run also prints `Excluded fixture rows: N (known test-fixture session_ids; see ADR-0016)`: the
+number of in-window rows dropped because their `session_id` is one of 8 known legacy test-fixture ids
+(#280). N is printed even when it is 0. When N > 0, an `Excluded fixture session_ids: ...` line follows, listing the distinct dropped ids.
+
 ### Thresholds
 
 These thresholds were defined **before any baseline data exists**, per the issue plan:
@@ -550,13 +554,16 @@ These thresholds were defined **before any baseline data exists**, per the issue
 - **≥95% of `*.begin` events have a matching `*.end`** — ensures most activity is observed completeness
 - **<15% of token/cache fields are `"unknown"` across successful runs** — ensures reasonable token capture rate
 
+Both percentages are computed after the fixture-row exclusion.
+
 Run `diagnose` regularly to track telemetry data quality over time.
 
 ### Agent data guard
 
 The guard checks `agent.*` rows written after a cutoff, so that a regression in the agent hooks fails
 loudly instead of quietly skewing the spawn and token counts. It runs on the events that survive the
-`--window-days` filter, so its effective lower bound is `max(since, window start)`.
+`--window-days` filter and after the fixture-row exclusion (the 8 known fixture `session_id`s are not
+judged), so its effective lower bound is `max(since, window start)`.
 
 The cutoff is `2026-10-13T18:58:25Z`, the merge time of #267 (the PR that introduced
 `agent.internal_stop` and normalized agent identity). Events before it were written by older code and
@@ -603,7 +610,10 @@ one reason the `min_begins` floor exists.
 
 **Machine-local state.** `diagnose` reads the machine's own `~/.claude/telemetry/events.jsonl` and the
 machine's hook wiring. `just check` therefore covers the guard only through fixtures; it cannot tell you
-whether this machine's real log passes.
+whether this machine's real log passes. Fixtures should not write to the real log either: `tests/run_all.py`
+runs every suite under a temp HOME and fails the run, naming the suite, on any write under
+`<tmp HOME>/.claude/telemetry/` by any suite that inherits `HOME`. That guard has documented limits
+(it covers only suites that inherit `HOME` and writes it can observe), so it is a backstop, not a proof.
 
 #### When the agent guard fails
 
