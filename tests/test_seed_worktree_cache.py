@@ -14,6 +14,7 @@ import json
 import tempfile
 import subprocess
 from pathlib import Path
+import unittest.mock as mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -826,6 +827,541 @@ if __name__ == "__main__":
     finally:
         os.chdir(old_cwd)
         fixture.cleanup()
+
+    print()
+    print("[Section 18] resolve_check_command: malformed YAML in project.yaml (F3)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create a worktree with project.yaml that has invalid structure
+        fixture.create_branch("feature/bad-yaml")
+        wt_path = fixture.create_worktree("feature/bad-yaml")
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+
+        # Write truly invalid YAML structure (bad indentation)
+        malformed_yaml = "commands:\ncheck: bad_indent\n"  # Missing indent for 'check'
+        (new_claude / "project.yaml").write_text(malformed_yaml)
+
+        command, source, failure_reason = resolve_check_command(wt_path)
+
+        test_result(
+            "resolve_check_command: handles malformed YAML gracefully",
+            command is None or isinstance(command, str),
+            f"command type: {type(command)}"
+        )
+
+        # When YAML is malformed or missing the check key, should get no command
+        if command is not None:
+            test_result(
+                "resolve_check_command: malformed YAML doesn't give unexpected command",
+                "bad_indent" not in str(command),
+                f"command={command}"
+            )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 19] resolve_check_command: no worktree cache, falls back to main (F5)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create repo-cache.json in main ONLY
+        main_claude = fixture.main_worktree / ".claude"
+        main_claude.mkdir(exist_ok=True)
+        repo_cache = {"commands": {"check": "main-check"}}
+        (main_claude / "repo-cache.json").write_text(json.dumps(repo_cache))
+
+        # Create a worktree with no cache
+        fixture.create_branch("feature/no-cache")
+        wt_path = fixture.create_worktree("feature/no-cache")
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+        # Don't create any cache files in the worktree
+
+        # Resolve with explicit main_worktree parameter
+        command, source, failure_reason = resolve_check_command(wt_path, fixture.main_worktree)
+
+        test_result(
+            "resolve_check_command: falls back to main when worktree has no cache",
+            command == "main-check",
+            f"command={command}"
+        )
+
+        test_result(
+            "resolve_check_command: source identifies the resolution source",
+            source is not None,
+            f"source={source}"
+        )
+
+        test_result(
+            "resolve_check_command: no failure_reason on main fallback",
+            failure_reason is None
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 20] resolve_check_command: worktree cache without check key falls back to main (F5)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create repo-cache.json in main
+        main_claude = fixture.main_worktree / ".claude"
+        main_claude.mkdir(exist_ok=True)
+        repo_cache = {"commands": {"check": "main-check"}}
+        (main_claude / "repo-cache.json").write_text(json.dumps(repo_cache))
+
+        # Create a worktree with cache file but no 'commands.check' key
+        fixture.create_branch("feature/incomplete-cache")
+        wt_path = fixture.create_worktree("feature/incomplete-cache")
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+        incomplete_cache = {"commands": {"lint": "some-lint"}}  # No check key
+        (new_claude / "repo-cache.json").write_text(json.dumps(incomplete_cache))
+
+        command, source, failure_reason = resolve_check_command(wt_path, fixture.main_worktree)
+
+        test_result(
+            "resolve_check_command: falls back to main when worktree cache lacks check key",
+            command == "main-check",
+            f"command={command}"
+        )
+
+        test_result(
+            "resolve_check_command: identifies resolution source",
+            source is not None,
+            f"source={source}"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 21] CLI: checks resolve-check with --main-worktree (F5)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create repo-cache.json in main
+        main_claude = fixture.main_worktree / ".claude"
+        main_claude.mkdir(exist_ok=True)
+        repo_cache = {"commands": {"check": "main-fallback"}}
+        (main_claude / "repo-cache.json").write_text(json.dumps(repo_cache))
+
+        # Create a worktree with no cache
+        fixture.create_branch("feature/test-main-fallback")
+        wt_path = fixture.create_worktree("feature/test-main-fallback")
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+
+        repo_root = Path(__file__).parent.parent
+
+        # Run the CLI command with --main-worktree
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.workflow.cli", "checks", "resolve-check",
+             "--worktree", str(wt_path),
+             "--main-worktree", str(fixture.main_worktree)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root
+        )
+
+        test_result(
+            "CLI checks resolve-check --main-worktree: exits 0",
+            result.returncode == 0,
+            f"returncode={result.returncode}, stderr={result.stderr}"
+        )
+
+        try:
+            output = json.loads(result.stdout)
+            test_result(
+                "CLI checks resolve-check --main-worktree: finds command from main",
+                output.get("command") == "main-fallback",
+                f"command={output.get('command')}"
+            )
+        except json.JSONDecodeError as e:
+            test_result(
+                "CLI checks resolve-check --main-worktree: outputs valid JSON",
+                False,
+                f"JSON error: {e}"
+            )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 22] seed_worktree_cache: dangling destination symlink is not replaced (F12)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        main_wt = tmppath / "main"
+        new_wt = tmppath / "new"
+
+        main_wt.mkdir()
+        new_wt.mkdir()
+
+        main_claude = main_wt / ".claude"
+        main_claude.mkdir(exist_ok=True)
+
+        # Create source file
+        original_content = {"commands": {"check": "original"}}
+        (main_claude / "repo-cache.json").write_text(json.dumps(original_content))
+
+        # Create a dangling symlink in the destination
+        new_claude = new_wt / ".claude"
+        new_claude.mkdir(exist_ok=True)
+        dangling_target = new_claude / "non-existent-target"
+        (new_claude / "repo-cache.json").symlink_to(dangling_target)
+
+        # Verify the symlink is indeed dangling
+        test_result(
+            "setup: symlink is dangling",
+            (new_claude / "repo-cache.json").is_symlink() and not (new_claude / "repo-cache.json").exists()
+        )
+
+        # Try to seed
+        seeded, skipped, error = seed_worktree_cache(main_wt, new_wt)
+
+        test_result(
+            "seed_worktree_cache: skips dangling symlink destination",
+            "repo-cache.json" in skipped,
+            f"skipped={skipped}, seeded={seeded}"
+        )
+
+        test_result(
+            "seed_worktree_cache: dangling symlink not replaced",
+            (new_claude / "repo-cache.json").is_symlink(),
+            "symlink should still exist"
+        )
+
+        test_result(
+            "seed_worktree_cache: no error on dangling symlink",
+            error is None
+        )
+
+    print()
+    print("[Section 23] seed_worktree_cache: good file seeded, then escaping symlink skipped (F9)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        main_wt = tmppath / "main"
+        new_wt = tmppath / "new"
+
+        main_wt.mkdir()
+        new_wt.mkdir()
+
+        main_claude = main_wt / ".claude"
+        main_claude.mkdir(exist_ok=True)
+
+        # Create both files in main: repo-cache.json (good) and project.yaml (will be escaping)
+        repo_cache = {"commands": {"check": "just check"}}
+        (main_claude / "repo-cache.json").write_text(json.dumps(repo_cache))
+
+        # Create an external directory and a symlink that escapes .claude
+        external = tmppath / "external"
+        external.mkdir()
+        external_file = external / "bad-project.yaml"
+        external_file.write_text("commands:\n  check: external\n")
+
+        # Create symlink in main that points outside
+        (main_claude / "project.yaml").symlink_to(external_file)
+
+        # Seed
+        seeded, skipped, error = seed_worktree_cache(main_wt, new_wt)
+
+        test_result(
+            "seed_worktree_cache: repo-cache.json (good file) is seeded",
+            "repo-cache.json" in seeded,
+            f"seeded={seeded}"
+        )
+
+        test_result(
+            "seed_worktree_cache: project.yaml (escaping symlink) not seeded",
+            "project.yaml" not in seeded,
+            f"seeded={seeded}"
+        )
+
+        test_result(
+            "seed_worktree_cache: error returned for escaping symlink",
+            error is not None,
+            f"error={error}"
+        )
+
+        test_result(
+            "seed_worktree_cache: repo-cache.json file actually copied",
+            (new_wt / ".claude" / "repo-cache.json").exists()
+        )
+
+    print()
+    print("[Section 24] resolve_check_command: falls back to main for project.yaml (F10)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create project.yaml in main ONLY
+        main_claude = fixture.main_worktree / ".claude"
+        main_claude.mkdir(exist_ok=True)
+        main_project = "commands:\n  check: main-project-check\n"
+        (main_claude / "project.yaml").write_text(main_project)
+
+        # Create a worktree with NO cache files
+        fixture.create_branch("feature/no-cache-project")
+        wt_path = fixture.create_worktree("feature/no-cache-project")
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+        # Don't create any files
+
+        command, source, failure_reason = resolve_check_command(wt_path, fixture.main_worktree)
+
+        test_result(
+            "resolve_check_command: falls back to main project.yaml",
+            command == "main-project-check",
+            f"command={command}"
+        )
+
+        test_result(
+            "resolve_check_command: source mentions project.yaml",
+            source is not None and "project.yaml" in source,
+            f"source={source}"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 25] resolve_check_command: test-only/lint-only cache is actionable failure (q1)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create a worktree with ONLY test/lint, no check
+        fixture.create_branch("feature/test-only")
+        wt_path = fixture.create_worktree("feature/test-only")
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+
+        # Create cache with only test and lint, no check
+        test_only_cache = {"commands": {"test": "pytest", "lint": "ruff check"}}
+        (new_claude / "repo-cache.json").write_text(json.dumps(test_only_cache))
+
+        command, source, failure_reason = resolve_check_command(wt_path)
+
+        test_result(
+            "resolve_check_command (q1): returns None for test-only cache",
+            command is None,
+            f"command={command}"
+        )
+
+        test_result(
+            "resolve_check_command (q1): failure_reason is actionable",
+            failure_reason is not None and "check" in failure_reason.lower(),
+            f"failure_reason={failure_reason}"
+        )
+
+        test_result(
+            "resolve_check_command (q1): failure_reason mentions what is available",
+            failure_reason is not None and ("test" in failure_reason or "lint" in failure_reason or "only" in failure_reason),
+            f"failure_reason={failure_reason}"
+        )
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 26] seed_worktree_cache: seed error with escaping symlink returns error (F7)")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        main_wt = tmppath / "main"
+        new_wt = tmppath / "new"
+
+        main_wt.mkdir()
+        new_wt.mkdir()
+
+        main_claude = main_wt / ".claude"
+        main_claude.mkdir(exist_ok=True)
+
+        # Create a source file that's an escaping symlink
+        external = tmppath / "external"
+        external.mkdir()
+        external_file = external / "bad.json"
+        external_file.write_text('{"commands": {"check": "external"}}')
+
+        # Create symlink in .claude pointing outside
+        (main_claude / "repo-cache.json").symlink_to(external_file)
+
+        # Try to seed
+        seeded, skipped, error = seed_worktree_cache(main_wt, new_wt)
+
+        test_result(
+            "seed_worktree_cache (F7): returns error for escaping symlink",
+            error is not None,
+            f"error={error}"
+        )
+
+        test_result(
+            "seed_worktree_cache (F7): seeded list is empty on error",
+            len(seeded) == 0,
+            f"seeded={seeded}"
+        )
+
+        test_result(
+            "seed_worktree_cache (F7): error mentions symlink or escape",
+            error is not None and ("symlink" in str(error).lower() or "escape" in str(error).lower()),
+            f"error={error}"
+        )
+
+    print()
+    print("[Section 27] apply_track: seed error handling (F7)")
+
+    fixture = GitFixture()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(fixture.repo_root)
+        fixture.create_initial_commit("Initial commit")
+        _track_claude_dir(fixture)
+
+        # Create a bad source that will cause seed to fail (e.g., symlink escaping)
+        main_claude = fixture.main_worktree / ".claude"
+        main_claude.mkdir(exist_ok=True)
+
+        external = fixture.tmpdir / "external"
+        external.mkdir(exist_ok=True)
+        external_file = external / "bad.json"
+        external_file.write_text('{"commands": {"check": "bad"}}')
+
+        # Create an escaping symlink in main
+        (main_claude / "repo-cache.json").symlink_to(external_file)
+
+        tmpdir = Path(tempfile.mkdtemp())
+        tracker_path = tmpdir / "issues.json"
+        plans_dir = tmpdir / "plans"
+
+        provider = LocalProvider(tracker_path=tracker_path, plans_dir=plans_dir)
+
+        # Create and apply plan
+        plan, err = plan_track(
+            provider=provider,
+            plan_content="Implementation plan",
+            title="Test seed error handling",
+            mode="local",
+            cwd=fixture.repo_root
+        )
+
+        fixture.worktree_parent.mkdir(parents=True, exist_ok=True)
+        plan_json = json.dumps(plan.to_dict())
+        result, err = apply_track(provider, plan_json, cwd=fixture.repo_root)
+
+        test_result(
+            "apply_track (F7): has seed_errors attribute",
+            hasattr(result, 'seed_errors'),
+            f"attributes: {dir(result)}"
+        )
+
+        # The seed error should be noted, but apply_track might still succeed
+        # (it doesn't stop the whole apply, just notes the error)
+        test_result(
+            "apply_track (F7): result has steps_completed",
+            hasattr(result, 'steps_completed') and isinstance(result.steps_completed, list)
+        )
+
+        test_result(
+            "apply_track (F7): result has steps_failed",
+            hasattr(result, 'steps_failed') and isinstance(result.steps_failed, list)
+        )
+
+        import shutil
+        shutil.rmtree(tmpdir)
+
+    finally:
+        os.chdir(old_cwd)
+        fixture.cleanup()
+
+    print()
+    print("[Section 28] resolve_check_command: exhausted fallback in tmp dir with no justfile (F6)")
+
+    # Create a temporary directory with no justfile to test exhausted fallback
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+
+        # Create a worktree path in the temp dir (no justfile exists anywhere)
+        wt_path = tmppath / "worktree"
+        wt_path.mkdir()
+
+        new_claude = wt_path / ".claude"
+        new_claude.mkdir(exist_ok=True)
+        # Don't create any cache files
+
+        # Change to the temp dir so no justfile can be found
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmppath)
+
+            # Resolve without any config and no main_worktree fallback
+            command, source, failure_reason = resolve_check_command(wt_path)
+
+            test_result(
+                "resolve_check_command (F6): returns None when exhausted (no config, no justfile)",
+                command is None,
+                f"command={command}"
+            )
+
+            test_result(
+                "resolve_check_command (F6): failure_reason exists when exhausted",
+                failure_reason is not None,
+                f"failure_reason={failure_reason}"
+            )
+
+            test_result(
+                "resolve_check_command (F6): failure_reason is actionable",
+                failure_reason is not None and ("no check" in failure_reason.lower() or "not found" in failure_reason.lower() or "configured" in failure_reason.lower()),
+                f"failure_reason={failure_reason}"
+            )
+
+        finally:
+            os.chdir(old_cwd)
 
     print()
     h.summarize_and_exit()
