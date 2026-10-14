@@ -11,6 +11,9 @@ instead of restating these blocks.
 
 Resolves the repo, main worktree, worktree parent, issue cache, and project root.
 
+Step 3 calls the claude-helpers CLI, so `CLAUDE_HELPERS_DIR` must be resolved first — see the
+"Resolve `CLAUDE_HELPERS_DIR` first" block in `commands/shipit.md` (~line 257).
+
 ```bash
 # 1. Repo identity (empty in a repo with no GitHub remote — local plan mode relies on this)
 REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo "")
@@ -18,37 +21,9 @@ REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo
 # 2. Main worktree (first entry is always main)
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
-# 3. Detect worktree parent. Order matters; first match wins.
-WORKTREE_PARENT=""
-if [ "$(basename "$(dirname "$MAIN_WORKTREE")")" = "worktrees" ]; then
-  # 3a. Canonical layout (e.g. repo/worktrees/main): siblings go next to main. No heuristic applies.
-  WORKTREE_PARENT=$(dirname "$MAIN_WORKTREE")
-else
-  # 3b. First non-main worktree that is a usable sibling candidate. Skip entries under $HOME/.claude/
-  # (merge-queue scratch, .claude/worktrees, PR-review worktrees), entries nested under main, and
-  # entries whose parent basename is a type prefix (feature/fix/chore).
-  while IFS= read -r CANDIDATE; do
-    [ -z "$CANDIDATE" ] && continue
-    [ "$CANDIDATE" = "$MAIN_WORKTREE" ] && continue
-    case "$CANDIDATE" in
-      "$HOME/.claude/"*|"${MAIN_WORKTREE}/"*) continue ;;
-    esac
-    case "$(basename "$(dirname "$CANDIDATE")")" in
-      feature|fix|chore) continue ;;
-    esac
-    WORKTREE_PARENT=$(dirname "$CANDIDATE")
-    break
-  done <<EOF
-$(git worktree list --porcelain | grep '^worktree ' | cut -d' ' -f2-)
-EOF
-  # 3c. Plain top-level clone with no worktrees/ parent and no usable sibling.
-  [ -z "$WORKTREE_PARENT" ] && WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
-fi
-# 3d. Fail closed: never main itself, never under ~/.claude/.
-case "$WORKTREE_PARENT" in
-  "$MAIN_WORKTREE"|"$HOME/.claude"|"$HOME/.claude/"*)
-    echo "ERROR: unsafe WORKTREE_PARENT '$WORKTREE_PARENT' (main: '$MAIN_WORKTREE')" >&2; exit 1 ;;
-esac
+# 3. Worktree parent: ONE implementation, in Python (scripts/workflow/worktrees.py::detect_worktree_parent).
+#    Fails closed (exit 1) if unsafe.
+WORKTREE_PARENT=$(PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli worktree detect-parent --cwd "$PWD") || { echo "ERROR: could not determine WORKTREE_PARENT" >&2; exit 1; }
 
 # 4. Issue cache at worktree parent level
 CACHE_FILE="${WORKTREE_PARENT}/issues.json"
@@ -73,16 +48,18 @@ on `REPO` or `ASSIGNEE`.
 
 **`WORKTREE_PARENT` and worktree directory names must never contain `/`**, even though branch names
 do (`feature/166-foo`, `fix/...`, `chore/...` — see `commands/track-and-start.md` "Branch Naming").
-Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone. Step 3 is
-ordered so a poisoned heuristic can never win: (a) the canonical layout (`MAIN_WORKTREE` under a
-`worktrees/` dir) is taken first and short-circuits everything; (b) otherwise the first non-main
-worktree is used only if it is not under `$HOME/.claude/` (merge-queue scratch such as
-`~/.claude/merge-queue-scratch/<hash>/scratch`, `.claude/worktrees`, PR-review worktrees), not nested
-under `MAIN_WORKTREE/`, and its parent is not a type-prefixed folder (`feature`/`fix`/`chore`) —
-otherwise a nested or scratch entry listed second would self-reinforce into nested worktrees;
-(c) a plain top-level clone falls back to `${MAIN_WORKTREE}/worktrees`. Finally, step 3 fails closed:
-`WORKTREE_PARENT` equal to `MAIN_WORKTREE` or under `$HOME/.claude/` aborts with an error instead of
-creating a worktree there.
+Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone.
+
+The precedence is implemented once, in `scripts/workflow/worktrees.py::detect_worktree_parent`, and
+exposed to command docs via `worktree detect-parent`; the bash no longer duplicates that logic. In order:
+(a) the canonical layout (`MAIN_WORKTREE` under a `worktrees/` dir) is taken first and short-circuits
+everything; (b) otherwise the first usable sibling worktree is used, skipping entries under
+`$HOME/.claude/` (merge-queue scratch, `.claude/worktrees`, PR-review worktrees), entries nested under
+`MAIN_WORKTREE/`, and entries whose parent is a type-prefixed folder (`feature`/`fix`/`chore`) —
+otherwise a nested or scratch entry would self-reinforce into nested worktrees; (c) a plain top-level
+clone falls back to `${MAIN_WORKTREE}/worktrees`. Detection fails closed: a result equal to
+`MAIN_WORKTREE` or under `$HOME/.claude/`, or a git failure, makes the CLI print `ERROR: <message>` to
+stderr and exit 1 with empty stdout, and the calling block aborts instead of creating a worktree there.
 
 ## Stack Detection
 
