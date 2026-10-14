@@ -57,6 +57,7 @@ READ_ONLY_BASH = (
     r"(?:ls|cat|grep|jq|date|printf|mkdir)(?: .*)?",
     r"sed -n(?: .*)?",
     r".*run-metrics\.py['\"]?(?: .*)?",
+    r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -355,6 +356,39 @@ def main():
                   "Prior answers" in ask_sec and "reused-answers" in ask_sec and "PRIOR_ANSWERS" in ask_sec)
     h.test_result("receipt read is the first action after a hand-back",
                   "first action" in text and "leaves the flow `running`" in " ".join(text.split()))
+
+    print()
+    print("[Section 11] Anti-shortcut rules, fidelity audit, retro (B3)")
+    loop = sub("### The step loop")
+    tmpl = loop.split("```\nFLOW_DIR=", 1)[1].split("\n```", 1)[0] if "```\nFLOW_DIR=" in loop else ""
+    h.test_result("step prompt template says a reduced run is a failure",
+                  "reduced run" in tmpl and "Reason: reduced run:" in tmpl)
+    h.test_result("receipt rule 7 checks Panel, ROUND NOT RUN, and direct implementation",
+                  "7. For `Decision: OK`" in loop and "`Panel:`" in loop and "NOT dispatched" in loop
+                  and "NOT RUN" in loop and "implemented directly" in loop and "without dispatching" in loop)
+    audit = sub("### Fidelity audit")
+    h.test_result("Fidelity audit section exists", bool(audit))
+    for needle in ("expert-scout", ".audit.md", "FIDELITY: ok", "FIDELITY: reduced", "<!-- audit-end -->",
+                   "reduced run (audit)", "--failure-class reduced-run", "audits.jsonl", "audit-unavailable"):
+        h.test_result(f"audit section mentions {needle}", needle in audit)
+    h.test_result("missing audit file is treated as ok, not a failure",
+                  "treated as `FIDELITY: ok`" in audit and "not a new" in audit)
+    h.test_result("audit covers plan, implement, review, fix and excludes the rest",
+                  "`plan`, `implement`, `review`, and `fix`" in audit
+                  and "never\nworktree, track, verify, ship, or merge" in audit)
+    h.test_result("Retry after a reduced run adds the extra line",
+                  "Previous\nattempt was rejected as a reduced run" in audit)
+    h.test_result("ledger render uses --run-key (render has no --repo)",
+                  "implement-ledger.py\" locate --repo" in audit and "render --run-key" in audit)
+    h.test_result("--list prints the reduced-runs tally from audits.jsonl",
+                  "audits.jsonl" in list_sec and "reduced runs:" in list_sec)
+    h.test_result("Arguments documents --retro", "--retro <flow-dir|issue#>" in args_sec)
+    h.test_result("--retro parsed and takes no other flags",
+                  "RETRO_REF" in text and "--retro takes no other flags" in text)
+    retro_sec = sub("### `--retro`")
+    h.test_result("--retro spawns one Opus general-purpose agent writing retro.md",
+                  '"opus"' in retro_sec and "general-purpose" in retro_sec and "retro.md" in retro_sec)
+    h.test_result("--retro exit row in Every Exit Path", re.search(r"^\| `--retro`", exit_sec, re.M) is not None)
 
     print()
     h.summarize_and_exit()
