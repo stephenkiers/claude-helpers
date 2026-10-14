@@ -97,17 +97,15 @@ branch refs/heads/feature
         except Exception:
             pass
 
-    # Extract type list from prompts/worktree-reference.md line 26
-    # Find the line with: printf '%s\n' "feature fix chore" | grep -qw "$SECOND_PARENT_BASENAME"
+    # Extract type list from prompts/worktree-reference.md step 3: a case pattern like
+    #   feature|fix|chore) continue ;;
     prompt_file = Path(__file__).parent.parent / "prompts" / "worktree-reference.md"
     prompt_types = set()
     if prompt_file.exists():
         prompt_content = prompt_file.read_text()
-        # Find the line with the printf statement containing type prefixes
-        match = re.search(r'printf\s+\'%s\\n\'\s+"([^"]+)"', prompt_content)
+        match = re.search(r'^\s*([a-z]+(?:\|[a-z]+)+)\)\s*continue', prompt_content, re.M)
         if match:
-            types_str = match.group(1)
-            prompt_types = set(types_str.split())
+            prompt_types = set(match.group(1).split("|"))
 
     # All three sets should be equal
     test_result(

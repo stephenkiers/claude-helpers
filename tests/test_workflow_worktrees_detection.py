@@ -115,8 +115,8 @@ branch refs/heads/feature/166-foo
         finally:
             git_module.get_worktree_list_porcelain = original_get_porcelain
         test_result(
-            "detect_worktree_parent falls back to flat 'worktrees/' when second worktree is nested under a type prefix",
-            result == "/repo/worktrees"
+            "detect_worktree_parent falls back to '<main>/worktrees' when second worktree is nested under a type prefix",
+            result == "/repo/main/worktrees"
         )
 
         # Legacy flat layout: second worktree's parent basename is not a type prefix — trust it as-is.
@@ -162,9 +162,109 @@ branch refs/heads/main
         finally:
             git_module.get_worktree_list_porcelain = original_get_porcelain
         test_result(
-            "detect_worktree_parent creates worktrees/ as a sibling of main when none exists (step 3)",
-            result == "/repo/worktrees"
+            "detect_worktree_parent falls back to '<main>/worktrees' for a bare top-level clone (rule 3)",
+            result == "/repo/main/worktrees"
         )
+
+    print()
+    print("[Section 6] detect_worktree_parent: canonical layout, ~/.claude skip, nested skip, fail-closed")
+
+    import os
+    import workflow.git as git_module6
+
+    original6 = git_module6.get_worktree_list_porcelain
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+
+    def _detect(porcelain_text):
+        git_module6.get_worktree_list_porcelain = lambda cwd=None: porcelain_text
+        try:
+            return worktrees_module.detect_worktree_parent()
+        finally:
+            git_module6.get_worktree_list_porcelain = original6
+
+    scratch = f"{home}/.claude/merge-queue-scratch/abc123/scratch"
+
+    # Canonical layout wins even with a scratch entry listed second.
+    r = _detect(f"""\
+worktree /repo/worktrees/main
+branch refs/heads/main
+
+worktree {scratch}
+HEAD 0000
+detached
+
+worktree /elsewhere/other/42-x
+branch refs/heads/feature/42-x
+""")
+    test_result("canonical layout wins even when a scratch entry is second", r == "/repo/worktrees")
+
+    # Non-canonical main: ~/.claude scratch second entry is skipped, next candidate used.
+    r = _detect(f"""\
+worktree /repo/main
+branch refs/heads/main
+
+worktree {scratch}
+HEAD 0000
+detached
+
+worktree /repo/siblings/42-x
+branch refs/heads/feature/42-x
+""")
+    test_result("~/.claude/merge-queue-scratch second entry is skipped", r == "/repo/siblings")
+
+    # .claude/worktrees under HOME is skipped too; only scratch present -> fallback.
+    r = _detect(f"""\
+worktree /repo/main
+branch refs/heads/main
+
+worktree {home}/.claude/worktrees/agent-1
+branch refs/heads/agent-1
+""")
+    test_result("only ~/.claude entries -> falls back to <main>/worktrees", r == "/repo/main/worktrees")
+
+    # Nested-under-main entry is skipped.
+    r = _detect("""\
+worktree /repo/main
+branch refs/heads/main
+
+worktree /repo/main/worktrees/1638-x
+branch refs/heads/feature/1638-x
+
+worktree /repo/siblings/7-y
+branch refs/heads/fix/7-y
+""")
+    test_result("entry nested under main is skipped", r == "/repo/siblings")
+
+    # Type-prefixed parent skipped.
+    r = _detect("""\
+worktree /repo/main
+branch refs/heads/main
+
+worktree /repo/other/feature/9-z
+branch refs/heads/feature/9-z
+
+worktree /repo/siblings/7-y
+branch refs/heads/fix/7-y
+""")
+    test_result("type-prefixed parent entry is skipped", r == "/repo/siblings")
+
+    # Plain-clone fallback.
+    r = _detect("""\
+worktree /repo
+branch refs/heads/main
+""")
+    test_result("plain top-level clone falls back to <main>/worktrees", r == "/repo/worktrees")
+
+    # Fail closed: main under ~/.claude -> fallback lands under ~/.claude.
+    raised = False
+    try:
+        _detect(f"""\
+worktree {home}/.claude/thing
+branch refs/heads/main
+""")
+    except worktrees_module.WorktreeParentError:
+        raised = True
+    test_result("fail-closed: parent under ~/.claude raises WorktreeParentError", raised)
 
     print()
     h.summarize_and_exit()

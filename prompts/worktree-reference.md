@@ -18,19 +18,37 @@ REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || echo
 # 2. Main worktree (first entry is always main)
 MAIN_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | head -1 | cut -d' ' -f2)
 
-# 3. Detect worktree parent from existing worktrees
-SECOND_WORKTREE=$(git worktree list --porcelain | grep '^worktree ' | sed -n '2p' | cut -d' ' -f2)
-SECOND_PARENT_BASENAME=$(basename "$(dirname "$SECOND_WORKTREE")" 2>/dev/null)
-# A second-worktree parent whose basename is a branch-type prefix (feature/fix/chore) means that
-# worktree is itself nested — trusting it would perpetuate the nesting. Fall through instead.
-if [ -n "$SECOND_WORKTREE" ] && ! printf '%s\n' "feature fix chore" | grep -qw "$SECOND_PARENT_BASENAME"; then
-  WORKTREE_PARENT=$(dirname "$SECOND_WORKTREE")
-elif [ "$(basename "$(dirname "$MAIN_WORKTREE")")" = "worktrees" ]; then
-  # Fresh /setup-repo clone: main worktree already sits under a worktrees/ dir, so siblings go there.
+# 3. Detect worktree parent. Order matters; first match wins.
+WORKTREE_PARENT=""
+if [ "$(basename "$(dirname "$MAIN_WORKTREE")")" = "worktrees" ]; then
+  # 3a. Canonical layout (e.g. repo/worktrees/main): siblings go next to main. No heuristic applies.
   WORKTREE_PARENT=$(dirname "$MAIN_WORKTREE")
 else
-  WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
+  # 3b. First non-main worktree that is a usable sibling candidate. Skip entries under $HOME/.claude/
+  # (merge-queue scratch, .claude/worktrees, PR-review worktrees), entries nested under main, and
+  # entries whose parent basename is a type prefix (feature/fix/chore).
+  while IFS= read -r CANDIDATE; do
+    [ -z "$CANDIDATE" ] && continue
+    [ "$CANDIDATE" = "$MAIN_WORKTREE" ] && continue
+    case "$CANDIDATE" in
+      "$HOME/.claude/"*|"${MAIN_WORKTREE}/"*) continue ;;
+    esac
+    case "$(basename "$(dirname "$CANDIDATE")")" in
+      feature|fix|chore) continue ;;
+    esac
+    WORKTREE_PARENT=$(dirname "$CANDIDATE")
+    break
+  done <<EOF
+$(git worktree list --porcelain | grep '^worktree ' | cut -d' ' -f2-)
+EOF
+  # 3c. Plain top-level clone with no worktrees/ parent and no usable sibling.
+  [ -z "$WORKTREE_PARENT" ] && WORKTREE_PARENT="${MAIN_WORKTREE}/worktrees"
 fi
+# 3d. Fail closed: never main itself, never under ~/.claude/.
+case "$WORKTREE_PARENT" in
+  "$MAIN_WORKTREE"|"$HOME/.claude"|"$HOME/.claude/"*)
+    echo "ERROR: unsafe WORKTREE_PARENT '$WORKTREE_PARENT' (main: '$MAIN_WORKTREE')" >&2; exit 1 ;;
+esac
 
 # 4. Issue cache at worktree parent level
 CACHE_FILE="${WORKTREE_PARENT}/issues.json"
@@ -55,10 +73,16 @@ on `REPO` or `ASSIGNEE`.
 
 **`WORKTREE_PARENT` and worktree directory names must never contain `/`**, even though branch names
 do (`feature/166-foo`, `fix/...`, `chore/...` — see `commands/track-and-start.md` "Branch Naming").
-Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone. Step 3 above
-guards against adopting a `WORKTREE_PARENT` nested under a type-prefixed folder, which otherwise
-self-reinforces: once one worktree lands there and is second in `git worktree list` order, every
-future worktree would be created under it too.
+Worktree directories are always flat siblings built from `{issue_number}-{slug}` alone. Step 3 is
+ordered so a poisoned heuristic can never win: (a) the canonical layout (`MAIN_WORKTREE` under a
+`worktrees/` dir) is taken first and short-circuits everything; (b) otherwise the first non-main
+worktree is used only if it is not under `$HOME/.claude/` (merge-queue scratch such as
+`~/.claude/merge-queue-scratch/<hash>/scratch`, `.claude/worktrees`, PR-review worktrees), not nested
+under `MAIN_WORKTREE/`, and its parent is not a type-prefixed folder (`feature`/`fix`/`chore`) —
+otherwise a nested or scratch entry listed second would self-reinforce into nested worktrees;
+(c) a plain top-level clone falls back to `${MAIN_WORKTREE}/worktrees`. Finally, step 3 fails closed:
+`WORKTREE_PARENT` equal to `MAIN_WORKTREE` or under `$HOME/.claude/` aborts with an error instead of
+creating a worktree there.
 
 ## Stack Detection
 

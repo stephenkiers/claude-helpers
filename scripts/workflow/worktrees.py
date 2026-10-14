@@ -4,6 +4,7 @@ Worktree parent detection.
 Ports ADR-0010's worktree-parent detection logic verbatim.
 """
 
+import os
 from pathlib import Path
 from typing import Optional, Tuple, List
 from . import git
@@ -50,6 +51,19 @@ def detect_main_worktree(cwd: Optional[Path] = None) -> Optional[str]:
     return None
 
 
+def _all_worktree_paths(cwd: Optional[Path] = None) -> List[str]:
+    """All worktree paths in `git worktree list` order, including detached entries."""
+    try:
+        porcelain = git.get_worktree_list_porcelain(cwd=cwd)
+    except Exception:
+        return []
+    return [
+        line[9:].strip()
+        for line in porcelain.split("\n")
+        if line.startswith("worktree ")
+    ]
+
+
 def detect_second_worktree(cwd: Optional[Path] = None) -> Optional[str]:
     """Get the second worktree path, if it exists."""
     try:
@@ -65,32 +79,66 @@ def detect_second_worktree(cwd: Optional[Path] = None) -> Optional[str]:
 _TYPE_PREFIXES = {"feature", "fix", "chore"}
 
 
+class WorktreeParentError(RuntimeError):
+    """Detected WORKTREE_PARENT is unsafe (main worktree itself or under ~/.claude)."""
+
+
+def _is_under(path: str, root: str) -> bool:
+    """True if path is strictly inside root (component-wise, not a string prefix)."""
+    root = root.rstrip("/")
+    return path.startswith(root + "/")
+
+
+def _home_claude() -> str:
+    return os.path.join(os.environ.get("HOME") or os.path.expanduser("~"), ".claude")
+
+
 def detect_worktree_parent(cwd: Optional[Path] = None) -> str:
     """
     Detect the worktree parent directory.
 
-    Logic from ADR-0010 Project Detection, step 3:
-    1. If a second worktree exists, use its parent directory — unless that
-       parent is itself a type-prefixed folder (feature/fix/chore), which
-       means the second worktree is nested and this candidate is poisoned;
-       fall through to steps 2/3 instead of trusting it.
-    2. Else if main worktree is already under 'worktrees/', use that directory.
-    3. Else create 'worktrees' as a sibling directory to main worktree.
+    Logic from ADR-0010 Project Detection, step 3 (mirrors the bash block in
+    prompts/worktree-reference.md exactly):
+    1. Canonical layout first: if main worktree's parent dir is named
+       'worktrees', use that directory. No other heuristic applies.
+    2. Else take the first non-main worktree that is a usable sibling
+       candidate and use its parent directory. Skipped candidates: anything
+       under ~/.claude/ (merge-queue scratch, .claude/worktrees, PR-review
+       worktrees), anything nested under the main worktree, and any whose
+       parent dir is a type prefix (feature/fix/chore).
+    3. Else fall back to '<main>/worktrees' (legit only for a bare top-level
+       clone with no 'worktrees/' parent).
+
+    Fail closed: raises WorktreeParentError if the result is the main
+    worktree itself or lies under ~/.claude/. Returns "" only when no
+    worktree can be determined at all.
     """
-    second = detect_second_worktree(cwd=cwd)
-    if second:
-        candidate = Path(second).parent
-        if candidate.name not in _TYPE_PREFIXES:
-            return str(candidate)
+    paths = _all_worktree_paths(cwd=cwd)
+    if not paths:
+        return ""
+    main = paths[0].rstrip("/") or paths[0]
+    home_claude = _home_claude()
 
-    main = detect_main_worktree(cwd=cwd)
-    if main:
-        main_path = Path(main)
-        if main_path.parent.name == "worktrees":
-            return str(main_path.parent)
-        return str(main_path.parent / "worktrees")
+    parent = ""
+    if os.path.basename(os.path.dirname(main)) == "worktrees":
+        parent = os.path.dirname(main)
+    else:
+        for cand in paths[1:]:
+            if cand == main or _is_under(cand, home_claude) or _is_under(cand, main):
+                continue
+            cand_parent = os.path.dirname(cand)
+            if os.path.basename(cand_parent) in _TYPE_PREFIXES:
+                continue
+            parent = cand_parent
+            break
+        else:
+            parent = main + "/worktrees"
 
-    return ""
+    if parent == main or parent == home_claude or _is_under(parent, home_claude):
+        raise WorktreeParentError(
+            f"refusing unsafe WORKTREE_PARENT {parent!r} (main worktree {main!r})"
+        )
+    return parent
 
 
 def detect_project_root(cwd: Optional[Path] = None) -> str:
