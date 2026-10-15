@@ -82,54 +82,35 @@ def main():
 
     text = track_file.read_text()
 
-    # Count occurrences of the two handoff options
-    impl_count = len(re.findall(r'claude "/implement-with-haiku"', text))
-    expert_flow_count = len(re.findall(r'claude "/expert-flow"', text))
-
-    print("[Section 1] Handoff lines are present")
-    t("/implement-with-haiku appears at least 4 times", impl_count >= 4, f"found {impl_count}")
-    t("/expert-flow appears at least 4 times in handoff contexts", expert_flow_count >= 4, f"found {expert_flow_count}")
-
-    print()
-    print("[Section 2] Each handoff block has both alternatives")
-    # Look for patterns where /expert-flow follows /implement-with-haiku
-    # They should be paired within handoff blocks
-
-    # More robust: find paragraphs that contain both lines
-    # Pattern: /implement-with-haiku followed (within same block) by /expert-flow
-
-    # Find all sections that mention both commands
-    impl_and_flow_pattern = r'claude "/implement-with-haiku".*?claude "/expert-flow"'
-    matches = re.findall(impl_and_flow_pattern, text, re.DOTALL)
-    t("both /implement-with-haiku and /expert-flow appear together",
-      len(matches) >= 4, f"found {len(matches)} paired blocks (expect >= 4)")
+    flow_lines = list(re.finditer(r'^cd <worktree-path> && claude "/expert-flow"$', text, re.MULTILINE))
+    impl_lines = list(re.finditer(r'claude "/implement-with-haiku"', text))
+    print("[Section 1] Exactly four bare /expert-flow handoff lines")
+    t("exactly 4 bare `cd <worktree-path> && claude \"/expert-flow\"` lines", len(flow_lines) == 4,
+      f"found {len(flow_lines)}")
+    t("no /expert-flow handoff line carries an issue number or flags",
+      re.search(r'claude "/expert-flow [^"]+"', text) is None)
 
     print()
-    print("[Section 3] GitHub blocks carry re-plan wording")
-    # Look for the re-plan explanation that should appear with /expert-flow in GitHub blocks
-    replan_pattern = r"starts again from planning|re-runs.*expert-plan"
-    replan_mentions = re.findall(replan_pattern, text, re.IGNORECASE)
-    t("re-plan wording appears in the document", len(replan_mentions) > 0,
-      f"found {len(replan_mentions)} mentions")
+    print("[Section 2] Each /expert-flow line is in its own handoff block, after an /implement-with-haiku line")
+    for i, m in enumerate(flow_lines, 1):
+        prev_impl = [x for x in impl_lines if x.start() < m.start()]
+        prev_flow = flow_lines[i - 2].start() if i > 1 else 0
+        t(f"block {i}: an /implement-with-haiku line sits between the previous /expert-flow line and this one",
+          bool(prev_impl) and prev_impl[-1].start() > prev_flow)
 
     print()
-    print("[Section 4] Local Plan and Tracker blocks note GitHub-only limitation")
-    # The local plan and tracker blocks should mention that /expert-flow only works with GitHub
-    github_only_pattern = r"only for a GitHub issue|GitHub issue.*worktree"
-    github_mentions = re.findall(github_only_pattern, text, re.IGNORECASE)
-    t("GitHub-only caveat mentioned for non-GitHub blocks", len(github_mentions) > 0,
-      f"found {len(github_mentions)} mentions")
-
-    print()
-    print("[Section 5] Handoff line follows /implement-with-haiku in same block")
-    # Each /implement-with-haiku line should have a nearby /expert-flow alternative
-    # (The quoted template details are in expert-flow.md, not track-and-start)
-    impl_count_in_text = len(re.findall(r'claude "/implement-with-haiku"', text))
-    expert_flow_count_in_text = len(re.findall(r'claude "/expert-flow"', text))
-    # They should roughly match (at least 4 of each)
-    t("handoff lines are balanced (both alternatives present)",
-      impl_count_in_text >= 4 and expert_flow_count_in_text >= 4,
-      f"/implement-with-haiku: {impl_count_in_text}, /expert-flow: {expert_flow_count_in_text}")
+    print("[Section 3] Intro sentence per block matches its kind (2 GitHub re-plan, 2 GitHub-only caveat)")
+    intros = []
+    for m in flow_lines:
+        line_start = text.rfind("Or run the whole lifecycle with /expert-flow", 0, m.start())
+        intros.append(text[line_start:m.start()] if line_start >= 0 else "")
+    replan = [x for x in intros if "starts again from planning" in x and "/expert-plan and track" in x]
+    caveat = [x for x in intros if "runs only for a GitHub issue" in x and "needs a GitHub remote" in x]
+    t("all 4 blocks have an intro sentence", all(intros))
+    t("exactly 2 blocks carry the re-plan wording", len(replan) == 2, f"found {len(replan)}")
+    t("exactly 2 blocks carry the GitHub-only caveat", len(caveat) == 2, f"found {len(caveat)}")
+    t("re-plan blocks are the last two (GitHub flows)",
+      "starts again from planning" in intros[2] and "starts again from planning" in intros[3])
 
     h.summarize_and_exit()
 

@@ -195,141 +195,102 @@ mkdir -p "$FLOWS_ROOT"
 
 When `NO_ARG=yes`, the orchestrator is in a ticket worktree and detects the issue from the worktree state. The detection logic determines one of four routes: silent resume of the hand-off flow, the existing-flow question, a fresh flow, or a prompt for the issue number.
 
-**Detection block** — takes only pre-set variables and prints `NOARG_ROUTE`, `NOARG_ISSUE`, `NOARG_FLOW`, and optional `NOARG_NONGITHUB`:
+**Detection block** — takes its inputs only as pre-set variables (`HERE`, `MAIN_WORKTREE`, `REPO`, `FLOWS_ROOT`, `CUR_BRANCH`, `IS_LISTED_WORKTREE` = `yes`/`no`), computes none of them, and prints one `KEY=value` per line: `NOARG_ROUTE`, `NOARG_ISSUE`, `NOARG_FLOW`, `NOARG_NONGITHUB`, `NOARG_REASON`. It never calls `exit` (it is run inline, so an `exit` would kill the orchestrator's shell):
 
 ```bash
-NOARG_ROUTE="ask"
-NOARG_ISSUE=""
-NOARG_FLOW=""
-NOARG_NONGITHUB=""
-NOARG_REASON=""
+noarg_detect() {
+  NOARG_ROUTE="ask"; NOARG_ISSUE=""; NOARG_FLOW=""; NOARG_NONGITHUB=""; NOARG_REASON=""
 
-# Check: not in a ticket worktree, or not a listed worktree
-if [ "$HERE" = "$MAIN_WORKTREE" ] || ! git worktree list --porcelain | grep -q "^worktree $HERE$"; then
-  NOARG_REASON="not in a ticket worktree"
-  printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-  exit 0
-fi
+  if [ "$HERE" = "$MAIN_WORKTREE" ] || [ "$IS_LISTED_WORKTREE" != "yes" ]; then
+    NOARG_REASON="not in a ticket worktree"; return 0
+  fi
 
-# Extract issue number from basename: format <N>-slug
-BN="${HERE##*/}"
-case "$BN" in
-  [0-9]*-*) BN_ISSUE="${BN%%-*}" ;;
-  *)
-    NOARG_REASON="basename does not start with digits"
-    printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-    exit 0
-    ;;
-esac
+  # Issue number from the basename: <N>-slug
+  local BN="${HERE##*/}" BN_ISSUE
+  case "$BN" in
+    [0-9]*-*) BN_ISSUE="${BN%%-*}" ;;
+    *) NOARG_REASON="basename does not start with digits"; return 0 ;;
+  esac
+  case "$BN_ISSUE" in
+    *[!0-9]*) NOARG_REASON="basename does not start with digits"; return 0 ;;
+  esac
 
-# Check marker
-MARKER_FILE="$HERE/.claude/flow-run"
-if [ -f "$MARKER_FILE" ]; then
-  # Marker present: read the flow directory
-  MARKER_TARGET=$(sed -n 1p "$MARKER_FILE" 2>/dev/null)
-  if [ -z "$MARKER_TARGET" ]; then
-    NOARG_REASON="flow marker is empty"
-    printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-    exit 0
-  fi
-  
-  # Verify realpath under FLOWS_ROOT
-  MARKER_REAL=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$MARKER_TARGET" 2>/dev/null)
-  FLOWS_ROOT_REAL=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$FLOWS_ROOT" 2>/dev/null)
-  if [ -z "$MARKER_REAL" ] || [ -z "$FLOWS_ROOT_REAL" ] || ! printf '%s' "$MARKER_REAL" | grep -q "^$FLOWS_ROOT_REAL"; then
-    NOARG_REASON="flow marker does not match this worktree"
-    printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-    exit 0
-  fi
-  
-  # Check state.json exists and issue matches
-  if [ ! -f "$MARKER_TARGET/state.json" ]; then
-    NOARG_REASON="flow marker does not match this worktree"
-    printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-    exit 0
-  fi
-  
-  STATE_ISSUE=$(jq -r '.issue|tostring' "$MARKER_TARGET/state.json" 2>/dev/null)
-  if [ "$STATE_ISSUE" != "$BN_ISSUE" ]; then
-    NOARG_REASON="flow marker does not match this worktree"
-    printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-    exit 0
-  fi
-  
-  # Check hand-off predicate: step==plan, status==paused, live==null, attempts.plan==0
-  if jq -e '.step=="plan" and .status=="paused" and .live==null and ((.attempts.plan // 0)==0)' "$MARKER_TARGET/state.json" >/dev/null 2>&1; then
-    NOARG_ROUTE="resume"
+  local MARKER_FILE="$HERE/.claude/flow-run"
+  if [ -f "$MARKER_FILE" ]; then
+    local MARKER_TARGET MARKER_REAL FLOWS_ROOT_REAL STATE_ISSUE
+    MARKER_TARGET=$(sed -n 1p "$MARKER_FILE" 2>/dev/null)
+    if [ -z "$MARKER_TARGET" ]; then
+      NOARG_REASON="flow marker is empty"; return 0
+    fi
+    MARKER_REAL=$(realpath "$MARKER_TARGET" 2>/dev/null)
+    FLOWS_ROOT_REAL=$(realpath "$FLOWS_ROOT" 2>/dev/null)
+    if [ -z "$MARKER_REAL" ] || [ -z "$FLOWS_ROOT_REAL" ]; then
+      NOARG_REASON="flow marker does not match this worktree"; return 0
+    fi
+    case "$MARKER_REAL/" in
+      "$FLOWS_ROOT_REAL"/?*) ;;
+      *) NOARG_REASON="flow marker does not match this worktree"; return 0 ;;
+    esac
+    if [ ! -f "$MARKER_REAL/state.json" ]; then
+      NOARG_REASON="flow marker does not match this worktree"; return 0
+    fi
+    STATE_ISSUE=$(jq -r '.issue|tostring' "$MARKER_REAL/state.json" 2>/dev/null)
+    if [ "$STATE_ISSUE" != "$BN_ISSUE" ]; then
+      NOARG_REASON="flow marker does not match this worktree"; return 0
+    fi
     NOARG_ISSUE="$BN_ISSUE"
     NOARG_FLOW="$MARKER_TARGET"
-  else
-    NOARG_ROUTE="existing"
-    NOARG_ISSUE="$BN_ISSUE"
-    NOARG_FLOW="$MARKER_TARGET"
+    # Exact hand-off state: step==plan, status==paused, live==null, attempts.plan==0
+    if jq -e '.step=="plan" and .status=="paused" and .live==null and ((.attempts.plan // 0)==0)' "$MARKER_REAL/state.json" >/dev/null 2>&1; then
+      NOARG_ROUTE="resume"
+    else
+      NOARG_ROUTE="existing"
+    fi
+    return 0
   fi
-  printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-  exit 0
-fi
 
-# No marker: check cache
-CACHE_FILE="$HERE/.claude/github-cache.json"
-if [ ! -f "$CACHE_FILE" ]; then
-  NOARG_REASON="no flow marker or .claude/github-cache.json"
-  printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-  exit 0
-fi
-
-# Validate cache: branch == current branch, issue.number is numeric and matches basename, url is GitHub
-CACHE_BRANCH=$(jq -r '.branch // empty' "$CACHE_FILE" 2>/dev/null)
-CUR_BRANCH=$(git branch --show-current 2>/dev/null)
-if [ "$CACHE_BRANCH" != "$CUR_BRANCH" ]; then
-  NOARG_REASON="cache branch '$CACHE_BRANCH' ≠ current branch '$CUR_BRANCH'"
-  printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-  exit 0
-fi
-
-# Validate issue.number: must be numeric and match basename
-if ! jq -e --arg n "$BN_ISSUE" '(.issue.number|tostring) as $s | ($s|test("^[0-9]+$")) and $s == $n' "$CACHE_FILE" >/dev/null 2>&1; then
-  CACHE_NUMBER=$(jq -r '.issue.number // empty' "$CACHE_FILE" 2>/dev/null)
-  if [ -z "$CACHE_NUMBER" ]; then
-    NOARG_REASON="cache has no issue.number"
-  else
-    NOARG_REASON="cache issue.number '$CACHE_NUMBER' does not match basename '$BN_ISSUE'"
+  # No marker: validate the github cache
+  local CACHE_FILE="$HERE/.claude/github-cache.json" CACHE_BRANCH CACHE_NUMBER CACHE_URL
+  if [ ! -f "$CACHE_FILE" ]; then
+    NOARG_REASON="no flow marker or .claude/github-cache.json"; return 0
   fi
-  printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-  exit 0
-fi
-
-# Validate issue.url: must be GitHub
-CACHE_URL=$(jq -r '.issue.url // empty' "$CACHE_FILE" 2>/dev/null)
-EXPECTED_URL="https://github.com/$REPO/issues/$BN_ISSUE"
-if [ "$CACHE_URL" != "$EXPECTED_URL" ]; then
-  if printf '%s' "$CACHE_URL" | grep -q '^https://github\.com'; then
-    NOARG_REASON="cache url is not for this issue"
-  else
-    NOARG_NONGITHUB=yes
-    NOARG_REASON="cache is not a GitHub issue"
+  CACHE_BRANCH=$(jq -r '.branch // empty' "$CACHE_FILE" 2>/dev/null)
+  if [ "$CACHE_BRANCH" != "$CUR_BRANCH" ]; then
+    NOARG_REASON="cache branch '$CACHE_BRANCH' differs from current branch '$CUR_BRANCH'"; return 0
   fi
-  printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
-  exit 0
-fi
-
-# All checks passed: plain route with detected issue
-NOARG_ROUTE="plain"
-NOARG_ISSUE="$BN_ISSUE"
-printf 'NOARG_ROUTE=%s NOARG_ISSUE=%s NOARG_FLOW=%s NOARG_NONGITHUB=%s NOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
+  if ! jq -e --arg n "$BN_ISSUE" '(.issue.number|tostring) as $s | ($s|test("^[0-9]+$")) and $s == $n' "$CACHE_FILE" >/dev/null 2>&1; then
+    CACHE_NUMBER=$(jq -r '.issue.number // empty' "$CACHE_FILE" 2>/dev/null)
+    if [ -z "$CACHE_NUMBER" ]; then
+      NOARG_REASON="cache has no issue.number"
+    else
+      NOARG_REASON="cache issue.number '$CACHE_NUMBER' does not match basename '$BN_ISSUE'"
+    fi
+    return 0
+  fi
+  CACHE_URL=$(jq -r '.issue.url // empty' "$CACHE_FILE" 2>/dev/null)
+  if [ "$CACHE_URL" != "https://github.com/$REPO/issues/$BN_ISSUE" ]; then
+    case "$CACHE_URL" in
+      https://github.com/*) NOARG_REASON="cache url is not for this issue" ;;
+      *) NOARG_NONGITHUB="yes"; NOARG_REASON="cache is not a GitHub issue" ;;
+    esac
+    return 0
+  fi
+  NOARG_ROUTE="plain"
+  NOARG_ISSUE="$BN_ISSUE"
+}
+noarg_detect
+printf 'NOARG_ROUTE=%s\nNOARG_ISSUE=%s\nNOARG_FLOW=%s\nNOARG_NONGITHUB=%s\nNOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
 ```
 
-**Compute detection inputs** — run this first to set the variables the detection block uses:
+**Compute detection inputs** — run this block FIRST (`MAIN_WORKTREE`, `REPO`, and `FLOWS_ROOT` are already set by "Project detection and repo key"), then run the detection block above:
 
 ```bash
 HERE=$(git rev-parse --show-toplevel)
-MAIN_WORKTREE=$(git rev-parse --absolute-git-dir | sed 's#\.git.*##')
 CUR_BRANCH=$(git branch --show-current)
-IS_LISTED_WORKTREE=$(git worktree list --porcelain | grep -q "^worktree $HERE$" && printf yes || printf no)
-FLOWS_ROOT="$HOME/.claude/flows/$REPO_KEY"
+IS_LISTED_WORKTREE=$(git worktree list --porcelain | grep -qxF "worktree $HERE" && printf yes || printf no)
 ```
 
-**Routing** — when `NO_ARG=yes`, run the detection block above with its pre-set inputs, then apply the route:
+**Routing** — when `NO_ARG=yes`, run the input block, then the detection block above, then apply the route:
 
 - **`resume`**: the flow is in exact hand-off state (`step==plan`, `status==paused`, `live==null`, `attempts.plan==0`). Print the trail line:
   ```

@@ -11,7 +11,7 @@ CUR_BRANCH, IS_LISTED_WORKTREE) and computes:
   NOARG_ROUTE: one of resume, existing, plain, ask
   NOARG_ISSUE: the issue number, or empty
   NOARG_FLOW: the flow directory path, or empty
-  NOARG_NONGITHUB: "yes" if the cache is non-GitHub, else unset
+  NOARG_NONGITHUB: "yes" if the cache is non-GitHub, else empty
 
 Testing Strategy: 19 scenarios as defined in the plan.
 
@@ -71,8 +71,6 @@ def make_marker(worktree, flow_path):
 
 def run_noarg_block(snippet, main_worktree, here, repo, flows_root, cur_branch, is_listed):
     """Run the detection block with the given variables. Returns (returncode, stdout, stderr)."""
-    # IS_LISTED_WORKTREE is a string variable from git worktree list; convert bool to "true"/"false"
-    is_listed_str = "true" if is_listed else "false"
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HERE": str(here),
@@ -80,25 +78,33 @@ def run_noarg_block(snippet, main_worktree, here, repo, flows_root, cur_branch, 
         "REPO": repo,
         "FLOWS_ROOT": str(flows_root),
         "CUR_BRANCH": cur_branch,
-        "IS_LISTED_WORKTREE": is_listed_str,
+        "IS_LISTED_WORKTREE": "yes" if is_listed else "no",
     }
-    result = subprocess.run(
-        ["bash", "-c", snippet],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    result = subprocess.run(["bash", "-c", snippet], capture_output=True, text=True, env=env)
     return result.returncode, result.stdout, result.stderr
 
 
 def parse_output(stdout):
-    """Parse the block's output into a dict with NOARG_ROUTE, NOARG_ISSUE, NOARG_FLOW, NOARG_NONGITHUB."""
+    """Parse one-KEY=value-per-line output into a dict."""
     result = {}
-    for line in stdout.strip().split('\n'):
-        if '=' in line:
-            key, val = line.split('=', 1)
-            result[key.strip()] = val.strip()
+    for line in stdout.split("\n"):
+        if "=" in line:
+            key, val = line.split("=", 1)
+            result[key] = val
     return result
+
+
+class Fixture:
+    """A temp tree: main/, a ticket worktree, and flows/."""
+
+    def __init__(self, tmp, wt_name="302-issue-slug"):
+        self.tmp = Path(tmp)
+        self.main = self.tmp / "main"
+        self.main.mkdir()
+        self.here = self.tmp / wt_name
+        self.here.mkdir()
+        self.flows = self.tmp / "flows"
+        self.flows.mkdir()
 
 
 def main():
@@ -112,396 +118,124 @@ def main():
     cmd_text = COMMAND.read_text() if COMMAND.is_file() else ""
     block = extract_noarg_block(cmd_text)
     t("the no-arg detection block is present in expert-flow.md", bool(block))
-
     if not block:
         h.summarize_and_exit()
 
-    # Quick sanity check: does the bash block recognize our test worktree as "listed"?
-    # If not, we'll need real git worktrees which are beyond the scope of isolated fixture testing.
-    # The real validation of detection logic happens in integration tests post-merge.
-    print("[Sanity check] Test if bash block recognizes simulated ticket worktrees")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-test"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
+    t("block calls no git (inputs are pre-set)", re.search(r"\bgit\b", block) is None)
+    t("block never exits the shell", re.search(r"^\s*exit\b", block, re.MULTILINE) is None)
+    t("block has no trailing whitespace", re.search(r"[ \t]+$", block, re.MULTILINE) is None)
 
-        # Try with IS_LISTED_WORKTREE="true"
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
+    def check(label, route, issue="", flow="", nongithub="", cur_branch="main",
+              is_listed=True, repo="owner/repo", setup=None, wt_name="302-issue-slug",
+              use_main_as_here=False):
+        """Build a fixture, run the block, assert the exact outputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fx = Fixture(tmpdir, wt_name)
+            expected_flow = setup(fx) if setup else ""
+            here = fx.main if use_main_as_here else fx.here
+            rc, out, err = run_noarg_block(block, fx.main, here, repo, fx.flows, cur_branch, is_listed)
+            p = parse_output(out)
+            want_flow = str(expected_flow) if flow == "<flow>" else flow
+            got = (p.get("NOARG_ROUTE"), p.get("NOARG_ISSUE"), p.get("NOARG_FLOW"), p.get("NOARG_NONGITHUB"))
+            want = (route, issue, want_flow, nongithub)
+            t(f"{label}: exact outputs", rc == 0 and got == want,
+              f"rc={rc} got={got} want={want} err={err!r}")
 
-        can_test = parsed.get("NOARG_ROUTE") != "ask" or "not in a ticket worktree" not in parsed.get("NOARG_REASON", "")
-        if not can_test:
-            print("SKIP: Bash block requires real git worktrees for IS_LISTED_WORKTREE validation.")
-            print("      The detection block's listed-worktree check needs actual git worktree list.")
-            print("      Post-merge integration tests will validate this behavior.")
-            h.summarize_and_exit()
+    def marker_setup(state, dirname="302-issue-slug-id"):
+        def setup(fx):
+            flow_dir = fx.flows / dirname
+            if state is not None:
+                make_flow(fx.flows, dirname, state)
+            else:
+                flow_dir.mkdir(parents=True)
+            make_marker(fx.here, flow_dir)
+            return flow_dir
+        return setup
 
-    print("[Scenario 1] Marker → flow under FLOWS_ROOT, state {step: plan, status: paused, live: null, attempts: {worktree: 1}} → resume")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        make_flow(flows, "302-issue-slug-id", {
-            "issue": 302,
-            "step": "plan",
-            "status": "paused",
-            "live": None,
-            "attempts": {"worktree": 1},
-        })
-        make_marker(here, flow_dir)
+    def cache_setup(cache):
+        def setup(fx):
+            make_cache(fx.here, cache)
+            return ""
+        return setup
 
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 1: route is resume", parsed.get("NOARG_ROUTE") == "resume", f"got {parsed}")
-        t("scenario 1: issue is 302", parsed.get("NOARG_ISSUE") == "302", f"got {parsed}")
-        t("scenario 1: flow is set", parsed.get("NOARG_FLOW") == str(flow_dir), f"got {parsed}")
+    gh302 = {"branch": "main", "issue": {"number": 302, "url": "https://github.com/owner/repo/issues/302"}}
+    handoff = {"issue": 302, "step": "plan", "status": "paused", "live": None, "attempts": {"worktree": 1}}
 
-    print()
-    print("[Scenario 2] Same but attempts: {plan: 1} → existing")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        make_flow(flows, "302-issue-slug-id", {
-            "issue": 302,
-            "step": "plan",
-            "status": "paused",
-            "live": None,
-            "attempts": {"plan": 1},
-        })
-        make_marker(here, flow_dir)
+    print("[Scenario 1] hand-off state -> resume")
+    check("scenario 1", "resume", "302", "<flow>", setup=marker_setup(handoff))
+    print("[Scenario 2] attempts.plan=1 -> existing")
+    check("scenario 2", "existing", "302", "<flow>",
+          setup=marker_setup(dict(handoff, attempts={"plan": 1})))
+    print("[Scenario 3] step implement -> existing")
+    check("scenario 3", "existing", "302", "<flow>",
+          setup=marker_setup({"issue": 302, "step": "implement", "status": "paused", "live": None}))
+    print("[Scenario 4] live set -> existing")
+    check("scenario 4", "existing", "302", "<flow>",
+          setup=marker_setup(dict(handoff, live="some-value")))
+    print("[Scenario 5] status failed -> existing")
+    check("scenario 5", "existing", "302", "<flow>",
+          setup=marker_setup({"issue": 302, "status": "failed"}))
 
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 2: route is existing", parsed.get("NOARG_ROUTE") == "existing", f"got {parsed}")
-        t("scenario 2: flow is set to marker", parsed.get("NOARG_FLOW") == str(flow_dir), f"got {parsed}")
+    print("[Scenario 6] marker outside FLOWS_ROOT -> ask")
 
-    print()
-    print("[Scenario 3] Same marker but step: implement (Take-over shape) → existing")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        make_flow(flows, "302-issue-slug-id", {
-            "issue": 302,
-            "step": "implement",
-            "status": "paused",
-            "live": None,
-        })
-        make_marker(here, flow_dir)
+    def outside(fx):
+        o = fx.tmp / "outside-flow"
+        make_flow(fx.tmp, "outside-flow", handoff)
+        make_marker(fx.here, o)
+    check("scenario 6", "ask", setup=outside)
 
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 3: route is existing", parsed.get("NOARG_ROUTE") == "existing", f"got {parsed}")
+    print("[Scenario 6b] marker in sibling dir sharing the FLOWS_ROOT prefix (flows vs flowsx) -> ask")
 
-    print()
-    print("[Scenario 4] Same marker but live set → existing")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        make_flow(flows, "302-issue-slug-id", {
-            "issue": 302,
-            "step": "plan",
-            "status": "paused",
-            "live": "some-value",
-        })
-        make_marker(here, flow_dir)
+    def sibling(fx):
+        make_flow(fx.tmp / "flowsx", "302-issue-slug-id", handoff)
+        make_marker(fx.here, fx.tmp / "flowsx" / "302-issue-slug-id")
+    check("scenario 6b", "ask", setup=sibling)
 
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 4: route is existing", parsed.get("NOARG_ROUTE") == "existing", f"got {parsed}")
+    print("[Scenario 6c] marker is FLOWS_ROOT itself -> ask")
 
-    print()
-    print("[Scenario 5] status: failed with valid marker → existing")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        make_flow(flows, "302-issue-slug-id", {
-            "issue": 302,
-            "status": "failed",
-        })
-        make_marker(here, flow_dir)
+    def is_root(fx):
+        (fx.flows / "state.json").write_text(json.dumps(handoff))
+        make_marker(fx.here, fx.flows)
+    check("scenario 6c", "ask", setup=is_root)
 
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 5: route is existing", parsed.get("NOARG_ROUTE") == "existing", f"got {parsed}")
+    print("[Scenario 7] marker target without state.json -> ask")
+    check("scenario 7", "ask", setup=marker_setup(None))
+    print("[Scenario 8] state.issue 30 vs basename 302 -> ask")
+    check("scenario 8", "ask", setup=marker_setup({"issue": 30}))
 
-    print()
-    print("[Scenario 6] Marker pointing outside FLOWS_ROOT → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        outside = tmp / "outside-flow"
-        outside.mkdir()
-        make_marker(here, outside)
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 6: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 7] Marker target without state.json → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        flow_dir.mkdir(parents=True)
-        # No state.json
-        make_marker(here, flow_dir)
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 7: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 8] Marker state.issue 30 in basename 302-x → ask (prefix confusion guard)")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        make_flow(flows, "302-issue-slug-id", {"issue": 30})  # Mismatch!
-        make_marker(here, flow_dir)
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 8: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 9] No marker, valid cache branch match, issue 302, basename 302-x → plain")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": 302, "url": "https://github.com/owner/repo/issues/302"},
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 9: route is plain", parsed.get("NOARG_ROUTE") == "plain", f"got {parsed}")
-        t("scenario 9: issue is 302", parsed.get("NOARG_ISSUE") == "302", f"got {parsed}")
-
-    print()
-    print("[Scenario 10] No marker, cache branch ≠ current branch → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": 302, "url": "https://github.com/owner/repo/issues/302"},
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "feature", "true")
-        parsed = parse_output(out)
-        t("scenario 10: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 11] No marker, cache number 303 vs basename 302-x → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": 303, "url": "https://github.com/owner/repo/issues/303"},
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 11: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 12] No marker, non-numeric issue number PPS-166 → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": "PPS-166", "url": "https://github.com/owner/repo/issues/PPS-166"},
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 12: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 13] No marker, numeric number but non-GitHub URL → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": 302, "url": "https://internal.example.com/issues/302"},
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 13: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 14] No marker, no cache → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        # No cache file
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 14: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 15] HERE == MAIN_WORKTREE → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-
-        rc, out, err = run_noarg_block(block, main_wt, main_wt, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 15: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 16] Basename without leading digits (pps-166) → ask")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "pps-166"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": 166, "url": "https://github.com/owner/repo/issues/166"},
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 16: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-
-    print()
-    print("[Scenario 17] Marker with integer state.issue 302 in 302-x (explicit JSON integer) → resume")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        flows = tmp / "flows"
-        flows.mkdir()
-        flow_dir = flows / "302-issue-slug-id"
-        # Explicitly write integer 302, not string
-        d = flow_dir
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "state.json").write_text(json.dumps({
-            "issue": 302,  # integer
-            "step": "plan",
-            "status": "paused",
-            "live": None,
-            "attempts": {},
-        }))
-        make_marker(here, flow_dir)
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", flows, "main", "true")
-        parsed = parse_output(out)
-        t("scenario 17: route is resume", parsed.get("NOARG_ROUTE") == "resume", f"got {parsed}")
-
-    print()
-    print("[Scenario 18] No marker, cache issue.number as string '302' with valid GitHub URL → plain")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "302-issue-slug"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": "302", "url": "https://github.com/owner/repo/issues/302"},  # string
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 18: route is plain", parsed.get("NOARG_ROUTE") == "plain", f"got {parsed}")
-        t("scenario 18: issue normalised to 302", parsed.get("NOARG_ISSUE") == "302", f"got {parsed}")
-
-    print()
-    print("[Scenario 19] No marker, local cache (url: '', numeric issue 5) in basename 5-foo → ask with NOARG_NONGITHUB=yes")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        main_wt = tmp / "main"
-        main_wt.mkdir()
-        here = tmp / "5-foo"
-        here.mkdir()
-        make_cache(here, {
-            "branch": "main",
-            "issue": {"number": 5, "url": ""},  # Local, non-GitHub
-        })
-
-        rc, out, err = run_noarg_block(block, main_wt, here, "owner/repo", tmp / "flows", "main", "true")
-        parsed = parse_output(out)
-        t("scenario 19: route is ask", parsed.get("NOARG_ROUTE") == "ask", f"got {parsed}")
-        t("scenario 19: NOARG_NONGITHUB is yes", parsed.get("NOARG_NONGITHUB") == "yes", f"got {parsed}")
+    print("[Scenario 9] valid cache -> plain")
+    check("scenario 9", "plain", "302", setup=cache_setup(gh302))
+    print("[Scenario 10] cache branch differs -> ask")
+    check("scenario 10", "ask", cur_branch="feature", setup=cache_setup(gh302))
+    print("[Scenario 11] cache number 303 vs basename 302 -> ask")
+    check("scenario 11", "ask", setup=cache_setup(
+        {"branch": "main", "issue": {"number": 303, "url": "https://github.com/owner/repo/issues/303"}}))
+    print("[Scenario 12] non-numeric number PPS-166 -> ask")
+    check("scenario 12", "ask", setup=cache_setup(
+        {"branch": "main", "issue": {"number": "PPS-166", "url": "https://github.com/owner/repo/issues/PPS-166"}}))
+    print("[Scenario 13] non-GitHub URL -> ask + NOARG_NONGITHUB=yes")
+    check("scenario 13", "ask", nongithub="yes", setup=cache_setup(
+        {"branch": "main", "issue": {"number": 302, "url": "https://internal.example.com/issues/302"}}))
+    print("[Scenario 13b] GitHub URL for a different issue -> ask, not non-GitHub")
+    check("scenario 13b", "ask", setup=cache_setup(
+        {"branch": "main", "issue": {"number": 302, "url": "https://github.com/owner/repo/issues/999"}}))
+    print("[Scenario 14] no marker, no cache -> ask")
+    check("scenario 14", "ask")
+    print("[Scenario 15] HERE == MAIN_WORKTREE (listed) -> ask")
+    check("scenario 15", "ask", use_main_as_here=True)
+    print("[Scenario 15b] HERE != MAIN, IS_LISTED_WORKTREE=no, otherwise valid -> ask")
+    check("scenario 15b", "ask", is_listed=False, setup=cache_setup(gh302))
+    print("[Scenario 16] basename without leading digits -> ask")
+    check("scenario 16", "ask", wt_name="pps-166", setup=cache_setup(
+        {"branch": "main", "issue": {"number": 166, "url": "https://github.com/owner/repo/issues/166"}}))
+    print("[Scenario 17] integer state.issue 302, attempts {} -> resume")
+    check("scenario 17", "resume", "302", "<flow>", setup=marker_setup(dict(handoff, attempts={})))
+    print("[Scenario 18] string cache number '302' -> plain, normalised")
+    check("scenario 18", "plain", "302", setup=cache_setup(
+        {"branch": "main", "issue": {"number": "302", "url": "https://github.com/owner/repo/issues/302"}}))
+    print("[Scenario 19] local cache (url '') in 5-foo -> ask + NOARG_NONGITHUB=yes")
+    check("scenario 19", "ask", nongithub="yes", wt_name="5-foo", setup=cache_setup(
+        {"branch": "main", "issue": {"number": 5, "url": ""}}))
 
     h.summarize_and_exit()
 

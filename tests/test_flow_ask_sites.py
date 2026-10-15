@@ -240,7 +240,8 @@ def main():
             h.test_result("'Which issue' ask-site references Ask block or flow-reference.md",
                           "Ask block" in which_line or "flow-reference.md" in which_line, which_line[:120])
         h.test_result("'Which issue' context mentions ISSUE_ARG parse",
-                      "ISSUE_ARG" in ef_text and ("parse" in ef_text or "parsed" in ef_text))
+                      bool(which_issue_lines) and "Parse a typed answer exactly like `ISSUE_ARG`" in which_issue_lines[0]
+                      and "`Abort` as the one listed option" in which_issue_lines[0])
 
     print()
     h.summarize_and_exit()

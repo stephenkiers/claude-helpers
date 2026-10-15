@@ -338,19 +338,22 @@ def main():
     h.test_result("ADR-0023 has the 2026-10-15 amendment heading",
                   "## Amendment (2026-10-15): bare /expert-flow in the ticket worktree" in adr)
     h.test_result("CLAUDE.md mentions bare form",
-                  "bare" in claude and "/expert-flow" in claude)
+                  "A bare `cd <worktree> && claude \"/expert-flow\"` auto-detects the issue and resumes the hand-off silently" in claude)
     h.test_result("EXISTING_DIR sentence in Existing flow section",
-                  "when the no-arg route set `EXISTING_DIR`" in text or "`EXISTING_DIR`" in text)
+                  "EXISTING_DIR" in heading_section(text, "### Fresh run: resolve the issue"))
     h.test_result("trail line contains 'from the main worktree to choose Start fresh'",
                   "from the main worktree to choose Start fresh" in text)
     h.test_result("Every Exit Path has bare run rows",
-                  re.search(r"bare run silently resumed|no-issue question", exit_sec, re.IGNORECASE) is not None)
+                  all(s in exit_sec for s in (
+                      "Bare `/expert-flow` in ticket worktree, exact hand-off state (silently resumed)",
+                      "No-issue question answered Abort, invalid input, or unanswered (no-arg route `ask`)",
+                      "Bare `/expert-flow` with other flags")))
     h.test_result("--from exception line for preserve start point",
-                  "FROM_STEP" in text and "--from" in text)
+                  "/expert-flow <ISSUE> --from <FROM_STEP>[ --plan-file <QUOTED_PLAN_FILE>]" in text)
     h.test_result("non-GitHub worktree guard message is present",
                   "this worktree is not for a GitHub issue — run /expert-flow <issue> from the main worktree" in text)
     h.test_result("Hand-off paragraph reflects exact hand-off predicate (step: plan, status: paused)",
-                  "step: plan" in text and "status: paused" in text)
+                  "`step==plan`, `status==paused`, `live==null`, `attempts.plan==0`" in noarg_sec)
 
     print()
     print("[Section 9] Mandatory AskUserQuestion relay and prose ingestion (#277)")
