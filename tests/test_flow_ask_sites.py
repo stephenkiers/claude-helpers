@@ -227,6 +227,22 @@ def main():
     h.test_result("roster is non-empty once conversions have landed", len(ROSTER) > 0)
 
     print()
+    print("[Section 4] Targeted check for /expert-flow no-argument 'Which issue' ask-site")
+    expert_flow = REPO_ROOT / "commands" / "expert-flow.md"
+    if expert_flow.exists():
+        ef_text = expert_flow.read_text()
+        # Count "Which issue" ask-site references: must have exactly one, reference Ask block, and mention ISSUE_ARG parse
+        which_issue_lines = [line for line in ef_text.split('\n') if 'Which issue' in line]
+        h.test_result("expert-flow.md has exactly one 'Which issue' ask-site", len(which_issue_lines) == 1,
+                      f"found {len(which_issue_lines)} occurrences")
+        if which_issue_lines:
+            which_line = which_issue_lines[0]
+            h.test_result("'Which issue' ask-site references Ask block or flow-reference.md",
+                          "Ask block" in which_line or "flow-reference.md" in which_line, which_line[:120])
+        h.test_result("'Which issue' context mentions ISSUE_ARG parse",
+                      "ISSUE_ARG" in ef_text and ("parse" in ef_text or "parsed" in ef_text))
+
+    print()
     h.summarize_and_exit()
 
 

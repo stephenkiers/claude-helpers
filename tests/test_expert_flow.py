@@ -300,13 +300,17 @@ def main():
                               len(expected_words) == 0, title)
 
     print()
-    print("[Section 8] Worktree-first invocation")
+    print("[Section 8] Worktree-first invocation and no-argument run")
     h.test_result("step table has a 00 | worktree row using --worktree-only",
                   "worktree" in rows and rows["worktree"].startswith("| 00 |") and "--worktree-only" in rows["worktree"],
                   rows.get("worktree", "missing"))
     h.test_result("plan row runs in the ticket worktree", "plan" in rows and "ticket worktree" in rows["plan"])
-    h.test_result("hand-off lines are present",
-                  "worktree ready: <WORKTREE>" in text and "then run: /expert-flow <ISSUE>" in text)
+    # Updated: check for the new quoted template hand-off line instead of old two-command form
+    h.test_result("hand-off uses quoted template cd <QUOTED_WORKTREE> && claude \"/expert-flow\"",
+                  "worktree ready: <WORKTREE>" in text and "next:  cd <QUOTED_WORKTREE> && claude \"/expert-flow\"" in text,
+                  "missing new template or old form still present")
+    h.test_result("old 'then run: /expert-flow <ISSUE>' form is gone",
+                  "then run: /expert-flow <ISSUE>" not in text)
     exit_sec = heading_section(text, "## Every Exit Path")
     h.test_result("Every Exit Path mentions the hand-off", "hand-off" in exit_sec.lower())
     h.test_result("worktree is a telemetry stage name", "worktree" in STAGES and "`worktree`" in exit_sec)
@@ -319,6 +323,34 @@ def main():
                   "no hand-off" in heading_section(text, "## Epic mode"))
     h.test_result("done line points back at the main worktree", "next:  cd <MAIN_WORKTREE>" in text)
     h.test_result("ADR has the worktree-first amendment", "## Amendment: worktree-first invocation" in adr)
+
+    # New assertions for no-argument run feature
+    print()
+    print("[Section 8a] No-argument run (bare /expert-flow)")
+    noarg_sec = heading_section(text, "### No-argument run")
+    h.test_result("No-argument run subsection exists", bool(noarg_sec))
+    h.test_result("argument-hint shows issue as optional [<issue-url|number>]",
+                  "[<issue-url|number>]" in fm, "issue should be optional in argument-hint")
+    h.test_result("'Required unless' text mentions bare form", "Required unless" in text and "ticket worktree" in text,
+                  "Required unless sentence should mention bare form")
+    h.test_result("parser message about bare form and flags is present",
+                  "(a bare /expert-flow takes no flags)" in text)
+    h.test_result("ADR-0023 has the 2026-10-15 amendment heading",
+                  "## Amendment (2026-10-15): bare /expert-flow in the ticket worktree" in adr)
+    h.test_result("CLAUDE.md mentions bare form",
+                  "bare" in claude and "/expert-flow" in claude)
+    h.test_result("EXISTING_DIR sentence in Existing flow section",
+                  "when the no-arg route set `EXISTING_DIR`" in text or "`EXISTING_DIR`" in text)
+    h.test_result("trail line contains 'from the main worktree to choose Start fresh'",
+                  "from the main worktree to choose Start fresh" in text)
+    h.test_result("Every Exit Path has bare run rows",
+                  re.search(r"bare run silently resumed|no-issue question", exit_sec, re.IGNORECASE) is not None)
+    h.test_result("--from exception line for preserve start point",
+                  "FROM_STEP" in text and "--from" in text)
+    h.test_result("non-GitHub worktree guard message is present",
+                  "this worktree is not for a GitHub issue — run /expert-flow <issue> from the main worktree" in text)
+    h.test_result("Hand-off paragraph reflects exact hand-off predicate (step: plan, status: paused)",
+                  "step: plan" in text and "status: paused" in text)
 
     print()
     print("[Section 9] Mandatory AskUserQuestion relay and prose ingestion (#277)")
