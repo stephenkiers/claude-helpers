@@ -181,7 +181,7 @@ question does not change:
 | Command | Site | Becomes |
 |---|---|---|
 | `/expert-plan` | Step 5 checkpoint (2–4-option Qs) | relayed |
-| | Step 5 open-ended / >4-question themes (markdown + conversation) | relayed as one free-text question per theme — **this is the one UX change**; today it's a chat exchange |
+| | Step 5 open-ended / >4-question themes (markdown + conversation) | relayed as one free-text question per theme — **this is the one UX change**; today it's a chat exchange — *superseded by ADR-0023's 2026-10-14 amendment: step gates are a second, orchestrator-owned stop* |
 | | Step 8 repair ask; missing-ticket ask; plan-mode guard | relayed / orchestrator always supplies the ticket / orchestrator never enters plan mode |
 | `/track-and-start` | pivot, duplicate, base-branch | **avoided**: orchestrator passes `--issue N --plan-file P` (skips pivot+duplicate detection today); base-branch only exists in tracker mode |
 | `/implement-with-haiku` | failed units Abort/Proceed; incomplete-report menu; conflict on shared file; gate not converged | relayed (first two) / relayed as FAILED-with-options (last two) |
@@ -316,6 +316,7 @@ always merges at the gate, `--stack` is never needed.
     [--plan-effort 2|3]        default: heuristic (scripts/plan-effort.py), as today
     [--review-effort 1-5]      default: heuristic; a risk-keyword floor to 4 is relayed as a question
     [--auto-merge]             skip the merge gate (never a stored default)
+    [--no-gates]               skip the five step gates for one run (never a stored default) — added by ADR-0023's 2026-10-14 amendment
     [--from <step>]            start at a later step for a ticket already in flight by hand
     [--resume <flow-dir|issue#>]
     [--list]
@@ -362,7 +363,7 @@ PR-base retarget check, ADR-0011 amendment.
 ## 12. Decisions needed from you before Phase 1
 
 **Resolved on #245 (2026-10-08):** (1) accept — open-ended plan questions become free-text
-`AskUserQuestion`s, the one UX change; (2) human merge gate by default, `--auto-merge` per-run only;
+`AskUserQuestion`s, the one UX change *(superseded by ADR-0023's 2026-10-14 amendment, which adds step gates)*; (2) human merge gate by default, `--auto-merge` per-run only;
 (3) epic v1 sequential, `--stack` deferred; (4) verify runs `commands.check` only — auto-running
 "needs measurement" commands stays open. The original questions follow for the record.
 
