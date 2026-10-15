@@ -324,7 +324,7 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   brief verbatim) and `/expert-review`'s rulings (triage digest; each *Needs you* block verbatim).
   The pointer-not-content rule for `context_path` still holds; the content now has its own fields.
 - **Every checkpoint question is asked.** In a flow, `/expert-plan` relays every `#### Q[n]` brief across
-  successive question files and turns every open-ended theme into a free-text Ask; `/expert-review`
+  successive question files, each open-ended brief as its own free-text Ask; `/expert-review`
   relays every *Needs you* item. Adopting a default, dropping a later batch, or skipping the checkpoint
   for a "reduced" run is `Decision: FAILED` (`reduced run: checkpoint questions dropped` /
   `rulings dropped`). `flow-verify-receipt.py` enforces it from disk (`--flow-dir`): the briefs in
