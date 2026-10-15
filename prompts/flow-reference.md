@@ -179,7 +179,7 @@ again there; `/expert-review` rulings are deterministic from checkpoints and usu
    hand it to `AskUserQuestion` unchanged. For a free-text question (an open-ended planning theme),
    give one option labelled `Answer in your own words` and the orchestrator will put the human's
    "Other" text in the answer. `context_path` is the one file worth opening first (the decision
-   brief, the action plan, the diff index); it is a pointer, never pasted content.
+   brief, the action plan, the diff index); it is a pointer, not pasted content — the orchestrator opens it only as the fallback when a file carries neither `summary` nor `brief`.
 
    **Context travels with the question.** The human answers in the orchestrator's conversation and
    never sees this command's output, so a bare option list is not enough to decide on. `summary` and

@@ -518,7 +518,7 @@ def main():
     print()
     print("[Section 14] More human in the loop: context-carrying relay, full checkpoint relay, step gates")
     review_cmd = (REPO_ROOT / "commands" / "expert-review.md").read_text()
-    ask_block = heading_section(flow_ref, "## Ask") or flow_ref
+    ask_block = heading_section(flow_ref, "## Ask")
     h.test_result("flow-reference Ask block defines top-level `summary` and per-question `brief`",
                   '"summary"' in ask_block and '"brief"' in ask_block)
     h.test_result("flow-reference requires summary/brief for expert-plan and expert-review",
@@ -528,7 +528,7 @@ def main():
     h.test_result("relay prints the context before the mandatory call",
                   "Print the context, then call the form" in relay and "`AskUserQuestion` call is mandatory" in relay)
     h.test_result("relay falls back to printing the whole context_path file",
-                  "print the\n   whole `context_path` file" in relay or "whole `context_path` file" in relay)
+                  "whole `context_path` file" in relay)
     h.test_result("relay exception names both gates",
                   "merge gate and the step gates, which are the orchestrator's own decision points" in relay)
     gate = sub("### Step gate")
@@ -541,12 +541,20 @@ def main():
                   "`flags.no_gates` is true" in gate and "`gates[STEP]` is already `continue`" in gate)
     h.test_result("Step gate prints each step's digest",
                   "`decisions.md`" in gate and "claude-action-plan.md" in gate and "git log --oneline <bases[STEP]>..HEAD" in gate)
+    h.test_result("Step gate writes the digest to gates/<NN>-<STEP>.md",
+                  "gates/<NN>-<STEP>.md" in gate)
+    h.test_result("Step gate prints the delta when a summary was relayed",
+                  "only what the relay did not" in gate)
     h.test_result("Step gate Pause closes the command as interrupted and resume re-asks",
                   "command-end --outcome interrupted" in gate and "resume rule 3a" in gate)
     h.test_result("free text at a gate is stored as gate_note", "`gate_note`" in gate)
     h.test_result("OK branch runs the Step gate before STEP advances",
-                  'run the "Step gate" when `STEP` is' in text and "advance `STEP` to the next step" in text)
-    h.test_result("resume rule 3a re-asks a gate the human paused at", "3a. `status: paused` at a step gate" in text)
+                  'hand off to the "Step gate"' in text and "Continue advances `STEP`" in text)
+    h.test_result("resume rule 3a re-asks a gate the human paused at", "never re-run — whatever `status` says" in text)
+    h.test_result("gate Abort resumes to re-ask, never re-run",
+                  "never re-run — whatever `status` says" in text and "`--resume`" in enclosing_section(text, "**Abort** — set `status: failed`"))
+    h.test_result("gate writes status: paused before the Ask",
+                  "Before asking: set `status: paused`, log `paused`, `WRITE-STATE`" in gate)
     h.test_result("flags.no_gates is forced false on resume", "`flags.no_gates` is forced to `false`" in text)
     h.test_result("state documents gates and flags.no_gates",
                   re.search(r"^\| `gates` \|", flow_state, re.M) is not None
@@ -563,13 +571,17 @@ def main():
     audit = sub("### Fidelity audit")
     h.test_result("fidelity audit compares briefs/Needs-you items with relayed question files",
                   "questions/plan-*.json" in audit and "questions/review-*.json" in audit and "no checkpoint questions" in audit)
+    h.test_result("fidelity audit counts only question files named by receipt markers",
+                  "awaiting-answers: … -->` / `<!-- reused-answers: … -->` markers" in audit)
+    h.test_result("fidelity audit has zero-brief carve-out",
+                  "zero `#### Q` headings" in audit)
     plan_step5 = plan.split("### Step 5", 1)[1].split("### Step 6", 1)[0] if "### Step 5" in plan else ""
     h.test_result("expert-plan Step 5 fails a run that drops checkpoint questions",
                   "reduced run: checkpoint questions dropped" in plan_step5)
     h.test_result("expert-plan Step 5 relays every brief across successive files",
                   "`plan-01`, `plan-02`" in plan_step5 and "`summary`" in plan_step5 and "`brief`" in plan_step5)
-    h.test_result("expert-plan Step 5 makes open-ended themes a free-text Ask unconditionally",
-                  "**must** become one free-text Ask" in plan_step5)
+    h.test_result("expert-plan Step 5 makes each open-ended brief its own free-text Ask",
+                  "each open-ended `#### Q[n]` brief **must** become its own free-text Ask" in plan_step5)
     h.test_result("expert-review Step 12 carries summary/brief and fails dropped rulings",
                   "reduced run:\nrulings dropped" in review_cmd and "`summary`" in review_cmd and "`review-01`, `review-02`" in review_cmd)
     h.test_result("ADR has the more-human-in-the-loop amendment",
