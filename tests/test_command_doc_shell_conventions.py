@@ -41,8 +41,7 @@ def has_literal_zero(line):
     return POSITIONAL_ZERO in line
 
 # Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303).
-# This is an untracked follow-up: the intent is to remove the remaining bare `$N` tokens from
-# command docs, but no issue number tracks it yet.
+# Tracked in #306: remove the remaining bare `$N` tokens from command docs.
 # Counts are recomputed at each run from the repo state to enforce ratcheting (counts can only decrease).
 # A file whose count reaches zero, or that no longer exists, fails the ratchet until its entry is
 # removed from this allowlist, so stale entries cannot linger.
