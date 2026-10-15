@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spec-blind test suite for the expert-flow round-2 implementation.
+Spec-blind test suite for the expert-flow step-gate / question-relay changes.
 
 This test suite is written ONLY from the plan specification (12 doing-it findings),
 without reading the implementation files. It verifies the accepted/implemented changes
@@ -20,7 +20,7 @@ The 12 findings being tested (by documentation verification and behavior):
 11. F14: Relay cycle comment (documented intention, may be GitHub comment)
 12. F15: Gate file naming per step (verified via documentation)
 
-Run with: python3 tests/test_expert_flow_round2_spec_blind.py
+Run with: python3 tests/test_expert_flow_spec_blind.py
 """
 
 import re
@@ -36,7 +36,7 @@ PROMPTS_DIR = REPO_ROOT / "prompts"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 DOCS_PLANS_DIR = REPO_ROOT / "docs" / "plans"
 
-h = Harness("EXPERT-FLOW ROUND-2 SPEC-BLIND TEST SUITE")
+h = Harness("EXPERT-FLOW SPEC-BLIND TEST SUITE")
 t = h.test_result
 
 print()
