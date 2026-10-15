@@ -1819,17 +1819,39 @@ No items."""
                       exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 2, unanswered: plan-02.json)" in stdout, stdout)
 
     print()
-    print("[Test 78] Plan: traversal marker questions/../../ does not escape the flow dir")
+    print("[Test 78] Plan: traversal marker questions/../../plan-01.json resolves by basename into flow_dir")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
         flow_dir = f"{tmp_home}/flow"
-        # A complete question/answer pair sits OUTSIDE the flow dir, reachable only by traversal
-        create_flow_questions(tmp_home, "plan", [1], answered=True)
-        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/../../evil.json -->\n<!-- awaiting-answers: questions/../../plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        # A complete question/answer pair sits UNDER the flow dir. The counting rule uses the marker's
+        # basename, so questions/../../plan-01.json is counted against flow_dir/answers/plan-01.json.
+        create_flow_questions(flow_dir, "plan", [1], answered=True)
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/../../plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("traversal marker's outside answers/ file is not treated as answered → unanswered, asked: 0",
+        h.test_result("traversal marker questions/../../plan-01.json counts by basename against flow_dir/answers (exit 0)",
+                      exit_code == 0, stdout)
+
+        # Same receipt with the flow dir's answers/plan-01.json removed: the basename lookup misses → unanswered.
+        (Path(flow_dir) / "answers" / "plan-01.json").unlink()
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("traversal marker questions/../../plan-01.json with no flow_dir answers file → unanswered (exit 1)",
                       exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, unanswered: plan-01.json)" in stdout, stdout)
+
+    print("[Test 78b] Plan: non-step-prefixed traversal marker questions/../../evil.json is ignored, not counted")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        Path(flow_dir, "questions").mkdir(parents=True, exist_ok=True)
+        Path(flow_dir, "answers").mkdir(parents=True, exist_ok=True)
+        # Escape target exists beside the flow dir (flow/questions/../../evil.json == tmp_home/evil.json)
+        Path(tmp_home, "evil.json").write_text("{}\n")
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/../../evil.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("non-step-prefixed traversal marker is ignored: zero plan markers, asked: 0 (exit 1)",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no plan-* markers)" in stdout,
+                      stdout)
 
     h.summarize_and_exit()
 

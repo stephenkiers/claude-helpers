@@ -35,6 +35,11 @@ from _test_harness import Harness, REPO_ROOT
 # The literal tokens, assembled so this file does not itself contain them.
 POSITIONAL_ZERO = "$" + "0"
 
+
+def has_literal_zero(line):
+    """The per-line literal-$0 detector used by the Section 1 scan (and exercised by Section 1.3)."""
+    return POSITIONAL_ZERO in line
+
 # Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303).
 # This is an untracked follow-up: the intent is to remove the remaining bare `$N` tokens from
 # command docs, but no issue number tracks it yet.
@@ -69,7 +74,7 @@ def main():
     offenders_zero = []
     for doc in docs:
         for lineno, line in enumerate(doc.read_text().splitlines(), start=1):
-            if POSITIONAL_ZERO in line:
+            if has_literal_zero(line):
                 rel = doc.relative_to(REPO_ROOT)
                 offenders_zero.append(f"{rel}:{lineno}: {line.strip()}")
 
@@ -169,15 +174,17 @@ def main():
     print()
     print("[Section 1.3] Guard the guard: literal $0 and indexed ARGUMENTS forms")
 
-    # Restored: a literal $0 inside an awk program is the original observed hazard.
+    # A literal $0 inside an awk program is the original observed hazard. This runs the same
+    # per-line detector (has_literal_zero) that the Section 1 scan uses, so removing it fails here.
     synthetic_zero = f"_cap8k() {{ awk '{{print substr({POSITIONAL_ZERO},1,10)}}'; }}"
     h.test_result(
         "detector matches synthetic literal $0 token inside an awk snippet",
-        POSITIONAL_ZERO in synthetic_zero,
+        has_literal_zero(synthetic_zero),
         "failed to match literal $0",
     )
 
-    # Indexed ARGUMENTS forms: the bare form is the hazard, the braced form is not matched.
+    # Indexed ARGUMENTS forms (documentation of the pattern only: these assertions use a local regex
+    # and do not guard any scan). The bare form is the hazard, the braced form is not matched.
     bare_args_pattern = re.compile(r"\$ARGUMENTS\[\d+\]")
     synthetic_bare_args = "echo $" + "ARGUMENTS[1]"
     synthetic_braced_args = "echo $" + "{ARGUMENTS[1]}"

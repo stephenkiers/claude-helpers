@@ -45,19 +45,32 @@ KEEP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-MARKER_REF = "awaiting-answers"
+# Every phrase by which a doc refers to a receipt marker (the same alternation the old drop check used).
+MARKER_REF = re.compile(r"awaiting-answers|reused-answers|awaiting marker")
+
+# Drop/remove language: checked in a 60-character window around each marker reference.
+DROP_VERBS = re.compile(r"\b(?:drop|remove|strip|delete)\b")
 
 
 def has_keep_sentence(text):
     return bool(KEEP_PATTERN.search(re.sub(r"\s+", " ", text)))
 
 
+def has_drop_language_near_marker(text):
+    normalized = re.sub(r"\s+", " ", text)
+    for match in MARKER_REF.finditer(normalized):
+        window = normalized[max(0, match.start() - 60):min(len(normalized), match.end() + 60)]
+        if DROP_VERBS.search(window):
+            return True
+    return False
+
+
 def marker_docs(commands_dir, flow_reference):
-    """Every command doc and prompts/flow-reference.md that references the awaiting marker."""
+    """Every command doc and prompts/flow-reference.md that references a receipt marker."""
     docs = sorted(commands_dir.rglob("*.md"))
     if flow_reference.exists():
         docs.append(flow_reference)
-    return [d for d in docs if MARKER_REF in d.read_text()]
+    return [d for d in docs if MARKER_REF.search(d.read_text())]
 
 
 def main():
@@ -102,6 +115,18 @@ def main():
         "marker exemptions each carry a documented reason",
         all(reason.strip() for reason in MARKER_EXEMPTIONS.values()),
         "",
+    )
+
+    # Second assertion beside the positive keep check: no drop/remove/strip/delete language near a marker.
+    drop_offenders = [
+        f"{doc.relative_to(REPO_ROOT)}: drop/remove language near markers"
+        for doc in referencing
+        if has_drop_language_near_marker(doc.read_text())
+    ]
+    h.test_result(
+        "no drop/remove/strip/delete language near receipt marker references",
+        not drop_offenders,
+        "\n      " + "\n      ".join(drop_offenders) if drop_offenders else "",
     )
 
     print()
