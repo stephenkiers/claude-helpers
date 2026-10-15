@@ -199,8 +199,9 @@ flow-side behaviour is recorded in §2 and §5.
 - **Telemetry correlation (expected, to be confirmed in #252 dogfooding):** nested step-command
   telemetry lands under the long-lived `expert-flow` orchestrator record. ADR-0016 correlates
   telemetry only for sequential invocations, so this is a change to be checked, not assumed safe.
-- **Open work touching the same orchestrator surfaces:** #230 (decision-relay completion check),
-  #179 (receipt-path safety), and #217 (checkpoint hygiene). Sequencing and priority TBD.
+- **Open work touching the same orchestrator surfaces:** #179 (receipt-path safety) and #217 (checkpoint
+  hygiene). The decision-relay completion check (decision points are asked and verified in
+  `flow-verify-receipt.py --flow-dir`) shipped with the 2026-10-14 amendment.
 - `/expert-implement-with-haiku-and-ship` is superseded; its CLAUDE.md entry is removed.
 
 ## Amendment: worktree-first invocation
@@ -302,3 +303,54 @@ not proceed. That was a dogfooding defect, not a design choice.
   having exactly one exception, the human-gated rebase. Deleting a worktree the human has asked to replace
   is a second, equally human-gated exception, and it goes through the existing `/cleanup` helper so
   the deletion logic is not duplicated.
+
+## Amendment (2026-10-14): more human in the loop — context-carrying relay, full checkpoint relay, step gates
+
+**Problem.** In practice the flow asked far fewer questions than the same commands run by hand, and the
+ones it did ask arrived as a bare option list with a `skim:` pointer. Three causes, all observed in
+`~/.claude/flows/`: plan steps dropped checkpoint batches after the first or adopted the recommended
+defaults ("Q5 to Q7 were not asked"); open-ended planning themes never became free-text asks; and the
+orchestrator relayed the stripped `questions[]` payload only, so the human decided without the decision
+brief, the round-up, or the action plan they would have read in chat. Nothing enforced any of it: the
+verifier and the fidelity audit checked that artifacts existed, not that the human had been consulted.
+
+**Decision.**
+
+- **Question files carry their context.** The Ask block adds a top-level `summary` (markdown the
+  human reads before the questions) and a per-question `brief`. The orchestrator prints `summary`
+  verbatim, then each `brief` under its question id, *before* the mandatory `AskUserQuestion` call;
+  a file with neither is printed as its whole `context_path` file. Both fields are required for
+  `/expert-plan`'s checkpoint (ticket refresher, North Star line, expert round-up; each `#### Q[n]`
+  brief verbatim) and `/expert-review`'s rulings (triage digest; each *Needs you* block verbatim).
+  The pointer-not-content rule for `context_path` still holds; the content now has its own fields.
+- **Every checkpoint question is asked.** In a flow, `/expert-plan` relays every `#### Q[n]` brief across
+  successive question files, each open-ended brief as its own free-text Ask; `/expert-review`
+  relays every *Needs you* item. Adopting a default, dropping a later batch, or skipping the checkpoint
+  for a "reduced" run is `Decision: FAILED` (`reduced run: checkpoint questions dropped` /
+  `rulings dropped`). `flow-verify-receipt.py` enforces it from disk (`--flow-dir`): the briefs in
+  `decisions.md` against the questions in `questions/plan-*.json` (`plan checkpoint incomplete`), the
+  *Needs you* items against `questions/review-*.json` (`review rulings incomplete`); `decisions.md` is
+  now a required plan artifact. The fidelity auditor checks the same counts and treats "not asked" /
+  "defaults adopted" receipt wording as `FIDELITY: reduced`.
+- **Step gates.** After `plan`, `implement`, `review`, `fix`, and `verify` close `OK`, the orchestrator
+  prints what the step produced; when the relay already printed the step's `summary`, the gate prints
+  only the delta (for `plan`, the checkpoint results and decision index plus the head of the plan; for
+  `review`, the action-plan header, *Doing it*, and *Deferred*), and whatever it prints is also written
+  to `${FLOW_DIR}/gates/<NN>-<STEP>.md`; for other steps, it prints the receipt and `git log` of new
+  commits, or the check result. Then it asks **Continue / Pause / Abort** (header `Step gate`). Continue
+  is recorded in `state.json` `gates[<step>]` and is never re-asked; Pause leaves the flow `paused` at
+  the completed step and `--resume` re-asks the gate (resume rule 2); free text is a Pause whose note is
+  stored as `gate_note` and printed back on resume. #277's prose-ingestion work will extend the same
+  anchor rule to the gate: a reply that plainly names Continue or Abort maps to that option, anything
+  else stays a Pause with a note. `--no-gates` skips them for one run and, like `--auto-merge`, is never
+  restored on resume. The gates are the orchestrator's own decision points, like the merge gate, so §2's
+  rule stands: the *relay* never adds a question; the orchestrator does, at fixed points, on its own
+  authority. This amendment supersedes "the orchestrator's one own question" in §2.1 and §4 (the
+  orchestrator now has six fixed decision points: five step gates + the merge gate) and the §3 rule that
+  `--resume` always re-runs the current step (a flow paused at a gate re-asks the gate; resume rule 2).
+
+**Consequences.** A flow now stops after every substantive step and at every decision the commands
+raise, with the material to decide on in the conversation; a human who changes nothing still reads
+everything. Runs take more wall-clock turns; `--no-gates` is the per-run opt-out, and relayed
+questions can never be opted out of. A plan or review that reaches the human with fewer questions
+than it raised is a failed step, not a quiet default.
