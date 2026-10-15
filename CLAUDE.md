@@ -288,15 +288,16 @@ around it.
 **Never write a bare positional token `$0`–`$9` in a `commands/*.md` shell snippet or prose.** Every `.md` in
 `commands/` is an invocable slash command, and the harness substitutes the invocation's arguments
 into bare positional tokens in the doc body (including inline prose and fenced code blocks)
-*before* the shell or model sees it — using 0-based indexing per the harness's own numbering (`$0` is the first argument,
-`$1` the second, etc.). `awk` is the usual way to hit this, since its only handle on the
+*before* the shell or model sees it. The 0-based numbering (`$0` is the first argument, `$1` the second) and the
+survival of the braced form `${N}` through substitution are asserted from an observed harness probe whose command and
+output are not recorded in-tree, so they are unverified claims until that probe is recorded. `awk` is the usual way to hit this, since its only handle on the
 current record is `$0`: `commands/cleanup.md`'s `_cap8k` helper was written as `awk '{b=length($0)+1; ...}'` and reached
 the model as `awk '{b=length(/Users/.../a-worktree-path)+1; ...}'`, a broken program assembled from a
 filesystem path. For shell, use the **braced form** `${N}` (e.g. `case "${1}" in`), which the harness does not substitute.
 For `awk`, the braced form is invalid awk syntax, so use `python3`, `sed`, or a git command that answers the question directly
 (`git -C <path> branch --show-current` instead of parsing `git worktree list --porcelain`). `$ARGUMENTS` is the intended
 input mechanism and is fine. `tests/test_command_doc_shell_conventions.py` enforces this ratchet guard (see its allowlist
-for known offenders tracked in follow-up F1). Files in `prompts/` are exempt — they
+for known offenders, listed in an untracked follow-up). Files in `prompts/` are exempt — they
 are lazy-loaded by path, never argument-substituted.
 
 **Never pipe a shell variable holding untrusted or externally-derived content through `echo "$VAR" | jq ...` (or `| python3 ...`).**

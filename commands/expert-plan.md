@@ -185,7 +185,7 @@ FLOW_FLAG_DIR=""   # set only by /expert-flow via --flow <dir>; empty = not in a
 EPIC_MODE="false"   # --epic: emit a ## Sub-tickets section (ADR-0023 §5)
 
 # Parser: use braced form ${N} so the harness does not substitute these positional tokens.
-# TODO (F2): rewrite this parser with python3 shlex over a quoted heredoc.
+# TODO (untracked follow-up): rewrite this parser with python3 shlex over a quoted heredoc.
 while [ $# -gt 0 ]; do
   case "${1}" in
     --effort=*)
