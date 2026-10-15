@@ -546,11 +546,11 @@ def main():
     h.test_result("Step gate prints the delta when a summary was relayed",
                   "only what the relay did not" in gate)
     h.test_result("Step gate Pause closes the command as interrupted and resume re-asks",
-                  "command-end --outcome interrupted" in gate and "resume rule 3a" in gate)
+                  "command-end --outcome interrupted" in gate and "resume rule 2" in gate)
     h.test_result("free text at a gate is stored as gate_note", "`gate_note`" in gate)
     h.test_result("OK branch runs the Step gate before STEP advances",
                   'hand off to the "Step gate"' in text and "Continue advances `STEP`" in text)
-    h.test_result("resume rule 3a re-asks a gate the human paused at", "never re-run — whatever `status` says" in text)
+    h.test_result("resume rule 2 re-asks a gate the human paused at", "never re-run — whatever `status` says" in text)
     h.test_result("gate Abort resumes to re-ask, never re-run",
                   "never re-run — whatever `status` says" in text and "`--resume`" in enclosing_section(text, "**Abort** — set `status: failed`"))
     h.test_result("gate writes status: paused before the Ask",

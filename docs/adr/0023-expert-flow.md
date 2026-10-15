@@ -339,7 +339,7 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   to `${FLOW_DIR}/gates/<NN>-<STEP>.md`; for other steps, it prints the receipt and `git log` of new
   commits, or the check result. Then it asks **Continue / Pause / Abort** (header `Step gate`). Continue
   is recorded in `state.json` `gates[<step>]` and is never re-asked; Pause leaves the flow `paused` at
-  the completed step and `--resume` re-asks the gate (resume rule 3a); free text is a Pause whose note is
+  the completed step and `--resume` re-asks the gate (resume rule 2); free text is a Pause whose note is
   stored as `gate_note` and printed back on resume. #277's prose-ingestion work will extend the same
   anchor rule to the gate: a reply that plainly names Continue or Abort maps to that option, anything
   else stays a Pause with a note. `--no-gates` skips them for one run and, like `--auto-merge`, is never
@@ -347,7 +347,7 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   rule stands: the *relay* never adds a question; the orchestrator does, at fixed points, on its own
   authority. This amendment supersedes "the orchestrator's one own question" in §2.1 and §4 (the
   orchestrator now has six fixed decision points: five step gates + the merge gate) and the §3 rule that
-  `--resume` always re-runs the current step (a flow paused at a gate re-asks the gate; resume rule 3a).
+  `--resume` always re-runs the current step (a flow paused at a gate re-asks the gate; resume rule 2).
 
 **Consequences.** A flow now stops after every substantive step and at every decision the commands
 raise, with the material to decide on in the conversation; a human who changes nothing still reads
