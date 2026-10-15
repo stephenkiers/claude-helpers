@@ -4,7 +4,8 @@
 Exit codes:
   0: artifacts OK
   1: receipt admits deviation, artifact missing, or a plan/review checkpoint was not fully relayed
-     (fewer questions in <flow-dir>/questions/<step>-*.json than decision briefs / Needs-you items)
+     (counting is marker-based: the questions in files named by receipt's awaiting-answers /
+     reused-answers markers that have a corresponding answers/ file)
   2: bad arguments or internal error (message on stderr)
 """
 
@@ -15,7 +16,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, NoReturn, Optional
+from typing import Dict, List, NamedTuple, NoReturn, Optional
 
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
@@ -25,6 +26,23 @@ GIT_TIMEOUT_SECS = 5
 CONTRIB_ABSENT = "absent"
 CONTRIB_UNTERMINATED = "unterminated"
 CONTRIB_STANDIN = "stand-in"
+
+
+class RelayCount(NamedTuple):
+    """Result of counting relayed questions from receipt markers.
+
+    Invariants (see count_relayed_questions):
+    - markers is the number of distinct `<step>-*.json` basenames named by the receipt.
+    - Each marker basename lands in at most one of unanswered / unreadable / (answered and
+      parsed). With no flow dir, nothing is classified, so unanswered and unreadable stay empty.
+    - When the questions/ dir is missing, every marker basename is reported as unanswered.
+    - asked counts only questions from answered, parsed marker files; it is 0 otherwise.
+    """
+    asked: int
+    markers: int
+    unanswered: List[str]
+    unreadable: List[str]
+
 
 # A decision brief heading in a plan session's decisions.md (`#### Q1. …`, `#### Q2 — …`).
 # Captures the Q number as group 1 to allow deduplication.
@@ -239,11 +257,17 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     if not decisions_file.exists():
         return "plan artifacts missing (decisions.md)"
     briefs = count_briefs(read_file(decisions_file))
-    asked, unreadable = count_relayed_questions(flow_dir, "plan", receipt)
-    if asked < briefs:
-        reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {asked}"
-        if unreadable:
-            reason += f", unreadable: {', '.join(unreadable)}"
+    relay_count = count_relayed_questions(flow_dir, "plan", receipt)
+    if relay_count.asked < briefs or relay_count.unanswered:
+        reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {relay_count.asked}"
+        if relay_count.markers == 0:
+            reason += ", receipt carries no plan-* markers"
+        if flow_dir is None and relay_count.markers:
+            reason += ", flow dir unresolved"
+        if relay_count.unanswered:
+            reason += f", unanswered: {', '.join(relay_count.unanswered)}"
+        if relay_count.unreadable:
+            reason += f", unreadable: {', '.join(relay_count.unreadable)}"
         reason += ")"
         return reason
 
@@ -293,11 +317,17 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
 
     # Rulings completeness: every *Needs you* item must have been put to the human through the relay.
     needs_you = count_needs_you_items(read_file(action_plan))
-    asked, unreadable = count_relayed_questions(flow_dir, "review", receipt)
-    if asked < needs_you:
-        reason = f"review rulings incomplete (needs-you: {needs_you}, asked: {asked}"
-        if unreadable:
-            reason += f", unreadable: {', '.join(unreadable)}"
+    relay_count = count_relayed_questions(flow_dir, "review", receipt)
+    if relay_count.asked < needs_you or relay_count.unanswered:
+        reason = f"review rulings incomplete (needs-you: {needs_you}, asked: {relay_count.asked}"
+        if relay_count.markers == 0:
+            reason += ", receipt carries no review-* markers"
+        if flow_dir is None and relay_count.markers:
+            reason += ", flow dir unresolved"
+        if relay_count.unanswered:
+            reason += f", unanswered: {', '.join(relay_count.unanswered)}"
+        if relay_count.unreadable:
+            reason += f", unreadable: {', '.join(relay_count.unreadable)}"
         reason += ")"
         return reason
 
@@ -329,8 +359,8 @@ def count_needs_you_items(action_plan: str) -> int:
 
 def count_relayed_questions(
     flow_dir: Optional[Path], step: str, receipt_text: str
-) -> tuple:
-    """Sum `questions[]` across files named by receipt markers.
+) -> RelayCount:
+    r"""Sum `questions[]` across files named by receipt markers.
 
     Parses the receipt's `<!-- awaiting-answers: questions/<STEP>-<SEQ>.json -->` and
     `<!-- reused-answers: questions/<STEP>-<SEQ>.json -->` markers (captured by regexes
@@ -338,17 +368,17 @@ def count_relayed_questions(
     `<!-- reused-answers: (questions/[^ ]+\.json) -->`). Only question files named by
     these markers are counted.
 
-    Returns (asked: int, unreadable_basenames: List[str]):
-    - asked: sum of questions[] across all successfully parsed, marker-named files
-    - unreadable_basenames: basenames of marker-named files that failed to read/parse
+    Returns RelayCount with:
+    - asked: sum of questions[] across all successfully parsed, marker-named files with answers/
+    - markers: total number of distinct marker-named basenames found
+    - unanswered: basenames of marker-named files without an answers/ file
+    - unreadable: basenames of marker-named files that failed to read/parse
 
-    An unknown flow dir or missing questions/ dir returns (0, []).
+    Zero markers returns RelayCount(asked=0, markers=0, unanswered=[], unreadable=[]).
+    With no flow dir but markers present, returns asked=0 and no "no markers" claim.
     The check fails closed when briefs or items exist and nothing provably reached the human.
     """
-    if flow_dir is None:
-        return (0, [])
-
-    # Find marker-named files
+    # Find marker-named files from receipt text, before checking flow_dir
     awaiting_re = re.compile(r"<!-- awaiting-answers: (questions/[^ ]+\.json) -->")
     reused_re = re.compile(r"<!-- reused-answers: (questions/[^ ]+\.json) -->")
 
@@ -364,14 +394,38 @@ def count_relayed_questions(
         if basename.startswith(f"{step}-"):
             marker_files.add(basename)
 
-    # Sum questions and track unreadable
-    total = 0
-    unreadable = []
+    marker_count = len(marker_files)
+
+    # If no markers, return early
+    if marker_count == 0:
+        return RelayCount(asked=0, markers=0, unanswered=[], unreadable=[])
+
+    # If no flow dir, return with asked=0 but don't claim "no markers"
+    if flow_dir is None:
+        return RelayCount(asked=0, markers=marker_count, unanswered=[], unreadable=[])
+
+    # Check that questions dir exists
     qdir = flow_dir / "questions"
     if not qdir.exists():
-        return (0, [])
+        # questions/ missing: nothing can be read, so every marker is reported as unanswered.
+        return RelayCount(asked=0, markers=marker_count, unanswered=sorted(marker_files), unreadable=[])
+
+    # Sum questions from files with answers/ and track unanswered/unreadable
+    total = 0
+    unanswered = []
+    unreadable = []
+    answers_dir = flow_dir / "answers"
 
     for basename in sorted(marker_files):
+        # Answered means the answers file exists as a regular file. This is existence-only by
+        # design: the answers/ file is evidence the relay ran, and its content is not validated.
+        # Only the question file's questions[] are counted.
+        answers_file = answers_dir / basename
+        if not answers_file.is_file():
+            unanswered.append(basename)
+            continue
+
+        # Try to read and parse the question file
         qfile = qdir / basename
         try:
             data = json.loads(qfile.read_text(encoding="utf-8"))
@@ -384,7 +438,7 @@ def count_relayed_questions(
         else:
             unreadable.append(basename)
 
-    return (total, unreadable)
+    return RelayCount(asked=total, markers=marker_count, unanswered=unanswered, unreadable=unreadable)
 
 
 def resolve_flow_dir(explicit: Optional[str], receipt_file: Path) -> Optional[Path]:
