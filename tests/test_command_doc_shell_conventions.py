@@ -8,12 +8,13 @@ positional tokens in the doc body *before* the shell runs it.
 
 Bare positional tokens `$0` through `$9` are substituted by the harness before the shell
 sees them. A literal `$0` in an embedded shell snippet is rewritten to the user's
-arguments. Braced forms `${1}`, `$(1)` and `$ARGUMENTS` / `$ARGUMENTS[N]` survive
-substitution unchanged. This applies to both prose and fenced code blocks in command docs;
-prompts/ files are exempt because they are lazy-loaded by path, never argument-substituted.
+arguments. The braced form `${1}` is the form this suite treats as safe (the bare-token
+detector does not match it), and the indexed `$ARGUMENTS[N]` / `${ARGUMENTS[N]}` forms are
+checked by the synthetic guard section. This applies to both prose and fenced code blocks in
+command docs; prompts/ files are exempt because they are lazy-loaded by path, never
+argument-substituted.
 
-awk cannot use `${1}` (invalid syntax), so awk code must use python3, sed, git commands,
-or other approaches that the harness probe demonstrates survive substitution.
+awk cannot use `${1}` (invalid syntax), so awk code should use python3, sed, or git commands.
 
 This was observed live: commands/cleanup.md's `_cap8k` helper was written as
 `awk '{b=length($0)+1; ... substr($0,1,8000-n) ...}'` and reached the model as
@@ -33,11 +34,13 @@ from _test_harness import Harness, REPO_ROOT
 
 # The literal tokens, assembled so this file does not itself contain them.
 POSITIONAL_ZERO = "$" + "0"
-POSITIONAL_DIGIT = "$" + "[1-9]"  # Bare $1-$9; the regex is assembled
 
-# Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303, F1).
-# Each entry is tagged with follow-up issue F1 (Remove remaining bare `$N` from command docs).
+# Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303).
+# This is an untracked follow-up: the intent is to remove the remaining bare `$N` tokens from
+# command docs, but no issue number tracks it yet.
 # Counts are recomputed at each run from the repo state to enforce ratcheting (counts can only decrease).
+# A file whose count reaches zero, or that no longer exists, fails the ratchet until its entry is
+# removed from this allowlist, so stale entries cannot linger.
 BARE_POSITIONAL_ALLOWLIST = {
     "cleanup.md": 6,
     "expert-plan-deprecated-v2.md": 5,
@@ -98,15 +101,16 @@ def main():
 
     # Files on allowlist must not exceed their count
     for filename, max_count in BARE_POSITIONAL_ALLOWLIST.items():
-        if filename in file_counts:
-            actual = file_counts[filename]
-            if actual > max_count:
-                ratchet_failures.append(f"{filename}: {actual} tokens (exceeds limit {max_count})")
-            elif actual < max_count:
-                ratchet_failures.append(f"{filename}: {actual} tokens (lower than baseline {max_count}, lower the baseline)")
-        else:
-            # File on allowlist but not found in scan - this is a success case (it's been fixed)
-            pass
+        actual = file_counts.get(filename, 0)
+        if actual == 0:
+            # Missing file or zero bare tokens: the entry is stale and must be removed.
+            ratchet_failures.append(
+                f"{filename}: allowlisted but missing or zero bare tokens (remove the stale allowlist entry)"
+            )
+        elif actual > max_count:
+            ratchet_failures.append(f"{filename}: {actual} tokens (exceeds limit {max_count})")
+        elif actual < max_count:
+            ratchet_failures.append(f"{filename}: {actual} tokens (lower than baseline {max_count}, lower the baseline)")
 
     h.test_result(
         "bare positional tokens ($1-$9) in allowlisted files only, within counts (ratchet)",
@@ -160,6 +164,33 @@ def main():
         "detector does NOT match `$ARGUMENTS`",
         args_no_match,
         "" if args_no_match else "incorrectly matched $ARGUMENTS"
+    )
+
+    print()
+    print("[Section 1.3] Guard the guard: literal $0 and indexed ARGUMENTS forms")
+
+    # Restored: a literal $0 inside an awk program is the original observed hazard.
+    synthetic_zero = f"_cap8k() {{ awk '{{print substr({POSITIONAL_ZERO},1,10)}}'; }}"
+    h.test_result(
+        "detector matches synthetic literal $0 token inside an awk snippet",
+        POSITIONAL_ZERO in synthetic_zero,
+        "failed to match literal $0",
+    )
+
+    # Indexed ARGUMENTS forms: the bare form is the hazard, the braced form is not matched.
+    bare_args_pattern = re.compile(r"\$ARGUMENTS\[\d+\]")
+    synthetic_bare_args = "echo $" + "ARGUMENTS[1]"
+    synthetic_braced_args = "echo $" + "{ARGUMENTS[1]}"
+
+    h.test_result(
+        "indexed-ARGUMENTS detector matches synthetic bare `$ARGUMENTS[N]`",
+        bool(bare_args_pattern.search(synthetic_bare_args)),
+        "failed to match bare $ARGUMENTS[N]",
+    )
+    h.test_result(
+        "indexed-ARGUMENTS detector does NOT match synthetic braced `${ARGUMENTS[N]}`",
+        not bare_args_pattern.search(synthetic_braced_args),
+        "incorrectly matched ${ARGUMENTS[N]}",
     )
 
     print()

@@ -3,9 +3,10 @@
 Test suite for the receipt marker prose contract.
 
 The receipt markers <!-- awaiting-answers: ... --> and <!-- reused-answers: ... --> must
-survive on final OK/FAILED receipts. This test enforces that command docs and flow-reference.md
-never tell agents to drop or remove markers, and that the canonical "keep" sentence appears at
-all required sites.
+survive on final OK/FAILED receipts. This test enforces that every doc which references
+`awaiting-answers` and writes a step receipt carries the canonical "keep" sentence (a
+positive requirement, not a verb denylist), and that the explicit exemptions list stays
+honest: each exempt doc must still reference the marker and must have a documented reason.
 
 Run with: python3 tests/test_flow_receipt_marker_contract.py
 """
@@ -19,74 +20,89 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
 
 
+# Docs that reference `awaiting-answers` but do NOT author a step receipt, so they are not
+# required to carry the canonical keep sentence. Each entry must still reference the marker
+# (stale entries fail the test). Reasons are taken from the docs' own wording.
+MARKER_EXEMPTIONS = {
+    "commands/cleanup.md": (
+        "writes no receipt of its own; its Ask appends the marker to the merge step's receipt "
+        "(\"/cleanup writes **no receipt** of its own\")"
+    ),
+    "commands/stack-sync.md": (
+        "writes no receipt of its own; a relayed ask's marker goes into the calling step's "
+        "receipt (\"/stack-sync writes **no receipt** of its own\")"
+    ),
+    "commands/expert-flow.md": (
+        "orchestrator, not a step author: it reads markers to re-ask pending questions and "
+        "stubs the receipt on a re-run, where the old awaiting marker is stale by design"
+    ),
+}
+
+# The canonical "keep" sentence: a `keep`/`keeping` instruction that names a marker and
+# points at flow-verify-receipt.py. Whitespace is normalized before matching.
+KEEP_PATTERN = re.compile(
+    r"keep[^.]{0,200}?(?:awaiting-answers|reused-answers|awaiting marker).{0,250}?flow-verify-receipt",
+    re.IGNORECASE,
+)
+
+MARKER_REF = "awaiting-answers"
+
+
+def has_keep_sentence(text):
+    return bool(KEEP_PATTERN.search(re.sub(r"\s+", " ", text)))
+
+
+def marker_docs(commands_dir, flow_reference):
+    """Every command doc and prompts/flow-reference.md that references the awaiting marker."""
+    docs = sorted(commands_dir.rglob("*.md"))
+    if flow_reference.exists():
+        docs.append(flow_reference)
+    return [d for d in docs if MARKER_REF in d.read_text()]
+
+
 def main():
     h = Harness("FLOW RECEIPT MARKER CONTRACT TEST SUITE")
 
     commands_dir = REPO_ROOT / "commands"
     flow_reference = REPO_ROOT / "prompts" / "flow-reference.md"
 
-    print("[Test (a)] No drop language: commands and flow-reference")
-    # Scan for drop/remove/strip language near marker references
-    # Normalize whitespace across lines for wrapped sentences
-    drop_verbs = r'\b(?:drop|remove|strip|delete)\b'
-    marker_refs = r'(?:awaiting-answers|reused-answers|awaiting marker)'
+    print("[Test (a)] Every marker-referencing receipt writer carries the canonical 'keep' sentence")
 
-    offenders = []
+    referencing = marker_docs(commands_dir, flow_reference)
+    referencing_rel = {str(d.relative_to(REPO_ROOT)) for d in referencing}
 
-    # Check all command docs
-    for doc in sorted(commands_dir.rglob("*.md")):
-        content = doc.read_text()
-        # Normalize whitespace (replace newlines + spaces with single space)
-        normalized = re.sub(r'\s+', ' ', content)
+    missing_keep = []
+    for doc in referencing:
+        rel = str(doc.relative_to(REPO_ROOT))
+        if rel in MARKER_EXEMPTIONS:
+            continue
+        if not has_keep_sentence(doc.read_text()):
+            missing_keep.append(f"{rel}: references awaiting-answers but lacks the canonical keep sentence")
 
-        # Check for drop language near marker references
-        for match in re.finditer(marker_refs, normalized):
-            start = max(0, match.start() - 60)
-            end = min(len(normalized), match.end() + 60)
-            window = normalized[start:end]
+    stale_exemptions = [
+        f"{rel}: exemption is stale (no longer references awaiting-answers; remove it)"
+        for rel in MARKER_EXEMPTIONS
+        if rel not in referencing_rel
+    ]
 
-            if re.search(drop_verbs, window):
-                rel = doc.relative_to(REPO_ROOT)
-                offenders.append(f"{rel}: drop/remove language near markers")
-                break  # One offender per file
-
-    # Check flow-reference.md
-    if flow_reference.exists():
-        content = flow_reference.read_text()
-        normalized = re.sub(r'\s+', ' ', content)
-
-        for match in re.finditer(marker_refs, normalized):
-            start = max(0, match.start() - 60)
-            end = min(len(normalized), match.end() + 60)
-            window = normalized[start:end]
-
-            if re.search(drop_verbs, window):
-                offenders.append("prompts/flow-reference.md: drop/remove language near markers")
-                break
-
-    # Also check for "carries no marker" which is a specific forbidden phrase
+    # Specific forbidden phrase retained from the earlier contract.
     carries_no = []
     for doc in sorted(commands_dir.rglob("*.md")) + [flow_reference]:
-        if not doc.exists():
-            continue
-        content = doc.read_text()
-        if "carries no marker" in content:
-            rel = doc.relative_to(REPO_ROOT)
-            carries_no.append(str(rel))
+        if doc.exists() and "carries no marker" in doc.read_text():
+            carries_no.append(f"{doc.relative_to(REPO_ROOT)}: contains forbidden phrase 'carries no marker'")
 
+    failures = missing_keep + stale_exemptions + carries_no
     h.test_result(
-        "no drop/remove/strip language near marker references",
-        not offenders and not carries_no,
-        "\n      " + "\n      ".join(offenders + carries_no) if offenders or carries_no else ""
+        "every marker-referencing receipt writer has the canonical keep sentence (or a documented exemption)",
+        not failures,
+        "\n      " + "\n      ".join(failures) if failures else "",
     )
 
-    # List exceptions that should NOT trigger (these are allowed because they don't refer to marker dropping)
-    _exceptions = {
-        "cleanup.md": "worktree removal",
-        "expert-rebase.md": "conflict markers",
-        "merge-and-cleanup.md": ".claude/flow-run marker",
-        "generate-style-guide.md": "bot markers",
-    }
+    h.test_result(
+        "marker exemptions each carry a documented reason",
+        all(reason.strip() for reason in MARKER_EXEMPTIONS.values()),
+        "",
+    )
 
     print()
     print("[Test (b)] No forbidden-shape entry: 'Decision: together with awaiting marker'")
@@ -113,10 +129,7 @@ def main():
         )
 
     print()
-    print("[Test (c)] Canonical 'keep' sentence present at all seven sites")
-
-    # The canonical sentence mentions "keep" and "flow-verify-receipt.py"
-    keep_pattern = r'keep[^.]{0,200}?(?:awaiting-answers|reused-answers|awaiting marker).{0,250}?flow-verify-receipt'
+    print("[Test (c)] Canonical 'keep' sentence present at all required sites")
 
     # Sites with their minimum count (shipit and implement-with-haiku need 2 each, others 1)
     sites = {
@@ -134,45 +147,38 @@ def main():
             missing_sites.append(f"{path}: file not found")
             continue
 
-        content = doc_path.read_text()
-        normalized = re.sub(r'\s+', ' ', content)
-        matches = len(re.findall(keep_pattern, normalized, re.IGNORECASE))
+        normalized = re.sub(r'\s+', ' ', doc_path.read_text())
+        matches = len(KEEP_PATTERN.findall(normalized))
 
         if matches < min_count:
             missing_sites.append(f"{path}: found {matches} canonical sentences, need {min_count}")
 
     h.test_result(
-        "canonical 'keep' sentence present at all seven sites with correct counts",
+        "canonical 'keep' sentence present at required sites with correct counts",
         not missing_sites,
         "\n      " + "\n      ".join(missing_sites) if missing_sites else ""
     )
 
     print()
-    print("[Test (d)] Guard the guard: synthetic old-wording string trips detector")
+    print("[Test (d)] Guard the guard: detector flags a receipt writer without the keep sentence")
 
-    # Synthetic string with drop language
-    synthetic_old = "rewrite the whole file and drop its awaiting-answers marker lines"
-
-    # Check if our detector would catch this
-    drop_verbs = r'\b(?:drop|remove|strip|delete)\b'
-    marker_refs = r'(?:awaiting-answers|reused-answers|awaiting marker)'
-    normalized = re.sub(r'\s+', ' ', synthetic_old)
-
-    # Check for drop language near marker references
-    would_catch = False
-    for match in re.finditer(marker_refs, normalized):
-        start = max(0, match.start() - 60)
-        end = min(len(normalized), match.end() + 60)
-        window = normalized[start:end]
-
-        if re.search(drop_verbs, window):
-            would_catch = True
-            break
+    # A writer that mentions the marker but never tells the agent to keep it must be flagged.
+    synthetic_without = "Append `<!-- awaiting-answers: questions/X.json -->` to the receipt."
+    # A writer carrying the canonical sentence must pass.
+    synthetic_with = (
+        "rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` line it holds "
+        "— `flow-verify-receipt.py` counts relayed questions from them."
+    )
 
     h.test_result(
-        "synthetic old-wording string is detected as violation",
-        would_catch,
-        "detector should have caught the old wording"
+        "synthetic writer without the keep sentence is flagged",
+        not has_keep_sentence(synthetic_without),
+        "detector should have flagged a writer lacking the keep sentence",
+    )
+    h.test_result(
+        "synthetic writer with the canonical keep sentence passes",
+        has_keep_sentence(synthetic_with),
+        "detector should have accepted the canonical keep sentence",
     )
 
     print()
