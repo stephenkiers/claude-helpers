@@ -686,8 +686,7 @@ Reason: <"completed", or the stop that ended the run>
 <!-- step-end -->
 ```
 
-If an earlier Ask left `<!-- awaiting-answers: … -->` markers in the file, rewrite the whole file and
-drop them — a receipt with `Decision:` carries no marker.
+If an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` counts relayed questions from them.
 
 `Decision: OK` only when the PR is merged **and** `/cleanup` succeeded. Otherwise `FAILED`, with a
 `Reason:` naming the stop: `queue kickback (exit 2) — fix, push, re-run /merge-and-cleanup <N>`,

@@ -315,6 +315,8 @@ Exactly three trailer shapes are valid:
 | FAILED | `ATTEMPT: <k>`, `Decision: FAILED`, `Reason: <why>`, `<!-- step-end -->` | `MERGED:` line |
 | AWAITING | `ATTEMPT: <k>`, one or more `<!-- awaiting-answers: … -->` markers | `Decision:`, `Reason:`, `<!-- step-end -->` |
 
+**Note on OK and FAILED:** body lines may include this attempt's `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers; each marker correlates with an `answers/<STEP>-<SEQ>.json` file.
+
 Each state's meaning:
 
 - `OK` — the command completed and the orchestrator may move to the next step.
@@ -329,11 +331,10 @@ Each state's meaning:
 - `AWAITING` — the command ended its turn via the Ask block. This is not a decision. The receipt
   stays open: it has the awaiting marker(s) and no `Decision:` line and no `<!-- step-end -->`. On
   resume the command rewrites the file with the rest of the summary and the final trailer for its
-  shape (`OK` or `FAILED`), which removes the marker.
+  shape (`OK` or `FAILED`), **keeping** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` counts relayed questions from them.
 
 **Forbidden trailer shapes** (the orchestrator rejects these): `Decision: AWAITING`; `MERGED: no`
-(omit the line instead); `MERGED: yes` with any `Decision` other than `OK`; a `Decision:` line
-together with an awaiting marker; `<!-- step-end -->` without a `Decision:` line; any receipt
+(omit the line instead); `MERGED: yes` with any `Decision` other than `OK`; `<!-- step-end -->` without a `Decision:` line; any receipt
 without an `ATTEMPT:` line; a line beginning `Deviation:` (any `Decision`).
 
 **Required lines per step** (the orchestrator parses these; keep the exact `KEY: value` form on
@@ -379,7 +380,7 @@ own procedure. The orchestrator rejects an OK receipt that admits a deviation (`
 - **Attempt scope.** The orchestrator archives or stubs the previous receipt before every spawn, so
   the receipt at the step path is always this attempt's. Every receipt carries `ATTEMPT: <k>`.
 - **Several awaiting markers.** A receipt may hold more than one `awaiting-answers` marker, one per
-  ask, in order. The orchestrator uses the **last** marker whose answers file is absent.
+  ask, in order. The orchestrator uses the **last** marker whose answers file is absent. A receipt with `<!-- step-end -->` has no open question; its markers are a record.
 - **Answers.** Keyed by question `id`, and checked against the question file's `id`s on resume (Ask).
 
 ---

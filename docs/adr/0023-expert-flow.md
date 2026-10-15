@@ -92,7 +92,9 @@ gated Rebase amendment).
 - Receipts are **attempt-scoped**: each carries `ATTEMPT: <k>`, and the orchestrator reads the receipt
   for the attempt it dispatched. A retry writes a new attempt's receipt; earlier receipts stay on disk.
 - An `<!-- awaiting-answers -->` marker is valid only while `state.json` status is `running` or
-  `awaiting`. In any other status the marker is stale and is ignored.
+  `awaiting`. In any other status the marker is stale and is ignored. This stale rule governs the
+  orchestrator's pending check only; it does not apply to verifier counting on a `step-end` receipt, which counts
+  the markers that receipt carries (see the 2026-10-14 receipt-markers amendment).
 - If several awaiting markers are present, the last one whose answers file is absent is the open
   question. Earlier markers are answered or stale.
 - `AWAITING` is not a receipt `Decision` value. A waiting step is identified by its marker, not its receipt.
@@ -354,3 +356,23 @@ raise, with the material to decide on in the conversation; a human who changes n
 everything. Runs take more wall-clock turns; `--no-gates` is the per-run opt-out, and relayed
 questions can never be opted out of. A plan or review that reaches the human with fewer questions
 than it raised is a failed step, not a quiet default.
+
+## Amendment (2026-10-14): receipt markers survive finalization
+
+**Problem.** The 2026-10-14 checkpoint-relay amendment's verifier counts marker-named question files to enforce that every checkpoint question was relayed (§2's "every checkpoint question is asked"). But seven prose sites in five command docs and flow-reference told step agents to drop the markers on finalization, and flow-reference listed "`Decision:` together with an awaiting marker" as a forbidden trailer shape. The result was a plan step failing after all questions were answered, with the verifier reporting `plan checkpoint incomplete (briefs: 10, asked: 0)`.
+
+**Decision.**
+
+1. `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers stay on `OK` and `FAILED` receipts. They are this attempt's relay record. The receipt is stubbed per attempt (Attempt scope in Lifecycle), so markers are attempt-scoped.
+2. The "`Decision:` together with an awaiting marker" forbidden shape is deleted.
+3. The verifier and the fidelity audit count a marker only when `answers/<STEP>-<SEQ>.json` exists. A marker without its answers file is a failed step with `unanswered: <basenames>`.
+4. Disk globbing is not a counting source. A receipt with zero markers fails closed when briefs or needs-you items exist, even when answered question files exist on disk. A zero-brief, zero-item checkpoint with zero markers passes.
+5. Resume rule 5 re-asks only from receipts without `<!-- step-end -->`.
+
+**Clarification.** This amendment clarifies §2.1 ("Earlier markers are answered or stale") and makes the 2026-10-14 amendment's "against the questions in `questions/plan-*.json`" precise: it means the questions in the files named by answered markers.
+
+**Trust assumption.** The verifier trusts agent-authored receipt markers: it counts what the step agent wrote, and it cannot independently confirm that a marker was written. A dropped marker is therefore a known failure mode. If every question was answered but the agent drops the markers on finalization, the step hard-fails with `, receipt carries no plan-* markers` (or `, receipt carries no review-* markers` for a review step), which reads as a relay problem when the relay actually succeeded. An `answers/<STEP>-<SEQ>.json` fallback (orchestrator-owned evidence that a question was asked and answered, independent of the receipt) is the follow-up if recurrence is seen. That follow-up is untracked: no issue exists for it yet.
+
+**Unverified claims.** The 0-based positional numbering in `CLAUDE.md` and the survival of `${N}` through argument substitution are asserted from an observed harness probe. The probe's command and output are NOT recorded in-tree, so these are unverified claims, not established facts. Only the parts that are supported in-tree are relied on: bare `$N` and `$ARGUMENTS` are substituted (so command docs avoid bare `$N`, and `$ARGUMENTS` is the intended input mechanism), and braced or other forms are used only where already tested.
+
+**Consequences.** An agent that drops markers still hard-fails, now with an error that says why (`, receipt carries no plan-* markers` or `, receipt carries no review-* markers`). If that keeps happening, a robustness upgrade (an `attempt` field plus disk-only counting scoped to the attempt) becomes the fix.
