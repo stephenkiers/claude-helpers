@@ -4,23 +4,26 @@ Test suite for shell conventions in slash-command docs (commands/*.md).
 
 Covers: the positional-parameter hazard. Every .md in commands/ is registered as an
 invocable slash command, and the harness substitutes the invocation's arguments into
-positional tokens in the doc body *before* the shell runs it. A literal dollar-zero in
-an embedded shell snippet is therefore rewritten to the user's arguments.
+positional tokens in the doc body *before* the shell runs it.
+
+Bare positional tokens `$0` through `$9` are substituted by the harness before the shell
+sees them. A literal `$0` in an embedded shell snippet is rewritten to the user's
+arguments. Braced forms `${1}`, `$(1)` and `$ARGUMENTS` / `$ARGUMENTS[N]` survive
+substitution unchanged. This applies to both prose and fenced code blocks in command docs;
+prompts/ files are exempt because they are lazy-loaded by path, never argument-substituted.
+
+awk cannot use `${1}` (invalid syntax), so awk code must use python3, sed, git commands,
+or other approaches that the harness probe demonstrates survive substitution.
 
 This was observed live: commands/cleanup.md's `_cap8k` helper was written as
 `awk '{b=length($0)+1; ... substr($0,1,8000-n) ...}'` and reached the model as
 `awk '{b=length(/Users/.../some-worktree)+1; ...}'` — a broken awk program built from a
-filesystem path. awk is the common way to hit this because its only handle on the current
-record is that token; prefer python3, sed, or a git command that answers the question
-directly.
-
-commands/ is scanned; prompts/ is deliberately not — those are lazy-loaded by path
-(see CLAUDE.md, "Reference docs are not commands"), never argument-substituted, so the
-same token there is harmless.
+filesystem path. prefer python3, sed, or a git command that answers the question directly.
 
 Run with: python3 tests/test_command_doc_shell_conventions.py
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -28,8 +31,23 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
 
-# The literal two-character token, assembled so this file does not itself contain it.
+# The literal tokens, assembled so this file does not itself contain them.
 POSITIONAL_ZERO = "$" + "0"
+POSITIONAL_DIGIT = "$" + "[1-9]"  # Bare $1-$9; the regex is assembled
+
+# Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303, F1).
+# Each entry is tagged with follow-up issue F1 (Remove remaining bare `$N` from command docs).
+# Counts are recomputed at each run from the repo state to enforce ratcheting (counts can only decrease).
+BARE_POSITIONAL_ALLOWLIST = {
+    "cleanup.md": 6,
+    "expert-plan-deprecated-v2.md": 5,
+    "expert-rebase.md": 1,
+    "expert-review.md": 11,
+    "handoff-resume.md": 2,
+    "save-usage.md": 2,
+    "stack-sync.md": 8,
+    "verify-queue.md": 15,
+}
 
 
 def main():
@@ -41,40 +59,107 @@ def main():
     docs = sorted(commands_dir.rglob("*.md"))
     h.test_result("found command docs to scan", len(docs) > 0, f"found {len(docs)}")
 
-    offenders = []
+    print()
+    print("[Section 1] Positional parameter hazard: bare $0-$9 tokens")
+
+    # Check for bare $0 (strict, no allowlist)
+    offenders_zero = []
     for doc in docs:
         for lineno, line in enumerate(doc.read_text().splitlines(), start=1):
             if POSITIONAL_ZERO in line:
                 rel = doc.relative_to(REPO_ROOT)
-                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+                offenders_zero.append(f"{rel}:{lineno}: {line.strip()}")
 
     h.test_result(
         f"no command doc contains a literal {POSITIONAL_ZERO} (clobbered by argument substitution)",
-        not offenders,
-        "\n      " + "\n      ".join(offenders) if offenders else "",
+        not offenders_zero,
+        "\n      " + "\n      ".join(offenders_zero) if offenders_zero else "",
     )
 
-    # expert-flow.md's argument parser reads $1/$2; bare forms were rewritten to the user's
-    # arguments (case "2" in ... [ -z "Fix" ]). The braced forms survive substitution.
-    import re
-    flow_doc = commands_dir / "expert-flow.md"
-    bare = [
-        f"expert-flow.md:{n}: {ln.strip()}"
-        for n, ln in enumerate(flow_doc.read_text().splitlines(), start=1)
-        if re.search(r"\$[1-9]\b", ln)
-    ]
+    # Generalized bare-positional guard: scan all commands/*.md for bare $1-$9
+    bare_positional_pattern = re.compile(r"\$[1-9]\b")
+
+    # Recompute counts from the repo
+    file_counts = {}
+    for doc in docs:
+        rel_name = doc.name
+        content = doc.read_text()
+        count = len(bare_positional_pattern.findall(content))
+        if count > 0:
+            file_counts[rel_name] = count
+
+    # Check against allowlist
+    ratchet_failures = []
+
+    # Files not on allowlist must have zero count
+    for filename, count in file_counts.items():
+        if filename not in BARE_POSITIONAL_ALLOWLIST and count > 0:
+            ratchet_failures.append(f"{filename}: {count} bare tokens (not on allowlist, must be 0)")
+
+    # Files on allowlist must not exceed their count
+    for filename, max_count in BARE_POSITIONAL_ALLOWLIST.items():
+        if filename in file_counts:
+            actual = file_counts[filename]
+            if actual > max_count:
+                ratchet_failures.append(f"{filename}: {actual} tokens (exceeds limit {max_count})")
+            elif actual < max_count:
+                ratchet_failures.append(f"{filename}: {actual} tokens (lower than baseline {max_count}, lower the baseline)")
+        else:
+            # File on allowlist but not found in scan - this is a success case (it's been fixed)
+            pass
+
     h.test_result(
-        "expert-flow.md uses braced positional tokens only (no bare dollar-1..9)",
-        not bare,
-        "\n      " + "\n      ".join(bare) if bare else "",
+        "bare positional tokens ($1-$9) in allowlisted files only, within counts (ratchet)",
+        not ratchet_failures,
+        "\n      " + "\n      ".join(ratchet_failures) if ratchet_failures else ""
     )
 
-    # Guard the guard: if the scan silently stopped matching, this suite would pass
-    # vacuously forever. Prove the detector still fires on a known-bad line.
-    synthetic = f"_cap8k() {{ awk '{{print substr({POSITIONAL_ZERO},1,10)}}'; }}"
+    # Explicit check: expert-flow.md and expert-plan.md have zero bare $1-$9
+    print()
+    print("[Section 1.1] expert-flow.md and expert-plan.md: zero bare positional tokens")
+
+    zero_check_failures = []
+    for doc_name in ["expert-flow.md", "expert-plan.md"]:
+        doc_path = commands_dir / doc_name
+        if doc_path.exists():
+            count = len(bare_positional_pattern.findall(doc_path.read_text()))
+            if count > 0:
+                zero_check_failures.append(f"{doc_name}: {count} bare tokens (must be 0)")
+
     h.test_result(
-        "detector still matches a known-bad snippet",
-        POSITIONAL_ZERO in synthetic,
+        "expert-flow.md and expert-plan.md have zero bare $1-$9 tokens",
+        not zero_check_failures,
+        "\n      " + "\n      ".join(zero_check_failures) if zero_check_failures else ""
+    )
+
+    # Guard the guard: synthetic $1 string should match
+    print()
+    print("[Section 1.2] Guard the guard: detector still matches")
+
+    synthetic_bare = "case $" + "1 in"  # Assembled to avoid containing it
+    synthetic_braced = "case $" + "{1} in"  # Assembled
+    synthetic_args = "$" + "ARGUMENTS"  # Assembled
+
+    bare_match = bool(bare_positional_pattern.search(synthetic_bare))
+    braced_no_match = not bare_positional_pattern.search(synthetic_braced)
+    args_no_match = not bare_positional_pattern.search(synthetic_args)
+
+    h.test_result(
+        "detector matches synthetic bare `$1` token",
+        bare_match,
+        "" if bare_match else "failed to match $1"
+    )
+
+    h.test_result(
+        "detector does NOT match synthetic `${1}` token",
+        braced_no_match,
+        "" if braced_no_match else "incorrectly matched ${1}"
+    )
+
+    h.test_result(
+        "detector does NOT match `$ARGUMENTS`",
+        args_no_match,
+        "" if args_no_match else "incorrectly matched $ARGUMENTS"
     )
 
     print()

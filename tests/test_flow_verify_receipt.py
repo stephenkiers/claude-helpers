@@ -69,10 +69,18 @@ def create_session(home: str, invocation_id: str, briefs: int = 0) -> str:
     return session_dir
 
 
-def create_flow_questions(flow_dir: str, step: str, counts: list) -> None:
-    """Write questions/<step>-NN.json files under flow_dir, one per entry in counts (its question count)."""
+def create_flow_questions(flow_dir: str, step: str, counts: list, answered: bool = True) -> None:
+    """Write questions/<step>-NN.json files under flow_dir, one per entry in counts (its question count).
+
+    If answered=True (default), also write answers/<step>-NN.json files so markers count.
+    """
     qdir = Path(flow_dir) / "questions"
     qdir.mkdir(parents=True, exist_ok=True)
+    adir = None
+    if answered:
+        adir = Path(flow_dir) / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+
     for seq, count in enumerate(counts, start=1):
         questions = [
             {"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}
@@ -81,6 +89,14 @@ def create_flow_questions(flow_dir: str, step: str, counts: list) -> None:
         (qdir / f"{step}-{seq:02d}.json").write_text(json.dumps({
             "step": step, "command": f"expert-{step}", "context_path": None, "summary": None, "questions": questions,
         }))
+
+        if answered:
+            answers = {
+                "step": step,
+                "seq": seq,
+                "answers": [{"id": f"q{i}", "response": f"A{i}"} for i in range(1, count + 1)]
+            }
+            (adir / f"{step}-{seq:02d}.json").write_text(json.dumps(answers))
 
 
 def create_plan_fixture(tmp_home: str, briefs: int) -> str:
@@ -1439,7 +1455,7 @@ No items."""
         # Receipt has no markers; asking count is zero
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
         h.test_result("1 brief / unknown flow dir fails closed",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0)" in stdout, stdout)
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no awaiting/reused markers)" in stdout, stdout)
 
     print()
     print("[Test 55] Plan: flow dir derived from a receipt under <flow>/steps/")
@@ -1469,6 +1485,10 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         Path(f"{flow_dir}/questions").mkdir(parents=True)
         Path(f"{flow_dir}/questions/plan-01.json").write_text("{not json")
+        # Create answers file so it's not marked unanswered, only unreadable
+        adir = Path(flow_dir) / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
         # Update receipt to name the unparsable file
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
@@ -1599,12 +1619,16 @@ No items."""
                       exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
-    print("[Test 66] Plan: unparsable review-01.json file with unreadable suffix")
+    print("[Test 66] Plan: unparsable question file with unreadable suffix")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
         flow_dir = f"{tmp_home}/flow"
         Path(f"{flow_dir}/questions").mkdir(parents=True)
         Path(f"{flow_dir}/questions/plan-01.json").write_text("{not json")
+        # Create answers file so it's not marked unanswered, only unreadable
+        adir = Path(flow_dir) / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
         # Update receipt to name the unparsable file
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
@@ -1621,12 +1645,146 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         Path(f"{flow_dir}/questions").mkdir(parents=True)
         Path(f"{flow_dir}/questions/review-01.json").write_text("{not json")
+        # Create answers file so it's not marked unanswered, only unreadable
+        adir = Path(flow_dir) / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "review-01.json").write_text(json.dumps({"step": "review", "seq": 1, "answers": []}))
         # Receipt names the unparsable file
         receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("unparsable review-01.json with marker → unreadable suffix in reason",
                       exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0, unreadable: review-01.json)" in stdout, stdout)
+
+    print()
+    print("[Test 68] Plan: marker without its answers file (no disk fallback)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=2)
+        flow_dir = f"{tmp_home}/flow"
+        # Create question file without answers file (answered=False)
+        create_flow_questions(flow_dir, "plan", [2], answered=False)
+        # Receipt has marker for plan-01.json
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("marker without answers file → unanswered suffix",
+                      exit_code == 1 and "(briefs: 2, asked: 0, unanswered: plan-01.json)" in stdout, stdout)
+
+    print()
+    print("[Test 69] Plan: the #287 incident shape (no markers, files on disk)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        # Create all 3 question and answer files
+        create_flow_questions(flow_dir, "plan", [1, 1, 1], answered=True)
+        # Receipt has NO markers (incident shape)
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("no markers, files on disk → no disk fallback, fails",
+                      exit_code == 1 and "receipt carries no awaiting/reused markers" in stdout, stdout)
+
+    print()
+    print("[Test 70] Plan: the #287 incident shape with markers kept")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        # Create all 3 question and answer files
+        create_flow_questions(flow_dir, "plan", [1, 1, 1], answered=True)
+        # Receipt has markers
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\n<!-- awaiting-answers: questions/plan-02.json -->\n<!-- awaiting-answers: questions/plan-03.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("three markers with answers files → passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 71] Plan: mixed answered and unanswered markers")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        # Create 2 questions with answers, but only 1 of those has answers file
+        create_flow_questions(flow_dir, "plan", [2], answered=True)
+        # Create plan-02.json without answers file
+        qdir = Path(flow_dir) / "questions"
+        questions = [
+            {"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}
+        ]
+        (qdir / "plan-02.json").write_text(json.dumps({
+            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None, "questions": questions,
+        }))
+        # Receipt has both markers
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("mixed: plan-01.json answered, plan-02.json not → asked: 2, unanswered: plan-02.json",
+                      exit_code == 1 and "(briefs: 3, asked: 2, unanswered: plan-02.json)" in stdout, stdout)
+
+    print()
+    print("[Test 72] Review: zero markers with files on disk (no fallback)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        # Create question and answer files
+        create_flow_questions(flow_dir, "review", [2], answered=True)
+        # Receipt has NO markers
+        receipt_body = f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("review: no markers, files on disk → fails with no-markers reason",
+                      exit_code == 1 and "receipt carries no awaiting/reused markers" in stdout, stdout)
+
+    print()
+    print("[Test 73] Review: unanswered marker with needs-you items")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        # Create question file without answers (answered=False)
+        create_flow_questions(flow_dir, "review", [2], answered=False)
+        # Receipt has marker
+        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("review: marker without answers file → unanswered suffix",
+                      exit_code == 1 and "(needs-you: 2, asked: 0, unanswered: review-01.json)" in stdout, stdout)
+
+    print()
+    print("[Test 74] Plan: marker with flow_dir derived, but no flow_dir option (no fallback)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        # Create questions and answers
+        create_flow_questions(flow_dir, "plan", [1], answered=True)
+        # Receipt (not under steps/) has marker
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        # Do NOT pass flow_dir
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        # Should fail because flow_dir is not provided and receipt is not under steps/
+        h.test_result("marker on receipt but no flow_dir provided → asked: 0, no marker claim",
+                      exit_code == 1 and "asked: 0" in stdout and "receipt carries no awaiting/reused markers" not in stdout, stdout)
+
+    print()
+    print("[Test 75] Defect C regression: compile script with warnings as errors")
+    try:
+        import warnings
+        with open(VERIFIER) as f:
+            code = f.read()
+        compile(code, str(VERIFIER), "exec")
+        h.test_result(
+            "scripts/flow-verify-receipt.py compiles without SyntaxWarning",
+            True
+        )
+    except SyntaxWarning as e:
+        h.test_result(
+            "scripts/flow-verify-receipt.py compiles without SyntaxWarning",
+            False,
+            str(e)
+        )
 
     h.summarize_and_exit()
 
