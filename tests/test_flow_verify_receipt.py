@@ -1455,7 +1455,7 @@ No items."""
         # Receipt has no markers; asking count is zero
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
         h.test_result("1 brief / unknown flow dir fails closed",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no awaiting/reused markers)" in stdout, stdout)
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no plan-* markers)" in stdout, stdout)
 
     print()
     print("[Test 55] Plan: flow dir derived from a receipt under <flow>/steps/")
@@ -1682,7 +1682,7 @@ No items."""
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("no markers, files on disk → no disk fallback, fails",
-                      exit_code == 1 and "receipt carries no awaiting/reused markers" in stdout, stdout)
+                      exit_code == 1 and "receipt carries no plan-* markers" in stdout, stdout)
 
     print()
     print("[Test 70] Plan: the #287 incident shape with markers kept")
@@ -1734,7 +1734,7 @@ No items."""
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("review: no markers, files on disk → fails with no-markers reason",
-                      exit_code == 1 and "receipt carries no awaiting/reused markers" in stdout, stdout)
+                      exit_code == 1 and "receipt carries no review-* markers" in stdout, stdout)
 
     print()
     print("[Test 73] Review: unanswered marker with needs-you items")
@@ -1753,20 +1753,20 @@ No items."""
                       exit_code == 1 and "(needs-you: 2, asked: 0, unanswered: review-01.json)" in stdout, stdout)
 
     print()
-    print("[Test 74] Plan: marker with flow_dir derived, but no flow_dir option (no fallback)")
+    print("[Test 74] Plan: marker present, flow dir unresolved (no flow_dir option, not under steps/) → flow dir unresolved suffix")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
         flow_dir = f"{tmp_home}/flow"
         # Create questions and answers
         create_flow_questions(flow_dir, "plan", [1], answered=True)
-        # Receipt (not under steps/) has marker
+        # Receipt (not under steps/) has marker; flow dir cannot be resolved
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         # Do NOT pass flow_dir
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
-        # Should fail because flow_dir is not provided and receipt is not under steps/
-        h.test_result("marker on receipt but no flow_dir provided → asked: 0, no marker claim",
-                      exit_code == 1 and "asked: 0" in stdout and "receipt carries no awaiting/reused markers" not in stdout, stdout)
+        # Should fail with the exact reason; the unresolved flow dir is named, not a no-markers claim
+        h.test_result("marker on receipt but no flow dir resolved → exact reason with flow dir unresolved suffix",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, flow dir unresolved)" in stdout, stdout)
 
     print()
     print("[Test 75] Defect C regression: compile script with warnings as errors")
@@ -1781,12 +1781,55 @@ No items."""
             "scripts/flow-verify-receipt.py compiles without SyntaxWarning",
             True
         )
-    except SyntaxWarning as e:
+    except (SyntaxError, SyntaxWarning, DeprecationWarning) as e:
         h.test_result(
             "scripts/flow-verify-receipt.py compiles without SyntaxWarning",
             False,
             str(e)
         )
+
+    print()
+    print("[Test 76] Plan: answers file is existence-only (content not validated) → counts as answered")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        create_flow_questions(flow_dir, "plan", [1], answered=False)
+        adir = Path(flow_dir) / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+        # Deliberately non-JSON: existence is the intended check, not content validation
+        (adir / "plan-01.json").write_text("not json at all")
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("answers file with non-JSON content still counts as answered (existence-only, intentional) → passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 77] Plan: over-asked with a stale unanswered marker → fails on unanswered")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        # plan-01.json has 2 answered questions (over-asked for 1 brief); plan-02.json is made stale
+        create_flow_questions(flow_dir, "plan", [2, 1], answered=True)
+        Path(f"{flow_dir}/answers/plan-02.json").unlink()
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("asked >= briefs but a marker is unanswered → fails (unanswered set non-empty)",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 2, unanswered: plan-02.json)" in stdout, stdout)
+
+    print()
+    print("[Test 78] Plan: traversal marker questions/../../ does not escape the flow dir")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        # A complete question/answer pair sits OUTSIDE the flow dir, reachable only by traversal
+        create_flow_questions(tmp_home, "plan", [1], answered=True)
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/../../evil.json -->\n<!-- awaiting-answers: questions/../../plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("traversal marker's outside answers/ file is not treated as answered → unanswered, asked: 0",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, unanswered: plan-01.json)" in stdout, stdout)
 
     h.summarize_and_exit()
 

@@ -29,7 +29,15 @@ CONTRIB_STANDIN = "stand-in"
 
 
 class RelayCount(NamedTuple):
-    """Result of counting relayed questions from receipt markers."""
+    """Result of counting relayed questions from receipt markers.
+
+    Invariants (see count_relayed_questions):
+    - markers is the number of distinct `<step>-*.json` basenames named by the receipt.
+    - Each marker basename lands in at most one of unanswered / unreadable / (answered and
+      parsed). With no flow dir, nothing is classified, so unanswered and unreadable stay empty.
+    - When the questions/ dir is missing, every marker basename is reported as unanswered.
+    - asked counts only questions from answered, parsed marker files; it is 0 otherwise.
+    """
     asked: int
     markers: int
     unanswered: List[str]
@@ -250,10 +258,12 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
         return "plan artifacts missing (decisions.md)"
     briefs = count_briefs(read_file(decisions_file))
     relay_count = count_relayed_questions(flow_dir, "plan", receipt)
-    if relay_count.asked < briefs:
+    if relay_count.asked < briefs or relay_count.unanswered:
         reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {relay_count.asked}"
         if relay_count.markers == 0:
-            reason += ", receipt carries no awaiting/reused markers"
+            reason += ", receipt carries no plan-* markers"
+        if flow_dir is None and relay_count.markers:
+            reason += ", flow dir unresolved"
         if relay_count.unanswered:
             reason += f", unanswered: {', '.join(relay_count.unanswered)}"
         if relay_count.unreadable:
@@ -308,10 +318,12 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
     # Rulings completeness: every *Needs you* item must have been put to the human through the relay.
     needs_you = count_needs_you_items(read_file(action_plan))
     relay_count = count_relayed_questions(flow_dir, "review", receipt)
-    if relay_count.asked < needs_you:
+    if relay_count.asked < needs_you or relay_count.unanswered:
         reason = f"review rulings incomplete (needs-you: {needs_you}, asked: {relay_count.asked}"
         if relay_count.markers == 0:
-            reason += ", receipt carries no awaiting/reused markers"
+            reason += ", receipt carries no review-* markers"
+        if flow_dir is None and relay_count.markers:
+            reason += ", flow dir unresolved"
         if relay_count.unanswered:
             reason += f", unanswered: {', '.join(relay_count.unanswered)}"
         if relay_count.unreadable:
@@ -395,7 +407,8 @@ def count_relayed_questions(
     # Check that questions dir exists
     qdir = flow_dir / "questions"
     if not qdir.exists():
-        return RelayCount(asked=0, markers=marker_count, unanswered=list(sorted(marker_files)), unreadable=[])
+        # questions/ missing: nothing can be read, so every marker is reported as unanswered.
+        return RelayCount(asked=0, markers=marker_count, unanswered=sorted(marker_files), unreadable=[])
 
     # Sum questions from files with answers/ and track unanswered/unreadable
     total = 0
@@ -404,9 +417,11 @@ def count_relayed_questions(
     answers_dir = flow_dir / "answers"
 
     for basename in sorted(marker_files):
-        # Check if answers file exists for this marker
+        # Answered means the answers file exists as a regular file. This is existence-only by
+        # design: the answers/ file is evidence the relay ran, and its content is not validated.
+        # Only the question file's questions[] are counted.
         answers_file = answers_dir / basename
-        if not answers_file.exists():
+        if not answers_file.is_file():
             unanswered.append(basename)
             continue
 
