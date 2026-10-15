@@ -1413,6 +1413,9 @@ No items."""
         receipt_path = create_plan_fixture(tmp_home, briefs=3)
         flow_dir = f"{tmp_home}/flow"
         create_flow_questions(flow_dir, "plan", [2])
+        # Update receipt to include marker naming plan-01.json
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("3 briefs / 2 asked fails with 'plan checkpoint incomplete'",
                       exit_code == 1 and "plan checkpoint incomplete (briefs: 3, asked: 2)" in stdout, stdout)
@@ -1423,6 +1426,9 @@ No items."""
         receipt_path = create_plan_fixture(tmp_home, briefs=3)
         flow_dir = f"{tmp_home}/flow"
         create_flow_questions(flow_dir, "plan", [2, 1])
+        # Update receipt to include markers naming both plan files
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("3 briefs / 3 asked (plan-01 + plan-02) passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
@@ -1430,6 +1436,7 @@ No items."""
     print("[Test 54] Plan: briefs but no --flow-dir and receipt not under steps/ → counts zero asked")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        # Receipt has no markers; asking count is zero
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
         h.test_result("1 brief / unknown flow dir fails closed",
                       exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0)" in stdout, stdout)
@@ -1440,7 +1447,9 @@ No items."""
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
         flow_dir = f"{tmp_home}/flow"
         steps_receipt = f"{flow_dir}/steps/01-plan.md"
-        create_receipt(steps_receipt, Path(receipt_path).read_text())
+        # Create receipt with marker
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(steps_receipt, receipt_body)
         create_flow_questions(flow_dir, "plan", [1])
         exit_code, stdout, _ = run_verifier("plan", steps_receipt, SINCE, tmp_home)
         h.test_result("receipt in steps/ finds questions/ without --flow-dir", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
@@ -1460,8 +1469,12 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         Path(f"{flow_dir}/questions").mkdir(parents=True)
         Path(f"{flow_dir}/questions/plan-01.json").write_text("{not json")
+        # Update receipt to name the unparsable file
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable plan-01.json → asked: 0", exit_code == 1 and "(briefs: 1, asked: 0)" in stdout, stdout)
+        h.test_result("unparsable plan-01.json → asked: 0, unreadable: plan-01.json",
+                      exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
 
     NEEDS_YOU_PLAN = (
         "# Action Plan\n\n## Needs you\n\n### 1. First ruling\n\nWhere: a.py\n\n### 2. Second ruling\n\nWhere: b.py\n\n"
@@ -1474,7 +1487,8 @@ No items."""
         review_dir = create_review_dir(tmp_home)
         Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->")
+        # Create receipt with marker
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->")
         flow_dir = f"{tmp_home}/flow"
         create_flow_questions(flow_dir, "review", [1])
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
@@ -1487,7 +1501,8 @@ No items."""
         review_dir = create_review_dir(tmp_home)
         Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->")
+        # Create receipt with marker
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->")
         flow_dir = f"{tmp_home}/flow"
         create_flow_questions(flow_dir, "review", [2])
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
@@ -1501,6 +1516,117 @@ No items."""
         create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->")
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home)
         h.test_result("needs-you 0 / asked 0 passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 61] Plan: stale question file not named by receipt → fails with stale count")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        # Create stale plan-01.json with 3 questions, and plan-02.json with 1 question
+        create_flow_questions(flow_dir, "plan", [3, 1])
+        # Receipt only names plan-02.json, not the stale plan-01.json
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("stale plan-01.json (3q) not named by receipt, plan-02.json (1q) named → briefs 3 / asked 1 fails",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 3, asked: 1)" in stdout, stdout)
+
+    print()
+    print("[Test 62] Plan: stale question file with reused-answers marker → passes")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=3)
+        flow_dir = f"{tmp_home}/flow"
+        # Create stale plan-01.json with 3 questions, and plan-02.json with 1 question
+        create_flow_questions(flow_dir, "plan", [3, 1])
+        # Receipt names plan-01.json with reused-answers marker
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- reused-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("reused-answers marker names plan-01.json (3q) → briefs 3 / asked 3 passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 63] Review: stale question file not named by receipt → fails with stale count")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        # Create stale review-01.json with 2 questions, and review-02.json with 1 question
+        create_flow_questions(flow_dir, "review", [2, 1])
+        # Receipt only names review-02.json, not the stale review-01.json
+        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-02.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("stale review-01.json (2q) not named by receipt, review-02.json (1q) named → needs-you 2 / asked 1 fails",
+                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 1)" in stdout, stdout)
+
+    print()
+    print("[Test 64] Review: stale question file with reused-answers marker → passes")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        # Create stale review-01.json with 2 questions, and review-02.json with 1 question
+        create_flow_questions(flow_dir, "review", [2, 1])
+        # Receipt names review-01.json with reused-answers marker
+        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- reused-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("reused-answers marker names review-01.json (2q) → needs-you 2 / asked 2 passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 65] Plan: repeated Q headings in checkpoint results → counts unique Q numbers")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=2)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        # Append repeated headings under a ## Checkpoint results heading
+        decisions_file = f"{session_dir}/decisions.md"
+        with open(decisions_file, "a") as f:
+            f.write("\n## Checkpoint results\n\n")
+            f.write("#### Q1. Question 1\n\nWhy it matters: because.\n\n")
+            f.write("#### Q2. Question 2\n\nWhy it matters: because.\n\n")
+        flow_dir = f"{tmp_home}/flow"
+        # Create 2 questions
+        create_flow_questions(flow_dir, "plan", [2])
+        # Receipt names plan-01.json
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("repeated Q1, Q2 headings → briefs still 2 (unique Q numbers), asked 2 → passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 66] Plan: unparsable review-01.json file with unreadable suffix")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        Path(f"{flow_dir}/questions").mkdir(parents=True)
+        Path(f"{flow_dir}/questions/plan-01.json").write_text("{not json")
+        # Update receipt to name the unparsable file
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("unparsable plan-01.json with marker → unreadable suffix in reason",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+
+    print()
+    print("[Test 67] Review: unparsable review-01.json file with unreadable suffix")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        Path(f"{flow_dir}/questions").mkdir(parents=True)
+        Path(f"{flow_dir}/questions/review-01.json").write_text("{not json")
+        # Receipt names the unparsable file
+        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("unparsable review-01.json with marker → unreadable suffix in reason",
+                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0, unreadable: review-01.json)" in stdout, stdout)
 
     h.summarize_and_exit()
 

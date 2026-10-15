@@ -27,7 +27,8 @@ CONTRIB_UNTERMINATED = "unterminated"
 CONTRIB_STANDIN = "stand-in"
 
 # A decision brief heading in a plan session's decisions.md (`#### Q1. …`, `#### Q2 — …`).
-BRIEF_HEADING_RE = re.compile(r"^####\s+Q\d+\b", re.MULTILINE)
+# Captures the Q number as group 1 to allow deduplication.
+BRIEF_HEADING_RE = re.compile(r"^####\s+Q(\d+)\b", re.MULTILINE)
 # A *Needs you* item heading in claude-action-plan.md (`### 1. Title`).
 NEEDS_YOU_ITEM_RE = re.compile(r"^###\s+\d+\.", re.MULTILINE)
 NEEDS_YOU_HEADING_RE = re.compile(r"^##\s+Needs you\b.*$", re.MULTILINE)
@@ -238,9 +239,13 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     if not decisions_file.exists():
         return "plan artifacts missing (decisions.md)"
     briefs = count_briefs(read_file(decisions_file))
-    asked = count_relayed_questions(flow_dir, "plan")
+    asked, unreadable = count_relayed_questions(flow_dir, "plan", receipt)
     if asked < briefs:
-        return f"plan checkpoint incomplete (briefs: {briefs}, asked: {asked})"
+        reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {asked}"
+        if unreadable:
+            reason += f", unreadable: {', '.join(unreadable)}"
+        reason += ")"
+        return reason
 
     return None
 
@@ -288,16 +293,24 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
 
     # Rulings completeness: every *Needs you* item must have been put to the human through the relay.
     needs_you = count_needs_you_items(read_file(action_plan))
-    asked = count_relayed_questions(flow_dir, "review")
+    asked, unreadable = count_relayed_questions(flow_dir, "review", receipt)
     if asked < needs_you:
-        return f"review rulings incomplete (needs-you: {needs_you}, asked: {asked})"
+        reason = f"review rulings incomplete (needs-you: {needs_you}, asked: {asked}"
+        if unreadable:
+            reason += f", unreadable: {', '.join(unreadable)}"
+        reason += ")"
+        return reason
 
     return None
 
 
 def count_briefs(decisions: str) -> int:
-    """Count `#### Q<n>` decision-brief headings in a plan session's decisions.md."""
-    return len(BRIEF_HEADING_RE.findall(decisions))
+    """Count `#### Q<n>` decision-brief headings in a plan session's decisions.md.
+
+    Uses the distinct Q numbers to handle repeated headings (e.g., in checkpoint results).
+    """
+    q_numbers = BRIEF_HEADING_RE.findall(decisions)
+    return len(set(q_numbers))
 
 
 def count_needs_you_items(action_plan: str) -> int:
@@ -314,24 +327,64 @@ def count_needs_you_items(action_plan: str) -> int:
     return len(NEEDS_YOU_ITEM_RE.findall(section))
 
 
-def count_relayed_questions(flow_dir: Optional[Path], step: str) -> int:
-    """Sum `questions[]` across `<flow_dir>/questions/<step>-*.json`.
+def count_relayed_questions(
+    flow_dir: Optional[Path], step: str, receipt_text: str
+) -> tuple:
+    """Sum `questions[]` across files named by receipt markers.
 
-    An unknown flow dir, a missing questions/ dir, or an unparseable file counts as zero asked:
-    the check fails closed when briefs or items exist and nothing provably reached the human.
+    Parses the receipt's `<!-- awaiting-answers: questions/<STEP>-<SEQ>.json -->` and
+    `<!-- reused-answers: questions/<STEP>-<SEQ>.json -->` markers (captured by regexes
+    `<!-- awaiting-answers: (questions/[^ ]+\.json) -->` and
+    `<!-- reused-answers: (questions/[^ ]+\.json) -->`). Only question files named by
+    these markers are counted.
+
+    Returns (asked: int, unreadable_basenames: List[str]):
+    - asked: sum of questions[] across all successfully parsed, marker-named files
+    - unreadable_basenames: basenames of marker-named files that failed to read/parse
+
+    An unknown flow dir or missing questions/ dir returns (0, []).
+    The check fails closed when briefs or items exist and nothing provably reached the human.
     """
     if flow_dir is None:
-        return 0
+        return (0, [])
+
+    # Find marker-named files
+    awaiting_re = re.compile(r"<!-- awaiting-answers: (questions/[^ ]+\.json) -->")
+    reused_re = re.compile(r"<!-- reused-answers: (questions/[^ ]+\.json) -->")
+
+    marker_paths_raw = []
+    marker_paths_raw.extend(awaiting_re.findall(receipt_text))
+    marker_paths_raw.extend(reused_re.findall(receipt_text))
+
+    # Keep only files matching <step>-*.json, deduplicate
+    marker_files = set()
+    for path_str in marker_paths_raw:
+        # Extract basename and check it matches <step>-*.json
+        basename = Path(path_str).name
+        if basename.startswith(f"{step}-"):
+            marker_files.add(basename)
+
+    # Sum questions and track unreadable
     total = 0
-    for qfile in sorted((flow_dir / "questions").glob(f"{step}-*.json")):
+    unreadable = []
+    qdir = flow_dir / "questions"
+    if not qdir.exists():
+        return (0, [])
+
+    for basename in sorted(marker_files):
+        qfile = qdir / basename
         try:
             data = json.loads(qfile.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError):
+            unreadable.append(basename)
             continue
         questions = data.get("questions") if isinstance(data, dict) else None
         if isinstance(questions, list):
             total += len(questions)
-    return total
+        else:
+            unreadable.append(basename)
+
+    return (total, unreadable)
 
 
 def resolve_flow_dir(explicit: Optional[str], receipt_file: Path) -> Optional[Path]:
