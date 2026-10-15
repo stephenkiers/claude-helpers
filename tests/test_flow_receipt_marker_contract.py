@@ -116,7 +116,7 @@ def main():
     print("[Test (c)] Canonical 'keep' sentence present at all seven sites")
 
     # The canonical sentence mentions "keep" and "flow-verify-receipt.py"
-    keep_pattern = r'keep.*(?:awaiting-answers|reused-answers|awaiting marker).*flow-verify-receipt'
+    keep_pattern = r'keep[^.]{0,200}?(?:awaiting-answers|reused-answers|awaiting marker).{0,250}?flow-verify-receipt'
 
     # Sites with their minimum count (shipit and implement-with-haiku need 2 each, others 1)
     sites = {
