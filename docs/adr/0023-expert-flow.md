@@ -199,8 +199,9 @@ flow-side behaviour is recorded in §2 and §5.
 - **Telemetry correlation (expected, to be confirmed in #252 dogfooding):** nested step-command
   telemetry lands under the long-lived `expert-flow` orchestrator record. ADR-0016 correlates
   telemetry only for sequential invocations, so this is a change to be checked, not assumed safe.
-- **Open work touching the same orchestrator surfaces:** #230 (decision-relay completion check),
-  #179 (receipt-path safety), and #217 (checkpoint hygiene). Sequencing and priority TBD.
+- **Open work touching the same orchestrator surfaces:** #179 (receipt-path safety) and #217 (checkpoint
+  hygiene). The decision-relay completion check (decision points are asked and verified in
+  `flow-verify-receipt.py --flow-dir`) shipped with the 2026-10-14 amendment.
 - `/expert-implement-with-haiku-and-ship` is superseded; its CLAUDE.md entry is removed.
 
 ## Amendment: worktree-first invocation
@@ -332,14 +333,21 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   now a required plan artifact. The fidelity auditor checks the same counts and treats "not asked" /
   "defaults adopted" receipt wording as `FIDELITY: reduced`.
 - **Step gates.** After `plan`, `implement`, `review`, `fix`, and `verify` close `OK`, the orchestrator
-  prints what the step produced (the plan session's `decisions.md` and the head of the plan; the
-  receipt and `git log` of new commits; the action plan; the check result) and asks **Continue /
-  Pause / Abort** (header `Step gate`). Continue is recorded in `state.json` `gates[<step>]` and is
-  never re-asked; Pause leaves the flow `paused` at the completed step and `--resume` re-asks the gate
-  (resume rule 3a); free text is a Pause whose note is stored as `gate_note` and printed back on
-  resume. `--no-gates` skips them for one run and, like `--auto-merge`, is never restored on resume.
-  The gates are the orchestrator's own decision points, like the merge gate, so §2's rule stands: the
-  *relay* never adds a question; the orchestrator does, at fixed points, on its own authority.
+  prints what the step produced; when the relay already printed the step's `summary`, the gate prints
+  only the delta (for `plan`, the checkpoint results and decision index plus the head of the plan; for
+  `review`, the action-plan header, *Doing it*, and *Deferred*), and whatever it prints is also written
+  to `${FLOW_DIR}/gates/<NN>-<STEP>.md`; for other steps, it prints the receipt and `git log` of new
+  commits, or the check result. Then it asks **Continue / Pause / Abort** (header `Step gate`). Continue
+  is recorded in `state.json` `gates[<step>]` and is never re-asked; Pause leaves the flow `paused` at
+  the completed step and `--resume` re-asks the gate (resume rule 3a); free text is a Pause whose note is
+  stored as `gate_note` and printed back on resume. #277's prose-ingestion work will extend the same
+  anchor rule to the gate: a reply that plainly names Continue or Abort maps to that option, anything
+  else stays a Pause with a note. `--no-gates` skips them for one run and, like `--auto-merge`, is never
+  restored on resume. The gates are the orchestrator's own decision points, like the merge gate, so §2's
+  rule stands: the *relay* never adds a question; the orchestrator does, at fixed points, on its own
+  authority. This amendment supersedes "the orchestrator's one own question" in §2.1 and §4 (the
+  orchestrator now has six fixed decision points: five step gates + the merge gate) and the §3 rule that
+  `--resume` always re-runs the current step (a flow paused at a gate re-asks the gate; resume rule 3a).
 
 **Consequences.** A flow now stops after every substantive step and at every decision the commands
 raise, with the material to decide on in the conversation; a human who changes nothing still reads

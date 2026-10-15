@@ -544,7 +544,7 @@ state a why, write `WHY: not stated in ticket` rather than inventing one. For a 
 3. **Decision index** — last, a compact table (Topic · Q# · Disagreement · Recommended default) as
    a quick-scan summary that points back into the briefs. It is an index, not a substitute for them.
 
-For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions (in a flow, each batch is its own question file and its own interrupt/resume cycle). Open-ended questions, or themes with >4 questions, stay markdown + conversation when `FLOW_DIR` is empty; when `FLOW_DIR` is set there is no conversation to hold, so each open-ended theme **must** become one free-text Ask (Ask block, a single option labelled `Answer in your own words`, `context_path` = `{SESSION_DIR}/decisions.md`) — not optional, and never skipped for being open-ended. Wait for answers.
+For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions (in a flow, each batch is its own question file and its own interrupt/resume cycle). Open-ended questions, or themes with >4 questions, stay markdown + conversation when `FLOW_DIR` is empty; when `FLOW_DIR` is set there is no conversation to hold, so each open-ended `#### Q[n]` brief **must** become its own free-text Ask (Ask block, a single option labelled `Answer in your own words`, `context_path` = `{SESSION_DIR}/decisions.md`) — not optional, and never skipped for being open-ended. Wait for answers.
 
 **Every decision brief is asked; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. In a flow, ask across successive question files (`plan-01`, `plan-02`, …) until every brief has been put to the human; one batch at a time is fine. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`. The orchestrator's verifier counts the briefs in `decisions.md` against the questions in `${FLOW_DIR}/questions/plan-*.json` and rejects the step when fewer were asked.
 
@@ -555,7 +555,9 @@ In a flow, the `checkpoint` stage is open when the Ask fires: per the Ask block,
 Write `{SESSION_DIR}/decisions.md` with the same round-up, decision briefs, and decision index, plus
 checkpoint results, so a user re-reading the session later gets the same report shown in chat — not
 the full unabridged contribution files, which remain on disk in `{expert}-contribution.md` for
-anyone who wants the full source.
+anyone who wants the full source. In `decisions.md`, the checkpoint results reference briefs by
+`Q[n]` in prose or a table, never as `####` headings — `#### Q[n]` headings appear once each, in
+the decision-briefs section only, because the verifier counts them.
 
 **Effort-2 escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains):
 
