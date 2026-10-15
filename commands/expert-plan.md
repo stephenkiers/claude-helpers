@@ -15,7 +15,7 @@ original `/expert-plan` (v1) and `/expert-plan-v2` are kept as `/expert-plan-dep
 
 ## Why this design, vs. the deprecated v1 and v2?
 
-Real A/B data showed: `/expert-plan-deprecated` (v1) costs $4.37 for a 92-line plan but allowed indeterminate-status decisions to drift between steps. `/expert-plan-deprecated-v2` (v2) effort 4 costs $13.39 and its alignment pass catches cross-domain risks (a probe assumed side-effect-free, an FFI timeout budget) — but at 3x the cost, with fixes appended rather than reconciled. v2 effort 2 cost almost the same as v1 ($4.20) but used 39% more tokens, because its "pods" still load full shared context per pod and gain nothing from isolation.
+Real A/B data showed: `/expert-plan-deprecated` (v1) costs 4.37 USD for a 92-line plan but allowed indeterminate-status decisions to drift between steps. `/expert-plan-deprecated-v2` (v2) effort 4 costs 13.39 USD and its alignment pass catches cross-domain risks (a probe assumed side-effect-free, an FFI timeout budget) — but at 3x the cost, with fixes appended rather than reconciled. v2 effort 2 cost almost the same as v1 (4.20 USD) but used 39% more tokens, because its "pods" still load full shared context per pod and gain nothing from isolation.
 
 This command combines: v1's cheap main-thread orchestration and dependency-ordered synthesis, v2's genuine per-expert isolation (no pods), and Carl's second-pass challenge — but drops v2's router/digest/synthesis subagents and its 5-level ladder in favor of **two effort levels** (2 = focused baseline; 3 = baseline + independent auditor). Goal: cheaper than v2 effort 4 and more internally consistent than v1, without regressing v1's cost floor.
 
@@ -184,8 +184,10 @@ MODELS="balanced"
 FLOW_FLAG_DIR=""   # set only by /expert-flow via --flow <dir>; empty = not in a flow
 EPIC_MODE="false"   # --epic: emit a ## Sub-tickets section (ADR-0023 §5)
 
+# Parser: use braced form ${N} so the harness does not substitute these positional tokens.
+# TODO (F2): rewrite this parser with python3 shlex over a quoted heredoc.
 while [ $# -gt 0 ]; do
-  case "$1" in
+  case "${1}" in
     --effort=*)
       EFFORT="${1#--effort=}"
       shift
@@ -193,7 +195,7 @@ while [ $# -gt 0 ]; do
     --effort)
       shift
       if [ $# -gt 0 ]; then
-        EFFORT="$1"
+        EFFORT="${1}"
         shift
       else
         echo "ERROR: --effort flag requires a value (2 or 3)" >&2
@@ -212,7 +214,7 @@ while [ $# -gt 0 ]; do
     --models)
       shift
       if [ $# -gt 0 ]; then
-        MODELS="$1"
+        MODELS="${1}"
         shift
       else
         echo "ERROR: --models flag requires a value (balanced or opus)" >&2
@@ -227,7 +229,7 @@ while [ $# -gt 0 ]; do
     --flow)
       shift
       if [ $# -gt 0 ]; then
-        FLOW_FLAG_DIR="$1"
+        FLOW_FLAG_DIR="${1}"
         shift
       else
         echo "ERROR: --flow flag requires a value (the flow directory)" >&2
@@ -240,7 +242,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --*)
-      echo "ERROR: unknown flag '$1' — supported flags are --effort 2|3, --models balanced|opus, --flow <dir>, --epic and --allow-degraded" >&2
+      echo "ERROR: unknown flag '${1}' — supported flags are --effort 2|3, --models balanced|opus, --flow <dir>, --epic and --allow-degraded" >&2
       python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome interrupted 2>/dev/null || true
       exit 1
       ;;
@@ -436,7 +438,7 @@ Escalating one contributor to opus multiplies that one contributor's token cost 
 (Opus vs Sonnet per-token list price) — not the whole run.
 ```
 
-State the ratio, never an absolute dollar figure. v3 has no measured per-run cost; do not reuse v2's `$4.20` measured cost or fabricate a new one.
+State the ratio, never an absolute dollar figure. v3 has no measured per-run cost; do not reuse v2's 4.20 USD measured cost or fabricate a new one.
 
 **Fail closed**: if no reviewers resolve for the `plan` context, stop and report that the `plan` context resolved empty — never run an empty panel.
 
@@ -744,9 +746,7 @@ Next steps:
 
 **Flow receipt (only when `FLOW_DIR` is set).** Before the closing telemetry below, write the step
 receipt per the Receipt block of `~/.claude/prompts/flow-reference.md`, with the `Write` tool, to the path the
-orchestrator named in its step prompt (default `${FLOW_DIR}/steps/01-plan.md`). If an Ask earlier
-in this run left the receipt open, rewrite the whole file and drop its awaiting-answers marker
-lines — a receipt with `Decision:` carries no marker. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Content: the closing message above, unchanged, followed by:
+orchestrator named in its step prompt (default `${FLOW_DIR}/steps/01-plan.md`). If an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` counts relayed questions from them. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Content: the closing message above, unchanged, followed by:
 
 ```
 FINAL_PLAN_PATH: <absolute FINAL_PLAN_PATH, $HOME expanded>
