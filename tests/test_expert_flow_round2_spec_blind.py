@@ -181,9 +181,9 @@ has_gate_path = bool(re.search(
 ))
 t("expert-flow.md mentions writing gate files", has_gate_path)
 
-# Check that step-specific guidance exists
+# Check that step-specific guidance exists (the main file table with per-step paths)
 has_step_specific = bool(re.search(
-    r"plan.*|.*review.*|.*implement",
+    r"`plan`.*→|`review`.*→|`implement`.*→",
     flow_content
 ))
 t("Gate section has step-specific documentation", has_step_specific)
@@ -245,7 +245,7 @@ if has_script:
         script_content
     ))
     t("flow-verify-receipt.py handles markers", has_markers)
-    
+
     # Check for counting logic
     has_count_logic = bool(re.search(
         r"count.*question|asked.*\d|brief.*\d",

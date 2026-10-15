@@ -943,7 +943,7 @@ skipped when `flags.no_gates` is true or `gates[STEP]` is already `continue`.
    The gate's main file per step — used in the Pause and free-text bullets below:
    - `plan` → `<PLAN_PATH>`
    - `review` → `<REVIEW_DIR>/claude-action-plan.md`
-   - `implement`, `fix`, `verify` → nothing to edit here
+   - `implement`, `fix`, `verify` → `${FLOW_DIR}/steps/<NN>-<STEP>.md`
 
 2. Before asking: set `status: paused`, log `paused`, `WRITE-STATE` — so an interrupted gate is on disk as paused.
 
@@ -953,7 +953,7 @@ skipped when `flags.no_gates` is true or `gates[STEP]` is already `continue`.
      `WRITE-STATE`, advance `STEP`, and continue the loop.
    - **Pause** — leave `status: paused` (already set), with `STEP` unchanged (the completed step; its receipt stays `OK`),
      log `paused` (already logged), print the stop lines with `paused at: <STEP> (gate: human paused)`
-     and `skim:` the gate's main file (see the table above; for `implement`/`fix`/`verify` there is nothing to edit), `command-end --outcome interrupted` (no stage is open at a
+     and `skim:` the gate's main file (per the table above), `command-end --outcome interrupted` (no stage is open at a
      gate), end the turn. `--resume` re-asks this gate (resume rule 2).
    - **Abort** — set `status: failed` (overwriting `paused`), log `aborted`, `WRITE-STATE`, print the stop lines,
      `command-end --outcome failure --failure-class other`, end the turn. `--resume` re-asks this gate (never re-runs).
