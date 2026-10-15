@@ -61,7 +61,7 @@ def main():
             window = normalized[start:end]
 
             if re.search(drop_verbs, window):
-                offenders.append(f"prompts/flow-reference.md: drop/remove language near markers")
+                offenders.append("prompts/flow-reference.md: drop/remove language near markers")
                 break
 
     # Also check for "carries no marker" which is a specific forbidden phrase
@@ -81,7 +81,7 @@ def main():
     )
 
     # List exceptions that should NOT trigger (these are allowed because they don't refer to marker dropping)
-    exceptions = {
+    _exceptions = {
         "cleanup.md": "worktree removal",
         "expert-rebase.md": "conflict markers",
         "merge-and-cleanup.md": ".claude/flow-run marker",

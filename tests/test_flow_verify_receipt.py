@@ -1774,7 +1774,9 @@ No items."""
         import warnings
         with open(VERIFIER) as f:
             code = f.read()
-        compile(code, str(VERIFIER), "exec")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(code, str(VERIFIER), "exec")
         h.test_result(
             "scripts/flow-verify-receipt.py compiles without SyntaxWarning",
             True

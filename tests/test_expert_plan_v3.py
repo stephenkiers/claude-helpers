@@ -717,7 +717,7 @@ def main():
         )
 
         # Verify case-style (using case statement, not if-chains)
-        has_case_statement = re.search(r'case\s+"\$1"\s+in', command_content)
+        has_case_statement = re.search(r'case\s+"\$\{1\}"\s+in', command_content)
 
         h.test_result(
             "Spec 4a: Flag parsing — single while loop for argument processing",
