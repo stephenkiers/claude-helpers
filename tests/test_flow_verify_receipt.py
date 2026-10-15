@@ -1312,8 +1312,8 @@ No items."""
             "review", receipt_path, "2026-10-13T00:00:00Z", tmp_home
         )
         # Relative mtime against absolute --since time: file from 1 hour ago is newer than 2026-10-13
-        # so it should PASS (within skew). But test allows either in case implementation differs.
-        h.test_result("Freshness check handles relative mtime vs absolute since", exit_code in [0, 1])
+        # so it should PASS (within skew).
+        h.test_result("Freshness check handles relative mtime vs absolute since", exit_code == 0 and "ARTIFACTS: ok" in stdout)
 
     print()
     print("[Test 49] Mtime boundary: exactly at since - 5s passes (within skew)")
