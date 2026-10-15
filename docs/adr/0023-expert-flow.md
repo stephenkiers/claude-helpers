@@ -221,7 +221,7 @@ worktree. `/expert-flow` is now worktree-first:
   `step: plan, status: paused`, event `handoff`, telemetry closed `interrupted`, and the orchestrator
   prints `cd <WORKTREE> && claude` then `/expert-flow <N>`. Run inside the worktree, a plain
   `/expert-flow <N>` with an existing flow behaves as `--resume <N>`, so no duplicate flow directory
-  is created.
+  is created. (This behaviour is superseded in part by the 2026-10-15 amendment: a plain `/expert-flow <N>` asks the Existing-flow question; only the bare form in the hand-off state resumes silently.)
 - Any invocation from main for a flow whose worktree exists prints the same hand-off and stops
   (`guard_block`); running from some other worktree is an error. Epic mode keeps running child flows
   from main with no hand-off.
@@ -385,3 +385,32 @@ argsidx0=[alpha]  argsidx1=[beta]  args=[alpha beta]
 So: numbering is 0-based; a bare token with no matching argument stays literal; the braced `${N}` and `$(1)` forms survive unsubstituted; `$ARGUMENTS`, `$ARGUMENTS[N]` and bare `$N` are substituted. The probe file was deleted afterward. Note that `$ARGUMENTS[N]` is also substituted, so it is as unsafe as a bare token in places where the literal text is wanted. The probe ran through the Skill tool, not a user-typed slash command; the harness uses the same expansion for both, but that was not separately probed.
 
 **Consequences.** An agent that drops markers still hard-fails, now with an error that says why (`, receipt carries no plan-* markers` or `, receipt carries no review-* markers`). If that keeps happening, a robustness upgrade (an `attempt` field plus disk-only counting scoped to the attempt) becomes the fix.
+
+## Amendment (2026-10-15): bare /expert-flow in the ticket worktree (#302)
+
+**Problem.** A ticket worktree created by `/track-and-start --worktree-only` or a completed hand-off requires the user to re-type `/expert-flow <N>` or copy `--resume <flow-dir>`. A bare `cd <worktree> && claude "/expert-flow"` should "just work".
+
+**Decision.**
+
+- **The bare form** takes no issue number and no other flags (`--resume`, `--abandon`, `--plan-effort`, etc.) — it is only meaningful inside a ticket worktree. An invocation with flags but no issue rejects with `(a bare /expert-flow takes no flags)`.
+- **Detection order** (inside the ticket worktree):
+  1. If the worktree holds a valid marker (`<HERE>/.claude/flow-run`) pointing to a flow under `FLOWS_ROOT` with matching `state.issue == worktree basename's leading digits`, continue with that flow.
+  2. Otherwise, if there is no marker but `<HERE>/.claude/github-cache.json` exists, require its `.branch == current branch` (the `trusted_github_cache` rule), `.issue.number` all digits, `.issue.number == basename leading digits`, and `.issue.url == "https://github.com/<REPO>/issues/<N>"`. On all four matches, continue as plain `/expert-flow <N>` with a fresh run if no flow exists. The URL check prevents a local-plan ID from binding to a same-numbered GitHub issue.
+  3. Otherwise, ask the free-text "Which issue" question (Q7 below). Invalid input or no answer → `guard_block`, no flow started.
+- **Silent resume predicate** (Q1): A bare run skips the "Resume?" question only when `state.json` has `step == "plan"`, `status == "paused"`, `live == null`, and `(.attempts.plan // 0) == 0` — the exact state the Hand-off writes. Any other `paused` or `awaiting` flow gets the "Existing-flow" question (Q3), which preserves the Start fresh / Abort recovery paths. Every other state keeps the existing Existing-flow question.
+- **Hand-off template**: Both "go into the worktree" sites (Main guard_block at step 0, and the post-track Hand-off) print the same one-line, shell-quoted command:
+  ```
+  ▶️ expert-flow #<ISSUE> — worktree ready: <WORKTREE>
+     next:  cd <QUOTED_WORKTREE> && claude "/expert-flow"
+  ```
+  where `QUOTED_WORKTREE=$(printf '%q' "$WORKTREE")`. A `--from` run from Main instead prints the explicit form with the start point and plan-file preserved.
+- **Trail line for existing flows** (Q3): When a bare run finds an existing, non-hand-off flow, it prints:
+  ```
+  ▶️ expert-flow #<N> — resuming flow <basename of NOARG_FLOW> at plan (hand-off).  Not this one? /expert-flow --abandon <N>, or /expert-flow <N> from the main worktree to choose Start fresh
+  ```
+  The "from the main worktree" phrase is necessary (audit Finding 1) because Start fresh's guard refuses to delete the worktree the session is in.
+- **`/track-and-start` alternative**: All four handoff blocks (Local Plan, Tracker Ticket, GitHub Pivot, GitHub Fresh) add a labelled alternative: `Or run the whole lifecycle with /expert-flow` (GitHub blocks specify "starts again from planning — it re-runs /expert-plan and track for this issue"). Local Plan and Tracker blocks add an honest label: "(/expert-flow runs only for a GitHub issue — in this worktree it will stop and point you to the main worktree; it also needs a GitHub remote)". The existing `/implement-with-haiku` line stays.
+- **No-issue question** (Q7, new ask site): When detection finds no issue, `AskUserQuestion` header `Which issue`, free-text input, parsed exactly like `ISSUE_ARG` (the `case` at expert-flow.md:386-389, then `gh issue view`). Context carries the detection failure reason (e.g. "no `.claude/github-cache.json` here", "cache branch ≠ current branch"). Invalid input, `Abort`, or no answer → `flow not started — run /expert-flow <issue>` (guard_block, no telemetry). A non-GitHub worktree that has a non-GitHub cache blocks any answer with `this worktree is not for a GitHub issue — run /expert-flow <issue> from the main worktree`.
+- **Per-run flags** (`--no-gates`, `--auto-merge`) remain not carried across the hand-off. This is pre-existing (resume rule 9), not a regression.
+
+**Consequences.** `/track-and-start --worktree-only` and a completed hand-off both lead to a copyable bare `claude "/expert-flow"` that resumes at `plan` without prompting. A fresh `/track-and-start` GitHub-issue worktree with no existing flow runs `/expert-plan` and `track` again (accepted, Q6). Local Plan and Tracker worktrees always end at a pointer to the main worktree. A no-remote project stops at Project detection, not the new question. Concurrent bare orchestrators on the same hand-off flow both see `live == null` before either spawns; the second to start loses (same as today's `--resume` rule 1, no new concurrency hazard).
