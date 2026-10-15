@@ -354,3 +354,19 @@ raise, with the material to decide on in the conversation; a human who changes n
 everything. Runs take more wall-clock turns; `--no-gates` is the per-run opt-out, and relayed
 questions can never be opted out of. A plan or review that reaches the human with fewer questions
 than it raised is a failed step, not a quiet default.
+
+## Amendment (2026-10-14): receipt markers survive finalization
+
+**Problem.** The 2026-10-14 checkpoint-relay amendment's verifier counts marker-named question files to enforce that every checkpoint question was relayed (§2's "every checkpoint question is asked"). But seven prose sites in five command docs and flow-reference told step agents to drop the markers on finalization, and flow-reference listed "`Decision:` together with an awaiting marker" as a forbidden trailer shape. The result was a plan step failing after all questions were answered, with the verifier reporting `plan checkpoint incomplete (briefs: 10, asked: 0)`.
+
+**Decision.**
+
+1. `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers stay on `OK` and `FAILED` receipts. They are this attempt's relay record. The receipt is stubbed per attempt (Attempt scope in Lifecycle), so markers are attempt-scoped.
+2. The "`Decision:` together with an awaiting marker" forbidden shape is deleted.
+3. The verifier and the fidelity audit count a marker only when `answers/<STEP>-<SEQ>.json` exists. A marker without its answers file is a failed step with `unanswered: <basenames>`.
+4. Disk globbing is not a counting source. A receipt with zero markers fails closed, even when answered question files exist on disk.
+5. Resume rule 5 re-asks only from receipts without `<!-- step-end -->`.
+
+**Clarification.** This amendment clarifies §2.1 ("Earlier markers are answered or stale") and makes the 2026-10-14 amendment's "against the questions in `questions/plan-*.json`" precise: it means the questions in the files named by answered markers.
+
+**Consequences.** An agent that drops markers still hard-fails, now with an error that says why (`receipt carries no awaiting/reused markers`). If that keeps happening, a robustness upgrade (an `attempt` field plus disk-only counting scoped to the attempt) becomes the fix.
