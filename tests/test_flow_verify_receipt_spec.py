@@ -233,7 +233,7 @@ def main():
         fx.write_receipt([], path=fx.root / "outside" / "04-review.md")
         rc, out = run_verifier(fx, receipt=fx.root / "outside" / "04-review.md")
         h.test_result("F8 negative: no flow dir and no markers does not add ', flow dir unresolved'",
-                      "flow dir unresolved" not in out,
+                      "flow dir unresolved" not in out and "asked: 0" in out,
                       f"rc={rc} out={out.strip()[-300:]}")
 
     # --- F9: zero-marker reason names this step's markers -----------------------------------
