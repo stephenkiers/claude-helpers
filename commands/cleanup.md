@@ -479,7 +479,10 @@ if [ -n "$ISSUE_NUM" ]; then
 
   CACHED_STATE=""
   if [ "$CACHED_ISSUE_STATE" != "closed" ] && [ -f "$CACHE_FILE" ]; then
-    CACHED_STATE=$(jq -r ".issues[\"$ISSUE_NUM\"].state // empty" "$CACHE_FILE" 2>/dev/null)
+    # .issues is either a map keyed by issue number or an array of {number, state, ...}
+    CACHED_STATE=$(jq -r --arg num "$ISSUE_NUM" \
+      '.issues | (if type == "array" then (map(select((.number | tostring) == $num)) | first) else .[$num] end) | .state // empty' \
+      "$CACHE_FILE" 2>/dev/null)
   fi
 
   if [ "$CACHED_ISSUE_STATE" = "closed" ] || [ "$CACHED_STATE" = "closed" ]; then
@@ -496,7 +499,7 @@ if [ -n "$ISSUE_NUM" ]; then
       # Update issues.json cache with closed state
       if [ -f "$CACHE_FILE" ]; then
         jq --arg num "$ISSUE_NUM" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '.issues[$num].state = "closed" | .lastSynced = $date' \
+          '.issues |= (if type == "array" then map(if (.number | tostring) == $num then .state = "closed" else . end) else .[$num].state = "closed" end) | .lastSynced = $date' \
           "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
         echo "Updated issues.json: issue #$ISSUE_NUM marked closed"
       fi
