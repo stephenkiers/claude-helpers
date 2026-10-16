@@ -87,6 +87,21 @@ def windows_around(text, needle, radius):
     return out
 
 
+def units(text):
+    """Blank-line paragraphs and individual '- ' bullet items, so a check can scope to one ruling."""
+    return [u for u in re.split(r"\n\s*\n|\n(?=- )", text) if u.strip()]
+
+
+def parse_block():
+    """First fenced bash block under '### Argument parsing' in the command doc, or ''."""
+    text = read(DOC)
+    start = text.find("### Argument parsing")
+    if start < 0:
+        return ""
+    m = re.search(r"```bash\n(.*?)```", text[start:], re.S)
+    return m.group(1) if m else ""
+
+
 PLACEHOLDER = re.compile(r"<([A-Z][A-Z0-9_]*)>")
 
 
@@ -124,6 +139,16 @@ def run_block(block, cwd, home, env_extra=None):
         text=True,
         timeout=120,
     )
+
+
+def parse_output(stdout):
+    """KEY=value lines of stdout as a dict; lines without '=' are ignored."""
+    out = {}
+    for line in stdout.split("\n"):
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
 
 
 def key_values(stdout):
@@ -169,20 +194,21 @@ if __name__ == "__main__":
       "silent resume of the hand-off flow" in norm(adr_text),
       "phrase 'silent resume of the hand-off flow' not found in ADR-0023")
 
-    trail_paras = [p for p in paragraphs(adr_text) if "trail" in p.lower()]
+    trail_units = [u for u in units(adr_text) if "trail" in u.lower()]
+    t("ADR's trail-line ruling says the trail line prints on silent resume of the hand-off flow",
+      any("silent resume of the hand-off flow" in norm(u) for u in trail_units),
+      "no trail-line ruling item says 'silent resume of the hand-off flow'")
     t("ADR no longer describes the trail line as firing on a 'non-hand-off' flow",
-      not any("non-hand-off" in norm(p).lower() for p in trail_paras),
-      "a trail-line paragraph still says 'non-hand-off'")
+      not any("non-hand-off" in norm(u).lower() for u in trail_units),
+      "a trail-line ruling item still says 'non-hand-off'")
 
     t("ADR no longer claims the amendment 'preserves the Start fresh / Abort recovery' paths",
       "preserves the Start fresh / Abort recovery" not in norm(adr_text),
       "the unsupported 'preserves the Start fresh / Abort recovery' claim is still present")
 
-    start_fresh_paras = [p for p in paragraphs(adr_text)
-                         if "start fresh" in p.lower() and "main worktree" in p.lower()]
-    t("ADR says Start fresh must be run from the main worktree (same paragraph)",
-      bool(start_fresh_paras),
-      "no paragraph mentions both 'Start fresh' and 'main worktree'")
+    t("ADR's trail-line ruling says Start fresh must be run from the main worktree",
+      any("start fresh" in norm(u).lower() and "main worktree" in norm(u).lower() for u in trail_units),
+      "no trail-line ruling item mentions both 'Start fresh' and 'main worktree'")
 
     # ------------------------------------------------------------------
     print()
@@ -190,9 +216,9 @@ if __name__ == "__main__":
     print("=" * 70)
 
     t("ADR records the bare-form silent resume as an exception to Epic #290 principle 2",
-      any("#290" in p and "principle 2" in p and "exception" in p.lower() and "bare" in p.lower()
-          for p in paragraphs(adr_text)),
-      "no single paragraph of ADR-0023 mentions #290, 'principle 2', 'exception' and 'bare' together")
+      any("#290" in u and "principle 2" in u and "exception" in u.lower() and "bare" in u.lower()
+          for u in units(adr_text)),
+      "no single ruling item of ADR-0023 mentions #290, 'principle 2', 'exception' and 'bare' together")
 
     t("CLAUDE.md bare-form sentence says: in the exact hand-off state it resumes silently",
       "in the exact hand-off state it resumes silently" in norm(claude_text),
@@ -208,7 +234,7 @@ if __name__ == "__main__":
     print("=" * 70)
 
     for label, text in (("commands/expert-flow.md", doc_text), ("docs/adr/0023-expert-flow.md", adr_text)):
-        hits = re.findall(r"\.md:\d+", text)
+        hits = re.findall(r"\.md\s*~?:\s*\d+|\blines? \d+", text)
         t(f"{label} has no '.md:NNN' line locators",
           not hits, f"found locators: {hits[:5]}")
 
@@ -217,10 +243,11 @@ if __name__ == "__main__":
     print("[Doing-it 2] ADR Consequences cites #307 (empty-parse masking)")
     print("=" * 70)
 
-    cons_at = adr_text.find("Consequences")
-    t("ADR has a Consequences section that cites #307",
-      cons_at >= 0 and "#307" in adr_text[cons_at:],
-      "no '#307' appears at or after the ADR's Consequences heading")
+    amend_text = adr_text[adr_text.find("## Amendment (2026-10-15)"):]
+    cons_para = next((p for p in paragraphs(amend_text) if p.lstrip().startswith("**Consequences.**")), "")
+    t("the 2026-10-15 amendment's Consequences paragraph cites #307",
+      "#307" in cons_para,
+      "no '**Consequences.**' paragraph in the 2026-10-15 amendment mentions '#307'")
 
     # ------------------------------------------------------------------
     print()
@@ -241,9 +268,15 @@ if __name__ == "__main__":
     print("=" * 70)
 
     if "QUOTED_PLAN_FILE" in doc_text:
-        t("QUOTED_PLAN_FILE, where used, is assigned in the doc",
-          re.search(r"QUOTED_PLAN_FILE=", doc_text) is not None,
-          "QUOTED_PLAN_FILE is used but never assigned")
+        # QUOTED_PLAN_FILE is a prose placeholder in the printed template, defined by a sentence,
+        # not a shell variable; either form counts as defined.
+        t("QUOTED_PLAN_FILE, where used, is defined in the doc (assignment or prose definition)",
+          re.search(r"QUOTED_PLAN_FILE=", doc_text) is not None
+          or re.search(r"`QUOTED_PLAN_FILE` is the `--plan-file` path", doc_text) is not None,
+          "QUOTED_PLAN_FILE is used but neither assigned nor defined in prose")
+        t("the parser's --plan-file allowlist that makes the prose definition safe is present",
+          "*[!A-Za-z0-9._/~+:=@,-]*" in doc_text,
+          "the --plan-file character allowlist is missing from the doc")
     else:
         t("QUOTED_PLAN_FILE removed from the doc (no undefined reference)", True)
 
@@ -273,12 +306,24 @@ if __name__ == "__main__":
     print("[Doing-it 11] Empty-argument routing is gated on the raw argument string")
     print("=" * 70)
 
-    no_arg_windows = windows_around(doc_text, "NO_ARG=yes", 300)
-    t("command doc sets NO_ARG=yes",
-      bool(no_arg_windows), "NO_ARG=yes not found in expert-flow.md")
-    t("NO_ARG=yes is tied to an empty raw argument string",
-      any("empty" in w.lower() for w in no_arg_windows),
-      "no NO_ARG=yes passage mentions an empty argument string")
+    t("NO_ARG=yes is set only under an argument-count-zero guard (RAW_ARGC -eq 0)",
+      re.search(r'if \[ "\$RAW_ARGC" -eq 0 \][^\n]*\n\s*NO_ARG=yes\b', doc_text) is not None,
+      "NO_ARG=yes is not directly guarded by RAW_ARGC -eq 0 in expert-flow.md")
+
+    parse_src = parse_block()
+    t("the argument-parsing bash block is present in expert-flow.md", bool(parse_src),
+      "no fenced bash block under '### Argument parsing'")
+    if parse_src:
+        for args in ([""], ["", "302"]):
+            with tempfile.TemporaryDirectory() as d:
+                r = subprocess.run(
+                    ["bash", "-c", parse_src + '\nprintf "BAD=%s\\nNO_ARG=%s\\n" "$BAD" "$NO_ARG"\n',
+                     "expert-flow", *args],
+                    capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")}, cwd=d)
+            p = parse_output(r.stdout)
+            t(f"parser: argv {args!r} is refused (non-empty BAD), not silently routed",
+              r.returncode == 0 and p.get("BAD", "") != "" and p.get("NO_ARG") == "no",
+              f"rc={r.returncode} got={p} err={r.stderr[-200:]!r}")
 
     # ------------------------------------------------------------------
     print()
@@ -294,6 +339,8 @@ if __name__ == "__main__":
             tmp_root = Path(d)
             fx, main_wt = make_repo(tmp_root)
             wt = add_worktree(fx, "5-widget", "feature/5-widget")
+            fx.write_cache_file(wt, {"branch": "feature/5-widget",
+                                     "issue": {"number": 5, "url": f"https://github.com/{main_wt.name}/issues/5"}})
             home = home_for(tmp_root)
             flows_root = home / ".claude" / "flows" / main_wt.name
             filled = fill_placeholders(block, flows_root, main_wt)
@@ -309,6 +356,10 @@ if __name__ == "__main__":
               unset.returncode == 0, f"rc={unset.returncode} stderr={unset.stderr[-300:]!r}")
             t("block emits at least one KEY=value line with inputs unset",
               bool(key_values(unset.stdout)), f"stdout={unset.stdout[-300:]!r}")
+            t("unset-input run routes plain for issue 5 from a real ticket worktree",
+              key_values(unset.stdout).get("NOARG_ROUTE") == "plain"
+              and key_values(unset.stdout).get("NOARG_ISSUE") == "5",
+              f"stdout={unset.stdout!r} stderr={unset.stderr[-300:]!r}")
             t("block does not report missing detection inputs when run from a worktree",
               re.search(r"input[s]?\s+(are\s+)?missing|missing\s+(detection\s+)?input",
                         unset.stdout + unset.stderr, re.I) is None,
@@ -326,14 +377,16 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as d:
             tmp_root = Path(d)
             fx, main_wt = make_repo(tmp_root)
-            wt = add_worktree(fx, "scratch", "scratch-notes")
+            wt = add_worktree(fx, "5-scratch", "feature/5-scratch")
+            fx.write_cache_file(wt, {"branch": "feature/5-scratch",
+                                     "issue": {"number": 5, "url": "https://example.com/issues/5"}})
             home = home_for(tmp_root)
             flows_root = home / ".claude" / "flows" / main_wt.name
             filled = fill_placeholders(block, flows_root, main_wt)
             res = run_block(filled, wt, home)
             kv = key_values(res.stdout)
-            t("scratch worktree: detection output carries the NOARG_NONGITHUB key",
-              "NOARG_NONGITHUB" in kv,
+            t("non-GitHub cache: detection routes ask and reports NOARG_NONGITHUB=yes",
+              kv.get("NOARG_ROUTE") == "ask" and kv.get("NOARG_NONGITHUB") == "yes",
               f"rc={res.returncode} stdout={res.stdout!r} stderr={res.stderr[-300:]!r}")
 
     # ------------------------------------------------------------------
@@ -347,15 +400,17 @@ if __name__ == "__main__":
             fx, main_wt = make_repo(tmp_root)
             wt = add_worktree(fx, "5-widget", "feature/5-widget")
             fx._run_git(["checkout", "--detach"], cwd=wt)
-            fx.write_cache_file(wt, {"issue": 5, "branch": ""})
+            fx.write_cache_file(wt, {"branch": "",
+                                     "issue": {"number": 5, "url": f"https://github.com/{main_wt.name}/issues/5"}})
             home = home_for(tmp_root)
             flows_root = home / ".claude" / "flows" / main_wt.name
             filled = fill_placeholders(block, flows_root, main_wt)
             res = run_block(filled, wt, home)
+            kv = key_values(res.stdout)
             t("detached HEAD with empty cached branch: block exits 0",
               res.returncode == 0, f"rc={res.returncode} stderr={res.stderr[-300:]!r}")
-            t("detached HEAD with empty cached branch: no NOARG_FLOW is trusted",
-              key_values(res.stdout).get("NOARG_FLOW", "") == "",
+            t("detached HEAD with empty cached branch: routes ask, not plain (cache is not trusted)",
+              kv.get("NOARG_ROUTE") == "ask" and kv.get("NOARG_REASON") == "cache has no branch",
               f"stdout={res.stdout!r}")
 
     # ------------------------------------------------------------------
@@ -370,11 +425,8 @@ if __name__ == "__main__":
             fx, main_wt = make_repo(tmp_root)
             wt = add_worktree(fx, "5-widget", "feature/5-widget")
             fx.write_cache_file(wt, {
-                "issue": 5,
                 "branch": "feature/5-widget",
-                "title": payload,
-                "url": payload,
-                "state": payload,
+                "issue": {"number": 5, "url": payload, "title": payload, "state": payload},
                 "tracker": payload,
                 "repo": payload,
             })
@@ -382,6 +434,10 @@ if __name__ == "__main__":
             flows_root = home / ".claude" / "flows" / main_wt.name
             filled = fill_placeholders(block, flows_root, main_wt)
             res = run_block(filled, wt, home)
+            kv = key_values(res.stdout)
+            t("payload cache: routes ask as a non-GitHub cache, with no flow bound",
+              kv.get("NOARG_ROUTE") == "ask" and kv.get("NOARG_NONGITHUB") == "yes" and kv.get("NOARG_FLOW", "") == "",
+              f"stdout={res.stdout!r}")
             t("injected newline payload from the cache does not reach stdout",
               "INJECTED_PAYLOAD" not in res.stdout, f"stdout={res.stdout!r}")
             t("injected newline payload from the cache does not reach stderr",

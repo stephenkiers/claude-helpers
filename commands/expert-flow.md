@@ -122,7 +122,7 @@ or `--retro` combined with any other flag, a `--plan-file` path outside the allo
 
 ```bash
 PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; NO_GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
-RESUME_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; NO_ARG=no; BAD=""
+RESUME_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
 RAW_ARGC=$#
 flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
 while [ $# -gt 0 ]; do
@@ -152,7 +152,7 @@ while [ $# -gt 0 ]; do
     --epic) EPIC=yes ;;
     --list) LIST=yes ;;
     --*) flag_bad "unknown flag: ${1}" ;;
-    *) [ -z "$ISSUE_ARG" ] || flag_bad "only one issue argument is allowed"; ISSUE_ARG="${1}" ;;
+    *) if [ -z "${1}" ]; then flag_bad "an empty argument is not an issue number or URL"; elif [ "$ISSUE_SEEN" = yes ]; then flag_bad "only one issue argument is allowed"; else ISSUE_SEEN=yes; ISSUE_ARG="${1}"; fi ;;
   esac
   shift
 done
