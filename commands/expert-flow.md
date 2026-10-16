@@ -1125,6 +1125,8 @@ For plan checkpoint reports from `/expert-plan`:
      matches.
    - Echo the mapping back, one line per question, so a wrong mapping is catchable:
      `q1 → Approve` / `q2 → Other: "ship it without the migration"`.
+   - Write the canonical answers file (step 4) and nothing else — keyed by question **id**, never
+     by question text.
    - For any `id` you cannot map with confidence, re-ask that question (and only that question)
      with `AskUserQuestion`. Never guess and never fill a default.
 
