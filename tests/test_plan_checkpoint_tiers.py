@@ -9,7 +9,7 @@ without reading the implementation. They verify the tier-assignment rule:
 - D: resolved, at least one other expert `agreed`, and no `could-go-other-way` flag.
 - W: every other resolved item.
 
-Run with: python3 tests/test_plan_checkpoint_tiers_spec_blind.py
+Run with: python3 tests/test_plan_checkpoint_tiers.py
 """
 
 import json
