@@ -184,29 +184,6 @@ def _is_report_checkpoint(flow_dir: Path, relay_count: RelayCount) -> bool:
     return False
 
 
-def _extract_ledger_json(decisions_text: str) -> Optional[Dict]:
-    """Extract and parse the Checkpoint ledger JSON block from decisions.md.
-
-    Uses the shared schema module for consistent ledger extraction.
-    Returns the parsed JSON dict or None if not found or invalid.
-    """
-    return schema.extract_ledger_json(decisions_text)
-
-
-def _get_ledger_handles_and_tiers(
-    ledger: Dict,
-) -> Dict[str, Dict]:
-    """Extract {handle: {tier, brief_type, ...}} from ledger.
-
-    Returns dict mapping handle to its tier, brief_type, and evidence.
-    """
-    result: Dict[str, Dict] = {}
-    for handle, data in ledger.items():
-        if isinstance(data, dict) and handle.startswith(("D", "W", "Q")):
-            result[handle] = data
-    return result
-
-
 def _load_answers_file(path: Path) -> Optional[Dict]:
     """Load and parse an answers JSON file. Return None on error."""
     try:
@@ -226,70 +203,33 @@ def _load_reaction_file(path: Path) -> Optional[Dict]:
         return None
 
 
-def _collect_reaction_evidence(
-    session_dir: Path, expected_reactions: List[Dict]
-) -> Dict[str, Dict[str, list]]:
-    """Collect evidence for each handle from reaction files listed in expected_reactions.
-
-    Returns {handle: {expert: [resolved|agreed|no-view|protested]}}
-    """
-    evidence: Dict[str, Dict[str, list]] = {}
-
-    for entry in expected_reactions:
-        if not isinstance(entry, dict):
-            continue
-        path_str = entry.get("path")
-        if not path_str:
-            continue
-
-        path = session_dir / path_str
-        data = _load_reaction_file(path)
-        if not data:
-            continue
-
-        # For each handle in the reaction file, record the reaction
-        for handle, reaction_data in data.items():
-            if handle == "complete":
-                continue
-            if not isinstance(reaction_data, dict):
-                continue
-
-            if handle not in evidence:
-                evidence[handle] = {}
-
-            # Extract expert slug from the path (reactions/<slug>-<mode>-r<round>.json)
-            path_obj = Path(path_str)
-            basename = path_obj.name
-            # Extract slug: everything before the first dash after "reactions/"
-            slug = basename.split("-")[0] if "-" in basename else basename
-
-            # Collect the reaction value
-            if "resolved" in reaction_data or reaction_data.get("status") == "resolved":
-                evidence[handle][slug] = "resolved"
-            elif reaction_data.get("status") == "agreed" or reaction_data.get("agreed"):
-                evidence[handle][slug] = "agreed"
-            elif reaction_data.get("status") == "no-view" or not reaction_data.get("status"):
-                evidence[handle][slug] = "no-view"
-            elif reaction_data.get("status") == "protested" or reaction_data.get("protested"):
-                evidence[handle][slug] = "protested"
-
-    return evidence
-
-
 def check_report_checkpoint(
-    session_dir: Path, flow_dir: Path, decisions_text: str
+    session_dir: Path, flow_dir: Path, decisions_text: str, attempt: int = 1, relay_count: Optional[RelayCount] = None
 ) -> Optional[str]:
     """Check report-kind plan checkpoint. Return error reason or None.
 
-    Implements rules 1-10 from Step 6.
+    Implements rules 1-10 from Step 5.
+
+    Args:
+        session_dir: Path to the plan session directory
+        flow_dir: Path to the flow directory
+        decisions_text: Content of decisions.md from the session
+        attempt: The attempt number (from receipt)
+        relay_count: Optional RelayCount from the receipt (for scoping verification)
     """
-    # Load the checkpoint ledger
-    ledger = _extract_ledger_json(decisions_text)
+    # Load the checkpoint ledger (F6: use schema module)
+    ledger = schema.extract_ledger_json(decisions_text)
     if not ledger:
         return "plan checkpoint incomplete (no checkpoint ledger in decisions.md)"
 
+    # Validate ledger shape
+    ledger_err = schema.validate_ledger_shape(ledger)
+    if ledger_err:
+        return f"plan checkpoint incomplete ({ledger_err})"
+
     seated = ledger.get("seated", [])
     expected_reactions = ledger.get("expected_reactions", [])
+    briefs = ledger.get("briefs", {})
 
     if not isinstance(seated, list):
         seated = []
@@ -300,32 +240,65 @@ def check_report_checkpoint(
     if "contrarian-carl" not in seated:
         return "plan checkpoint incomplete (missing contrarian-carl from seated list)"
 
-    # Get all handles from ledger
-    ledger_handles_and_tiers = _get_ledger_handles_and_tiers(ledger)
+    # Get all handles from ledger (post-tier handles: D1, W1, Q1, ...)
+    ledger_handles_and_tiers = {}
+    for key, data in ledger.items():
+        if isinstance(data, dict) and key[0] in ("D", "W", "Q"):
+            ledger_handles_and_tiers[key] = data
     ledger_handles = set(ledger_handles_and_tiers.keys())
 
-    # Rule 1: Check for report markers
+    # Determine which question files to check: from relay_count.unanswered and answered
     qdir = flow_dir / "questions"
     adir = flow_dir / "answers"
 
-    if not qdir.exists():
-        return "plan checkpoint incomplete (receipt carries no plan-* markers)"
+    # Rule 1: Verify we have plan-* question files
+    marker_files = set()
+    if relay_count:
+        # Build the set of marker files from relay_count
+        marker_files.update(relay_count.unanswered)
+        # Also need to check answered files
+        if adir.exists():
+            for answer_file in sorted(adir.glob("plan-*.json")):
+                if answer_file.name in relay_count.unanswered:
+                    continue
+                # Check if this file has an attempt matching our attempt
+                try:
+                    adata = json.loads(answer_file.read_text(encoding="utf-8"))
+                    if isinstance(adata, dict) and adata.get("attempt") == attempt:
+                        marker_files.add(answer_file.name)
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
+    else:
+        # Without relay_count, fall back to finding all plan-*.json files for this attempt
+        if qdir.exists():
+            for qfile in sorted(qdir.glob("plan-*.json")):
+                try:
+                    qdata = json.loads(qfile.read_text(encoding="utf-8"))
+                    if isinstance(qdata, dict) and qdata.get("attempt") == attempt:
+                        marker_files.add(qfile.name)
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
 
-    # Find all report question files
+    if not qdir.exists():
+        return "plan checkpoint incomplete (questions directory missing)"
+
+    # Find all report question files for this attempt
     report_files = {}
-    for qfile in qdir.glob("plan-*.json"):
+    for marker in marker_files:
+        qfile = qdir / marker
+        if not qfile.exists():
+            continue
         try:
             data = json.loads(qfile.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("kind") == "report":
-                report_files[qfile.name] = data
+            if isinstance(data, dict) and data.get("kind") == "report" and data.get("attempt") == attempt:
+                report_files[marker] = data
         except (OSError, UnicodeDecodeError, ValueError):
             pass
 
     if not report_files:
-        return "plan checkpoint incomplete (receipt carries no plan-* markers)"
+        return "plan checkpoint incomplete (no report question files for this attempt)"
 
     # Rule 2: Check that round-1 report's handle set matches ledger handles
-    # Round-1 is the first report file (sorted by name)
     round1_basename = min(report_files.keys()) if report_files else None
     if round1_basename:
         round1_data = report_files[round1_basename]
@@ -348,38 +321,76 @@ def check_report_checkpoint(
 
     # Rule 3, 4: Check answers files for all report rounds and check for unresolved
     final_dispositions: Dict[str, str] = {}
-    prose_rounds: set = set()
+    prose_rounds: Dict[str, int] = {}  # map basename to round number
 
     if adir.exists():
-        for answer_file in adir.glob("plan-*.json"):
-            answers_data = _load_answers_file(answer_file)
-            if not answers_data:
+        # Sort by attempt and round to process in order
+        for answer_file in sorted(adir.glob("plan-*.json")):
+            try:
+                answers_data = json.loads(answer_file.read_text(encoding="utf-8"))
+                if not isinstance(answers_data, dict):
+                    return f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
+
+                # F33: Key on the answers file's kind field
+                kind = answers_data.get("kind")
+                file_attempt = answers_data.get("attempt")
+
+                # F17: Validate the shape up front
+                shape_err = schema.validate_answers_file_shape(answers_data, kind or "ask")
+                if shape_err:
+                    return f"plan checkpoint incomplete ({shape_err})"
+
+                # Only process files for this attempt
+                if file_attempt != attempt:
+                    continue
+
+                if kind == "report":
+                    # Use items for report variant
+                    items = answers_data.get("items", {})
+                    if not isinstance(items, dict):
+                        return f"plan checkpoint incomplete (malformed answers file: {answer_file.name})"
+
+                    # Rule 3: Check that all handles are present
+                    for handle in ledger_handles:
+                        if handle not in items:
+                            return f"plan checkpoint incomplete (answer file missing handle: {handle})"
+
+                    # Track final disposition and prose rounds
+                    round_num = answers_data.get("round")
+                    for handle, item in items.items():
+                        if isinstance(item, dict):
+                            disposition = item.get("disposition")
+                            final_dispositions[handle] = disposition
+                            source = item.get("source")
+                            if source == "prose":
+                                prose_rounds[answer_file.name] = round_num
+                else:
+                    # Standard form variant (legacy)
+                    answers = answers_data.get("answers", {})
+                    if not isinstance(answers, dict):
+                        continue
+
+                    for handle in ledger_handles:
+                        if handle not in answers:
+                            return f"plan checkpoint incomplete (answer file missing handle: {handle})"
+
+                    for handle, answer in answers.items():
+                        if isinstance(answer, dict):
+                            disposition = answer.get("disposition")
+                            final_dispositions[handle] = disposition
+                            source = answer.get("source")
+                            if source == "prose":
+                                prose_rounds[answer_file.name] = 1
+
+            except (OSError, UnicodeDecodeError, ValueError):
                 return f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
-
-            answers = answers_data.get("answers", {})
-            if not isinstance(answers, dict):
-                continue
-
-            # Rule 3: Check that all handles are present
-            for handle in ledger_handles:
-                if handle not in answers:
-                    return f"plan checkpoint incomplete (answer file missing handle: {handle})"
-
-            # Track final disposition and prose rounds
-            for handle, answer in answers.items():
-                if isinstance(answer, dict):
-                    disposition = answer.get("disposition")
-                    final_dispositions[handle] = disposition
-                    source = answer.get("source")
-                    if source == "prose":
-                        prose_rounds.add(answer_file.name)
 
     # Rule 4: Check for unresolved dispositions
     for handle, disposition in final_dispositions.items():
         if disposition == "unresolved":
             return f"plan checkpoint incomplete (unresolved: {handle})"
 
-    # Rebuild must-answer info from report files and answers
+    # Rebuild must-answer info from report files
     must_answer_items: Dict[str, bool] = {}
     must_answer_reasons: Dict[str, str] = {}
 
@@ -415,30 +426,68 @@ def check_report_checkpoint(
         if disposition in ["answered", "overridden"]:
             reply_excerpt = None
             for answer_file in adir.glob("plan-*.json"):
-                answers_data = _load_answers_file(answer_file)
-                if answers_data and handle in answers_data.get("answers", {}):
-                    answer = answers_data["answers"][handle]
-                    if answer.get("disposition") == disposition:
-                        reply_excerpt = answer.get("reply_excerpt")
-                        break
+                try:
+                    answers_data = json.loads(answer_file.read_text(encoding="utf-8"))
+                    if not isinstance(answers_data, dict):
+                        continue
+                    if answers_data.get("attempt") != attempt:
+                        continue
+
+                    kind = answers_data.get("kind")
+                    if kind == "report":
+                        items = answers_data.get("items", {})
+                        if handle in items and items[handle].get("disposition") == disposition:
+                            reply_excerpt = items[handle].get("reply_excerpt")
+                            break
+                    else:
+                        answers = answers_data.get("answers", {})
+                        if handle in answers and answers[handle].get("disposition") == disposition:
+                            reply_excerpt = answers[handle].get("reply_excerpt")
+                            break
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
 
             if not reply_excerpt:
                 return f"plan checkpoint incomplete (must-answer without quote: {handle})"
 
         if disposition == "accepted-on-continue":
-            # Find the answers file with this disposition
+            found = False
             for answer_file in adir.glob("plan-*.json"):
-                answers_data = _load_answers_file(answer_file)
-                if answers_data and handle in answers_data.get("answers", {}):
-                    answer = answers_data["answers"][handle]
-                    if answer.get("disposition") == "accepted-on-continue":
-                        loop_end = answers_data.get("loop_end")
-                        reply_excerpt = answer.get("reply_excerpt")
-                        if loop_end != "continue":
-                            return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
-                        if not reply_excerpt:
-                            return f"plan checkpoint incomplete (must-answer without quote: {handle})"
-                        break
+                try:
+                    answers_data = json.loads(answer_file.read_text(encoding="utf-8"))
+                    if not isinstance(answers_data, dict):
+                        continue
+                    if answers_data.get("attempt") != attempt:
+                        continue
+
+                    kind = answers_data.get("kind")
+                    if kind == "report":
+                        items = answers_data.get("items", {})
+                        if handle in items and items[handle].get("disposition") == "accepted-on-continue":
+                            loop_end = answers_data.get("loop_end")
+                            reply_excerpt = items[handle].get("reply_excerpt")
+                            if loop_end != "continue":
+                                return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
+                            if not reply_excerpt:
+                                return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+                            found = True
+                            break
+                    else:
+                        answers = answers_data.get("answers", {})
+                        if handle in answers and answers[handle].get("disposition") == "accepted-on-continue":
+                            loop_end = answers_data.get("loop_end")
+                            reply_excerpt = answers[handle].get("reply_excerpt")
+                            if loop_end != "continue":
+                                return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
+                            if not reply_excerpt:
+                                return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+                            found = True
+                            break
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
+
+            if not found:
+                return f"plan checkpoint incomplete (accepted-on-continue not found: {handle})"
 
     # Rule 6: Check accepted items are only D or W
     for handle, disposition in final_dispositions.items():
@@ -447,7 +496,7 @@ def check_report_checkpoint(
             if tier not in ["decided", "worth-a-look"]:
                 return f"plan checkpoint incomplete (accepted non-D/W: {handle})"
 
-    # Rule 7: Check reaction files
+    # Rule 7: Check reaction files exist and are complete
     missing_experts: List[str] = []
     for expert in seated:
         # Check for pre-show round-1
@@ -463,6 +512,11 @@ def check_report_checkpoint(
                 # Check file exists and has "complete": true sentinel
                 path_str = entry.get("path")
                 if path_str:
+                    # F25: Confine path to session dir
+                    confine_err = schema.confine_path_to_dir(path_str, session_dir)
+                    if confine_err:
+                        return f"plan checkpoint incomplete ({confine_err})"
+
                     path = session_dir / path_str
                     data = _load_reaction_file(path)
                     if not data or not data.get("complete"):
@@ -476,10 +530,47 @@ def check_report_checkpoint(
         return f"plan checkpoint incomplete (missing pre-show reactions: {', '.join(missing_experts)})"
 
     # Rule 8, 8b: Check for protested D/W items and disagreement D/W items
-    evidence = _collect_reaction_evidence(session_dir, expected_reactions)
+    # Build evidence from pre-show reactions only
+    evidence: Dict[str, Dict[str, str]] = {}
+
+    for entry in expected_reactions:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("mode") != "pre-show":
+            continue
+
+        slug = entry.get("slug")
+        path_str = entry.get("path")
+        if not slug or not path_str:
+            continue
+
+        path = session_dir / path_str
+        data = _load_reaction_file(path)
+        if not data:
+            continue
+
+        # Process each brief_id in the reaction file
+        for brief_id, reaction_data in data.items():
+            if brief_id == "complete" or not isinstance(reaction_data, dict):
+                continue
+
+            # Get the handle for this brief_id from ledger.briefs
+            # (we'll check this in Rule 8b)
+            brief_type = briefs.get(brief_id, {}).get("brief_type")
+
+            # Classify the reaction using schema module
+            classification = schema.classify_reaction(reaction_data, slug)
+
+            # Find the handle(s) for this brief_id (from post-tier ledger)
+            for handle, handle_data in ledger_handles_and_tiers.items():
+                if handle_data.get("brief_id") == brief_id:
+                    if handle not in evidence:
+                        evidence[handle] = {}
+                    evidence[handle][slug] = classification
 
     for handle, tier_data in ledger_handles_and_tiers.items():
         tier = tier_data.get("tier")
+        brief_id = tier_data.get("brief_id")
         brief_type = tier_data.get("brief_type")
 
         if tier in ["decided", "worth-a-look"]:
@@ -493,9 +584,10 @@ def check_report_checkpoint(
                 if reaction == "protested":
                     return f"plan checkpoint tier mismatch ({handle} protested by {expert})"
 
-    # Rule 9: Check raw-reply files for prose rounds
-    for prose_round in prose_rounds:
-        reply_file = adir / prose_round.replace(".json", ".reply.md")
+    # Rule 9: Check raw-reply files exist for prose rounds
+    for prose_basename in prose_rounds:
+        round_num = prose_rounds[prose_basename]
+        reply_file = adir / f"plan-{prose_basename.split('-')[1].split('.')[0]}.reply-{round_num}.md"
         if not reply_file.exists():
             return f"plan checkpoint incomplete (missing reply file: {reply_file.name})"
 
@@ -521,7 +613,7 @@ def check_report_checkpoint(
         for handle, reaction_data in data.items():
             if handle == "complete" or not isinstance(reaction_data, dict):
                 continue
-            if "pushback" in reaction_data or reaction_data.get("pushback"):
+            if reaction_data.get("pushback") is True:
                 key = (slug, handle)
                 pushback_tracker[key] = pushback_tracker.get(key, 0) + 1
 
