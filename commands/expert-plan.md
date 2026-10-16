@@ -550,9 +550,36 @@ state a why, write `WHY: not stated in ticket` rather than inventing one. For a 
 
 **Non-flow branch:** For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
 
-**Every decision brief is asked in non-flow mode; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`.
+**Every decision brief is asked; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`.
 
 Write `{SESSION_DIR}/decisions.md` with the round-up, decision briefs, decision index, and checkpoint results, so a user re-reading the session later gets the same report shown in chat — not the full unabridged contribution files, which remain on disk in `{expert}-contribution.md` for anyone who wants the full source. In `decisions.md`, the checkpoint results reference briefs by `Q[n]` in prose or a table, never as `####` headings — `#### Q[n]` headings appear once each, in the decision-briefs section only, because the verifier counts them.
+
+**Effort-2 escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains):
+
+If the decision index reveals an unresolved disagreement among experts or a scope decision the user's checkpoint answers did not fully settle, include this option in the checkpoint `AskUserQuestion` batch via the same Ask block (`~/.claude/prompts/flow-reference.md`) — do not ask as a separate prompt, fold it into the same question flow:
+
+```
+Option: "No — consistency check only" (default)
+Option: "Yes — escalate: audit this one question: \"<the concrete question>\""
+```
+
+When the user selects "Yes" (within the checkpoint batch):
+- Call the `Write` tool (not shell redirect) to create `{SESSION_DIR}/audit-escalation.txt` with the question in the format defined at line 60-75, using `RAISED-AT: step-5-checkpoint`. Record the question and the user's "Yes" answer in `decisions.md`.
+
+When the user selects "No" or the default:
+- Write nothing. Proceed to synthesis.
+
+On Write failure:
+- Do not retry. Print one line: "audit-escalation.txt write failed; skipping escalation question." Record the failure in `decisions.md`. No file means Step 7's `elif` does not fire, degrading to consistency check only.
+
+If the decision index contains no material disagreement, do not include these options — ask only when something genuinely unresolved exists.
+
+If the user declines to continue at this checkpoint, emit:
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome interrupted 2>/dev/null || true
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome interrupted 2>/dev/null || true
+```
+Then exit cleanly.
 
 **Flow branch:** Merge briefs as today and write each brief's proposed resolution as the attributed panel recommendation(s) only, with no new judgment. Write the `## Checkpoint ledger` fenced JSON block with `seated` (the slugs of every seated expert, contributors plus `contrarian-carl`) and `expected_reactions` (one entry per expected file: `{slug, mode: "pre-show", round: 1, path}`).
 
@@ -591,33 +618,7 @@ Collect first-time pushbacks; any ruling with a pushback, plus any changed item,
 
 Replace the flow-branch completeness rule: the verifier no longer counts "brief asked ≥ briefs in decisions.md." Instead, it checks: every brief is shown with its rationale, every Q and changed item carries a quoted excerpt from the human (disposition `answered` or `overridden`) or is explicitly accepted on the human's `"continue"` (disposition `accepted-on-continue`), no handling of must-answer items is guessed, and the expected reaction set comes from the ledger. A reaction dispatch that errors or returns a file without the `"complete": true` sentinel is retried once; if it still fails, write `Decision: FAILED` with `Reason: reaction pass failed: <expert>`. Keep `Decision: FAILED` / `reduced run: checkpoint questions dropped` for any skipped reaction pass, any must-answer item settled without a quote, or any adopted default on a Q.
 
-**Non-flow escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains, and `FLOW_DIR` is empty):
-
-If the decision index reveals an unresolved disagreement among experts or a scope decision the user's checkpoint answers did not fully settle, include this option in the checkpoint `AskUserQuestion` batch via the same Ask block (`~/.claude/prompts/flow-reference.md`) — do not ask as a separate prompt, fold it into the same question flow:
-
-```
-Option: "No — consistency check only" (default)
-Option: "Yes — escalate: audit this one question: \"<the concrete question>\""
-```
-
-When the user selects "Yes" (within the checkpoint batch):
-- Call the `Write` tool (not shell redirect) to create `{SESSION_DIR}/audit-escalation.txt` with the question in the format defined at line 60-75, using `RAISED-AT: step-5-checkpoint`. Record the question and the user's "Yes" answer in `decisions.md`.
-
-When the user selects "No" or the default:
-- Write nothing. Proceed to synthesis.
-
-On Write failure:
-- Do not retry. Print one line: "audit-escalation.txt write failed; skipping escalation question." Record the failure in `decisions.md`. No file means Step 7's `elif` does not fire, degrading to consistency check only.
-
-If the decision index contains no material disagreement, do not include these options — ask only when something genuinely unresolved exists.
-
-**Non-flow only:** If the user declines to continue at this checkpoint, emit:
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome interrupted 2>/dev/null || true
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome interrupted 2>/dev/null || true
-```
-Then exit cleanly.
-
+**Both branches:** once the checkpoint is complete, emit:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-plan >/dev/null 2>&1 || true
