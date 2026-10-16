@@ -747,6 +747,10 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command track-and-s
 ### Start implementation:
 
 cd <worktree-path> && claude "/implement-with-haiku"
+
+Or run the whole lifecycle with /expert-flow (/expert-flow runs only for a GitHub issue — in this worktree it will stop and point you to the main worktree; it also needs a GitHub remote):
+
+cd <worktree-path> && claude "/expert-flow"
 ```
 
 **Do NOT** call ExitPlanMode, continue implementation, or create a GitHub issue.
@@ -945,6 +949,10 @@ Same format as today:
 ### Start implementation:
 
 cd <worktree-path> && claude "/implement-with-haiku"
+
+Or run the whole lifecycle with /expert-flow (/expert-flow runs only for a GitHub issue — in this worktree it will stop and point you to the main worktree; it also needs a GitHub remote):
+
+cd <worktree-path> && claude "/expert-flow"
 ```
 
 **Do NOT** call `ExitPlanMode`, create a GitHub issue, or call any `gh` command.
@@ -1151,6 +1159,10 @@ Skip `ExitPlanMode` and print the standard handoff block instead:
 ### Start implementation:
 
 cd <worktree-path> && claude "/implement-with-haiku"
+
+Or run the whole lifecycle with /expert-flow (starts again from planning — it re-runs /expert-plan and track for this issue):
+
+cd <worktree-path> && claude "/expert-flow"
 ```
 
 **Do NOT** proceed to Steps 5-9 after a successful pivot.
@@ -1504,6 +1516,10 @@ Output the following for the user to copy/paste:
 ### Start implementation:
 
 cd <worktree-path> && claude "/implement-with-haiku"
+
+Or run the whole lifecycle with /expert-flow (starts again from planning — it re-runs /expert-plan and track for this issue):
+
+cd <worktree-path> && claude "/expert-flow"
 ```
 
 The user will:

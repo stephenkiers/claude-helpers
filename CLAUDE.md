@@ -196,7 +196,7 @@ separate from the reviewer-context cascade.
 - `/stack-sync` — sync a stack's descendant branches onto the current parent state: single-driver layout delegates to `gh stack sync`, per-branch walks children bottom-up with the generalized Restack-a-child block; unknown layout fails closed (ADR-0012)
 - `/expert-flow` — lifecycle orchestrator (worktree-first: creates the ticket worktree, hands off, then runs from inside it): worktree → plan → track → implement → review → fix → verify → ship → merge for one
   issue (or `--epic` **[experimental until #252 dogfood gate passes]** for an epic's sub-issues, sequentially), each step the existing command run as a subagent in the
-  right worktree. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
+  right worktree. A bare `cd <worktree> && claude "/expert-flow"` auto-detects the issue; in the exact hand-off state it resumes silently, otherwise it asks as usual. Invocations of the form `/expert-flow <N>` ask as usual. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
   Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
   references the Ask block). Question files carry `summary`/`brief` context the orchestrator prints before the form
   (never a bare option list); `/expert-plan` must relay every decision brief and `/expert-review` every *Needs you*
