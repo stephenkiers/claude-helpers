@@ -22,6 +22,7 @@ Covers:
 Run with: python3 tests/test_expert_flow.py
 """
 
+import json
 import re
 import subprocess
 import sys
@@ -639,14 +640,96 @@ def main():
     non_flow_section = (plan_step5.split("**Non-flow branch:**", 1)[1].split("**Flow branch:**", 1)[0]
                         if "**Non-flow branch:**" in plan_step5 and "**Flow branch:**" in plan_step5 else "")
     h.test_result("the non-flow Step 5 text in expert-plan.md is unchanged",
-                  "**Every decision brief is asked; none is answered for the human.**" in non_flow_section and
-                  "FLOW_DIR" not in non_flow_section)
+                  ("**Every decision brief is asked; none is answered for the human.**" in non_flow_section and
+                   "FLOW_DIR" not in non_flow_section and
+                   "AskUserQuestion" in non_flow_section and
+                   "Open-ended questions" in non_flow_section and
+                   "Effort-2 escalation trigger" in non_flow_section))
     h.test_result("expert-review Step 12 carries summary/brief and fails dropped rulings",
                   "reduced run:\nrulings dropped" in review_cmd and "`summary`" in review_cmd and "`review-01`, `review-02`" in review_cmd)
     h.test_result("ADR has the more-human-in-the-loop amendment",
                   "## Amendment (2026-10-14): more human in the loop" in adr and "`--no-gates`" in adr)
     h.test_result("CLAUDE.md mentions step gates and --no-gates",
                   "step gate" in CLAUDE_MD.read_text() and "--no-gates" in CLAUDE_MD.read_text())
+
+    print()
+    print("[F1] Answers-file jq gate fixture tests")
+    print("=" * 70)
+
+    # F1: Test the answers-file jq gate with valid and invalid fixtures
+    try:
+        # Valid fixture: all items answered or accepted, loop_end is "continue"
+        valid_fixture = {
+            "kind": "report",
+            "round": 1,
+            "attempt": 1,
+            "answers": {
+                "D1": {"disposition": "answered", "reply_excerpt": "approved"},
+                "Q1": {"disposition": "answered", "reply_excerpt": "yes"}
+            },
+            "loop_end": "continue"
+        }
+
+        # Invalid fixture: unresolved item
+        invalid_fixture_unresolved = {
+            "kind": "report",
+            "round": 1,
+            "attempt": 1,
+            "answers": {
+                "D1": {"disposition": "answered", "reply_excerpt": "approved"},
+                "Q1": {"disposition": "unresolved"}
+            },
+            "loop_end": None
+        }
+
+        # Invalid fixture: accepted-on-continue without loop_end being "continue"
+        invalid_fixture_bad_continue = {
+            "kind": "report",
+            "round": 1,
+            "attempt": 1,
+            "answers": {
+                "D1": {"disposition": "answered", "reply_excerpt": "approved"},
+                "Q1": {"disposition": "accepted-on-continue", "reply_excerpt": "continue"}
+            },
+            "loop_end": None
+        }
+
+        jq_gate = '(.answers|type=="object") and ([.answers[]|select(.disposition=="unresolved")]|length==0) and (.loop_end=="continue" or ([.answers[]|select(.disposition=="accepted-on-continue")]|length==0))'
+
+        # Test valid fixture
+        valid_result = subprocess.run(
+            ['jq', '-e', jq_gate],
+            input=json.dumps(valid_fixture),
+            text=True,
+            capture_output=True
+        )
+        h.test_result("F1: jq gate passes on valid answers file (all answered, loop_end=continue)",
+                      valid_result.returncode == 0)
+
+        # Test invalid fixture: unresolved items
+        invalid_result = subprocess.run(
+            ['jq', '-e', jq_gate],
+            input=json.dumps(invalid_fixture_unresolved),
+            text=True,
+            capture_output=True
+        )
+        h.test_result("F1: jq gate fails on unresolved items",
+                      invalid_result.returncode != 0)
+
+        # Test invalid fixture: accepted-on-continue without loop_end=continue
+        bad_continue_result = subprocess.run(
+            ['jq', '-e', jq_gate],
+            input=json.dumps(invalid_fixture_bad_continue),
+            text=True,
+            capture_output=True
+        )
+        h.test_result("F1: jq gate fails on accepted-on-continue without loop_end=continue",
+                      bad_continue_result.returncode != 0)
+
+    except (ImportError, subprocess.CalledProcessError, FileNotFoundError):
+        h.test_result("F1: jq gate fixture tests skipped (jq not available)", True)
+    except Exception as e:
+        h.test_result(f"F1: jq gate fixture tests error: {e}", False)
 
     print()
     h.summarize_and_exit()
