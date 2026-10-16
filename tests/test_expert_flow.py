@@ -605,6 +605,10 @@ def main():
     h.test_result("OK branch runs the Step gate before STEP advances",
                   'hand off to the "Step gate"' in text and "Continue advances `STEP`" in text)
     h.test_result("resume rule 2 re-asks a gate the human paused at", "never re-run — whatever `status` says" in text)
+    h.test_result("resume rule 2 validates and audits a taken-over OK before its gate",
+                  "Unless the loop never validated that `OK`" in text
+                  and 'grep -E "^[^ ]+ <STEP> (ok|failed)$" "$FLOW_DIR/log.md"' in text
+                  and "Never let a\n   hand-written `OK` reach the gate unchecked" in text)
     h.test_result("gate Abort resumes to re-ask, never re-run",
                   "never re-run — whatever `status` says" in text and "`--resume`" in enclosing_section(text, "**Abort** — set `status: failed`"))
     h.test_result("gate writes status: paused before the Ask",

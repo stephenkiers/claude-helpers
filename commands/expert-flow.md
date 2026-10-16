@@ -432,6 +432,20 @@ re-runs the `worktree` step and then hands off like a fresh run. Resume rules, a
    its receipt `steps/<NN>-<STEP>.md` is `Decision: OK` with `<!-- step-end -->`, and `gates[STEP]`
    is not `continue` → the step finished and the human paused, aborted, or was interrupted at its gate. Re-ask the gate (after "Telemetry begin", run "Step gate" for `STEP`; a `gate_note` in the state
    is printed above the digest and cleared on Continue), never re-run — whatever `status` says. A recorded `continue` is never re-asked.
+   **Unless the loop never validated that `OK`.** The step can reach this state through Take over: it
+   failed, a human finished or repaired it by hand, and the receipt now reads `OK` without the loop
+   having checked it. Find the newest outcome line for the step:
+
+   ```bash
+   grep -E "^[^ ]+ <STEP> (ok|failed)$" "$FLOW_DIR/log.md" | tail -n 1
+   ```
+
+   If it ends in `failed`, validate before the gate: run step 5's receipt validation (rules 1–8, with
+   `K` = `attempts[STEP]` and `--since` the timestamp of the newest `<STEP> begin` log line), then, for
+   `plan`, `implement`, `review`, and `fix`, the "Fidelity audit" (its telemetry line included). Both
+   pass → log `ok` and run the gate. Either fails → no stage is open, so none is closed: increment
+   `failures[STEP]`, log `failed`, `WRITE-STATE`, and go to "Hard stop" with the reason. Never let a
+   hand-written `OK` reach the gate unchecked; the human can still Take over again.
 3. `status: done` → print `flow already done` and the PR URL; stop, no telemetry.
 3a. `status: abandoned` → ask once with `AskUserQuestion` — "This flow was abandoned at `<STEP>`.
    Resume it?" — options `Yes — resume (Recommended)` and `No — stop`. On `No` (or no answer), print
