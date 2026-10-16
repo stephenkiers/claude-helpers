@@ -81,7 +81,8 @@ to North Star Nick).
 - [ADR-0023: /expert-flow — lifecycle orchestrator with a question relay](0023-expert-flow.md) — one
   command runs plan → track → implement → review → fix → verify → ship → merge as subagent steps; steps relay their
   `AskUserQuestion` sites through files (`prompts/flow-reference.md`), state lives on disk and resumes, failures are
-  hard stops with no auto-remediation, epics run sequentially
+  hard stops with no auto-remediation, epics run sequentially; amended by the 2026-10-15 amendment
+  (plan checkpoint becomes a report and a conversation, with prose reply and reaction passes)
 
 ## Format
 

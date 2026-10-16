@@ -199,7 +199,7 @@ separate from the reviewer-context cascade.
   right worktree. A bare `cd <worktree> && claude "/expert-flow"` auto-detects the issue; in the exact hand-off state it resumes silently, otherwise it asks as usual. Invocations of the form `/expert-flow <N>` ask as usual. Steps relay every question they would have asked (`prompts/flow-reference.md`: Resolve FLOW_DIR /
   Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
   references the Ask block). Question files carry `summary`/`brief` context the orchestrator prints before the form
-  (never a bare option list); `/expert-plan` must relay every decision brief and `/expert-review` every *Needs you*
+  (never a bare option list); `/expert-plan` in a flow must show every decision brief through a report (see ADR-0023 amendment 2026-10-15) and `/expert-review` every *Needs you*
   item, enforced by `scripts/flow-verify-receipt.py --flow-dir` and the fidelity audit. After plan, implement,
   review, fix, and verify a step gate (Continue / Pause / Abort, `--no-gates` per run) shows what the step produced.
   Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment) — never auto-remediated. State

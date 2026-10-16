@@ -46,25 +46,34 @@ print("=" * 70)
 expert_plan_file = COMMANDS_DIR / "expert-plan.md"
 plan_content = expert_plan_file.read_text() if expert_plan_file.exists() else ""
 
-# Check that Step 5 mentions making each open-ended brief a free-text Ask
-has_free_text_ask = bool(re.search(
-    r"each\s+open-ended.*free-text",
-    plan_content,
+# Flow branch pins report-kind checkpoint: one readable report plus prose reply
+# Find the expert-plan Step 5 section
+step5_match = re.search(r"### Step 5\b(.*?)(?=### Step [67]|\Z)", plan_content, re.DOTALL)
+step5_section = step5_match.group(1) if step5_match else ""
+
+# Find the Flow branch subsection
+flow_branch_match = re.search(r"\*\*Flow branch:\*\*(.*?)(?=\*\*Non-flow branch:\*\*|\*\*Step \d+|\Z)", step5_section, re.DOTALL)
+flow_branch = flow_branch_match.group(1) if flow_branch_match else ""
+
+# Check for `kind: report` in the round-1 question file definition
+has_report_kind = bool(re.search(
+    r"kind:\s*report",
+    flow_branch
+))
+t("Step 5 specifies report-kind checkpoint with `kind: report`", has_report_kind)
+
+# Check for reply-mode or .reply.md file handling (prose reply)
+has_reply_file = bool(re.search(
+    r"\.reply\.md|reply-mode\s+reaction",
+    flow_branch,
     re.IGNORECASE
 ))
-t("Step 5 mentions each open-ended brief becomes free-text Ask", has_free_text_ask)
+t("Step 5 documents reply file (`.reply.md`) or reply-mode reaction pass", has_reply_file)
 
-# Check for "Answer in your own words" language
-has_answer_in_words = bool(re.search(
-    r"Answer\s+in\s+your\s+own\s+words",
-    plan_content
-))
-t("Step 5 specifies 'Answer in your own words' for open-ended", has_answer_in_words)
-
-# Check that every brief is asked
+# Check that every brief is asked (look for "all briefs" or similar in flow branch)
 has_every_brief_asked = bool(re.search(
-    r"Every.*decision.*brief.*asked|every.*####.*Q",
-    plan_content,
+    r"all\s+briefs|every.*brief|####\s*Q\s*\d+.*brief",
+    flow_branch,
     re.IGNORECASE
 ))
 t("Step 5 states every decision brief is asked", has_every_brief_asked)

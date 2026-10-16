@@ -491,8 +491,10 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/
 
 Main thread reads all contribution files once, builds a compact decision index directly. When experts propose materially different scopes, present them side by side with concrete differences (extra behavior, added components, affected repos, testing burden) rather than picking a default silently.
 
-Present to the user, **as chat message text in this step** (not summarized away, not deferred to
+**Non-flow branch** (`FLOW_DIR` empty): Present to the user, **as chat message text in this step** (not summarized away, not deferred to
 the file) — a round-up they can read through, same spirit as v1's checkpoint, not a book.
+
+**Flow branch** (`FLOW_DIR` set): Merge briefs, run reaction passes, generate a report question file, and conduct a conversation checkpoint as described below.
 
 **North Star blind line (first body line).** If `$SESSION_DIR/north-star-blind.tokens` is non-empty, or Nick's contribution has a `NORTH STAR BLIND:` line within its first few lines (after any heading), build the line with `python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --tokens-file "$SESSION_DIR/north-star-blind.tokens" --nick-file "$SESSION_DIR/north-star-nick-contribution.md"` (the union; Nick's tokens are appended, never substituted; malformed text becomes `nick=unparseable`, so the line is never dropped). Print the result as the first body line of this checkpoint, above the ticket refresher. Keep the line in `NORTH_STAR_BLIND_LINE` for Step 9.
 
@@ -546,20 +548,11 @@ state a why, write `WHY: not stated in ticket` rather than inventing one. For a 
 3. **Decision index** — last, a compact table (Topic · Q# · Disagreement · Recommended default) as
    a quick-scan summary that points back into the briefs. It is an index, not a substitute for them.
 
-For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions (in a flow, each batch is its own question file and its own interrupt/resume cycle). Open-ended questions, or themes with >4 questions, stay markdown + conversation when `FLOW_DIR` is empty; when `FLOW_DIR` is set there is no conversation to hold, so each open-ended `#### Q[n]` brief **must** become its own free-text Ask (Ask block, a single option labelled `Answer in your own words`, `context_path` = `{SESSION_DIR}/decisions.md`) — not optional, and never skipped for being open-ended. Wait for answers.
+**Non-flow branch:** For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
 
-**Every decision brief is asked; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. In a flow, ask across successive question files (`plan-01`, `plan-02`, …) until every brief has been put to the human; one batch at a time is fine. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`. The orchestrator's verifier counts the briefs in `decisions.md` against the questions in `${FLOW_DIR}/questions/plan-*.json` and rejects the step when fewer were asked.
+**Every decision brief is asked; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`.
 
-**The question file carries the checkpoint.** In a flow the human reads only what the question file carries, so each `plan-<SEQ>.json` sets `summary` to the ticket refresher line, the North Star blind line (when present), and the expert round-up — markdown, as it would have been printed in chat, repeated in every file of the batch sequence (the human may answer across sessions) — and sets each question's `brief` to that question's `#### Q[n]` decision brief verbatim (Why it matters, Raised by, the option table, Recommended, Could be wrong if). Never shorten a brief to its recommendation.
-
-In a flow, the `checkpoint` stage is open when the Ask fires: per the Ask block, close it with `stage-end --stage checkpoint --outcome interrupted` before `command-end --outcome interrupted`, and on resume re-open it with `stage-begin --stage checkpoint` after the `command-begin --resumed-from` call. Write `decisions.md` (below) before the first Ask — always, even when the panel raised zero briefs — so `context_path` exists and the verifier can count its briefs, and update its checkpoint results after the answers arrive.
-
-Write `{SESSION_DIR}/decisions.md` with the same round-up, decision briefs, and decision index, plus
-checkpoint results, so a user re-reading the session later gets the same report shown in chat — not
-the full unabridged contribution files, which remain on disk in `{expert}-contribution.md` for
-anyone who wants the full source. In `decisions.md`, the checkpoint results reference briefs by
-`Q[n]` in prose or a table, never as `####` headings — `#### Q[n]` headings appear once each, in
-the decision-briefs section only, because the verifier counts them.
+Write `{SESSION_DIR}/decisions.md` with the round-up, decision briefs, decision index, and checkpoint results, so a user re-reading the session later gets the same report shown in chat — not the full unabridged contribution files, which remain on disk in `{expert}-contribution.md` for anyone who wants the full source. In `decisions.md`, the checkpoint results reference briefs by `Q[n]` in prose or a table, never as `####` headings — `#### Q[n]` headings appear once each, in the decision-briefs section only, because the verifier counts them.
 
 **Effort-2 escalation trigger** (only if `EFFORT` is 2 and a material disagreement or scope split remains):
 
@@ -588,6 +581,44 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan
 ```
 Then exit cleanly.
 
+**Flow branch:** Merge briefs as today and write each brief's proposed resolution as the attributed panel recommendation(s) only, with no new judgment. Write the `## Checkpoint ledger` fenced JSON block with `seated` and `briefs` as documented in `~/.claude/prompts/flow-reference.md` "Checkpoint ledger and reaction schema" — both sections must be present before the tier script runs. Write `expected_reactions` (one entry per expected file: `{slug, mode: "pre-show", round: 1, path}`). For the ledger format details, see flow-reference.md.
+
+**Pre-show reaction dispatch:** Dispatch the pre-show reaction pass as parallel `Task` calls in one message, one per seated expert (contributors + `contrarian-carl`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `pre-show`, round `1`, `{SESSION_DIR}/decisions.md` (merged briefs and proposed resolutions), and its output path `{SESSION_DIR}/reactions/{slug}-pre-show-r1.json` (slug = persona file stem). Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (pre-show mode). Model per Step 2's record (same as contributors). Expected receipt:
+```
+{slug} | checkpoint-reaction | mode: pre-show | round: 1 | protests: {N} | wrote: {path}
+```
+
+**Join barrier.** Receipt validation, file existence with `"complete": true` sentinel, retry once on failure. On second failure, write `Decision: FAILED` with `Reason: reaction pass failed: {expert}` and stop — no stand-in file is written for reaction failures.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
+
+Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md"`, which reads the ledger's expected reaction files and the briefs' types and prints handle → tier JSON. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
+- **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists, or any expert marked `needs-human`.
+- **D:** no Q condition applies, at least one expert `resolved`, at least one expert OTHER THAN the one(s) who resolved `agreed` (self-agreement does not count), and no `could-go-other-way` flag. `no-view` does NOT demote D to W.
+- **W:** every other item.
+
+Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- **D<n>. …**`), `## Worth a look` (`- **W<n>. …**`), and `## Questions for you` (`#### Q<n>.` briefs). Each Q carries its recommendation, backing experts, why, and business case. Extend the ledger with handle → tier, `brief_type`, and evidence paths.
+
+If more than five Qs survive, set `headline` to "This ticket looks under-specified — N questions survived the panel; let's talk it through." Five follows Danielle's observation that people drop items past about five. Keep this as a named constant. There is no halt and no cap.
+
+Write the round-1 `kind: report` question file per the Ask block in `~/.claude/prompts/flow-reference.md` — one question file with `kind: report`, `attempt: 1`, `round: 1`, and all briefs, with `must_answer` true for Qs and items with recorded disagreement or protest. Record the `awaiting` marker.
+
+**On each later conversation round** (when resumed via `SendMessage`): Read the round's answers file and raw reply. If `loop_end` is `"continue"`, skip the reply-mode pass and go to "The loop ends". Otherwise, append the round's reply-mode entries to the ledger's `expected_reactions`, then dispatch the reply-mode reaction pass as parallel `Task` calls in one message, one per seated expert whenever any ruling exists (disposition `answered` or `overridden`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern. Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `reply`, round `{n}` (the conversation round), `${FLOW_DIR}/answers/plan-<SEQ>.json` (round's answers), `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md` (raw reply, if it exists), the list of that expert's prior pushbacks in this attempt (so it never pushes back on the same ruling twice), and output path `{SESSION_DIR}/reactions/{slug}-reply-r{n}.json`. Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (reply mode). Model per Step 2's record. Expected receipt:
+```
+{slug} | checkpoint-reaction | mode: reply | round: {n} | pushbacks: {N} | wrote: {path}
+```
+
+**Join barrier.** Receipt validation, file existence with `"complete": true` sentinel, retry once on failure. On second failure, write `Decision: FAILED` with `Reason: reaction pass failed: {expert}` and stop.
+
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier.
+
+Collect first-time pushbacks; any ruling with a pushback, plus any changed item, goes into a round-N+1 report file as `must_answer: true`. The handle is unchanged and the pushback is shown.
+
+**The loop ends** when no Q is unanswered and no new pushback was raised, or when `loop_end: "continue"`. Append every round's reading to "Checkpoint results" with the reply file path, then proceed to Step 6. A retried attempt starts from step 1 with a fresh `SESSION_DIR` and asks everything again.
+
+Replace the flow-branch completeness rule: the verifier no longer counts "brief asked ≥ briefs in decisions.md." Instead, it checks: every brief is shown with its rationale, every Q and changed item carries a quoted excerpt from the human (disposition `answered` or `overridden`) or is explicitly accepted on the human's `"continue"` (disposition `accepted-on-continue`), no handling of must-answer items is guessed, and the expected reaction set comes from the ledger. A reaction dispatch that errors or returns a file without the `"complete": true` sentinel is retried once; if it still fails, write `Decision: FAILED` with `Reason: reaction pass failed: <expert>`. Keep `Decision: FAILED` / `reduced run: checkpoint questions dropped` for any skipped reaction pass, any must-answer item settled without a quote, or any adopted default on a Q.
+
+**Both branches:** once the checkpoint is complete, emit:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome success 2>/dev/null || true
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage synthesize-plan >/dev/null 2>&1 || true
@@ -804,8 +835,9 @@ These stages must each appear in a `stage-begin`/`stage-end` pair:
 
 ## References
 
-This command references four role prompts:
+This command references five role prompts:
 - `~/.claude/prompts/plan-contribution-contract.md` — output-format contract read alongside a persona YAML by each contributor and Carl
+- `~/.claude/prompts/plan-checkpoint-reaction.md` — hybrid-mode contract defining input/output format for each expert's pre-show and reply-mode reactions (Step 5, flow branch only)
 - `~/.claude/prompts/plan-synthesize-and-check.md` — role prompt for Step 6 (single dispatch combining Synthesize then Consistency-check; subagent writes then self-checks plan.md)
 - `~/.claude/prompts/plan-audit.md` — role prompt for Step 7 (Audit subagent, effort 3 or escalation)
 
