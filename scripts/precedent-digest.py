@@ -38,13 +38,16 @@ YYYYMMDDTHHMMSS token in the run dir name. When there is none it falls back to t
 source file's mtime, rendered in local time. mtime is a hidden input: a corpus
 whose dir names carry no timestamp can order differently on another checkout.
 
-Bounded outputs. The 300-entry cap and --top N are volume prefilters, not rulings.
-Absence from the digest does not mean "never asked". This follows epic #291's
-information-only rule and ADR-0005's "lens not law".
+Bounded outputs. Without --match, output is capped at the 300 most recent entries.
+With --match, output is bounded by --top N (default 60) and the 300 cap does not
+apply; scoring runs over the full deduplicated corpus. Both bounds are volume
+prefilters, not rulings. Absence from the digest does not mean "never asked". This
+follows epic #291's information-only rule and ADR-0005's "lens not law".
 
-Provenance. This is the first cross-run reader of claude-action-plan.md. It
-exercises ADR-0007's chore/29 escape hatch under epic #291. #293 owns the ADR-0007
-amendment and ADR-0024.
+Provenance. This reader is proposed under epic #291 as the first cross-run reader of
+claude-action-plan.md. It relies on ADR-0007's chore/29 escape hatch, and that hatch
+needs an ADR update first. The ADR-0007 amendment and ADR-0024 are owned by #293 and
+have not landed, so this reader does not yet exercise the escape hatch.
 
 Consumer boundary: read only by Pat (#293) and humans; never by reviewer prompts or
 Triage (preserves ADR-0002 blind-first).
@@ -121,6 +124,7 @@ REVIEW_OPTION_RE = re.compile(r"^\s*[-*]\s+\*\*(.+?)\*\*")
 REVIEW_OPTIONS_START_RE = re.compile(r"^- \*\*Options\*\*\s*:")
 REVIEW_KEY_SPLIT_RE = re.compile(r"\s*(?:—|:)\s*|\s+-\s*|\s*-\s+")
 REVIEW_LEAD_SPLIT_RE = re.compile(r"[,;.(]")
+LEADING_LETTER_RE = re.compile(r"^([A-Za-z])(?=[.)\s—:]|$)")
 
 
 class _Usage(Exception):
@@ -304,7 +308,7 @@ def _key_from_url(url: str) -> Optional[str]:
     if path is None:
         return None
     path = path.rstrip("/")
-    if path.endswith(".git"):
+    if path.lower().endswith(".git"):
         path = path[: -len(".git")]
     segments = [seg for seg in path.split("/") if seg]
     if len(segments) < 2:
@@ -343,8 +347,8 @@ def discover(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
     Flat review dirs, which hold claude-action-plan.md directly, carry no repo key.
     """
     owner, name = pair
-    hyphen = "%s-%s" % (owner, name)
-    wanted = {hyphen.casefold(), ("%s_%s" % (owner, name)).casefold()}
+    hyphen = ("%s-%s" % (owner, name)).lower()
+    wanted = {hyphen, ("%s_%s" % (owner, name)).casefold()}
     info: Dict[str, Any] = {
         "repo_key": hyphen,
         "dirs": {source: [] for source in SOURCES},
@@ -506,6 +510,8 @@ def parse_flow(questions_text: str, answers_text: Optional[str]) -> Tuple[List[D
         if answer is None:
             counts["unanswered"] += 1
             continue
+        if _norm(answer) in options:
+            answer = _norm(answer)
         reason = None
         for note_key in (qid, key):
             if note_key is not None and note_key in annotations:
@@ -596,7 +602,9 @@ def _brief_answer(brief: Dict[str, Any], checkpoint_lines: List[str]) -> Optiona
     result_re = re.compile(r"\bQ%d\b(?:\s*\([^)]*\))?\s*[=:]" % number)
     map_re = re.compile(
         r"\bQ%d\b(?:\s*\([^)]*\))?\s*=\s*([A-Za-z])(?=$|[\s.:(,])"
-        r"(?![ \t]*(?:[+&/][ \t]*[A-Za-z]|and[ \t]+[A-Za-z]))" % number
+        r"(?![ \t]*(?:[+&/][ \t]*[A-Za-z]|and[ \t]+[A-Za-z]"
+        r"|or[ \t]+[A-Za-z](?![A-Za-z])"
+        r"|,[ \t]*(?:(?:and|or)[ \t]+)?[A-Za-z](?![A-Za-z])))" % number
     )
     for line in checkpoint_lines:
         if not result_re.search(line):
@@ -720,7 +728,10 @@ def _review_recommended(value: Optional[str], labels: List[str], marked: Optiona
         if head:
             wanted_key = head.group(1).casefold()
             for label in labels:
-                if _option_key(label) == wanted_key:
+                lead = LEADING_LETTER_RE.match(label)
+                if _option_key(label) == wanted_key or (
+                    lead is not None and lead.group(1).casefold() == wanted_key
+                ):
                     return label
         lead = _norm(REVIEW_LEAD_SPLIT_RE.split(value, maxsplit=1)[0]).casefold()
         for label in labels:
@@ -890,18 +901,6 @@ def collect(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
     result["unkeyed"] = info["unkeyed_review_dirs"]
     result["matched"] = any(info["dirs"][s] for s in SOURCES)
     return result
-
-
-def dedupe(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Drop repeated ids, keeping the first occurrence."""
-    seen: Set[str] = set()
-    out: List[Dict[str, Any]] = []
-    for entry in entries:
-        if entry["id"] in seen:
-            continue
-        seen.add(entry["id"])
-        out.append(entry)
-    return out
 
 
 def order(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1138,14 +1137,14 @@ def _run(argv: Optional[Sequence[str]]) -> int:
 
     key, why = resolve_key(args.repo)
     if key is None:
-        collected = _empty_collection("unresolved")
+        collected = _empty_collection(args.repo)
         reason = "could not resolve repo key: %s" % why
     else:
         collected = collect(tuple(key.split("/", 1)), home)  # type: ignore[arg-type]
         reason = ""
     repo = collected["repo_key"]
 
-    entries = order(dedupe(collected["entries"]))
+    entries = order(collected["entries"])
     total = len(entries)
     if questions is not None:
         output = match_entries(entries, questions, args.top)
