@@ -23,18 +23,36 @@ done
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 
+# Resolve a git path (e.g. --git-dir, --git-common-dir) to an absolute, symlink-free path.
+# Prints nothing when REPO_DIR is not a git checkout. Uses only rev-parse + cd/pwd, so it does
+# not depend on newer git flags such as --path-format (git 2.31+).
+abs_git_path() {
+    local p
+    p=$(git -C "$REPO_DIR" rev-parse "$1" 2>/dev/null) || return 0
+    [ -n "$p" ] && (cd "$REPO_DIR" && cd "$p" && pwd -P)
+    return 0
+}
+
 # Refuse to install from a linked worktree: every ~/.claude link would point into a feature
 # branch that lags main and is deleted at /cleanup, so merged work silently never goes live.
-# A non-git copy (the tests) and the main worktree have git-dir == git-common-dir.
+# Exempt: --check (read-only, so it is safe from any checkout), --from-worktree (explicit opt-in),
+# a non-git copy (no git dir, so the guard does not apply), and the main worktree (git-dir ==
+# git-common-dir). Bare-repo layouts are skipped too: their first worktree entry is the bare repo,
+# which has no working tree to point the user at.
 if [ "$CHECK_ONLY" -eq 0 ] && [ "$FROM_WORKTREE" -eq 0 ]; then
-    GIT_DIR_ABS=$(git -C "$REPO_DIR" rev-parse --absolute-git-dir 2>/dev/null || true)
-    GIT_COMMON_ABS=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    GIT_DIR_ABS=$(abs_git_path --git-dir)
+    GIT_COMMON_ABS=$(abs_git_path --git-common-dir)
     if [ -n "$GIT_DIR_ABS" ] && [ -n "$GIT_COMMON_ABS" ] && [ "$GIT_DIR_ABS" != "$GIT_COMMON_ABS" ]; then
-        MAIN_CHECKOUT=$(git -C "$REPO_DIR" worktree list --porcelain | sed -n '1s/^worktree //p')
-        echo "ERROR: $REPO_DIR is a linked worktree; install from the main worktree instead:" >&2
-        echo "  cd $MAIN_CHECKOUT && ./install.sh" >&2
-        echo "(pass --from-worktree to install from this worktree anyway)" >&2
-        exit 1
+        # Only a linked worktree reaches here, so the worktree list is read just for the message.
+        WORKTREE_LIST=$(git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true)
+        MAIN_CHECKOUT=$(printf '%s\n' "$WORKTREE_LIST" | sed -n '1s/^worktree //p')
+        MAIN_IS_BARE=$(printf '%s\n' "$WORKTREE_LIST" | sed -n '2p')
+        if [ -n "$MAIN_CHECKOUT" ] && [ "$MAIN_IS_BARE" != "bare" ]; then
+            echo "ERROR: $REPO_DIR is a linked worktree; install from the main worktree instead:" >&2
+            echo "  cd $MAIN_CHECKOUT && ./install.sh" >&2
+            echo "(pass --from-worktree to install from this worktree anyway)" >&2
+            exit 1
+        fi
     fi
 fi
 

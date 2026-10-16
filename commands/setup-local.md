@@ -50,7 +50,8 @@ tracked. See `~/.claude/reviewers/README.md` for the full context on local overr
 ## `/setup-local --check` (read-only drift report)
 
 When the argument is `--check`, run `./install.sh --check` from the repo root instead of installing
-and report its output verbatim. It creates, removes and moves nothing. Lines: `unlinked:` (repo file
+and report its output verbatim. It creates, removes and moves nothing, and it runs from a linked
+worktree too (the linked-worktree refusal in step 2 does not apply to `--check`). Lines: `unlinked:` (repo file
 with no link in `~/.claude`), `wrong-link:` (link points elsewhere), `stale:` (link into this repo
 whose target is gone), `not-ours:` (a real user file in the way; informational). Exit 0 means no
 drift, 1 means drift: tell the user to re-run `/setup-local`. Missing links are the usual reason

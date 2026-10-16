@@ -691,6 +691,12 @@ def test_refuses_linked_worktree():
         if code != 0 or not claude_cmd.is_symlink():
             return False, f"--from-worktree should install, got code={code} stderr={stderr!r}"
 
+        # --check is read-only drift reporting, so it is exempt from the guard and must run from
+        # a linked worktree. Links were just installed from there, so it should report no drift.
+        code, stdout, stderr = run_bash_script([str(linked / "install.sh"), "--check"], env=env)
+        if code != 0 or "linked worktree" in stderr or "No drift" not in stdout:
+            return False, f"--check from a linked worktree should be exempt, got code={code} stderr={stderr!r}"
+
         code, _, stderr = run_bash_script([str(main_repo / "install.sh")], env=env)
         if code != 0 or claude_cmd.resolve() != (main_repo / "commands" / "test_cmd.md").resolve():
             return False, f"main worktree install should succeed and relink, got code={code} stderr={stderr!r}"
