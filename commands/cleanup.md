@@ -232,11 +232,14 @@ fi
 # A shell read loop, not awk: awk's field names are bare positional tokens, which the
 # slash-command loader substitutes before the shell ever runs (#306).
 CURRENT_BRANCH=$(git worktree list --porcelain | while IFS=' ' read -r KEY VAL; do
-  case "$KEY" in
-    worktree) if [ "$VAL" = "$CURRENT_WORKTREE" ]; then FOUND=1; else FOUND=""; fi ;;
-    branch) if [ -n "$FOUND" ]; then printf '%s\n' "${VAL#refs/heads/}"; break; fi ;;
-    "") FOUND="" ;;  # blank line ends a record, so a detached match never takes the next branch
-  esac
+  # if/elif, not case: bash 3.2 (macOS) cannot parse a case with `)` patterns inside $( ... )
+  if [ "$KEY" = "worktree" ]; then
+    if [ "$VAL" = "$CURRENT_WORKTREE" ]; then FOUND=1; else FOUND=""; fi
+  elif [ "$KEY" = "branch" ]; then
+    if [ -n "$FOUND" ]; then printf '%s\n' "${VAL#refs/heads/}"; break; fi
+  elif [ -z "$KEY" ]; then
+    FOUND=""  # blank line ends a record, so a detached match never takes the next branch
+  fi
 done)
 
 if [ -z "$CURRENT_BRANCH" ]; then
@@ -258,8 +261,24 @@ if [ -n "$DIRTY_FILES" ]; then
     echo "Auto-restoring generated files:"
     echo "$AUTO_ONLY"
     # Restore each auto-restorable file
-    # Porcelain v1 lines are "XY <path>"; the path starts at column 4.
-    echo "$AUTO_ONLY" | cut -c4- | while read -r f; do
+    # Read paths from NUL-delimited porcelain (-z), so quoting and renames can't mangle them.
+    # Renames/copies carry a second (origin) NUL field; skip both and leave them for the user.
+    git -C "$CURRENT_WORKTREE" status --porcelain -z 2>/dev/null | python3 -c '
+import sys
+fields = sys.stdin.buffer.read().split(b"\0")
+i = 0
+while i < len(fields):
+    ent = fields[i]
+    i += 1
+    if not ent:
+        continue
+    if b"R" in ent[:2] or b"C" in ent[:2]:
+        i += 1
+        continue
+    path = ent[3:]
+    if path.startswith((b".envrc", b".direnv/", b".claude/")):
+        sys.stdout.buffer.write(path + b"\0")
+' | while IFS= read -r -d '' f; do
       git -C "$CURRENT_WORKTREE" checkout -- "$f" 2>/dev/null || true
     done
   fi
@@ -479,10 +498,7 @@ if [ -n "$ISSUE_NUM" ]; then
 
   CACHED_STATE=""
   if [ "$CACHED_ISSUE_STATE" != "closed" ] && [ -f "$CACHE_FILE" ]; then
-    # .issues is either a map keyed by issue number or an array of {number, state, ...}
-    CACHED_STATE=$(jq -r --arg num "$ISSUE_NUM" \
-      '.issues | (if type == "array" then (map(select((.number | tostring) == $num)) | first) else .[$num] end) | .state // empty' \
-      "$CACHE_FILE" 2>/dev/null)
+    CACHED_STATE=$(jq -r --arg num "$ISSUE_NUM" '.issues[$num].state // empty' "$CACHE_FILE" 2>/dev/null)
   fi
 
   if [ "$CACHED_ISSUE_STATE" = "closed" ] || [ "$CACHED_STATE" = "closed" ]; then
@@ -499,7 +515,7 @@ if [ -n "$ISSUE_NUM" ]; then
       # Update issues.json cache with closed state
       if [ -f "$CACHE_FILE" ]; then
         jq --arg num "$ISSUE_NUM" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '.issues |= (if type == "array" then map(if (.number | tostring) == $num then .state = "closed" else . end) else .[$num].state = "closed" end) | .lastSynced = $date' \
+          '.issues[$num].state = "closed" | .lastSynced = $date' \
           "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
         echo "Updated issues.json: issue #$ISSUE_NUM marked closed"
       fi
