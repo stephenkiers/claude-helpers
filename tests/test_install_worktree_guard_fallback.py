@@ -75,8 +75,11 @@ def build_fixture(tmpdir_path):
 
 
 def run_install(args, cwd, env):
+    # Run the fixture's own copy of install.sh: the script resolves REPO_DIR from its
+    # own location, so running the repo's INSTALL_SH would guard the real checkout
+    # (and pass or fail with whichever worktree the suite happens to run from).
     result = subprocess.run(
-        ["bash", str(INSTALL_SH)] + args,
+        ["bash", str(Path(cwd) / "install.sh")] + args,
         cwd=str(cwd),
         capture_output=True,
         text=True,
