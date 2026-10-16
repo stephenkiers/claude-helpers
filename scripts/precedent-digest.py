@@ -55,19 +55,26 @@ Triage (preserves ADR-0002 blind-first).
 Exit and stderr contract:
   - Exit 0, with exactly one stderr summary line, on every data-side outcome: an
     empty corpus, missing dirs, an unresolvable repo key, skipped files.
+  - Exit 1, with one stderr line and no traceback, for internal errors: bugs,
+    uncaught exceptions. The --out file is left unwritten or incomplete on exit 1.
   - Exit 2, with one stderr line and no traceback, for invocation errors: bad
     arguments, --top < 1, a missing or malformed --match file, an unwritable --out.
+
+Provenance note: This reader is proposed under epic #291 as the first cross-run
+reader of claude-action-plan.md. The ADR-0007 amendment (#293) and the Pat
+wiring (#294, #296) must land before this reader's output is consumed.
 """
 import argparse
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, NoReturn, Optional, Sequence, Set, Tuple, TypedDict
 
 PINNED_KEYS = (
     "id", "source", "repo_key", "date", "ref", "path", "header", "question",
@@ -107,24 +114,24 @@ STOPWORDS = frozenset({
     "also", "only", "just", "more", "some", "such", "each", "does", "did", "had",
 })
 
-KEY_RE = re.compile(r"^[^/\s]+/[^/\s]+$")
-SCP_RE = re.compile(r"^[^@/\s]+@[^:/\s]+:(.+)$")
-URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(.+)$")
+KEY_RE = re.compile(r"^[^/\s]+/[^/\s]+$")  # matches owner/name
+SCP_RE = re.compile(r"^[^@/\s]+@[^:/\s]+:(.+)$")  # matches git@host:path
+URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(.+)$")  # matches scheme://host/path
 GIT_TIMEOUT_SECS = 5
-STAMP_RE = re.compile(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})")
-LEADING_NUM_RE = re.compile(r"^(\d+)-")
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
-BRIEF_START_RE = re.compile(r"^#{3,6}\s+Q(\d+)\.?\s*(.*?)\s*$")
-OPTION_LABEL_RE = re.compile(r"^([A-Za-z])(?:[.)]\s*(.*)|$)")
-RECOMMENDED_LINE_RE = re.compile(r"^\**\s*recommended\**\s*:\s*(.*)$", re.IGNORECASE)
-LETTER_RE = re.compile(r"^\**\s*([A-Za-z])(?![A-Za-z])")
-REVIEW_HEAD_RE = re.compile(r"^\**\s*([A-Za-z0-9]+)\b")
-REVIEW_OPTION_RE = re.compile(r"^\s*[-*]\s+\*\*(.+?)\*\*")
-REVIEW_OPTIONS_START_RE = re.compile(r"^- \*\*Options\*\*\s*:")
-REVIEW_KEY_SPLIT_RE = re.compile(r"\s*(?:—|:)\s*|\s+-\s*|\s*-\s+")
-REVIEW_LEAD_SPLIT_RE = re.compile(r"[,;.(]")
-LEADING_LETTER_RE = re.compile(r"^([A-Za-z])(?=[.)\s—:]|$)")
+STAMP_RE = re.compile(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})")  # matches YYYYMMDDTHHMMSS
+LEADING_NUM_RE = re.compile(r"^(\d+)-")  # matches leading digits before hyphen (e.g., "9-run-name")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")  # matches markdown headings
+BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")  # matches bullets/list markers
+BRIEF_START_RE = re.compile(r"^#{3,6}\s+Q(\d+)\.?\s*(.*?)\s*$")  # matches "#### Q1. Header"
+OPTION_LABEL_RE = re.compile(r"^([A-Za-z])(?:[.)]\s*(.*)|$)")  # matches "A. Option text" or "A"
+RECOMMENDED_LINE_RE = re.compile(r"^\**\s*recommended\**\s*:\s*(.*)$", re.IGNORECASE)  # **recommended**: value
+LETTER_RE = re.compile(r"^\**\s*([A-Za-z])(?![A-Za-z])")  # lone letter not followed by another letter
+REVIEW_HEAD_RE = re.compile(r"^\**\s*([A-Za-z0-9]+)\b")  # letter/digit(s) at start of value
+REVIEW_OPTION_RE = re.compile(r"^\s*[-*]\s+\*\*(.+?)\*\*")  # matches "- **Option text**"
+REVIEW_OPTIONS_START_RE = re.compile(r"^- \*\*Options\*\*\s*:")  # options section marker
+REVIEW_KEY_SPLIT_RE = re.compile(r"\s*(?:—|:)\s*|\s+-\s*|\s*-\s+")  # splits on em-dash, colon, or hyphen
+REVIEW_LEAD_SPLIT_RE = re.compile(r"[,;.(]")  # splits on comma, semicolon, period, or paren
+LEADING_LETTER_RE = re.compile(r"^([A-Za-z])(?=[.)\s—:]|$)")  # lone letter before specific punct or end
 
 
 class _Usage(Exception):
@@ -134,13 +141,42 @@ class _Usage(Exception):
 class _Parser(argparse.ArgumentParser):
     """ArgumentParser that reports errors on one stderr line and exits 2."""
 
-    def error(self, message: str) -> None:  # type: ignore[override]
+    def error(self, message: str) -> NoReturn:  # type: ignore[override]
         sys.stderr.write("precedent-digest: %s\n" % message)
         raise SystemExit(2)
 
 
 def _stderr(message: str) -> None:
     sys.stderr.write(message + "\n")
+
+
+class _RawRecord(TypedDict, total=False):
+    """Intermediate record format before entry construction."""
+    header: str
+    question: str
+    options: List[str]
+    recommended: Optional[str]
+    answer: str
+    reason: Optional[str]
+    n: int  # for briefs
+    recommended_key: Optional[str]  # for briefs
+
+
+class _Entry(TypedDict):
+    """Complete entry in pinned key order."""
+    id: str
+    source: str
+    repo_key: str
+    date: str
+    ref: Optional[int]
+    path: str
+    header: str
+    question: str
+    options: List[str]
+    recommended: Optional[str]
+    answer: str
+    reason: Optional[str]
+    deviated: Optional[bool]
 
 
 # ---------------------------------------------------------------------------
@@ -156,14 +192,20 @@ def _has_marker(text: str) -> bool:
     return RECOMMENDED_RE.search(text) is not None
 
 
+def _fold(text: str) -> str:
+    """Normalize text for comparison: lowercase (not casefold, to avoid cross-attribute issues)."""
+    return text.lower()
+
+
 def _option_key(label: str) -> str:
     """The text before the first em dash, colon or hyphen separator, folded."""
     head = REVIEW_KEY_SPLIT_RE.split(label, maxsplit=1)[0]
-    return head.strip().casefold()
+    return _fold(head.strip())
 
 
-def _entry_id(path: str, question: str) -> str:
-    return hashlib.sha256((path + "\n" + question).encode("utf-8")).hexdigest()[:16]
+def _entry_id(path: str, question: str, header: str) -> str:
+    """Unique entry ID from path, question, and header to disambiguate multiple rulings."""
+    return hashlib.sha256((path + "\n" + question + "\n" + header).encode("utf-8")).hexdigest()[:16]
 
 
 def _deviated(answer: str, recommended: Optional[str]) -> Optional[bool]:
@@ -182,14 +224,15 @@ def _make_entry(
 ) -> Dict[str, Any]:
     """Build one entry in the pinned key order. The only place entries are built."""
     question = rec["question"]
+    header = rec["header"]
     return {
-        "id": _entry_id(path, question),
+        "id": _entry_id(path, question, header),
         "source": source,
         "repo_key": repo_key,
         "date": date,
         "ref": ref,
         "path": path,
-        "header": rec["header"],
+        "header": header,
         "question": question,
         "options": list(rec["options"]),
         "recommended": rec["recommended"],
@@ -274,6 +317,10 @@ def resolve_key(arg: str) -> Tuple[Optional[str], str]:
     A literal owner/name that is not an existing directory is taken as the key.
     Anything else is a repo root: its origin remote is read with git, with stderr
     captured so git text never leaks.
+
+    Precedence: if arg is a directory (absolute or relative to cwd), use it as
+    a git root; otherwise treat arg as a literal "owner/name" key. Relative
+    paths depend on the current working directory.
     """
     if KEY_RE.match(arg) and not os.path.isdir(arg):
         return arg, ""
@@ -345,10 +392,12 @@ def discover(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
     Both spellings (owner-name, owner_name) match case-insensitively. Matched dirs
     are deduplicated by realpath. Legacy dirs (name-only) are information only.
     Flat review dirs, which hold claude-action-plan.md directly, carry no repo key.
+    repo_key is best-effort normalized to "owner-name" (hyphen, lowercase), but
+    on-disk dirs may use different casings or underscores.
     """
     owner, name = pair
-    hyphen = ("%s-%s" % (owner, name)).lower()
-    wanted = {hyphen, ("%s_%s" % (owner, name)).casefold()}
+    hyphen = _fold("%s-%s" % (owner, name))
+    wanted = {hyphen, _fold("%s_%s" % (owner, name))}
     info: Dict[str, Any] = {
         "repo_key": hyphen,
         "dirs": {source: [] for source in SOURCES},
@@ -362,13 +411,13 @@ def discover(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
             if source == "review" and os.path.isfile(os.path.join(child_path, REVIEW_DOC)):
                 info["unkeyed_review_dirs"] += 1
                 continue
-            folded = child_name.casefold()
+            folded = _fold(child_name)
             if folded in wanted:
                 real = os.path.realpath(child_path)
                 if real not in seen_real:
                     seen_real.add(real)
                     info["dirs"][source].append(child_path)
-            elif folded == name.casefold():
+            elif folded == _fold(name):
                 info["legacy"].append("%s/%s" % (root_name, child_name))
     return info
 
@@ -385,24 +434,25 @@ def _heading_of(line: str) -> Optional[Tuple[int, str]]:
 
 
 def _is_excluded_heading(title: str) -> bool:
-    folded = title.casefold()
-    return any(folded.startswith(item.casefold()) for item in EXCLUDED_HEADINGS)
+    folded = _fold(title)
+    return any(folded.startswith(_fold(item)) for item in EXCLUDED_HEADINGS)
 
 
 def _title_is(target: str) -> Callable[[str], bool]:
-    return lambda title: title.strip().casefold() == target.casefold()
+    return lambda title: _fold(title.strip()) == _fold(target)
 
 
 def _title_in(targets: Sequence[str]) -> Callable[[str], bool]:
-    folded = {item.casefold() for item in targets}
-    return lambda title: title.strip().casefold() in folded
+    folded = {_fold(item) for item in targets}
+    return lambda title: _fold(title.strip()) in folded
 
 
 def _section_lines(lines: List[str], wanted: Callable[[str], bool]) -> List[str]:
     """Body lines of every level-1/2 section whose title matches, nested headings kept.
 
     A section ends at the next heading of the same or a higher level. Excluded
-    headings (and everything nested under them) are never returned.
+    headings (and everything nested under them) are never returned. Headings
+    inside fenced code blocks do not end sections.
     """
     out: List[str] = []
     index = 0
@@ -414,9 +464,14 @@ def _section_lines(lines: List[str], wanted: Callable[[str], bool]) -> List[str]
             continue
         level = head[0]
         skip_level: Optional[int] = None
+        in_fence = False
         index += 1
         while index < total:
-            sub = _heading_of(lines[index])
+            line = lines[index]
+            # Toggle fence state on triple-backtick.
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+            sub = _heading_of(line) if not in_fence else None
             if sub is not None:
                 if sub[0] <= level:
                     break
@@ -425,7 +480,7 @@ def _section_lines(lines: List[str], wanted: Callable[[str], bool]) -> List[str]
                 if skip_level is None and _is_excluded_heading(sub[1]):
                     skip_level = sub[0]
             if skip_level is None:
-                out.append(lines[index])
+                out.append(line)
             index += 1
     return out
 
@@ -599,12 +654,12 @@ def _parse_briefs(lines: List[str]) -> List[Dict[str, Any]]:
 def _brief_answer(brief: Dict[str, Any], checkpoint_lines: List[str]) -> Optional[str]:
     """The answer for one brief, or None when no result line exists for it."""
     number = brief["n"]
-    result_re = re.compile(r"\bQ%d\b(?:\s*\([^)]*\))?\s*[=:]" % number)
+    result_re = re.compile(r"\bQ%d\b(?:\s*\([^)]*\))?\s*[=;:]" % number)
     map_re = re.compile(
-        r"\bQ%d\b(?:\s*\([^)]*\))?\s*=\s*([A-Za-z])(?=$|[\s.:(,])"
+        r"\bQ%d\b(?:\s*\([^)]*\))?\s*=\s*([A-Za-z])(?![A-Za-z0-9])"
         r"(?![ \t]*(?:[+&/][ \t]*[A-Za-z]|and[ \t]+[A-Za-z]"
         r"|or[ \t]+[A-Za-z](?![A-Za-z])"
-        r"|,[ \t]*(?:(?:and|or)[ \t]+)?[A-Za-z](?![A-Za-z])))" % number
+        r"|[,;][ \t]*(?:(?:and|or)[ \t]+)?[A-Za-z](?![A-Za-z])))" % number
     )
     for line in checkpoint_lines:
         if not result_re.search(line):
@@ -726,25 +781,32 @@ def _review_recommended(value: Optional[str], labels: List[str], marked: Optiona
     if value:
         head = REVIEW_HEAD_RE.match(value)
         if head:
-            wanted_key = head.group(1).casefold()
+            wanted_key = _fold(head.group(1))
+            # Only treat as a letter option if it's a single letter followed by
+            # one of: period, close paren, space, em dash, end of string.
+            if len(wanted_key) == 1 and (
+                len(value) == 1 or value[1:2] in ".): —" or value[1] in " .);—"
+            ):
+                for label in labels:
+                    lead_match = LEADING_LETTER_RE.match(label)
+                    if lead_match is not None and _fold(lead_match.group(1)) == wanted_key:
+                        return label
+            # Try matching as a multi-letter key (from option label).
             for label in labels:
-                lead = LEADING_LETTER_RE.match(label)
-                if _option_key(label) == wanted_key or (
-                    lead is not None and lead.group(1).casefold() == wanted_key
-                ):
+                if _option_key(label) == wanted_key:
                     return label
-        lead = _norm(REVIEW_LEAD_SPLIT_RE.split(value, maxsplit=1)[0]).casefold()
+        lead = _fold(_norm(REVIEW_LEAD_SPLIT_RE.split(value, maxsplit=1)[0]))
         for label in labels:
-            if _norm(label).casefold() == lead or _option_key(label) == lead:
+            if _fold(_norm(label)) == lead or _option_key(label) == lead:
                 return label
     return marked
 
 
 def _review_answer(decision: str, labels: List[str]) -> str:
     key = _option_key(decision)
-    folded = _norm(decision).casefold()
+    folded = _fold(_norm(decision))
     for label in labels:
-        if _option_key(label) == key or _norm(label).casefold() == folded:
+        if _option_key(label) == key or _fold(_norm(label)) == folded:
             return label
     return decision.strip()
 
@@ -756,7 +818,7 @@ def parse_review(text: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     records: List[Dict[str, Any]] = []
     for header, body in _split_items(_section_lines(lines, _title_is(REVIEW_SECTION))):
         status = _field(body, "STATUS")
-        if status is None or status.strip().casefold() not in RULING_STATUSES:
+        if status is None or _fold(status.strip()) not in RULING_STATUSES:
             continue
         decision = _field(body, "DECISION")
         if not decision or decision.strip().startswith("_("):
@@ -837,25 +899,26 @@ def collect(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
                 atext = _read_answer(os.path.join(adir, qname)) if qname in anames else None
                 flow_items.append((qpath, run_path, run_name, qtext, atext))
 
+    # Collect context paths only from flows that produce entries (not all flows).
     context: Set[str] = set()
-    for _qpath, _run_path, _run_name, qtext, _atext in flow_items:
-        try:
-            ctx = flow_context_path(qtext)
-        except ValueError:
-            ctx = None
-        if ctx:
-            context.add(os.path.realpath(os.path.expanduser(ctx)))
-
     for qpath, _run_path, run_name, qtext, atext in flow_items:
         try:
             records, counts = parse_flow(qtext, atext)
             date = _date_for(run_name, qpath)
-        except (ValueError, OSError):
+            ref = _ref_for(run_name)
+        except Exception:
             skipped["flow"]["malformed"] += 1
             continue
         skipped["flow"]["malformed"] += counts["malformed"]
         skipped["flow"]["unanswered"] += counts["unanswered"]
-        ref = _ref_for(run_name)
+        # Only add context path if this flow produced entries.
+        if records:
+            try:
+                ctx = flow_context_path(qtext)
+            except ValueError:
+                ctx = None
+            if ctx:
+                context.add(os.path.realpath(os.path.expanduser(ctx)))
         for rec in records:
             entries.append(_make_entry("flow", repo_key, os.path.abspath(qpath), date, ref, rec))
 
@@ -864,6 +927,11 @@ def collect(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
         ("plan-session", PLAN_DOC, parse_plan),
         ("review", REVIEW_DOC, parse_review),
     ):
+        # Check if root directory exists but is unreadable.
+        root_name = [name for name, src in SOURCE_ROOTS if src == source][0]
+        root = os.path.join(home, ".claude", root_name)
+        if os.path.exists(root) and not os.access(root, os.R_OK):
+            skipped[source]["unreadable"] += 1
         for keyed_dir in info["dirs"][source]:
             for run_path, run_name in _subdirs(keyed_dir):
                 doc = os.path.join(run_path, doc_name)
@@ -879,20 +947,16 @@ def collect(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
                 try:
                     text = _read_text(doc)
                     date = _date_for(run_name, doc)
-                except (OSError, UnicodeDecodeError):
-                    skipped[source]["unreadable"] += 1
-                    continue
-                if source == "plan-session":
-                    for heading in plan_headings(text):
-                        census[heading] = census.get(heading, 0) + 1
-                try:
+                    if source == "plan-session":
+                        for heading in plan_headings(text):
+                            census[heading] = census.get(heading, 0) + 1
                     records, counts = parser(text)
-                except ValueError:
+                    ref = _ref_for(run_name)
+                except Exception:
                     skipped[source]["malformed"] += 1
                     continue
                 skipped[source]["unanswered"] += counts["unanswered"]
                 skipped[source]["malformed"] += counts["malformed"]
-                ref = _ref_for(run_name)
                 for rec in records:
                     entries.append(_make_entry(source, repo_key, os.path.abspath(doc), date, ref, rec))
 
@@ -964,8 +1028,9 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
     """Rank by weighted token overlap with the pending questions; drop zero scores.
 
     Score = sum, over tokens shared with the pending questions, of the entry's
-    max field weight (header 3, question 2, option 1). Ties keep the base order.
-    The score is never emitted.
+    max field weight (header 3, question 2, option 1) multiplied by log(1 + N/df),
+    where N is the total number of entries and df is the number of entries
+    containing the token. Ties keep the base order. The score is never emitted.
     """
     pending: Set[str] = set()
     for question in questions:
@@ -975,9 +1040,28 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
             pending.update(_tokens(label))
     if not pending:
         return []
-    scored: List[Tuple[int, int, Dict[str, Any]]] = []
+    # Compute document frequency for each token in pending.
+    df: Dict[str, int] = {}
+    for entry in entries:
+        entry_tokens: Set[str] = set()
+        for tok in _tokens(entry["header"]):
+            entry_tokens.add(tok)
+        for tok in _tokens(entry["question"]):
+            entry_tokens.add(tok)
+        for label in entry["options"]:
+            for tok in _tokens(label):
+                entry_tokens.add(tok)
+        for tok in entry_tokens:
+            if tok in pending:
+                df[tok] = df.get(tok, 0) + 1
+    N = len(entries)
+    scored: List[Tuple[float, int, Dict[str, Any]]] = []
     for index, entry in enumerate(entries):
-        score = sum(w for tok, w in _entry_weights(entry).items() if tok in pending)
+        score = 0.0
+        for tok, w in _entry_weights(entry).items():
+            if tok in pending:
+                idf = math.log(1.0 + N / (df.get(tok, 1) or 1))
+                score += w * idf
         if score > 0:
             scored.append((-score, index, entry))
     scored.sort(key=lambda item: (item[0], item[1]))
@@ -1077,7 +1161,12 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
 
 
 def _write_atomic(path: str, text: str) -> None:
-    """Write text to path via a temp file in the same dir, then os.replace."""
+    """Write text to path via a temp file in the same dir, then os.replace.
+
+    The output file is created with mode 0o600 (read/write for owner only).
+    On any error (including internal errors), the temp file is cleaned up and
+    the output file is left unwritten or incomplete.
+    """
     target = os.path.abspath(path)
     try:
         handle = tempfile.NamedTemporaryFile(
@@ -1094,9 +1183,15 @@ def _write_atomic(path: str, text: str) -> None:
     except OSError as exc:
         try:
             os.unlink(temp_name)
-        except OSError:
+        except BaseException:
             pass
         raise _Usage("cannot write --out %s: %s" % (path, exc.strerror or exc))
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except BaseException:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1115,13 +1210,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=DEFAULT_TOP, metavar="N",
                         help="with --match, keep the top N entries (default %d)" % DEFAULT_TOP)
     parser.add_argument("--stats", action="store_true", help="emit the stats object instead of entries")
-    parser.add_argument("--out", metavar="FILE", default=None, help="write atomically to FILE")
+    parser.add_argument("--out", metavar="FILE", default=None,
+                        help="write atomically to FILE (created with mode 0o600)")
     return parser
 
 
-def _summary(repo: str, counts: Dict[str, int], skipped_total: int, kept: int, total: int, reason: str) -> str:
-    line = "precedent-digest: repo=%s plan-session=%d flow=%d review=%d skipped=%d kept=%d of %d" % (
-        repo, counts["plan-session"], counts["flow"], counts["review"], skipped_total, kept, total,
+def _summary(repo: str, counts: Dict[str, int], skipped_total: int, linked_skipped: int, kept: int, total: int, reason: str) -> str:
+    line = "precedent-digest: repo=%s plan-session=%d flow=%d review=%d skipped=%d linked_skipped=%d kept=%d of %d" % (
+        repo, counts["plan-session"], counts["flow"], counts["review"], skipped_total, linked_skipped, kept, total,
     )
     if reason:
         line += " (%s)" % reason
@@ -1132,6 +1228,8 @@ def _run(argv: Optional[Sequence[str]]) -> int:
     args = _build_parser().parse_args(argv)
     if args.top < 1:
         raise _Usage("--top must be at least 1")
+    if args.match is None and args.top != DEFAULT_TOP:
+        raise _Usage("--top is only used with --match")
     questions = load_match(args.match) if args.match else None
     home = os.path.expanduser("~")
 
@@ -1171,12 +1269,15 @@ def _run(argv: Optional[Sequence[str]]) -> int:
     skipped_total = sum(
         collected["skipped"][s][b] for s in SOURCES for b in SKIP_BUCKETS if b != "linked_skipped"
     )
-    _stderr(_summary(repo, _count_sources(entries), skipped_total, len(output), total, reason))
+    linked_skipped = sum(
+        collected["skipped"][s]["linked_skipped"] for s in SOURCES
+    )
+    _stderr(_summary(repo, _count_sources(entries), skipped_total, linked_skipped, len(output), total, reason))
     return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Entry point. Returns the exit code: 0 for data outcomes, 2 for invocation errors."""
+    """Entry point. Returns: 0 for data outcomes, 1 for internal errors, 2 for invocation errors."""
     try:
         return _run(argv)
     except SystemExit as exc:
@@ -1185,8 +1286,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _stderr("precedent-digest: %s" % exc)
         return 2
     except Exception as exc:  # never raise on data paths; keep the bug visible
-        _stderr("precedent-digest: internal error (%s); no digest produced" % type(exc).__name__)
-        return 0
+        _stderr("precedent-digest: internal error (%s: %s)" % (type(exc).__name__, exc))
+        return 1
 
 
 if __name__ == "__main__":

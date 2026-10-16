@@ -80,8 +80,8 @@ def main():
                 h.test_result(f"smoke: {src} has zero entries when no directory matched",
                               counts[src] == 0, f"count={counts[src]}")
         keys = {e.get("repo_key") for e in entries}
-        h.test_result("smoke: every entry's repo_key is the hyphen spelling",
-                      keys <= {f"{owner}-{name}"}, f"keys={sorted(k for k in keys if k)}")
+        h.test_result("smoke: every entry's repo_key is the lowercased hyphen spelling",
+                      keys <= {f"{owner.lower()}-{name.lower()}"}, f"keys={sorted(k for k in keys if k)}")
 
     h.summarize_and_exit()
 

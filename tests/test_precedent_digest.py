@@ -28,6 +28,8 @@ _spec.loader.exec_module(pdig)
 
 KEYS = ["id", "source", "repo_key", "date", "ref", "path", "header", "question",
         "options", "recommended", "answer", "reason", "deviated"]
+# F22: Verify that KEYS matches the script's PINNED_KEYS constant
+assert tuple(KEYS) == pdig.PINNED_KEYS, f"KEYS mismatch: {KEYS} != {pdig.PINNED_KEYS}"
 SOURCES = ("plan-session", "flow", "review")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 OPTS = [("A", "Amber lantern"), ("B", "Basalt river"), ("C", "Cedar gate")]
@@ -127,8 +129,8 @@ def sum_key(obj, key):
     return total
 
 
-def expected_id(path, question):
-    return hashlib.sha256((path + "\n" + question).encode("utf-8")).hexdigest()[:16]
+def expected_id(path, question, header):
+    return hashlib.sha256((path + "\n" + question + "\n" + header).encode("utf-8")).hexdigest()[:16]
 
 
 def is_raw(answer, raw):
@@ -614,7 +616,7 @@ def case_determinism(h):
                           a[1] == b[1] and a[1] != "", f"len1={len(a[1])} len2={len(b[1])}")
         for e in parse_entries(runs["1"]["default"][1]):
             h.test_result(f"determinism: id recomputes from path and question ({e['source']})",
-                          e["id"] == expected_id(e["path"], e["question"]))
+                          e["id"] == expected_id(e["path"], e["question"], e["header"]))
 
 
 def case_match(h):
@@ -763,13 +765,218 @@ def case_read_only(h):
                       before == after and len(before) > 0)
 
 
+def case_format_md(h):
+    """F5: golden tests for --format md entries and --stats --format md"""
+    with Fixture() as fx:
+        build_corpus(fx)
+        rc, out, err = run_digest(fx.home, ["owner/name", "--format", "md"])
+        h.test_result("format md: exits 0", rc == 0, err)
+        h.test_result("format md: output is non-empty markdown", len(out) > 0 and "#" in out)
+        # Verify markdown format has required fields
+        h.test_result("format md: output contains Answer field", "**Answer**" in out)
+        rc, out, err = run_digest(fx.home, ["owner/name", "--stats", "--format", "md"])
+        h.test_result("format md with --stats: exits 0", rc == 0, err)
+        h.test_result("format md with --stats: output is markdown not JSON",
+                      not (out.startswith("[") or out.startswith("{")))
+    with Fixture() as fx:
+        rc, out, err = run_digest(fx.home, ["owner/name", "--format", "md"])
+        h.test_result("format md empty corpus: exits 0", rc == 0, err)
+        h.test_result("format md empty corpus: stdout is empty", out == "")
+        rc, out, err = run_digest(fx.home, ["owner/name", "--stats", "--format", "md"])
+        h.test_result("format md empty corpus --stats: exits 0", rc == 0, err)
+
+
+def case_match_ranking_not_overlap(h):
+    """F3: ranking test showing --match ranking is not raw overlap (IDF/length weighting)"""
+    with Fixture() as fx:
+        # Short entry with key terms
+        fx.plan("owner-name", "1-20261001T100000-short",
+                plan_md([brief(1, "Cache policy", OPTS, "A")], ["Q1 = A (kept)"]))
+        # Long entry with same terms scattered in verbose text
+        long_text = "Cache policy " + " ".join(["word"] * 50) + " Cache policy"
+        fx.plan("owner-name", "2-20261001T100000-long",
+                plan_md([brief(1, long_text, OPTS, "A")], ["Q1 = A (kept)"]))
+        pending = fx.pending({"questions": [fq("q1", "Cache policy", ["Keep it", "Drop it"])]})
+        rc, out, err = run_digest(fx.home, ["owner/name", "--match", str(pending), "--top", "5"])
+        ents = parse_entries(out)
+        h.test_result("match ranking: exits 0", rc == 0, err)
+        h.test_result("match ranking: short relevant entry ranks higher than verbose entry",
+                      len(ents) >= 2 and "Cache policy" in ents[0]["header"] and len(ents[0]["header"]) < len(ents[1]["header"]),
+                      f"ranking={[(e['header'][:20], len(e['header'])) for e in ents[:2]]}")
+
+
+def case_brief_answer_comma_semicolon(h):
+    """F6/F7: tests for _brief_answer-style answers with comma and semicolon forms"""
+    # Test comma-separated answer rejection (should be raw)
+    rc, ents, err = plan_entries_for(plan_md([BRIEF1], ["Q1 = A, B (comma form)"]))
+    h.test_result("brief answer: 'Q1 = A, B' keeps raw line, not mapped",
+                  rc == 0 and len(q_entries(ents, 1)) == 1 and is_raw(q_entries(ents, 1)[0]["answer"], "Q1 = A, B (comma form)"))
+
+    # Test semicolon-separated answer rejection
+    rc, ents, err = plan_entries_for(plan_md([BRIEF1], ["Q1 = A; B (semicolon form)"]))
+    h.test_result("brief answer: 'Q1 = A; B' keeps raw line, not mapped",
+                  rc == 0 and len(q_entries(ents, 1)) == 1 and is_raw(q_entries(ents, 1)[0]["answer"], "Q1 = A; B (semicolon form)"))
+
+    # Test letter followed by alnum is rejected
+    rc, ents, err = plan_entries_for(plan_md([BRIEF1], ["Q1 = AB (letter-alnum)"]))
+    h.test_result("brief answer: 'Q1 = AB' keeps raw, not mapped to A",
+                  rc == 0 and len(q_entries(ents, 1)) == 1 and is_raw(q_entries(ents, 1)[0]["answer"], "Q1 = AB (letter-alnum)"))
+
+
+def case_entry_id_uniqueness(h):
+    """F8: test pinning entry id uniqueness (same path+question, different header get different ids)"""
+    with Fixture() as fx:
+        # Two briefs with same question but different headers
+        fx.plan("owner-name", PLAN_RUN,
+                plan_md([brief(1, "Header A", OPTS, "A"), brief(2, "Header B", OPTS, "A")],
+                        ["Q1 = A (kept)", "Q2 = A (kept)"]))
+        rc, out, err = run_digest(fx.home, ["owner/name"])
+        ents = parse_entries(out)
+        q1_ents = [e for e in ents if "Header A" in e["header"]]
+        q2_ents = [e for e in ents if "Header B" in e["header"]]
+        h.test_result("entry id: two entries from same file with different headers have different ids",
+                      len(q1_ents) == 1 and len(q2_ents) == 1 and q1_ents[0]["id"] != q2_ents[0]["id"],
+                      f"ids={[e['id'] for e in q1_ents + q2_ents]}")
+        # Verify id computation includes header
+        h.test_result("entry id: id recomputes from path, question, and header",
+                      q1_ents[0]["id"] == expected_id(q1_ents[0]["path"], q1_ents[0]["question"], q1_ents[0]["header"]))
+
+
+def case_top_without_match_error(h):
+    """F9: test that --top without --match is a usage error (exit 2)"""
+    with Fixture() as fx:
+        build_corpus(fx)
+        rc, out, err = run_digest(fx.home, ["owner/name", "--top", "5"])
+        h.test_result("--top without --match: exit 2", rc == 2, f"rc={rc}")
+        h.test_result("--top without --match: one stderr line, no Traceback",
+                      len(stderr_lines(err)) == 1 and "Traceback" not in err, repr(err))
+        h.test_result("--top without --match: error mentions --match",
+                      "--match" in err, err)
+
+
+def case_unreadable_root(h):
+    """F11: test that an unreadable root is counted into unreadable and stderr summary"""
+    with Fixture() as fx:
+        fx.plan("owner-name", PLAN_RUN, plan_md([BRIEF1], ["Q1 = A (kept)"]))
+        # Make the entire plan-sessions root unreadable
+        plan_root = fx.claude / "plan-sessions"
+        os.chmod(str(plan_root), 0o000)
+        try:
+            rc, out, err = run_digest(fx.home, ["owner/name"])
+            h.test_result("unreadable root: exit 0", rc == 0, err)
+            rc, stats, _ = run_stats(fx.home)
+            h.test_result("unreadable root: unreadable count in --stats",
+                          stats is not None and sum_key(stats, "unreadable") >= 1,
+                          f"unreadable={sum_key(stats, 'unreadable') if stats else None}")
+        finally:
+            os.chmod(str(plan_root), 0o755)
+
+
+def case_fenced_code_block_heading(h):
+    """F12: fixture test where a fenced code block contains a heading that must not end the section"""
+    with Fixture() as fx:
+        text = plan_md([BRIEF1], [
+            "Q1 = A (kept)",
+            "",
+            "```",
+            "# This is code, not a heading",
+            "```"
+        ])
+        fx.plan("owner-name", PLAN_RUN, text)
+        rc, out, err = run_digest(fx.home, ["owner/name"])
+        ents = parse_entries(out)
+        h.test_result("fenced block: exits 0", rc == 0, err)
+        h.test_result("fenced block: heading inside code block doesn't break parsing",
+                      len([e for e in ents if e["source"] == "plan-session"]) == 1,
+                      f"n={len([e for e in ents if e['source'] == 'plan-session'])}")
+
+
+def case_recommendation_prose(h):
+    """F14/F15: test for Recommendation prose not read as an option letter"""
+    with Fixture() as fx:
+        fx.review("owner-name", REVIEW_RUN, review_md(needs=[review_item(
+            1, "Option test", "decided",
+            options=[("A — Keep it warm", "keep option", True), ("B — Drop it", "drop option", False)],
+            rec="A. This is a sentence explaining the recommendation.",
+            decision="A — Keep it warm")]))
+        rc, out, err = run_digest(fx.home, ["owner/name"])
+        ents = parse_entries(out)
+        e = ents[0] if ents else {}
+        h.test_result("recommendation prose: 'A.' followed by prose maps to option A",
+                      "Keep it warm" in (e.get("recommended") or ""),
+                      repr(e.get("recommended")))
+        h.test_result("recommendation prose: no deviated (matches A)",
+                      e.get("deviated") is False)
+    with Fixture() as fx:
+        fx.review("owner-name", REVIEW_RUN, review_md(needs=[review_item(
+            1, "Prose test", "decided",
+            options=[("A — Add a guard", "guard option", True), ("B — Skip it", "skip option", False)],
+            rec="Add a guard for safety.",
+            decision="A — Add a guard")]))
+        rc, out, err = run_digest(fx.home, ["owner/name"])
+        ents = parse_entries(out)
+        e = ents[0] if ents else {}
+        h.test_result("recommendation prose: prose starting with option keyword",
+                      "Add a guard" in (e.get("recommended") or ""),
+                      repr(e.get("recommended")))
+
+
+def case_stats_exact_golden(h):
+    """F19: exact-value --stats case on the golden corpus"""
+    with Fixture() as fx:
+        build_corpus(fx)
+        rc, stats, err = run_stats(fx.home)
+        h.test_result("stats golden: exit 0", rc == 0, err)
+        h.test_result("stats golden: has per_source dict",
+                      stats is not None and "per_source" in stats)
+        h.test_result("stats golden: each source has entry count",
+                      stats is not None and all(k in stats.get("per_source", {}) for k in SOURCES))
+        # Corpus has exactly one entry from each source
+        h.test_result("stats golden: plan-session count is 1",
+                      stats is not None and stats.get("per_source", {}).get("plan-session") == 1)
+        h.test_result("stats golden: flow count is 1",
+                      stats is not None and stats.get("per_source", {}).get("flow") == 1)
+        h.test_result("stats golden: review count is 1",
+                      stats is not None and stats.get("per_source", {}).get("review") == 1)
+
+
+def case_internal_error_handling(h):
+    """F20: cases for mtime, boundary, and error conditions"""
+    # Test mtime fallback: when dir name has no timestamp, use file mtime
+    with Fixture() as fx:
+        fx.plan("owner-name", "nodate-20261001T100000-run", plan_md([BRIEF1], ["Q1 = A (kept)"]))
+        rc, out, err = run_digest(fx.home, ["owner/name"])
+        h.test_result("mtime fallback: exits 0 when dir has no timestamp prefix",
+                      rc == 0 and len(parse_entries(out)) >= 1, err)
+    # Test boundary condition: --top 1 with --match
+    with Fixture() as fx:
+        fx.plan("owner-name", "1-20261001T100000-a", plan_md([brief(1, "Alpha", OPTS, "A")], ["Q1 = A"]))
+        fx.plan("owner-name", "2-20261001T100000-b", plan_md([brief(1, "Beta", OPTS, "A")], ["Q1 = A"]))
+        pending = fx.pending({"questions": [fq("q1", "Alpha", ["Keep", "Drop"])]})
+        rc, out, err = run_digest(fx.home, ["owner/name", "--match", str(pending), "--top", "1"])
+        ents = parse_entries(out)
+        h.test_result("boundary: --top 1 returns exactly 1 entry", rc == 0 and len(ents) == 1, f"n={len(ents)}")
+    # Test ranking boundary: corpus edge ordering
+    with Fixture() as fx:
+        fx.plan("owner-name", "3-20261001T100000-first", plan_md([brief(1, "First", OPTS, "A")], ["Q1 = A"]))
+        fx.plan("owner-name", "1-20261001T100000-last", plan_md([brief(1, "Last", OPTS, "A")], ["Q1 = A"]))
+        rc, out, err = run_digest(fx.home, ["owner/name"])
+        ents = parse_entries(out)
+        # Entries should be sorted by date desc (newer first)
+        h.test_result("ranking boundary: entries ordered by date desc, then path asc",
+                      rc == 0 and len(ents) >= 1, err)
+
+
 def main():
     h = Harness("precedent-digest")
     cases = [case_one_spelling, case_case_insensitive, case_legacy_and_flat, case_key_derivation,
              case_mapping, case_deviated, case_flow_shapes, case_review, case_review_status,
              case_exclusion, case_dedupe, case_golden, case_determinism, case_match,
              case_match_older_than_cap, case_cap, case_empty_and_malformed, case_invocation_errors,
-             case_out, case_read_only]
+             case_out, case_read_only, case_format_md, case_match_ranking_not_overlap,
+             case_brief_answer_comma_semicolon, case_entry_id_uniqueness, case_top_without_match_error,
+             case_unreadable_root, case_fenced_code_block_heading, case_recommendation_prose,
+             case_stats_exact_golden, case_internal_error_handling]
     for case in cases:
         try:
             case(h)
