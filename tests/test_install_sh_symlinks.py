@@ -655,6 +655,49 @@ esac
         return True, ""
 
 
+def test_refuses_linked_worktree():
+    """install.sh refuses to run from a linked git worktree unless --from-worktree is passed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        test_home = tmpdir_path / "home"
+        test_home.mkdir()
+        main_repo = tmpdir_path / "main"
+        (main_repo / "commands").mkdir(parents=True)
+        (main_repo / "commands" / "test_cmd.md").write_text("test command\n")
+        # git tracks no empty dirs, so give every linked dir a file the worktree checkout keeps
+        for d in ("reviewers", "prompts", "agents", "scripts"):
+            (main_repo / d).mkdir()
+            (main_repo / d / "keep.md").write_text("keep\n")
+        (main_repo / "prompts" / "preferences.yaml.template").write_text("{}\n")
+        setup_test_repo_with_install_sh(tmpdir_path, main_repo)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(main_repo)]
+        subprocess.run(git[:-2] + ["init", "-q", str(main_repo)], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-qm", "init"], check=True)
+        linked = tmpdir_path / "linked"
+        subprocess.run(git + ["worktree", "add", "-q", str(linked)], check=True)
+
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+        claude_cmd = test_home / ".claude" / "commands" / "test_cmd.md"
+
+        code, _, stderr = run_bash_script([str(linked / "install.sh")], env=env)
+        if code == 0 or "linked worktree" not in stderr:
+            return False, f"expected a refusal from the linked worktree, got code={code} stderr={stderr!r}"
+        if claude_cmd.exists() or claude_cmd.is_symlink():
+            return False, "refused install must not create any link"
+
+        code, _, stderr = run_bash_script([str(linked / "install.sh"), "--from-worktree"], env=env)
+        if code != 0 or not claude_cmd.is_symlink():
+            return False, f"--from-worktree should install, got code={code} stderr={stderr!r}"
+
+        code, _, stderr = run_bash_script([str(main_repo / "install.sh")], env=env)
+        if code != 0 or claude_cmd.resolve() != (main_repo / "commands" / "test_cmd.md").resolve():
+            return False, f"main worktree install should succeed and relink, got code={code} stderr={stderr!r}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("INSTALL.SH RECURSIVE SYMLINK TEST SUITE")
     test_result = h.test_result
@@ -716,6 +759,9 @@ if __name__ == "__main__":
 
     passed, msg = test_python3_old_version()
     test_result("install.sh fails when python3 version is too old", passed, msg)
+
+    passed, msg = test_refuses_linked_worktree()
+    test_result("install.sh refuses a linked worktree unless --from-worktree", passed, msg)
 
     print()
 

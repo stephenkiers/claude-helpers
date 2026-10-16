@@ -40,7 +40,9 @@ tracked. See `~/.claude/reviewers/README.md` for the full context on local overr
 
 1. Resolve the repo root (the directory this command lives in).
 2. Run `./install.sh` from the repo root (which performs all the symlinking, pruning, and
-   preferences bootstrapping described above).
+   preferences bootstrapping described above). From a linked worktree it refuses and prints the main
+   worktree's path: run it there instead, unless the user explicitly asked to install this branch
+   (then pass `--from-worktree`).
 3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
 4. Report a concise summary: how many files were linked, how many were pruned, how many were backed
    up, and whether `preferences.yaml` was created.

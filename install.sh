@@ -1,12 +1,14 @@
 #!/bin/bash
 set -e
 
-# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry] [--check]
+# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry] [--check] [--from-worktree]
 #   --check                  Read-only drift report: repo files not linked into ~/.claude, wrong or
 #                            stale links. Exit 0 = no drift, 1 = drift. Changes nothing.
 #   --with-zsh-keybindings   Also add Option+Arrow word jumping to ~/.zshrc (opt-in).
 #   --with-telemetry         Register telemetry hooks in ~/.claude/settings.json (opt-in).
+#   --from-worktree          Allow installing from a linked git worktree (refused by default).
 WITH_ZSH_KEYBINDINGS=0
+FROM_WORKTREE=0
 WITH_TELEMETRY=0
 CHECK_ONLY=0
 for arg in "$@"; do
@@ -14,11 +16,27 @@ for arg in "$@"; do
         --with-zsh-keybindings) WITH_ZSH_KEYBINDINGS=1 ;;
         --with-telemetry) WITH_TELEMETRY=1 ;;
         --check) CHECK_ONLY=1 ;;
+        --from-worktree) FROM_WORKTREE=1 ;;
     esac
 done
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
+
+# Refuse to install from a linked worktree: every ~/.claude link would point into a feature
+# branch that lags main and is deleted at /cleanup, so merged work silently never goes live.
+# A non-git copy (the tests) and the main worktree have git-dir == git-common-dir.
+if [ "$CHECK_ONLY" -eq 0 ] && [ "$FROM_WORKTREE" -eq 0 ]; then
+    GIT_DIR_ABS=$(git -C "$REPO_DIR" rev-parse --absolute-git-dir 2>/dev/null || true)
+    GIT_COMMON_ABS=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    if [ -n "$GIT_DIR_ABS" ] && [ -n "$GIT_COMMON_ABS" ] && [ "$GIT_DIR_ABS" != "$GIT_COMMON_ABS" ]; then
+        MAIN_CHECKOUT=$(git -C "$REPO_DIR" worktree list --porcelain | sed -n '1s/^worktree //p')
+        echo "ERROR: $REPO_DIR is a linked worktree; install from the main worktree instead:" >&2
+        echo "  cd $MAIN_CHECKOUT && ./install.sh" >&2
+        echo "(pass --from-worktree to install from this worktree anyway)" >&2
+        exit 1
+    fi
+fi
 
 # The one enumeration of repo files that get linked; install and --check both use it.
 # A real file at a managed path is informational only (reported as not-ours, not drift):
