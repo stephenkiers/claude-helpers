@@ -75,6 +75,22 @@ non-contributor role — alignment, digest, or a future addition — defines its
 its own prompt; only roles that write a `{expert}-contribution.md` file follow the contract's
 Receipt Format section.
 
+### Persona + contract (plan checkpoint reaction)
+
+The `/expert-flow` plan step checkpoint runs a second hybrid-mode pairing: each seated expert reacts
+to plan briefs and human rulings through **both** its persona YAML and the `prompts/plan-checkpoint-reaction.md`
+contract. The structure is the same as the plan-contribution-contract pairing: the persona is the lens,
+the contract defines the output format and input shape, and both are required.
+
+- **Write location:** exactly one file under `SESSION_DIR` (`~/.claude/plan-sessions/`), named by the
+  prompt. The default pattern is `reactions/<slug>-<mode>-r<round>.json`, where `<slug>` is the persona
+  file stem (e.g. `contrarian-carl`), `<mode>` is `pre-show` or `reply`, and `<round>` is the
+  conversation round number.
+- **Receipt format:** 
+  - Pre-show mode: `{slug} | checkpoint-reaction | mode: pre-show | round: 1 | protests: {N} | wrote: {path}`
+  - Reply mode: `{slug} | checkpoint-reaction | mode: reply | round: {round} | pushbacks: {N} | wrote: {path}`,
+  where `{N}` is the count of protests in pre-show mode or the count of pushbacks in reply mode.
+
 ## You cannot change the code, and that is deliberate
 
 You have no `Edit` tool and no write-capable Bash. You can read the repository and write exactly one
