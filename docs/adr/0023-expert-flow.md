@@ -539,22 +539,22 @@ a resume reads a missing `flags.step_gates` as `false`.
 
 Each flow directory now holds an append-only ledger of human input, `human.jsonl`, owned exclusively by `scripts/flow-ledger.py`. The orchestrator and steps read it; only the script and its delegated callers write it.
 
-**State on disk:** The flow directory gains `human.jsonl`, an append-only record of every human direction, note, and annotation for this flow. It is the source of truth for human input: `state.json` records nothing about human input and gains no `gate_note` field (see Supersessions below). Steps read it once at spawn; the snapshot they see is immutable within the step. The script is the sole writer, running in the orchestrator and in scripts it delegates (e.g., the auto-rebase worker calling `mark --by`).
+**State on disk:** The flow directory gains `human.jsonl`, an append-only record of every human direction, note, and answer for this flow. It is the source of truth for human input: `state.json` records nothing about human input and gains no `gate_note` field (see Supersessions below). Steps read it once at spawn; the snapshot they see is immutable within the step. The script is the sole writer, running in the orchestrator and in scripts it delegates (e.g., `flow-verify-receipt.py` calling `mark --by`, #288).
 
 **Ownership and readers:** `scripts/flow-ledger.py` is the only writer. Callers are the orchestrator and scripts it runs on its behalf. **Steps are read-only**: they never write `human.jsonl`, never run `flow-ledger.py`, never edit records. Workers receive records verbatim through the worker-delivery mechanism (Ledger block, Passing it to workers); they never call the script.
 
-**"Append-only" means:** records are never removed or reordered after creation. Only two fields change after creation: `status` (values: `pending` → `addressed` | `parked` | `superseded`) and `addressed_by` (the step or script that moved the record out of `pending`). The script performs both the append and the status update atomically: one call appends a new record, another call (or a supersession) updates existing status fields. Writes use a temp file + `os.replace()` under `flock()` to ensure atomicity.
+**"Append-only" means:** records are never removed or reordered after creation. Only two fields change after creation: `status` (values: `pending` → `addressed` | `parked` | `superseded`) and `addressed_by` (the step or script that moved the record out of `pending`). The script performs both the append and the status update atomically: one call appends a new record, another call (or a supersession) updates existing status fields. Plain appends are one locked full-line write; `mark` and supersede write a temp file and `os.replace()` it under `flock()`.
 
 **Transition table:** The `mark` command moves `pending` records only. Valid transitions are:
 - `pending` → `addressed` (the step read it and acted on it)
 - `pending` → `parked` (the step read it, understood it, and deferred it)
-- `pending` → `superseded` (same-call atomicity with the new record; the old record's `status` and `addressed_by` are updated in place)
+- `pending` → `superseded` (same-call atomicity with the new record; the old record's `status` is updated in place and its `addressed_by` is kept). `append --supersedes N` may also supersede an `addressed` or `parked` record, so long as it is not already `superseded`.
 
-Any attempt to move a record already `addressed`, `parked`, or `superseded` is a no-op (idempotent).
+Any `mark` on a record that is not `pending` exits non-zero and leaves the file unchanged.
 
 **Fail loud on any invalid line:** In the script, at orchestrator call sites, and in the step-side Ledger block: malformed JSON, missing required keys, invalid status/kind values, or any line that cannot be parsed is a hard stop. Never skip a malformed line. Report `human ledger unreadable: line <N>` with the line number.
 
-**No growth bound** until #277 (prose ingestion / `HUMAN_NOTE` support). The script and the Ledger block place no limit on the file size.
+**No growth bound** until #277 (dictation and interpretation). The script and the Ledger block place no limit on the file size.
 
 **`HUMAN_LEDGER` placement:** The orchestrator's spawn line for a step includes `HUMAN_LEDGER: human.jsonl` directly after `ATTEMPT=<k>`, always on its own line. Every other inserted line (`PRIOR_ANSWERS`, the fidelity-retry reason, #286's future `HUMAN_NOTE`) follows it. When the file is missing or empty, `HUMAN_LEDGER:` is still printed and the ledger is an empty list.
 
@@ -573,7 +573,7 @@ Any attempt to move a record already `addressed`, `parked`, or `superseded` is a
 **ADR-0007 reference:** The human-input ledger is a record of the human's own input to this flow (directions, gate notes, answers), not ADR-0007's removed decisions/suppression ledger. It is immutable and append-only by design, unlike ADR-0007's suppression list which was edited interactively.
 
 **Recorded exclusions and limits:**
-- The `HUMAN_LEDGER:` line is not carried by the fidelity auditor (`scripts/flow-verify-receipt.py --flow-dir`).
+- The `HUMAN_LEDGER:` line is not carried by the fidelity-audit `expert-scout` prompt.
 - The ledger is not read by the `--retro` grader or the auto-rebase worker (which is spawned only on a base-stale `verify` failure and stops on any conflict needing intent it cannot know, surfacing through the existing failure stop).
 - `/expert-review --effort 2` reviewer pods do not receive the ledger because they receive no `PROJECT_CONTEXT`.
 

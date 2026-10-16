@@ -20,18 +20,20 @@ import fcntl
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypedDict, Optional, List, Dict, Any, NoReturn, Tuple
+from typing import Literal, TypedDict, Optional, List, Dict, Any, NoReturn, Tuple, get_args
 
 # Type definitions
 Kind = Literal["transcript", "answer", "direction", "question", "parked", "gate_note", "correction"]
 Status = Literal["pending", "addressed", "parked", "superseded"]
 
-KINDS: Tuple[Kind, ...] = ("transcript", "answer", "direction", "question", "parked", "gate_note", "correction")
-STATUSES: Tuple[Status, ...] = ("pending", "addressed", "parked", "superseded")
+# Derived from the Literal types so the argparse choices cannot drift from the model.
+KINDS: Tuple[Kind, ...] = get_args(Kind)
+STATUSES: Tuple[Status, ...] = get_args(Status)
 
 
 class Record(TypedDict):
@@ -102,7 +104,7 @@ def validate_record(obj: Any, line_no: int) -> None:
         error(f"flow-ledger: human.jsonl line {line_no}: ts must be string")
 
     # Validate step: matches ^[a-z0-9-]+$
-    if not isinstance(obj["step"], str) or not re.match(r"^[a-z0-9-]+$", obj["step"]):
+    if not isinstance(obj["step"], str) or not re.fullmatch(r"[a-z0-9-]+", obj["step"]):
         error(f"flow-ledger: human.jsonl line {line_no}: step must match ^[a-z0-9-]+$")
 
     # Validate attempt: int >= 1 (reject bool)
@@ -146,6 +148,8 @@ def validate_record(obj: Any, line_no: int) -> None:
             error(f"flow-ledger: human.jsonl line {line_no}: supersedes must be int")
         if supersedes < 1:
             error(f"flow-ledger: human.jsonl line {line_no}: supersedes must be >= 1")
+        if supersedes >= obj["seq"]:
+            error(f"flow-ledger: human.jsonl line {line_no}: supersedes must be < seq")
     else:
         if supersedes is not None:
             error(f"flow-ledger: human.jsonl line {line_no}: supersedes only allowed for kind correction")
@@ -206,6 +210,11 @@ def write_records(ledger_file: Path, records: List[Record]) -> None:
             with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
                 for rec in records:
                     f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            # mkstemp creates 0600; keep the mode of the existing ledger (append-created, 0644 by default)
+            if ledger_file.exists():
+                os.chmod(temp_path, stat.S_IMODE(os.stat(str(ledger_file)).st_mode))
+            else:
+                os.chmod(temp_path, 0o644)
             os.replace(temp_path, str(ledger_file))
         except Exception:
             try:
@@ -276,9 +285,15 @@ def cmd_append(
 
         # Append or rewrite depending on supersedes
         if supersedes is None:
-            # Simple append: single write to O_APPEND descriptor
-            with open(str(ledger_file), "a") as f:
-                f.write(json.dumps(new_record, separators=(",", ":")) + "\n")
+            # Simple append: one os.write of the full line to an O_APPEND descriptor
+            data = (json.dumps(new_record, separators=(",", ":")) + "\n").encode("utf-8")
+            fd = os.open(str(ledger_file), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o666)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+            finally:
+                os.close(fd)
         else:
             # Rewrite: mark superseded record, add new, rewrite entire file
             records[supersedes - 1]["status"] = "superseded"
@@ -445,9 +460,9 @@ def main() -> None:
     # Validate flow-dir
     flow_dir = Path(args.flow_dir).expanduser().resolve()
     if not flow_dir.is_dir():
-        usage_error(f"flow-ledger: {args.flow_dir}: not a directory")
+        error(f"flow-ledger: {args.flow_dir}: not a directory")
     if not (flow_dir / "state.json").exists():
-        usage_error(f"flow-ledger: {args.flow_dir}: no state.json")
+        error(f"flow-ledger: {args.flow_dir}: no state.json")
 
     try:
         if args.command == "append":

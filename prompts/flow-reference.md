@@ -577,13 +577,13 @@ own procedure. The orchestrator rejects an OK receipt that admits a deviation (`
 
 A human-input ledger `${FLOW_DIR}/human.jsonl` (named by the `HUMAN_LEDGER: human.jsonl` line in the orchestrator's spawn) carries the human's own input to this flow. Read it whole with `Read` at the start of the step.
 
-**Location and reading**: `${FLOW_DIR}/human.jsonl` is a one-entry-per-line JSON file of records owned exclusively by `scripts/flow-ledger.py`. Read the entire file once at the start of your step with a single `Read` tool call. The result is shared among workers.
+**Location and reading**: `${FLOW_DIR}/human.jsonl` is a one-entry-per-line JSON file of records owned exclusively by `scripts/flow-ledger.py`. Read the entire file once at the start of your step with a single `Read` tool call.
 
 **Missing or empty file**: means "no human input". It is not an error, and you must not create the file. When the file is missing, treat it as an empty list.
 
 **Malformed line**: a record you cannot parse as JSON, or a record missing required keys, is a hard stop. Do not skip the line. Stop with `Decision: FAILED`, `Reason: human ledger unreadable: line <N>`.
 
-**Snapshot**: the ledger is read once, at spawn. Records the orchestrator appends while the step runs are not seen. A step that re-reads the ledger after an intermediate `Mark` call will see the updated status fields (a record may change from `pending` to `addressed` or `superseded`), but the record count and content are immutable within the step.
+**Snapshot**: the ledger is read once, at spawn. Records the orchestrator appends while the step runs are not seen. The step works from that single read; it does not re-read the ledger during the step.
 
 **Meaning of each record type:**
 

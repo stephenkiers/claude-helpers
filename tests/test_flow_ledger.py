@@ -218,10 +218,10 @@ def main():
 
         flow = flow_dir(root, "append-textarg")
         rc, _, _ = run("append", flow, "--kind", "answer", "--step", "plan", "--attempt", "1")
-        h.test_result("neither --text nor --text-stdin is rejected", rc != 0)
+        h.test_result("neither --text nor --text-stdin is rejected (argparse exit 2)", rc == 2, f"rc={rc}")
         rc, _, _ = run("append", flow, "--kind", "answer", "--step", "plan", "--attempt", "1",
                        "--text", "x", "--text-stdin", stdin=b"y")
-        h.test_result("--text together with --text-stdin is rejected", rc != 0)
+        h.test_result("--text together with --text-stdin is rejected (argparse exit 2)", rc == 2, f"rc={rc}")
         h.test_result("rejected text args leave no ledger", ledger_bytes(flow) is None)
 
         flow = flow_dir(root, "append-kinds")
@@ -359,7 +359,7 @@ def main():
         h.test_result("--by with a .. segment exits 1", rc == 1, f"rc={rc}")
         before = ledger_bytes(flow)
         rc, _, _ = mark(flow, 2, "pending")
-        h.test_result("--status pending is rejected", rc != 0, f"rc={rc}")
+        h.test_result("--status pending is rejected (argparse choices, exit 2)", rc == 2, f"rc={rc}")
         h.test_result("rejected marks leave the file byte-identical", ledger_bytes(flow) == before)
         rc, _, _ = mark(flow, 99, "parked")
         h.test_result("mark of a nonexistent seq exits 1", rc == 1, f"rc={rc}")
@@ -393,8 +393,9 @@ def main():
             ("superseded -> parked", (3, "parked", None)),
         ]:
             seq, status, by = args
-            rc, _, _ = mark(flow, seq, status, by=by)
-            h.test_result(f"mark refuses {label} (exit non-zero)", rc != 0, f"rc={rc}")
+            rc, _, err = mark(flow, seq, status, by=by)
+            h.test_result(f"mark refuses {label} (exit 1, 'not pending')", rc == 1 and "not pending" in err,
+                          f"rc={rc} stderr={err.strip()[:120]!r}")
         h.test_result("refused non-pending marks leave the file byte-identical", ledger_bytes(flow) == before)
 
         print()
@@ -460,10 +461,12 @@ def main():
         h.test_result("--md header line has the documented shape",
                       bool(lines) and re.match(r"- #1 \[answer, addressed\] plan attempt 2 \(\S[^)]*\)", lines[0]) is not None,
                       lines[0] if lines else "")
-        h.test_result("--md shows the addressed_by path",
-                      "by steps/03-implement.md" in out, out[:300])
-        h.test_result("--md shows supersedes #N on the correction",
-                      "supersedes #2" in out, out[:300])
+        h.test_result("--md shows the addressed_by path on record 1's line",
+                      re.search(r"^- #1 \[answer, addressed\] plan attempt 2 \(\S[^)]*\) by steps/03-implement\.md$", out, re.M) is not None,
+                      out[:300])
+        h.test_result("--md shows supersedes #2 on the correction's own line",
+                      re.search(r"^- #3 \[correction, pending\] plan attempt 1 \(\S[^)]*\) supersedes #2$", out, re.M) is not None,
+                      out[:300])
         h.test_result("--md shows the superseded status",
                       re.search(r"^- #2 \[gate_note, superseded\] implement attempt 1 \(", out, re.M) is not None,
                       out[:300])
@@ -471,7 +474,7 @@ def main():
                       re.search(r"^\s+multi$", out, re.M) is not None and re.search(r"^\s+line text$", out, re.M) is not None,
                       out[:300])
         rc, _, _ = run("list", flow, "--json", "--md")
-        h.test_result("--json and --md are mutually exclusive", rc != 0, f"rc={rc}")
+        h.test_result("--json and --md are mutually exclusive (argparse exit 2)", rc == 2, f"rc={rc}")
 
         print()
         print("[Section 5] fail loud (invalid or torn ledger)")
