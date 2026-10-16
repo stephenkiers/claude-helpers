@@ -42,6 +42,12 @@ abs_git_path() {
 if [ "$CHECK_ONLY" -eq 0 ] && [ "$FROM_WORKTREE" -eq 0 ]; then
     GIT_DIR_ABS=$(abs_git_path --git-dir)
     GIT_COMMON_ABS=$(abs_git_path --git-common-dir)
+    # Inside a work tree but unable to resolve either git dir (an unusual or very old git): say so
+    # rather than skipping the guard silently. Not a git copy at all stays quiet, as documented.
+    if { [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_ABS" ]; } \
+        && git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "WARNING: could not resolve the git dirs of $REPO_DIR; the linked-worktree guard did not run" >&2
+    fi
     if [ -n "$GIT_DIR_ABS" ] && [ -n "$GIT_COMMON_ABS" ] && [ "$GIT_DIR_ABS" != "$GIT_COMMON_ABS" ]; then
         # Only a linked worktree reaches here, so the worktree list is read just for the message.
         WORKTREE_LIST=$(git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true)
