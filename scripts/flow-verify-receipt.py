@@ -18,6 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, NamedTuple, NoReturn, Optional
 
+# Import shared schema module
+try:
+    import plan_checkpoint_schema as schema
+except ImportError:
+    # If not in path, add scripts directory
+    sys.path.insert(0, str(Path(__file__).parent))
+    import plan_checkpoint_schema as schema
+
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
 GIT_TIMEOUT_SECS = 5
@@ -179,30 +187,10 @@ def _is_report_checkpoint(flow_dir: Path, relay_count: RelayCount) -> bool:
 def _extract_ledger_json(decisions_text: str) -> Optional[Dict]:
     """Extract and parse the Checkpoint ledger JSON block from decisions.md.
 
+    Uses the shared schema module for consistent ledger extraction.
     Returns the parsed JSON dict or None if not found or invalid.
     """
-    # Find the fenced JSON block starting with ## Checkpoint ledger
-    ledger_start = decisions_text.find("## Checkpoint ledger")
-    if ledger_start == -1:
-        return None
-
-    # Find the first fence after the heading
-    fence_start = decisions_text.find("```", ledger_start)
-    if fence_start == -1:
-        return None
-
-    # Find the closing fence
-    fence_end = decisions_text.find("```", fence_start + 3)
-    if fence_end == -1:
-        return None
-
-    # Extract the JSON content
-    json_text = decisions_text[fence_start + 3:fence_end].strip()
-
-    try:
-        return json.loads(json_text)
-    except (ValueError, json.JSONDecodeError):
-        return None
+    return schema.extract_ledger_json(decisions_text)
 
 
 def _get_ledger_handles_and_tiers(

@@ -42,13 +42,15 @@ def create_reaction_file(path: str, reactions: dict) -> None:
     Path(path).write_text(json.dumps(payload))
 
 
-def create_decisions_file(path: str, seated: list, expected_reactions: list) -> None:
+def create_decisions_file(path: str, seated: list, expected_reactions: list, briefs: dict = None) -> None:
     """Create a decisions.md with a Checkpoint ledger block."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     ledger = {
         "seated": seated,
         "expected_reactions": expected_reactions,
     }
+    if briefs:
+        ledger["briefs"] = briefs
     # Build the decisions file with the fenced JSON block
     # The fence parser in the script expects ``` on its own line
     lines = ["# Decisions", "", "## Checkpoint ledger", "```", json.dumps(ledger), "```", "",
@@ -69,25 +71,19 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
-
-        # Create decisions with ledger that includes brief_type
-        Path(decisions_file).parent.mkdir(parents=True, exist_ok=True)
-        ledger = {
-            "seated": seated,
-            "expected_reactions": expected_reactions,
-            "Q1": {"brief_type": "disagreement"},  # Set brief_type to disagreement
+        briefs = {
+            "B1": {"brief_type": "disagreement", "raiser": "alice"},
         }
-        lines = ["# Decisions", "", "## Checkpoint ledger", "```", json.dumps(ledger), "```", "",
-                 "## Decided", "", "## Worth a look", "", "## Questions for you"]
-        Path(decisions_file).write_text("\n".join(lines))
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "Q1": {"resolved": True, "agreed": False}
+            "B1": {"resolved": True, "agreed": False}
         })
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "Q1": {"agreed": True}
+            "B1": {"agreed": True}
         })
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
@@ -97,7 +93,7 @@ def main():
             else:
                 tiers = json.loads(stdout)
                 h.test_result("Disagreement brief -> Q",
-                             exit_code == 0 and tiers.get("Q1") == "question",
+                             exit_code == 0 and tiers.get("B1") == "question",
                              f"exit={exit_code}, tiers={tiers}")
         except json.JSONDecodeError as e:
             h.test_result("Disagreement brief -> Q", False, f"JSON error: {e}, stdout={stdout[:200]}")
@@ -111,16 +107,19 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "W1": {"resolved": True, "agreed": True, "protested": True}
+            "B1": {"resolved": True, "agreed": True, "protested": True}
         })
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "W1": {"agreed": True}
+            "B1": {"agreed": True}
         })
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
@@ -130,8 +129,8 @@ def main():
             else:
                 tiers = json.loads(stdout)
                 h.test_result("Protested brief -> Q",
-                             exit_code == 0 and tiers.get("W1") == "question",
-                             f"exit={exit_code}, W1 tier={tiers.get('W1')}")
+                             exit_code == 0 and tiers.get("B1") == "question",
+                             f"exit={exit_code}, B1 tier={tiers.get('B1')}")
         except json.JSONDecodeError as e:
             h.test_result("Protested brief -> Q", False, f"JSON error: {e}")
 
@@ -144,16 +143,19 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "D1": {"resolved": True, "agreed": False}
+            "B1": {"resolved": True, "agreed": False}
         })
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "D1": {"agreed": True}
+            "B1": {"agreed": True}
         })
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
@@ -163,8 +165,8 @@ def main():
             else:
                 tiers = json.loads(stdout)
                 h.test_result("Resolved + agreed + no could-go-other-way -> D",
-                             exit_code == 0 and tiers.get("D1") == "decided",
-                             f"exit={exit_code}, D1 tier={tiers.get('D1')}")
+                             exit_code == 0 and tiers.get("B1") == "decided",
+                             f"exit={exit_code}, B1 tier={tiers.get('B1')}")
         except json.JSONDecodeError as e:
             h.test_result("Resolved + agreed + no could-go-other-way -> D", False, f"JSON error: {e}")
 
@@ -177,16 +179,19 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "W1": {"resolved": True, "agreed": False, "could-go-other-way": True}
+            "B1": {"resolved": True, "agreed": False, "could-go-other-way": True}
         })
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "W1": {"agreed": True}
+            "B1": {"agreed": True}
         })
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
@@ -196,8 +201,8 @@ def main():
             else:
                 tiers = json.loads(stdout)
                 h.test_result("Resolved + agreed + could-go-other-way -> W",
-                             exit_code == 0 and tiers.get("W1") == "worth-a-look",
-                             f"exit={exit_code}, W1 tier={tiers.get('W1')}")
+                             exit_code == 0 and tiers.get("B1") == "worth-a-look",
+                             f"exit={exit_code}, B1 tier={tiers.get('B1')}")
         except json.JSONDecodeError as e:
             h.test_result("Resolved + agreed + could-go-other-way -> W", False, f"JSON error: {e}")
 
@@ -210,16 +215,19 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "W1": {"resolved": True}
+            "B1": {"resolved": True}
         })
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "W1": {"no-view": True}
+            "B1": {"no-view": True}
         })
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
@@ -229,8 +237,8 @@ def main():
             else:
                 tiers = json.loads(stdout)
                 h.test_result("Resolved with no other agreement -> W",
-                             exit_code == 0 and tiers.get("W1") == "worth-a-look",
-                             f"exit={exit_code}, W1 tier={tiers.get('W1')}")
+                             exit_code == 0 and tiers.get("B1") == "worth-a-look",
+                             f"exit={exit_code}, B1 tier={tiers.get('B1')}")
         except json.JSONDecodeError as e:
             h.test_result("Resolved with no other agreement -> W", False, f"JSON error: {e}")
 
@@ -243,13 +251,16 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         # Create only alice's file, not bob's
-        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"Q1": {"resolved": True}})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"B1": {"resolved": True}})
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Missing expected reaction file -> exit non-zero",
@@ -265,35 +276,154 @@ def main():
 
         seated = ["alice", "bob"]
         expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "alice-pre-show-r1.json")},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
         ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
         # Create alice's file without the sentinel
         Path(reactions_dir).mkdir(parents=True, exist_ok=True)
-        Path(reactions_dir / "alice-pre-show-r1.json").write_text(json.dumps({"Q1": {"resolved": True}}))
-        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"Q1": {"agreed": True}})
+        Path(reactions_dir / "alice-pre-show-r1.json").write_text(json.dumps({"B1": {"resolved": True}}), encoding="utf-8")
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Reaction file without 'complete' sentinel -> exit non-zero",
                      exit_code != 0,
                      f"exit={exit_code}")
 
-    # Test 8: Missing decisions.md -> non-zero exit
-    print("[Test 8] Missing decisions.md -> exit non-zero")
+    # Test 8: Missing brief_type in ledger when brief has reactions -> non-zero exit
+    print("[Test 8] Missing brief_type in ledger -> exit non-zero")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {}  # Missing brief_type for B1
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create reaction files that reference B1
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"B1": {"resolved": True}})
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file))
+        h.test_result("Missing brief_type in ledger -> exit non-zero",
+                     exit_code != 0 and "brief_type" in stderr.lower(),
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 9: Missing decisions.md -> non-zero exit
+    print("[Test 9] Missing decisions.md -> exit non-zero")
     with tempfile.TemporaryDirectory() as tmp:
         nonexistent_file = str(Path(tmp) / "missing.md")
         exit_code, stdout, stderr = run_tier_script(nonexistent_file)
         h.test_result("Missing decisions.md -> exit non-zero", exit_code != 0, f"exit={exit_code}")
 
-    # Test 9: No --decisions argument -> exit non-zero
-    print("[Test 9] No --decisions argument -> exit non-zero")
+    # Test 10: No --decisions argument -> exit non-zero
+    print("[Test 10] No --decisions argument -> exit non-zero")
     cmd = [sys.executable, str(TIER_SCRIPT)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     h.test_result("No --decisions argument -> exit non-zero",
                  result.returncode != 0,
                  f"exit={result.returncode}")
+
+    # Test 11: Edge case - empty seated list (should still work if expected_reactions is also empty)
+    print("[Test 11] Empty seated list -> exit 0")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+
+        seated = []
+        expected_reactions = []
+        briefs = {}
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file))
+        try:
+            if stdout:
+                tiers = json.loads(stdout)
+                h.test_result("Empty seated list -> exit 0",
+                             exit_code == 0 and tiers == {},
+                             f"exit={exit_code}, tiers={tiers}")
+            else:
+                h.test_result("Empty seated list -> exit 0", exit_code == 0, f"exit={exit_code}, stderr={stderr[:100]}")
+        except json.JSONDecodeError as e:
+            h.test_result("Empty seated list -> exit 0", False, f"JSON error: {e}")
+
+    # Test 12: Edge case - relative paths in expected_reactions
+    print("[Test 12] Relative paths in expected_reactions -> works")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice"]
+        # Use relative path (not absolute)
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file))
+        try:
+            if stdout:
+                tiers = json.loads(stdout)
+                h.test_result("Relative paths -> works",
+                             exit_code == 0 and tiers.get("B1") == "worth-a-look",
+                             f"exit={exit_code}, tiers={tiers}")
+            else:
+                h.test_result("Relative paths -> works", False, f"exit={exit_code}, stderr={stderr[:100]}")
+        except json.JSONDecodeError as e:
+            h.test_result("Relative paths -> works", False, f"JSON error: {e}")
+
+    # Test 13: Edge case - mixed protest and resolve (protest wins -> Q)
+    print("[Test 13] Mixed protest and resolve -> Q")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Alice protested even though she resolved
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "protested": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file))
+        try:
+            if stdout:
+                tiers = json.loads(stdout)
+                h.test_result("Mixed protest and resolve -> Q",
+                             exit_code == 0 and tiers.get("B1") == "question",
+                             f"exit={exit_code}, tiers={tiers}")
+            else:
+                h.test_result("Mixed protest and resolve -> Q", False, f"exit={exit_code}, stderr={stderr[:100]}")
+        except json.JSONDecodeError as e:
+            h.test_result("Mixed protest and resolve -> Q", False, f"JSON error: {e}")
 
     h.summarize_and_exit()
 

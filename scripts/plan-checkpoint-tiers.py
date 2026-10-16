@@ -1,178 +1,216 @@
 #!/usr/bin/env python3
 """Assign tiers (D/W/Q) to checkpoint items based on reaction-pass evidence."""
 
+import argparse
 import json
 import sys
 from pathlib import Path
 
+# Add parent directory to path to import plan_checkpoint_schema
+sys.path.insert(0, str(Path(__file__).parent))
+import plan_checkpoint_schema as schema
 
-def main():
-    """Read ledger and reaction files, output handle->tier JSON."""
-    if len(sys.argv) < 2:
-        print("Usage: plan-checkpoint-tiers.py --decisions <decisions.md>", file=sys.stderr)
-        sys.exit(1)
 
-    decisions_path = None
-    i = 1
-    while i < len(sys.argv):
-        if sys.argv[i] == "--decisions" and i + 1 < len(sys.argv):
-            decisions_path = sys.argv[i + 1]
-            i += 2
-        else:
-            i += 1
+def main() -> int:
+    """Read ledger and reaction files, output handle->tier JSON.
 
-    if not decisions_path:
-        print("Error: --decisions <path> required", file=sys.stderr)
-        sys.exit(1)
+    Returns:
+        0 on success, 1 on validation error or missing file, 2 on internal error.
+    """
+    parser = argparse.ArgumentParser(
+        description="Assign tiers (D/W/Q) to checkpoint items based on reaction-pass evidence."
+    )
+    parser.add_argument("--decisions", required=True, help="Path to decisions.md")
+    args = parser.parse_args()
+
+    decisions_path = Path(args.decisions)
 
     # Read decisions.md and extract the ledger block
     try:
-        with open(decisions_path) as f:
-            content = f.read()
-    except OSError as e:
+        content = decisions_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(f"Error: {decisions_path} not found", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeDecodeError) as e:
         print(f"Error reading {decisions_path}: {e}", file=sys.stderr)
-        sys.exit(1)
+        return 2
 
-    # Find the fenced JSON block: ## Checkpoint ledger
-    ledger = None
-    lines = content.split('\n')
-    in_fence = False
-    fence_lines = []
-    for i, line in enumerate(lines):
-        if line.startswith('## Checkpoint ledger'):
-            # Look for the fence after this heading
-            for j in range(i + 1, len(lines)):
-                if lines[j].startswith('```'):
-                    if not in_fence:
-                        in_fence = True
-                    else:
-                        # Closing fence
-                        break
-                elif in_fence:
-                    fence_lines.append(lines[j])
-
-    if fence_lines:
-        try:
-            ledger = json.loads('\n'.join(fence_lines))
-        except json.JSONDecodeError as e:
-            print(f"Error parsing ledger JSON: {e}", file=sys.stderr)
-            sys.exit(1)
-
+    # Extract ledger
+    ledger = schema.extract_ledger_json(content)
     if not ledger:
-        print("Error: no ## Checkpoint ledger block found", file=sys.stderr)
-        sys.exit(1)
+        print("Error: no ## Checkpoint ledger block found or invalid JSON", file=sys.stderr)
+        return 1
 
-    # Validate ledger structure
-    if "seated" not in ledger or "expected_reactions" not in ledger:
-        print("Error: ledger missing 'seated' or 'expected_reactions'", file=sys.stderr)
-        sys.exit(1)
+    # Validate ledger shape
+    ledger_error = schema.validate_ledger_shape(ledger)
+    if ledger_error:
+        print(f"Error: {ledger_error}", file=sys.stderr)
+        return 1
 
     # Read all expected reaction files and build evidence per handle
-    evidence = {}  # handle -> {slug -> reaction_entry}
+    evidence = {}  # handle -> {slug -> classification}
+    decisions_dir = decisions_path.parent
+    raiser_map = {}  # brief_id -> raiser slug
 
-    decisions_dir = Path(decisions_path).parent
+    # Extract briefs map
+    briefs_map = ledger.get("briefs", {})
+    if not isinstance(briefs_map, dict):
+        print("Error: ledger 'briefs' is not a dict", file=sys.stderr)
+        return 1
+
+    # First pass: collect raiser info from briefs
+    for brief_id, brief_data in briefs_map.items():
+        if isinstance(brief_data, dict):
+            raiser = brief_data.get("raiser")
+            if raiser:
+                raiser_map[brief_id] = raiser
+
     for reaction_spec in ledger.get("expected_reactions", []):
-        reaction_path = reaction_spec.get("path")
-        if not reaction_path:
+        reaction_path_str = reaction_spec.get("path")
+        if not reaction_path_str:
             continue
 
-        full_path = decisions_dir / reaction_path if not Path(reaction_path).is_absolute() else Path(reaction_path)
+        # Resolve path: relative to decisions_dir or absolute
+        if Path(reaction_path_str).is_absolute():
+            reaction_path = Path(reaction_path_str)
+        else:
+            reaction_path = decisions_dir / reaction_path_str
 
-        if not full_path.exists():
-            print(f"Error: expected reaction file missing: {reaction_path}", file=sys.stderr)
-            sys.exit(1)
+        # Confine path to decisions_dir
+        path_error = schema.confine_path_to_dir(str(reaction_path), decisions_dir)
+        if path_error:
+            print(f"Error: {path_error}", file=sys.stderr)
+            return 1
+
+        if not reaction_path.exists():
+            print(f"Error: expected reaction file missing: {reaction_path_str}", file=sys.stderr)
+            return 1
 
         try:
-            with open(full_path) as f:
-                reactions = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"Error reading reaction file {reaction_path}: {e}", file=sys.stderr)
-            sys.exit(1)
+            reactions = json.loads(reaction_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            print(f"Error reading reaction file {reaction_path_str}: {e}", file=sys.stderr)
+            return 2
 
-        # Check for complete sentinel
+        # Validate reaction file shape
+        reaction_error = schema.validate_reaction_file_shape(reactions)
+        if reaction_error:
+            print(f"Error in {reaction_path_str}: {reaction_error}", file=sys.stderr)
+            return 1
+
         if not reactions.get("complete"):
-            print(f"Error: reaction file missing 'complete': true sentinel: {reaction_path}", file=sys.stderr)
-            sys.exit(1)
+            print(f"Error: reaction file missing 'complete': true sentinel: {reaction_path_str}", file=sys.stderr)
+            return 1
 
         slug = reaction_spec.get("slug")
         if not slug:
             continue
 
-        # Extract reactions per handle (all keys except 'complete')
-        for handle, reaction in reactions.items():
-            if handle == "complete":
+        # Extract reactions per brief (all keys except 'complete')
+        for brief_id, reaction in reactions.items():
+            if brief_id == "complete":
                 continue
-            if handle not in evidence:
-                evidence[handle] = {}
-            evidence[handle][slug] = reaction
+            if not isinstance(reaction, dict):
+                continue
 
-    # Read brief types from the ledger (handles should be keys in the ledger with brief_type field)
-    # or from the decisions.md sections as fallback
-    brief_types = {}  # handle -> brief_type (from ledger or decisions file)
+            # Classify this reaction
+            classification = schema.classify_reaction(reaction, slug)
 
-    # First, try to get brief_type from the ledger
-    for handle in evidence:
-        if handle in ledger:
-            brief_type = ledger[handle].get("brief_type")
-            if brief_type:
-                brief_types[handle] = brief_type
+            if brief_id not in evidence:
+                evidence[brief_id] = {}
+            evidence[brief_id][slug] = classification
 
-    # Fallback: parse the decisions.md sections to find brief types
-    # Look for `#### Q` headings which indicate question briefs (not D or W)
-    for line in lines:
-        if line.startswith('#### Q'):
-            # Extract Q number
-            parts = line.split('.')
-            if parts:
-                qn = parts[0].replace('####', '').strip()
-                handle = f"Q{qn.lstrip('Q')}" if 'Q' in qn else None
-                if handle and handle in evidence and handle not in brief_types:
-                    # Check if this brief has a Type: disagreement field in the decisions.md
-                    # For now, just mark it as found (handle in evidence, so it's real)
-                    # The verifier will check the actual type
-                    pass
+    # Collect brief types from ledger (must be present before tiering)
+    brief_types = {}
+
+    for brief_id in evidence:
+        if brief_id in briefs_map and isinstance(briefs_map[brief_id], dict):
+            brief_type = briefs_map[brief_id].get("brief_type")
+            if not brief_type:
+                print(
+                    f"Error: brief {brief_id} has reactions but no brief_type in ledger briefs",
+                    file=sys.stderr,
+                )
+                return 1
+            brief_types[brief_id] = brief_type
+        else:
+            # Brief has reactions but no entry in briefs map or no brief_type
+            print(
+                f"Error: brief {brief_id} has reactions but no brief_type in ledger briefs",
+                file=sys.stderr,
+            )
+            return 1
+
+    # For could-go-other-way check, need access to raw reactions
+    # Re-collect raw reactions for flag checking
+    raw_reactions = {}  # brief_id -> {slug -> raw_reaction_dict}
+    for reaction_spec in ledger.get("expected_reactions", []):
+        reaction_path_str = reaction_spec.get("path")
+        if not reaction_path_str:
+            continue
+
+        # Resolve path
+        if Path(reaction_path_str).is_absolute():
+            reaction_path = Path(reaction_path_str)
+        else:
+            reaction_path = decisions_dir / reaction_path_str
+
+        if not reaction_path.exists():
+            continue
+
+        try:
+            reactions = json.loads(reaction_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+
+        slug = reaction_spec.get("slug")
+        if not slug:
+            continue
+
+        # Extract raw reactions per brief
+        for brief_id, reaction in reactions.items():
+            if brief_id == "complete":
+                continue
+            if not isinstance(reaction, dict):
+                continue
+
+            if brief_id not in raw_reactions:
+                raw_reactions[brief_id] = {}
+            raw_reactions[brief_id][slug] = reaction
 
     # Assign tiers based on rules
-    tiers = {}  # handle -> tier
+    tiers = {}
 
-    for handle in evidence:
-        reactions = evidence[handle]
+    for brief_id in evidence:
+        reactions_by_slug = evidence[brief_id]  # Classification
+        brief_type = brief_types.get(brief_id)
+        raiser_slug = raiser_map.get(brief_id)
+        raw_brief_reactions = raw_reactions.get(brief_id, {})
 
-        # Determine if this was a disagreement brief
-        is_disagreement = brief_types.get(handle) == "disagreement"
+        # Collect reactions by type
+        protested_by = [s for s, c in reactions_by_slug.items() if c == "protested"]
+        needs_human_by = [s for s, c in reactions_by_slug.items() if c == "needs-human"]
+        resolved_by = [s for s, c in reactions_by_slug.items() if c == "resolved"]
+        agreed_by = [s for s, c in reactions_by_slug.items() if c == "agreed"]
 
-        # Check for protests
-        has_protest = any(
-            r.get("protested") for r in reactions.values()
+        # Check for could-go-other-way flag in any expert's raw reaction
+        could_go_other_way = any(
+            raw_brief_reactions.get(s, {}).get("could-go-other-way") is True
+            for s in raw_brief_reactions
         )
 
-        # Q if disagreement or protested
-        if is_disagreement or has_protest:
-            tiers[handle] = "question"
-            continue
-
-        # Check if resolved (not protested/disagreement)
-        # For D: resolved + at least one agreed + no could-go-other-way
-        can_be_d = all(
-            r.get("resolved") or r.get("agreed")
-            for r in reactions.values()
+        # Apply tier rule
+        tier = schema.tier_item(
+            brief_type or "",
+            protested_by,
+            needs_human_by,
+            resolved_by,
+            agreed_by,
+            raiser_slug,
+            could_go_other_way,
         )
 
-        if not can_be_d:
-            tiers[handle] = "worth-a-look"
-            continue
-
-        has_agreed = any(
-            r.get("agreed") for r in reactions.values()
-        )
-        has_could_go_other_way = any(
-            r.get("could-go-other-way") for r in reactions.values()
-        )
-
-        if has_agreed and not has_could_go_other_way:
-            tiers[handle] = "decided"
-        else:
-            tiers[handle] = "worth-a-look"
+        tiers[brief_id] = tier
 
     # Output JSON
     print(json.dumps(tiers))
