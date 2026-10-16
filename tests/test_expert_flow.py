@@ -412,7 +412,8 @@ def main():
     h.test_result("--list marks stale flows", "stale" in list_sec and ("10800" in list_sec or "3 hours" in list_sec))
     h.test_result("--list jq uses 10800 seconds", "10800" in list_sec)
     h.test_result("resume relays the pending question before re-running",
-                  "re-ask the pending question" in text and "PRIOR_ANSWERS" in text and "**not** step 6" in text)
+                  "relay that question file now" in text and "PRIOR_ANSWERS" in text and "**not** step 6" in text and
+                  "For report-kind files, never add a `PRIOR_ANSWERS` line" in text)
     ask_sec = heading_section(FLOW_REF.read_text(), "## Ask")
     h.test_result("flow-reference Ask has Prior answers rule",
                   "Prior answers" in ask_sec and "reused-answers" in ask_sec and "PRIOR_ANSWERS" in ask_sec)
@@ -630,10 +631,16 @@ def main():
     plan_step5 = plan.split("### Step 5", 1)[1].split("### Step 6", 1)[0] if "### Step 5" in plan else ""
     h.test_result("expert-plan Step 5 fails a run that drops checkpoint questions",
                   "reduced run: checkpoint questions dropped" in plan_step5)
-    h.test_result("expert-plan Step 5 relays every brief across successive files",
-                  "`plan-01`, `plan-02`" in plan_step5 and "`summary`" in plan_step5 and "`brief`" in plan_step5)
-    h.test_result("expert-plan Step 5 makes each open-ended brief its own free-text Ask",
-                  "each open-ended `#### Q[n]` brief **must** become its own free-text Ask" in plan_step5)
+    h.test_result("expert-plan Step 5 Flow branch defines the checkpoint ledger",
+                  "## Checkpoint ledger" in plan_step5 and "`seated`" in plan_step5 and "`expected_reactions`" in plan_step5)
+    h.test_result("expert-plan Step 5 Flow branch references the reaction contract and tier script",
+                  "plan-checkpoint-reaction.md" in plan_step5 and "plan-checkpoint-tiers.py" in plan_step5 and
+                  "`accepted-on-continue`" in plan_step5)
+    non_flow_section = (plan_step5.split("**Non-flow branch:**", 1)[1].split("**Flow branch:**", 1)[0]
+                        if "**Non-flow branch:**" in plan_step5 and "**Flow branch:**" in plan_step5 else "")
+    h.test_result("the non-flow Step 5 text in expert-plan.md is unchanged",
+                  "**Every decision brief is asked; none is answered for the human.**" in non_flow_section and
+                  "FLOW_DIR" not in non_flow_section)
     h.test_result("expert-review Step 12 carries summary/brief and fails dropped rulings",
                   "reduced run:\nrulings dropped" in review_cmd and "`summary`" in review_cmd and "`review-01`, `review-02`" in review_cmd)
     h.test_result("ADR has the more-human-in-the-loop amendment",
