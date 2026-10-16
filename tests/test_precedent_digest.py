@@ -7,6 +7,7 @@ via importlib (as tests/test_plan_effort.py does) so its named ruling constants 
 """
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import tempfile
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import REPO_ROOT, Harness
@@ -1025,6 +1027,45 @@ def case_out_stale_file_replaced(h):
                       f"new_content={new_content[:100]}")
 
 
+def case_internal_error_monkeypatch(h):
+    """Test that internal errors are reported with exit code 1, one stderr line with source, no file left."""
+    with Fixture() as fx:
+        build_corpus(fx)
+        outdir = fx.home / "outdir-error"
+        outdir.mkdir()
+        target = outdir / "digest.jsonl"
+
+        # Call main() in-process with mocked _run to force an exception
+        old_stderr = sys.stderr
+        captured_stderr = io.StringIO()
+
+        def raise_error(*args, **kwargs):
+            raise RuntimeError("Forced test error for internal error handling")
+
+        try:
+            sys.stderr = captured_stderr
+            with mock.patch.object(pdig, "_run", side_effect=raise_error):
+                exit_code = pdig.main(["owner/name", "--out", str(target)])
+        finally:
+            sys.stderr = old_stderr
+
+        stderr_output = captured_stderr.getvalue()
+        stderr_lines = stderr_output.strip().split("\n") if stderr_output else []
+
+        h.test_result("internal error monkeypatch: exit code is 1", exit_code == 1, f"code={exit_code}")
+        h.test_result("internal error monkeypatch: exactly one stderr line", len(stderr_lines) == 1,
+                      f"lines={len(stderr_lines)} content={stderr_output}")
+        h.test_result("internal error monkeypatch: no 'Traceback' in stderr",
+                      "Traceback" not in stderr_output, f"stderr={stderr_output}")
+        h.test_result("internal error monkeypatch: stderr contains exception message",
+                      "Forced test error" in stderr_output, f"stderr={stderr_output}")
+        h.test_result("internal error monkeypatch: stderr contains source location (file:line in func)",
+                      (":" in stderr_output and " in " in stderr_output),
+                      f"stderr={stderr_output}")
+        h.test_result("internal error monkeypatch: --out file not written",
+                      not target.exists(), f"file exists={target.exists()}")
+
+
 def main():
     h = Harness("precedent-digest")
     cases = [case_one_spelling, case_case_insensitive, case_legacy_and_flat, case_key_derivation,
@@ -1035,7 +1076,7 @@ def main():
              case_brief_answer_comma_semicolon, case_entry_id_uniqueness, case_top_without_match_error,
              case_unreadable_root, case_fenced_code_block_heading, case_recommendation_prose,
              case_stats_exact_golden, case_internal_error_handling, case_out_file_mode,
-             case_out_stale_file_replaced]
+             case_out_stale_file_replaced, case_internal_error_monkeypatch]
     for case in cases:
         try:
             case(h)

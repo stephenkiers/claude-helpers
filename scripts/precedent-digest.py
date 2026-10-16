@@ -15,7 +15,7 @@ bounded digest of the human rulings found there:
 Model-free and read-only. The only file it ever writes is the one named by --out.
 
 Entry schema (the contract with #293, Pat). Keys, in this exact order:
-  id           str    sha256(path + "\\n" + question) hex digest, first 16 chars.
+  id           str    sha256(path + "\\n" + question + "\\n" + header) hex digest, first 16 chars.
   source       str    open enum. Today: "plan-session", "flow", "review".
                       Consumers MUST tolerate unknown source values.
   repo_key     str    hyphen spelling, "owner-name".
@@ -61,8 +61,10 @@ Exit and stderr contract:
     arguments, --top < 1, a missing or malformed --match file, an unwritable --out.
 
 Provenance note: This reader is proposed under epic #291 as the first cross-run
-reader of claude-action-plan.md. The ADR-0007 amendment (#293) and the Pat
-wiring (#294, #296) must land before this reader's output is consumed.
+reader of claude-action-plan.md. The ADR-0007 amendment (#293) must explicitly
+cover all three sources (plan-session, flow, review), including "Needs you" items
+from review sections. The Pat wiring (#294, #296) must not wire this reader
+until the amendment lands.
 """
 import argparse
 import datetime
@@ -74,6 +76,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Sequence, Set, Tuple, TypedDict
 
 PINNED_KEYS = (
@@ -193,7 +196,11 @@ def _has_marker(text: str) -> bool:
 
 
 def _fold(text: str) -> str:
-    """Normalize text for comparison: lowercase (not casefold, to avoid cross-attribute issues)."""
+    """Normalize text for comparison: lowercase (not casefold, to avoid cross-attribute issues).
+
+    casefold() would map ß→ss, breaking case-insensitive repo-key matching across attributes;
+    lower() is safer for cross-attribute consistency.
+    """
     return text.lower()
 
 
@@ -252,6 +259,7 @@ def _date_for(dir_name: str, file_path: str) -> str:
 
 
 def _ref_for(dir_name: str) -> Optional[int]:
+    """Extract leading digits from a run directory name, or None if not present."""
     match = LEADING_NUM_RE.match(dir_name)
     return int(match.group(1)) if match else None
 
@@ -1286,7 +1294,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _stderr("precedent-digest: %s" % exc)
         return 2
     except Exception as exc:  # never raise on data paths; keep the bug visible
-        _stderr("precedent-digest: internal error (%s: %s)" % (type(exc).__name__, exc))
+        # Extract the innermost frame: get the file, line, and function name
+        tb = traceback.extract_tb(sys.exc_info()[2])
+        if tb:
+            frame = tb[-1]
+            lineno = frame.lineno if frame.lineno is not None else 0
+            source = "%s:%d in %s" % (os.path.basename(frame.filename), lineno, frame.name)
+        else:
+            source = "unknown"
+        _stderr("precedent-digest: internal error (%s: %s) [%s]" % (type(exc).__name__, exc, source))
         return 1
 
 
