@@ -12,7 +12,6 @@ Tests the schema module's public API:
 Run with: python3 tests/test_plan_checkpoint_schema.py
 """
 
-import json
 import sys
 import tempfile
 from pathlib import Path

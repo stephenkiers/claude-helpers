@@ -187,8 +187,8 @@ again there; the plan checkpoint report variant (`kind: report` files) is never 
    question's `brief` under its `id`): put in them what the human would have read in chat outside a
    flow, not a pointer to it, written for a reader who has lost all context. **Required** for
    `/expert-plan` outside a flow (`summary` = the ticket refresher, the North Star line, and the expert
-   round-up; `brief` = that question's `#### Q[n]` decision brief, verbatim); **required for the plan checkpoint
-   report variant** (`summary` = the ticket refresher and expert round-up; carried by the report file instead; see "Report variant" section below); and `/expert-review`'s
+   round-up; `brief` = that question's `#### Q[n]` decision brief, verbatim); and for the **plan checkpoint
+   report variant**, the summary concept (ticket refresher and expert round-up) is instead carried as separate fields `ticket` and `roundup` (see "Report variant" section below); and `/expert-review`'s
    rulings (`summary` = the triage digest; `brief` = that item's *Needs you* block, verbatim). Other
    commands may set both to `null`; when a file has neither, the orchestrator prints the whole
    `context_path` file instead, so a question is never shown bare.
@@ -459,7 +459,7 @@ Fields (report kind only):
 - `value` — the human's chosen or stated value, or the panel recommendation for `accepted-on-continue`.
 - `reply_excerpt` — verbatim text from the human's reply. Required for `answered` and `overridden`; must be non-empty. For `accepted-on-continue`, the excerpt containing the human's "continue".
 - `source` — `"prose"` (direct from reply text), `"form"` (escape-hatch form), or null (for `accepted`).
-- `ambiguous` — true when the reading required an echo (see "Echo" below in Step 5).
+- `ambiguous` — true when the reading required an echo.
 - `reading_echoed` — true when this round's reading was ambiguous and echoed back.
 - `loop_end` — `"continue"` when the human said continue; `"all-answered"` when every must-answer item in the round is `answered` or `overridden`; otherwise null.
 

@@ -219,6 +219,43 @@ def confine_path_to_dir(path_str: str, base_dir: Path) -> Optional[str]:
         return f"path {path_str} is outside {base_dir}"
 
 
+def normalize_whitespace(text: str) -> str:
+    """Normalize whitespace for substring matching.
+
+    Converts multiple consecutive whitespace characters to single spaces
+    and strips leading/trailing whitespace.
+
+    Args:
+        text: The text to normalize
+
+    Returns:
+        Normalized text
+    """
+    import re
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def answer_file_sort_key(filename: str) -> tuple:
+    """Extract numeric sort key from answer file name.
+
+    Extracts the sequence number from filenames like "plan-1.json" or "plan-42.json"
+    and returns a tuple suitable for sorted().
+
+    Args:
+        filename: The basename of the answer file
+
+    Returns:
+        Tuple (seq_num, filename) for use as sort key
+    """
+    import re
+    match = re.match(r'plan-(\d+)', filename)
+    if match:
+        seq_num = int(match.group(1))
+        return (seq_num, filename)
+    # Fallback for unexpected format
+    return (float('inf'), filename)
+
+
 def tier_item(
     brief_type: str,
     protested_by: List[str],

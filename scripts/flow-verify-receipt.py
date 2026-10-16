@@ -203,6 +203,27 @@ def _load_reaction_file(path: Path) -> Optional[Dict]:
         return None
 
 
+def _validate_reply_excerpt(excerpt: str, reply_file: Path) -> bool:
+    """Check if excerpt is present in reply file (whitespace-normalized).
+
+    Args:
+        excerpt: The excerpt to validate
+        reply_file: Path to the .reply-<round>.md file
+
+    Returns:
+        True if excerpt is found in file, False otherwise
+    """
+    if not reply_file.exists():
+        return False
+    try:
+        reply_text = reply_file.read_text(encoding="utf-8")
+        normalized_excerpt = schema.normalize_whitespace(excerpt)
+        normalized_reply = schema.normalize_whitespace(reply_text)
+        return normalized_excerpt in normalized_reply
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def check_report_checkpoint(
     session_dir: Path, flow_dir: Path, decisions_text: str, attempt: int = 1, relay_count: Optional[RelayCount] = None
 ) -> Optional[str]:
@@ -258,7 +279,8 @@ def check_report_checkpoint(
         marker_files.update(relay_count.unanswered)
         # Also need to check answered files
         if adir.exists():
-            for answer_file in sorted(adir.glob("plan-*.json")):
+            answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+            for answer_file in answer_files:
                 if answer_file.name in relay_count.unanswered:
                     continue
                 # Check if this file has an attempt matching our attempt
@@ -271,7 +293,8 @@ def check_report_checkpoint(
     else:
         # Without relay_count, fall back to finding all plan-*.json files for this attempt
         if qdir.exists():
-            for qfile in sorted(qdir.glob("plan-*.json")):
+            qfiles = sorted(qdir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+            for qfile in qfiles:
                 try:
                     qdata = json.loads(qfile.read_text(encoding="utf-8"))
                     if isinstance(qdata, dict) and qdata.get("attempt") == attempt:
@@ -324,8 +347,9 @@ def check_report_checkpoint(
     prose_rounds: Dict[str, int] = {}  # map basename to round number
 
     if adir.exists():
-        # Sort by attempt and round to process in order
-        for answer_file in sorted(adir.glob("plan-*.json")):
+        # Sort by attempt and round to process in order (numeric sort by SEQ number)
+        answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+        for answer_file in answer_files:
             try:
                 answers_data = json.loads(answer_file.read_text(encoding="utf-8"))
                 if not isinstance(answers_data, dict):
@@ -425,6 +449,7 @@ def check_report_checkpoint(
 
         if disposition in ["answered", "overridden"]:
             reply_excerpt = None
+            round_num = None
             for answer_file in adir.glob("plan-*.json"):
                 try:
                     answers_data = json.loads(answer_file.read_text(encoding="utf-8"))
@@ -438,17 +463,38 @@ def check_report_checkpoint(
                         items = answers_data.get("items", {})
                         if handle in items and items[handle].get("disposition") == disposition:
                             reply_excerpt = items[handle].get("reply_excerpt")
+                            round_num = answers_data.get("round")
                             break
                     else:
                         answers = answers_data.get("answers", {})
                         if handle in answers and answers[handle].get("disposition") == disposition:
                             reply_excerpt = answers[handle].get("reply_excerpt")
+                            round_num = answers_data.get("round")
                             break
                 except (OSError, UnicodeDecodeError, ValueError):
                     pass
 
             if not reply_excerpt:
                 return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+
+            # F15: Validate that reply_excerpt is actually in the .reply-<round>.md file
+            if round_num and reply_excerpt:
+                # Find the corresponding answer file basename to construct the reply file path
+                reply_basename = None
+                for afile in adir.glob("plan-*.json"):
+                    try:
+                        adata = json.loads(afile.read_text(encoding="utf-8"))
+                        if isinstance(adata, dict) and adata.get("round") == round_num and adata.get("attempt") == attempt:
+                            # Found the answer file for this round; construct the reply file path
+                            reply_basename = f"{afile.stem}.reply-{round_num}.md"
+                            break
+                    except (OSError, UnicodeDecodeError, ValueError):
+                        pass
+
+                if reply_basename:
+                    reply_file = adir / reply_basename
+                    if not _validate_reply_excerpt(reply_excerpt, reply_file):
+                        return f"plan checkpoint incomplete (reply excerpt not found in {reply_file.name})"
 
         if disposition == "accepted-on-continue":
             found = False
@@ -470,6 +516,13 @@ def check_report_checkpoint(
                                 return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
                             if not reply_excerpt:
                                 return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+                            # F15: Validate excerpt against reply file
+                            round_num = answers_data.get("round")
+                            if round_num and reply_excerpt:
+                                reply_basename = f"{answer_file.stem}.reply-{round_num}.md"
+                                reply_file = adir / reply_basename
+                                if not _validate_reply_excerpt(reply_excerpt, reply_file):
+                                    return f"plan checkpoint incomplete (reply excerpt not found in {reply_file.name})"
                             found = True
                             break
                     else:
@@ -481,6 +534,13 @@ def check_report_checkpoint(
                                 return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
                             if not reply_excerpt:
                                 return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+                            # F15: Validate excerpt against reply file
+                            round_num = answers_data.get("round")
+                            if round_num and reply_excerpt:
+                                reply_basename = f"{answer_file.stem}.reply-{round_num}.md"
+                                reply_file = adir / reply_basename
+                                if not _validate_reply_excerpt(reply_excerpt, reply_file):
+                                    return f"plan checkpoint incomplete (reply excerpt not found in {reply_file.name})"
                             found = True
                             break
                 except (OSError, UnicodeDecodeError, ValueError):
@@ -594,6 +654,24 @@ def check_report_checkpoint(
     # Rule 10: Check for repeated pushbacks on same handle by same expert
     pushback_tracker: Dict[tuple, int] = {}  # (expert, handle) -> count
 
+    # F9: First, check that all expected reply-mode reaction files exist and are complete
+    for entry in expected_reactions:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("mode") != "reply":
+            continue
+
+        slug = entry.get("slug")
+        path_str = entry.get("path")
+        if not slug or not path_str:
+            continue
+
+        path = session_dir / path_str
+        data = _load_reaction_file(path)
+        if not data or not data.get("complete"):
+            return f"plan checkpoint incomplete (reaction file missing or incomplete: {path_str})"
+
+    # Now process pushback reactions
     for entry in expected_reactions:
         if not isinstance(entry, dict):
             continue
@@ -738,13 +816,24 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
 
     decisions_text = read_file(decisions_file)
 
+    # Parse ATTEMPT from receipt (default to 1 if not found)
+    attempt = 1
+    for line in receipt.split("\n"):
+        if line.startswith("ATTEMPT:"):
+            attempt_str = line.split(":", 1)[1].strip()
+            try:
+                attempt = int(attempt_str)
+            except ValueError:
+                pass
+            break
+
     # Branch on checkpoint kind: report vs. legacy per-question
     relay_count = count_relayed_questions(flow_dir, "plan", receipt)
     if relay_count.markers > 0 and flow_dir is not None:
         # Check if any marker-named report has kind: "report"
         is_report_checkpoint = _is_report_checkpoint(flow_dir, relay_count)
         if is_report_checkpoint:
-            return check_report_checkpoint(session_dir, flow_dir, decisions_text)
+            return check_report_checkpoint(session_dir, flow_dir, decisions_text, attempt, relay_count)
 
     # Legacy per-question rule
     briefs = count_briefs(decisions_text)
