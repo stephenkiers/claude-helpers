@@ -419,7 +419,7 @@ So: numbering is 0-based; a bare token with no matching argument stays literal; 
   The "from the main worktree" phrase is necessary (audit Finding 1) because Start fresh's guard refuses to delete the worktree the session is in.
 - **`/track-and-start` alternative**: All four handoff blocks (Local Plan, Tracker Ticket, GitHub Pivot, GitHub Fresh) add a labelled alternative: `Or run the whole lifecycle with /expert-flow` (GitHub blocks specify "starts again from planning — it re-runs /expert-plan and track for this issue"). Local Plan and Tracker blocks add an honest label: "(/expert-flow runs only for a GitHub issue — in this worktree it will stop and point you to the main worktree; it also needs a GitHub remote)". The existing `/implement-with-haiku` line stays.
 - **No-issue question** (Q7, new ask site): When detection finds no issue, `AskUserQuestion` header `Which issue`, free-text input, parsed exactly like `ISSUE_ARG` (the `case "$ISSUE_ARG"` block in "Fresh run: resolve the issue", then `gh issue view`). Context carries the detection failure reason (e.g. "no `.claude/github-cache.json` here", "cache branch ≠ current branch"). Invalid input, `Abort`, or no answer → `flow not started — run /expert-flow <issue>` (guard_block, no telemetry). A non-GitHub worktree that has a non-GitHub cache blocks any answer with `this worktree is not for a GitHub issue — run /expert-flow <issue> from the main worktree`.
-- **Per-run flags** (`--no-gates`, `--auto-merge`) remain not carried across the hand-off. This is pre-existing (resume rule 9), not a regression.
+- **Per-run flags** (`--no-gates`, `--auto-merge`) remain not carried across the hand-off. This is pre-existing (resume rule 9), not a regression. *(`--no-gates` is gone since the 2026-10-16 third amendment; its replacement `--gates` is stored and does carry.)*
 
 **Consequences.** `/track-and-start --worktree-only` and a completed hand-off both lead to a copyable bare `claude "/expert-flow"` that resumes at `plan` without prompting. A fresh `/track-and-start` GitHub-issue worktree with no existing flow runs `/expert-plan` and `track` again (accepted, Q6). Local Plan and Tracker worktrees always end at a pointer to the main worktree. A no-remote project stops at Project detection, not the new question. Concurrent bare orchestrators on the same hand-off flow both see `live == null` before either spawns; the second to start loses (same as today's `--resume` rule 1, no new concurrency hazard). The bare form is keyed on the argument count being zero, not on the parsed issue: any argument at all, including an empty string or one that parses to nothing, `guard_block`s, so an argument lost to a parse failure (the #307 class) fails loudly instead of silently routing to the no-argument run.
 
@@ -493,3 +493,31 @@ A resume-time validation failure logs `failed` and goes to Hard stop **without i
 `failures[STEP]`**, because no attempt ran on resume. The Retry budget counts only spawned attempts.
 
 Spawned-agent receipts are validated as before. Only the hand-finished case is exempt.
+
+## Amendment (2026-10-16, third): step gates are opt-in
+
+**Problem.** The 2026-10-14 "more human in the loop" amendment made the flow stop after `plan`, `implement`,
+`review`, `fix`, and `verify` to ask Continue / Pause / Abort, with `--no-gates` as a per-run opt-out that
+`--resume` never restored and epic child flows ignored. In practice that is a stop with nothing to decide:
+the human's part of the flow is answering what a step asks, not confirming that it finished. The gates were
+added alongside the relay-fidelity fixes, but what actually catches a step that skipped its questions is the
+receipt verifier and the Fidelity audit, not a human clicking Continue. A flow that stops to be told to go on
+is being babysat, and `--no-gates` could not be made to stick.
+
+**Decision.** `--no-gates` is replaced by `--gates`, and the default flips:
+
+- Step gates are **off by default**. Without `--gates` the flow stops only when a step relays a question,
+  at the merge gate, and on a failure (Hard stop). The Step gate section, its digest files
+  (`gates/<NN>-<STEP>.md`), Pause / Abort / free-text handling, and resume rule 2 are unchanged and run
+  only when gates are on.
+- `--gates` is persisted as `flags.step_gates` and **restored on `--resume`**. The "never a stored default"
+  rule was written for flags that remove a safety stop (`--auto-merge`, which keeps that rule); a flag that
+  adds stops is safe to remember. Epic child flows inherit the parent's `flags.step_gates`.
+- The 2026-10-14 amendment's "a flow now stops after every substantive step" consequence no longer holds
+  by default; "a plan or review that reaches the human with fewer questions than it raised is a failed
+  step" still does, enforced by the verifier and the audit, not by the gate.
+
+**Consequences.** A default run goes from issue to the merge gate with no stop that is not an answer or a
+failure. Reviewing what a step produced before the next builds on it is a per-flow choice (`--gates`), and a
+flow started with it keeps it across resumes and hand-offs. Existing `state.json` files carry `flags.no_gates`;
+a resume reads a missing `flags.step_gates` as `false`.

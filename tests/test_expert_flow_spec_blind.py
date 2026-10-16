@@ -173,7 +173,7 @@ t("expert-flow.md has E4 section", has_e4_section)
 
 # Check that E4 mentions flag initialization or child behavior
 has_flag_init = bool(re.search(
-    r"(initialise|initialize).*flags|flags.*(false|no_gates|auto_merge)|children.*initialise",
+    r"(initialise|initialize).*flags|flags.*(false|step_gates|auto_merge)|children.*initialise",
     flow_content,
     re.IGNORECASE
 ))

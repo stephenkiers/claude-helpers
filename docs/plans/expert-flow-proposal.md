@@ -316,7 +316,7 @@ always merges at the gate, `--stack` is never needed.
     [--plan-effort 2|3]        default: heuristic (scripts/plan-effort.py), as today
     [--review-effort 1-5]      default: heuristic; a risk-keyword floor to 4 is relayed as a question
     [--auto-merge]             skip the merge gate (never a stored default)
-    [--no-gates]               skip the five step gates for one run (never a stored default) — added by ADR-0023's 2026-10-14 amendment
+    [--gates]                  opt into the five step gates (stored per flow) — added as --no-gates by ADR-0023's 2026-10-14 amendment, flipped to opt-in by the 2026-10-16 (third) amendment
     [--from <step>]            start at a later step for a ticket already in flight by hand
     [--resume <flow-dir|issue#>]
     [--list]
