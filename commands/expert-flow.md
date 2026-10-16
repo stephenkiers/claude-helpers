@@ -1216,7 +1216,7 @@ Every flow maintains an append-only ledger `${FLOW_DIR}/human.jsonl` that tracks
 **Passing human text to the script.** Human text is passed through stdin from a **quoted** heredoc, so the shell never expands it:
 
 ```bash
-python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir <FLOW_DIR> --kind <KIND> --step <STEP> --attempt <k> --text-stdin <<'HUMAN_TEXT_EOF'
+python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind <KIND> --step <STEP> --attempt <k> --text-stdin <<'HUMAN_TEXT_EOF'
 <the human's text, verbatim>
 HUMAN_TEXT_EOF
 ```
@@ -1235,7 +1235,7 @@ HUMAN_TEXT_EOF
 
 If the target seq is not unambiguous from the human's words, the orchestrator does not infer one — it records the text under the site's normal kind (`answer` / `gate_note`) instead, naming one sentence what it could not infer. It never adds a question of its own (ADR-0023 §2 rule).
 
-### Relaying a question
+### Step gate
 
 The relay carries only the questions a step chose to ask. The step gate is the orchestrator's own
 decision point, like the merge gate: after a step closes `OK`, the human reads what it produced and
