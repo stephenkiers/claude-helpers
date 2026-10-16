@@ -351,7 +351,7 @@ Collect the input to plan against:
    - **Constraints**: What ADRs, invariants, or project rules apply
    - **Unknowns**: What the ticket leaves ambiguous or unspecified
 
-Write `{SESSION_DIR}/context.md` with the requirements, explicit user constraints verbatim, relevant existing behavior with file refs, known unknowns, and starting scope.
+Write `{SESSION_DIR}/context.md` with the requirements, explicit user constraints verbatim, relevant existing behavior with file refs, known unknowns, and starting scope. In a flow, apply the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers): add a `## Human ledger` section to `context.md` holding the fenced records.
 
 **Epic mode marker.** When `--epic` was passed (`EPIC_MODE=true` from the parser), add the line
 `EPIC_MODE: true` on its own line at the top of `{SESSION_DIR}/context.md` (directly under the title).

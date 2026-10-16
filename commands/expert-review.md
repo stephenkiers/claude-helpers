@@ -326,7 +326,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    or carry the already-known literal values forward as text, rather than persisting them to disk.
 
 3. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
-   and pass to all reviewer prompts. Key extractions:
+   and pass to all reviewer prompts. In a flow, apply the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers): append the fenced records to `PROJECT_CONTEXT` under a `Human ledger (from /expert-flow)` heading. Key extractions:
    - `techStack.language` → primary language (skips detection in step 4)
    - `fragility.*` → Fragile Feynman; `docStyle` → Contract Chris;
      `typeChecker`, `propertyTestingLib` → Tara TypeSafe

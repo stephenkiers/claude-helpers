@@ -553,6 +553,7 @@ Each prompt must be **fully self-contained** (the agent has no other context). I
   > **This was already decided by a human reviewer — implement exactly what is described below. Do not
   > treat it as open, do not propose an alternative, do not flag it back as ambiguous.**
 - The verification commands from the plan (or `n/a` if none for this unit)
+- In a flow (`FLOW_DIR` set): the fenced human-ledger records, per the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers).
 - The complete report trailer instruction (copy from `plan-implementer.md`'s trailer section, which
   ends in `REPORT_FILE: <path> | none`, not a commit)
 - A literal line `Report file: <SCRATCH_PATH>/round1-<unit-id>-report.md` (absolute path, with
