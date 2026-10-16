@@ -1,12 +1,14 @@
 #!/bin/bash
 set -e
 
-# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry] [--check]
+# Usage: ./install.sh [--with-zsh-keybindings] [--with-telemetry] [--check] [--from-worktree]
 #   --check                  Read-only drift report: repo files not linked into ~/.claude, wrong or
 #                            stale links. Exit 0 = no drift, 1 = drift. Changes nothing.
 #   --with-zsh-keybindings   Also add Option+Arrow word jumping to ~/.zshrc (opt-in).
 #   --with-telemetry         Register telemetry hooks in ~/.claude/settings.json (opt-in).
+#   --from-worktree          Allow installing from a linked git worktree (refused by default).
 WITH_ZSH_KEYBINDINGS=0
+FROM_WORKTREE=0
 WITH_TELEMETRY=0
 CHECK_ONLY=0
 for arg in "$@"; do
@@ -14,11 +16,51 @@ for arg in "$@"; do
         --with-zsh-keybindings) WITH_ZSH_KEYBINDINGS=1 ;;
         --with-telemetry) WITH_TELEMETRY=1 ;;
         --check) CHECK_ONLY=1 ;;
+        --from-worktree) FROM_WORKTREE=1 ;;
     esac
 done
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
+
+# Resolve a git path (e.g. --git-dir, --git-common-dir) to an absolute, symlink-free path.
+# Prints nothing when REPO_DIR is not a git checkout. Uses only rev-parse + cd/pwd, so it does
+# not depend on newer git flags such as --path-format (git 2.31+).
+abs_git_path() {
+    local p
+    p=$(git -C "$REPO_DIR" rev-parse "$1" 2>/dev/null) || return 0
+    [ -n "$p" ] && (cd "$REPO_DIR" && cd "$p" && pwd -P)
+    return 0
+}
+
+# Refuse to install from a linked worktree: every ~/.claude link would point into a feature
+# branch that lags main and is deleted at /cleanup, so merged work silently never goes live.
+# Exempt: --check (read-only, so it is safe from any checkout), --from-worktree (explicit opt-in),
+# a non-git copy (no git dir, so the guard does not apply), and the main worktree (git-dir ==
+# git-common-dir). Bare-repo layouts are skipped too: their first worktree entry is the bare repo,
+# which has no working tree to point the user at.
+if [ "$CHECK_ONLY" -eq 0 ] && [ "$FROM_WORKTREE" -eq 0 ]; then
+    GIT_DIR_ABS=$(abs_git_path --git-dir)
+    GIT_COMMON_ABS=$(abs_git_path --git-common-dir)
+    # Inside a work tree but unable to resolve either git dir (an unusual or very old git): say so
+    # rather than skipping the guard silently. Not a git copy at all stays quiet, as documented.
+    if { [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_ABS" ]; } \
+        && git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "WARNING: could not resolve the git dirs of $REPO_DIR; the linked-worktree guard did not run" >&2
+    fi
+    if [ -n "$GIT_DIR_ABS" ] && [ -n "$GIT_COMMON_ABS" ] && [ "$GIT_DIR_ABS" != "$GIT_COMMON_ABS" ]; then
+        # Only a linked worktree reaches here, so the worktree list is read just for the message.
+        WORKTREE_LIST=$(git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true)
+        MAIN_CHECKOUT=$(printf '%s\n' "$WORKTREE_LIST" | sed -n '1s/^worktree //p')
+        MAIN_IS_BARE=$(printf '%s\n' "$WORKTREE_LIST" | sed -n '2p')
+        if [ -n "$MAIN_CHECKOUT" ] && [ "$MAIN_IS_BARE" != "bare" ]; then
+            echo "ERROR: $REPO_DIR is a linked worktree; install from the main worktree instead:" >&2
+            echo "  cd $MAIN_CHECKOUT && ./install.sh" >&2
+            echo "(pass --from-worktree to install from this worktree anyway)" >&2
+            exit 1
+        fi
+    fi
+fi
 
 # The one enumeration of repo files that get linked; install and --check both use it.
 # A real file at a managed path is informational only (reported as not-ours, not drift):

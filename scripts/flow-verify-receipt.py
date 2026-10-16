@@ -325,22 +325,23 @@ def check_report_checkpoint(
     round1_basename = min(report_files.keys()) if report_files else None
     if round1_basename:
         round1_data = report_files[round1_basename]
-        if isinstance(round1_data.get("items"), list):
-            report_handles = set()
-            for item in round1_data["items"]:
-                if isinstance(item, dict) and "handle" in item:
-                    report_handles.add(item["handle"])
+        if not isinstance(round1_data.get("items"), list):
+            return f"plan checkpoint incomplete (malformed report file: {round1_basename})"
+        report_handles = set()
+        for item in round1_data["items"]:
+            if isinstance(item, dict) and "handle" in item:
+                report_handles.add(item["handle"])
 
-            if report_handles != ledger_handles:
-                missing = ledger_handles - report_handles
-                extra = report_handles - ledger_handles
-                reason = "plan checkpoint incomplete (round-1 handles mismatch"
-                if missing:
-                    reason += f": missing {', '.join(sorted(missing))}"
-                if extra:
-                    reason += f": extra {', '.join(sorted(extra))}"
-                reason += ")"
-                return reason
+        if report_handles != ledger_handles:
+            missing = ledger_handles - report_handles
+            extra = report_handles - ledger_handles
+            reason = "plan checkpoint incomplete (round-1 handles mismatch"
+            if missing:
+                reason += f": missing {', '.join(sorted(missing))}"
+            if extra:
+                reason += f": extra {', '.join(sorted(extra))}"
+            reason += ")"
+            return reason
 
     # Rule 3, 4: Check answers files for all report rounds and check for unresolved
     final_dispositions: Dict[str, str] = {}

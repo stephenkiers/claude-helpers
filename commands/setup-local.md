@@ -40,7 +40,9 @@ tracked. See `~/.claude/reviewers/README.md` for the full context on local overr
 
 1. Resolve the repo root (the directory this command lives in).
 2. Run `./install.sh` from the repo root (which performs all the symlinking, pruning, and
-   preferences bootstrapping described above).
+   preferences bootstrapping described above). From a linked worktree it refuses and prints the main
+   worktree's path: run it there instead, unless the user explicitly asked to install this branch
+   (then pass `--from-worktree`).
 3. **Verify** by listing the five target directories and confirming the new symlinks resolve.
 4. Report a concise summary: how many files were linked, how many were pruned, how many were backed
    up, and whether `preferences.yaml` was created.
@@ -48,7 +50,8 @@ tracked. See `~/.claude/reviewers/README.md` for the full context on local overr
 ## `/setup-local --check` (read-only drift report)
 
 When the argument is `--check`, run `./install.sh --check` from the repo root instead of installing
-and report its output verbatim. It creates, removes and moves nothing. Lines: `unlinked:` (repo file
+and report its output verbatim. It creates, removes and moves nothing, and it runs from a linked
+worktree too (the linked-worktree refusal in step 2 does not apply to `--check`). Lines: `unlinked:` (repo file
 with no link in `~/.claude`), `wrong-link:` (link points elsewhere), `stale:` (link into this repo
 whose target is gone), `not-ours:` (a real user file in the way; informational). Exit 0 means no
 drift, 1 means drift: tell the user to re-run `/setup-local`. Missing links are the usual reason

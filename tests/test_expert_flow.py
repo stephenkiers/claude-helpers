@@ -605,6 +605,50 @@ def main():
     h.test_result("OK branch runs the Step gate before STEP advances",
                   'hand off to the "Step gate"' in text and "Continue advances `STEP`" in text)
     h.test_result("resume rule 2 re-asks a gate the human paused at", "never re-run — whatever `status` says" in text)
+    # Section-scoped: the resume rules sit under the `--resume` heading, up to the next `### ` heading.
+    # Whitespace is normalized so the assertions do not depend on how the markdown is hard-wrapped.
+    resume_m = re.search(r"^### `--resume`.*?(?=^### )", text, re.M | re.S)
+    resume = " ".join(resume_m.group(0).split()) if resume_m else ""
+    h.test_result("resume rule 2 checks how a taken-over OK was reached before its gate",
+                  "Check how the `OK` was reached before the gate." in resume
+                  and 'grep -E "^[^ ]+ <STEP> (begin|retry|ok|failed|taken-over)$" "$FLOW_DIR/log.md" | tail -n 1' in resume)
+    h.test_result("resume: newest ok line goes to the gate as-is",
+                  "**Newest line is `ok`** → the loop validated this receipt; go to the gate as-is." in resume)
+    h.test_result("resume: hand-finished is keyed to the newest taken-over line, not to failed",
+                  "**Newest line is `taken-over`** → **hand-finished**" in resume
+                  and "Skip receipt validation entirely (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit." in resume
+                  and "**Newest line is `failed`** → **hand-finished**" not in resume)
+    h.test_result("resume: a failed, begin, or retry newest line (or none) is validated, never hand-finished",
+                  "**Newest line is `failed`, `begin`, or `retry`, or there is none** → not hand-finished" in resume
+                  and "never passed unchecked" in resume)
+    h.test_result("resume: hand-finished gate digest says not audited",
+                  "digest prefixed by the line `hand-finished, not audited`" in resume)
+    h.test_result("resume: hand-finished logs hand-finished, and the taken-over line keeps the marker",
+                  "Log `hand-finished` (the newest line stays `taken-over`" in resume
+                  and "`hand-finished`, `awaiting`" in text)
+    h.test_result("resume: no outcome line is validated, never passed unchecked",
+                  "or there is none** → not hand-finished" in resume and "never passed unchecked" in resume)
+    # Take over is the only writer of taken-over, so the event must be written at both Take over sites.
+    h.test_result("event list names taken-over beside failed and hand-finished",
+                  "`failed`, `taken-over`, `hand-finished`" in " ".join(text.split()))
+    hard_stop = " ".join(subsection(text, "### Hard stop").split())
+    take_over_hs = re.search(r"\*\*Take over\*\* — leave everything as is.*?(?=\*\*Abort\*\*)", hard_stop)
+    h.test_result("Hard stop Take over logs taken-over (section-scoped, whitespace-normalized)",
+                  bool(take_over_hs) and "log `taken-over` for `<STEP>`" in take_over_hs.group(0))
+    gate_block = " ".join(text.split())
+    take_over_gate = re.search(r"\*\*Take over\*\* — same as Hold.*?(?=\*\*merge\.\*\*)", gate_block)
+    h.test_result("merge gate Take over logs taken-over (section-scoped, whitespace-normalized)",
+                  bool(take_over_gate) and "also log `taken-over` for `merge`" in take_over_gate.group(0))
+    h.test_result("ADR-0023 second 2026-10-16 amendment keys hand-finished to taken-over",
+                  "`taken-over`" in " ".join(adr.split()).split("## Amendment (2026-10-16, second)")[-1])
+    h.test_result("resume: --since reads the newest begin or retry line, failing validation if neither exists",
+                  'grep -E "^[^ ]+ <STEP> (begin|retry)$" "$FLOW_DIR/log.md" | tail -n 1' in resume
+                  and "no begin or retry line for <STEP>" in resume)
+    h.test_result("resume: a resume-time validation failure does not increment failures[STEP]",
+                  "**Do not increment `failures[STEP]`** — no attempt ran on resume" in resume)
+    h.test_result("ADR-0023 records the 2026-10-16 second amendment (hand-finished is human-attested)",
+                  "## Amendment (2026-10-16, second): a hand-finished `OK` is human-attested, not audited" in adr
+                  and "**without incrementing `failures[STEP]`**" in " ".join(adr.split()))
     h.test_result("gate Abort resumes to re-ask, never re-run",
                   "never re-run — whatever `status` says" in text and "`--resume`" in enclosing_section(text, "**Abort** — set `status: failed`"))
     h.test_result("gate writes status: paused before the Ask",

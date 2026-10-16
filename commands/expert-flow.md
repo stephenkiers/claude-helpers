@@ -432,6 +432,35 @@ re-runs the `worktree` step and then hands off like a fresh run. Resume rules, a
    its receipt `steps/<NN>-<STEP>.md` is `Decision: OK` with `<!-- step-end -->`, and `gates[STEP]`
    is not `continue` → the step finished and the human paused, aborted, or was interrupted at its gate. Re-ask the gate (after "Telemetry begin", run "Step gate" for `STEP`; a `gate_note` in the state
    is printed above the digest and cleared on Continue), never re-run — whatever `status` says. A recorded `continue` is never re-asked.
+   **Check how the `OK` was reached before the gate.** The step can reach this state through Take over:
+   a human finished or repaired the failed step by hand, so the receipt reads `OK` and the loop may never
+   have checked it. Take over writes a `taken-over` line for the step at the moment the human chooses it,
+   and no spawned attempt writes one. Find the newest of the step's lifecycle lines (`begin`, `retry`,
+   `ok`, `failed`, `taken-over`; other lines such as `hand-finished` are not counted):
+
+   ```bash
+   grep -E "^[^ ]+ <STEP> (begin|retry|ok|failed|taken-over)$" "$FLOW_DIR/log.md" | tail -n 1
+   ```
+
+   - **Newest line is `taken-over`** → **hand-finished** (a human-attested Take over finish). Skip receipt
+     validation entirely (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit. Log
+     `hand-finished` (the newest line stays `taken-over` until a later `begin`, `retry`, `ok`, or `failed`
+     line supersedes it, so this check still reads hand-finished on every later resume), `WRITE-STATE`, and
+     run the gate with the digest prefixed by the line `hand-finished, not audited`. The audit exists to
+     catch agent shortcuts, and a human finish has none to catch. Do not touch `failures[STEP]`.
+   - **Newest line is `ok`** → the loop validated this receipt; go to the gate as-is.
+   - **Newest line is `failed`, `begin`, or `retry`, or there is none** → not hand-finished. A `failed` line
+     is also what every spawned attempt's failure leaves behind (validation, reduced-run rejection), so it
+     never proves a human finished the step. The receipt is treated as spawned-agent output and is
+     validated, never passed unchecked. Take `--since` as the timestamp (the first field) of the newest
+     `<STEP> begin` or `<STEP> retry` line (`grep -E "^[^ ]+ <STEP> (begin|retry)$" "$FLOW_DIR/log.md" | tail -n 1 | cut -d' ' -f1`).
+     If neither line exists, the validation fails with reason `no begin or retry line for <STEP>`.
+     Otherwise run step 5's receipt validation (rules 1–8, with `K` = `attempts[STEP]`; rule 8's `--since`
+     is this timestamp, because rule 1 cleared `live`), then, for `plan`, `implement`, `review`, and `fix`,
+     the "Fidelity audit" (its telemetry line included). Both pass → log `ok` and run the gate. Either
+     fails → no stage is open, so none is closed: log `failed`, `WRITE-STATE`, and go to "Hard stop" with
+     the reason. **Do not increment `failures[STEP]`** — no attempt ran on resume, so the Retry budget is
+     untouched. The human can still Take over again.
 3. `status: done` → print `flow already done` and the PR URL; stop, no telemetry.
 3a. `status: abandoned` → ask once with `AskUserQuestion` — "This flow was abandoned at `<STEP>`.
    Resume it?" — options `Yes — resume (Recommended)` and `No — stop`. On `No` (or no answer), print
@@ -719,8 +748,9 @@ Append to the log with a fixed format — step names and timestamps only, never 
 printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<STEP>" "<EVENT>" >> "$FLOW_DIR/log.md"
 ```
 
-where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `awaiting`, `resumed`, `gate`, `paused`,
-`skipped`, `rebased`, `rebase-worker`, `aborted`, `abandoned`, `handoff`, `done`. (`handoff` is logged once, by the fresh-run hand-off.)
+where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `taken-over`, `hand-finished`, `awaiting`, `resumed`, `gate`, `paused`,
+`skipped`, `rebased`, `rebase-worker`, `aborted`, `abandoned`, `handoff`, `done`. (`handoff` is logged once, by the fresh-run hand-off.
+`taken-over` is written by Take over at the Hard stop and at the merge gate; it is the only record that a human chose to finish a step by hand, and resume rule 2 reads it.)
 
 ## Steps
 
@@ -1254,9 +1284,10 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
 4. Ask (header `Flow stop`):
    - **Retry** — re-run the step. Offered only while `failures[STEP] < 2`. After a reduced-run
     rejection the spawn carries the extra line from "Fidelity audit".
-   - **Take over** — leave everything as is; `status: paused`; if the failed step is `merge`, reset
-     `gate_passed: false`; print the stop lines again; close telemetry (`command-end --outcome
-     interrupted`); end the turn.
+   - **Take over** — leave everything as is; log `taken-over` for `<STEP>` (written now, at the moment of
+     choice; resume rule 2 reads it as the human's attestation); `status: paused`; if the failed step is
+     `merge`, reset `gate_passed: false`; print the stop lines again; close telemetry (`command-end
+     --outcome interrupted`); end the turn.
    - **Abort** — `status: failed`, log `aborted`, `command-end --outcome failure --failure-class
      other`; end the turn. Nothing is deleted.
 
@@ -1404,7 +1435,8 @@ session), skip the gate too. Otherwise ask (header `Merge gate`):
 - **Hold** — `status: paused` at `merge`, `gate_passed` stays `false`, log `paused`, `WRITE-STATE`,
   print the stop lines, `command-end --outcome interrupted` (no stage is open at the gate), end the
   turn. The next `--resume` re-asks this gate.
-- **Take over** — same as Hold but worded for a human who intends to finish by hand.
+- **Take over** — same as Hold (including the `paused` log line), and also log `taken-over` for `merge`
+  before `WRITE-STATE`; worded for a human who intends to finish by hand.
 
 **merge.** Args: `<WORKTREE>`. Runs in `MAIN_WORKTREE` (the ticket worktree is removed by
 `/cleanup` at the end of this step — including the directory the orchestrator itself is sitting in,

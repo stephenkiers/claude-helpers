@@ -11,7 +11,7 @@ philosophy and [docs/adr/](docs/adr/) for the design decisions behind it.
 **Precondition:** `install.sh` now checks for Python 3.8+ (required by `scripts/workflow/`); it will fail loudly and early if python3 is missing or too old.
 
 Run `/setup-local` in this repo (or `./install.sh` for the no-Claude path). It is idempotent — safe to
-re-run any time.
+re-run any time. Both refuse to run from a linked worktree (`~/.claude` links must point at the main worktree) unless `--from-worktree` is passed.
 
 It creates **file-level symlinks** from `~/.claude/{dir}/` into this repo for each of `commands`,
 `reviewers`, `prompts`, `agents`, and `scripts`. File-level (not directory-level) symlinks let your

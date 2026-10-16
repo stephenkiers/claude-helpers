@@ -102,7 +102,8 @@ Before calling `gh issue view` or `gh issue list`, check the local JSON cache:
 
 1. Detect the issue cache: `CACHE_FILE` from the **Project Detection** block in
    `~/.claude/prompts/worktree-reference.md` (already set if detection ran earlier)
-2. Read the cache file and look up the issue number in the `issues` object
+2. Read the cache file and look up the issue number in the `issues` map (keyed by issue number, e.g.
+   `{"issues": {"58": {...}}}`)
 3. If found in cache, use that data — **skip the `gh` API call**
 4. Only fall back to `gh issue view` if the issue is **not in the cache**
 5. After creating a new issue, append it to the cache (see "Cache Write-Back" below)
@@ -117,7 +118,7 @@ After creating a new issue via `gh issue create`, add it to the cache:
 ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 
 # Detect cache path (same project detection as above)
-# Use jq or a script to add the new entry to issues.json:
+# Use jq or a script to add the new entry to issues.json (a map keyed by issue number):
 # .issues["$ISSUE_NUM"] = { number, title, state: "open", labels, milestone, assignee, url }
 ```
 
@@ -135,7 +136,7 @@ ISSUE_NUM=$(echo "$BRANCH" | grep -oE '^[0-9]+' || echo "")
 if [ -n "$ISSUE_NUM" ]; then
   # Try cache first, fall back to API
   if [ -f "$CACHE_FILE" ]; then
-    CACHED=$(jq -r ".issues[\"$ISSUE_NUM\"] // empty" "$CACHE_FILE" 2>/dev/null)
+    CACHED=$(jq -r --arg num "$ISSUE_NUM" '.issues[$num] // empty' "$CACHE_FILE" 2>/dev/null)
     if [ -n "$CACHED" ]; then
       echo "$CACHED"
     else
