@@ -432,20 +432,32 @@ re-runs the `worktree` step and then hands off like a fresh run. Resume rules, a
    its receipt `steps/<NN>-<STEP>.md` is `Decision: OK` with `<!-- step-end -->`, and `gates[STEP]`
    is not `continue` → the step finished and the human paused, aborted, or was interrupted at its gate. Re-ask the gate (after "Telemetry begin", run "Step gate" for `STEP`; a `gate_note` in the state
    is printed above the digest and cleared on Continue), never re-run — whatever `status` says. A recorded `continue` is never re-asked.
-   **Unless the loop never validated that `OK`.** The step can reach this state through Take over: it
-   failed, a human finished or repaired it by hand, and the receipt now reads `OK` without the loop
-   having checked it. Find the newest outcome line for the step:
+   **Check how the `OK` was reached before the gate.** The step can reach this state through Take over:
+   it failed, and a human finished or repaired it by hand, so the receipt reads `OK` and the loop may
+   never have checked it. Find the newest outcome line for the step (`begin`, `retry`, and other lines
+   are not outcomes):
 
    ```bash
    grep -E "^[^ ]+ <STEP> (ok|failed)$" "$FLOW_DIR/log.md" | tail -n 1
    ```
 
-   If it ends in `failed`, validate before the gate: run step 5's receipt validation (rules 1–8, with
-   `K` = `attempts[STEP]` and `--since` the timestamp of the newest `<STEP> begin` log line), then, for
-   `plan`, `implement`, `review`, and `fix`, the "Fidelity audit" (its telemetry line included). Both
-   pass → log `ok` and run the gate. Either fails → no stage is open, so none is closed: increment
-   `failures[STEP]`, log `failed`, `WRITE-STATE`, and go to "Hard stop" with the reason. Never let a
-   hand-written `OK` reach the gate unchecked; the human can still Take over again.
+   - **Newest line is `ok`** → the loop validated this receipt; go to the gate as-is.
+   - **Newest line is `failed`** → **hand-finished** (a human-attested Take over finish). Skip receipt
+     validation entirely (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit. Log
+     `hand-finished` (the outcome line stays `failed`, so this check still reads hand-finished on every
+     later resume), `WRITE-STATE`, and run the gate with the digest prefixed by the line
+     `hand-finished, not audited`. The audit exists to catch agent shortcuts, and a human finish has none
+     to catch. Do not touch `failures[STEP]`.
+   - **No outcome line** → not hand-finished, so the receipt is treated as spawned-agent output and is
+     validated, never passed unchecked. Take `--since` as the timestamp (the first field) of the newest
+     `<STEP> begin` or `<STEP> retry` line (`grep -E "^[^ ]+ <STEP> (begin|retry)$" "$FLOW_DIR/log.md" | tail -n 1 | cut -d' ' -f1`).
+     If neither line exists, the validation fails with reason `no begin or retry line for <STEP>`.
+     Otherwise run step 5's receipt validation (rules 1–8, with `K` = `attempts[STEP]`; rule 8's `--since`
+     is this timestamp, because rule 1 cleared `live`), then, for `plan`, `implement`, `review`, and `fix`,
+     the "Fidelity audit" (its telemetry line included). Both pass → log `ok` and run the gate. Either
+     fails → no stage is open, so none is closed: log `failed`, `WRITE-STATE`, and go to "Hard stop" with
+     the reason. **Do not increment `failures[STEP]`** — no attempt ran on resume, so the Retry budget is
+     untouched. The human can still Take over again.
 3. `status: done` → print `flow already done` and the PR URL; stop, no telemetry.
 3a. `status: abandoned` → ask once with `AskUserQuestion` — "This flow was abandoned at `<STEP>`.
    Resume it?" — options `Yes — resume (Recommended)` and `No — stop`. On `No` (or no answer), print
@@ -733,7 +745,7 @@ Append to the log with a fixed format — step names and timestamps only, never 
 printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<STEP>" "<EVENT>" >> "$FLOW_DIR/log.md"
 ```
 
-where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `awaiting`, `resumed`, `gate`, `paused`,
+where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `hand-finished`, `awaiting`, `resumed`, `gate`, `paused`,
 `skipped`, `rebased`, `rebase-worker`, `aborted`, `abandoned`, `handoff`, `done`. (`handoff` is logged once, by the fresh-run hand-off.)
 
 ## Steps

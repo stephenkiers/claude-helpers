@@ -458,3 +458,24 @@ The reason strings in the verifier are, for example, `plan checkpoint incomplete
 ## Amendment (2026-10-16): a resumed `OK` the loop never validated is validated before its gate
 
 On `--resume`, a step whose receipt reads `OK` normally goes straight to its step gate. But Take over lets a human finish a `failed` step by hand, and the receipt then reads `OK` even though the loop never checked it. In #311's flow, the review step went failed → Take over → resume → gate, and the Fidelity audit never ran. Now resume rule 2 first checks the newest `<STEP> (ok|failed)` line in `log.md`. If it is `failed`, the flow runs step 5's receipt validation and, for `plan`/`implement`/`review`/`fix`, the Fidelity audit before it shows the gate. If both pass, it logs `ok` and shows the gate. If either fails, it records a failure and Hard stops.
+
+## Amendment (2026-10-16, second): a hand-finished `OK` is human-attested, not audited
+
+This amends the previous 2026-10-16 amendment for one case only. On `--resume`, the newest outcome line
+(`ok` or `failed`) for the step decides how a receipt reading `OK` reaches its step gate:
+
+- **`ok`** → the loop validated it; the gate follows as before.
+- **`failed`** → a human finished the step by Take over. This is **hand-finished**. Receipt validation
+  (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit are skipped. The orchestrator logs a
+  `hand-finished` line (the outcome line stays `failed`, so the marker persists across resumes), and the
+  gate digest is prefixed `hand-finished, not audited`. The audit exists to catch agent shortcuts
+  (rounds not run, panels never dispatched, checkpoint defaults adopted), and a human finish has none of
+  those to catch, so the human's Take over is the attestation.
+- **no outcome line** → not hand-finished. The receipt is treated as spawned-agent output and validated
+  before its gate, the same as the loop would have done. An empty result is never passed through unchecked.
+  `--since` is the newest `begin` or `retry` line's timestamp; if neither exists the validation fails.
+
+A resume-time validation failure logs `failed` and goes to Hard stop **without incrementing
+`failures[STEP]`**, because no attempt ran on resume. The Retry budget counts only spawned attempts.
+
+Spawned-agent receipts are validated as before. Only the hand-finished case is exempt.
