@@ -46,20 +46,21 @@ print("=" * 70)
 expert_plan_file = COMMANDS_DIR / "expert-plan.md"
 plan_content = expert_plan_file.read_text() if expert_plan_file.exists() else ""
 
-# Check that Step 5 mentions making each open-ended brief a free-text Ask
-has_free_text_ask = bool(re.search(
-    r"each\s+open-ended.*free-text",
+# Flow branch pins report-kind checkpoint: one readable report plus prose reply
+# Check for `kind: report` in the round-1 question file definition
+has_report_kind = bool(re.search(
+    r"kind:\s*report",
+    plan_content
+))
+t("Step 5 specifies report-kind checkpoint with `kind: report`", has_report_kind)
+
+# Check for reply-mode or .reply.md file handling (prose reply)
+has_reply_file = bool(re.search(
+    r"\.reply\.md|reply-mode\s+reaction",
     plan_content,
     re.IGNORECASE
 ))
-t("Step 5 mentions each open-ended brief becomes free-text Ask", has_free_text_ask)
-
-# Check for "Answer in your own words" language
-has_answer_in_words = bool(re.search(
-    r"Answer\s+in\s+your\s+own\s+words",
-    plan_content
-))
-t("Step 5 specifies 'Answer in your own words' for open-ended", has_answer_in_words)
+t("Step 5 documents reply file (`.reply.md`) or reply-mode reaction pass", has_reply_file)
 
 # Check that every brief is asked
 has_every_brief_asked = bool(re.search(
