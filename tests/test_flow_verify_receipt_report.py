@@ -737,7 +737,7 @@ def main():
         }), encoding="utf-8")
 
         # Create VALID attempt-2 question/answer
-        (questions_dir / "plan-02.json").write_text(json.dumps({
+        (questions_dir / "plan-03.json").write_text(json.dumps({
             "kind": "report", "attempt": 2, "round": 1, "step": "plan", "command": "expert-plan",
             "items": [{
                 "handle": "D1", "tier": "decided", "brief_type": "question", "title": "Test",
@@ -752,15 +752,28 @@ def main():
             }]
         }), encoding="utf-8")
 
-        (answers_dir / "plan-02.json").write_text(json.dumps({
+        (answers_dir / "plan-03.json").write_text(json.dumps({
             "kind": "report", "round": 1, "attempt": 2,
             "items": {"D1": {"disposition": "accepted", "value": None, "reply_excerpt": None}},
             "loop_end": None,
         }), encoding="utf-8")
 
-        # Create receipt with ATTEMPT: 2
+        # An earlier attempt-2 report file the receipt never names (a relay this attempt
+        # abandoned), malformed and unanswered. It sorts before plan-03.json, so it would be
+        # read as the round-1 report if the verifier globbed every attempt-2 file instead of
+        # scoping to the receipt's markers (relay_count).
+        (questions_dir / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "attempt": 2, "round": 1,
+        }), encoding="utf-8")
+
+        # Create receipt with ATTEMPT: 2 and the marker naming plan-03.json, so check_plan
+        # takes the report branch (without a marker it falls back to the legacy brief count
+        # and never calls check_report_checkpoint at all).
         receipt_file = Path(tmp_home) / "receipt.md"
-        receipt_file.write_text(f"FINAL_PLAN_PATH: {plan_file}\nATTEMPT: 2\nDecision: OK\n<!-- step-end -->")
+        receipt_file.write_text(
+            f"FINAL_PLAN_PATH: {plan_file}\n<!-- awaiting-answers: questions/plan-03.json -->\n"
+            "ATTEMPT: 2\nDecision: OK\n<!-- step-end -->"
+        )
 
         # Call check_plan via CLI with --flow-dir
         env = os.environ.copy()
@@ -775,6 +788,19 @@ def main():
         h.test_result("Ruling #2: check_plan with ATTEMPT: 2 ignores attempt-1",
                      result.returncode == 0 and "ARTIFACTS: ok" in result.stdout,
                      f"returncode={result.returncode}, stdout={result.stdout[:200]}")
+
+    # Test 14: a round-1 report file with no items list fails instead of skipping rule 2
+    print("[Test 14] Report file without items -> fail")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = create_minimal_fixture(Path(tmp))
+        qfile = flow_dir / "questions" / "plan-01.json"
+        qdata = json.loads(qfile.read_text(encoding="utf-8"))
+        del qdata["items"]
+        qfile.write_text(json.dumps(qdata), encoding="utf-8")
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("Report file without items -> fail",
+                     error is not None and "malformed report file: plan-01.json" in error,
+                     f"error={error}")
 
     h.summarize_and_exit()
 
