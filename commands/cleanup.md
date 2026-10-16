@@ -228,11 +228,16 @@ if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   exit 1
 fi
 
-# Look up branch from git worktree list (works without cd'ing into target)
-CURRENT_BRANCH=$(git worktree list --porcelain | awk -v wt="$CURRENT_WORKTREE" '
-  $1 == "worktree" && $2 == wt { found=1 }
-  found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
-')
+# Look up branch from git worktree list (works without cd'ing into target).
+# A shell read loop, not awk: awk's field names are bare positional tokens, which the
+# slash-command loader substitutes before the shell ever runs (#306).
+CURRENT_BRANCH=$(git worktree list --porcelain | while IFS=' ' read -r KEY VAL; do
+  case "$KEY" in
+    worktree) if [ "$VAL" = "$CURRENT_WORKTREE" ]; then FOUND=1; else FOUND=""; fi ;;
+    branch) if [ -n "$FOUND" ]; then printf '%s\n' "${VAL#refs/heads/}"; break; fi ;;
+    "") FOUND="" ;;  # blank line ends a record, so a detached match never takes the next branch
+  esac
+done)
 
 if [ -z "$CURRENT_BRANCH" ]; then
   echo "ERROR: '$CURRENT_WORKTREE' is not a registered git worktree"
@@ -253,7 +258,8 @@ if [ -n "$DIRTY_FILES" ]; then
     echo "Auto-restoring generated files:"
     echo "$AUTO_ONLY"
     # Restore each auto-restorable file
-    echo "$AUTO_ONLY" | awk '{print $2}' | while read -r f; do
+    # Porcelain v1 lines are "XY <path>"; the path starts at column 4.
+    echo "$AUTO_ONLY" | cut -c4- | while read -r f; do
       git -C "$CURRENT_WORKTREE" checkout -- "$f" 2>/dev/null || true
     done
   fi
