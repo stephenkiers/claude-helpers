@@ -20,7 +20,7 @@ Deliberately not covered here:
 - Plan item 6's runtime behaviour (plan path with whitespace): the --from hand-off block has no
   named anchor either; only the undefined-variable part is checked statically.
 
-Run with: python3 tests/test_expert_flow_fix_spec.py
+Run with: python3 tests/test_expert_flow_bare_run.py
 """
 
 import os
