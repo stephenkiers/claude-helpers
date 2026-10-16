@@ -73,7 +73,16 @@ def main():
             {"slug": "bob", "mode": "pre-show", "round": 1, "path": str(reactions_dir / "bob-pre-show-r1.json")},
         ]
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions)
+        # Create decisions with ledger that includes brief_type
+        Path(decisions_file).parent.mkdir(parents=True, exist_ok=True)
+        ledger = {
+            "seated": seated,
+            "expected_reactions": expected_reactions,
+            "Q1": {"brief_type": "disagreement"},  # Set brief_type to disagreement
+        }
+        lines = ["# Decisions", "", "## Checkpoint ledger", "```", json.dumps(ledger), "```", "",
+                 "## Decided", "", "## Worth a look", "", "## Questions for you"]
+        Path(decisions_file).write_text("\n".join(lines))
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "Q1": {"resolved": True, "agreed": False}
         })

@@ -14,30 +14,24 @@ It is **not** a role prompt. Each expert uses its own judgment, not a role. The 
 - Flag an item `could-go-other-way` when an option names cost, irreversibility, security, or schema change.
 - A `disagreement` brief (one with competing recommendations from earlier experts) stays a Q whatever the reactions say; record your reactions as evidence only.
 
-**Output:** `${SESSION_DIR}/reactions/<slug>-pre-show-r1.json`, where `<slug>` is the persona file stem (e.g. `contrarian-carl`):
+**Output:** `${SESSION_DIR}/reactions/<slug>-pre-show-r1.json`, where `<slug>` is the persona file stem (e.g. `contrarian-carl`), keyed by handle with a top-level `"complete": true` sentinel. Each handle carries `resolved`, `agreed`, `no-view`, and/or `protested` as boolean keys (for your own questions, set one of `resolved` or `protested` true; for others, set one of `agreed`, `no-view`, or `protested` true). All reactions carry a `reason` field (null if not applicable) and may carry `could-go-other-way`:
 
 ```json
 {
-  "briefs_and_reactions": {
-    "Q1": {
-      "is_own_question": false,
-      "reaction": "agreed",
-      "reason": null,
-      "could_go_other_way": false
-    },
-    "Q2": {
-      "is_own_question": true,
-      "reaction": "resolved",
-      "recommendation": "Option B because …",
-      "reason": null,
-      "could_go_other_way": true
-    },
-    "W1": {
-      "is_own_question": false,
-      "reaction": "protested",
-      "reason": "This is too conservative",
-      "could_go_other_way": false
-    }
+  "Q1": {
+    "agreed": true,
+    "reason": null,
+    "could-go-other-way": false
+  },
+  "Q2": {
+    "resolved": true,
+    "reason": null,
+    "could-go-other-way": false
+  },
+  "W1": {
+    "protested": true,
+    "reason": "This is too conservative",
+    "could-go-other-way": false
   },
   "complete": true
 }
@@ -49,22 +43,16 @@ It is **not** a role prompt. Each expert uses its own judgment, not a role. The 
 
 **Task:** for each ruling, return `accept` or one `pushback` with a one-line reason (failure, likelihood, smallest change). You must not push back on a ruling you already pushed back on in an earlier round (the prompt receives the prior pushback list).
 
-**Output:** `${SESSION_DIR}/reactions/<slug>-reply-r<round>.json`:
+**Output:** `${SESSION_DIR}/reactions/<slug>-reply-r<round>.json`, keyed by handle with a top-level `"complete": true` sentinel. Each ruling carries either `accept` or `pushback` as a boolean key (true only for the one you choose). If `pushback` is true, include a `reason` field:
 
 ```json
 {
-  "rulings_and_reactions": {
-    "Q2": {
-      "human_disposition": "answered",
-      "human_answer": "Option A",
-      "reaction": "accept"
-    },
-    "W2": {
-      "human_disposition": "overridden",
-      "human_answer": "Option B",
-      "reaction": "pushback",
-      "reason": "This misses the security implication"
-    }
+  "Q2": {
+    "accept": true
+  },
+  "W2": {
+    "pushback": true,
+    "reason": "This misses the security implication"
   },
   "complete": true
 }
