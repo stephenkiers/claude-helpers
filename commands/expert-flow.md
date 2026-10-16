@@ -1,6 +1,6 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
-argument-hint: <issue-url|number> [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--no-gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
+argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--no-gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
 allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
@@ -80,7 +80,7 @@ wake-up with no completion notification, re-read the receipt from disk and other
   fresh, or abort (see "Existing flow").
   A bare number is resolved to a URL with
   `gh issue view <n> --json url -q .url` (it must exist and be open). Required unless `--resume`,
-  `--abandon`, `--retro`, or `--list` is given.
+  `--abandon`, `--retro`, `--list` is given, or run bare inside a ticket worktree (see "No-argument run").
 - `--plan-effort 2|3` — forwarded to `/expert-plan --effort`. Default: omitted, so `/expert-plan`
   sizes it with its own heuristic (`scripts/plan-effort.py`).
 - `--review-effort 2-5` — forwarded to `/expert-review --effort`. Default: omitted, so
@@ -114,7 +114,7 @@ wake-up with no completion notification, re-read the receipt from disk and other
   `running`/`awaiting` flow untouched for 3 hours is marked `(stale)`. Takes no other flags.
 
 Unknown flags, a bad `--from` value, a value flag with no value, two issue arguments, `--abandon`
-or `--retro` combined with any other flag, or a missing issue stop before any telemetry with a `guard_block` exit.
+or `--retro` combined with any other flag, a `--plan-file` path outside the allowed character set, bare `/expert-flow` with other flags, an argument string that is present but parses to nothing, or a missing issue without a bare run in a ticket worktree stop before any telemetry with a `guard_block` exit. Only a run with no arguments at all is a bare run.
 
 ## Step 0: Setup
 
@@ -122,7 +122,8 @@ or `--retro` combined with any other flag, or a missing issue stop before any te
 
 ```bash
 PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; NO_GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
-RESUME_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; BAD=""
+RESUME_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
+RAW_ARGC=$#
 flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
 while [ $# -gt 0 ]; do
   case "${1}" in
@@ -151,7 +152,7 @@ while [ $# -gt 0 ]; do
     --epic) EPIC=yes ;;
     --list) LIST=yes ;;
     --*) flag_bad "unknown flag: ${1}" ;;
-    *) [ -z "$ISSUE_ARG" ] || flag_bad "only one issue argument is allowed"; ISSUE_ARG="${1}" ;;
+    *) if [ -z "${1}" ]; then flag_bad "an empty argument is not an issue number or URL"; elif [ "$ISSUE_SEEN" = yes ]; then flag_bad "only one issue argument is allowed"; else ISSUE_SEEN=yes; ISSUE_ARG="${1}"; fi ;;
   esac
   shift
 done
@@ -160,12 +161,19 @@ case "$REVIEW_EFFORT" in ""|2|3|4|5) ;; *) flag_bad "--review-effort must be 2-5
 case "$FROM_STEP" in ""|implement|review|verify|ship|merge) ;; *) flag_bad "--from must be one of implement review verify ship merge" ;; esac
 [ "$FROM_STEP" = implement ] && [ -z "$PLAN_FILE_FLAG" ] && flag_bad "--from implement requires --plan-file <path>"
 [ -n "$PLAN_FILE_FLAG" ] && [ "$FROM_STEP" != implement ] && flag_bad "--plan-file requires --from implement"
+case "$PLAN_FILE_FLAG" in *[!A-Za-z0-9._/~+:=@,-]*) flag_bad "--plan-file path may contain only letters, digits, and . _ / ~ + : = @ , -" ;; esac
 [ -n "$FROM_STEP" ] && [ "$EPIC" = yes ] && flag_bad "--from cannot be combined with --epic"
 [ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
 [ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
 [ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
 [ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ]; } && flag_bad "--list takes no other flags"
-[ "$LIST" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ] && flag_bad "an issue URL or number is required"
+if [ "$LIST" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ]; then
+  if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$NO_GATES" = no ] && [ "$EPIC" = no ]; then
+    NO_ARG=yes
+  else
+    flag_bad "an issue URL or number is required (a bare /expert-flow takes no flags)"
+  fi
+fi
 [ -n "$RESUME_REF" ] && [ ! -f "$RESUME_REF/state.json" ] && case "$RESUME_REF" in *[!0-9]*) flag_bad "--resume requires an issue number or a flow directory" ;; esac
 [ -n "$ABANDON_REF" ] && [ ! -f "$ABANDON_REF/state.json" ] && case "$ABANDON_REF" in *[!0-9]*) flag_bad "--abandon requires an issue number or a flow directory" ;; esac
 [ -n "$BAD" ] && printf 'ERROR: %s\n' "$BAD" >&2
@@ -185,6 +193,123 @@ FLOWS_ROOT="$HOME/.claude/flows/$REPO_KEY"
 mkdir -p "$FLOWS_ROOT"
 ```
 
+### No-argument run
+
+When `NO_ARG=yes`, the orchestrator is in a ticket worktree and detects the issue from the worktree state. The detection logic determines one of four routes: silent resume of the hand-off flow, the existing-flow question, a fresh flow, or a prompt for the issue number.
+
+**Detection block** — computes its own inputs, so it runs correctly from a fresh shell. `HERE`, `CUR_BRANCH`, and `IS_LISTED_WORKTREE` (`yes`/`no`) default to values read from the current git worktree, each assigned with `: "${VAR:=...}"` only when the variable is unset or empty. `MAIN_WORKTREE`, `REPO`, and `FLOWS_ROOT` come from "Project detection and repo key": the orchestrator replaces the `<REPO>`, `<FLOWS_ROOT>`, and `<MAIN_WORKTREE>` literals in the block with those values before running it. If `HERE`, `REPO`, `FLOWS_ROOT`, or `MAIN_WORKTREE` is still empty or a literal `<...>` placeholder, the block routes `ask` with `NOARG_REASON="detection inputs missing"`. It prints one `KEY=value` per line: `NOARG_ROUTE`, `NOARG_ISSUE`, `NOARG_FLOW`, `NOARG_NONGITHUB`, `NOARG_REASON`. `NOARG_REASON` is always a fixed string, never a value read from the cache or the marker. It never calls `exit` (it is run inline, so an `exit` would kill the orchestrator's shell):
+
+```bash
+noarg_detect() {
+  NOARG_ROUTE="ask"; NOARG_ISSUE=""; NOARG_FLOW=""; NOARG_NONGITHUB=""; NOARG_REASON=""
+  local IN_VAL
+  : "${HERE:=$(git rev-parse --show-toplevel 2>/dev/null)}"
+  : "${CUR_BRANCH:=$(git branch --show-current 2>/dev/null)}"
+  : "${IS_LISTED_WORKTREE:=$(git worktree list --porcelain 2>/dev/null | grep -qxF "worktree $HERE" && printf yes || printf no)}"
+  : "${REPO:=<REPO>}"
+  : "${FLOWS_ROOT:=<FLOWS_ROOT>}"
+  : "${MAIN_WORKTREE:=<MAIN_WORKTREE>}"
+  for IN_VAL in "$HERE" "$REPO" "$FLOWS_ROOT" "$MAIN_WORKTREE"; do
+    case "$IN_VAL" in ""|"<"*">") NOARG_REASON="detection inputs missing"; return 0 ;; esac
+  done
+
+  if [ "$HERE" = "$MAIN_WORKTREE" ] || [ "$IS_LISTED_WORKTREE" != "yes" ]; then
+    NOARG_REASON="not in a ticket worktree"; return 0
+  fi
+
+  # Issue number from the basename: <N>-slug
+  local BN="${HERE##*/}" BN_ISSUE
+  case "$BN" in
+    [0-9]*-*) BN_ISSUE="${BN%%-*}" ;;
+    *) NOARG_REASON="basename does not start with digits"; return 0 ;;
+  esac
+  case "$BN_ISSUE" in
+    *[!0-9]*) NOARG_REASON="basename does not start with digits"; return 0 ;;
+  esac
+
+  local MARKER_FILE="$HERE/.claude/flow-run"
+  if [ -f "$MARKER_FILE" ]; then
+    local MARKER_TARGET MARKER_REAL FLOWS_ROOT_REAL STATE_ISSUE
+    MARKER_TARGET=$(sed -n 1p "$MARKER_FILE" 2>/dev/null)
+    if [ -z "$MARKER_TARGET" ]; then
+      NOARG_REASON="flow marker is empty"; return 0
+    fi
+    MARKER_REAL=$(realpath "$MARKER_TARGET" 2>/dev/null)
+    FLOWS_ROOT_REAL=$(realpath "$FLOWS_ROOT" 2>/dev/null)
+    if [ -z "$MARKER_REAL" ] || [ -z "$FLOWS_ROOT_REAL" ]; then
+      NOARG_REASON="flow marker does not match this worktree"; return 0
+    fi
+    case "$MARKER_REAL/" in
+      "$FLOWS_ROOT_REAL"/?*) ;;
+      *) NOARG_REASON="flow marker does not match this worktree"; return 0 ;;
+    esac
+    if [ ! -f "$MARKER_REAL/state.json" ]; then
+      NOARG_REASON="flow marker does not match this worktree"; return 0
+    fi
+    STATE_ISSUE=$(jq -r '.issue|tostring' "$MARKER_REAL/state.json" 2>/dev/null)
+    if [ "$STATE_ISSUE" != "$BN_ISSUE" ]; then
+      NOARG_REASON="flow marker does not match this worktree"; return 0
+    fi
+    NOARG_ISSUE="$BN_ISSUE"
+    NOARG_FLOW="$MARKER_REAL"
+    # Exact hand-off state: step==plan, status==paused, live==null, attempts.plan==0
+    if jq -e '.step=="plan" and .status=="paused" and .live==null and ((.attempts.plan // 0)==0)' "$MARKER_REAL/state.json" >/dev/null 2>&1; then
+      NOARG_ROUTE="resume"
+    else
+      NOARG_ROUTE="existing"
+    fi
+    return 0
+  fi
+
+  # No marker: validate the github cache
+  local CACHE_FILE="$HERE/.claude/github-cache.json" CACHE_BRANCH CACHE_URL
+  if [ ! -f "$CACHE_FILE" ]; then
+    NOARG_REASON="no flow marker or .claude/github-cache.json"; return 0
+  fi
+  CACHE_BRANCH=$(jq -r '.branch // empty' "$CACHE_FILE" 2>/dev/null)
+  if [ -z "$CACHE_BRANCH" ]; then
+    NOARG_REASON="cache has no branch"; return 0
+  fi
+  if [ "$CACHE_BRANCH" != "$CUR_BRANCH" ]; then
+    NOARG_REASON="cache branch differs from current branch"; return 0
+  fi
+  if ! jq -e --arg n "$BN_ISSUE" '(.issue.number|tostring) as $s | ($s|test("^[0-9]+$")) and $s == $n' "$CACHE_FILE" >/dev/null 2>&1; then
+    if jq -e '.issue.number // empty' "$CACHE_FILE" >/dev/null 2>&1; then
+      NOARG_REASON="cache issue.number does not match basename"
+    else
+      NOARG_REASON="cache has no issue.number"
+    fi
+    return 0
+  fi
+  CACHE_URL=$(jq -r '.issue.url // empty' "$CACHE_FILE" 2>/dev/null)
+  if [ "$CACHE_URL" != "https://github.com/$REPO/issues/$BN_ISSUE" ]; then
+    case "$CACHE_URL" in
+      https://github.com/*) NOARG_REASON="cache url is not for this issue" ;;
+      *) NOARG_NONGITHUB="yes"; NOARG_REASON="cache is not a GitHub issue" ;;
+    esac
+    return 0
+  fi
+  NOARG_ROUTE="plain"
+  NOARG_ISSUE="$BN_ISSUE"
+}
+noarg_detect
+printf 'NOARG_ROUTE=%s\nNOARG_ISSUE=%s\nNOARG_FLOW=%s\nNOARG_NONGITHUB=%s\nNOARG_REASON=%s\n' "$NOARG_ROUTE" "$NOARG_ISSUE" "$NOARG_FLOW" "$NOARG_NONGITHUB" "$NOARG_REASON"
+```
+
+**Routing** — when `NO_ARG=yes`, run the detection block above (it computes its own inputs; `MAIN_WORKTREE`, `REPO`, and `FLOWS_ROOT` come from "Project detection and repo key"), then apply the route:
+
+- **`resume`**: the flow is in exact hand-off state (`step==plan`, `status==paused`, `live==null`, `attempts.plan==0`). Print the trail line:
+  ```
+  ▶️ expert-flow #<N> — resuming flow <basename of NOARG_FLOW> at plan (hand-off).  Not this one? /expert-flow --abandon <N>, or /expert-flow <N> from the main worktree to choose Start fresh
+  ```
+  Set `RESUME_REF="$NOARG_FLOW"` and continue at the "`--resume`" section exactly as written (all rules, flag reset, `running` re-asserts the marker).
+
+- **`existing`**: marker present but flow not in exact hand-off state. Set `ISSUE_ARG="$NOARG_ISSUE"` and `EXISTING_DIR="$NOARG_FLOW"`, then continue at "Fresh run: resolve the issue"; the Existing-flow question runs against that flow.
+
+- **`plain`**: no marker and cache validates. Set `ISSUE_ARG="$NOARG_ISSUE"` and continue at "Fresh run: resolve the issue" unchanged. If an `<N>-*` flow exists, the Existing-flow question asks as today. If not, this is a fresh run in place (likely a re-plan in a `/track-and-start` GitHub worktree).
+
+- **`ask`**: no usable marker or cache. If `NOARG_NONGITHUB=yes`, do not ask at all: `guard_block` immediately with `this worktree is not for a GitHub issue — run /expert-flow <issue> from the main worktree` (no answer could make this worktree usable, so no question is shown). Otherwise call `AskUserQuestion` with header `Which issue` — the question reads "Your worktree's issue could not be detected. <NOARG_REASON>. Which issue should this flow run?" with `Abort` as the one listed option and `Answer in your own words` for typing the number or URL. Per the Ask block in `~/.claude/prompts/flow-reference.md` (orchestrator's `FLOW_DIR` is empty), call `AskUserQuestion` directly. Parse a typed answer exactly like `ISSUE_ARG`: trim it, assign `ISSUE_ARG`, continue at "Fresh run: resolve the issue" (the `case` in that section → `gh issue view`). Empty input, `Abort`, or no answer → `guard_block` with `flow not started — run /expert-flow <issue>`, no telemetry.
+
 ### Where the orchestrator runs
 
 Once the issue is known (`--list` and `--abandon` are exempt, as is `--retro`, and run from anywhere), record `HERE=$(git rev-parse --show-toplevel)` and classify it:
@@ -202,20 +327,27 @@ continues in place, no hand-off).
 
 Any invocation from Main for a flow whose worktree already exists — `--resume`, `--from`, or a
 plain `/expert-flow <N>` (which first asks, see "Existing flow"; Resume or Start fresh both lead here)
-— prints the two hand-off lines and stops (`guard_block`, no telemetry):
-
-```
-▶️ expert-flow #<ISSUE> — worktree ready: <WORKTREE>
-   next:  cd <WORKTREE> && claude      then run: /expert-flow <ISSUE>
-```
+— prints the hand-off lines and stops (`guard_block`, no telemetry). See "Where the orchestrator runs" for the template.
 
 **Epic mode is the exception**: it keeps running child flows from
 `MAIN_WORKTREE` with no hand-off.
 
-**Plain `/expert-flow <N>` with an existing flow.** If `$FLOWS_ROOT` holds a `<N>-*` directory with a
-`state.json`, the run does not resume silently: see "Existing flow" under "Fresh run: resolve the
-issue" for the one question it asks. With no such flow it is a fresh run (from Main, the `worktree`
-step then hands off; from the ticket worktree, the run continues in place).
+**Plain `/expert-flow <N>` with an existing flow.** An explicit `/expert-flow <N>` always asks the Existing-flow question when a flow exists (see "Existing flow" under "Fresh run: resolve the issue"). Only a bare `/expert-flow` in a ticket worktree in the exact hand-off state (see "No-argument run") resumes silently. With no such flow, it is a fresh run (from Main, the `worktree` step then hands off; from the ticket worktree, the run continues in place).
+
+**Hand-off template.** When the orchestrator prints hand-off lines (both "go into the worktree" sites: Main's fresh-run worktree-ready, and the post-worktree Hand-off), compute `QUOTED_WORKTREE=$(printf '%q' "$WORKTREE")` and print:
+
+```
+▶️ expert-flow #<ISSUE> — worktree ready: <WORKTREE>
+   next:  cd <QUOTED_WORKTREE> && claude "/expert-flow"
+```
+
+**`--from` exception:** when the Main invocation carries `--from <FROM_STEP>`, the `next:` line instead reads:
+
+```
+   next:  cd <QUOTED_WORKTREE> && claude "/expert-flow <ISSUE> --from <FROM_STEP>[ --plan-file <QUOTED_PLAN_FILE>]"
+```
+
+`QUOTED_PLAN_FILE` is the `--plan-file` path as given, with no extra escaping: the argument parser ("Argument parsing") admits a plan path only from ASCII letters and digits and the characters `. _ / ~ + : = @ , -`, none of which need shell quoting, and refuses any other path with a `guard_block` before a worktree is created. The take-over `resume:` line and the done line `next:  cd <MAIN_WORKTREE>`, both in "Stop lines", remain unchanged.
 
 ### Newest-flow lookup (shared)
 
@@ -401,11 +533,11 @@ printf 'ISSUE=%s STATE=%s FLOW_DIR=%s\n' "$ISSUE" "$ISSUE_STATE" "$FLOW_DIR"
 runs" (classify `HERE` now that `ISSUE` is known).
 
 **Existing flow.** A plain run (no `--from`, no `--epic`) for which `$FLOWS_ROOT` already holds an
-`<ISSUE>-*` directory with a `state.json` does not resume silently. Pick the newest with the shared newest-flow lookup, `<PREFIX>` = `<ISSUE>-` (this
-is the `EXISTING_DIR`) and read its `status`, `step`, and `live` with `jq`. Then:
+`<ISSUE>-*` directory with a `state.json` does not resume silently. When the no-arg route set `EXISTING_DIR`, use it; otherwise pick the newest with the shared newest-flow lookup, `<PREFIX>` = `<ISSUE>-` (this
+is the `EXISTING_DIR`). Read its `status`, `step`, and `live` with `jq`. Then:
 
 1. If `live` is not `null`, resume rule 1 applies first (its own question); the question below is
-   asked only once `live` is `null`.
+   asked only once `live` is `null`. When `EXISTING_DIR` is set and **Resume** is chosen, continue as `--resume "$EXISTING_DIR"` with all resume rules and flag reset.
 2. Ask once with `AskUserQuestion` (header `Existing flow`): "`#<ISSUE>` already has a flow at
    `<EXISTING step>` (`<EXISTING status>`, updated `<EXISTING updated>`). What should this run do? Start fresh deletes the old flow's worktree."
    Options: `Resume (Recommended)` — continue the existing flow exactly as `--resume <ISSUE>` does;
@@ -572,6 +704,9 @@ auto-deleted**; `--list` shows them and the human prunes by hand.
 **Flow marker validity.** The marker `<WORKTREE>/.claude/flow-run` holds one line, a `FLOW_DIR`. It
 is valid only while that flow's `state.json` `status` is `running` or `awaiting`. A marker pointing at
 a `paused`, `failed`, `abandoned`, or `done` flow is stale and must be ignored. The orchestrator never deletes it.
+The one exception is the no-argument detection block (see "No-argument run"): a bare run reads the marker to route a
+`paused` hand-off flow to `resume`, and any other flow whose marker resolves to the same issue to `existing` (the
+Existing-flow question, which can Start fresh). It only reads the marker and never writes or deletes it.
 
 Append to the log with a fixed format — step names and timestamps only, never receipt text:
 
@@ -1069,9 +1204,8 @@ no flag:
 **Hand-off.** After a successful `worktree` step on a fresh single-ticket run whose `HERE` is Main
 (never in epic mode, never when started inside the ticket worktree): set `step: plan`, `status:
 paused`, log `handoff`, `WRITE-STATE`, close telemetry (`command-end --command expert-flow --outcome
-interrupted`), print the two hand-off lines from "Where the orchestrator runs", and end the turn.
-Running `/expert-flow <ISSUE>` inside the worktree then finds this flow (existing-flow rule), asks
-once, and **Resume** continues at `plan`.
+interrupted`), print the hand-off lines from "Where the orchestrator runs", and end the turn.
+Running bare `/expert-flow` inside the worktree resumes this flow at `plan` without a question (see "No-argument run"); `/expert-flow <ISSUE>` asks once as before.
 
 **plan.** Args: `<ISSUE_URL> --flow <FLOW_DIR>` plus `--effort <PLAN_EFFORT>` when set. Runs in
 `WORKTREE` (the flow marker exists by now; `--flow` is still passed and wins as the explicit
@@ -1241,6 +1375,9 @@ FAILED outcome is issued in loop step 5, so no later exit closes that stage agai
 | `--abandon` refused because `live` is set and the human says still running, or the flow is already `abandoned` | none | none (`guard_block`, state untouched) |
 | Existing-flow question answered Abort (plain `/expert-flow <N>`) | none | none (`guard_block`, state untouched) |
 | Awaiting answers (turn ends, step alive) | stays open | stays open |
+| Bare `/expert-flow` in ticket worktree, exact hand-off state (silently resumed) | all steps run as `--resume` | telemetry as `--resume` |
+| No-issue question answered Abort, invalid input, or unanswered (no-arg route `ask`) | none | none (`guard_block`, no telemetry opened) |
+| Bare `/expert-flow` with other flags | none | none (`guard_block`, no telemetry opened) |
 | Hand-off after the `worktree` step (fresh run from main) | none (worktree closed as `success` by loop step 5) | `command-end --outcome interrupted` |
 | Invoked from main for a flow whose worktree exists (hand-off lines printed, `guard_block`) | none | none (no telemetry opened) |
 | Hold at the merge gate | none (merge stage not yet opened) | `command-end --outcome interrupted` |
