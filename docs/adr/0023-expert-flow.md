@@ -454,3 +454,40 @@ The reason strings in the verifier are, for example, `plan checkpoint incomplete
 **Scope:** flow plan step only (Steps 1–6 of the plan, plus the Terms and Approach sections). The ADR amendment, the report variant in `prompts/flow-reference.md`, the reaction contract in `prompts/plan-checkpoint-reaction.md`, and the verifier and audit updates apply to the flow plan step. Standalone `/expert-plan` and `/expert-review` rulings stay as they are. A backport is a separate follow-up issue opened only if this succeeds.
 
 **Consequences.** The checkpoint becomes a conversation: the panel proposes, the human answers, and experts may push back on rulings once. The human's answer is the final word. No question is dropped, no default is adopted, and nothing is guessed. A retried attempt re-asks everything. The cost is two or more extra paid reaction dispatches per expert per checkpoint (the human accepted this explicitly). The report replaces the per-brief forms, so the number of turns taken per checkpoint is fewer than with the 2026-10-14 rule.
+
+## Amendment (2026-10-16): a resumed `OK` the loop never validated is validated before its gate
+
+On `--resume`, a step whose receipt reads `OK` normally goes straight to its step gate. But Take over lets a human finish a `failed` step by hand, and the receipt then reads `OK` even though the loop never checked it. In #311's flow, the review step went failed → Take over → resume → gate, and the Fidelity audit never ran. Now resume rule 2 first checks how the receipt's `OK` was reached. The detection rule below (the newest `<STEP> (ok|failed)` line) is superseded by the second amendment; the `ok` branch and the rule that a resumed receipt is validated before its gate still hold.
+
+~~If it is `failed`, the flow runs step 5's receipt validation and, for `plan`/`implement`/`review`/`fix`, the Fidelity audit before it shows the gate. If both pass, it logs `ok` and shows the gate. If either fails, it records a failure and Hard stops.~~ *Superseded by the second amendment: a newest `failed` line no longer marks a receipt hand-finished, because every spawned attempt's failure writes one. Hand-finished is now keyed to the `taken-over` line that Take over writes.*
+
+## Amendment (2026-10-16, second): a hand-finished `OK` is human-attested, not audited
+
+This replaces the `failed`-branch rule of the previous 2026-10-16 amendment (see the strikethrough there) and its
+detection rule. The `ok` branch and the no-outcome-line branch of that amendment carry over, with the wording below.
+Hand-finished is now keyed to a `taken-over` event, not to a `failed` line. A `failed` line is written by every
+spawned attempt's failure (receipt validation, reduced-run rejection), so it cannot tell a human finish from an
+agent shortcut. Take over is the only action that can record a human's choice, so it writes the event.
+
+On `--resume`, the newest of the step's lifecycle lines (`begin`, `retry`, `ok`, `failed`, `taken-over`) in `log.md`
+decides how a receipt reading `OK` reaches its step gate:
+
+- **`taken-over`** → **hand-finished**. A human chose Take over and finished the step by hand. Receipt validation
+  (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit are skipped. The orchestrator logs a
+  `hand-finished` line, and the gate digest is prefixed `hand-finished, not audited`. The audit exists to catch
+  agent shortcuts (rounds not run, panels never dispatched, checkpoint defaults adopted), and a human finish has
+  none of those to catch, so the Take over choice is the attestation. The `taken-over` line stays the newest
+  lifecycle line until a later `begin`, `retry`, `ok`, or `failed` supersedes it, so the classification holds on
+  every later resume without a new attempt.
+- **`ok`** → the loop validated the receipt; the gate follows as before.
+- **`failed`, `begin`, or `retry`, or no line** → not hand-finished. The receipt is spawned-agent output and is
+  validated before its gate, the same as the loop would have done. An empty result is never passed through
+  unchecked. `--since` is the newest `begin` or `retry` line's timestamp; if neither exists the validation fails.
+
+Take over writes `taken-over` at the Hard stop (for the failed step) and at the merge gate (for `merge`). The merge
+gate's Take over is audit only: its step has no step gate, so resume rule 2 never reads it.
+
+A resume-time validation failure logs `failed` and goes to Hard stop **without incrementing
+`failures[STEP]`**, because no attempt ran on resume. The Retry budget counts only spawned attempts.
+
+Spawned-agent receipts are validated as before. Only the hand-finished case is exempt.

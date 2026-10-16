@@ -268,7 +268,7 @@ def test_install_sh_no_flag_checks_settings_json():
         # Run install.sh without --with-telemetry flag
         env = os.environ.copy()
         env["HOME"] = str(test_home)
-        code, stdout, stderr = run_bash_script([str(INSTALL_SH)], env={**os.environ, "HOME": str(test_home)})
+        code, stdout, stderr = run_bash_script([str(INSTALL_SH), "--from-worktree"], env={**os.environ, "HOME": str(test_home)})
 
         # The no-flag branch should detect the hook and print message with "settings.json"
         output = stdout + stderr
@@ -305,7 +305,7 @@ def test_install_sh_no_flag_prints_already_registered_message():
         }))
 
         # Run install.sh without --with-telemetry flag
-        code, stdout, stderr = run_bash_script([str(INSTALL_SH)], env={**os.environ, "HOME": str(test_home)})
+        code, stdout, stderr = run_bash_script([str(INSTALL_SH), "--from-worktree"], env={**os.environ, "HOME": str(test_home)})
 
         # Should print "already registered" message
         output = stdout + stderr

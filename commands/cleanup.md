@@ -228,11 +228,19 @@ if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
   exit 1
 fi
 
-# Look up branch from git worktree list (works without cd'ing into target)
-CURRENT_BRANCH=$(git worktree list --porcelain | awk -v wt="$CURRENT_WORKTREE" '
-  $1 == "worktree" && $2 == wt { found=1 }
-  found && $1 == "branch" { sub(/^refs\/heads\//, "", $2); print $2; exit }
-')
+# Look up branch from git worktree list (works without cd'ing into target).
+# A shell read loop, not awk: awk's field names are bare positional tokens, which the
+# slash-command loader substitutes before the shell ever runs (#306).
+CURRENT_BRANCH=$(git worktree list --porcelain | while IFS=' ' read -r KEY VAL; do
+  # if/elif, not case: bash 3.2 (macOS) cannot parse a case with `)` patterns inside $( ... )
+  if [ "$KEY" = "worktree" ]; then
+    if [ "$VAL" = "$CURRENT_WORKTREE" ]; then FOUND=1; else FOUND=""; fi
+  elif [ "$KEY" = "branch" ]; then
+    if [ -n "$FOUND" ]; then printf '%s\n' "${VAL#refs/heads/}"; break; fi
+  elif [ -z "$KEY" ]; then
+    FOUND=""  # blank line ends a record, so a detached match never takes the next branch
+  fi
+done)
 
 if [ -z "$CURRENT_BRANCH" ]; then
   echo "ERROR: '$CURRENT_WORKTREE' is not a registered git worktree"
@@ -244,23 +252,69 @@ fi
 # Check for uncommitted changes using git -C (no cd needed)
 DIRTY_FILES=$(git -C "$CURRENT_WORKTREE" status --porcelain 2>/dev/null)
 if [ -n "$DIRTY_FILES" ]; then
-  # Separate auto-restorable files from meaningful changes
-  AUTO_RESTORE_PATTERN='^\s*\S+\s+(\.envrc|\.direnv/|\.claude/)'
-  MEANINGFUL=$(echo "$DIRTY_FILES" | grep -vE "$AUTO_RESTORE_PATTERN" || true)
-  AUTO_ONLY=$(echo "$DIRTY_FILES" | grep -E "$AUTO_RESTORE_PATTERN" || true)
+  # One NUL-delimited pass (-z, so quoting and renames cannot mangle paths) sorts every entry into
+  # one bucket, and the banner and the restore both come from that same pass:
+  #   R<path>   generated file under a restore prefix: restored with git checkout
+  #   K<entry>  rename/copy touching a restore prefix: never restored, listed for the user
+  #   M<entry>  everything else: meaningful changes, listed as a warning
+  # Renames/copies carry a second (origin) NUL field, which the python pass consumes.
+  # The restore prefixes are defined once, here, and reach python through CLEANUP_RESTORE_PREFIXES.
+  CLEANUP_RESTORE_PREFIXES=".envrc .direnv/ .claude/"
+  CLEANUP_SORT_PY='
+import os, sys
+prefixes = tuple(p.encode() for p in os.environ.get("CLEANUP_RESTORE_PREFIXES", "").split())
+fields = sys.stdin.buffer.read().split(b"\0")
+out = sys.stdout.buffer
+i = 0
+while i < len(fields):
+    ent = fields[i]
+    i += 1
+    if not ent:
+        continue
+    path = ent[3:]
+    if b"R" in ent[:2] or b"C" in ent[:2]:
+        origin = fields[i] if i < len(fields) else b""
+        i += 1
+        if path.startswith(prefixes) or origin.startswith(prefixes):
+            out.write(b"K" + ent + b"\0")
+        else:
+            out.write(b"M" + ent + b"\0")
+        continue
+    if path.startswith(prefixes):
+        out.write(b"R" + path + b"\0")
+    else:
+        out.write(b"M" + ent + b"\0")
+'
+  AUTO_RESTORED=""
+  AUTO_KEPT=""
+  MEANINGFUL=""
+  while IFS= read -r -d '' REC; do
+    case "${REC}" in
+      R*)
+        F="${REC#R}"
+        if git -C "$CURRENT_WORKTREE" checkout -- "$F" 2>/dev/null; then
+          AUTO_RESTORED="${AUTO_RESTORED}${F}"$'\n'
+        else
+          AUTO_KEPT="${AUTO_KEPT}${F}"$'\n'
+        fi
+        ;;
+      K*) AUTO_KEPT="${AUTO_KEPT}${REC#K}"$'\n' ;;
+      M*) MEANINGFUL="${MEANINGFUL}${REC#M}"$'\n' ;;
+    esac
+  done < <(git -C "$CURRENT_WORKTREE" status --porcelain -z 2>/dev/null | CLEANUP_RESTORE_PREFIXES="$CLEANUP_RESTORE_PREFIXES" python3 -c "$CLEANUP_SORT_PY")
 
-  if [ -n "$AUTO_ONLY" ]; then
-    echo "Auto-restoring generated files:"
-    echo "$AUTO_ONLY"
-    # Restore each auto-restorable file
-    echo "$AUTO_ONLY" | awk '{print $2}' | while read -r f; do
-      git -C "$CURRENT_WORKTREE" checkout -- "$f" 2>/dev/null || true
-    done
+  if [ -n "$AUTO_RESTORED" ]; then
+    echo "Auto-restored generated files:"
+    printf '%s' "$AUTO_RESTORED"
+  fi
+  if [ -n "$AUTO_KEPT" ]; then
+    echo "Generated-file entries NOT auto-restored (left for you):"
+    printf '%s' "$AUTO_KEPT"
   fi
 
   if [ -n "$MEANINGFUL" ]; then
     echo "WARNING: Uncommitted changes that may be real work:"
-    echo "$MEANINGFUL"
+    printf '%s' "$MEANINGFUL"
     echo "NEEDS_CONFIRMATION=uncommitted_changes"
     # Do NOT exit — let the LLM ask the user before proceeding
   fi
@@ -451,13 +505,19 @@ if [ -n "$ISSUE_NUM" ]; then
   GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
     || (cd "$(git rev-parse --git-common-dir 2>/dev/null)" && pwd))
   [ -z "$GIT_COMMON_DIR" ] && echo "WARN: could not resolve GIT_COMMON_DIR" >&2
+  # Only the dict-keyed cache (docs/workflow-cli-invariants.md) is read or written here. The project root
+  # can hold the array-format local tracker under the same name, so a candidate counts only when its
+  # `.issues` is an object; any other file is skipped with a message.
   CACHE_FILE=""
   for CANDIDATE in \
     "$(dirname "$GIT_COMMON_DIR")/issues.json" \
     "$(dirname "$MAIN_WORKTREE")/issues.json"; do
     if [ -f "$CANDIDATE" ]; then
-      CACHE_FILE="$CANDIDATE"
-      break
+      if jq -e '(.issues | type) == "object"' "$CANDIDATE" >/dev/null 2>&1; then
+        CACHE_FILE="$CANDIDATE"
+        break
+      fi
+      echo "NOTE: skipping $CANDIDATE (its issues is not a dict-keyed cache)"
     fi
   done
   if [ -n "$CACHE_FILE" ]; then
@@ -473,7 +533,7 @@ if [ -n "$ISSUE_NUM" ]; then
 
   CACHED_STATE=""
   if [ "$CACHED_ISSUE_STATE" != "closed" ] && [ -f "$CACHE_FILE" ]; then
-    CACHED_STATE=$(jq -r ".issues[\"$ISSUE_NUM\"].state // empty" "$CACHE_FILE" 2>/dev/null)
+    CACHED_STATE=$(jq -r --arg num "$ISSUE_NUM" '.issues[$num].state // empty' "$CACHE_FILE" 2>/dev/null)
   fi
 
   if [ "$CACHED_ISSUE_STATE" = "closed" ] || [ "$CACHED_STATE" = "closed" ]; then
@@ -489,10 +549,20 @@ if [ -n "$ISSUE_NUM" ]; then
       echo "Issue #$ISSUE_NUM is closed"
       # Update issues.json cache with closed state
       if [ -f "$CACHE_FILE" ]; then
-        jq --arg num "$ISSUE_NUM" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '.issues[$num].state = "closed" | .lastSynced = $date' \
-          "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-        echo "Updated issues.json: issue #$ISSUE_NUM marked closed"
+        # Write back only an entry that already exists: a missing key would become a title-less stub.
+        if jq -e --arg num "$ISSUE_NUM" '.issues[$num] != null' "$CACHE_FILE" >/dev/null 2>&1; then
+          if jq --arg num "$ISSUE_NUM" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '.issues[$num].state = "closed" | .lastSynced = $date' \
+            "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" \
+            && jq -e --arg num "$ISSUE_NUM" '.issues[$num].state == "closed"' "$CACHE_FILE" >/dev/null 2>&1; then
+            echo "Updated issues.json: issue #$ISSUE_NUM marked closed"
+          else
+            rm -f "${CACHE_FILE}.tmp"
+            echo "WARN: could not update issues.json for issue #$ISSUE_NUM; cache left unchanged"
+          fi
+        else
+          echo "NOTE: issue #$ISSUE_NUM is not in $CACHE_FILE; nothing to update"
+        fi
       fi
     fi
   fi

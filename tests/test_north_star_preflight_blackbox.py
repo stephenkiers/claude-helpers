@@ -540,7 +540,7 @@ def main():
         home = Path(tmp) / "home"
         home.mkdir()
         install = subprocess.run(
-            ["bash", str(INSTALL_SH)], capture_output=True, text=True,
+            ["bash", str(INSTALL_SH), "--from-worktree"], capture_output=True, text=True,
             env={**os.environ, "HOME": str(home)}, cwd=str(REPO_ROOT))
         t("install: a full install into a fresh HOME succeeds (precondition for F19 probe)",
           install.returncode == 0, install.stdout[-300:] + install.stderr[-300:])

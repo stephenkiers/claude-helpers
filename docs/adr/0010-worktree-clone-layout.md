@@ -69,3 +69,13 @@ The precedence, as implemented by that function and set by #163, is:
 The result is fail-closed: a resolved parent equal to the main worktree or under `~/.claude/`, or a git
 failure, is an error and never a usable parent. The invariant that worktree directories are flat
 `{issue_number}-{slug}` siblings and never contain `/` is unchanged.
+
+## Amendment (2026-10-16): `~/.claude` links point at the main worktree
+
+`./install.sh` (and `/setup-local`, which runs it) symlinks `~/.claude/{dir}/` into the repo it runs
+from. By default it now refuses to run from a linked worktree and prints the main worktree's path;
+`--from-worktree` opts in, and `--check` is exempt because it is read-only. The reason: every link
+would point into a feature branch that lags main and is deleted at `/cleanup`, so merged work
+would sit unlinked behind that branch's copy and never go live. The main worktree is the one
+checkout whose files outlive any single PR, so it is the default link target. Bare-repo layouts
+are not guarded, since their first worktree entry has no working tree to point at.

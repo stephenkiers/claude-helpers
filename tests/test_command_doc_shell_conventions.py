@@ -46,7 +46,6 @@ def has_literal_zero(line):
 # A file whose count reaches zero, or that no longer exists, fails the ratchet until its entry is
 # removed from this allowlist, so stale entries cannot linger.
 BARE_POSITIONAL_ALLOWLIST = {
-    "cleanup.md": 6,
     "expert-plan-deprecated-v2.md": 5,
     "expert-rebase.md": 1,
     "expert-review.md": 11,
