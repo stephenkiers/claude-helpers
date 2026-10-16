@@ -116,6 +116,16 @@ unavailable snapshot stop the run with a remedy (including a missing or failed `
 plan carries `NORTH STAR BLIND: ...` as the first line of the final plan and its summary. See ADR-0003's
 2026-10-13 amendment, which supersedes the fail-open wording of the 2026-10-09 one. Scout output quality (empty or garbage `north-star-*.md` scout files, and Nick's self-reported `NORTH STAR BLIND:` line) is NOT gated by the preflight and is out of scope for #273; a `scouts --dir` phase is a possible follow-up.
 
+## Amendment (2026-10-15) — Plan checkpoint in `/expert-flow` uses a report and conversation
+
+When `/expert-plan` runs as the `plan` step in `/expert-flow`, the checkpoint changes from per-brief
+`AskUserQuestion` forms to one readable report with a single free-text reply. The report presents all
+decided (D) and worth-a-look (W) items, all questions (Q), and must-answer rules. The human replies
+in prose, and the step runs one reaction pass per round to allow experts to push back. Silence accepts
+D and W items only; every Q and changed/protested item requires a human answer or explicit "continue".
+Standalone `/expert-plan` outside a flow keeps the per-brief form checkpoint. The full amendment with
+implementation detail is recorded in ADR-0023 §Amendment (2026-10-15).
+
 ## References
 
 - ADR-0018: Parallel planning with checkpoint-based isolation (v2 design, which v3 builds on) and its Amendment on harness-agnostic barrier waiting — defines the join-barrier pattern used for coordinating parallel subagents

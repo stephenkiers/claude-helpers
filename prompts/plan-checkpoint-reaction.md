@@ -4,33 +4,40 @@ This contract defines how a seated expert reacts to plan briefs and human ruling
 
 It is **not** a role prompt. Each expert uses its own judgment, not a role. The persona YAML and this contract are the two halves of the hybrid-mode pairing.
 
+For the ledger and reaction file schemas referenced below, see "Checkpoint ledger and reaction schema" in `~/.claude/prompts/flow-reference.md`.
+
 ## Pre-show mode
 
 **Input:** the merged briefs from Step 5 of `commands/expert-plan.md`, with the proposed resolution of each (the attributed panel recommendation(s) only, with no new judgment).
 
 **Task:** for each brief:
-- If it is one of your own questions: either *resolve* it (give a recommendation, so the item can become D or W) or *protest* it (one-line reason; the item stays a Q).
-- For every other brief: mark `agreed`, `no-view`, or `protested` (one-line reason).
+- If it is one of your own questions: either *resolve* it (give a recommendation, so the item can become D or W), *protest* it (one-line reason; the item stays a Q), or mark `needs-human` (one-line reason; forces the item to Q regardless of other votes).
+- For every other brief: mark `agreed`, `no-view`, `protested` (one-line reason), or `needs-human` (one-line reason; forces the item to Q).
 - Flag an item `could-go-other-way` when an option names cost, irreversibility, security, or schema change.
 - A `disagreement` brief (one with competing recommendations from earlier experts) stays a Q whatever the reactions say; record your reactions as evidence only.
 
-**Output:** `${SESSION_DIR}/reactions/<slug>-pre-show-r1.json`, where `<slug>` is the persona file stem (e.g. `contrarian-carl`), keyed by handle with a top-level `"complete": true` sentinel. Each handle carries `resolved`, `agreed`, `no-view`, and/or `protested` as boolean keys (for your own questions, set one of `resolved` or `protested` true; for others, set one of `agreed`, `no-view`, or `protested` true). All reactions carry a `reason` field (null if not applicable) and may carry `could-go-other-way`:
+**Output:** `${SESSION_DIR}/reactions/<slug>-pre-show-r1.json`, where `<slug>` is the persona file stem (e.g. `contrarian-carl`), keyed by brief_id with a top-level `"complete": true` sentinel. Each brief_id carries exactly ONE boolean key among `resolved`, `agreed`, `no-view`, `protested`, `needs-human` (classified by truthiness; precedence: `needs-human > protested > resolved > agreed > no-view`). All reactions carry a `reason` field (null if not applicable) and may carry `could-go-other-way`:
 
 ```json
 {
-  "Q1": {
+  "B1": {
     "agreed": true,
     "reason": null,
     "could-go-other-way": false
   },
-  "Q2": {
+  "B2": {
     "resolved": true,
     "reason": null,
     "could-go-other-way": false
   },
-  "W1": {
+  "B3": {
     "protested": true,
     "reason": "This is too conservative",
+    "could-go-other-way": false
+  },
+  "B4": {
+    "needs-human": true,
+    "reason": "This security decision must not be made by silence",
     "could-go-other-way": false
   },
   "complete": true

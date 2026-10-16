@@ -581,9 +581,9 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan
 ```
 Then exit cleanly.
 
-**Flow branch:** Merge briefs as today and write each brief's proposed resolution as the attributed panel recommendation(s) only, with no new judgment. Write the `## Checkpoint ledger` fenced JSON block with `seated` (the slugs of every seated expert, contributors plus `contrarian-carl`) and `expected_reactions` (one entry per expected file: `{slug, mode: "pre-show", round: 1, path}`).
+**Flow branch:** Merge briefs as today and write each brief's proposed resolution as the attributed panel recommendation(s) only, with no new judgment. Write the `## Checkpoint ledger` fenced JSON block with `seated` and `briefs` as documented in `~/.claude/prompts/flow-reference.md` "Checkpoint ledger and reaction schema" — both sections must be present before the tier script runs. Write `expected_reactions` (one entry per expected file: `{slug, mode: "pre-show", round: 1, path}`). For the ledger format details, see flow-reference.md.
 
-**Pre-show reaction dispatch:** Dispatch the pre-show reaction pass as parallel `Task` calls in one message, one per seated expert (contributors + `contrarian-carl`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `pre-show`, round `1`, `{SESSION_DIR}/decisions.md` (merged briefs and proposed resolutions), and its output path `{SESSION_DIR}/reactions/{slug}-pre-show-r1.json` (slug = persona file stem). Model per Step 2's record (same as contributors). Expected receipt:
+**Pre-show reaction dispatch:** Dispatch the pre-show reaction pass as parallel `Task` calls in one message, one per seated expert (contributors + `contrarian-carl`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern (`~/.claude/prompts/join-barrier-pattern.md`). Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `pre-show`, round `1`, `{SESSION_DIR}/decisions.md` (merged briefs and proposed resolutions), and its output path `{SESSION_DIR}/reactions/{slug}-pre-show-r1.json` (slug = persona file stem). Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (pre-show mode). Model per Step 2's record (same as contributors). Expected receipt:
 ```
 {slug} | checkpoint-reaction | mode: pre-show | round: 1 | protests: {N} | wrote: {path}
 ```
@@ -592,10 +592,10 @@ Then exit cleanly.
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
-Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md"`, which reads the ledger's expected reaction files and the briefs' types and prints handle → tier JSON. The rule:
-- **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists.
-- **D:** resolved, at least one other expert `agreed`, and no `could-go-other-way` flag.
-- **W:** every other resolved item.
+Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md"`, which reads the ledger's expected reaction files and the briefs' types and prints handle → tier JSON. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
+- **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists, or any expert marked `needs-human`.
+- **D:** no Q condition applies, at least one expert `resolved`, at least one expert OTHER THAN the one(s) who resolved `agreed` (self-agreement does not count), and no `could-go-other-way` flag. `no-view` does NOT demote D to W.
+- **W:** every other item.
 
 Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- **D<n>. …**`), `## Worth a look` (`- **W<n>. …**`), and `## Questions for you` (`#### Q<n>.` briefs). Each Q carries its recommendation, backing experts, why, and business case. Extend the ledger with handle → tier, `brief_type`, and evidence paths.
 
@@ -603,7 +603,7 @@ If more than five Qs survive, set `headline` to "This ticket looks under-specifi
 
 Write the round-1 `kind: report` question file per the Ask block in `~/.claude/prompts/flow-reference.md` — one question file with `kind: report`, `attempt: 1`, `round: 1`, and all briefs, with `must_answer` true for Qs and items with recorded disagreement or protest. Record the `awaiting` marker.
 
-**On each later conversation round** (when resumed via `SendMessage`): Read the round's answers file and raw reply. If `loop_end` is `"continue"`, skip the reply-mode pass and go to "The loop ends". Otherwise, append the round's reply-mode entries to the ledger's `expected_reactions`, then dispatch the reply-mode reaction pass as parallel `Task` calls in one message, one per seated expert with a ruling (disposition `answered` or `overridden`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern. Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `reply`, round `{n}` (the conversation round), `${FLOW_DIR}/answers/plan-<SEQ>.json` (round's answers), `${FLOW_DIR}/answers/plan-<SEQ>.reply.md` (raw reply, if it exists), the list of that expert's prior pushbacks in this attempt (so it never pushes back on the same ruling twice), and output path `{SESSION_DIR}/reactions/{slug}-reply-r{n}.json`. Model per Step 2's record. Expected receipt:
+**On each later conversation round** (when resumed via `SendMessage`): Read the round's answers file and raw reply. If `loop_end` is `"continue"`, skip the reply-mode pass and go to "The loop ends". Otherwise, append the round's reply-mode entries to the ledger's `expected_reactions`, then dispatch the reply-mode reaction pass as parallel `Task` calls in one message, one per seated expert whenever any ruling exists (disposition `answered` or `overridden`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern. Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `reply`, round `{n}` (the conversation round), `${FLOW_DIR}/answers/plan-<SEQ>.json` (round's answers), `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md` (raw reply, if it exists), the list of that expert's prior pushbacks in this attempt (so it never pushes back on the same ruling twice), and output path `{SESSION_DIR}/reactions/{slug}-reply-r{n}.json`. Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (reply mode). Model per Step 2's record. Expected receipt:
 ```
 {slug} | checkpoint-reaction | mode: reply | round: {n} | pushbacks: {N} | wrote: {path}
 ```

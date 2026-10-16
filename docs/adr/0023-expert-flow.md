@@ -328,7 +328,7 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   `/expert-plan`'s checkpoint (ticket refresher, North Star line, expert round-up; each `#### Q[n]`
   brief verbatim) and `/expert-review`'s rulings (triage digest; each *Needs you* block verbatim).
   The pointer-not-content rule for `context_path` still holds; the content now has its own fields.
-- **Every checkpoint question is asked.** ~~In a flow, `/expert-plan` relays every `#### Q[n]` brief across
+- **Every checkpoint question is asked.** In a flow, `/expert-plan` relays every `#### Q[n]` brief across
   successive question files, each open-ended brief as its own free-text Ask; `/expert-review`
   relays every *Needs you* item. Adopting a default, dropping a later batch, or skipping the checkpoint
   for a "reduced" run is `Decision: FAILED` (`reduced run: checkpoint questions dropped` /
@@ -336,8 +336,9 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   `decisions.md` against the questions in `questions/plan-*.json` (`plan checkpoint incomplete`), the
   *Needs you* items against `questions/review-*.json` (`review rulings incomplete`); `decisions.md` is
   now a required plan artifact. The fidelity auditor checks the same counts and treats "not asked" /
-  "defaults adopted" receipt wording as `FIDELITY: reduced`.~~ **Superseded for the plan step by
-  amendment 2026-10-15** (see below); `/expert-review` Needs-you relay still applies the rule above.
+  "defaults adopted" receipt wording as `FIDELITY: reduced`. **Amendment 2026-10-15:** for the plan step
+  with a report-kind checkpoint, the completeness rule is refined — see the amendment below. This rule
+  applies to `/expert-review` Needs-you relay without change.
   Standalone `/expert-plan` outside a flow still applies the rule above.
 - **Step gates.** After `plan`, `implement`, `review`, `fix`, and `verify` close `OK`, the orchestrator
   prints what the step produced; when the relay already printed the step's `summary`, the gate prints
@@ -432,7 +433,7 @@ This amendment supersedes the 2026-10-14 rule "Every checkpoint question is aske
 
 The new invariant for the plan checkpoint in a flow: **every brief is shown with its rationale; every Q, protested item, and changed item is answered in the human's own words, or explicitly accepted by the human's "continue" (recorded as `accepted-on-continue` with the quoted "continue"); silence accepts only D and W items the human was shown; nothing is ever guessed.**
 
-**Implementation.** Tiers and conversation loop are spelled out in Steps 1–6 of the plan file (`/Users/stephenkiers/.claude/plans/expert-flow-plan-checkpoint-report-reply-20261015T125816-32413.md`). Briefly:
+**Implementation.** Tiers and conversation loop are spelled out in Step 5 of `commands/expert-plan.md` (flow branch). Briefly:
 
 1. **Report file per round:** `kind: report` question file (not a per-brief Ask) carries the ticket refresher, D/W/Q handles, each item's recommendation, experts, why, business case, and must-answer reason. Tier comes from recorded reaction evidence: a `disagreement` brief is always a Q, any protest always makes an item a Q, and everything else is D or W.
 

@@ -280,11 +280,65 @@ Resolve), since it has no `--flow` or step-prompt line. Its question file goes u
 `questions/` directory with the inherited `STEP_NAME`. The nested command writes no receipt and
 no awaiting marker of its own: the outer step's receipt carries the marker (see Receipt).
 
+### Checkpoint ledger and reaction schema
+
+This section defines the shared checkpoint ledger and reaction file formats used by the plan step checkpoint. The same schema is referenced in `~/.claude/prompts/plan-checkpoint-reaction.md`, `commands/expert-plan.md` Step 5, `scripts/plan-checkpoint-tiers.py`, and `scripts/flow-verify-receipt.py`.
+
+**Checkpoint ledger** — a fenced ```json block in `decisions.md` headed `## Checkpoint ledger`, containing:
+- `seated`: array of expert slugs (contributors plus `contrarian-carl`)
+- `briefs`: map of `brief_id` → `{brief_type, raiser}`, where `brief_id` is "B1", "B2", … in the order briefs appear in the decision briefs section. Written before the tier script runs; tier script fails closed if a brief with reactions has no `brief_type`.
+- `expected_reactions`: array of expected reaction files, each `{slug, mode, round, path}`, derived from `seated` and the reaction dispatch (see Pre-show and Reply modes below)
+- After tiering, extended with handle keys ("D1", "W1", "Q1", …) mapping to `{tier, brief_id, brief_type, evidence: [paths]}`, where paths resolve under `SESSION_DIR` only
+
+Extraction: one line-based parser reads the ledger from the file by finding the line starting with "## Checkpoint ledger" and the first line after it starting with ` ``` ` (opening fence; returned only when `json` parses to a dict and the closing fence is found):
+
+```bash
+_extract_ledger_json() {
+  local file="$1"
+  local in_fence=0 json_block=""
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^"## Checkpoint ledger" ]]; then
+      in_fence=1
+      continue
+    fi
+    if [ "$in_fence" -eq 1 ]; then
+      if [[ "$line" =~ "^"\`"\`" ]]; then
+        if [ -z "$json_block" ]; then
+          # opening fence found
+          json_block="{"
+        else
+          # closing fence found
+          json_block="${json_block}"$'\n'"}"
+          python3 -c "import json, sys; json.load(sys.stdin)" <<< "$json_block" 2>/dev/null && printf '%s\n' "$json_block" && return 0
+          return 1
+        fi
+        continue
+      fi
+      if [ -n "$json_block" ] && [ "$json_block" != "{" ]; then
+        json_block="${json_block}"$'\n'"${line}"
+      fi
+    fi
+  done < "$file"
+  return 1
+}
+```
+
+Paths in `expected_reactions` and `evidence` are canonicalized and verified to resolve under `SESSION_DIR` (reject with a specific error if any path lies outside). Absolute paths and directory traversal (e.g., `../../..`) are rejected; all paths must resolve within the session directory.
+
+**Reaction files** (per mode):
+
+*Pre-show mode* — `reactions/<slug>-pre-show-r1.json`, where `<slug>` is the persona file stem. Keyed by `brief_id` ("B1".."Bn"), with a top-level `"complete": true` sentinel. Each value is an object with ONE boolean key among `resolved`, `agreed`, `no-view`, `protested`, `needs-human` (by truthiness, not presence: classification precedence is `needs-human > protested > resolved > agreed > no-view`), plus:
+- `reason`: string or null (required)
+- `could-go-other-way`: boolean, optional
+
+*Reply mode* — `reactions/<slug>-reply-r<round>.json`, keyed by handle ("D1", "W1", "Q1", …), with a top-level `"complete": true` sentinel. Each value is an object with exactly ONE boolean key among `accept`, `pushback`, classified by `pushback is True`, plus:
+- `reason`: string (required if `pushback` is true)
+
 ### Report variant (plan checkpoint only)
 
 The plan step in a flow uses a different checkpoint path: one readable report instead of per-brief forms, with a single free-text reply. This section defines the report question file, answers file, and raw reply file.
 
-**Terms (used in this section and Step 6 of `commands/expert-plan.md`):**
+**Terms (used in this section and Step 5 of `commands/expert-plan.md`):**
 
 - **Conversation round:** one report shown to the human and one reply taken back, within a single attempt of the plan step. Rounds are numbered `1, 2, …` within an attempt.
 - **Attempt:** one spawn of the plan step (`ATTEMPT=<k>` in the flow). Each attempt has its own `SESSION_DIR` (path includes the invocation id). A retried attempt re-asks everything with no carry-over.
@@ -303,6 +357,8 @@ The plan step in a flow uses a different checkpoint path: one readable report in
   "context_path": "<absolute path of context.md, or null>",
   "ticket": "<ticket refresher for this attempt>",
   "headline": "<'This ticket looks under-specified — …' notice, or null>",
+  "north_star_blind": "<exact NORTH STAR BLIND: line from Step 5, or null>",
+  "roundup": "<expert round-up markdown from Step 5, or null>",
   "items": [
     {
       "handle": "D1",
@@ -357,16 +413,23 @@ Fields:
 - `attempt`, `round` — attempt number and conversation round within it.
 - `ticket` — ticket refresher text the human needs to remember context.
 - `headline` — null unless more than five Qs survive (set to the under-specified notice).
-- `items[]` — D, W, and Q items in order (D first, then W, then Q). Each carries its handle, tier (`decided` | `worth-a-look` | `question`), brief type from Step 5, recommendation, why, backing experts, and business case (Q items). Q items also carry `options[]` with for/against. `evidence` is a map per seated expert showing their recorded reaction (`resolved`, `agreed`, `no-view`, `protested`, or `pat: vetoed`). `pushback` is null on round 1; on later rounds, if an expert pushed back on this handle, `{ "expert": "<slug>", "text": "<one-line reason>" }`.
-- `must_answer` — true when the item is a Q, was protested, or changed since the human last saw it.
-- `reason_must_answer` — `"question"`, `"protested"`, `"changed"`, or null.
+- `north_star_blind` — the exact NORTH STAR BLIND: line from Step 5 (the preflight result), or null if no blind run or preflight error.
+- `roundup` — expert round-up markdown from Step 5 (the short blocks orienting per expert), or null on later rounds (shown only round 1).
+- `items[]` — D, W, and Q items in order (D first, then W, then Q). Each carries its handle, tier (`decided` | `worth-a-look` | `question`), brief type from Step 5, recommendation, why, backing experts, and business case (Q items). Q items also carry `options[]` with for/against. `evidence` is a map per seated expert showing their recorded reaction (`resolved`, `agreed`, `no-view`, `protested`, or `needs-human`). `pushback` is null on round 1; on later rounds, if an expert pushed back on this handle, `{ "expert": "<slug>", "text": "<one-line reason>" }`.
+- `must_answer` — true when the item is a Q, was protested, marked needs-human, or changed since the human last saw it.
+- `reason_must_answer` — `"question"`, `"protested"`, `"needs-human"`, `"changed"`, or null.
 - `questions[]` — exactly one free-text entry for the human's reply (the form escape hatch needs it for `AskUserQuestion`-compatibility).
 
-**Answers file** `${FLOW_DIR}/answers/plan-<SEQ>.json` (one per conversation round):
+**Answers file** `${FLOW_DIR}/answers/plan-<SEQ>.json` (one per conversation round, keyed by `kind`):
+
+For `kind: "report"` files (the plan checkpoint report):
 
 ```json
 {
-  "answers": {
+  "kind": "report",
+  "round": <n>,
+  "attempt": <k>,
+  "items": {
     "D1": {
       "disposition": "accepted",
       "value": null,
@@ -387,7 +450,11 @@ Fields:
 }
 ```
 
-Fields:
+For other `kind` values (standard Ask block forms): the existing `{"answers": {...}, "annotations": {...}}` shape.
+
+Fields (report kind only):
+- `kind: "report"`, `round`, `attempt` — marks this as a report answers file with round and attempt numbers.
+- `items` — keyed by handle, with dispositions and excerpts as below.
 - `disposition` — `"accepted"` (unmentioned D or W), `"answered"` (explicit answer), `"overridden"` (changed prior answer), `"accepted-on-continue"` (must-answer item left open when human said continue), or `"unresolved"` (unanswered must-answer item, blocks resume).
 - `value` — the human's chosen or stated value, or the panel recommendation for `accepted-on-continue`.
 - `reply_excerpt` — verbatim text from the human's reply. Required for `answered` and `overridden`; must be non-empty. For `accepted-on-continue`, the excerpt containing the human's "continue".
@@ -396,7 +463,7 @@ Fields:
 - `reading_echoed` — true when this round's reading was ambiguous and echoed back.
 - `loop_end` — `"continue"` when the human said continue; `"all-answered"` when every must-answer item in the round is `answered` or `overridden`; otherwise null.
 
-**Raw reply file** `${FLOW_DIR}/answers/plan-<SEQ>.reply.md`:
+**Raw reply file** `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md`:
 
 The human's prose reply, verbatim, saved by the orchestrator with the `Write` tool before interpretation. A round answered entirely through the form escape hatch has no prose to save and no reply file.
 
