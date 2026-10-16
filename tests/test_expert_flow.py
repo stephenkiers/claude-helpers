@@ -88,6 +88,16 @@ def heading_section(text, heading):
     return text[m.start():end]
 
 
+def subsection(text, heading):
+    """Return the `### ` section whose heading line starts with `heading`, bounded by the next `##` or `###` heading."""
+    m = re.search(rf"^{re.escape(heading)}\b.*$", text, re.MULTILINE)
+    if not m:
+        return ""
+    nxt = re.search(r"^#{2,3} ", text[m.end():], re.MULTILINE)
+    end = m.end() + nxt.start() if nxt else len(text)
+    return text[m.start():end]
+
+
 def enclosing_section(text, anchor):
     """Return the `## ` section that contains the first occurrence of `anchor` ("" if absent)."""
     pos = text.find(anchor)
@@ -327,20 +337,27 @@ def main():
     # New assertions for no-argument run feature
     print()
     print("[Section 8a] No-argument run (bare /expert-flow)")
-    noarg_sec = heading_section(text, "### No-argument run")
+    noarg_sec = subsection(text, "### No-argument run")
     h.test_result("No-argument run subsection exists", bool(noarg_sec))
     h.test_result("argument-hint shows issue as optional [<issue-url|number>]",
                   "[<issue-url|number>]" in fm, "issue should be optional in argument-hint")
-    h.test_result("'Required unless' text mentions bare form", "Required unless" in text and "ticket worktree" in text,
-                  "Required unless sentence should mention bare form")
+    h.test_result("'Required unless' sentence names the bare run in a ticket worktree",
+                  "run bare inside a ticket worktree" in text,
+                  "Required unless sentence should say 'run bare inside a ticket worktree'")
     h.test_result("parser message about bare form and flags is present",
                   "(a bare /expert-flow takes no flags)" in text)
     h.test_result("ADR-0023 has the 2026-10-15 amendment heading",
                   "## Amendment (2026-10-15): bare /expert-flow in the ticket worktree" in adr)
-    h.test_result("CLAUDE.md mentions bare form",
-                  "A bare `cd <worktree> && claude \"/expert-flow\"` auto-detects the issue and resumes the hand-off silently" in claude)
-    h.test_result("EXISTING_DIR sentence in Existing flow section",
-                  "EXISTING_DIR" in heading_section(text, "### Fresh run: resolve the issue"))
+    h.test_result("CLAUDE.md states silent resume only in the exact hand-off state, otherwise asks",
+                  "A bare `cd <worktree> && claude \"/expert-flow\"` auto-detects the issue; in the exact hand-off state it resumes silently, otherwise it asks as usual." in claude)
+    fresh_sec = subsection(text, "### Fresh run: resolve the issue")
+    h.test_result("Fresh run section: Existing flow uses EXISTING_DIR when the no-arg route set it",
+                  "When the no-arg route set `EXISTING_DIR`, use it" in fresh_sec)
+    h.test_result("Fresh run section: Resume continues as --resume \"$EXISTING_DIR\"",
+                  "--resume \"$EXISTING_DIR\"" in fresh_sec)
+    h.test_result("Per-step details Hand-off paragraph pins the bare resume sentence",
+                  "Running bare `/expert-flow` inside the worktree resumes this flow at `plan` without a question"
+                  in subsection(text, "### Per-step details"))
     h.test_result("trail line contains 'from the main worktree to choose Start fresh'",
                   "from the main worktree to choose Start fresh" in text)
     h.test_result("Every Exit Path has bare run rows",
@@ -352,7 +369,7 @@ def main():
                   "/expert-flow <ISSUE> --from <FROM_STEP>[ --plan-file <QUOTED_PLAN_FILE>]" in text)
     h.test_result("non-GitHub worktree guard message is present",
                   "this worktree is not for a GitHub issue — run /expert-flow <issue> from the main worktree" in text)
-    h.test_result("Hand-off paragraph reflects exact hand-off predicate (step: plan, status: paused)",
+    h.test_result("No-argument run section states the exact hand-off predicate (step: plan, status: paused)",
                   "`step==plan`, `status==paused`, `live==null`, `attempts.plan==0`" in noarg_sec)
 
     print()
