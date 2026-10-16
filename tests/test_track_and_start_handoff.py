@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Test that /track-and-start's four handoff blocks include both the /implement-with-haiku
-and /expert-flow alternatives (issue #302).
+Test the four handoff blocks in commands/track-and-start.md (issue #302).
 
-The four blocks are:
-  1. Local Plan (~:749)
-  2. Tracker (~:947)
-  3. GitHub (~:1153)
-  4. GitHub (~:1506)
-
-Each block should have both lines as alternatives, with the GitHub blocks carrying the
-re-plan wording.
+Asserts, against the text of the file:
+  1. Exactly four bare `cd <worktree-path> && claude "/expert-flow"` lines exist, and none
+     carries an issue number or flags.
+  2. Each /expert-flow line sits in its own handoff block: an `claude "/implement-with-haiku"`
+     line appears between the previous /expert-flow line (or file start) and this one.
+  3. Each block has an intro sentence ("Or run the whole lifecycle with /expert-flow ...")
+     located between the previous /expert-flow line and this one. A missing intro is a
+     failure, not a silent match against an earlier block's intro. Two blocks carry the
+     GitHub re-plan wording and two carry the GitHub-only caveat, with the re-plan blocks
+     last.
 
 Run with: python3 tests/test_track_and_start_handoff.py
 """
@@ -24,50 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
 
 
-def find_handoff_blocks(text):
-    """Extract the four handoff blocks from track-and-start.md.
-
-    Returns a list of (description, block_text) tuples for the four blocks.
-    """
-    blocks = []
-
-    # Marker strings for each block start (looking for unique context)
-    # Local Plan block: ends with "run /implement-with-haiku" and handoff
-    local_plan_start = text.find("### Step 4b: Handoff to")
-    if local_plan_start > 0:
-        next_block = text.find("\n### ", local_plan_start + 1)
-        block = text[local_plan_start:next_block] if next_block > 0 else text[local_plan_start:]
-        # This is the Local Plan block
-        blocks.append(("Local Plan", block))
-
-    # Count /implement-with-haiku occurrences to identify blocks
-    impl_positions = [m.start() for m in re.finditer(r'claude "/implement-with-haiku"', text)]
-
-    if len(impl_positions) >= 4:
-        # Extract blocks around each /implement-with-haiku occurrence
-        # Each block is from before the occurrence to the next heading or similar marker
-        for i, pos in enumerate(impl_positions):
-            # Find the start of this section (previous heading or marker)
-            section_start = text.rfind("###", 0, pos)
-            if section_start < 0:
-                section_start = text.rfind("##", 0, pos)
-            if section_start < 0:
-                continue
-
-            # Find the end (next heading or end of file)
-            section_end = text.find("\n###", pos + 1)
-            if section_end < 0:
-                section_end = text.find("\n##", pos + 1)
-            if section_end < 0:
-                section_end = len(text)
-
-            block = text[section_start:section_end]
-            # Extract a meaningful description from the section heading
-            heading_match = re.search(r"###?\s+([^\n]+)", block)
-            desc = heading_match.group(1) if heading_match else f"Handoff {i+1}"
-            blocks.append((desc, block))
-
-    return blocks
+INTRO_MARKER = "Or run the whole lifecycle with /expert-flow"
 
 
 def main():
@@ -101,16 +59,20 @@ def main():
     print()
     print("[Section 3] Intro sentence per block matches its kind (2 GitHub re-plan, 2 GitHub-only caveat)")
     intros = []
-    for m in flow_lines:
-        line_start = text.rfind("Or run the whole lifecycle with /expert-flow", 0, m.start())
-        intros.append(text[line_start:m.start()] if line_start >= 0 else "")
-    replan = [x for x in intros if "starts again from planning" in x and "/expert-plan and track" in x]
-    caveat = [x for x in intros if "runs only for a GitHub issue" in x and "needs a GitHub remote" in x]
-    t("all 4 blocks have an intro sentence", all(intros))
+    for i, m in enumerate(flow_lines):
+        # Search only between the previous block's /expert-flow line and this block's line,
+        # so a block missing its intro cannot borrow the previous block's intro.
+        window_start = flow_lines[i - 1].end() if i > 0 else 0
+        line_start = text.rfind(INTRO_MARKER, window_start, m.start())
+        intros.append(text[line_start:m.start()] if line_start >= 0 else None)
+    replan = [x for x in intros if x and "starts again from planning" in x and "/expert-plan and track" in x]
+    caveat = [x for x in intros if x and "runs only for a GitHub issue" in x and "needs a GitHub remote" in x]
+    t("all 4 blocks have an intro sentence", len(intros) == 4 and all(x is not None for x in intros))
     t("exactly 2 blocks carry the re-plan wording", len(replan) == 2, f"found {len(replan)}")
     t("exactly 2 blocks carry the GitHub-only caveat", len(caveat) == 2, f"found {len(caveat)}")
     t("re-plan blocks are the last two (GitHub flows)",
-      "starts again from planning" in intros[2] and "starts again from planning" in intros[3])
+      len(intros) == 4 and intros[2] is not None and intros[3] is not None
+      and "starts again from planning" in intros[2] and "starts again from planning" in intros[3])
 
     h.summarize_and_exit()
 
