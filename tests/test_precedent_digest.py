@@ -967,6 +967,64 @@ def case_internal_error_handling(h):
                       rc == 0 and len(ents) >= 1, err)
 
 
+def case_out_file_mode(h):
+    """Test that --out writes a file with private mode 0o600."""
+    with Fixture() as fx:
+        build_corpus(fx)
+        outdir = fx.home / "outdir-mode"
+        outdir.mkdir()
+        target = outdir / "digest.jsonl"
+        rc, out, err = run_digest(fx.home, ["owner/name", "--out", str(target)])
+        h.test_result("--out mode: exit 0", rc == 0, err)
+        h.test_result("--out mode: file exists", target.exists(), f"path={target}")
+        h.test_result("--out mode: file has mode 0o600",
+                      target.exists() and oct(target.stat().st_mode & 0o777) == "0o600",
+                      f"actual mode={oct(target.stat().st_mode & 0o777)}")
+        h.test_result("--out mode: empty --out file also has mode 0o600",
+                      target.exists() and oct(target.stat().st_mode & 0o777) == "0o600",
+                      f"actual mode={oct(target.stat().st_mode & 0o777)}")
+
+
+def case_out_stale_file_replaced(h):
+    """Test that a stale --out file is replaced, not kept looking current."""
+    with Fixture() as fx:
+        # First run with old corpus content
+        fx.plan("owner-name", "1-20261001T100000-old", plan_md([brief(1, "Old topic", OPTS, "A")], ["Q1 = A (old)"]))
+        outdir = fx.home / "outdir-stale"
+        outdir.mkdir()
+        target = outdir / "digest.jsonl"
+        rc1, _, _ = run_digest(fx.home, ["owner/name", "--out", str(target)])
+
+        # Capture the first content
+        first_content = target.read_bytes()
+        old_mtime = target.stat().st_mtime
+
+        # Modify the fixture - clear old, add new
+        shutil.rmtree(fx.claude / "plan-sessions")
+        fx.plan("owner-name", "2-20261002T100000-new", plan_md([brief(1, "New topic", OPTS, "A")], ["Q1 = A (new)"]))
+
+        import time
+        time.sleep(0.1)  # Ensure mtime changes
+
+        # Second run with new corpus content
+        rc2, _, _ = run_digest(fx.home, ["owner/name", "--out", str(target)])
+
+        # The file should be updated, not kept with old content
+        new_content = target.read_bytes()
+        new_mtime = target.stat().st_mtime
+
+        h.test_result("--out stale file: both runs exit 0", rc1 == 0 and rc2 == 0)
+        h.test_result("--out stale file: file content changed",
+                      first_content != new_content,
+                      f"content_same={first_content == new_content}")
+        h.test_result("--out stale file: file mtime updated",
+                      new_mtime > old_mtime,
+                      f"old_mtime={old_mtime} new_mtime={new_mtime}")
+        h.test_result("--out stale file: new content has 'New topic', not 'Old topic'",
+                      b"New topic" in new_content and b"Old topic" not in new_content,
+                      f"new_content={new_content[:100]}")
+
+
 def main():
     h = Harness("precedent-digest")
     cases = [case_one_spelling, case_case_insensitive, case_legacy_and_flat, case_key_derivation,
@@ -976,7 +1034,8 @@ def main():
              case_out, case_read_only, case_format_md, case_match_ranking_not_overlap,
              case_brief_answer_comma_semicolon, case_entry_id_uniqueness, case_top_without_match_error,
              case_unreadable_root, case_fenced_code_block_heading, case_recommendation_prose,
-             case_stats_exact_golden, case_internal_error_handling]
+             case_stats_exact_golden, case_internal_error_handling, case_out_file_mode,
+             case_out_stale_file_replaced]
     for case in cases:
         try:
             case(h)
