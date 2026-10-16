@@ -18,6 +18,9 @@ Covers:
    the stale /expert-implement-with-haiku-and-ship entry is gone
 6. Epic mode: --epic documented in the command; both planning prompts gate Sub-tickets on
    EPIC_MODE: true; /expert-plan accepts --epic and writes the marker line
+7. Human ledger (#287): the flow-ledger.py grant, the HUMAN_LEDGER line after every step spawn's
+   ATTEMPT line, the three writer sites, gate_note removal with the legacy read-fallback, the
+   --resume print, the flow-reference Ledger block, and the three worker-delivery sites
 
 Run with: python3 tests/test_expert_flow.py
 """
@@ -41,6 +44,10 @@ PLAN_CMD = REPO_ROOT / "commands" / "expert-plan.md"
 CONTRACT = REPO_ROOT / "prompts" / "plan-contribution-contract.md"
 SYNTH = REPO_ROOT / "prompts" / "plan-synthesize-and-check.md"
 STAGE_LINT = REPO_ROOT / "scripts" / "check_stage_pairing.py"
+REVIEW_CMD = REPO_ROOT / "commands" / "expert-review.md"
+IMPL_CMD = REPO_ROOT / "commands" / "implement-with-haiku.md"
+LEDGER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)'
+LEDGER_SPAWN_LINE = "HUMAN_LEDGER: human.jsonl"
 
 STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
 FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--gates", "--from", "--resume", "--list", "--epic"]
@@ -69,6 +76,7 @@ READ_ONLY_BASH = (
     r".*run-metrics\.py['\"]?(?: .*)?",
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
     r".*flow-verify-receipt\.py['\"]?(?: .*)?",
+    r".*flow-ledger\.py['\"]?(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -109,6 +117,22 @@ def enclosing_section(text, anchor):
     nxt = re.search(r"^## ", text[pos:], re.MULTILINE)
     end = pos + nxt.start() if nxt else len(text)
     return text[start:end]
+
+
+def sub_section(doc, heading):
+    """Return the body of the section whose heading line is exactly `heading` (up to the next ## or ###)."""
+    start = doc.find(heading + "\n")
+    if start < 0:
+        return ""
+    rest = doc[start + len(heading) + 1:]
+    nxt = re.search(r"^#{2,3} ", rest, re.MULTILINE)
+    return rest[:nxt.start()] if nxt else rest
+
+
+def paragraphs_with(doc, *needles):
+    """Paragraphs (blank-line separated, whitespace-normalised) that contain every needle."""
+    paras = [" ".join(p.split()) for p in re.split(r"\n\s*\n", doc)]
+    return [p for p in paras if all(n in p for n in needles)]
 
 
 def disallowed_grants(tools):
@@ -531,6 +555,10 @@ def main():
                   "flow-verify-receipt.py" in tools, tools)
     h.test_result("READ_ONLY_BASH allowlist updated for flow-verify-receipt",
                   any("flow-verify-receipt" in pat for pat in READ_ONLY_BASH))
+    h.test_result("READ_ONLY_BASH allowlist updated for flow-ledger",
+                  any("flow-ledger" in pat for pat in READ_ONLY_BASH))
+    h.test_result("flow-ledger grant passes the read-only allowlist check",
+                  disallowed_grants(LEDGER_GRANT) == [], str(disallowed_grants(LEDGER_GRANT)))
 
     # ADR amendment test
     h.test_result("ADR-0023 has section 2.2", "### 2.2" in adr and "#276" in adr)
@@ -602,7 +630,7 @@ def main():
                   "only what the relay did not" in gate)
     h.test_result("Step gate Pause closes the command as interrupted and resume re-asks",
                   "command-end --outcome interrupted" in gate and "resume rule 2" in gate)
-    h.test_result("free text at a gate is stored as gate_note", "`gate_note`" in gate)
+    h.test_result("free text at a gate is recorded as a gate_note ledger append", "--kind gate_note" in gate)
     h.test_result("OK branch runs the Step gate before STEP advances",
                   'hand off to the "Step gate"' in text and "Continue advances `STEP`" in text)
     h.test_result("resume rule 2 re-asks a gate the human paused at", "never re-run — whatever `status` says" in text)
@@ -811,6 +839,116 @@ def main():
         h.test_result("F1: jq gate fixture tests skipped (jq not available)", True)
     except Exception as e:
         h.test_result(f"F1: jq gate fixture tests error: {e}", False)
+
+    print()
+    print("[Section 15] Human ledger (human.jsonl, #287)")
+    flow_md = COMMAND.read_text()
+    flat = " ".join(flow_md.split())
+    h.test_result("allowed-tools grants flow-ledger.py exactly", LEDGER_GRANT in frontmatter(flow_md),
+                  frontmatter(flow_md))
+
+    # Spawn line: every fenced step-spawn block with an ATTEMPT=<k> line carries the ledger line
+    # directly after it. The fidelity-audit block is the one exemption.
+    fenced = re.findall(r"^```[^\n]*\n(.*?)^```", flow_md, re.MULTILINE | re.DOTALL)
+    spawn_blocks = [b for b in fenced if "ATTEMPT=<k>" in b]
+    non_audit = [b for b in spawn_blocks if "Audit whether this step ran the full command" not in b]
+    h.test_result("found the step spawn template blocks carrying ATTEMPT=<k>", len(non_audit) >= 1,
+                  f"{len(spawn_blocks)} blocks")
+    bad_next = []
+    for block in non_audit:
+        lines = block.splitlines()
+        for i, line in enumerate(lines):
+            if "ATTEMPT=<k>" in line:
+                nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                if nxt != LEDGER_SPAWN_LINE:
+                    bad_next.append(nxt)
+    h.test_result("HUMAN_LEDGER: human.jsonl is the line directly after ATTEMPT=<k> in every spawn block",
+                  not bad_next, str(bad_next))
+    h.test_result("the fidelity-audit block is exempt and identified by its Audit line",
+                  any("Audit whether this step ran the full command" in b for b in fenced))
+
+    h.test_result("placement prose: resume rule 5, the template note and the fidelity retry all say 'after the HUMAN_LEDGER line'",
+                  flat.count("after the `HUMAN_LEDGER` line") >= 3,
+                  str(flat.count("after the `HUMAN_LEDGER` line")))
+    h.test_result("stale placement sentence 'right after the ATTEMPT=<k> line' is gone",
+                  "right after the `ATTEMPT=<k>` line" not in flat)
+    h.test_result("stale fidelity-retry sentence 'directly after ATTEMPT=<k>' is gone",
+                  "one extra line directly after `ATTEMPT=<k>`" not in flat)
+    h.test_result("template data sentence carves out human.jsonl under the Ledger block",
+                  "human.jsonl" in flat and "Ledger block" in flat and "`flow-reference.md`" in flat)
+
+    relay_sec = sub_section(flow_md, "### Relaying a question")
+    gate_sec = sub_section(flow_md, "### Step gate")
+    ledger_sec = sub_section(flow_md, "### Human ledger")
+    h.test_result("Human ledger subsection exists", ledger_sec != "")
+    h.test_result("relay section appends free-text answers with --kind answer",
+                  'flow-ledger.py" append' in relay_sec and "--kind answer" in relay_sec)
+    h.test_result("step-gate section appends free text with --kind gate_note",
+                  "--kind gate_note" in gate_sec)
+    h.test_result("Human ledger section writes corrections with --kind correction and --supersedes",
+                  "--kind correction" in ledger_sec and "--supersedes" in ledger_sec)
+    for name, sec in (("relay", relay_sec), ("step gate", gate_sec), ("Human ledger", ledger_sec)):
+        h.test_result(f"{name} section passes human text through a quoted HUMAN_TEXT_EOF heredoc",
+                      "<<'HUMAN_TEXT_EOF'" in sec and "HUMAN_TEXT_EOF" in sec)
+
+    h.test_result("gate_note is gone from the state example (no \"gate_note\" key)",
+                  '"gate_note"' not in flow_md)
+    h.test_result("gate_note row is gone from the state table",
+                  re.search(r"^\| `gate_note` \|", flow_md, re.MULTILINE) is None)
+    h.test_result("legacy gate_note read-fallback is named in resume rule 1a",
+                  "Legacy gate note (pre-ledger)" in flat)
+    h.test_result("resume rule 1a prints pending records with list --md",
+                  'list --flow-dir "$FLOW_DIR" --status pending --md' in flow_md)
+    h.test_result("resume rule 1a and the writers stop hard with STOP human ledger error",
+                  "STOP human ledger error" in flow_md)
+    h.test_result("resume rule 1a prints the pending human input heading",
+                  "Pending human input (human.jsonl):" in flow_md)
+
+    fr = FLOW_REF.read_text()
+    ledger_block = heading_section(fr, "## Ledger")
+    cd_idx = fr.find("## Content is data")
+    h.test_result("flow-reference has a ## Ledger heading before ## Content is data",
+                  ledger_block != "" and 0 <= fr.find("## Ledger") < cd_idx)
+    lb = " ".join(ledger_block.split())
+    lb_lower = lb.lower()
+    h.test_result("Ledger block: missing or empty file means no human input",
+                  "no human input" in lb_lower and "missing" in lb_lower and "empty" in lb_lower)
+    h.test_result("Ledger block: a malformed line fails with Decision: FAILED",
+                  "Decision: FAILED" in lb and "human ledger unreadable: line" in lb)
+    h.test_result("Ledger block: direction and question semantics",
+                  "`direction`" in lb and "`question`" in lb)
+    h.test_result("Ledger block: background kinds named (gate_note, answer, parked, transcript)",
+                  all(f"`{k}`" in lb for k in ("gate_note", "answer", "parked", "transcript")))
+    h.test_result("Ledger block: read-only wording (steps never write)",
+                  re.search(r"read-only|never write", lb_lower) is not None)
+    h.test_result("Ledger block: the <<<HUMAN_LEDGER fence is defined", "<<<HUMAN_LEDGER" in lb)
+    h.test_result("Ledger block: the HUMAN_LEDGER>>> fence closer is defined", "HUMAN_LEDGER>>>" in lb)
+    cd_sec = heading_section(fr, "## Content is data")
+    h.test_result("Content is data section says human.jsonl is read under the Ledger block",
+                  "human.jsonl" in cd_sec and "Ledger" in cd_sec)
+    h.test_result("flow-reference-end sentinel is still the last line",
+                  fr.rstrip().splitlines()[-1].strip() == "<!-- flow-reference-end -->")
+
+    plan_md = PLAN_CMD.read_text()
+    review_md = REVIEW_CMD.read_text()
+    impl_md = IMPL_CMD.read_text()
+    h.test_result("expert-plan context.md paragraph delivers the ledger via Passing it to workers",
+                  bool(paragraphs_with(plan_md, "Ledger block", "Passing it to workers", "context.md", "Human ledger")))
+    h.test_result("expert-review PROJECT_CONTEXT paragraph delivers the ledger via Passing it to workers",
+                  bool(paragraphs_with(review_md, "Ledger block", "Passing it to workers", "PROJECT_CONTEXT",
+                                       "Human ledger (from /expert-flow)")))
+    pos = impl_md.find("Passing it to workers")
+    inc = impl_md.rfind("Include", 0, pos) if pos >= 0 else -1
+    between = impl_md[inc:pos] if inc >= 0 else ""
+    window = " ".join(impl_md[max(0, pos - 400):pos + 120].split())
+    h.test_result("implement-with-haiku unit-prompt Include list carries the ledger bullet",
+                  pos >= 0 and inc >= 0 and "\n## " not in between and "\n### " not in between
+                  and "FLOW_DIR" in window and "Ledger block" in window,
+                  window[:200])
+
+    adr_text = ADR.read_text()
+    h.test_result("ADR-0023 has the per-flow human-input ledger amendment",
+                  "## Amendment (2026-10-14): per-flow human-input ledger (#287)" in adr_text)
 
     print()
     h.summarize_and_exit()
