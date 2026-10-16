@@ -144,6 +144,405 @@ def scan_for_deviation(content: str) -> bool:
     return False
 
 
+def _is_report_checkpoint(flow_dir: Path, relay_count: RelayCount) -> bool:
+    """Check if any marker-named report question file has kind: "report"."""
+    qdir = flow_dir / "questions"
+    if not qdir.exists():
+        return False
+
+    for marker in relay_count.unanswered:
+        qfile = qdir / marker
+        try:
+            data = json.loads(qfile.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("kind") == "report":
+                return True
+        except (OSError, UnicodeDecodeError, ValueError):
+            pass
+
+    # Also check answered files
+    adir = flow_dir / "answers"
+    if adir.exists():
+        for answer_file in adir.glob("plan-*.json"):
+            # Find corresponding question file by name
+            qfile = qdir / answer_file.name
+            if qfile.exists():
+                try:
+                    data = json.loads(qfile.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and data.get("kind") == "report":
+                        return True
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
+
+    return False
+
+
+def _extract_ledger_json(decisions_text: str) -> Optional[Dict]:
+    """Extract and parse the Checkpoint ledger JSON block from decisions.md.
+
+    Returns the parsed JSON dict or None if not found or invalid.
+    """
+    # Find the fenced JSON block starting with ## Checkpoint ledger
+    ledger_start = decisions_text.find("## Checkpoint ledger")
+    if ledger_start == -1:
+        return None
+
+    # Find the first fence after the heading
+    fence_start = decisions_text.find("```", ledger_start)
+    if fence_start == -1:
+        return None
+
+    # Find the closing fence
+    fence_end = decisions_text.find("```", fence_start + 3)
+    if fence_end == -1:
+        return None
+
+    # Extract the JSON content
+    json_text = decisions_text[fence_start + 3:fence_end].strip()
+
+    try:
+        return json.loads(json_text)
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def _get_ledger_handles_and_tiers(
+    ledger: Dict,
+) -> Dict[str, Dict]:
+    """Extract {handle: {tier, brief_type, ...}} from ledger.
+
+    Returns dict mapping handle to its tier, brief_type, and evidence.
+    """
+    result: Dict[str, Dict] = {}
+    for handle, data in ledger.items():
+        if isinstance(data, dict) and handle.startswith(("D", "W", "Q")):
+            result[handle] = data
+    return result
+
+
+def _load_answers_file(path: Path) -> Optional[Dict]:
+    """Load and parse an answers JSON file. Return None on error."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _load_reaction_file(path: Path) -> Optional[Dict]:
+    """Load and parse a reaction JSON file. Return None on error."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+        return None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _collect_reaction_evidence(
+    session_dir: Path, expected_reactions: List[Dict]
+) -> Dict[str, Dict[str, list]]:
+    """Collect evidence for each handle from reaction files listed in expected_reactions.
+
+    Returns {handle: {expert: [resolved|agreed|no-view|protested]}}
+    """
+    evidence: Dict[str, Dict[str, list]] = {}
+
+    for entry in expected_reactions:
+        if not isinstance(entry, dict):
+            continue
+        path_str = entry.get("path")
+        if not path_str:
+            continue
+
+        path = session_dir / path_str
+        data = _load_reaction_file(path)
+        if not data:
+            continue
+
+        # For each handle in the reaction file, record the reaction
+        for handle, reaction_data in data.items():
+            if handle == "complete":
+                continue
+            if not isinstance(reaction_data, dict):
+                continue
+
+            if handle not in evidence:
+                evidence[handle] = {}
+
+            # Extract expert slug from the path (reactions/<slug>-<mode>-r<round>.json)
+            path_obj = Path(path_str)
+            basename = path_obj.name
+            # Extract slug: everything before the first dash after "reactions/"
+            slug = basename.split("-")[0] if "-" in basename else basename
+
+            # Collect the reaction value
+            if "resolved" in reaction_data or reaction_data.get("status") == "resolved":
+                evidence[handle][slug] = "resolved"
+            elif reaction_data.get("status") == "agreed" or reaction_data.get("agreed"):
+                evidence[handle][slug] = "agreed"
+            elif reaction_data.get("status") == "no-view" or not reaction_data.get("status"):
+                evidence[handle][slug] = "no-view"
+            elif reaction_data.get("status") == "protested" or reaction_data.get("protested"):
+                evidence[handle][slug] = "protested"
+
+    return evidence
+
+
+def check_report_checkpoint(
+    session_dir: Path, flow_dir: Path, decisions_text: str
+) -> Optional[str]:
+    """Check report-kind plan checkpoint. Return error reason or None.
+
+    Implements rules 1-10 from Step 6.
+    """
+    # Load the checkpoint ledger
+    ledger = _extract_ledger_json(decisions_text)
+    if not ledger:
+        return "plan checkpoint incomplete (no checkpoint ledger in decisions.md)"
+
+    seated = ledger.get("seated", [])
+    expected_reactions = ledger.get("expected_reactions", [])
+
+    if not isinstance(seated, list):
+        seated = []
+    if not isinstance(expected_reactions, list):
+        expected_reactions = []
+
+    # Rule 7a: Check that contrarian-carl is in seated list
+    if "contrarian-carl" not in seated:
+        return "plan checkpoint incomplete (missing contrarian-carl from seated list)"
+
+    # Get all handles from ledger
+    ledger_handles_and_tiers = _get_ledger_handles_and_tiers(ledger)
+    ledger_handles = set(ledger_handles_and_tiers.keys())
+
+    # Rule 1: Check for report markers
+    qdir = flow_dir / "questions"
+    adir = flow_dir / "answers"
+
+    if not qdir.exists():
+        return "plan checkpoint incomplete (receipt carries no plan-* markers)"
+
+    # Find all report question files
+    report_files = {}
+    for qfile in qdir.glob("plan-*.json"):
+        try:
+            data = json.loads(qfile.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("kind") == "report":
+                report_files[qfile.name] = data
+        except (OSError, UnicodeDecodeError, ValueError):
+            pass
+
+    if not report_files:
+        return "plan checkpoint incomplete (receipt carries no plan-* markers)"
+
+    # Rule 2: Check that round-1 report's handle set matches ledger handles
+    # Round-1 is the first report file (sorted by name)
+    round1_basename = min(report_files.keys()) if report_files else None
+    if round1_basename:
+        round1_data = report_files[round1_basename]
+        if isinstance(round1_data.get("items"), list):
+            report_handles = set()
+            for item in round1_data["items"]:
+                if isinstance(item, dict) and "handle" in item:
+                    report_handles.add(item["handle"])
+
+            if report_handles != ledger_handles:
+                missing = ledger_handles - report_handles
+                extra = report_handles - ledger_handles
+                reason = "plan checkpoint incomplete (round-1 handles mismatch"
+                if missing:
+                    reason += f": missing {', '.join(sorted(missing))}"
+                if extra:
+                    reason += f": extra {', '.join(sorted(extra))}"
+                reason += ")"
+                return reason
+
+    # Rule 3, 4: Check answers files for all report rounds and check for unresolved
+    final_dispositions: Dict[str, str] = {}
+    prose_rounds: set = set()
+
+    if adir.exists():
+        for answer_file in adir.glob("plan-*.json"):
+            answers_data = _load_answers_file(answer_file)
+            if not answers_data:
+                return f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
+
+            answers = answers_data.get("answers", {})
+            if not isinstance(answers, dict):
+                continue
+
+            # Rule 3: Check that all handles are present
+            for handle in ledger_handles:
+                if handle not in answers:
+                    return f"plan checkpoint incomplete (answer file missing handle: {handle})"
+
+            # Track final disposition and prose rounds
+            for handle, answer in answers.items():
+                if isinstance(answer, dict):
+                    disposition = answer.get("disposition")
+                    final_dispositions[handle] = disposition
+                    source = answer.get("source")
+                    if source == "prose":
+                        prose_rounds.add(answer_file.name)
+
+    # Rule 4: Check for unresolved dispositions
+    for handle, disposition in final_dispositions.items():
+        if disposition == "unresolved":
+            return f"plan checkpoint incomplete (unresolved: {handle})"
+
+    # Rebuild must-answer info from report files and answers
+    must_answer_items: Dict[str, bool] = {}
+    must_answer_reasons: Dict[str, str] = {}
+
+    for basename, report_data in report_files.items():
+        items = report_data.get("items", [])
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            handle = item.get("handle")
+            if not handle:
+                continue
+
+            must_answer = item.get("must_answer", False)
+            reason_must_answer = item.get("reason_must_answer")
+
+            if must_answer or reason_must_answer:
+                must_answer_items[handle] = True
+                if reason_must_answer:
+                    must_answer_reasons[handle] = reason_must_answer
+
+    # Rule 5: Check must-answer items have proper dispositions
+    for handle in must_answer_items:
+        disposition = final_dispositions.get(handle)
+        if not disposition:
+            return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+
+        if disposition == "accepted":
+            return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+
+        if disposition in ["answered", "overridden"]:
+            reply_excerpt = None
+            for answer_file in adir.glob("plan-*.json"):
+                answers_data = _load_answers_file(answer_file)
+                if answers_data and handle in answers_data.get("answers", {}):
+                    answer = answers_data["answers"][handle]
+                    if answer.get("disposition") == disposition:
+                        reply_excerpt = answer.get("reply_excerpt")
+                        break
+
+            if not reply_excerpt:
+                return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+
+        if disposition == "accepted-on-continue":
+            # Find the answers file with this disposition
+            for answer_file in adir.glob("plan-*.json"):
+                answers_data = _load_answers_file(answer_file)
+                if answers_data and handle in answers_data.get("answers", {}):
+                    answer = answers_data["answers"][handle]
+                    if answer.get("disposition") == "accepted-on-continue":
+                        loop_end = answers_data.get("loop_end")
+                        reply_excerpt = answer.get("reply_excerpt")
+                        if loop_end != "continue":
+                            return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
+                        if not reply_excerpt:
+                            return f"plan checkpoint incomplete (must-answer without quote: {handle})"
+                        break
+
+    # Rule 6: Check accepted items are only D or W
+    for handle, disposition in final_dispositions.items():
+        if disposition == "accepted":
+            tier = ledger_handles_and_tiers.get(handle, {}).get("tier")
+            if tier not in ["decided", "worth-a-look"]:
+                return f"plan checkpoint incomplete (accepted non-D/W: {handle})"
+
+    # Rule 7: Check reaction files
+    missing_experts: List[str] = []
+    for expert in seated:
+        # Check for pre-show round-1
+        found = False
+        for entry in expected_reactions:
+            if (
+                isinstance(entry, dict)
+                and entry.get("slug") == expert
+                and entry.get("mode") == "pre-show"
+                and entry.get("round") == 1
+            ):
+                found = True
+                # Check file exists and has "complete": true sentinel
+                path_str = entry.get("path")
+                if path_str:
+                    path = session_dir / path_str
+                    data = _load_reaction_file(path)
+                    if not data or not data.get("complete"):
+                        return f"plan checkpoint incomplete (reaction file missing or incomplete: {path_str})"
+                break
+
+        if not found:
+            missing_experts.append(expert)
+
+    if missing_experts:
+        return f"plan checkpoint incomplete (missing pre-show reactions: {', '.join(missing_experts)})"
+
+    # Rule 8, 8b: Check for protested D/W items and disagreement D/W items
+    evidence = _collect_reaction_evidence(session_dir, expected_reactions)
+
+    for handle, tier_data in ledger_handles_and_tiers.items():
+        tier = tier_data.get("tier")
+        brief_type = tier_data.get("brief_type")
+
+        if tier in ["decided", "worth-a-look"]:
+            # Rule 8b: Check that tier is not "disagreement"
+            if brief_type == "disagreement":
+                return f"plan checkpoint tier mismatch ({handle} is a disagreement)"
+
+            # Rule 8: Check that no reaction says "protested"
+            handle_evidence = evidence.get(handle, {})
+            for expert, reaction in handle_evidence.items():
+                if reaction == "protested":
+                    return f"plan checkpoint tier mismatch ({handle} protested by {expert})"
+
+    # Rule 9: Check raw-reply files for prose rounds
+    for prose_round in prose_rounds:
+        reply_file = adir / prose_round.replace(".json", ".reply.md")
+        if not reply_file.exists():
+            return f"plan checkpoint incomplete (missing reply file: {reply_file.name})"
+
+    # Rule 10: Check for repeated pushbacks on same handle by same expert
+    pushback_tracker: Dict[tuple, int] = {}  # (expert, handle) -> count
+
+    for entry in expected_reactions:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("mode") != "reply":
+            continue
+
+        slug = entry.get("slug")
+        path_str = entry.get("path")
+        if not slug or not path_str:
+            continue
+
+        path = session_dir / path_str
+        data = _load_reaction_file(path)
+        if not data:
+            continue
+
+        for handle, reaction_data in data.items():
+            if handle == "complete" or not isinstance(reaction_data, dict):
+                continue
+            if "pushback" in reaction_data or reaction_data.get("pushback"):
+                key = (slug, handle)
+                pushback_tracker[key] = pushback_tracker.get(key, 0) + 1
+
+                if pushback_tracker[key] > 1:
+                    return f"plan checkpoint repeated pushback ({slug} on {handle})"
+
+    return None
+
+
 def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[Path]) -> Optional[str]:
     """Check plan artifacts. Return error reason or None."""
     receipt = read_file(receipt_file)
@@ -256,8 +655,19 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     decisions_file = session_dir / "decisions.md"
     if not decisions_file.exists():
         return "plan artifacts missing (decisions.md)"
-    briefs = count_briefs(read_file(decisions_file))
+
+    decisions_text = read_file(decisions_file)
+
+    # Branch on checkpoint kind: report vs. legacy per-question
     relay_count = count_relayed_questions(flow_dir, "plan", receipt)
+    if relay_count.markers > 0 and flow_dir is not None:
+        # Check if any marker-named report has kind: "report"
+        is_report_checkpoint = _is_report_checkpoint(flow_dir, relay_count)
+        if is_report_checkpoint:
+            return check_report_checkpoint(session_dir, flow_dir, decisions_text)
+
+    # Legacy per-question rule
+    briefs = count_briefs(decisions_text)
     if relay_count.asked < briefs or relay_count.unanswered:
         reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {relay_count.asked}"
         if relay_count.markers == 0:
