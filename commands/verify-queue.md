@@ -77,7 +77,7 @@ for the duration of the check-and-append to coordinate with the Python `sync()` 
 
 ```bash
 add_row() {
-  local id="$1" status="$2" kind="$3" summary="$4" command="$5" plan="$6" result="$7"
+  local id="${1}" status="${2}" kind="${3}" summary="${4}" command="${5}" plan="${6}" result="${7}"
   
   # Open fd 200 against $QUEUE for exclusive lock (same inode as Python fcntl.flock)
   exec 200<>"$QUEUE" || return 1
@@ -120,7 +120,7 @@ inode stable, ensuring that the Python side's `fcntl.flock` on the same inode se
 
 ```bash
 set_status() {
-  local id="$1" new_status="$2" new_result="${3:-}"
+  local id="${1}" new_status="${2}" new_result="${3:-}"
   
   # Open fd 200 against $QUEUE for exclusive lock (same inode as Python fcntl.flock)
   exec 200<>"$QUEUE" || return 1
@@ -271,17 +271,17 @@ echo "Total pending: **$TOTAL**"
 Marks a row as `done`, optionally records a result, and writes the result back to the source claude-action-plan:
 
 ```bash
-ID="$2"
+ID="${2}"
 RESULT=""
 NOOP=false
 
 # Parse --result and --noop flags
 shift 2  # consume ID and command name
 while [ $# -gt 0 ]; do
-  case "$1" in
+  case "${1}" in
     --result)
-      if [ -n "$2" ]; then
-        RESULT="$2"
+      if [ -n "${2}" ]; then
+        RESULT="${2}"
         shift 2
       else
         shift
@@ -369,7 +369,7 @@ with the queue — so a re-sync no longer re-discovers a ruling you've already r
 Leaves the row with status `open` (i.e., no change). Use when you want to handle it later:
 
 ```bash
-ID="$2"
+ID="${2}"
 echo "Deferred $ID (will resurface on next sync)"
 ```
 
@@ -378,7 +378,7 @@ echo "Deferred $ID (will resurface on next sync)"
 Marks a row as `ignored` — it will never resurface on re-sync:
 
 ```bash
-ID="$2"
+ID="${2}"
 set_status "$ID" "ignored" ""
 echo "Ignored $ID (will not appear again)"
 ```

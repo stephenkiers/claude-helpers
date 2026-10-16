@@ -14,12 +14,14 @@ checked by the synthetic guard section. This applies to both prose and fenced co
 command docs; prompts/ files are exempt because they are lazy-loaded by path, never
 argument-substituted.
 
-awk cannot use `${1}` (invalid syntax), so awk code should use python3, sed, or git commands.
+awk cannot use `${1}` (invalid syntax), but its parenthesized field form `$(N)` (e.g. `awk '{print $(2)}'`) is valid
+awk and is not matched by the detector. ADR-0023's probe recorded `$(1)` as unsubstituted; `$(N)` follows the same rule.
+Otherwise use python3, sed, or a git command that answers the question directly.
 
 This was observed live: commands/cleanup.md's `_cap8k` helper was written as
 `awk '{b=length($0)+1; ... substr($0,1,8000-n) ...}'` and reached the model as
 `awk '{b=length(/Users/.../some-worktree)+1; ...}'` — a broken awk program built from a
-filesystem path. prefer python3, sed, or a git command that answers the question directly.
+filesystem path.
 
 Run with: python3 tests/test_command_doc_shell_conventions.py
 """
@@ -41,19 +43,12 @@ def has_literal_zero(line):
     return POSITIONAL_ZERO in line
 
 # Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303).
-# Tracked in #306: remove the remaining bare `$N` tokens from command docs.
+# This dict is intentionally empty. Every command doc must have zero bare `$1`-`$9` tokens.
+# Adding an entry here is a deliberate, reviewed exception — never a default path.
 # Counts are recomputed at each run from the repo state to enforce ratcheting (counts can only decrease).
 # A file whose count reaches zero, or that no longer exists, fails the ratchet until its entry is
 # removed from this allowlist, so stale entries cannot linger.
-BARE_POSITIONAL_ALLOWLIST = {
-    "expert-plan-deprecated-v2.md": 5,
-    "expert-rebase.md": 1,
-    "expert-review.md": 11,
-    "handoff-resume.md": 2,
-    "save-usage.md": 2,
-    "stack-sync.md": 8,
-    "verify-queue.md": 15,
-}
+BARE_POSITIONAL_ALLOWLIST = {}
 
 
 def main():

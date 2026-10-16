@@ -47,7 +47,7 @@ A checkpoint-based, parallel planning pipeline:
 
 - `--model <haiku|sonnet|opus|fable>`: model for the **contributor panel** — experts in Steps 3 and 4 (Contributor subagents incl. Carl) only. Unlike `/expert-review`, synthesis (Step 7) and the alignment pass (Step 8) stay opus-pinned regardless of `--model` — see the Model Policy table below. Digest (Step 5) also stays sonnet-pinned. Router (Step 2) is sonnet-pinned regardless. Default: inherit this command's model (`sonnet`).
 
-  Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25 · **fable** $10/$50.
+  Cost per 1M tokens (in/out, USD), cheapest first: **haiku** 1/5 · **sonnet** 3/15 · **opus** 5/25 · **fable** 10/50.
 
 Examples: `/expert-plan-deprecated-v2 --model haiku` (contributors run haiku; synthesis and alignment still run opus — see Model Policy) · `/expert-plan-deprecated-v2 --effort 4` (default: 4-6 experts + Carl, full pipeline with alignment pass) · `/expert-plan-deprecated-v2 --effort 5` (everyone, full depth) · `/expert-plan-deprecated-v2 https://github.com/owner/repo/issues/123` (fetches and plans a GitHub issue).
 
@@ -150,7 +150,7 @@ set -euo pipefail
 
 # Shell helper — fail loud on unset/empty vars
 require_var() {
-  [ -n "${!1:-}" ] || { echo "ERROR: $1 is unset or empty" >&2; exit 1; }
+  [ -n "${!1:-}" ] || { echo "ERROR: ${1} is unset or empty" >&2; exit 1; }
 }
 
 # Derive slug from ticket title (or default)

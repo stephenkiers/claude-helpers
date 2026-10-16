@@ -83,7 +83,7 @@ Proceed to Step 4.
 Collect every conflicted file:
 
 ```bash
-git status --short | grep '^UU\|^AA\|^DD\|^AU\|^UA\|^DU\|^UD' | awk '{print $2}'
+git status --short | grep '^UU\|^AA\|^DD\|^AU\|^UA\|^DU\|^UD' | awk '{print $(2)}'
 ```
 
 For each conflicted file, read the full conflict markers — show content between `<<<<<<< HEAD`, `=======`, and `>>>>>>> <commit>`. Capture:

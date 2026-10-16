@@ -296,10 +296,9 @@ recorded in the ADR-0023 amendment. `$ARGUMENTS[N]` is as unsafe as a bare `$N` 
 current record is `$0`: `commands/cleanup.md`'s `_cap8k` helper was written as `awk '{b=length($0)+1; ...}'` and reached
 the model as `awk '{b=length(/Users/.../a-worktree-path)+1; ...}'`, a broken program assembled from a
 filesystem path. For shell, use the **braced form** `${N}` (e.g. `case "${1}" in`), which the harness does not substitute.
-For `awk`, the braced form is invalid awk syntax, so use `python3`, `sed`, or a git command that answers the question directly
+For `awk`, the braced form is invalid awk syntax, but keeping awk and using its field form `$(N)` (e.g. `awk '{print $(2)}'`) is also safe: it is valid awk, and ADR-0023's probe recorded `$(1)` as unsubstituted (`$(N)` follows the same rule). Otherwise use `python3`, `sed`, or a git command that answers the question directly
 (`git -C <path> branch --show-current` instead of parsing `git worktree list --porcelain`). `$ARGUMENTS` is the intended
-input mechanism and is fine. `tests/test_command_doc_shell_conventions.py` enforces this ratchet guard (see its allowlist
-for known offenders, tracked in #306). Files in `prompts/` are exempt — they
+input mechanism and is fine. `tests/test_command_doc_shell_conventions.py` enforces this ratchet guard with an empty allowlist: any bare `$1`-`$9` in any command doc fails the test. Files in `prompts/` are exempt — they
 are lazy-loaded by path, never argument-substituted.
 
 **Never pipe a shell variable holding untrusted or externally-derived content through `echo "$VAR" | jq ...` (or `| python3 ...`).**
