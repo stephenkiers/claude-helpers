@@ -73,7 +73,10 @@ Every converted command applies three blocks defined once in `prompts/flow-refer
 
 **Behaviour-neutral outside a flow** is the invariant: every block starts by checking `FLOW_DIR`,
 and with it empty the commands are byte-for-byte the same behaviour they had before. The relay
-never adds a question and never picks a default. It relays every question a command would ask
+never adds a question and never picks a default. **For the plan checkpoint in a flow** (amendment
+2026-10-15), silence-acceptance of a shown D or W item is the human's acceptance, not a default the
+relay picks; `accepted-on-continue` is the human's explicit word, and the relay still never picks a
+default for a Q on its own. It relays every question a command would ask
 outside a flow, except the deliberately not relayed set below. `tests/test_flow_ask_sites.py`
 enforces the shape: every line in a converted command that mentions `AskUserQuestion` must
 reference the Ask block (or be an explicit negation such as "never relayed"), and every converted
@@ -325,7 +328,7 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   `/expert-plan`'s checkpoint (ticket refresher, North Star line, expert round-up; each `#### Q[n]`
   brief verbatim) and `/expert-review`'s rulings (triage digest; each *Needs you* block verbatim).
   The pointer-not-content rule for `context_path` still holds; the content now has its own fields.
-- **Every checkpoint question is asked.** In a flow, `/expert-plan` relays every `#### Q[n]` brief across
+- **Every checkpoint question is asked.** ~~In a flow, `/expert-plan` relays every `#### Q[n]` brief across
   successive question files, each open-ended brief as its own free-text Ask; `/expert-review`
   relays every *Needs you* item. Adopting a default, dropping a later batch, or skipping the checkpoint
   for a "reduced" run is `Decision: FAILED` (`reduced run: checkpoint questions dropped` /
@@ -333,7 +336,9 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   `decisions.md` against the questions in `questions/plan-*.json` (`plan checkpoint incomplete`), the
   *Needs you* items against `questions/review-*.json` (`review rulings incomplete`); `decisions.md` is
   now a required plan artifact. The fidelity auditor checks the same counts and treats "not asked" /
-  "defaults adopted" receipt wording as `FIDELITY: reduced`.
+  "defaults adopted" receipt wording as `FIDELITY: reduced`.~~ **Superseded for the plan step by
+  amendment 2026-10-15** (see below); `/expert-review` Needs-you relay still applies the rule above.
+  Standalone `/expert-plan` outside a flow still applies the rule above.
 - **Step gates.** After `plan`, `implement`, `review`, `fix`, and `verify` close `OK`, the orchestrator
   prints what the step produced; when the relay already printed the step's `summary`, the gate prints
   only the delta (for `plan`, the checkpoint results and decision index plus the head of the plan; for
@@ -359,7 +364,7 @@ than it raised is a failed step, not a quiet default.
 
 ## Amendment (2026-10-14): receipt markers survive finalization
 
-**Problem.** The 2026-10-14 checkpoint-relay amendment's verifier counts marker-named question files to enforce that every checkpoint question was relayed (§2's "every checkpoint question is asked"). But seven prose sites in five command docs and flow-reference told step agents to drop the markers on finalization, and flow-reference listed "`Decision:` together with an awaiting marker" as a forbidden trailer shape. The result was a plan step failing after all questions were answered, with the verifier reporting `plan checkpoint incomplete (briefs: 10, asked: 0)`.
+**Problem.** The 2026-10-14 checkpoint-relay amendment's verifier counts marker-named question files to enforce that every checkpoint question was relayed (§2's "every checkpoint question is asked" — **note:** this rule is superseded for report-kind plan checkpoints by amendment 2026-10-15, which uses the new completeness rule). But seven prose sites in five command docs and flow-reference told step agents to drop the markers on finalization, and flow-reference listed "`Decision:` together with an awaiting marker" as a forbidden trailer shape. The result was a plan step failing after all questions were answered, with the verifier reporting `plan checkpoint incomplete (briefs: 10, asked: 0)`.
 
 **Decision.**
 
@@ -414,3 +419,37 @@ So: numbering is 0-based; a bare token with no matching argument stays literal; 
 - **Per-run flags** (`--no-gates`, `--auto-merge`) remain not carried across the hand-off. This is pre-existing (resume rule 9), not a regression.
 
 **Consequences.** `/track-and-start --worktree-only` and a completed hand-off both lead to a copyable bare `claude "/expert-flow"` that resumes at `plan` without prompting. A fresh `/track-and-start` GitHub-issue worktree with no existing flow runs `/expert-plan` and `track` again (accepted, Q6). Local Plan and Tracker worktrees always end at a pointer to the main worktree. A no-remote project stops at Project detection, not the new question. Concurrent bare orchestrators on the same hand-off flow both see `live == null` before either spawns; the second to start loses (same as today's `--resume` rule 1, no new concurrency hazard). The bare form is keyed on the argument count being zero, not on the parsed issue: any argument at all, including an empty string or one that parses to nothing, `guard_block`s, so an argument lost to a parse failure (the #307 class) fails loudly instead of silently routing to the no-argument run.
+
+## Amendment (2026-10-15): The plan checkpoint is a report and a conversation
+
+**Problem.** The 2026-10-14 checkpoint-relay amendment turned the `/expert-plan` step into a series of AskUserQuestion forms, one per brief. But reading a plan brief in the conversation is a cost that grows with the question count, and the form-escape-hatch design assumes the human can skim the forms before picking answers. A report that presents the briefs once, in a stable order, and takes one free-text reply is cheaper and more adaptable to follow-up.
+
+**Decision.**
+
+The plan step checkpoint in a flow becomes one readable markdown report instead of per-brief forms. The report shows: what the ticket does (ticket refresher), what was decided (D items), what is worth a look (W items), and what questions need answering (Q items, each with recommendation, experts, why, and business case). Every Q, every item an expert protested, and every item that changed since the human last saw it is a must-answer item. The human replies in one free text, and a shared prose interpreter maps the reply to per-item dispositions. Unresolved must-answer items are re-asked once in prose, then through a form escape hatch. The plan step runs a reaction pass after each human reply, and any first-time expert pushback opens a conversation round. The loop ends when every Q is answered or the human says "continue". Silence accepts D and W items only.
+
+This amendment supersedes the 2026-10-14 rule "Every checkpoint question is asked" for the plan step in a flow only. Standalone `/expert-plan` outside a flow keeps today's per-question format, and `/expert-review`'s Needs-you relay keeps today's rule.
+
+The new invariant for the plan checkpoint in a flow: **every brief is shown with its rationale; every Q, protested item, and changed item is answered in the human's own words, or explicitly accepted by the human's "continue" (recorded as `accepted-on-continue` with the quoted "continue"); silence accepts only D and W items the human was shown; nothing is ever guessed.**
+
+**Implementation.** Tiers and conversation loop are spelled out in Steps 1–6 of the plan file (`/Users/stephenkiers/.claude/plans/expert-flow-plan-checkpoint-report-reply-20261015T125816-32413.md`). Briefly:
+
+1. **Report file per round:** `kind: report` question file (not a per-brief Ask) carries the ticket refresher, D/W/Q handles, each item's recommendation, experts, why, business case, and must-answer reason. Tier comes from recorded reaction evidence: a `disagreement` brief is always a Q, any protest always makes an item a Q, and everything else is D or W.
+
+2. **Prose reply:** the human replies to the report in one free-text message. A shared prose interpreter maps that reply to per-item dispositions with quoted excerpts. The raw reply is saved verbatim.
+
+3. **Re-ask and form:** unresolved must-answer items are re-asked once in prose, then through a form escape hatch (D5). A form answer carries `source: "form"` and the selected label or Other text as the excerpt.
+
+4. **Read-only echo:** if any reading is ambiguous (no excerpt names the item or option, or the excerpt maps to more than one; content paraphrase and positional references count as naming), print "Here's how I read it" and wait. Otherwise proceed with no extra stop.
+
+5. **Reaction passes:** one pre-show pass per seated expert (contributors plus Contrarian Carl) before the report is shown; one reply-mode pass per round on any ruling. Each expert either resolves, agrees, flags as could-go-other-way, or protests (outcome: Q, D, or W with evidence). Only first-time pushbacks open a round; one pushback per expert per ruling.
+
+6. **"Continue" end condition:** "continue" (or equivalent instruction to move on) is an end condition, not an ambiguity. Record any explicit answers in the same reply. Record each must-answer item still open as `accepted-on-continue`, with the quoted "continue" and value = the human's latest ruling on that handle in this attempt if one exists, otherwise the panel recommendation. No confirm stop.
+
+7. **Verifier rule:** a `kind: report` checkpoint fails closed on: missing or unsentinelled reaction files; unresolved must-answer items; items tiered D or W with recorded protests or disagreement; missed must-answer quotes; `accepted-on-continue` without `loop_end: "continue"`; repeated pushbacks on the same ruling by the same expert.
+
+The reason strings in the verifier are, for example, `plan checkpoint incomplete (must-answer without quote: Q2)`, `plan checkpoint tier mismatch (W3 protested by tara-typesafe)`, `plan checkpoint tier mismatch (W1 is a disagreement)`, `plan checkpoint repeated pushback (contrarian-carl on Q2)`, `receipt carries no plan-* markers`.
+
+**Scope:** flow plan step only (Steps 1–6 of the plan, plus the Terms and Approach sections). The ADR amendment, the report variant in `prompts/flow-reference.md`, the reaction contract in `prompts/plan-checkpoint-reaction.md`, and the verifier and audit updates apply to the flow plan step. Standalone `/expert-plan` and `/expert-review` rulings stay as they are. A backport is a separate follow-up issue opened only if this succeeds.
+
+**Consequences.** The checkpoint becomes a conversation: the panel proposes, the human answers, and experts may push back on rulings once. The human's answer is the final word. No question is dropped, no default is adopted, and nothing is guessed. A retried attempt re-asks everything. The cost is two or more extra paid reaction dispatches per expert per checkpoint (the human accepted this explicitly). The report replaces the per-brief forms, so the number of turns taken per checkpoint is fewer than with the 2026-10-14 rule.

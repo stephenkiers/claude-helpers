@@ -150,8 +150,8 @@ check and step 3 against that pair, and record `<!-- reused-answers: questions/<
 in the receipt instead of an awaiting marker. Each `PRIOR_ANSWERS` file may be reused at most once per
 attempt. Any difference in question text or labels means it is a new question: ask normally with the
 next `SEQ`. The match must be exact because the human answered that question, not a similar one.
-`/expert-plan` questions are derived from a fresh panel and often differ, so the human may be asked
-again there; `/expert-review` rulings are deterministic from checkpoints and usually match.
+`/expert-plan` questions outside a flow are derived from a fresh panel and often differ, so the human may be asked
+again there; the plan checkpoint report variant (`kind: report` files) is never reused across attempts (a retried attempt re-asks everything); `/expert-review` rulings are deterministic from checkpoints and usually match.
 
 2. **Write the question file** `${FLOW_DIR}/questions/<STEP_NAME>-<SEQ>.json` with the `Write`
    tool (not a shell redirect — the question text can derive from untrusted ticket or diff
@@ -186,8 +186,9 @@ again there; `/expert-review` rulings are deterministic from checkpoints and usu
    `brief` are markdown the orchestrator prints verbatim above the form (`summary` once, then each
    question's `brief` under its `id`): put in them what the human would have read in chat outside a
    flow, not a pointer to it, written for a reader who has lost all context. **Required** for
-   `/expert-plan`'s checkpoint (`summary` = the ticket refresher, the North Star line, and the expert
-   round-up; `brief` = that question's `#### Q[n]` decision brief, verbatim) and `/expert-review`'s
+   `/expert-plan` outside a flow (`summary` = the ticket refresher, the North Star line, and the expert
+   round-up; `brief` = that question's `#### Q[n]` decision brief, verbatim); **required for the plan checkpoint
+   report variant** (`summary` = the ticket refresher and expert round-up; carried by the report file instead; see "Report variant" section below); and `/expert-review`'s
    rulings (`summary` = the triage digest; `brief` = that item's *Needs you* block, verbatim). Other
    commands may set both to `null`; when a file has neither, the orchestrator prints the whole
    `context_path` file instead, so a question is never shown bare.
@@ -278,6 +279,126 @@ so explicitly where they live.
 Resolve), since it has no `--flow` or step-prompt line. Its question file goes under that flow's
 `questions/` directory with the inherited `STEP_NAME`. The nested command writes no receipt and
 no awaiting marker of its own: the outer step's receipt carries the marker (see Receipt).
+
+### Report variant (plan checkpoint only)
+
+The plan step in a flow uses a different checkpoint path: one readable report instead of per-brief forms, with a single free-text reply. This section defines the report question file, answers file, and raw reply file.
+
+**Terms (used in this section and Step 6 of `commands/expert-plan.md`):**
+
+- **Conversation round:** one report shown to the human and one reply taken back, within a single attempt of the plan step. Rounds are numbered `1, 2, …` within an attempt.
+- **Attempt:** one spawn of the plan step (`ATTEMPT=<k>` in the flow). Each attempt has its own `SESSION_DIR` (path includes the invocation id). A retried attempt re-asks everything with no carry-over.
+- **Ruling:** a handle whose disposition in an answers file is `answered` or `overridden`.
+- **Changed:** a handle whose text or recommendation differs from the version the human last saw in an earlier round of the same attempt.
+
+**Report question file** `${FLOW_DIR}/questions/plan-<SEQ>.json` (one per conversation round):
+
+```json
+{
+  "kind": "report",
+  "attempt": <k>,
+  "round": <n>,
+  "step": "plan",
+  "command": "expert-plan",
+  "context_path": "<absolute path of context.md, or null>",
+  "ticket": "<ticket refresher for this attempt>",
+  "headline": "<'This ticket looks under-specified — …' notice, or null>",
+  "items": [
+    {
+      "handle": "D1",
+      "tier": "decided",
+      "brief_type": "<Step 5 brief Type: disagreement, question, etc.>",
+      "title": "…",
+      "decision_or_recommendation": "…",
+      "why": "…",
+      "backed_by": ["expert-name", …],
+      "business_case": null,
+      "options": null,
+      "must_answer": false,
+      "reason_must_answer": null,
+      "evidence": { "expert-name": "resolved", "other-expert": "agreed", … },
+      "pushback": null
+    },
+    {
+      "handle": "Q1",
+      "tier": "question",
+      "brief_type": "…",
+      "title": "…",
+      "decision_or_recommendation": "…(the panel recommendation)",
+      "why": "…",
+      "backed_by": ["expert-name", …],
+      "business_case": "…(may be null)",
+      "options": [
+        { "label": "A", "for": "…", "against": "…" },
+        { "label": "B", "for": "…", "against": "…" }
+      ],
+      "must_answer": true,
+      "reason_must_answer": "question",
+      "evidence": { "expert-name": "protested", … },
+      "pushback": null
+    }
+  ],
+  "questions": [
+    {
+      "id": "reply",
+      "brief": null,
+      "question": "Reply in your own words: answer every Q, and name any D or W you want to change. Unmentioned D and W items stand; unanswered Qs will be asked again unless you say continue.",
+      "header": null,
+      "options": [
+        { "label": "Answer in your own words", "description": "" }
+      ]
+    }
+  ]
+}
+```
+
+Fields:
+- `kind: "report"` — marks this as a report variant, not a per-question Ask.
+- `attempt`, `round` — attempt number and conversation round within it.
+- `ticket` — ticket refresher text the human needs to remember context.
+- `headline` — null unless more than five Qs survive (set to the under-specified notice).
+- `items[]` — D, W, and Q items in order (D first, then W, then Q). Each carries its handle, tier (`decided` | `worth-a-look` | `question`), brief type from Step 5, recommendation, why, backing experts, and business case (Q items). Q items also carry `options[]` with for/against. `evidence` is a map per seated expert showing their recorded reaction (`resolved`, `agreed`, `no-view`, `protested`, or `pat: vetoed`). `pushback` is null on round 1; on later rounds, if an expert pushed back on this handle, `{ "expert": "<slug>", "text": "<one-line reason>" }`.
+- `must_answer` — true when the item is a Q, was protested, or changed since the human last saw it.
+- `reason_must_answer` — `"question"`, `"protested"`, `"changed"`, or null.
+- `questions[]` — exactly one free-text entry for the human's reply (the form escape hatch needs it for `AskUserQuestion`-compatibility).
+
+**Answers file** `${FLOW_DIR}/answers/plan-<SEQ>.json` (one per conversation round):
+
+```json
+{
+  "answers": {
+    "D1": {
+      "disposition": "accepted",
+      "value": null,
+      "reply_excerpt": null,
+      "source": null,
+      "ambiguous": false
+    },
+    "Q1": {
+      "disposition": "answered",
+      "value": "Option B",
+      "reply_excerpt": "I prefer B because it's clearer",
+      "source": "prose",
+      "ambiguous": false
+    }
+  },
+  "reading_echoed": false,
+  "loop_end": "all-answered"
+}
+```
+
+Fields:
+- `disposition` — `"accepted"` (unmentioned D or W), `"answered"` (explicit answer), `"overridden"` (changed prior answer), `"accepted-on-continue"` (must-answer item left open when human said continue), or `"unresolved"` (unanswered must-answer item, blocks resume).
+- `value` — the human's chosen or stated value, or the panel recommendation for `accepted-on-continue`.
+- `reply_excerpt` — verbatim text from the human's reply. Required for `answered` and `overridden`; must be non-empty. For `accepted-on-continue`, the excerpt containing the human's "continue".
+- `source` — `"prose"` (direct from reply text), `"form"` (escape-hatch form), or null (for `accepted`).
+- `ambiguous` — true when the reading required an echo (see "Echo" below in Step 5).
+- `reading_echoed` — true when this round's reading was ambiguous and echoed back.
+- `loop_end` — `"continue"` when the human said continue; `"all-answered"` when every must-answer item in the round is `answered` or `overridden`; otherwise null.
+
+**Raw reply file** `${FLOW_DIR}/answers/plan-<SEQ>.reply.md`:
+
+The human's prose reply, verbatim, saved by the orchestrator with the `Write` tool before interpretation. A round answered entirely through the form escape hatch has no prose to save and no reply file.
 
 ---
 
