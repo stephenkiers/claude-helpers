@@ -14,9 +14,10 @@ checked by the synthetic guard section. This applies to both prose and fenced co
 command docs; prompts/ files are exempt because they are lazy-loaded by path, never
 argument-substituted.
 
-awk cannot use `${1}` (invalid syntax), but its parenthesized field form `$(N)` (e.g. `awk '{print $(2)}'`) is valid
-awk and is not matched by the detector. ADR-0023's probe recorded `$(1)` as unsubstituted; `$(N)` follows the same rule.
-Otherwise use python3, sed, or a git command that answers the question directly.
+awk cannot use `${1}` (invalid syntax). The parenthesized field form `$(N)` (e.g. `awk '{print $(2)}'`) is valid
+awk and is not matched by the detector, but is known to be substituted for N>=2 when invoked with enough
+arguments — this is tracked as follow-up work (ADR-0023 re-probe 2026-10-17). Do not use `$(N)` in awk.
+Use python3, sed, cut, or a git command that answers the question directly instead.
 
 This was observed live: commands/cleanup.md's `_cap8k` helper was written as
 `awk '{b=length($0)+1; ... substr($0,1,8000-n) ...}'` and reached the model as
@@ -42,12 +43,10 @@ def has_literal_zero(line):
     """The per-line literal-$0 detector used by the Section 1 scan (and exercised by Section 1.3)."""
     return POSITIONAL_ZERO in line
 
-# Allowlist of known offenders with their maximum allowed bare-token counts (per Step 11 of #303).
+# Allowlist of known offenders with their maximum allowed bare-token counts.
 # This dict is intentionally empty. Every command doc must have zero bare `$1`-`$9` tokens.
 # Adding an entry here is a deliberate, reviewed exception — never a default path.
-# Counts are recomputed at each run from the repo state to enforce ratcheting (counts can only decrease).
-# A file whose count reaches zero, or that no longer exists, fails the ratchet until its entry is
-# removed from this allowlist, so stale entries cannot linger.
+# Counts are recomputed at each run from repo state to enforce ratcheting (counts can only decrease).
 BARE_POSITIONAL_ALLOWLIST = {}
 
 
@@ -78,7 +77,7 @@ def main():
     )
 
     # Generalized bare-positional guard: scan all commands/*.md for bare $1-$9
-    bare_positional_pattern = re.compile(r"\$[1-9]\b")
+    bare_positional_pattern = re.compile(r"\$[1-9](?!\w)")
 
     # Recompute counts from the repo
     file_counts = {}
@@ -140,10 +139,12 @@ def main():
 
     synthetic_bare = "case $" + "1 in"  # Assembled to avoid containing it
     synthetic_braced = "case $" + "{1} in"  # Assembled
+    synthetic_cmd_sub = "echo $" + "(2)"  # Assembled; known to be substituted for N>=2 with 3+ args (ADR-0023 re-probe 2026-10-17), but detector does not match
     synthetic_args = "$" + "ARGUMENTS"  # Assembled
 
     bare_match = bool(bare_positional_pattern.search(synthetic_bare))
     braced_no_match = not bare_positional_pattern.search(synthetic_braced)
+    cmd_sub_no_match = not bare_positional_pattern.search(synthetic_cmd_sub)
     args_no_match = not bare_positional_pattern.search(synthetic_args)
 
     h.test_result(
@@ -159,9 +160,25 @@ def main():
     )
 
     h.test_result(
+        "detector does NOT match synthetic `$(2)` awk field form (known detector gap; form IS substituted with 3+ args)",
+        cmd_sub_no_match,
+        "" if cmd_sub_no_match else "incorrectly matched $(2)"
+    )
+
+    h.test_result(
         "detector does NOT match `$ARGUMENTS`",
         args_no_match,
         "" if args_no_match else "incorrectly matched $ARGUMENTS"
+    )
+
+    # Test the updated regex: $1_x (concatenated variable name, not a bare positional)
+    synthetic_concat = "echo $" + "1_x"  # Assembled to avoid containing it; detector should NOT match this
+    concat_no_match = not bare_positional_pattern.search(synthetic_concat)
+
+    h.test_result(
+        "detector does NOT match `$1_x` (continuation of variable name, not a positional token)",
+        concat_no_match,
+        "" if concat_no_match else "incorrectly matched $1_x"
     )
 
     print()

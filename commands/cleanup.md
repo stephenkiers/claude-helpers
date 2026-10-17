@@ -229,7 +229,7 @@ if [ "$CURRENT_WORKTREE" = "$MAIN_WORKTREE" ]; then
 fi
 
 # Look up branch from git worktree list (works without cd'ing into target).
-# A shell read loop rather than awk: bare awk field names are substituted by the loader (see CLAUDE.md shell conventions).
+# A shell read loop rather than awk: bare positional field names in awk are substituted by the harness (see CLAUDE.md shell conventions).
 CURRENT_BRANCH=$(git worktree list --porcelain | while IFS=' ' read -r KEY VAL; do
   # if/elif, not case: bash 3.2 (macOS) cannot parse a case with `)` patterns inside $( ... )
   if [ "$KEY" = "worktree" ]; then
