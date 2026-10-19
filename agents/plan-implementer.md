@@ -128,3 +128,42 @@ If you genuinely cannot implement a step without one of the above, report `VERIF
 - Do not spawn sub-agents.
 - If genuinely blocked by an ambiguity, make the most conservative reasonable
   choice and note it in the report.
+
+## Escalated attempt
+
+When your prompt contains a line `Partial work since: <SHA>`, you are retrying a plan that one Haiku unit
+could not finish. Inspect the partial work and decide whether to keep it or reset it:
+
+- **Keep:** The prior attempt's work is sound. Finish the remaining plan steps, remove any stubs or
+  partial work you own, and leave the committed changes in place.
+- **Reset:** The prior work is broken and blocks your progress. Restore each changed file to its state
+  at `<SHA>` using `git show <SHA>:<path>` and `Write`, recreate any deleted files the same way, and
+  proceed with the plan from scratch. The git-guard blocks `reset`, `checkout`, `stash`, and `clean`,
+  so use `git show` and `Write` only.
+
+Before your final report, emit three optional blocks (in this order) — **before the fixed five-line
+report trailer** — one per line, or `none` if a block is empty:
+
+```
+INCOMPLETE_STEPS:
+<step number or D<n>>: <title>
+…
+
+PARTIAL_WORK: keep|reset — <one-line reason>
+
+DISCARDED_ADDED_FILES:
+<repo-relative path>
+…
+```
+
+- **`INCOMPLETE_STEPS:`** — every plan step or directive (`D<n>` for action plans) your run did not
+  complete. Union your own self-report with a diff heuristic: a step is incomplete if none of its
+  named files appear in `git diff --name-only <SHA>` plus the staged files, or if any file gained
+  `TODO|FIXME|unimplemented!()|todo!()|NotImplementedError|throw new NotImplemented` on **added
+  lines only** (checked line-by-line in `git diff -U0 <SHA> -- <file>` where lines start with `+`).
+  Each entry labels its source: `<id>: <title> [self-report]` or `[heuristic]` or `[both]`.
+- **`PARTIAL_WORK:`** — your keep-or-reset decision and a one-line reason. Only for escalated
+  attempts (when `Partial work since:` appears in the prompt). Omit if not escalated.
+- **`DISCARDED_ADDED_FILES:`** — any file the prior attempt added that should not survive. You
+  cannot delete files (the git-guard blocks `rm`), so list paths instead; the step orchestrator
+  will remove them before committing. Omit if none.

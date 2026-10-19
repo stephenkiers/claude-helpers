@@ -1338,6 +1338,68 @@ def _count_doing_it_items(action_plan: str) -> int:
     return count
 
 
+def parse_receipt_field(receipt: str, field_name: str) -> Optional[str]:
+    """Parse a single receipt field (e.g., IMPLEMENTER_MODEL, FAILURE_CLASS).
+
+    Returns the value of the last matching line, or None if not found.
+    """
+    for line in receipt.split("\n"):
+        if line.startswith(f"{field_name}:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def parse_discarded_files_block(receipt: str) -> List[str]:
+    """Parse DISCARDED_ADDED_FILES block from receipt.
+
+    Returns a list of file paths from lines starting with "- " under the block.
+    """
+    files: List[str] = []
+    in_block = False
+    for line in receipt.split("\n"):
+        if line.startswith("DISCARDED_ADDED_FILES:"):
+            in_block = True
+            continue
+        if in_block:
+            if line.startswith("- "):
+                files.append(line[2:].strip())
+            elif line and not line.startswith(" "):
+                # End of block
+                break
+    return files
+
+
+def check_discarded_files(repo: str, branch: str, discarded_files: List[str]) -> Optional[str]:
+    """Check that discarded files are absent from the branch via git ls-tree.
+
+    Returns error reason if any files are present, None if all are absent.
+    """
+    if not discarded_files:
+        return None
+
+    present_files = []
+    for file_path in discarded_files:
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo, "ls-tree", "-r", branch, "--", file_path],
+                capture_output=True,
+                text=True,
+                timeout=GIT_TIMEOUT_SECS,
+            )
+            # If exit code is 0 and there's output, the file exists
+            if result.returncode == 0 and result.stdout.strip():
+                present_files.append(file_path)
+        except subprocess.TimeoutExpired:
+            error(f"Git operation timed out checking {file_path}")
+        except Exception:
+            # On any other error, treat as absent (fail open for discarded files check)
+            pass
+
+    if present_files:
+        return f"discarded files still present ({', '.join(present_files)})"
+    return None
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -1350,7 +1412,7 @@ def main() -> None:
         help="Step name",
     )
     parser.add_argument("--receipt", required=True, help="Path to receipt file")
-    parser.add_argument("--since", required=True, help="ISO-8601 UTC timestamp")
+    parser.add_argument("--since", help="ISO-8601 UTC timestamp")
     parser.add_argument("--repo", help="Repo directory (for implement/fix)")
     parser.add_argument("--branch", help="Branch name (for implement/fix)")
     parser.add_argument("--base", help="Base SHA (for implement/fix)")
@@ -1359,8 +1421,125 @@ def main() -> None:
         "--flow-dir",
         help="Flow directory holding questions/ (plan/review); default: the receipt's grandparent when it sits in steps/",
     )
+    parser.add_argument(
+        "--escalation",
+        action="store_true",
+        help="Escalation mode: print ESCALATE line and exit 0",
+    )
+    parser.add_argument(
+        "--stop-source",
+        choices=["receipt", "validation", "audit"],
+        help="Stop source for escalation mode",
+    )
+    parser.add_argument(
+        "--escalations",
+        type=int,
+        help="Number of escalations so far",
+    )
+    parser.add_argument(
+        "--failures",
+        type=int,
+        help="Number of failures so far",
+    )
+    parser.add_argument(
+        "--implementer-model-state",
+        choices=["unset", "sonnet", "opus"],
+        help="Current implementer model state",
+    )
+    parser.add_argument(
+        "--expect-model",
+        help="Expected implementer model for OK receipts",
+    )
 
     args = parser.parse_args()
+
+    # Read receipt file
+    receipt_file = Path(args.receipt)
+    if not receipt_file.exists():
+        error(f"Receipt file not found: {args.receipt}")
+
+    receipt = read_file(receipt_file)
+
+    # Handle --escalation mode
+    if args.escalation:
+        # Escalation mode for implement/fix
+        if args.step not in ["implement", "fix"]:
+            error("--escalation only supported for implement/fix steps")
+        if not all([args.stop_source, args.escalations is not None, args.failures is not None]):
+            error("--escalation requires --stop-source, --escalations, --failures")
+
+        # Parse receipt fields
+        failure_class = parse_receipt_field(receipt, "FAILURE_CLASS")
+        turns_exhausted = parse_receipt_field(receipt, "TURNS_EXHAUSTED")
+        implementer_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL")
+
+        # Determine escalation decision based on contracts
+        escalate_line = "ESCALATE: none receipt did not fail"
+
+        # Check if failure_class is implementer_shortfall
+        if failure_class == "implementer-shortfall":
+            # Auto path conditions (contracts line 7):
+            # 1. STEP implement|fix ✓ (checked above)
+            # 2. stop-source receipt ✓
+            # 3. FAILURE_CLASS implementer-shortfall ✓
+            # 4. TURNS_EXHAUSTED no
+            # 5. IMPLEMENTER_MODEL haiku and implementer_model state unset
+            # 6. escalations==0
+            # 7. failures<2 after this failure counted
+
+            auto_eligible = (
+                turns_exhausted == "no"
+                and implementer_model == "haiku"
+                and args.implementer_model_state == "unset"
+                and args.escalations == 0
+                and args.failures < 2
+            )
+
+            if auto_eligible:
+                escalate_line = "ESCALATE: auto sonnet"
+            else:
+                # Manual escalation: implement|fix, failures<2, failed attempt ran on haiku, auto did not apply
+                if args.failures < 2 and implementer_model == "haiku":
+                    escalate_line = "ESCALATE: manual sonnet implementer_shortfall"
+                else:
+                    escalate_line = "ESCALATE: none failures>=2 or not haiku"
+
+        print(escalate_line)
+        sys.exit(0)
+
+    # Handle --expect-model mode
+    if args.expect_model:
+        # Expect-model mode for implement/fix on OK receipts
+        if args.step not in ["implement", "fix"]:
+            error("--expect-model only supported for implement/fix steps")
+
+        # Check for deviation
+        if scan_for_deviation(receipt):
+            print("Reason: receipt admits deviation")
+            sys.exit(1)
+
+        # Parse receipt fields
+        implementer_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL")
+
+        # Check model match
+        if implementer_model != args.expect_model:
+            print(f"implementer model mismatch (expected {args.expect_model}, receipt {implementer_model})")
+            sys.exit(1)
+
+        # Check discarded files
+        if args.repo and args.branch:
+            discarded_files = parse_discarded_files_block(receipt)
+            if discarded_files:
+                discarded_error = check_discarded_files(args.repo, args.branch, discarded_files)
+                if discarded_error:
+                    print(discarded_error)
+                    sys.exit(1)
+
+        sys.exit(0)
+
+    # Standard artifact verification mode
+    if args.since is None:
+        error("--since required for standard verification")
 
     # Parse --since once; bad value exits with code 2
     try:
@@ -1368,12 +1547,6 @@ def main() -> None:
     except ValueError as e:
         error(str(e))
 
-    # Deviation scan applies to all steps
-    receipt_file = Path(args.receipt)
-    if not receipt_file.exists():
-        error(f"Receipt file not found: {args.receipt}")
-
-    receipt = read_file(receipt_file)
     if scan_for_deviation(receipt):
         print("Reason: receipt admits deviation")
         sys.exit(1)

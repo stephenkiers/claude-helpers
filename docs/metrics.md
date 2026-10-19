@@ -31,7 +31,7 @@ Every `*.end` event carries an `outcome` field with one of three shapes:
 
 ```json
 {"status": "success"}
-{"status": "failure", "class": "timeout|api_error|test_failure|guard_block|other|steps_skipped|plan_not_found|all_units_failed|gate_not_converged|resume_format_invalid|resume_sha_not_found|ancestry_invalid|ancestry_invalid_after_drift|working_tree_dirty|detached_head|outstanding_worktree|resume_cancelled"}
+{"status": "failure", "class": "timeout|api_error|test_failure|guard_block|other|steps_skipped|plan_not_found|all_units_failed|gate_not_converged|resume_format_invalid|resume_sha_not_found|ancestry_invalid|ancestry_invalid_after_drift|working_tree_dirty|detached_head|outstanding_worktree|resume_cancelled|implementer_shortfall"}
 {"status": "interrupted"}
 ```
 
@@ -405,7 +405,7 @@ python3 scripts/run-metrics.py [--log PATH] command-begin --command NAME
 
 python3 scripts/run-metrics.py [--log PATH] command-end \
   --command-id ID --command NAME --outcome success|failure|interrupted \
-  [--failure-class timeout|api_error|test_failure|guard_block|other|steps_skipped|plan_not_found|all_units_failed|gate_not_converged|resume_format_invalid|resume_sha_not_found|ancestry_invalid|ancestry_invalid_after_drift|working_tree_dirty|detached_head|outstanding_worktree|resume_cancelled]
+  [--failure-class timeout|api_error|test_failure|guard_block|other|steps_skipped|plan_not_found|all_units_failed|gate_not_converged|resume_format_invalid|resume_sha_not_found|ancestry_invalid|ancestry_invalid_after_drift|working_tree_dirty|detached_head|outstanding_worktree|resume_cancelled|implementer_shortfall]
 
 python3 scripts/run-metrics.py [--log PATH] command-id --command NAME
   # prints the most recently begun command_id for the given command name, or empty output if none found (read-only)
