@@ -724,6 +724,10 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     except ValueError:
         return "plan artifacts missing (FINAL_PLAN_PATH not under plans/ or no invocation id)"
 
+    # Check that FINAL_PLAN_PATH file exists
+    if not plan_path.is_file():
+        return "plan artifacts missing (FINAL_PLAN_PATH file does not exist)"
+
     # Extract invocation ID from basename
     basename = plan_path.name
     # Pattern: {slug}-{YYYYMMDDTHHMMSS}-{NNNNN}.md
@@ -808,6 +812,11 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
         if _is_standin(contrib):
             return f"plan artifacts missing (contribution: {name} {CONTRIB_STANDIN})"
 
+    # Check that plan.md exists in the session directory
+    plan_session_file = session_dir / "plan.md"
+    if not plan_session_file.exists():
+        return "plan artifacts missing (plan.md)"
+
     # Checkpoint completeness: every decision brief in decisions.md must have been put to the
     # human through the relay. decisions.md is written before the first Ask (even with zero
     # briefs), so its absence means the checkpoint never ran.
@@ -836,9 +845,19 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
         if is_report_checkpoint:
             return check_report_checkpoint(session_dir, flow_dir, decisions_text, attempt, relay_count)
 
-    # Legacy per-question rule
+    # Fail closed: if ledger carries D/W/Q handles but we didn't take the report branch,
+    # or if unreadable is non-empty in the legacy branch.
+    ledger = schema.extract_ledger_json(decisions_text)
+    if ledger:
+        # Check if ledger has D/W/Q handles (post-tier handles)
+        ledger_handles = {key for key in ledger.keys() if isinstance(key, str) and key[0] in ("D", "W", "Q")}
+        if ledger_handles and relay_count.markers > 0:
+            # If ledger has handles but we didn't validate via report checkpoint, fail closed
+            return "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated)"
+
+    # Legacy per-question rule (fail closed if unreadable files present)
     briefs = count_briefs(decisions_text)
-    if relay_count.asked < briefs or relay_count.unanswered:
+    if relay_count.asked < briefs or relay_count.unanswered or relay_count.unreadable:
         reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {relay_count.asked}"
         if relay_count.markers == 0:
             reason += ", receipt carries no plan-* markers"

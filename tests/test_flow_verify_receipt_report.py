@@ -680,6 +680,9 @@ def main():
         # Create context.md for freshness check
         (session_dir / "context.md").write_text("# Context")
 
+        # Create plan.md
+        (session_dir / "plan.md").write_text("# Plan")
+
         # Create selected-experts roster
         (session_dir / "selected-experts.md").write_text("| Expert |\n|--------|\n| alice |\n| bob |\n| contrarian-carl |")
 
@@ -801,6 +804,38 @@ def main():
         h.test_result("Report file without items -> fail",
                      error is not None and "malformed report file: plan-01.json" in error,
                      f"error={error}")
+
+    # Test 15: Report-kind plan split-location positive (questions in FLOW_DIR, decoy in session)
+    print("[Test 15] Report-kind plan split-location positive")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = create_minimal_fixture(Path(tmp))
+        # Create decoy files in session to verify they are NOT used
+        (session_dir / "pending-questions").mkdir(parents=True, exist_ok=True)
+        (session_dir / "pending-questions" / "plan-decoy.json").write_text("{}")
+        # The actual files are already in flow_dir from create_minimal_fixture
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("Report-kind plan split-location positive: FLOW_DIR questions/answers work, session decoy ignored",
+                     error is None, f"error={error}" if error else "")
+
+    # Test 16: Report-kind plan split-location negative (legacy-branch) - files only in session
+    print("[Test 16] Report-kind plan split-location negative (legacy-branch)")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = create_minimal_fixture(Path(tmp))
+        # Remove the actual files from flow_dir
+        (flow_dir / "questions" / "plan-01.json").unlink()
+        (flow_dir / "answers" / "plan-01.json").unlink()
+        # Create files ONLY in session (decoy location)
+        (session_dir / "pending-questions").mkdir(parents=True, exist_ok=True)
+        (session_dir / "pending-questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1,
+            "step": "plan", "command": "expert-plan",
+            "items": [{"handle": "D1", "tier": "decided", "brief_type": "question", "title": "Test"}],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": []}]
+        }))
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("Report-kind plan split-location negative (legacy-branch): no fallback to session dir, fails",
+                     error is not None and "plan checkpoint incomplete" in error, f"error={error}")
+
 
     h.summarize_and_exit()
 
