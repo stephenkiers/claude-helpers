@@ -76,6 +76,7 @@ See the ADRs for the full rationale:
   ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 - [ADR-0021 Local merge queue](docs/adr/0021-local-merge-queue.md) — serialized per-repo merge queue for testing every PR against the exact base it lands on, with unverified-main detection and the force-push carve-out.
 - [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation, sequential epics.
+- [ADR-0024 Precedent Pat](docs/adr/0024-precedent-pat.md) — a prompt-the-human design that surfaces the user's past answers beside pending questions, display-only, never suppresses or pre-selects, triage never reads it.
 
 ## Triage: the review ends with decisions, not findings
 
@@ -103,6 +104,15 @@ waved through without escalating.
 
 `final-report.md` is unchanged and one click away. It is still the gut-check instrument of record —
 triage sits **in front of** it, not over it.
+
+## Precedent Pat
+
+Precedent Pat is a pipeline role that reads a digest of the user's own past answers to similar questions and writes
+a `precedent.md` file containing precedent citations, predicted answers with confidence levels, and distinction analysis
+for each pending question. It is display-only — no panel reviewer, Amalgamator, Triage Chief, or orchestrator decision
+logic reads it, and triage never reads it. Nothing is suppressed; every question's handling and the human's prior choice
+are visible. Pat runs on Sonnet (ADR-0004) and has no index entry or routing configuration. It is not yet wired into any
+command (see #294/#296 for the insertion points).
 
 ## User preferences
 

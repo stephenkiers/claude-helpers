@@ -238,7 +238,7 @@ practice, a measurement scan pass could be added as a targeted opt-in per the es
 **Escape hatch.** A future *prompt-the-human* ledger design — one that surfaces past rulings as
 `AskUserQuestion` prompts rather than silently suppressing findings — is explicitly permitted by
 this removal. Any such reintroduction should open a new issue and update this ADR rather than
-restoring the removed machinery directly.
+restoring the removed machinery directly. Exercised by ADR-0024 (#291); see the amendment at the end of this file.
 
 **Rationale:** The ledger and decision-memory machinery added complexity whose maintenance cost
 outweighed the benefit at this stage. The triage flow itself (the load-reduction insight this ADR
@@ -337,3 +337,7 @@ that matches literal `STATUS`/`DECISION` values and never re-derives intent from
   Neither command silently treats a pre-migration file as empty — that's the shared failure mode this
   bullet eliminates — but "loud" takes a different shape per command's blast radius: a hard stop where
   one file is the whole unit of work, a surfaced warning where many files are.
+
+## Amendment — Escape hatch exercised by ADR-0024 (#291)
+
+The escape hatch left open by the chore/29 removal is exercised by [ADR-0024](0024-precedent-pat.md), which introduces Precedent Pat, a prompt-the-human design that surfaces the user's own past answers beside pending questions without any suppression. Pat reads a digest of past decision briefs and writes a `precedent.md` file containing precedent citations, predicted answers with confidence levels, and mandatory Distinguish lines for each question. The triage pipeline and all orchestrator decision logic (including the Triage Chief) never read Pat's output — it is display-only, read only by the human. None of the removed machinery (decisions.yaml, ledger.jsonl, the fourth context layer, or silent suppression) is reintroduced.
