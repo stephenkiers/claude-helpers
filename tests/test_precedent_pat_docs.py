@@ -359,4 +359,100 @@ if __name__ == "__main__":
 
     print()
 
+    # ============================================================================
+    # SECTION 7.3: [WEAK_ASSERTION] Validate receipt counts against example bodies
+    # ============================================================================
+    print("[Section 7.3] [WEAK_ASSERTION] Receipt count validation against example bodies")
+
+    # Find all fenced code blocks with receipt lines (worked examples)
+    # Pattern: look for ```markdown blocks containing "precedent-pat |" with numbers
+    fenced_example_pattern = r'```markdown\n(#.*?\n.*?precedent-pat \| questions: \d+.*?```)'
+    fenced_examples = re.findall(fenced_example_pattern, precedent_pat_content, re.DOTALL)
+
+    if fenced_examples:
+        for idx, example in enumerate(fenced_examples, 1):
+            # Extract receipt line from example
+            receipt_match = re.search(
+                r'precedent-pat \| questions: (\d+) \| spoke-on: (\d+) \| citations: (\d+) \| confidence: high=(\d+) medium=(\d+)',
+                example
+            )
+            if not receipt_match:
+                continue
+
+            receipt_n_questions = int(receipt_match.group(1))
+            receipt_n_spoke_on = int(receipt_match.group(2))
+            receipt_n_citations = int(receipt_match.group(3))
+            receipt_n_high = int(receipt_match.group(4))
+            receipt_n_medium = int(receipt_match.group(5))
+
+            # Count Q headings (## Q{n})
+            q_headings = re.findall(r'^## Q\d+', example, re.MULTILINE)
+            body_n_questions = len(q_headings)
+
+            # Count **Precedent** lines
+            precedent_lines = re.findall(r'^\*\*Precedent\*\*:', example, re.MULTILINE)
+            body_n_citations = len(precedent_lines)
+
+            # Count non-silent blocks (blocks with at least one **Precedent** line)
+            # A non-silent block is a section starting with ## Q that contains **Precedent**
+            q_blocks = re.findall(r'^## Q\d+.*?(?=^## Q|\Z)', example, re.MULTILINE | re.DOTALL)
+            body_n_spoke_on = sum(1 for block in q_blocks if '**Precedent**' in block)
+
+            # Count **Confidence**: high and **Confidence**: medium lines
+            high_lines = re.findall(r'^\*\*Confidence\*\*: high', example, re.MULTILINE)
+            medium_lines = re.findall(r'^\*\*Confidence\*\*: medium', example, re.MULTILINE)
+            body_n_high = len(high_lines)
+            body_n_medium = len(medium_lines)
+
+            # Test: questions count matches
+            example_label = f"Example {idx}"
+            test_result(
+                f"[WEAK_ASSERTION] {example_label}: questions count matches body (receipt={receipt_n_questions}, body={body_n_questions})",
+                receipt_n_questions == body_n_questions,
+                f"Receipt says {receipt_n_questions} questions, but found {body_n_questions} ## Q headings"
+            )
+
+            # Test: citations count matches
+            test_result(
+                f"[WEAK_ASSERTION] {example_label}: citations count matches body (receipt={receipt_n_citations}, body={body_n_citations})",
+                receipt_n_citations == body_n_citations,
+                f"Receipt says {receipt_n_citations} citations, but found {body_n_citations} **Precedent** lines"
+            )
+
+            # Test: spoke-on count matches
+            test_result(
+                f"[WEAK_ASSERTION] {example_label}: spoke-on count matches body (receipt={receipt_n_spoke_on}, body={body_n_spoke_on})",
+                receipt_n_spoke_on == body_n_spoke_on,
+                f"Receipt says {receipt_n_spoke_on} spoke-on, but found {body_n_spoke_on} non-silent blocks"
+            )
+
+            # Test: high count matches
+            test_result(
+                f"[WEAK_ASSERTION] {example_label}: high confidence count matches body (receipt={receipt_n_high}, body={body_n_high})",
+                receipt_n_high == body_n_high,
+                f"Receipt says {receipt_n_high} high, but found {body_n_high} **Confidence**: high lines"
+            )
+
+            # Test: medium count matches
+            test_result(
+                f"[WEAK_ASSERTION] {example_label}: medium confidence count matches body (receipt={receipt_n_medium}, body={body_n_medium})",
+                receipt_n_medium == body_n_medium,
+                f"Receipt says {receipt_n_medium} medium, but found {body_n_medium} **Confidence**: medium lines"
+            )
+
+            # Test: high + medium == spoke-on
+            test_result(
+                f"[WEAK_ASSERTION] {example_label}: high + medium == spoke-on ({body_n_high} + {body_n_medium} == {body_n_spoke_on})",
+                (body_n_high + body_n_medium) == body_n_spoke_on,
+                f"high({body_n_high}) + medium({body_n_medium}) != spoke-on({body_n_spoke_on})"
+            )
+    else:
+        test_result(
+            "[WEAK_ASSERTION] Fenced examples with receipt lines found",
+            False,
+            "Could not find any fenced code blocks with receipt lines in prompts/precedent-pat.md"
+        )
+
+    print()
+
     h.summarize_and_exit()

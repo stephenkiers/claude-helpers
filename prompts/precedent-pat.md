@@ -39,7 +39,7 @@ Your output follows a strict, counting structure:
 ```markdown
 # Precedent — {session or review id}
 
-precedent-pat | questions: {n} | spoke-on: {k} | citations: {m} | confidence: high={a} medium={b}
+precedent-pat | questions: 3 | spoke-on: 2 | citations: 3 | confidence: high=1 medium=1
 
 ## Q1 {question header}
 
@@ -107,7 +107,7 @@ When `ref` is null, omit the `#` symbol entirely: `**Precedent**: {date} · {sou
 
 - Five citations per batch in total. No question exceeds 3 citations.
 - Allocate citations to questions in descending confidence order (high before medium). Ties are broken by input order (earlier questions in the file get citations first).
-- A high-confidence question gets both of its priors cited, unless only one citation slot remains. If only one slot remains and the question is high, demote to medium and cite the one prior, or stay silent and count as silent in the receipt.
+- A high-confidence question gets both of its priors cited, unless only one citation slot remains. If only one slot remains and the question is high, demote to medium and cite the one prior.
 - A question that cannot get a citation goes silent and is counted as silent in the receipt. Every silent question is rendered as `(silent — nothing related)`.
 
 ---
@@ -145,7 +145,7 @@ This is a fully synthetic worked example:
 ```markdown
 # Precedent — review-12345
 
-precedent-pat | questions: 3 | spoke-on: 2 | citations: 2 | confidence: high=1 medium=1
+precedent-pat | questions: 3 | spoke-on: 2 | citations: 3 | confidence: high=1 medium=1
 
 ## Q1 Should we add contract validation to the API handler?
 
