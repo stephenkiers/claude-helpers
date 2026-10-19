@@ -272,6 +272,12 @@ def check_report_checkpoint(
     qdir = flow_dir / "questions"
     adir = flow_dir / "answers"
 
+    # Fail closed: a marker-named report whose answers file is absent (or whose question file
+    # is unreadable) never provably reached the human, wherever a decoy copy may sit.
+    if relay_count and (relay_count.unanswered or relay_count.unreadable):
+        bad = relay_count.unanswered + relay_count.unreadable
+        return f"plan checkpoint incomplete (marker files without a readable answered report: {', '.join(sorted(bad))})"
+
     # Rule 1: Verify we have plan-* question files
     marker_files = set()
     if relay_count:
@@ -851,7 +857,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     if ledger:
         # Check if ledger has D/W/Q handles (post-tier handles)
         ledger_handles = {key for key in ledger.keys() if isinstance(key, str) and key[0] in ("D", "W", "Q")}
-        if ledger_handles and relay_count.markers > 0:
+        if ledger_handles:
             # If ledger has handles but we didn't validate via report checkpoint, fail closed
             return "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated)"
 

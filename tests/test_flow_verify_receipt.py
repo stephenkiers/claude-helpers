@@ -1985,6 +1985,31 @@ No items."""
         h.test_result("unreadable question file in legacy path → fails with unreadable",
                       exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
 
+    print()
+    print("[Test 86] Plan: zero #### Q headings but ledger carries D/W/Q handles, no report validated -> fails closed")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        with open(f"{session_dir}/decisions.md", "a") as f:
+            f.write("\n## Checkpoint ledger\n\n```json\n" + json.dumps({"D1": {"tier": "decided"}}) + "\n```\n")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("ledger D handle without validated report fails closed",
+                      exit_code == 1 and "ledger has D/W/Q handles" in stdout, stdout)
+
+    print()
+    print("[Test 87] Plan: report receipt with answers file present but question file missing -> fails")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        (Path(flow_dir) / "answers").mkdir(parents=True)
+        (Path(flow_dir) / "answers" / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
+        Path(receipt_path).write_text(
+            f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n"
+            "<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("missing question file with answers present fails",
+                      exit_code == 1 and "plan checkpoint incomplete" in stdout, stdout)
+
     h.summarize_and_exit()
 
 

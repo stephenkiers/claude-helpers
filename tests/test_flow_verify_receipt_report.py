@@ -837,6 +837,20 @@ def main():
                      error is not None and "plan checkpoint incomplete" in error, f"error={error}")
 
 
+    # Test 17: Report-kind plan split-location negative (report-branch): question file in FLOW_DIR, answers only in decoy
+    print("[Test 17] Report-kind plan split-location negative (report-branch)")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = create_minimal_fixture(Path(tmp))
+        (flow_dir / "answers" / "plan-01.json").unlink()
+        (session_dir / "pending-answers").mkdir(parents=True, exist_ok=True)
+        (session_dir / "pending-answers" / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
+        relay_count = flow_verify_module.count_relayed_questions(
+            flow_dir, "plan", "<!-- awaiting-answers: questions/plan-01.json -->")
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text, 1, relay_count)
+        h.test_result("Report-kind plan split-location negative (report-branch): answers only in decoy fails",
+                      error is not None, f"error={error}")
+        print(f"  reason: {error}")
+
     h.summarize_and_exit()
 
 
