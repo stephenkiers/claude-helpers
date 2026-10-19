@@ -1352,7 +1352,7 @@ def parse_receipt_field(receipt: str, field_name: str) -> Optional[str]:
 def parse_discarded_files_block(receipt: str) -> List[str]:
     """Parse DISCARDED_ADDED_FILES block from receipt.
 
-    Returns a list of file paths from lines starting with "- " under the block.
+    Returns a list of file paths from indented lines under the block.
     """
     files: List[str] = []
     in_block = False
@@ -1361,10 +1361,18 @@ def parse_discarded_files_block(receipt: str) -> List[str]:
             in_block = True
             continue
         if in_block:
-            if line.startswith("- "):
-                files.append(line[2:].strip())
-            elif line and not line.startswith(" "):
-                # End of block
+            # Check if line is indented (part of the block)
+            if line and line[0] == " ":
+                # Strip leading whitespace and extract the path
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and not stripped.startswith("<!--"):
+                    # Handle both "- path" and plain "path" formats
+                    if stripped.startswith("- "):
+                        files.append(stripped[2:])
+                    else:
+                        files.append(stripped)
+            elif line and line[0] != " ":
+                # End of block (non-indented line)
                 break
     return files
 
@@ -1460,54 +1468,102 @@ def main() -> None:
 
     receipt = read_file(receipt_file)
 
-    # Handle --escalation mode
+    # Handle --escalation mode (check before any --since requirement)
     if args.escalation:
-        # Escalation mode for implement/fix
+        # Check if receipt has a decision of OK
+        decision = parse_receipt_field(receipt, "Decision")
+        if decision == "OK":
+            print("ESCALATE: none receipt-ok")
+            sys.exit(0)
+
+        # For non-implement/fix steps, print none and exit 0
         if args.step not in ["implement", "fix"]:
-            error("--escalation only supported for implement/fix steps")
-        if not all([args.stop_source, args.escalations is not None, args.failures is not None]):
-            error("--escalation requires --stop-source, --escalations, --failures")
+            print(f"ESCALATE: none step-{args.step}")
+            sys.exit(0)
+
+        # For implement/fix steps, validate required arguments
+        if not args.stop_source:
+            error("--escalation requires --stop-source")
+        if args.escalations is None:
+            error("--escalation requires --escalations")
+        if args.failures is None:
+            error("--escalation requires --failures")
+
+        # Validate stop_source value
+        if args.stop_source not in ["receipt", "validation", "audit"]:
+            error(f"unknown --stop-source value: {args.stop_source}")
+
+        # Default --implementer-model-state to 'unset' if missing
+        implementer_model_state = args.implementer_model_state or "unset"
 
         # Parse receipt fields
         failure_class = parse_receipt_field(receipt, "FAILURE_CLASS")
         turns_exhausted = parse_receipt_field(receipt, "TURNS_EXHAUSTED")
-        implementer_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL")
+        # Treat missing IMPLEMENTER_MODEL as haiku (pre-feature attempts ran Haiku)
+        implementer_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL") or "haiku"
 
-        # Determine escalation decision based on contracts
-        escalate_line = "ESCALATE: none receipt did not fail"
+        # Determine if it's a failure
+        if not failure_class:
+            print("ESCALATE: none not-failed")
+            sys.exit(0)
 
-        # Check if failure_class is implementer_shortfall
-        if failure_class == "implementer-shortfall":
-            # Auto path conditions (contracts line 7):
-            # 1. STEP implement|fix ✓ (checked above)
-            # 2. stop-source receipt ✓
-            # 3. FAILURE_CLASS implementer-shortfall ✓
-            # 4. TURNS_EXHAUSTED no
-            # 5. IMPLEMENTER_MODEL haiku and implementer_model state unset
-            # 6. escalations==0
-            # 7. failures<2 after this failure counted
+        # Check auto path eligibility (all 7 conditions)
+        auto_eligible = (
+            args.stop_source == "receipt"
+            and failure_class == "implementer-shortfall"
+            and turns_exhausted == "no"
+            and implementer_model == "haiku"
+            and implementer_model_state == "unset"
+            and args.escalations == 0
+            and args.failures < 2
+        )
 
-            auto_eligible = (
-                turns_exhausted == "no"
-                and implementer_model == "haiku"
-                and args.implementer_model_state == "unset"
-                and args.escalations == 0
-                and args.failures < 2
-            )
+        if auto_eligible:
+            print("ESCALATE: auto sonnet")
+            sys.exit(0)
 
-            if auto_eligible:
-                escalate_line = "ESCALATE: auto sonnet"
-            else:
-                # Manual escalation: implement|fix, failures<2, failed attempt ran on haiku, auto did not apply
-                if args.failures < 2 and implementer_model == "haiku":
-                    escalate_line = "ESCALATE: manual sonnet implementer_shortfall"
+        # Check manual path eligibility
+        if args.failures < 2 and implementer_model == "haiku":
+            # Manual escalation applicable, determine reason
+            if args.stop_source != "receipt":
+                print(f"ESCALATE: manual sonnet stop-source {args.stop_source}")
+                sys.exit(0)
+            elif failure_class != "implementer-shortfall":
+                print("ESCALATE: manual sonnet class-other")
+                sys.exit(0)
+            elif turns_exhausted != "no":
+                # Determine reason for turns being exhausted/unknown/absent
+                if turns_exhausted == "yes":
+                    reason = "turns-yes"
+                elif turns_exhausted == "unknown":
+                    reason = "turns-unknown"
                 else:
-                    escalate_line = "ESCALATE: none failures>=2 or not haiku"
+                    reason = "turns-absent"
+                print(f"ESCALATE: manual sonnet {reason}")
+                sys.exit(0)
+            elif implementer_model_state != "unset" or args.escalations > 0:
+                # Go to none path instead
+                pass
+            else:
+                print("ESCALATE: manual sonnet")
+                sys.exit(0)
 
-        print(escalate_line)
+        # None path
+        reason = None
+        if args.escalations >= 1:
+            reason = "escalations-spent"
+        elif args.failures >= 2:
+            reason = "failures-at-cap"
+        elif implementer_model not in [None, "haiku"]:
+            reason = "model-not-haiku"
+
+        if reason:
+            print(f"ESCALATE: none {reason}")
+        else:
+            print("ESCALATE: none")
         sys.exit(0)
 
-    # Handle --expect-model mode
+    # Handle --expect-model mode (does not require --since)
     if args.expect_model:
         # Expect-model mode for implement/fix on OK receipts
         if args.step not in ["implement", "fix"]:
@@ -1526,7 +1582,7 @@ def main() -> None:
             print(f"implementer model mismatch (expected {args.expect_model}, receipt {implementer_model})")
             sys.exit(1)
 
-        # Check discarded files
+        # Check discarded files (requires both repo and branch)
         if args.repo and args.branch:
             discarded_files = parse_discarded_files_block(receipt)
             if discarded_files:

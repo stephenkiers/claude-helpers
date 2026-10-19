@@ -1094,7 +1094,7 @@ Max **K = 3** iterations. On each iteration:
    ```
    When `FLOW_DIR` is set, this is a hard stop, not a question: write the FAILED receipt with the
    outstanding failures as its body and Reason `gate-not-converged` (K iterations exhausted). The
-   orchestrator, not this step, offers the human Retry / Take over / Abort.
+   orchestrator, not this step, either escalates once per ADR-0023's 2026-10-16 amendment or offers the human Retry / Take over / Abort.
 
 Emit a line each time a fix-Haiku is dispatched: `GATE attempt <i>/<K>: dispatching fix-Haiku`
 

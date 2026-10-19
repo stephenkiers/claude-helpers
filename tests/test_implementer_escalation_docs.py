@@ -8,7 +8,6 @@ contracts for the --implementer-model flag, receipt fields, and escalation logic
 Run with: python3 tests/test_implementer_escalation_docs.py
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -197,7 +196,10 @@ def main():
 
     print()
     print("[Section 10] expert-flow.md Hard stop includes escalation")
-    hard_stop_section = flow_cmd[flow_cmd.find("No other option exists"):flow_cmd.find("No other option exists") + 3000] if "No other option exists" in flow_cmd else ""
+    # Find the Hard stop section using "The scope of the hard stop menu" which appears after the menu items
+    hard_stop_start = flow_cmd.find("### Hard stop")
+    hard_stop_end = flow_cmd.find("### Escalation telemetry")
+    hard_stop_section = flow_cmd[hard_stop_start:hard_stop_end] if hard_stop_start != -1 and hard_stop_end != -1 else ""
     h.test_result(
         "Hard stop section mentions auto-escalation",
         "auto" in hard_stop_section.lower() or "escalat" in hard_stop_section.lower(),

@@ -8,7 +8,6 @@ Tests verify the new --escalation flag and its seven-condition bounded path,
 Run with: python3 tests/test_flow_verify_receipt_escalation.py
 """
 
-import os
 import subprocess
 import sys
 import tempfile
@@ -31,15 +30,17 @@ def create_git_repo(repo_path: str) -> None:
     subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_path, capture_output=True)
 
 
-def run_verifier(step: str, receipt_path: str, **kwargs) -> tuple:
-    """Run the verifier in escalation mode and return (exit_code, stdout, stderr)."""
+def run_verifier(step: str, receipt_path: str, escalation: bool = True, **kwargs) -> tuple:
+    """Run the verifier in escalation mode (or expect-model mode) and return (exit_code, stdout, stderr)."""
     cmd = [
         sys.executable,
         str(VERIFIER),
         "--step", step,
         "--receipt", receipt_path,
-        "--escalation",
     ]
+    if escalation:
+        cmd.append("--escalation")
+
     for key, value in kwargs.items():
         if value is not None:
             arg_name = key.replace("_", "-")
@@ -396,7 +397,7 @@ Decision: FAILED
         )
 
     print()
-    print("[Test 12] Exit 2: --escalation for non-implement/fix step")
+    print("[Test 12] --escalation for non-implement/fix step prints none")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = f"{tmp_home}/receipt.md"
         receipt = """Decision: FAILED
@@ -412,9 +413,9 @@ Decision: FAILED
             implementer_model_state="unset"
         )
         h.test_result(
-            "exit 2: escalation only for implement/fix",
-            exit_code == 2,
-            f"exit={exit_code}, stderr={stderr}"
+            "non-implement/fix step: print ESCALATE: none step-verify",
+            exit_code == 0 and "ESCALATE: none step-verify" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
         )
 
     print()
@@ -500,7 +501,7 @@ Decision: FAILED
         subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        receipt = f"""IMPLEMENTER_MODEL: sonnet
+        receipt = """IMPLEMENTER_MODEL: sonnet
 ROUND 1
 Decision: OK
 <!-- step-end -->"""
@@ -509,6 +510,7 @@ Decision: OK
         exit_code, stdout, stderr = run_verifier(
             "implement",
             receipt_path,
+            escalation=False,
             expect_model="sonnet",
             repo=repo_path,
             branch="HEAD",
@@ -535,7 +537,7 @@ Decision: OK
         subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        receipt = f"""IMPLEMENTER_MODEL: haiku
+        receipt = """IMPLEMENTER_MODEL: haiku
 ROUND 1
 Decision: OK
 <!-- step-end -->"""
@@ -544,6 +546,7 @@ Decision: OK
         exit_code, stdout, stderr = run_verifier(
             "implement",
             receipt_path,
+            escalation=False,
             expect_model="sonnet",
             repo=repo_path,
             branch="HEAD",
@@ -570,7 +573,7 @@ Decision: OK
         subprocess.run(["git", "commit", "-m", "add discarded"], cwd=repo_path, capture_output=True)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        receipt = f"""IMPLEMENTER_MODEL: sonnet
+        receipt = """IMPLEMENTER_MODEL: sonnet
 DISCARDED_ADDED_FILES:
   - discarded.txt
 ROUND 1
@@ -581,6 +584,7 @@ Decision: OK
         exit_code, stdout, stderr = run_verifier(
             "implement",
             receipt_path,
+            escalation=False,
             expect_model="sonnet",
             repo=repo_path,
             branch="HEAD",
@@ -605,12 +609,13 @@ Decision: OK
         Path(f"{repo_path}/discarded.txt").write_text("this should be removed")
         subprocess.run(["git", "add", "discarded.txt"], cwd=repo_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "add discarded"], cwd=repo_path, capture_output=True)
-        # Remove it now
+        # Remove it now and commit the removal
         Path(f"{repo_path}/discarded.txt").unlink()
         subprocess.run(["git", "add", "-u"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "remove discarded"], cwd=repo_path, capture_output=True)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        receipt = f"""IMPLEMENTER_MODEL: sonnet
+        receipt = """IMPLEMENTER_MODEL: sonnet
 DISCARDED_ADDED_FILES:
   - discarded.txt
 ROUND 1
@@ -621,6 +626,7 @@ Decision: OK
         exit_code, stdout, stderr = run_verifier(
             "implement",
             receipt_path,
+            escalation=False,
             expect_model="sonnet",
             repo=repo_path,
             branch="HEAD",
