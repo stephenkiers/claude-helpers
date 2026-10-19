@@ -848,7 +848,7 @@ def main():
             flow_dir, "plan", "<!-- awaiting-answers: questions/plan-01.json -->")
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text, 1, relay_count)
         h.test_result("Report-kind plan split-location negative (report-branch): answers only in decoy fails",
-                      error is not None, f"error={error}")
+                      error is not None and "marker files without a readable answered report" in error, f"error={error}")
         print(f"  reason: {error}")
 
     h.summarize_and_exit()
