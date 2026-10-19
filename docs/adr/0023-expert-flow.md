@@ -634,4 +634,4 @@ The probe in a throwaway git repo showed that the Agent `model` parameter overri
 
 ### Amending §1
 
-The "nothing else" sentence (line 48–53) now points to this amendment for the one exception to "the step's command keeps its own frontmatter model". The exception is: a single automatic escalation from Haiku to Sonnet for `plan-implementer` only, once per step per flow, only on a typed shortfall class for a single-unit run, with turn exhaustion excluded, always logged, and Opus never automatic.
+The "nothing else" sentence (in the Decision section) now points to this amendment for the one exception to "the step's command keeps its own frontmatter model". The exception is: a single automatic escalation from Haiku to Sonnet for `plan-implementer` only, once per step per flow, only on a typed shortfall class for a single-unit run, with turn exhaustion excluded, always logged, and Opus never automatic.
