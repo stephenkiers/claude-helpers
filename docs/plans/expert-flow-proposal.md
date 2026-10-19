@@ -43,7 +43,7 @@ that
 - **stops only for questions the step would have asked anyway**, surfaced in the orchestrator window
   through the exact `AskUserQuestion` payload the step would have used,
 - **stops on any hard failure** with *Retry / Take over / Abort*, never auto-fixes past a failing
-  gate,
+  gate (except single-unit implement/fix shortfalls auto-escalate to Sonnet once),
 - can be **paused and resumed from disk** at any step (`--resume`), so the human can `cd` into the
   worktree, work by hand, and hand it back,
 - keeps the **merge as a human gate by default** (`--auto-merge` is the opt-in), and
@@ -129,7 +129,8 @@ fallback was not needed.
 
 - **Orchestrator model:** `model: sonnet` in frontmatter (same reasoning as `/expert-plan`: the main
   thread does no judgment work). Steps inherit their own frontmatter pins (`/shipit` haiku,
-  `/expert-review` sonnet shell, etc.) — the flow changes no model choices.
+  `/expert-review` sonnet shell, etc.) — the flow changes no model choices, except for a single
+  automatic Haiku-to-Sonnet escalation on single-unit implement/fix shortfalls.
 - **One step at a time.** No parallelism inside a ticket. The join barrier degenerates to N=1.
 - **The orchestrator never edits code, never runs git mutations.** Its `allowed-tools` are `Task`,
   `SendMessage`, `AskUserQuestion`, `Read`, `Write` (flow dir only, by convention — same residual
@@ -222,7 +223,7 @@ log.md            append-only one line per transition (human-readable audit)
 |---|---|---|---|---|
 | 1 | plan | `/expert-plan <issue> --flow $FLOW_DIR [--effort]` | main worktree | plan context empty / copy failed → Retry · Abort |
 | 2 | track | `/track-and-start --issue <N> --plan-file <plan>` then write `<wt>/.claude/flow-run` | main worktree | worktree exists already → Resume there · Abort |
-| 3 | implement | `/implement-with-haiku` | worktree | failed units, gate non-convergence → Retry · Take over · Abort |
+| 3 | implement | `/implement-with-haiku` | worktree | single-unit shortfall → auto-escalate to sonnet, then Retry · Take over · Abort; multi-unit or other failures → Retry · Take over · Abort |
 | 4 | review | `/expert-review --force --effort <N>` | worktree | zero CONFIRMED findings is **not** a stop; skip step 5 |
 | 5 | fix | `/implement-with-haiku <review_dir>/claude-action-plan.md` | worktree | pending-decision items remain → relay them first (they should already be answered in step 4) |
 | 6 | verify | `repo-cache.json` `commands.check` (fallback: `commands.test` + `lint`); plus any "needs measurement" command the action plan drafted that is runnable without the human | worktree | any non-zero → Retry · Take over · Abort. Never "fix and retry" automatically |
@@ -250,7 +251,9 @@ summary, the action plan, and the PR before you merge. Mitigations, in order of 
    question, so the natural reading moments survive as one-click opens.
 3. **Hard stops never auto-remediate.** A failing gate, a non-converged fix loop, a rebase conflict,
    a merge kickback: all end in *Retry / Take over / Abort*. The flow may re-run a step once; it may
-   not improvise a fix. `/expert-rebase` is suggested, not invoked.
+   not improvise a fix. `/expert-rebase` is suggested, not invoked. Exception: a single-unit
+   implement/fix shortfall is escalated once to Sonnet automatically before the menu; if that escalation
+   fails, the usual menu applies.
 4. **Issue mutation is the earliest remote side-effect** (step 2 rewrites the issue body with the
    plan — same as today). The plan checkpoint questions come *before* it, so the human has approved
    the plan content that gets written.

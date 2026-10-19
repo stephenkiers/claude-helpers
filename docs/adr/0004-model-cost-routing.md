@@ -118,3 +118,7 @@ gate ran 19 Haiku calls over the same patch. 3 vs. 19 yields a modeled ~6× cost
 routing step (unmeasured; the gate's ~1.1M-token cost is the measured baseline, while the Router's
 cost is a model estimate not yet benchmarked against a real run). Routing accuracy (judgment vs.
 keywords) is a bonus on top.
+
+### Amendment: implementer escalate-once exception (2026-10-16)
+
+ADR-0023's decision to never auto-remediate includes one narrow exception: when `/implement-with-haiku` fails in the `implement` or `fix` step because a single-unit Haiku `plan-implementer` run could not finish the plan (typed as `FAILURE_CLASS: implementer-shortfall`), the `/expert-flow` orchestrator re-runs the step once on Sonnet automatically, if turn exhaustion did not cause the failure and no escalation has been attempted for this step. This is a bounded escalation (one per step per flow, never to Opus, always logged), never automatic for multi-unit runs or non-shortfall failures. The escalated Sonnet unit inherits the same `maxTurns: 120` cap and partial work from the Haiku attempt's `START_SHA`. Rationale: a single-unit shortfall is a reasonable signal that the task exceeds what Haiku can reliably do in one unit, and re-running Sonnet is cheaper than escalating to Opus for every capacity miss. See ADR-0023's 2026-10-16 amendment for the full design.
