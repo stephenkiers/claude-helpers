@@ -55,7 +55,7 @@ if [ -z "$ARGS" ]; then
       [ -d "$d" ] || continue
       mt=$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)
       printf '%s|%s\n' "$mt" "${d%/}"
-    done | sort -t'|' -k1 -rn | head -5 | awk -F'|' '{print $(2)}'
+    done | sort -t'|' -k1 -rn | head -5 | cut -d'|' -f2
   )
   echo "5 most recent handoffs (of $(ls -1 "$HANDOFF_DIR" | awk 'END{print NR}')):"
   echo ""
@@ -111,7 +111,7 @@ mapfile -t RANKED < <(
   for d in "${HITS[@]}"; do
     mt=$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)
     printf '%s|%s\n' "$mt" "$d"
-  done | sort -t'|' -k1 -rn | head -5 | awk -F'|' '{print $(2)}'
+  done | sort -t'|' -k1 -rn | head -5 | cut -d'|' -f2
 )
 echo "${#HITS[@]} handoff(s) matched '$ARGS' (showing top ${#RANKED[@]}):"
 echo ""

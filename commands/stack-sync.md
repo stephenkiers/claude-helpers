@@ -300,7 +300,7 @@ find_children_of() {
       [ -z "$pr_rec" ] && continue
       pr_branch=$(printf '%s' "$pr_rec" | cut -d: -f1)
       # Dedupe by branch (field 1) — a child found via cache keeps its cache record (with worktree).
-      if printf '%s' "$CHILD_BRANCHES" | awk -F: -v b="$pr_branch" '$(1)==b {f=1} END {exit !f}'; then
+      if printf '%s' "$CHILD_BRANCHES" | cut -d: -f1 | grep -qxF -- "$pr_branch"; then
         continue
       fi
       CHILD_BRANCHES="${CHILD_BRANCHES}${pr_rec}"$'\n'
@@ -635,7 +635,18 @@ while IFS= read -r rec; do
   CHILD_BRANCH=$(printf '%s' "$rec" | cut -d: -f1)
   CHILD_WT=$(printf '%s' "$rec" | cut -d: -f5-)
   # This child's own outcome — recorded by its 4b.3 invocation, one '<branch>:<outcome>' line each.
-  OUTCOME=$(awk -F: -v b="$CHILD_BRANCH" '$(1)==b {o=$(2)} END {print o}' "$OUTCOMES_FILE")
+  OUTCOME=$(python3 -c '
+import sys
+b, o = sys.argv[1], ""
+try:
+    for line in open(sys.argv[2]):
+        f = line.rstrip("\n").split(":")
+        if f[0] == b:
+            o = f[1] if len(f) > 1 else ""
+except OSError:
+    pass
+print(o)
+' "$CHILD_BRANCH" "$OUTCOMES_FILE")
   [ -z "$OUTCOME" ] && OUTCOME="unknown"
   echo "  $CHILD_BRANCH → $OUTCOME"
   if [ -n "$CHILD_WT" ] && [ "$OUTCOME" = "synced" ]; then

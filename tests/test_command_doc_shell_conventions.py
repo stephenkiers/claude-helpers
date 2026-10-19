@@ -15,8 +15,8 @@ command docs; prompts/ files are exempt because they are lazy-loaded by path, ne
 argument-substituted.
 
 awk cannot use `${1}` (invalid syntax). The parenthesized field form `$(N)` (e.g. `awk '{print $(2)}'`) is valid
-awk and is not matched by the detector, but is known to be substituted for N>=2 when invoked with enough
-arguments — this is tracked as follow-up work (ADR-0023 re-probe 2026-10-17). Do not use `$(N)` in awk.
+awk but is substituted by the harness for N>=2 when invoked with enough arguments (ADR-0023 re-probe 2026-10-17).
+It is now enforced by the Section 1.4 scan, which fails on any `$(N)` token in any commands/**/*.md doc.
 Use python3, sed, cut, or a git command that answers the question directly instead.
 
 This was observed live: commands/cleanup.md's `_cap8k` helper was written as
@@ -37,6 +37,9 @@ from _test_harness import Harness, REPO_ROOT
 
 # The literal tokens, assembled so this file does not itself contain them.
 POSITIONAL_ZERO = "$" + "0"
+
+# The parenthesized awk field token `$(N)`, e.g. `$(2)`. Banned in command docs (Section 1.4).
+AWK_FIELD_TOKEN = re.compile(r"\$\([0-9]\)")
 
 
 def has_literal_zero(line):
@@ -139,12 +142,12 @@ def main():
 
     synthetic_bare = "case $" + "1 in"  # Assembled to avoid containing it
     synthetic_braced = "case $" + "{1} in"  # Assembled
-    synthetic_cmd_sub = "echo $" + "(2)"  # Assembled; known to be substituted for N>=2 with 3+ args (ADR-0023 re-probe 2026-10-17), but detector does not match
+    synthetic_cmd_sub = "echo $" + "(2)"  # Assembled; substituted for N>=2 with 3+ args (ADR-0023 re-probe 2026-10-17)
     synthetic_args = "$" + "ARGUMENTS"  # Assembled
 
     bare_match = bool(bare_positional_pattern.search(synthetic_bare))
     braced_no_match = not bare_positional_pattern.search(synthetic_braced)
-    cmd_sub_no_match = not bare_positional_pattern.search(synthetic_cmd_sub)
+    cmd_sub_match = bool(AWK_FIELD_TOKEN.search(synthetic_cmd_sub))
     args_no_match = not bare_positional_pattern.search(synthetic_args)
 
     h.test_result(
@@ -160,9 +163,9 @@ def main():
     )
 
     h.test_result(
-        "detector does NOT match synthetic `$(2)` awk field form (known detector gap; form IS substituted with 3+ args)",
-        cmd_sub_no_match,
-        "" if cmd_sub_no_match else "incorrectly matched $(2)"
+        "awk-field detector matches synthetic `$(2)` awk field form (form is substituted with 3+ args)",
+        cmd_sub_match,
+        "" if cmd_sub_match else "failed to match $(2)"
     )
 
     h.test_result(
@@ -208,6 +211,24 @@ def main():
         "indexed-ARGUMENTS detector does NOT match synthetic braced `${ARGUMENTS[N]}`",
         not bare_args_pattern.search(synthetic_braced_args),
         "incorrectly matched ${ARGUMENTS[N]}",
+    )
+
+    print()
+    print("[Section 1.4] awk `$(N)` field tokens are banned in every command doc")
+
+    # `$(` followed by a digit and `)` never occurs in legitimate shell command substitution,
+    # so every line of every commands/**/*.md doc is scanned.
+    awk_field_offenders = []
+    for doc in docs:
+        for lineno, line in enumerate(doc.read_text().splitlines(), start=1):
+            if AWK_FIELD_TOKEN.search(line):
+                rel = doc.relative_to(REPO_ROOT)
+                awk_field_offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+    h.test_result(
+        "no command doc contains an awk `$(N)` field token (substituted with 3+ args)",
+        not awk_field_offenders,
+        "\n      " + "\n      ".join(awk_field_offenders) if awk_field_offenders else "",
     )
 
     print()
