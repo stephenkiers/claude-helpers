@@ -675,12 +675,24 @@ def main():
     h.test_result("verifier failure reasons for incomplete checkpoints are documented",
                   "plan checkpoint incomplete" in text and "review rulings incomplete" in text)
     audit = sub("### Fidelity audit")
-    h.test_result("fidelity audit compares briefs/Needs-you items with relayed question files",
-                  "questions/plan-*.json" in audit and "questions/review-*.json" in audit and "no checkpoint questions" in audit)
-    h.test_result("fidelity audit counts only question files named by receipt markers",
-                  "awaiting-answers: … -->` / `<!-- reused-answers: … -->` markers" in audit)
+    h.test_result("audit preamble names rule 8 (verifier exit 0) as preceding the audit",
+                  "rule 8's" in audit.lower() and "flow-verify-receipt.py" in audit and "exits 0" in audit)
+    h.test_result("audit prompt text says verifier has enforced counts and marker paths are relative to FLOW_DIR",
+                  "verifier" in audit and "already enforced" in audit and "relative to `FLOW_DIR`" in audit)
+    h.test_result("plan and review audit lines each contain <FLOW_DIR>/questions/ and <FLOW_DIR>/answers/ paths",
+                  audit.count("<FLOW_DIR>/questions/") >= 2 and audit.count("<FLOW_DIR>/answers/") >= 2)
+    h.test_result("audit section no longer contains mechanical counting clauses",
+                  "count the `#### Q`" not in audit and "count the `### N.`" not in audit and
+                  "only those marker-named files whose answers" not in audit and "a marker without its answers file" not in audit)
+    h.test_result("audit keeps judgment checks (push back twice, evidence, excerpts)",
+                  "did any expert push back twice" in audit and "evidence actually show no protest" in audit)
+    h.test_result("audit keeps wording checks (not asked, defaults adopted, reduced run, a ruling was made for the human)",
+                  "not asked" in audit and "defaults adopted" in audit and "reduced run" in audit and
+                  "a ruling was made for the human" in audit)
     h.test_result("fidelity audit has zero-brief carve-out",
-                  "zero `#### Q` headings" in audit)
+                  "zero `#### Q` headings" in audit and "carries no D/W/Q handles" in audit)
+    h.test_result("plan audit line does not present plan-sessions glob before FLOW_DIR statement",
+                  (audit.find("<FLOW_DIR>") < audit.find("~/.claude/plan-sessions/") if "~/.claude/plan-sessions/" in audit else True))
     plan_step5 = plan.split("### Step 5", 1)[1].split("### Step 6", 1)[0] if "### Step 5" in plan else ""
     h.test_result("expert-plan Step 5 fails a run that drops checkpoint questions",
                   "reduced run: checkpoint questions dropped" in plan_step5)

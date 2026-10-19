@@ -211,7 +211,7 @@ separate from the reviewer-context cascade.
   Ask / Receipt blocks; `tests/test_flow_ask_sites.py` enforces that every `AskUserQuestion` site in a rostered command
   references the Ask block). Question files carry `summary`/`brief` context the orchestrator prints before the form
   (never a bare option list); `/expert-plan` in a flow must show every decision brief through a report (see ADR-0023 amendment 2026-10-15) and `/expert-review` every *Needs you*
-  item, enforced by `scripts/flow-verify-receipt.py --flow-dir` and the fidelity audit. Between steps the flow does not
+  item, enforced by `scripts/flow-verify-receipt.py --flow-dir`, with the fidelity audit judging evidence quality and receipt wording. Between steps the flow does not
   stop; `--gates` (stored per flow, inherited by epic children) opts into a step gate (Continue / Pause / Abort) after plan,
   implement, review, fix, and verify that shows what the step produced.
   Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment) — never auto-remediated. State
