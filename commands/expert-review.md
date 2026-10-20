@@ -58,7 +58,7 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
 
 ## Arguments
 
-- `$1...`: Reviewer selection (default: all discovered reviewers, router-selected)
+- `<reviewer>...` (positional): Reviewer selection (default: all discovered reviewers, router-selected)
   - Comma- or space-separated names matched case-insensitively against `index.yaml` — full names or
     unambiguous prefixes: `/expert-review rachel,security-sage` — error if a name doesn't match. Naming
     a reviewer that lacks the active context tag (e.g., an editor on a code diff) is allowed; prints a
@@ -109,8 +109,7 @@ You are a dispatcher: routing, review, and synthesis all happen in subagents. Re
   or the snapshot's GitHub context is fixed, so the human takes over or re-runs with `--allow-degraded`.
 - `--force` (alias `-y`): skip the re-run confirmation when a prior review exists for this branch
 
-  Cost per 1M tokens (in/out), cheapest first: **haiku** $1/$5 · **sonnet** $3/$15 · **opus** $5/$25
-  · **fable** $10/$50. Fable is the most capable *and* the most expensive — 2× Opus — it is the
+  Cost per 1M tokens (in/out, USD), cheapest first: **haiku** 1/5 · **sonnet** 3/15 · **opus** 5/25 · **fable** 10/50. Fable is the most capable *and* the most expensive — 2× Opus — it is the
   deliberate expensive step, used by the Amalgamator to resolve conflicts and severity-rank findings.
   Sonnet is the default panel tier.
 
@@ -282,12 +281,12 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
 
    # Shell helpers — any variable that is unset or any file write that is silently truncated
    # fails loud here rather than propagating empty downstream.
-   # $1 must be a valid bash identifier (no hyphens, cannot start with a digit)
+   # The first argument must be a valid bash identifier (no hyphens, cannot start with a digit)
    require_var() {
-     [ -n "${!1:-}" ] || { echo "ERROR: $1 is unset or empty" >&2; exit 1; }
+     [ -n "${!1:-}" ] || { echo "ERROR: ${1} is unset or empty" >&2; exit 1; }
    }
    sentinel_or_fail() {
-     local file=$1 sentinel=$2
+     local file=${1} sentinel=${2}
      tail -1 "$file" 2>/dev/null | grep -qF "$sentinel" \
        || { echo "ERROR: sentinel '${sentinel}' not found at end of ${file} — write may be truncated" >&2; exit 1; }
    }
@@ -810,7 +809,7 @@ First, extract severity counts from findings.json and collect the reviewers that
 # malformed file is an error, not zero findings — a silent 0 would poison the cache.
 [ -f "$REVIEW_DIR/findings.json" ] || { echo "ERROR: $REVIEW_DIR/findings.json not found" >&2; false; }
 sev_count() {
-  jq -e --arg s "$1" '[.findings[] | select(.verdict == "CONFIRMED" and (.severity | ascii_downcase) == $s)] | length' "$REVIEW_DIR/findings.json"
+  jq -e --arg s "${1}" '[.findings[] | select(.verdict == "CONFIRMED" and (.severity | ascii_downcase) == $s)] | length' "$REVIEW_DIR/findings.json"
 }
 CRITICAL_COUNT=$(sev_count critical) && HIGH_COUNT=$(sev_count high) && \
   MEDIUM_COUNT=$(sev_count medium) && LOW_COUNT=$(sev_count low) || \
@@ -900,7 +899,7 @@ wrote to the cache (substitute `REVIEW_DIR` as a literal):
 
 ```bash
 sev_count() {
-  jq -e --arg s "$1" '[.findings[] | select(.verdict == "CONFIRMED" and (.severity | ascii_downcase) == $s)] | length' "$REVIEW_DIR/findings.json"
+  jq -e --arg s "${1}" '[.findings[] | select(.verdict == "CONFIRMED" and (.severity | ascii_downcase) == $s)] | length' "$REVIEW_DIR/findings.json"
 }
 printf 'REVIEW_DIR: %s\n' "$REVIEW_DIR"
 printf 'CONFIRMED: critical=%s high=%s medium=%s low=%s\n' "$(sev_count critical)" "$(sev_count high)" "$(sev_count medium)" "$(sev_count low)"
