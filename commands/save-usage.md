@@ -18,12 +18,12 @@ label as the first line and the pasted panel text after it:
 /save-usage expert-plan-v3-effort2-issue184
 Settings  Status   Config   Usage   Stats
 Session
-Total cost:            $1.06
+Total cost:            $X.XX
 Total duration (API):  3m 27s
 Total duration (wall): 1h 19m 46s
 Total code changes:    0 lines added, 0 lines removed
 Usage by model:
-    claude-sonnet-5:  4.2k input, 14.1k output, 2.8m cache read, 102.3k cache write ($1.05)
+    claude-sonnet-5:  4.2k input, 14.1k output, 2.8m cache read, 102.3k cache write ($Y.YY)
     claude-haiku-4-5:  925 input, 18 output, 0 cache read, 0 cache write (0.10¢)
 ```
 

@@ -268,7 +268,7 @@ GH_CHILD_LOOKUP_FAILED=false
 # canonical block is a snippet, not a shell function — keep the two in sync). Emits CHILD_BRANCHES
 # as newline-separated "branch:pr:worktree" records; sets GH_CHILD_LOOKUP_FAILED on gh errors.
 find_children_of() {
-  local parent="$1"
+  local parent="${1}"
   CHILD_BRANCHES=""
   # Detector 1 — sibling worktree caches.
   if [ -d "$WORKTREE_PARENT" ]; then
@@ -300,7 +300,7 @@ find_children_of() {
       [ -z "$pr_rec" ] && continue
       pr_branch=$(printf '%s' "$pr_rec" | cut -d: -f1)
       # Dedupe by branch (field 1) — a child found via cache keeps its cache record (with worktree).
-      if printf '%s' "$CHILD_BRANCHES" | awk -F: -v b="$pr_branch" '$1==b {f=1} END {exit !f}'; then
+      if printf '%s' "$CHILD_BRANCHES" | cut -d: -f1 | grep -qxF -- "$pr_branch"; then
         continue
       fi
       CHILD_BRANCHES="${CHILD_BRANCHES}${pr_rec}"$'\n'
@@ -316,7 +316,7 @@ find_children_of() {
 # when the cache record has an empty worktree field. Hard-errors when the branch is checked out
 # in MORE THAN ONE worktree (ambiguous — the plan promised a duplicate guard).
 resolve_worktree() {
-  local branch="$1" wt_cache="$2"
+  local branch="${1}" wt_cache="${2}"
   if [ -n "$wt_cache" ] && [ -d "$wt_cache" ]; then
     echo "$wt_cache"
     return 0
@@ -359,7 +359,7 @@ if matches:
 
 # walk <parent> <level> — DFS pre-order so ancestors are emitted before their descendants.
 walk() {
-  local parent="$1" level="$2"
+  local parent="${1}" level="${2}"
   case "$SEEN" in *":$parent:"*) CYCLE_DETECTED=true; return ;; esac
   SEEN="$SEEN$parent:"
   find_children_of "$parent"
@@ -635,7 +635,18 @@ while IFS= read -r rec; do
   CHILD_BRANCH=$(printf '%s' "$rec" | cut -d: -f1)
   CHILD_WT=$(printf '%s' "$rec" | cut -d: -f5-)
   # This child's own outcome — recorded by its 4b.3 invocation, one '<branch>:<outcome>' line each.
-  OUTCOME=$(awk -F: -v b="$CHILD_BRANCH" '$1==b {o=$2} END {print o}' "$OUTCOMES_FILE")
+  OUTCOME=$(python3 -c '
+import sys
+b, o = sys.argv[1], ""
+try:
+    for line in open(sys.argv[2]):
+        f = line.rstrip("\n").split(":")
+        if f[0] == b:
+            o = f[1] if len(f) > 1 else ""
+except OSError:
+    pass
+print(o)
+' "$CHILD_BRANCH" "$OUTCOMES_FILE")
   [ -z "$OUTCOME" ] && OUTCOME="unknown"
   echo "  $CHILD_BRANCH → $OUTCOME"
   if [ -n "$CHILD_WT" ] && [ "$OUTCOME" = "synced" ]; then
