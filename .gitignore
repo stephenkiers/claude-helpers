@@ -6,3 +6,5 @@ __pycache__/
 .mypy_cache/
 # git worktrees live here (standard ./worktrees/<branch> layout)
 worktrees/
+# private regression-guard terms for tests/test_style_guide.py
+tests/.forbidden-terms
