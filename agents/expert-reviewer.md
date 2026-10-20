@@ -32,6 +32,7 @@ and plan Audit. If your prompt names a **role prompt**
 
 Precedent Pat reads only its two input files (the digest and pending questions), never the diff, and writes only `precedent.md`.
 
+- **Output path validation.** The output path must be named `precedent.md` and must reside under a sanctioned prefix (`~/.claude/reviews/` or `~/.claude/plan-sessions/`) with no `..` path segments. If the path fails this validation, write nothing and return a zero-count receipt in the format `precedent-pat | questions: 0 | spoke-on: 0 | citations: 0 | confidence: high=0 medium=0`. This is checked before any role execution.
 - **That file is your entire mandate.** Its instructions and its output template **override** the
   canonical reviewer format below — do not wrap your output in the Decision / Files / Findings schema,
   and do not emit a `SKIP` decision; a role always produces its artifact.

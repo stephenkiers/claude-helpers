@@ -108,7 +108,7 @@ triage sits **in front of** it, not over it.
 ## Precedent Pat
 
 Precedent Pat is a pipeline role that reads a digest of the user's own past answers to similar questions and writes
-a `precedent.md` file containing precedent citations, predicted answers with confidence levels, and distinction analysis
+a `precedent.md` file containing precedent citations, predicted answers with confidence levels, and Distinguish lines
 for each pending question. It is display-only — no panel reviewer, Amalgamator, Triage Chief, or orchestrator decision
 logic reads it, and triage never reads it. Sanctioned readers are the calling command's own step (rendering Precedent 
 lines beside questions), logging, and the caller's own validation of the receipt. Nothing is suppressed; every question's 

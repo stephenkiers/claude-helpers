@@ -12,7 +12,7 @@ The removed machinery addressed a real problem: repetition fatigue. The same fin
 
 Precedent Pat is that redesign. It is a pipeline role that reads a digest of the user's past decision briefs or triage rulings and writes a `precedent.md` file containing, for each pending question, the precedent citations, a predicted answer with a confidence level, and a mandatory Distinguish line explaining how this case differs from those cited. Nothing is suppressed. Triage never reads it. Display-only.
 
-The stale open issue #23 (in-progress work tracking) asked for "a way to track which decisions were settled" — this design surfaces settled decisions when they are relevant, rather than suppressing new findings.
+Related: issue #23 proposes `/search-claude --decisions mode` to surface recorded question/answer rulings from transcripts by a direct grep pattern. Precedent Pat addresses similar user needs via a digest of recorded decisions rather than transcript search.
 
 ## Decision
 
@@ -34,7 +34,7 @@ Pat runs on Sonnet. The role's judgment is narrow (scoring confidence, allocatin
 
 ### 4. Scopes
 
-**Project scope only** for Pat's input — the caller is responsible for project filtering. Personal scope and cross-repo scope are deferred to #299 (behind Gate 2 and requiring an amendment to declare a personal and cross-repo entry point, per Q9).
+**Project scope only** for Pat's input — the caller is responsible for project filtering. Personal scope and cross-repo scope are deferred to #299 (behind Gate 2 and requiring an amendment to declare personal and cross-repo entry points).
 
 This relates to [ADR-0005](0005-three-layer-context-cascade.md)'s amended statement that preferences are a lens through which reviewers shape findings — never a suppression list. Personal precedent would be a lens (surfacing the human's own project-agnostic preferences), not a suppression. Personal scope is deferred pending a design for that lens.
 
@@ -70,7 +70,7 @@ Prediction-influenced answers are not independent priors. #292/#295 own marking 
 
 1. **Behaviour-neutral when the digest is empty, the script fails, or Pat fails or times out.** Pat produces a file or nothing; the caller treats nothing the same as an empty digest.
 
-2. **A file counts as complete only if it exists, its receipt matches the pinned regex, its receipt counts match the body, every spoken question has a Distinguish line, and it has at most 5 citations.** Otherwise the caller treats it as absent, failing quiet (Q4, safe by construction because the orchestrator does not read Pat's output — only a command wiring it into an insertion point would be affected).
+2. **A file counts as complete only if it exists, its receipt matches the pinned regex, its receipt counts match the body, every spoken question has a Distinguish line, and it has at most 5 citations.** Otherwise the caller treats it as absent (safe by construction because the orchestrator does not read Pat's output — only a command wiring it into an insertion point would be affected; missing or invalid files are equivalent to a failed role invocation).
 
 3. **The caller excludes security/CRITICAL items from Pat's input.** These stay out of reach of any display-only annotation or digested past answers.
 
