@@ -198,7 +198,12 @@ def main():
     print("[Section 10] expert-flow.md Hard stop includes escalation")
     # Find the Hard stop section using "### Hard stop" which appears in the command doc
     hard_stop_start = flow_cmd.find("### Hard stop")
-    hard_stop_section = flow_cmd[hard_stop_start:hard_stop_start+3000] if hard_stop_start != -1 else ""
+    if hard_stop_start != -1:
+        next_heading = flow_cmd.find("\n### ", hard_stop_start + 1)
+        hard_stop_end = next_heading if next_heading != -1 else len(flow_cmd)
+        hard_stop_section = flow_cmd[hard_stop_start:hard_stop_end]
+    else:
+        hard_stop_section = ""
     h.test_result(
         "Hard stop section mentions implementer-shortfall",
         "implementer-shortfall" in hard_stop_section,

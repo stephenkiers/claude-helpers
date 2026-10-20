@@ -790,8 +790,9 @@ git apply --index "$SCRATCH/unit-${UNIT_ID}.patch"
 DISCARD_PATHS=()
 INVALID_PATHS=()
 
-# For each path in DISCARDED_ADDED_FILES (from the agent's report):
-for DISCARD_PATH in <repo-relative paths>; do
+# REPORTED_DISCARD_PATHS is the array of repo-relative paths parsed from the agent's DISCARDED_ADDED_FILES block
+# For each path in REPORTED_DISCARD_PATHS:
+for DISCARD_PATH in "${REPORTED_DISCARD_PATHS[@]}"; do
   # Validate the path: must be repo-relative, no .., no leading /
   if [[ "$DISCARD_PATH" == /* ]] || [[ "$DISCARD_PATH" == *..* ]]; then
     INVALID_PATHS+=("$DISCARD_PATH (invalid path)")
