@@ -1861,10 +1861,15 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         # Create actual question and answer files in FLOW_DIR
         create_flow_questions(flow_dir, "plan", [2])
-        # Create decoy files in session dir (to verify we don't use them)
+        # Decoy in the session dir: a complete question file named like the real marker, with NO
+        # answer beside it. If the verifier resolved markers against the session dir, plan-01.json
+        # would be unanswered and the run would exit 1, so a pass shows FLOW_DIR-only resolution.
         session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
         Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
-        Path(f"{session_dir}/pending-questions/plan-decoy.json").write_text("{}")
+        Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
+            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None,
+            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
+        }))
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
@@ -1905,9 +1910,13 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         # Create actual question and answer files in FLOW_DIR
         create_flow_questions(flow_dir, "review", [2])
-        # Create decoy files in session area
+        # Decoy in the review dir: a complete question file named like the real marker, with NO
+        # answer beside it. A fallback to the review dir would report review-01.json unanswered.
         Path(f"{review_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
-        Path(f"{review_dir}/pending-questions/review-decoy.json").write_text("{}")
+        Path(f"{review_dir}/pending-questions/review-01.json").write_text(json.dumps({
+            "step": "review", "command": "expert-review", "kind": "report", "summary": None,
+            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
+        }))
         receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
@@ -1995,6 +2004,30 @@ No items."""
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
         h.test_result("ledger D handle without validated report fails closed",
                       exit_code == 1 and "ledger has D/W/Q handles" in stdout, stdout)
+
+    print()
+    print("[Test 86b] Plan: ledger with an empty-string key does not crash the verifier (empty key is not a handle)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        # A report-kind marker routes the run into check_report_checkpoint, whose ledger loop is
+        # the one that indexes key[0]. The marker has no answers file, so the run fails closed.
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        ledger = {"seated": ["contrarian-carl"], "expected_reactions": [], "": {"tier": "decided"}}
+        with open(f"{session_dir}/decisions.md", "a") as f:
+            f.write("\n## Checkpoint ledger\n\n```json\n" + json.dumps(ledger) + "\n```\n")
+        flow_dir = f"{tmp_home}/flow"
+        Path(f"{flow_dir}/questions").mkdir(parents=True)
+        Path(f"{flow_dir}/questions/plan-01.json").write_text(json.dumps({
+            "step": "plan", "command": "expert-plan", "kind": "report", "summary": None,
+            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
+        }))
+        Path(receipt_path).write_text(f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n"
+                                      "<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->")
+        exit_code, stdout, stderr = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("empty-string ledger key is not a handle: verifier does not raise (no IndexError/Traceback), fails closed on the unanswered report",
+                      "IndexError" not in stderr and "Traceback" not in stderr and "Traceback" not in stdout
+                      and exit_code == 1 and "marker files without a readable answered report" in stdout,
+                      f"exit={exit_code}\nstdout={stdout[-300:]}\nstderr={stderr[-500:]}")
 
     print()
     print("[Test 87] Plan: report receipt with answers file present but question file missing -> fails")

@@ -674,7 +674,16 @@ def main():
     h.test_result("verifier is invoked with --flow-dir", '--flow-dir "$FLOW_DIR"' in text)
     h.test_result("verifier failure reasons for incomplete checkpoints are documented",
                   "plan checkpoint incomplete" in text and "review rulings incomplete" in text)
+    # Rule 8 is the verifier's failure contract. Whitespace is normalized so the assertions do not
+    # depend on how the markdown is hard-wrapped.
+    rule8_m = re.search(r"^8\. For `Decision: OK` only.*?(?=^Then branch on the validated)", text, re.M | re.S)
+    rule8 = " ".join(rule8_m.group(0).split()) if rule8_m else ""
+    h.test_result("rule 8 lists the marker-without-readable-answer checkpoint failure reason",
+                  "plan checkpoint incomplete (marker files without a readable answered report" in rule8)
+    h.test_result("rule 8 lists the ledger-handles-without-validated-report checkpoint failure reason",
+                  "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated" in rule8)
     audit = sub("### Fidelity audit")
+    # Wording guard: the audit assertions below pin exact prose. A deliberate reword must update them in the same change.
     h.test_result("audit preamble names rule 8 (verifier exit 0) as preceding the audit",
                   "rule 8's" in audit.lower() and "flow-verify-receipt.py" in audit and "exits 0" in audit)
     h.test_result("audit prompt text says verifier has enforced counts and marker paths are relative to FLOW_DIR",
@@ -691,8 +700,9 @@ def main():
                   "a ruling was made for the human" in audit)
     h.test_result("fidelity audit has zero-brief carve-out",
                   "zero `#### Q` headings" in audit and "carries no D/W/Q handles" in audit)
-    h.test_result("plan audit line does not present plan-sessions glob before FLOW_DIR statement",
-                  (audit.find("<FLOW_DIR>") < audit.find("~/.claude/plan-sessions/") if "~/.claude/plan-sessions/" in audit else True))
+    h.test_result("plan audit line names <FLOW_DIR> before the plan-sessions glob (glob must be present)",
+                  "~/.claude/plan-sessions/" in audit and "<FLOW_DIR>" in audit
+                  and audit.find("<FLOW_DIR>") < audit.find("~/.claude/plan-sessions/"))
     plan_step5 = plan.split("### Step 5", 1)[1].split("### Step 6", 1)[0] if "### Step 5" in plan else ""
     h.test_result("expert-plan Step 5 fails a run that drops checkpoint questions",
                   "reduced run: checkpoint questions dropped" in plan_step5)
