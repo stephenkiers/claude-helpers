@@ -141,8 +141,8 @@ could not finish. Inspect the partial work and decide whether to keep it or rese
   proceed with the plan from scratch. The git-guard blocks `reset`, `checkout`, `stash`, and `clean`,
   so use `git show` and `Write` only.
 
-Before your final report, emit three optional blocks (in this order) — **before the fixed five-line
-report trailer** — one per line, or `none` if a block is empty:
+Before your final report, emit optional blocks (in this order) — **before the fixed five-line
+report trailer** — only when each block has content; omit empty blocks entirely:
 
 ```
 INCOMPLETE_STEPS:
@@ -152,7 +152,7 @@ INCOMPLETE_STEPS:
 PARTIAL_WORK: keep|reset — <one-line reason>
 
 DISCARDED_ADDED_FILES:
-<repo-relative path>
+  - <repo-relative path>
 …
 ```
 
@@ -162,8 +162,10 @@ DISCARDED_ADDED_FILES:
   `TODO|FIXME|unimplemented!()|todo!()|NotImplementedError|throw new NotImplemented` on **added
   lines only** (checked line-by-line in `git diff -U0 <SHA> -- <file>` where lines start with `+`).
   Each entry labels its source: `<id>: <title> [self-report]` or `[heuristic]` or `[both]`.
+  Omit this block if none.
 - **`PARTIAL_WORK:`** — your keep-or-reset decision and a one-line reason. Only for escalated
-  attempts (when `Partial work since:` appears in the prompt). Omit if not escalated.
+  attempts (when `Partial work since:` appears in the prompt). Omit entirely if not escalated.
 - **`DISCARDED_ADDED_FILES:`** — any file the prior attempt added that should not survive. You
   cannot delete files (the git-guard blocks `rm`), so list paths instead; the step orchestrator
-  will remove them before committing. Omit if none.
+  will remove them before committing. Each path on its own line, prefixed with two spaces and a dash
+  (`  - <path>`). Omit entirely if none.
