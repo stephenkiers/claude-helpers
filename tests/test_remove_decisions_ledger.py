@@ -38,12 +38,21 @@ if __name__ == "__main__":
 
     expert_review_file = COMMANDS_DIR / "expert-review.md"
     expert_review_content = expert_review_file.read_text() if expert_review_file.exists() else ""
-    # #287: the one human-ledger delivery line (Q9 B) names the "Ledger block" of flow-reference.md.
-    # That is the human.jsonl ledger, not the removed decisions ledger, so only that line is exempt.
-    HUMAN_LEDGER_DELIVERY_MARKER = "Ledger block of `~/.claude/prompts/flow-reference.md`"
-    expert_review_no_human_ledger = "\n".join(
-        line for line in expert_review_content.splitlines() if HUMAN_LEDGER_DELIVERY_MARKER not in line
-    )
+    # #287: the human-ledger delivery wiring (human.jsonl, not the removed decisions ledger) uses
+    # these exact phrases. Only these phrases are exempt, not whole lines: the replacement runs
+    # longest-first and case-sensitively, so any other "ledger" wording still fails the check.
+    HUMAN_LEDGER_EXEMPT_PHRASES = [
+        "Ledger block of `~/.claude/prompts/flow-reference.md`",
+        "Human ledger (from /expert-flow)",
+        "HUMAN_LEDGER_BLOCK",
+        "HUMAN_LEDGER",
+        "human ledger",
+        "ledger records",
+        "human.jsonl",
+    ]
+    expert_review_no_human_ledger = expert_review_content
+    for exempt_phrase in sorted(HUMAN_LEDGER_EXEMPT_PHRASES, key=len, reverse=True):
+        expert_review_no_human_ledger = expert_review_no_human_ledger.replace(exempt_phrase, "")
 
     test_result(
         "expert-review.md exists",

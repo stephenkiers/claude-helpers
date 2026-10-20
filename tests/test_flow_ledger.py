@@ -9,11 +9,11 @@ state.json. Covered:
 2. supersede: `append --supersedes N` from pending, addressed and parked; refused from superseded
    or a missing seq; --kind correction and --supersedes must come together
 3. mark: pending -> addressed/parked/superseded only; --by rules; non-pending sources refused
-4. list: missing file is a pure no-op; filters; pinned --json and --md shapes; never writes
+4. list: missing file prints [] (JSON, the default) or nothing (--md); filters; pinned --json and --md shapes
 5. fail loud: torn, invalid, and invariant-violating files make list/append/mark exit 1 with the
    line number on stderr and leave the file byte-identical
 6. lock: append, append --supersedes and mark block while another holder has the sidecar lock,
-   and land only after release; list takes no lock
+   and land only after release; list takes a shared lock (blocked by an exclusive holder)
 
 Run with: python3 tests/test_flow_ledger.py
 """
@@ -22,6 +22,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -368,10 +369,12 @@ def main():
         rc, _, _ = mark(flow, 2, "parked")
         h.test_result("pending -> parked exits 0", rc == 0)
         rc, _, _ = mark(flow, 3, "superseded")
-        h.test_result("pending -> superseded via mark exits 0", rc == 0)
+        h.test_result("mark --status superseded is refused by argparse (exit 2)", rc == 2, f"rc={rc}")
+        rc, _, err = supersede(flow, 3)
+        h.test_result("superseding pending record 3 via append --supersedes exits 0", rc == 0, err)
         recs = load_records(flow)
-        h.test_result("mark statuses land: 1 addressed, 2 parked, 3 superseded",
-                      [r["status"] for r in recs] == ["addressed", "parked", "superseded"],
+        h.test_result("statuses land: 1 addressed, 2 parked, 3 superseded, 4 pending correction",
+                      [r["status"] for r in recs] == ["addressed", "parked", "superseded", "pending"],
                       str([r["status"] for r in recs]))
 
         print()
@@ -381,12 +384,11 @@ def main():
             append(flow, text=f"record {n}")
         mark(flow, 1, "addressed", by="steps/03-implement.md")
         mark(flow, 2, "parked")
-        mark(flow, 3, "superseded")
+        supersede(flow, 3)
         before = ledger_bytes(flow)
         for label, args in [
             ("addressed -> parked", (1, "parked", None)),
             ("addressed -> addressed", (1, "addressed", "steps/other.md")),
-            ("addressed -> superseded", (1, "superseded", None)),
             ("parked -> addressed", (2, "addressed", "steps/03-implement.md")),
             ("parked -> parked", (2, "parked", None)),
             ("superseded -> addressed", (3, "addressed", "steps/03-implement.md")),
@@ -396,6 +398,8 @@ def main():
             rc, _, err = mark(flow, seq, status, by=by)
             h.test_result(f"mark refuses {label} (exit 1, 'not pending')", rc == 1 and "not pending" in err,
                           f"rc={rc} stderr={err.strip()[:120]!r}")
+        rc, _, _ = mark(flow, 1, "superseded")
+        h.test_result("mark refuses addressed -> superseded (argparse, exit 2)", rc == 2, f"rc={rc}")
         h.test_result("refused non-pending marks leave the file byte-identical", ledger_bytes(flow) == before)
 
         print()
@@ -404,8 +408,8 @@ def main():
         rc1, out1, _ = run("list", flow, "--json")
         rc2, out2, _ = run("list", flow, "--md")
         rc3, out3, _ = run("list", flow, "--status", "pending")
-        h.test_result("list on a missing file exits 0 with no output",
-                      rc1 == 0 and rc2 == 0 and rc3 == 0 and out1 == "" and out2 == "" and out3 == "",
+        h.test_result("list on a missing file exits 0: [] in JSON mode, nothing in Markdown mode",
+                      rc1 == 0 and rc2 == 0 and rc3 == 0 and out1 == "[]\n" and out2 == "" and out3 == "[]\n",
                       f"rc={rc1},{rc2},{rc3} out={out1!r},{out2!r},{out3!r}")
         h.test_result("list on a missing file creates neither human.jsonl nor the lock",
                       not ledger_path(flow).exists() and not (flow / "human.jsonl.lock").exists(),
@@ -569,14 +573,16 @@ def main():
         finally:
             fcntl.flock(held, fcntl.LOCK_UN)
             held.close()
-        h.test_result("list completes while the lock is held (pure read, no lock)",
-                      completed and list_rc == 0 and "#1 [answer, pending]" in list_out)
+        h.test_result("list blocks while an exclusive lock is held (shared lock, C6)",
+                      not completed, f"completed={completed} rc={list_rc} out={list_out!r}")
 
         flow = flow_dir(root, "list-no-lock-file")
         append(flow, text="one")
         (flow / "human.jsonl.lock").unlink()
-        run("list", flow, "--json")
-        h.test_result("list does not recreate the lock file", not (flow / "human.jsonl.lock").exists())
+        rc, out, _ = run("list", flow, "--md")
+        lock_mode = stat.S_IMODE(os.stat(flow / "human.jsonl.lock").st_mode) if (flow / "human.jsonl.lock").exists() else None
+        h.test_result("list recreates a missing lock sidecar with mode 0600 (documented side effect)",
+                      rc == 0 and "#1 [answer, pending]" in out and lock_mode == 0o600, f"lock_mode={lock_mode}")
 
     print()
     h.summarize_and_exit()

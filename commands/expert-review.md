@@ -326,7 +326,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    or carry the already-known literal values forward as text, rather than persisting them to disk.
 
 3. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
-   and pass to all reviewer prompts. In a flow, read the human ledger under the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers) and pass it separately to Pass 2, the Amalgamator, and the Triage Chief only — never to Pass 1, Contrarian Carl, the Router, scouts, or effort-1/2 pods, preserving blind Pass 1 per ADR-0002. Key extractions:
+   and pass it to all reviewer prompts. In a flow (`FLOW_DIR` set), build `HUMAN_LEDGER_BLOCK` from `${FLOW_DIR}/human.jsonl` under the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers): one `Read` of the whole file (missing or empty → `HUMAN_LEDGER_BLOCK` stays empty, no fence), then the read-only sentence, the `<<<HUMAN_LEDGER` fence line, every record verbatim as one JSON line, and the `HUMAN_LEDGER>>>` fence line. `HUMAN_LEDGER_BLOCK` is passed to Pass 2, the Amalgamator, and the Triage Chief only, and never to Pass 1, Contrarian Carl, the Router, scouts, Haiku Q&A, pod verifiers, or effort-1/2 pods, preserving blind Pass 1 per ADR-0002. Key extractions:
    - `techStack.language` → primary language (skips detection in step 4)
    - `fragility.*` → Fragile Feynman; `docStyle` → Contract Chris;
      `typeChecker`, `propertyTestingLib` → Tara TypeSafe
@@ -623,8 +623,8 @@ When `PR_MODE=true`:
 
 Read `~/.claude/prompts/expert-review-panel.md` and follow those steps exactly. `REVIEW_DIR`,
 `PANEL_MODEL`, `MODEL_EXPLICIT`, `EFFORT`, `EFFORT_EXPLICIT`, `NAMED_SELECTION`, `NAMED_REVIEWERS`,
-`PR_MODE`, `ALLOW_DEGRADED`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, `FLOW_DIR` and `STEP_NAME` (both empty when not
-in a flow), and all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
+`PR_MODE`, `ALLOW_DEGRADED`, `PROJECT_CONTEXT`, `DETECTED_LANGUAGES`, `FLOW_DIR`, `STEP_NAME` and `HUMAN_LEDGER_BLOCK` (`FLOW_DIR` and `STEP_NAME` both empty when not
+in a flow; `HUMAN_LEDGER_BLOCK` empty unless a flow has ledger records), and all diff artifacts (`full-diff.patch`, `diff-index.md`) are already set from Steps 0–3 above.
 At `EFFORT=1` the panel's Swarm Path replaces Steps 4–10; at `EFFORT=5` Step 3 has already lowered
 the run to named selection over the full index.
 

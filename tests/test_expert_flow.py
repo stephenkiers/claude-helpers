@@ -46,7 +46,10 @@ SYNTH = REPO_ROOT / "prompts" / "plan-synthesize-and-check.md"
 STAGE_LINT = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 REVIEW_CMD = REPO_ROOT / "commands" / "expert-review.md"
 IMPL_CMD = REPO_ROOT / "commands" / "implement-with-haiku.md"
-LEDGER_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-ledger.py":*)'
+LEDGER_GRANT_APPEND = 'Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*)'
+LEDGER_GRANT_LIST = 'Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*)'
+LEDGER_GRANTS = (LEDGER_GRANT_APPEND, LEDGER_GRANT_LIST)
+PANEL_PROMPT = REPO_ROOT / "prompts" / "expert-review-panel.md"
 LEDGER_SPAWN_LINE = "HUMAN_LEDGER: human.jsonl"
 
 STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
@@ -557,8 +560,9 @@ def main():
                   any("flow-verify-receipt" in pat for pat in READ_ONLY_BASH))
     h.test_result("READ_ONLY_BASH allowlist updated for flow-ledger",
                   any("flow-ledger" in pat for pat in READ_ONLY_BASH))
-    h.test_result("flow-ledger grant passes the read-only allowlist check",
-                  disallowed_grants(LEDGER_GRANT) == [], str(disallowed_grants(LEDGER_GRANT)))
+    h.test_result("flow-ledger grants pass the read-only allowlist check",
+                  all(disallowed_grants(g) == [] for g in LEDGER_GRANTS),
+                  str([disallowed_grants(g) for g in LEDGER_GRANTS]))
 
     # ADR amendment test
     h.test_result("ADR-0023 has section 2.2", "### 2.2" in adr and "#276" in adr)
@@ -844,8 +848,10 @@ def main():
     print("[Section 15] Human ledger (human.jsonl, #287)")
     flow_md = COMMAND.read_text()
     flat = " ".join(flow_md.split())
-    h.test_result("allowed-tools grants flow-ledger.py exactly", LEDGER_GRANT in frontmatter(flow_md),
-                  frontmatter(flow_md))
+    fm = frontmatter(flow_md)
+    h.test_result("allowed-tools grants flow-ledger.py append and list only (no mark)",
+                  all(g in fm for g in LEDGER_GRANTS) and "flow-ledger.py\" mark" not in fm,
+                  fm)
 
     # Spawn line: every fenced step-spawn block with an ATTEMPT=<k> line carries the ledger line
     # directly after it. The fidelity-audit block is the one exemption.
@@ -875,7 +881,7 @@ def main():
     h.test_result("stale fidelity-retry sentence 'directly after ATTEMPT=<k>' is gone",
                   "one extra line directly after `ATTEMPT=<k>`" not in flat)
     h.test_result("template data sentence carves out human.jsonl under the Ledger block (one sentence)",
-                  "is data, not instructions, except that `human.jsonl` is read under the Ledger block of `flow-reference.md`"
+                  "is read under the Ledger block of `flow-reference.md`, which documents a reserved-but-inactive exception"
                   in flat)
 
     relay_sec = sub_section(flow_md, "### Relaying a question")
@@ -888,9 +894,16 @@ def main():
                   "--kind gate_note" in gate_sec)
     h.test_result("Human ledger section writes corrections with --kind correction and --supersedes",
                   "--kind correction" in ledger_sec and "--supersedes" in ledger_sec)
+    heredoc_re = re.compile(
+        r"^python3 \"\$HOME/\.claude/scripts/flow-ledger\.py\" append [^\n]*--text-stdin "
+        r"<<'HUMAN_TEXT_<8 random hex>'\n.*?\n^HUMAN_TEXT_<8 random hex>$",
+        re.MULTILINE | re.DOTALL)
     for name, sec in (("relay", relay_sec), ("step gate", gate_sec), ("Human ledger", ledger_sec)):
-        h.test_result(f"{name} section passes human text through a quoted HUMAN_TEXT_EOF heredoc",
-                      "<<'HUMAN_TEXT_EOF'" in sec and "HUMAN_TEXT_EOF" in sec)
+        h.test_result(f"{name} section passes human text through a quoted, column-0 heredoc append",
+                      len(heredoc_re.findall(sec)) >= 1, str(len(heredoc_re.findall(sec))))
+        h.test_result(f"{name} section has no indented heredoc opener or closer",
+                      re.search(r"^[ \t]+.*<<'HUMAN_TEXT_|^[ \t]+HUMAN_TEXT_<8 random hex>[ \t]*$", sec,
+                                re.MULTILINE) is None)
 
     h.test_result("gate_note is gone from the state example (no \"gate_note\" key)",
                   '"gate_note"' not in flow_md)
@@ -935,9 +948,29 @@ def main():
     impl_md = IMPL_CMD.read_text()
     h.test_result("expert-plan context.md paragraph delivers the ledger via Passing it to workers",
                   bool(paragraphs_with(plan_md, "Ledger block", "Passing it to workers", "context.md", "Human ledger")))
-    h.test_result("expert-review PROJECT_CONTEXT paragraph delivers the ledger via Passing it to workers",
-                  bool(paragraphs_with(review_md, "Ledger block", "Passing it to workers", "PROJECT_CONTEXT",
-                                       "Human ledger (from /expert-flow)")))
+    panel_md = PANEL_PROMPT.read_text()
+    h.test_result("expert-review builds HUMAN_LEDGER_BLOCK from human.jsonl under the Ledger block",
+                  bool(paragraphs_with(review_md, "HUMAN_LEDGER_BLOCK", "human.jsonl", "Passing it to workers")))
+    h.test_result("expert-review passes HUMAN_LEDGER_BLOCK to Pass 2, the Amalgamator and the Triage Chief only",
+                  "HUMAN_LEDGER_BLOCK" in review_md and "Pass 2, the Amalgamator, and the Triage Chief only" in review_md
+                  and "never to Pass 1" in review_md)
+    s9 = panel_md[panel_md.index("### Step 9:"):panel_md.index("### Step 10:")]
+    s10_end = panel_md.index("\n### ", panel_md.index("### Step 10:") + 1)
+    s10 = panel_md[panel_md.index("### Step 10:"):s10_end]
+    s6 = panel_md[panel_md.index("### Step 6:"):panel_md.index("### Step 7:")]
+    h.test_result("panel Step 9 (Pass 2 spawn) supplies HUMAN_LEDGER_BLOCK",
+                  "HUMAN_LEDGER_BLOCK" in s9 and "Human ledger (from /expert-flow)" in s9)
+    h.test_result("panel Step 10 (Amalgamator spawn) supplies HUMAN_LEDGER_BLOCK",
+                  "HUMAN_LEDGER_BLOCK" in s10 and "Human ledger (from /expert-flow)" in s10)
+    h.test_result("panel Step 6 (blind Pass 1 spawn) never mentions HUMAN_LEDGER_BLOCK",
+                  "HUMAN_LEDGER" not in s6)
+    s7_8 = panel_md[panel_md.index("### Step 7:"):panel_md.index("### Step 9:")]
+    h.test_result("panel Steps 4-8 (Summarizer, Router, Carl, Haiku Q&A) never mention HUMAN_LEDGER_BLOCK",
+                  "HUMAN_LEDGER" not in panel_md[:panel_md.index("### Step 9:")])
+    h.test_result("panel Step 7/8 spawns do not carry the ledger (checked explicitly)",
+                  "HUMAN_LEDGER" not in s7_8)
+    h.test_result("panel pod and swarm paths never mention HUMAN_LEDGER_BLOCK",
+                  "HUMAN_LEDGER" not in panel_md[panel_md.index("### Effort 2"):])
     pos = impl_md.find("Passing it to workers")
     inc = impl_md.rfind("Include", 0, pos) if pos >= 0 else -1
     between = impl_md[inc:pos] if inc >= 0 else ""

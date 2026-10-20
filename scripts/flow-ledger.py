@@ -38,11 +38,12 @@ import fcntl
 import json
 import os
 import re
+import resource
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypedDict, Optional, List, Dict, Any, NoReturn, Tuple, FrozenSet, get_args
+from typing import Literal, TypedDict, Optional, List, Dict, Any, NoReturn, Tuple, FrozenSet, Iterator, cast, get_args
 
 # Type definitions
 Kind = Literal["transcript", "answer", "direction", "question", "parked", "gate_note", "correction"]
@@ -75,12 +76,6 @@ def error(msg: str) -> NoReturn:
     sys.exit(1)
 
 
-def usage_error(msg: str) -> NoReturn:
-    """Print error to stderr and exit with code 2 (argparse usage error)."""
-    print(msg, file=sys.stderr)
-    sys.exit(2)
-
-
 def validate_relative_path(path: Optional[str]) -> bool:
     """Check if path is non-empty relative path with no .. segments and not absolute."""
     if path is None:
@@ -95,10 +90,19 @@ def validate_relative_path(path: Optional[str]) -> bool:
 
 
 def validate_ts(ts: str) -> bool:
-    r"""Check if ts is ISO-8601 UTC with Z suffix: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"""
+    r"""Check if ts is ISO-8601 UTC with Z suffix: ^[0-9]{4}-...T..:..:..(\.[0-9]+)?Z$ and a real calendar date.
+
+    ASCII digits only (\d would accept fullwidth digits), and the date and time must parse.
+    """
     if not isinstance(ts, str):
         return False
-    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z", ts))
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z", ts):
+        return False
+    try:
+        datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return False
+    return True
 
 
 def parse_record(obj: Any, label: str) -> Record:
@@ -118,7 +122,7 @@ def parse_record(obj: Any, label: str) -> Record:
         error(f"flow-ledger: {label}: not a dict")
 
     # Check exact keys
-    expected_keys = {"seq", "ts", "step", "attempt", "kind", "text", "transcript", "status", "addressed_by", "supersedes"}
+    expected_keys = set(Record.__annotations__)
     actual_keys = set(obj.keys())
     if actual_keys != expected_keys:
         missing = expected_keys - actual_keys
@@ -192,7 +196,7 @@ def parse_record(obj: Any, label: str) -> Record:
         if supersedes is not None:
             error(f"flow-ledger: {label}: supersedes only allowed for kind correction")
 
-    return obj  # type: ignore
+    return cast(Record, obj)
 
 
 def load_records(ledger_file: Path) -> List[Record]:
@@ -243,11 +247,47 @@ def transition_allowed(current_status: Status, new_status: Status) -> bool:
     return new_status in allowed_transitions.get(current_status, frozenset())
 
 
-def write_records(ledger_file: Path, records: List[Record]) -> None:
+def fsync_dir(directory: Path) -> None:
+    """Flush a directory entry (after os.replace or first create). Best effort: the content is already synced."""
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def truncate_to(ledger_file: Path, size: int) -> bool:
+    """Shrink the ledger back to size bytes and fsync. Returns False if the restore failed.
+
+    RLIMIT_FSIZE is checked against the new length on truncate, so a soft cap below the prior size
+    would refuse the restore. The soft limit is raised to the hard limit first: the restore only
+    shrinks the file, and the cap is about growth. The process exits right after either way.
+    """
+    try:
+        _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (hard, hard))
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(str(ledger_file), "r+b") as f:
+            f.truncate(size)
+            os.fsync(f.fileno())
+        return True
+    except OSError:
+        return False
+
+
+def write_records(ledger_file: Path, records: List[Record], label: str) -> None:
     """Write records to ledger file via temp file + os.replace.
 
-    Creates the temp file with mode 0o600 and syncs before replace.
-    On any error, removes the temp file and calls error() to exit with code 1.
+    Creates the temp file with mode 0o600 and syncs before replace. The original file is untouched
+    until the replace, so on any error the temp file is removed and the ledger is unchanged.
+    On any error, calls error() with a "flow-ledger: <label>: " prefix (exit code 1).
     """
     temp_path = None
     try:
@@ -258,7 +298,12 @@ def write_records(ledger_file: Path, records: List[Record]) -> None:
             suffix=".jsonl",
         )
         try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            f = os.fdopen(temp_fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(temp_fd)
+            raise
+        try:
+            with f:
                 for rec in records:
                     f.write(json.dumps(rec, separators=(",", ":")) + "\n")
                 # Flush and fsync before close
@@ -267,6 +312,7 @@ def write_records(ledger_file: Path, records: List[Record]) -> None:
             # mkstemp creates 0600; preserve that for the ledger
             os.chmod(temp_path, 0o600)
             os.replace(temp_path, str(ledger_file))
+            fsync_dir(ledger_file.parent)
         except Exception:
             if temp_path:
                 try:
@@ -275,12 +321,16 @@ def write_records(ledger_file: Path, records: List[Record]) -> None:
                     pass
             raise
     except (OSError, IOError) as e:
-        error(f"flow-ledger: append: write failed ({e}); ledger rolled back")
+        error(f"flow-ledger: {label}: write failed ({e}); ledger rolled back")
 
 
 @contextlib.contextmanager
-def ledger_lock(flow_dir: Path, shared: bool = False):  # type: ignore
+def ledger_lock(flow_dir: Path, shared: bool = False) -> Iterator[None]:
     """Context manager to acquire and release a lock on the ledger.
+
+    The sidecar lock file (human.jsonl.lock, mode 0o600) is created if missing, by every
+    subcommand including list, so a read-only flow directory fails with "lock error".
+    Only acquisition is wrapped: OSErrors raised by the protected body propagate unchanged.
 
     Args:
         flow_dir: The flow directory.
@@ -290,25 +340,22 @@ def ledger_lock(flow_dir: Path, shared: bool = False):  # type: ignore
         None. The lock is held for the duration of the context.
     """
     lock_file = flow_dir / "human.jsonl.lock"
-    lock_f = None
     try:
-        # Create lock file with mode 0o600 if not present
         if not lock_file.exists():
             fd = os.open(str(lock_file), os.O_WRONLY | os.O_CREAT, 0o600)
             os.close(fd)
-
         lock_f = open(lock_file, "a")
-        lock_type = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-        fcntl.flock(lock_f.fileno(), lock_type)
-        yield
     except OSError as e:
         error(f"flow-ledger: lock error: {e}")
+    try:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+    except OSError as e:
+        lock_f.close()
+        error(f"flow-ledger: lock error: {e}")
+    try:
+        yield
     finally:
-        if lock_f:
-            try:
-                lock_f.close()
-            except OSError:
-                pass
+        lock_f.close()
 
 
 def cmd_append(
@@ -382,7 +429,8 @@ def cmd_append(
         if supersedes is None:
             # Simple append: record the size before writing and rollback on error
             size_before = 0
-            if ledger_file.exists():
+            created = not ledger_file.exists()
+            if not created:
                 size_before = ledger_file.stat().st_size
 
             data = (json.dumps(new_record, separators=(",", ":")) + "\n").encode("utf-8")
@@ -397,19 +445,17 @@ def cmd_append(
                 finally:
                     os.close(fd)
             except OSError as e:
-                # Rollback: truncate back to size before write
-                try:
-                    with open(str(ledger_file), "r+b") as f:
-                        f.truncate(size_before)
-                        os.fsync(f.fileno())
-                except OSError:
-                    pass
-                error(f"flow-ledger: append: write failed ({e}); ledger rolled back")
+                # Rollback: truncate back to size before write. A failed restore must not claim success.
+                if truncate_to(ledger_file, size_before):
+                    error(f"flow-ledger: append: write failed ({e}); ledger rolled back")
+                error(f"flow-ledger: append: write failed ({e}); rollback failed - delete the partial last line to repair")
+            if created:
+                fsync_dir(ledger_file.parent)
         else:
             # Rewrite: mark superseded record, add new, rewrite entire file
             records[supersedes - 1]["status"] = "superseded"
             records.append(new_record)
-            write_records(ledger_file, records)
+            write_records(ledger_file, records, "append")
 
         # Print new seq
         print(seq)
@@ -456,7 +502,7 @@ def cmd_mark(flow_dir: Path, seq: int, status: MarkStatus, by: Optional[str]) ->
         parse_record(record, f"mark: record {seq}")
 
         # Rewrite file
-        write_records(ledger_file, records)
+        write_records(ledger_file, records, "mark")
 
 
 def cmd_list(
@@ -559,16 +605,19 @@ def main() -> None:
     # Validate flow-dir
     flow_dir = Path(args.flow_dir).expanduser().resolve()
     if not flow_dir.is_dir():
-        error(f"flow-ledger: {args.flow_dir}: not a directory")
+        error(f"flow-ledger: {args.command}: {args.flow_dir}: not a directory")
     if not (flow_dir / "state.json").exists():
-        error(f"flow-ledger: {args.flow_dir}: no state.json")
+        error(f"flow-ledger: {args.command}: {args.flow_dir}: no state.json")
 
     try:
         if args.command == "append":
             # Get text from argument or stdin
             if args.text_stdin:
                 # Read stdin as UTF-8 regardless of locale
-                text = sys.stdin.buffer.read().decode("utf-8")
+                try:
+                    text = sys.stdin.buffer.read().decode("utf-8")
+                except UnicodeDecodeError:
+                    error("flow-ledger: append: --text-stdin is not valid UTF-8")
                 # Strip exactly one trailing newline
                 if text.endswith("\n"):
                     text = text[:-1]

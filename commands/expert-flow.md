@@ -470,7 +470,7 @@ Resume rules, applied in this order:
 3a. `status: abandoned` → ask once with `AskUserQuestion` — "This flow was abandoned at `<STEP>`.
    Resume it?" — options `Yes — resume (Recommended)` and `No — stop`. On `No` (or no answer), print
    `flow abandoned` and stop, no telemetry, state untouched. On `Yes`, continue as `paused` (rule 2, then 5).
-1a. **Pending human input (legacy and human ledger).** Run `python3 "$HOME/.claude/scripts/flow-ledger.py" list --flow-dir "$FLOW_DIR" --status pending --md`. If it prints anything, print it under a `Pending human input (human.jsonl):` heading. If the legacy `gate_note` saved earlier is non-null, also print it under a `Legacy gate note (pre-ledger): <text>` heading (read-fallback; do not migrate it into the human ledger). A non-zero exit from the script is `STOP human ledger error: <first stderr line>`. This rule prints once per resume, before continuing to rule 4.
+1a. **Pending human input (legacy and human ledger).** Run `python3 "$HOME/.claude/scripts/flow-ledger.py" list --flow-dir "$FLOW_DIR" --status pending --md`. If it prints anything, print it under a `Pending human input (human.jsonl):` heading. If the legacy `gate_note` saved earlier is non-null, also print it under a `Legacy gate note (pre-ledger): <text>` heading (read-fallback; do not migrate it into the human ledger). A non-zero exit from the script is `STOP human ledger error: <first stderr line>`. This rule runs only when rule 2 does not apply. When rule 2 re-asks a gate, the gate's item 1 is the single place that prints pending records and the legacy `gate_note`, so rule 1a is skipped. Otherwise it prints them once and continues to rule 4.
 4. `status: failed` (aborted) → re-run the recorded step if `failures[STEP] < 2`, else
    `STOP attempts exhausted for <STEP>`.
 5. `status: awaiting`, `paused`, or `running` → the step subagent from the earlier session is gone
@@ -1162,20 +1162,18 @@ For plan checkpoint reports from `/expert-plan`:
 
    Improvements to prose ingestion are tracked in #277. PR #311 settled the prose interpreter design (#277, #290, #286, #289): free-text reply path, escaping rules for untrusted text, per-round `.reply-<n>.md` files, and re-ask loop semantics.
 
-   **Ledger: append free-text answers.** After writing the answers file, for each answer whose value is not one of that question's option labels (free text in "Other", including the plan step's `Answer in your own words` questions), append one `answer` record to the human ledger. Use:
-
-   ```bash
-   python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind answer --step <STEP> --attempt <k> --text-stdin <<'HUMAN_TEXT_<8 random hex>'
-   <the free text verbatim>
-   HUMAN_TEXT_<8 random hex>
-   ```
-
-   Any non-zero exit is `STOP human ledger error: <first stderr line>`. The stop prints the unrecorded text verbatim. Option picks are not recorded (only free text in "Other").
-
 4. Write `${FLOW_DIR}/answers/<STEP>-<SEQ>.json` with the `Write` tool, **keyed by question `id`**:
    `{"answers": {"<question id>": "<chosen label or free text>", …}, "annotations": {…}}`. The
    `AskUserQuestion` result is keyed by question text; map each answer back to the `id` of the
    question it answered before writing. "Other" text is passed through as the value.
+
+4a. **Ledger: append free-text answers.** Only after step 4 has written the answers file, for each answer whose value is not one of that question's option labels (free text in "Other", including the plan step's `Answer in your own words` questions), append one `answer` record to the human ledger with the command below. Option picks are not recorded (only free text in "Other"). Any non-zero exit is `STOP human ledger error: <first stderr line>`. The answers file is already on disk, so the free text is NOT in the human ledger: the stop prints the unrecorded text verbatim, and the human adds it by hand (or re-answers the question) before `--resume`. Resume does not re-run the relay.
+
+```bash
+python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind answer --step <STEP> --attempt <k> --text-stdin <<'HUMAN_TEXT_<8 random hex>'
+<the free text verbatim>
+HUMAN_TEXT_<8 random hex>
+```
 
 5. **Verify the answers file exists before resuming** — resuming on a file that was not yet on disk is the
    one way to make the step fail closed on good answers. Every question `id` must be a key:
@@ -1288,16 +1286,16 @@ skipped when `flags.step_gates` is false (the default) or `gates[STEP]` is alrea
      gate), end the turn. `--resume` re-asks this gate (resume rule 2).
    - **Abort** — set `status: failed` (overwriting `paused`), log `aborted`, `WRITE-STATE`, print the stop lines,
      `command-end --outcome failure --failure-class other`, end the turn. `--resume` re-asks this gate (never re-runs).
-   - Free text ("Other") is a Pause with a note: append one `gate_note` record to the human ledger:
-
-     ```bash
-     python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind gate_note --step <STEP> --attempt <attempts[STEP]> --text-stdin <<'HUMAN_TEXT_<8 random hex>'
-     <the human's text, verbatim>
-     HUMAN_TEXT_<8 random hex>
-     ```
-
-     Any non-zero exit is `STOP human ledger error: <first stderr line>`. Then add a third stop
+   - Free text ("Other") is a Pause with a note: append one `gate_note` record to the human ledger with the command below (the text column-0 block after this list). Any non-zero exit is `STOP human ledger error: <first stderr line>`. Then add a third stop
      line `   note: edit <the gate's main file> by hand, then --resume` (for `plan` and `review`, per the table above; for `implement`/`fix`/`verify` write `note: nothing to edit here; Take over in <WORKTREE>, then --resume`). The record is in `human.jsonl`, and later steps see it as background. If the reply explicitly corrects an earlier record in this flow, the Correction rule in the `### Human ledger` section applies, under the same unambiguous-target condition. Free text stays a Pause in this version; #277's prose mapping will extend to the gate — a reply that plainly names Continue or Abort maps to that option, anything else stays a Pause with a note.
+
+The free-text gate note is this append (the `Other` case of item 3), with `<STEP>` and `<attempts[STEP]>` filled in:
+
+```bash
+python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind gate_note --step <STEP> --attempt <attempts[STEP]> --text-stdin <<'HUMAN_TEXT_<8 random hex>'
+<the human's text, verbatim>
+HUMAN_TEXT_<8 random hex>
+```
 
 ### Hard stop
 
