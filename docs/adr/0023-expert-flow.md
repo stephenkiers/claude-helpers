@@ -161,7 +161,9 @@ Recorded here so the dogfooding phase (#252) argues with a decision, not a blank
    `--auto-merge` trusts the plan and PR author; this ADR does not require enforcement of that trust.
 3. **Epic v1 is sequential.** Ticket N+1 branches from main after N merges, because the flow already
    ends each ticket in `/merge-and-cleanup`; a stack buys nothing unless Hold is chosen. `--stack`
-   is deferred until "Hold" is observed in practice (proposal §9 lists what it needs).
+   is deferred until "Hold" is observed in practice (proposal §9 lists what it needs). Merges within
+   an epic should be sequenced to avoid conflicts and ensure each ticket's work is stable before the
+   next begins (see #320, #322 for overlap analysis).
 4. **Verify is the project's `commands.check` only.** Coverage, performance, and E2E remain
    `/expert-is-it-done`'s job after merge, where there is a merged diff to judge.
 
@@ -584,13 +586,13 @@ Any `mark` on a record that is not `pending` exits non-zero and leaves the file 
 
 **Out of scope:** Cross-flow use (#291, #298, reading ledger from one flow in another); enforcement (#288, what happens if a step ignores a direction); dictation / prose-input (#277, extending directions to free-form); redo / `HUMAN_NOTE` (#286, replaying or correcting prior work).
 
-## Amendment (2026-10-16, fourth): one automatic implementer escalation (#315)
+## Amendment (2026-10-16, fourth): one implementer escalation path (#315)
 
-When the `/implement-with-haiku` step for `implement` or `fix` fails because the Haiku `plan-implementer` unit could not finish the plan (a single-unit shortfall), an automatic escalation re-runs the step once on Sonnet under a narrow, bounded path. Every escalation is logged for later review. The manual `Retry with sonnet` option remains available when the automatic path does not qualify.
+When the `/implement-with-haiku` step for `implement` or `fix` fails because the Haiku `plan-implementer` unit could not finish the plan (a single-unit shortfall), a fourth hard-stop option `Retry with sonnet` is offered for manual escalation. An automatic escalation mechanism is designed but dormant — it would re-run the step once on Sonnet under a narrow, bounded path once a turns source becomes available (see #325). Every escalation is logged for later review. The manual `Retry with sonnet` option is the live path until the automatic mechanism activates.
 
-### The bounded automatic path
+### The dormant automatic path (reserved for when a turns source exists)
 
-The orchestrator does not decide whether to escalate. It tells `flow-verify-receipt.py --escalation` how the step reached Hard stop (`--stop-source`) and asks whether the receipt meets all seven conditions. Only a direct receipt failure qualifies (not a validation rule or fidelity-audit rejection). The conditions are:
+When a turns source becomes available, the orchestrator would check whether the step reached Hard stop by direct receipt failure. It would tell `flow-verify-receipt.py --escalation` how the step reached Hard stop (`--stop-source`) and ask whether the receipt meets all seven conditions. Only a direct receipt failure would qualify (not a validation rule or fidelity-audit rejection). The conditions would be:
 
 1. `STEP` is `implement` or `fix`.
 2. The receipt's `Decision: FAILED` came from the receipt itself, not from a validation rule or fidelity audit.
@@ -600,19 +602,19 @@ The orchestrator does not decide whether to escalate. It tells `flow-verify-rece
 6. `escalations[STEP] == 0` — this is the first and only automatic escalation per step per flow.
 7. `failures[STEP] < 2` after this failure was counted.
 
-On `ESCALATE: auto sonnet`, the orchestrator sets `implementer_model[STEP]="sonnet"`, increments `escalations[STEP]`, logs `escalated`, and re-runs the step through the normal loop, passing `--implementer-model sonnet --partial-base <START_SHA>` to carry the partial work. The escalated attempt counts under the existing two-attempt cap; if it fails, the menu shows Retry (`haiku`) / Take over / Abort, with the choice to `Retry with sonnet` excluded unless the failure is a turn-exhaustion or validation stop.
+On `ESCALATE: auto sonnet`, the orchestrator would set `implementer_model[STEP]="sonnet"`, increment `escalations[STEP]`, log `escalated`, and re-run the step through the normal loop, passing `--implementer-model sonnet --partial-base <START_SHA>` to carry the partial work. The escalated attempt would count under the existing two-attempt cap; if it fails, the menu shows Take over / Abort only (no Retry).
 
 ### The turns-exhaustion exclusion
 
-A failure with `TURNS_EXHAUSTED: yes` or `unknown` never escalates automatically, because the larger Sonnet unit would face the same cap under the same `maxTurns`. Every attempt records `TURNS_USED` from a step-established source and `TURNS_EXHAUSTED` (computed as `yes` when the trailer is missing, `no` when complete and `TURNS_USED` is known and below the cap, or `unknown` otherwise). If Step 1's probe found no reliable turns source, every receipt carries `TURNS_USED: unknown` and `TURNS_EXHAUSTED: unknown`, so the automatic path is inert (fail-closed) until a turns source exists.
+A failure with `TURNS_EXHAUSTED: yes` or `unknown` would never escalate automatically, because the larger Sonnet unit would face the same cap under the same `maxTurns`. Every attempt records `TURNS_USED` from a step-established source and `TURNS_EXHAUSTED` (computed as `yes` when the trailer is missing, `no` when complete and `TURNS_USED` is known and below the cap, or `unknown` otherwise). Currently, no reliable turns source exists, so every receipt carries `TURNS_USED: unknown` and `TURNS_EXHAUSTED: unknown`, and the automatic path remains inert (fail-closed) until a turns source exists (see #325).
 
-### The partial-work contract
+### The partial-work contract (for escalated attempts)
 
-When the escalated `/implement-with-haiku` runs, it is told what is already present via `Partial work since: <START_SHA>` and makes one judgment: keep (the failed work is sound; finish the remaining steps and clean up its stubs) or reset (the failed work is broken; restore each changed file from `START_SHA` through `git show` and `Write`). The judgment and its reason go into the receipt. The original `START_SHA` is preserved across the escalation, so the full run's anti-tamper scan covers all of the work. The escalated attempt lists files it added that should not survive in `DISCARDED_ADDED_FILES:`; the step's orchestrator removes them with validation before committing, or stops for the human.
+When an escalated `/implement-with-haiku` runs, it would be told what is already present via `Partial work since: <START_SHA>` and makes one judgment: keep (the failed work is sound; finish the remaining steps and clean up its stubs) or reset (the failed work is broken; restore each changed file from `START_SHA` through `git show` and `Write`). The judgment and its reason would go into the receipt. The original `START_SHA` is preserved across the escalation, so the full run's anti-tamper scan covers all of the work. The escalated attempt would list files it added that should not survive in `DISCARDED_ADDED_FILES:`; the `/implement-with-haiku` orchestrator removes them with validation before committing, or stops for the human.
 
-### Manual retry
+### Manual `Retry with sonnet` option
 
-A manual `Retry with sonnet` option is offered at Hard stop when the eligibility conditions do not meet the automatic path. It is listed first, labelled with its model, and shares the `failures[STEP]` cap with automatic escalations. Under the default reading, after a failed automatic escalation the menu is Take over / Abort only. A multi-unit failed attempt whose label mentions "single unit" shows the human what the collapse entails.
+A fourth hard-stop menu option `Retry with sonnet` is offered to escalate manually to Sonnet. It is listed after Retry and labelled with its model, and shares the `failures[STEP]` cap with any future automatic escalations. It is available whenever a shortfall failure occurs, independent of whether the automatic path's conditions are met. A multi-unit failed attempt whose label mentions "single unit" shows the human what the collapse entails.
 
 ### Telemetry
 
@@ -627,11 +629,12 @@ The probe in a throwaway git repo showed that the Agent `model` parameter overri
 - Pre-run size checks and automatic sequential split of a single-unit plan.
 - A user-facing model flag on `/expert-flow` at start.
 - Raising or overriding `maxTurns`.
-- A third implementer attempt or a manual Sonnet retry after the automatic escalation fails (under the default reading).
+- A third implementer attempt after a failed escalation.
 - Automatic escalation of multi-unit runs.
+- Opus for implementer escalation (Sonnet only, never Opus).
 - Orchestrator-side destructive git.
 - Branch and unit-worktree cleanup after an escalated run.
 
 ### Amending §1
 
-The "nothing else" sentence (in the Decision section) now points to this amendment for the one exception to "the step's command keeps its own frontmatter model". The exception is: a single automatic escalation from Haiku to Sonnet for `plan-implementer` only, once per step per flow, only on a typed shortfall class for a single-unit run, with turn exhaustion excluded, always logged, and Opus never automatic.
+The "nothing else" sentence (in the Decision section) now points to this amendment for the one exception to "the step's command keeps its own frontmatter model". The exception is: a fourth hard-stop option `Retry with sonnet` is available for single-unit shortfalls to allow manual Haiku-to-Sonnet escalation. An automatic escalation from Haiku to Sonnet for `plan-implementer` is designed but dormant (reserved for when a turns source exists); when active, it would run once per step per flow, only on a typed shortfall class for a single-unit run, with turn exhaustion excluded, always logged, and Opus never used for implementer escalation.

@@ -114,9 +114,9 @@ def main():
 
     # Check that some specific context mentions launch sites
     h.test_result(
-        "single-unit fallback uses model flag",
-        "single-unit" in impl_cmd and "frontmatter" in impl_cmd,
-        "missing context"
+        "single-unit fallback uses --implementer-model flag",
+        "single-unit" in impl_cmd and "--implementer-model" in impl_cmd,
+        "missing single-unit or flag reference"
     )
 
     print()
@@ -141,8 +141,8 @@ def main():
     print("[Section 6] Turns source handling")
     h.test_result(
         "TURNS_USED: unknown default when no source",
-        "TURNS_USED: unknown" in impl_cmd or "unknown" in impl_cmd.lower(),
-        "missing"
+        "TURNS_USED: unknown" in impl_cmd,
+        "missing TURNS_USED: unknown field"
     )
     h.test_result(
         "MAX_TURNS from frontmatter",
@@ -189,26 +189,25 @@ def main():
     print()
     print("[Section 9] CLAUDE.md mentions escalation")
     h.test_result(
-        "CLAUDE.md bullet 205 mentions escalation",
-        "/expert-flow" in claude_md and "escalat" in claude_md.lower(),
-        "missing mention"
+        "CLAUDE.md mentions dormant escalation and Retry with sonnet",
+        "dormant" in claude_md and "Retry with sonnet" in claude_md,
+        "missing dormant or Retry with sonnet"
     )
 
     print()
     print("[Section 10] expert-flow.md Hard stop includes escalation")
-    # Find the Hard stop section using "The scope of the hard stop menu" which appears after the menu items
+    # Find the Hard stop section using "### Hard stop" which appears in the command doc
     hard_stop_start = flow_cmd.find("### Hard stop")
-    hard_stop_end = flow_cmd.find("### Escalation telemetry")
-    hard_stop_section = flow_cmd[hard_stop_start:hard_stop_end] if hard_stop_start != -1 and hard_stop_end != -1 else ""
+    hard_stop_section = flow_cmd[hard_stop_start:hard_stop_start+3000] if hard_stop_start != -1 else ""
     h.test_result(
-        "Hard stop section mentions auto-escalation",
-        "auto" in hard_stop_section.lower() or "escalat" in hard_stop_section.lower(),
-        "missing escalation mention in hard stop"
+        "Hard stop section mentions implementer-shortfall",
+        "implementer-shortfall" in hard_stop_section,
+        "missing implementer-shortfall mention"
     )
     h.test_result(
-        "Hard stop section mentions Retry with sonnet or model-labeled Retry",
-        "sonnet" in hard_stop_section or "model" in hard_stop_section,
-        "missing model options"
+        "Hard stop section mentions Retry with sonnet option",
+        "Retry with sonnet" in hard_stop_section,
+        "missing Retry with sonnet fourth option"
     )
 
     print()

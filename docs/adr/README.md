@@ -83,7 +83,7 @@ to North Star Nick).
   `AskUserQuestion` sites through files (`prompts/flow-reference.md`), state lives on disk and resumes, failures are
   hard stops with no auto-remediation, epics run sequentially; amended by the 2026-10-15 amendment
   (plan checkpoint becomes a report and a conversation, with prose reply and reaction passes); amended by the 2026-10-16 amendment
-  (one automatic Haiku-to-Sonnet escalation for single-unit implement/fix shortfalls, bounded and logged)
+  (a fourth hard-stop option `Retry with sonnet` for manual escalation on single-unit implement/fix shortfalls; automatic escalation is dormant until a turns source exists, and is Sonnet-only, never Opus)
 - [ADR-0024: Precedent Pat — a prompt-the-human digest of past answers](0024-precedent-pat.md) — Status Proposed;
   exercises the ADR-0007 escape hatch with a display-only pipeline role that surfaces past answers and citations beside
   pending questions without suppression; triage never reads it
