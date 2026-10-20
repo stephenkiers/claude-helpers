@@ -730,9 +730,9 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `gate_passed` | boolean | `true` only after the human answers Merge at the merge gate |
 | `gates` | object step → `"continue"` | step gates the human answered Continue; a gated step absent here is (re-)asked |
 | `bases` | object step → SHA | commit SHA at the first spawn of `implement` / `fix`; kept across Retry and `--resume` |
-| `implementer_model` | object step → `null`, `"sonnet"`, `"opus"` | set when escalating to a non-Haiku model; sticky once set (never reset to Haiku); `implement` and `fix` only |
-| `escalations` | object step → integer | count of escalations per step (auto or manual); incremented on every escalation trigger |
-| `stop_source` | object step → `"receipt"`, `"validation"`, `"audit"` | how the step reached FAILED: from the receipt itself, from a validation rule, or from fidelity audit |
+| `implementer_model` | object step → `null`, `"haiku"`, `"sonnet"` | set when escalating to a non-Haiku model; sticky once set (never reset to Haiku); `implement` and `fix` only |
+| `escalations` | object step → integer | count of escalations per step (auto or manual); incremented on every escalation trigger; default: 0 per step on resume if absent |
+| `stop_source` | object step → `"receipt"`, `"validation"`, `"audit"` | how the step reached FAILED: from the receipt itself, from a validation rule, or from fidelity audit; cleared on every `begin` or `retry` |
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |
 | `started`, `updated` | ISO-8601 UTC | `updated` is set on every `WRITE-STATE` |
 | `flags.plan_effort` | `null`, `2`, `3` | forwarded to plan |
@@ -794,7 +794,7 @@ For the current `STEP` with position `<NN>`:
 
 **1. Attempt accounting.** There are two attempts per step. If `failures[STEP] >= 2`: `STOP attempts
 exhausted for <STEP>` — only a human can lift it (by taking over). Otherwise `attempts[STEP]` +1;
-record that value as `k`. Log `begin` for the first spawn of the step or `retry` after a FAILED
+record that value as `k`. Clear `stop_source[STEP]` (so the previous attempt's failure reason does not carry over). Log `begin` for the first spawn of the step or `retry` after a FAILED
 outcome, then `WRITE-STATE`. `attempts` counts spawns; only FAILED outcomes count toward the
 two-attempt cap, tracked in `failures`.
 
@@ -913,7 +913,7 @@ reply, and any failure below is `FAILED` with the stated reason:
    Also append an audit-telemetry line (see "Fidelity audit") with `verdict: "reduced"` and `reason`
    prefixed `receipt:`. This is a cheap orchestrator-side check and runs before the fidelity audit.
 8. For `Decision: OK` only, verify the step's on-disk artifacts with the read-only verifier. This rule runs after rules 1–7 and before the `OK` branch clears `live` or records `PLAN_PATH` / `REVIEW_DIR`:
-   - Run: `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --step <STEP> --receipt "$FLOW_DIR/steps/<NN>-<STEP>.md" --flow-dir "$FLOW_DIR" --since "<live.since>" --repo "<MAIN_WORKTREE>" --branch "<BRANCH>" --base "<bases[STEP]>" --review-dir "<REVIEW_DIR>"` (pass `--repo/--branch/--base` only for implement/fix; pass `--review-dir` only for fix; `--flow-dir` always).
+   - Run: `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --step <STEP> --receipt "$FLOW_DIR/steps/<NN>-<STEP>.md" --flow-dir "$FLOW_DIR" --since "<live.since>" --repo "<MAIN_WORKTREE>" --branch "<BRANCH>" --base "<bases[STEP]>" --review-dir "<REVIEW_DIR>"` (pass `--repo/--branch/--base` only for implement/fix; pass `--review-dir` only for fix; `--flow-dir` always). For an implement/fix step when `implementer_model[STEP]` is set (the escalated re-run), pass `--expect-model <implementer_model[STEP]>` as well.
    - Exit 1 → `FAILED` with the printed reason. The reason is one of: a bare `receipt admits deviation`; `<step> artifacts missing (<what>)`; `plan checkpoint incomplete (briefs: B, asked: Q…)` when fewer questions reached `questions/plan-*.json` than `decisions.md` has decision briefs; `plan checkpoint incomplete (marker files without a readable answered report: <basenames>)` when a marker-named question file has no answers file or cannot be read; `plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated: <detail>; handles: <handles>)` when the checkpoint ledger carries D/W/Q handles but the report checkpoint was not validated (`<detail>` is one of `no relayed marker-named report files`, `flow dir unresolved`, or `marker-named files exist but none is a kind: report checkpoint`, with the `unanswered:` / `unreadable:` suffixes appended when present); `plan artifacts missing (FINAL_PLAN_PATH file does not exist)` when the receipt's `FINAL_PLAN_PATH` file is absent; `plan artifacts missing (plan.md)` when the plan session directory has no `plan.md`; or `review rulings incomplete (needs-you: N, asked: Q…)`. The two checkpoint reasons are parenthesised, and the marker-based suffixes sit inside those parentheses, never as standalone reasons. The suffixes the verifier prints are: `, receipt carries no plan-* markers` / `, receipt carries no review-* markers` when the verifier found zero markers for this step (fails only when briefs or needs-you items exist); `, flow dir unresolved` when markers exist but no flow dir resolves; `, unanswered: <basenames>` when markers name question files with no answers file; and `, unreadable: <basenames>` when a marker's question file cannot be read or parsed.
    - Exit 2 or other → `FAILED` with `artifact check could not run (<first stderr line>)` — a checker problem; Take over is the recovery.
    - Exit 0 → continue to the OK branch.
@@ -933,7 +933,7 @@ Then branch on the validated `Decision`:
   omitted in every other case, so a missing `MERGED` line is `FAILED` `receipt missing MERGED`.)
 - **`FAILED`** (from the receipt, or from any validation rule above) → close the stage
   (`python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STEP> --outcome failure --failure-class other 2>/dev/null || true`; use `--failure-class reduced-run` for rule 7 and a `reduced` audit), clear `live`, increment
-  `failures[STEP]`, set `stop_source[STEP]` to `receipt` (if the receipt's own `Decision: FAILED` passed every validation rule) or `validation` (if any rule 1-8 failed) or `audit` (if fidelity audit returned `reduced`), log `failed`, `WRITE-STATE`, and go to "Hard stop" with the file's `Reason:` line.
+  `failures[STEP]`, set `stop_source[STEP]` to `"receipt"` (if the receipt's own `Decision: FAILED` passed every validation rule), `"validation"` (if any rule 1-8 failed), or `"audit"` (if fidelity audit returned `reduced`; used to track how a step reached FAILED for escalation and telemetry), log `failed`, `WRITE-STATE`, and go to "Hard stop" with the file's `Reason:` line.
 
 ### Orchestrator-written receipts
 
@@ -1352,16 +1352,15 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
    - Print: `▶️ expert-flow #<ISSUE> — escalating <STEP> to sonnet (attempt <k+1> of 2; incomplete: <n> steps)`  (read `<n>` from the receipt's `INCOMPLETE_STEPS:` block, or `0` if absent or `none`).
    - Set `implementer_model[STEP] = "sonnet"` and `escalations[STEP] += 1`.
    - Log `escalated`.
-   - Build the telemetry outcome and attempt lines (Step 10 details below).
-   - `WRITE-STATE`.
-   - Re-run the step through the normal loop with `--implementer-model sonnet --partial-base <bases[STEP]>` added to the spawn args.
+   - `WRITE-STATE` (state must be written before telemetry append, so a crash mid-telemetry never leaves state in doubt).
+   - Build and append the escalation event to `$FLOWS_ROOT/escalations.jsonl` (event: "escalation", trigger: "auto") — see "Escalation telemetry" details below.
+   - Re-run the step through the normal loop. For `implement`: args are `<PLAN_PATH> --implementer-model sonnet --partial-base <bases[STEP]>`. For `fix`: args are `<REVIEW_DIR>/claude-action-plan.md --implementer-model sonnet --partial-base <bases[STEP]>`.
    On `ESCALATE: manual sonnet` or `ESCALATE: none`, fall through to the menu below.
 4. Ask (header `Flow stop`):
    When the eligibility line is `ESCALATE: manual sonnet <reason>` and the failed step is `implement` or `fix`, offer the following options first:
-   - **Retry with sonnet** (or `Retry with sonnet (single unit; plan had <n> units)` if the receipt's `UNITS:` is greater than 1, so the human sees the collapse) — set `implementer_model[STEP] = "sonnet"`, `escalations[STEP] += 1`, log `escalated`, build the telemetry outcome and attempt lines, `WRITE-STATE`, and re-run the step through the normal loop with `--implementer-model sonnet --partial-base <bases[STEP]>` added to the spawn args. Offered only while `failures[STEP] < 2`.
+   - **Retry with sonnet** (or `Retry with sonnet (single unit; plan had <n> units)` if the receipt's `UNITS:` is greater than 1, so the human sees the collapse) — set `implementer_model[STEP] = "sonnet"`, `escalations[STEP] += 1`, log `escalated`, `WRITE-STATE`, build and append the escalation event to `$FLOWS_ROOT/escalations.jsonl` (event: "escalation", trigger: "manual"), and re-run the step through the normal loop. For `implement`: args are `<PLAN_PATH> --implementer-model sonnet --partial-base <bases[STEP]>`. For `fix`: args are `<REVIEW_DIR>/claude-action-plan.md --implementer-model sonnet --partial-base <bases[STEP]>`. Offered only while `failures[STEP] < 2`.
    Then offer the standard menu:
-   - **Retry (<model>)** — where `<model>` is the model from `implementer_model[STEP]` if set, otherwise `haiku`. Re-run the step. Offered only while `failures[STEP] < 2`. After a reduced-run
-    rejection the spawn carries the extra line from "Fidelity audit".
+   - **Retry** — where the model is the model from `implementer_model[STEP]` if set (Sonnet, after a failed escalation), otherwise `haiku` (first attempt). Re-run the step. Offered only while `failures[STEP] < 2`. After a reduced-run rejection the spawn carries the extra line from "Fidelity audit".
    - **Take over** — leave everything as is; log `taken-over` for `<STEP>` (written now, at the moment of
      choice; resume rule 2 reads it as the human's attestation); `status: paused`; if the failed step is
      `merge`, reset `gate_passed: false`; print the stop lines again; close telemetry (`command-end
@@ -1369,28 +1368,33 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
    - **Abort** — `status: failed`, log `aborted`, `command-end --outcome failure --failure-class
      other`; end the turn. Nothing is deleted.
 
-The scope of the hard stop menu is: for implement and fix steps, when a single-unit implementer-shortfall receipt meets all seven escalation conditions, the orchestrator escalates once to Sonnet automatically; otherwise, the flow shows the menu above (which may include the manual `Retry with sonnet` option for failures the automatic path excludes). For all other step failures, the menu is the standard Retry / Take over / Abort. The orchestrator never fixes a failing check, never resolves a rebase conflict itself (conflicts go to the `/expert-rebase` worker, which never pushes), never edits a plan, and the escalation never fixes a failing check. Hard stops clear `live` (the step has finished).
+   **Post-escalation menu** (after an escalated Sonnet retry fails): only **Take over** and **Abort** are offered; no further `Retry` or `Retry with sonnet`. The escalation-once limit is binding at this point.
+
+The scope of the hard stop menu is: for implement and fix steps, when a single-unit implementer-shortfall receipt meets all seven escalation conditions, the orchestrator escalates once to Sonnet automatically; otherwise, the flow shows the menu above (which may include the manual `Retry with sonnet` option for failures the automatic path excludes). When a manual `Retry with sonnet` is chosen and Sonnet fails, only **Take over** and **Abort** are offered (no further Retry); the escalation-once limit is binding. For all other step failures, the menu is the standard Retry / Take over / Abort. The orchestrator never fixes a failing check, never resolves a rebase conflict itself (conflicts go to the `/expert-rebase` worker, which never pushes), never edits a plan, and the escalation never fixes a failing check. Hard stops clear `live` (the step has finished).
 
 ### Escalation telemetry
 
-On every escalation (automatic or manual), before re-running the step, append one line to `$FLOWS_ROOT/escalations.jsonl` with all fields built using `jq -nc` and one `--arg` or `--argjson` per field (never interpolate variables into JSON literals — `jq` owns all escaping). The attempt event is an `event: "attempt"` line appended for every failed implement or fix attempt (not just escalated ones). The outcome event is an `event: "outcome"` line appended after the escalated re-run completes, whether it succeeds or fails. Telemetry is the single authoritative record of each escalation's trigger and result.
+On every escalation (automatic or manual), before re-running the step, append one line to `$FLOWS_ROOT/escalations.jsonl`. Telemetry is the single authoritative record of each escalation's trigger and result. All fields use one `--arg` or `--argjson` per field: never interpolate variables into JSON literal strings — `jq` owns all escaping. Cap each string field at 300 characters and the entire line at 2000 bytes. No event names encode action or outcome: the `event` and `trigger` fields describe the step's state at that record.
 
-**Attempt event** (for every failed implement or fix attempt, escalated or not):
+**Escalation event** (on auto or manual escalation, before the re-run):
+
 ```bash
-jq -nc --arg flow "$(basename "$FLOW_DIR")" --arg issue "<ISSUE>" --arg step "<STEP>" --argjson attempt "<k>" --arg event "attempt" --arg stop_source "<stop_source[STEP]>" --arg from_model "<resolved model from the receipt>" --argjson units "<n from receipt>" --arg turns_used "<from receipt>" --arg turns_exhausted "<from receipt>" --argjson incomplete_count "<count of entries in INCOMPLETE_STEPS or 0>" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{flow:$flow,issue:$issue,step:$step,attempt:$attempt,event:$event,stop_source:$stop_source,from_model:$from_model,units:$units,turns_used:$turns_used,turns_exhausted:$turns_exhausted,incomplete_count:$incomplete_count,ts:$ts}' >> "$FLOWS_ROOT/escalations.jsonl"
+jq -nc --arg flow "$(basename "$FLOW_DIR")" --arg issue "$ISSUE" --arg step "$STEP" --argjson attempt "$k" --arg event "escalation" --arg trigger "<auto|manual>" --arg stop_source "$stop_source_STEP" --arg from_model "$from_model" --arg to_model "sonnet" --argjson units "$units_from_receipt" --arg turns_used "$turns_used_from_receipt" --arg turns_exhausted "$turns_exhausted_from_receipt" --argjson incomplete_steps "$incomplete_steps_array_or_empty" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{flow: $flow, issue: $issue, step: $step, attempt: $attempt, event: $event, trigger: $trigger, stop_source: $stop_source, from_model: $from_model, to_model: $to_model, units: $units, turns_used: $turns_used, turns_exhausted: $turns_exhausted, incomplete_steps: $incomplete_steps, ts: $ts}' >> "$FLOWS_ROOT/escalations.jsonl"
 ```
 
-**Escalation trigger event** (on auto or manual escalation):
-```bash
-jq -nc --arg flow "$(basename "$FLOW_DIR")" --arg issue "<ISSUE>" --arg step "<STEP>" --argjson attempt "<k>" --arg event "escalation" --arg trigger "<auto|manual>" --arg stop_source "<stop_source[STEP]>" --arg from_model "<resolved model from the failed receipt>" --arg to_model "sonnet" --arg failure_class "<from receipt>" --argjson units "<n from receipt>" --arg turns_used "<from receipt>" --arg turns_exhausted "<from receipt>" --argjson incomplete_steps "<array of {id, source} objects from receipt, or empty>" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{flow:$flow,issue:$issue,step:$step,attempt:$attempt,event:$event,trigger:$trigger,stop_source:$stop_source,from_model:$from_model,to_model:$to_model,failure_class:$failure_class,units:$units,turns_used:$turns_used,turns_exhausted:$turns_exhausted,incomplete_steps:$incomplete_steps,ts:$ts}' >> "$FLOWS_ROOT/escalations.jsonl"
-```
+Fields: `flow` (directory basename), `issue`, `step`, `attempt`, `event: "escalation"`, `trigger: "auto" or "manual"`, `stop_source` (how the step failed: `"receipt"`, `"validation"`, or `"audit"`), `from_model`, `to_model: "sonnet"`, `units` (from receipt's `UNITS:` line, or 0), `turns_used` (from receipt, truncated), `turns_exhausted` (from receipt, truncated), `incomplete_steps` (array of `{id, source}` objects from receipt's `INCOMPLETE_STEPS:` block, capped at 50 items; empty array if absent or `none`), `ts`.
 
 **Outcome event** (after the escalated re-run completes, with its receipt):
+
 ```bash
-jq -nc --arg flow "$(basename "$FLOW_DIR")" --arg issue "<ISSUE>" --arg step "<STEP>" --argjson attempt "<k>" --arg event "outcome" --arg outcome "<ok|failed>" --arg partial_work "<keep|reset>" --arg partial_work_reason "<from receipt, truncated to 300 chars>" --argjson discarded_added_files "<array of paths>" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{flow:$flow,issue:$issue,step:$step,attempt:$attempt,event:$event,outcome:$outcome,partial_work:$partial_work,partial_work_reason:$partial_work_reason,discarded_added_files:$discarded_added_files,ts:$ts}' >> "$FLOWS_ROOT/escalations.jsonl"
+jq -nc --arg flow "$(basename "$FLOW_DIR")" --arg issue "$ISSUE" --arg step "$STEP" --argjson attempt "$k_after_rerun" --arg event "outcome" --arg trigger "$trigger_from_escalation_event" --arg outcome "<ok|failed>" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{flow: $flow, issue: $issue, step: $step, attempt: $attempt, event: $event, trigger: $trigger, outcome: $outcome, ts: $ts}' >> "$FLOWS_ROOT/escalations.jsonl"
 ```
 
-The automatic path is inert until the implement-with-haiku receipt carries a known `TURNS_EXHAUSTED` source (currently `unknown` because no reliable turns source exists; see Step 1 probe result), so the manual `Retry with sonnet` option is the live path today.
+Fields: `flow`, `issue`, `step`, `attempt` (the re-run's attempt number), `event: "outcome"`, `trigger` (copied from the escalation event: `"auto"` or `"manual"`), `outcome: "ok" or "failed"`, `ts`.
+
+Note: these events use at-least-once semantics. Write `state.json` (via `WRITE-STATE`) before appending the telemetry events, so a crash mid-telemetry never leaves `state.json` in doubt.
+
+The automatic path is inert until the implement-with-haiku receipt carries a known `TURNS_EXHAUSTED` source. Currently no reliable turns source exists, so the manual `Retry with sonnet` option is the live path today. See https://github.com/stephenkiers/claude-helpers/issues/325 for the automatic path unblocking.
 
 ### Stop lines
 
