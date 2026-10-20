@@ -21,6 +21,7 @@ Run with: python3 tests/test_style_guide.py
 """
 
 import json
+import os
 import re
 
 from _test_harness import REPO_ROOT, Harness
@@ -121,16 +122,27 @@ t("style-guide.json toneNotes is non-empty",
   len(style_guide.get("toneNotes", [])) > 0,
   "toneNotes array is empty")
 
-# Regression guard: literal keyword "instacart" (a previously-leaked employer name) must not reappear in examples or toneNotes — not a general employer-name detector
-examples_text = " ".join(style_guide.get("examples", []))
-toneNotes_text = " ".join(style_guide.get("toneNotes", []))
-t("no 'instacart' literal keyword regression in examples",
-  "instacart" not in examples_text.lower(),
-  "Regression: employer name 'instacart' literal reappeared in examples — must be genericized")
+# Regression guard: private terms (e.g. an employer or client name that once leaked
+# into the shipped defaults) must not reappear in examples or toneNotes. The list is
+# never committed: set STYLE_GUIDE_FORBIDDEN_TERMS (comma-separated) or put one term
+# per line in the gitignored tests/.forbidden-terms. With no list configured the
+# guard is a no-op. This is not a general name detector.
+def _forbidden_terms():
+    terms = [x.strip() for x in os.environ.get("STYLE_GUIDE_FORBIDDEN_TERMS", "").split(",")]
+    local = REPO_ROOT / "tests" / ".forbidden-terms"
+    if local.exists():
+        terms += [line.strip() for line in local.read_text().splitlines()]
+    return sorted({x.lower() for x in terms if x and not x.startswith("#")})
 
-t("no 'instacart' literal keyword regression in toneNotes",
-  "instacart" not in toneNotes_text.lower(),
-  "Regression: employer name 'instacart' literal reappeared in toneNotes — must be genericized")
+examples_text = " ".join(style_guide.get("examples", [])).lower()
+toneNotes_text = " ".join(style_guide.get("toneNotes", [])).lower()
+for _term in _forbidden_terms():
+    t("no forbidden term regression in examples",
+      _term not in examples_text,
+      "Regression: a forbidden private term reappeared in examples — must be genericized")
+    t("no forbidden term regression in toneNotes",
+      _term not in toneNotes_text,
+      "Regression: a forbidden private term reappeared in toneNotes — must be genericized")
 
 # ============================================================================
 # STYLE-GUIDE.JSON.TEMPLATE
