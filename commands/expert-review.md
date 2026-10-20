@@ -326,7 +326,7 @@ cwd (read `${WORKTREE_PATH}/.claude/project.yaml`, `${WORKTREE_PATH}/CLAUDE.md`,
    or carry the already-known literal values forward as text, rather than persisting them to disk.
 
 3. **Read `.claude/project.yaml`** (if present in the project root). Store as `PROJECT_CONTEXT`
-   and pass to all reviewer prompts. In a flow, apply the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers): append the fenced records to `PROJECT_CONTEXT` under a `Human ledger (from /expert-flow)` heading. Key extractions:
+   and pass to all reviewer prompts. In a flow, read the human ledger under the Ledger block of `~/.claude/prompts/flow-reference.md` (Passing it to workers) and pass it separately to Pass 2, the Amalgamator, and the Triage Chief only — never to Pass 1, Contrarian Carl, the Router, scouts, or effort-1/2 pods, preserving blind Pass 1 per ADR-0002. Key extractions:
    - `techStack.language` → primary language (skips detection in step 4)
    - `fragility.*` → Fragile Feynman; `docStyle` → Contract Chris;
      `typeChecker`, `propertyTestingLib` → Tara TypeSafe
@@ -651,6 +651,7 @@ to read:
 - `{PROJECT_ROOT}/.claude/project.yaml` (skip if absent; in PR mode, the setup script copies the
   reviewer's own local project context and quarantines any project files the PR branch tracks, so
   "absent" means the reviewer has no local project-context override)
+- In a flow, the human ledger under a `Human ledger (from /expert-flow)` heading (when present)
 
 It writes `{REVIEW_DIR}/claude-action-plan.md`. It returns:
 
