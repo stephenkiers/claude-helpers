@@ -681,7 +681,11 @@ def main():
     h.test_result("rule 8 lists the marker-without-readable-answer checkpoint failure reason",
                   "plan checkpoint incomplete (marker files without a readable answered report" in rule8)
     h.test_result("rule 8 lists the ledger-handles-without-validated-report checkpoint failure reason",
-                  "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated" in rule8)
+                  "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated: " in rule8
+                  and "; handles: <handles>)" in rule8)
+    h.test_result("rule 8 lists both plan-artifact failure reasons",
+                  "plan artifacts missing (FINAL_PLAN_PATH file does not exist)" in rule8
+                  and "plan artifacts missing (plan.md)" in rule8)
     audit = sub("### Fidelity audit")
     # Wording guard: the audit assertions below pin exact prose. A deliberate reword must update them in the same change.
     h.test_result("audit preamble names rule 8 (verifier exit 0) as preceding the audit",

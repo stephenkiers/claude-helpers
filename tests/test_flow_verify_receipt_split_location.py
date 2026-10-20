@@ -167,8 +167,8 @@ def main():
             write_answer_file(flow_dir / "answers", "plan", seq, 1)
 
         # Decoy in the session dir: a complete question file named like a real marker, with NO
-        # answer beside it. If the verifier resolved markers against the session dir, plan-01.json
-        # would be unanswered and the run would exit 1. A pass proves FLOW_DIR-only resolution.
+        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
+        # of a session-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
         write_question_file(Path(session_dir) / "pending-questions", "plan", 1, 1)
 
         # Create receipt with markers
@@ -200,7 +200,8 @@ Decision: OK
         flow_dir.mkdir()
 
         # Complete decoy question AND answer, in the legacy session layout, NOT in FLOW_DIR.
-        # An answer found in the session dir must not satisfy the FLOW_DIR marker.
+        # Pins that a session-dir answer does not satisfy the FLOW_DIR marker. Like the other decoys,
+        # it only catches a fallback that reads pending-questions/pending-answers.
         write_question_file(Path(session_dir) / "pending-questions", "plan", 1, 1)
         write_answer_file(Path(session_dir) / "pending-answers", "plan", 1, 1)
 
@@ -385,8 +386,9 @@ Decision: OK
         write_question_file(flow_dir / "questions", "review", 1, 1)
         write_answer_file(flow_dir / "answers", "review", 1, 1)
 
-        # Decoy in the review dir: complete question file, NO answer beside it. A fallback to the
-        # review dir would report review-01.json unanswered and exit 1.
+        # Decoy in the review dir: complete question file, NO answer beside it. The decoy sits where
+        # the verifier never reads, so this pins the absence of a review-dir read path. It does not
+        # catch a fallback unless that fallback reads pending-questions.
         write_question_file(Path(review_dir) / "pending-questions", "review", 1, 1)
 
         receipt_path = Path(tmp_home) / "receipt.md"

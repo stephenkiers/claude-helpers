@@ -1862,8 +1862,8 @@ No items."""
         # Create actual question and answer files in FLOW_DIR
         create_flow_questions(flow_dir, "plan", [2])
         # Decoy in the session dir: a complete question file named like the real marker, with NO
-        # answer beside it. If the verifier resolved markers against the session dir, plan-01.json
-        # would be unanswered and the run would exit 1, so a pass shows FLOW_DIR-only resolution.
+        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
+        # of a session-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
         session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
         Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
         Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
@@ -1883,7 +1883,7 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         # Create EMPTY FLOW_DIR
         Path(flow_dir).mkdir(parents=True, exist_ok=True)
-        # Create question files ONLY in session dir (decoy location)
+        # Create question files ONLY in session dir (decoy location; pins the absence of a session-dir read path)
         session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
         Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
         Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
@@ -1911,7 +1911,8 @@ No items."""
         # Create actual question and answer files in FLOW_DIR
         create_flow_questions(flow_dir, "review", [2])
         # Decoy in the review dir: a complete question file named like the real marker, with NO
-        # answer beside it. A fallback to the review dir would report review-01.json unanswered.
+        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
+        # of a review-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
         Path(f"{review_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
         Path(f"{review_dir}/pending-questions/review-01.json").write_text(json.dumps({
             "step": "review", "command": "expert-review", "kind": "report", "summary": None,
@@ -2028,6 +2029,18 @@ No items."""
                       "IndexError" not in stderr and "Traceback" not in stderr and "Traceback" not in stdout
                       and exit_code == 1 and "marker files without a readable answered report" in stdout,
                       f"exit={exit_code}\nstdout={stdout[-300:]}\nstderr={stderr[-500:]}")
+
+    print()
+    print("[Test 86c] Plan: non-dict D1 value with no report marker and briefs satisfied -> fails closed (key-only handle match)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        with open(f"{session_dir}/decisions.md", "a") as f:
+            f.write("\n## Checkpoint ledger\n\n```json\n" + json.dumps({"D1": "oops"}) + "\n```\n")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("non-dict D1 value fails closed: exit 1, ledger reason names D1, no traceback",
+                      exit_code == 1 and "ledger has D/W/Q handles" in stdout and "handles: D1" in stdout
+                      and "Traceback" not in stdout, stdout)
 
     print()
     print("[Test 87] Plan: report receipt with answers file present but question file missing -> fails")
