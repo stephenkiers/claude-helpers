@@ -43,7 +43,7 @@ This relates to [ADR-0005](0005-three-layer-context-cascade.md)'s amended statem
 These are the Proposed values and are named as parameters the thresholds ticket (#300) may amend:
 
 - **Speak only at medium or above.** Low confidence is expressed as silence.
-- **High needs two consistent priors** (or one curated rule, reserved until #297; until then only two consistent priors yield high).
+- **High needs two consistent priors** (or one curated rule, reserved until #297; until then only two consistent priors yield high). External priors count toward the 5-citation ceiling but not toward the high-confidence rule; only user priors marked with confirmed provenance count as independent toward high. Unknown provenance is fail-closed to medium confidence.
 - **Five citations per batch in total; no question exceeds 3 citations.** When citations would exceed five, questions get citations in descending confidence order; ties are broken by input order. A high question cites both of its priors (or is demoted to medium with one citation if only one slot remains). A question that cannot get a citation goes silent. All of this is recorded in the receipt.
 
 **Receipt format (pinned).** The receipt is a single-line header in the output file following this format:

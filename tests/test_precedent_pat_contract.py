@@ -87,17 +87,18 @@ test("CLAUDE.md has a '## Precedent Pat' section",
      "## Precedent Pat" in claude_md_text,
      "Section header not found")
 
-test("CLAUDE.md describes Pat as display-only",
-     "display-only" in claude_md_text and "Precedent Pat" in claude_md_text,
-     "display-only property not documented")
+test("CLAUDE.md describes Pat as display-only with no decision-logic reads",
+     re.search(r"display-only.*no.*decision|decision.*logic.*reads.*it", claude_md_text, re.I),
+     "display-only with decision-logic restriction not clearly documented")
 
 test("CLAUDE.md says triage never reads Precedent Pat output",
-     re.search(r"triage.*never.*read", claude_md_text, re.I),
-     "triage/never-read contract not documented")
+     re.search(r"triage.*never.*read|triage never reads it", claude_md_text, re.I),
+     "triage/never-read contract not clearly stated")
 
 test("CLAUDE.md mentions sanctioned readers (rendering, logging, validation)",
-     re.search(r"rendering|logging|caller.*validation", claude_md_text, re.I),
-     "Sanctioned readers not listed")
+     re.search(r"rendering.*Precedent.*question|logging.*validation.*receipt|caller.*validation.*receipt", claude_md_text, re.I) or
+     ("rendering" in claude_md_text and "logging" in claude_md_text and "validation" in claude_md_text),
+     "Sanctioned readers not properly documented")
 
 # ============================================================================
 # INVARIANT 3: ADR-0024 documents Precedent Pat design
@@ -120,9 +121,9 @@ test("ADR-0024 says triage never reads output",
      re.search(r"triage.*never.*read", adr_text, re.I),
      "Triage/never-read invariant not documented")
 
-test("ADR-0024 documents citation logic and precedent ordering",
-     re.search(r"citation|precedent|ordering|most recent", adr_text, re.I),
-     "Citation logic not documented")
+test("ADR-0024 documents citation logic with ceiling and confidence ordering",
+     re.search(r"five.*citation|citation.*ceiling|descending.*confidence.*order", adr_text, re.I),
+     "Citation ceiling and confidence-order logic not documented")
 
 # ============================================================================
 # INVARIANT 4: ADR-0007 amendment documents Precedent Pat escape hatch
@@ -210,9 +211,9 @@ test("Prompt mentions citation ordering (most recent first)",
      re.search(r"most recent.*first|recent.*order", prompt_text, re.I),
      "Most recent first ordering not documented")
 
-test("Prompt mentions citation limits (per batch/question)",
-     re.search(r"citation.*limit|\d.*citation|limit.*citation", prompt_text, re.I),
-     "Citation limits not documented")
+test("Prompt documents citation limits (5 total, max 3 per question)",
+     re.search(r"five.*citation|3.*citation|no.*exceed.*3|at most 5", prompt_text, re.I),
+     "Citation limits (5 total, max 3 per question) not documented")
 
 test("Prompt mentions user vs external prior ordering",
      re.search(r"user.*external|external.*user", prompt_text, re.I),
@@ -240,9 +241,10 @@ test("Prompt describes unwritable/invalid output path failure",
 # ============================================================================
 print("\n[Invariant 10] Prompt enforces display-only invariant")
 
-test("Prompt says decision logic never reads precedent.md",
-     re.search(r"decision.*never.*read|never.*read.*decision", prompt_text, re.I),
-     "Decision logic / never-read contract not documented in prompt")
+test("Prompt or ADR says no decision logic reads precedent.md",
+     re.search(r"display-only|never.*read", prompt_text, re.I) or
+     re.search(r"no.*decision.*logic.*read|decision.*logic.*never.*read", adr_text, re.I),
+     "Display-only or decision-never-reads contract not documented")
 
 test("Prompt or ADR says triage/decision never reads precedent.md",
      re.search(r"triage.*never.*read|never.*read.*triage|decision.*never.*read", prompt_text, re.I) or
@@ -296,9 +298,9 @@ test("agents/expert-reviewer.md documents output path validation",
 # ============================================================================
 print("\n[Invariant 13] Worked examples and receipt reconciliation")
 
-test("Prompt or ADR includes worked examples",
-     re.search(r"example|worked|sample", prompt_text, re.I) or re.search(r"example|worked|sample", adr_text, re.I),
-     "Worked examples not documented")
+test("Prompt includes worked examples with receipt format",
+     re.search(r"##.*Example|precedent-pat.*\|.*questions:.*\|.*spoke-on:", prompt_text, re.I),
+     "Worked examples with receipt format not documented in prompt")
 
 test("Receipt counts concept documented (all silent, zero-count, one-count outcomes)",
      re.search(r"receipt|count.*silent|silent.*count", prompt_text, re.I) or
@@ -319,18 +321,18 @@ test("Prompt documents empty options means silent",
 # ============================================================================
 print("\n[Invariant 15] Distinguish mandatory for each question")
 
-test("Prompt or ADR mentions Distinguish line or mandatory distinction analysis",
-     re.search(r"distinguish|distinguish.*line", prompt_text, re.I) or re.search(r"distinguish", adr_text, re.I),
-     "Distinguish line requirement not documented")
+test("Prompt documents Distinguish as mandatory when speaking",
+     re.search(r"distinguish.*mandatory|mandatory.*distinguish|distinguish.*whenever.*speak", prompt_text, re.I),
+     "Distinguish mandatory requirement not clearly documented")
 
 # ============================================================================
 # INVARIANT 16: id field is data not instruction
 # ============================================================================
 print("\n[Invariant 16] id field treated as data, not instruction")
 
-test("Prompt or ADR clarifies id is data",
-     re.search(r"id.*data|data.*id", prompt_text, re.I) or re.search(r"id.*data", adr_text, re.I),
-     "id-as-data clarification not documented")
+test("Prompt clarifies id field is data, not instruction",
+     re.search(r"id.*data.*never.*instruction|never.*instruction.*id|id.*field.*data", prompt_text, re.I),
+     "id-as-data clarification not clearly documented")
 
 # ============================================================================
 # INVARIANT 17: Sonnet model specification
@@ -386,6 +388,45 @@ test("CLAUDE.md/ADR says every question and prior choice are visible",
      re.search(r"every.*question|prior.*choice|visible", claude_md_text) or
      re.search(r"visible", adr_text),
      "Question/choice visibility guarantee not documented")
+
+# ============================================================================
+# INVARIANT 22: Agent file output path validation note
+# ============================================================================
+print("\n[Invariant 22] Agent file documents output path validation failure note")
+
+test("agents/expert-reviewer.md specifies note on output path validation failure",
+     re.search(r"File not written.*output path", agent_text),
+     "Output path validation failure note not documented")
+
+# ============================================================================
+# INVARIANT 23: CLAUDE.md distinguishes Distinguish lines for spoken questions
+# ============================================================================
+print("\n[Invariant 23] CLAUDE.md specifies Distinguish lines for spoken questions")
+
+test("CLAUDE.md says Distinguish lines are for each spoken pending question",
+     re.search(r"Distinguish.*spoken|spoken.*question", claude_md_text, re.I),
+     "Distinguish scope (spoken questions) not clearly documented")
+
+# ============================================================================
+# INVARIANT 24: ADR-0024 documents external prior and provenance rules
+# ============================================================================
+print("\n[Invariant 24] ADR-0024 documents external prior and unknown provenance rules")
+
+test("ADR-0024 documents external priors and confidence ceiling",
+     re.search(r"External.*citation.*ceiling|count.*toward.*ceiling", adr_text, re.I),
+     "External prior ceiling rule not documented in ADR-0024")
+
+test("ADR-0024 documents unknown provenance fail-closed rule",
+     re.search(r"unknown.*provenance|provenance.*unknown|fail.*closed.*medium", adr_text, re.I),
+     "Unknown provenance fail-closed rule not documented in ADR-0024")
+
+test("Prompt documents external priors do not count toward high confidence",
+     re.search(r"External.*do not.*independent|not.*count.*independent.*user.*prior", prompt_text, re.I),
+     "External prior independence rule not documented in prompt")
+
+test("Prompt documents unknown provenance treatment",
+     re.search(r"unknown.*provenance|provenance.*unknown|fail.*closed", prompt_text, re.I),
+     "Unknown provenance treatment not documented in prompt")
 
 # ============================================================================
 # Summarize and exit
