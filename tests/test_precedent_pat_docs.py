@@ -177,11 +177,11 @@ if __name__ == "__main__":
     )
 
     # 1.15: Sanctioned prefix check
-    sanctioned_prefixes = "~/.claude/flows/" in precedent_pat_content and "~/.claude/reviews/" in precedent_pat_content
+    sanctioned_prefixes = "~/.claude/plan-sessions/" in precedent_pat_content and "~/.claude/reviews/" in precedent_pat_content
     test_result(
         "Sanctioned prefix list present",
         sanctioned_prefixes,
-        "Found no mention of sanctioned prefixes (~/.claude/flows/ and ~/.claude/reviews/)"
+        "Found no mention of sanctioned prefixes (~/.claude/plan-sessions/ and ~/.claude/reviews/)"
     )
 
     # 1.16: Q heading with ID format

@@ -36,7 +36,7 @@ Write exactly one file, at the given output path, and nothing else: `precedent.m
 
 Validate the output path before writing:
 - The path must end in `/precedent.md` (the exact filename).
-- The path must sit under a sanctioned prefix with no `..` segments. Sanctioned prefixes: `~/.claude/flows/` or `~/.claude/reviews/`. Reject any other prefix or any path containing `..`.
+- The path must sit under a sanctioned prefix with no `..` segments. Sanctioned prefixes: `~/.claude/reviews/` or `~/.claude/plan-sessions/`. Reject any other prefix or any path containing `..`.
 - If validation fails, do not write the file and return the zero-count receipt line with a note that the path was invalid.
 
 ---
