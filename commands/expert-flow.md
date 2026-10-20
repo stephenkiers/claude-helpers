@@ -1,6 +1,6 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
-argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--no-gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
+argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
 allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
@@ -16,9 +16,9 @@ the work happens. The
 orchestrator does **no engineering work itself**: it never edits code, never runs a git mutation
 (beyond the automatic base-stale Rebase and the Start fresh deletion below), never remediates a failure. Every step is the existing command, unchanged except that questions it
 would have asked you with `AskUserQuestion` are written to a file, relayed to you here — with the
-context the step would have printed, never a bare option list — and the answers handed back. Between
-steps, a step gate shows you what was produced and asks Continue / Pause / Abort before anything
-builds on it (`--no-gates` skips that for one run). See `docs/adr/0023-expert-flow.md` for the design and
+context the step would have printed, never a bare option list — and the answers handed back. It stops only
+when a step needs an answer or fails; with `--gates` it also stops after each substantive step
+to show what was produced and ask Continue / Pause / Abort (off by default). See `docs/adr/0023-expert-flow.md` for the design and
 `docs/plans/expert-flow-proposal.md` for the full proposal; the relay mechanism every step follows
 lives in `~/.claude/prompts/flow-reference.md`.
 
@@ -90,10 +90,12 @@ wake-up with no completion notification, re-read the receipt from disk and other
   never a stored default, and never restored from `state.json` on `--resume`.** Never use with
   third-party PR comments or untrusted issue content — the merge gate is the human's chance to review
   the PR and all its feedback before landing.
-- `--no-gates` — skip the step gates: the Continue / Pause / Abort stop after `plan`, `implement`,
-  `review`, `fix`, and `verify` (see "Step gate"). **Per-run only;** like `--auto-merge` it is never
-  a stored default and never restored from `state.json` on `--resume`. Relayed questions are
-  unaffected — a step's own questions are always asked.
+- `--gates` — turn on the step gates: the Continue / Pause / Abort stop after `plan`, `implement`,
+  `review`, `fix`, and `verify` (see "Step gate"). **Off by default:** without it the flow stops
+  only when a step relays a question, at the merge gate, or on a failure. Stored in `state.json`
+  as `flags.step_gates` and restored on `--resume` (it is an opt-in for *more* stops, so restoring
+  it is safe; `--auto-merge`, which removes a stop, stays per-run). Epic child flows inherit it.
+  Relayed questions are unaffected either way — a step's own questions are always asked.
 - `--from <step>` — start a fresh flow at `implement`, `review`, `verify`, `ship`, or `merge` for a
   ticket that is already in flight by hand. `fix` is rejected: it consumes a review's action plan,
   so start at `review` instead. Requires an existing worktree for the issue (matched by `<issue>-`
@@ -121,7 +123,7 @@ or `--retro` combined with any other flag, a `--plan-file` path outside the allo
 ### Argument parsing
 
 ```bash
-PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; NO_GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
+PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
 RESUME_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
 RAW_ARGC=$#
 flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
@@ -148,7 +150,7 @@ while [ $# -gt 0 ]; do
         shift
       fi ;;
     --auto-merge) AUTO_MERGE=yes ;;
-    --no-gates) NO_GATES=yes ;;
+    --gates) GATES=yes ;;
     --epic) EPIC=yes ;;
     --list) LIST=yes ;;
     --*) flag_bad "unknown flag: ${1}" ;;
@@ -163,12 +165,12 @@ case "$FROM_STEP" in ""|implement|review|verify|ship|merge) ;; *) flag_bad "--fr
 [ -n "$PLAN_FILE_FLAG" ] && [ "$FROM_STEP" != implement ] && flag_bad "--plan-file requires --from implement"
 case "$PLAN_FILE_FLAG" in *[!A-Za-z0-9._/~+:=@,-]*) flag_bad "--plan-file path may contain only letters, digits, and . _ / ~ + : = @ , -" ;; esac
 [ -n "$FROM_STEP" ] && [ "$EPIC" = yes ] && flag_bad "--from cannot be combined with --epic"
-[ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
-[ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
-[ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
-[ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$NO_GATES" = yes ]; } && flag_bad "--list takes no other flags"
+[ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
+[ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
+[ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
+[ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ]; } && flag_bad "--list takes no other flags"
 if [ "$LIST" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ]; then
-  if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$NO_GATES" = no ] && [ "$EPIC" = no ]; then
+  if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$GATES" = no ] && [ "$EPIC" = no ]; then
     NO_ARG=yes
   else
     flag_bad "an issue URL or number is required (a bare /expert-flow takes no flags)"
@@ -495,8 +497,9 @@ re-runs the `worktree` step and then hands off like a fresh run. Resume rules, a
    and `plan` do not need it (`plan` runs in the worktree whenever one is recorded).
 8. **Epic flows** resume the current sub-ticket's child flow (see "Epic mode").
 9. **Flags.** `flags.auto_merge` is forced to `false` on resume regardless of the persisted value.
-   `--auto-merge` is per-run only and is never restored. `flags.no_gates` is forced to `false` the
-   same way, so a resumed flow asks every step gate not already recorded as `continue` in `gates`.
+   `--auto-merge` is per-run only and is never restored. `flags.step_gates` is restored from
+   `state.json` as persisted (`--gates` adds stops, so a stored value is safe to keep); when it is
+   true, a resumed flow asks every step gate not already recorded as `continue` in `gates`.
    `gate_passed` is reset to `false` on every
    resume: `--resume` always re-asks the merge gate.
 10. **Telemetry.** If the earlier session left a stage open (status `awaiting`, `running`), close it
@@ -692,7 +695,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
   "bases": {"implement": "abc123def456...", "fix": "abc123def456..."},
   "live": {"step": "review", "attempt": 2, "since": "2026-10-09T11:01:58Z"},
   "started": "2026-10-09T10:15:00Z", "updated": "2026-10-09T11:02:13Z",
-  "flags": {"plan_effort": null, "review_effort": null, "auto_merge": false, "no_gates": false, "from": null},
+  "flags": {"plan_effort": null, "review_effort": null, "auto_merge": false, "step_gates": false, "from": null},
   "epic": null
 }
 ```
@@ -722,7 +725,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `flags.plan_effort` | `null`, `2`, `3` | forwarded to plan |
 | `flags.review_effort` | `null`, `2`–`5` | forwarded to review |
 | `flags.auto_merge` | boolean | per-run; never restored on resume |
-| `flags.no_gates` | boolean | per-run; never restored on resume |
+| `flags.step_gates` | boolean | `--gates` was passed; stored and restored on resume; default `false` |
 | `flags.from` | `null`, `implement`, `review`, `verify`, `ship`, `merge` | the `--from` start point |
 | `epic` | `null` or the epic object | see "Epic mode" |
 
@@ -763,7 +766,7 @@ where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `taken-over`, `hand-
 | 04 | review | `/expert-review --force [--effort <REVIEW_EFFORT>]` | ticket worktree | `REVIEW_DIR:` `CONFIRMED: critical=N high=N medium=N low=N` |
 | 05 | fix | `/implement-with-haiku <REVIEW_DIR>/claude-action-plan.md` | ticket worktree | `ROUND 1`, `ACTION PLAN SOURCE:` — **skipped** when every CONFIRMED count is 0 |
 | 06 | verify | the project's check command (below) | ticket worktree | `CHECK:` `CHECK_EXIT:` (orchestrator-written) |
-| — | step gate | `AskUserQuestion` Continue / Pause / Abort after plan, implement, review, fix, and verify — skipped with `--no-gates` | orchestrator | — |
+| — | step gate | `AskUserQuestion` Continue / Pause / Abort after plan, implement, review, fix, and verify — only with `--gates` (`flags.step_gates`) | orchestrator | — |
 | 07 | ship | `/shipit` | ticket worktree | `PR_URL:` |
 | — | merge gate | `AskUserQuestion` Merge / Hold / Take over — skipped with `--auto-merge` | orchestrator | — |
 | 08 | merge | `/merge-and-cleanup <WORKTREE>` | main worktree | `MERGED: yes` (the line is **omitted** unless the PR merged) |
@@ -1201,9 +1204,11 @@ own — except the merge gate and the step gates, which are the orchestrator's o
 
 The relay carries only the questions a step chose to ask. The step gate is the orchestrator's own
 decision point, like the merge gate: after a step closes `OK`, the human reads what it produced and
-decides whether the next step may build on it. It runs in the loop's `OK` branch after `plan`,
+decides whether the next step may build on it. **It is opt-in** (`--gates`, persisted as
+`flags.step_gates`): by default the flow does not stop between steps, because the human's part is
+answering what a step asks, not confirming that it finished. It runs in the loop's `OK` branch after `plan`,
 `implement`, `review`, `fix`, and `verify` — after that step's `WRITE-STATE`; the gate owns the advance of `STEP` — never after `worktree`, `track`, `ship` (the merge gate follows ship), or `merge`. It is
-skipped when `flags.no_gates` is true or `gates[STEP]` is already `continue`.
+skipped when `flags.step_gates` is false (the default) or `gates[STEP]` is already `continue`.
 
 1. **Print the digest**, read as data and printed verbatim in a fenced block — never summarised,
    never trimmed to a verdict. If `gate_note` is set (a resumed gate), print it first.
@@ -1504,7 +1509,7 @@ sub-ticket's `/expert-plan` is seeded with the sub-issue itself (its body is the
 N+1 starts only after ticket N's `status: done` — its branch is cut from main after N has merged,
 so there is nothing to stack. Record `tickets[n].status` and `epic.current` after every step;
 `--resume <epic-issue>` resumes the current child's current step, applying the resume rules to the
-child's `state.json`. Child flows initialize `flags.no_gates: false` and `flags.auto_merge: false` regardless of the parent's flags (child step gates always run; only `PLAN_EFFORT` is carried).
+child's `state.json`. Child flows initialize `flags.auto_merge: false` regardless of the parent's flags and inherit the parent's `flags.step_gates` (child step gates run only when the epic was started with `--gates`; `PLAN_EFFORT` is carried the same way).
 
 **Not in v1:** `--stack` (start N+1 on top of N while N holds at the merge gate). The proposal
 §9 lists what it needs (`/track-and-start --base`, PR base retargeting on restack). Ship
@@ -1575,11 +1580,12 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-flow
   one-line marker `<WORKTREE>/.claude/flow-run`, and one fixed line appended to the repo's local git
   exclude file (`$(git rev-parse --git-common-dir)/info/exclude`) to keep that marker out of
   commits. Nothing else is written outside `FLOW_DIR`.
-- **No stored defaults for `--auto-merge` or `--no-gates`.** Each is typed every run or not at all,
-  and resume never restores either.
-- **No silent progress past a step.** After `plan`, `implement`, `review`, `fix`, and `verify` the
-  orchestrator prints what the step produced and asks Continue / Pause / Abort (the step gate), and
-  every question a step wrote is printed with the context it carried, never as a bare option list.
+- **No stored default for `--auto-merge`.** It is typed every run or not at all, and resume never
+  restores it. `--gates` is the opposite kind of flag (it adds stops), so it is stored and restored.
+- **Stop for answers, not for confirmation.** Every question a step wrote is printed with the context
+  it carried, never as a bare option list, and the flow waits for the answer. Between steps the
+  flow does not stop unless `--gates` was passed, in which case after `plan`, `implement`, `review`,
+  `fix`, and `verify` the orchestrator prints what the step produced and asks Continue / Pause / Abort.
   The human may change nothing and still reads everything.
 - **No parallel steps.** One subagent at a time; the concurrency cap (20, including this agent)
   belongs to the step's own panel.
