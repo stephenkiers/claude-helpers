@@ -224,6 +224,23 @@ def _validate_reply_excerpt(excerpt: str, reply_file: Path) -> bool:
         return False
 
 
+# Post-tier ledger handle: a D/W/Q letter followed by digits (D1, W1, Q1, ...).
+_LEDGER_HANDLE_RE = re.compile(r"[DWQ]\d+")
+
+
+def _ledger_handles(ledger: dict) -> Dict[str, dict]:
+    """Return {handle: data} for every post-tier handle in the checkpoint ledger.
+
+    A key is a handle only if it is a string matching `_LEDGER_HANDLE_RE` and its value is a
+    dict. Empty or non-matching keys are simply not handles (never an error).
+    """
+    return {
+        key: data
+        for key, data in ledger.items()
+        if isinstance(key, str) and _LEDGER_HANDLE_RE.fullmatch(key) and isinstance(data, dict)
+    }
+
+
 def check_report_checkpoint(
     session_dir: Path, flow_dir: Path, decisions_text: str, attempt: int = 1, relay_count: Optional[RelayCount] = None
 ) -> Optional[str]:
@@ -262,15 +279,16 @@ def check_report_checkpoint(
         return "plan checkpoint incomplete (missing contrarian-carl from seated list)"
 
     # Get all handles from ledger (post-tier handles: D1, W1, Q1, ...)
-    ledger_handles_and_tiers = {}
-    for key, data in ledger.items():
-        if isinstance(data, dict) and key[0] in ("D", "W", "Q"):
-            ledger_handles_and_tiers[key] = data
+    ledger_handles_and_tiers = _ledger_handles(ledger)
     ledger_handles = set(ledger_handles_and_tiers.keys())
 
     # Determine which question files to check: from relay_count.unanswered and answered
     qdir = flow_dir / "questions"
     adir = flow_dir / "answers"
+
+    # NOTE: the marker/ledger handling in this section (and the ledger-handle fail-closed in
+    # check_plan below) is slated for rework under #310 and #308. Keep the fail-closed
+    # behaviour and the existing reason prefixes stable until those issues land.
 
     # Fail closed: a marker-named report whose answers file is absent (or whose question file
     # is unreadable) never provably reached the human, wherever a decoy copy may sit.
@@ -279,16 +297,13 @@ def check_report_checkpoint(
         return f"plan checkpoint incomplete (marker files without a readable answered report: {', '.join(sorted(bad))})"
 
     # Rule 1: Verify we have plan-* question files
+    # (reaching this point means relay_count has no unanswered/unreadable markers)
     marker_files = set()
     if relay_count:
-        # Build the set of marker files from relay_count
-        marker_files.update(relay_count.unanswered)
         # Also need to check answered files
         if adir.exists():
             answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
             for answer_file in answer_files:
-                if answer_file.name in relay_count.unanswered:
-                    continue
                 # Check if this file has an attempt matching our attempt
                 try:
                     adata = json.loads(answer_file.read_text(encoding="utf-8"))
@@ -820,7 +835,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
 
     # Check that plan.md exists in the session directory
     plan_session_file = session_dir / "plan.md"
-    if not plan_session_file.exists():
+    if not plan_session_file.is_file():
         return "plan artifacts missing (plan.md)"
 
     # Checkpoint completeness: every decision brief in decisions.md must have been put to the
@@ -853,13 +868,24 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
 
     # Fail closed: if ledger carries D/W/Q handles but we didn't take the report branch,
     # or if unreadable is non-empty in the legacy branch.
+    # NOTE: this ledger-handle fail-closed is slated for rework under #310 and #308; keep the
+    # "plan checkpoint incomplete (" reason prefix stable until those issues land.
     ledger = schema.extract_ledger_json(decisions_text)
     if ledger:
         # Check if ledger has D/W/Q handles (post-tier handles)
-        ledger_handles = {key for key in ledger.keys() if isinstance(key, str) and key[0] in ("D", "W", "Q")}
+        ledger_handles = set(_ledger_handles(ledger).keys())
         if ledger_handles:
-            # If ledger has handles but we didn't validate via report checkpoint, fail closed
-            return "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated)"
+            # Ledger has handles but we didn't validate via report checkpoint, fail closed.
+            # Say which situation applies so the reason is actionable.
+            handles_txt = ", ".join(sorted(ledger_handles))
+            if relay_count.markers > 0:
+                detail = "marker-named files exist but none is a kind: report checkpoint"
+            else:
+                detail = "no relayed marker-named report files"
+            return (
+                f"plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated: "
+                f"{detail}; handles: {handles_txt})"
+            )
 
     # Legacy per-question rule (fail closed if unreadable files present)
     briefs = count_briefs(decisions_text)
