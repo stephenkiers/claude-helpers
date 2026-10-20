@@ -1341,12 +1341,18 @@ def _count_doing_it_items(action_plan: str) -> int:
 def parse_receipt_field(receipt: str, field_name: str) -> Optional[str]:
     """Parse a single receipt field (e.g., IMPLEMENTER_MODEL, FAILURE_CLASS).
 
-    Returns the value of the last matching line, or None if not found.
+    Searches for field_name in the header block (fields before the first blank line
+    or <!-- step-end --> marker). Returns the value of the last matching line, or None
+    if not found.
     """
+    result = None
     for line in receipt.split("\n"):
+        # Stop at blank line or step-end marker
+        if not line.strip() or "<!-- step-end -->" in line:
+            break
         if line.startswith(f"{field_name}:"):
-            return line.split(":", 1)[1].strip()
-    return None
+            result = line.split(":", 1)[1].strip()
+    return result
 
 
 def parse_discarded_files_block(receipt: str) -> List[str]:
@@ -1380,10 +1386,24 @@ def parse_discarded_files_block(receipt: str) -> List[str]:
 def check_discarded_files(repo: str, branch: str, discarded_files: List[str]) -> Optional[str]:
     """Check that discarded files are absent from the branch via git ls-tree.
 
-    Returns error reason if any files are present, None if all are absent.
+    Requires repo and branch to be non-empty. Rejects absolute paths and .. components.
+    Returns error reason if any files are present or if validation fails, None if all are absent.
     """
     if not discarded_files:
         return None
+
+    # Validate that repo and branch are provided
+    if not repo or not branch:
+        return "discarded files check requires --repo and --branch"
+
+    # Validate each file path
+    for file_path in discarded_files:
+        # Reject absolute paths
+        if file_path.startswith("/"):
+            return f"discarded files check: absolute path not allowed ({file_path})"
+        # Reject .. components
+        if ".." in file_path:
+            return f"discarded files check: .. component not allowed ({file_path})"
 
     present_files = []
     for file_path in discarded_files:
@@ -1397,11 +1417,15 @@ def check_discarded_files(repo: str, branch: str, discarded_files: List[str]) ->
             # If exit code is 0 and there's output, the file exists
             if result.returncode == 0 and result.stdout.strip():
                 present_files.append(file_path)
+            # On non-zero exit or other git errors, fail closed
+            elif result.returncode != 0 and result.returncode != 128:
+                # 128 typically means "not found", which is OK
+                return f"git operation failed checking {file_path}: {result.stderr.strip()}"
         except subprocess.TimeoutExpired:
-            error(f"Git operation timed out checking {file_path}")
-        except Exception:
-            # On any other error, treat as absent (fail open for discarded files check)
-            pass
+            return f"git operation timed out checking {file_path}"
+        except Exception as e:
+            # Fail closed: any other error is treated as a check failure
+            return f"git operation error checking {file_path}: {e}"
 
     if present_files:
         return f"discarded files still present ({', '.join(present_files)})"
@@ -1451,7 +1475,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--implementer-model-state",
-        choices=["unset", "sonnet", "opus"],
+        choices=["unset", "sonnet"],
         help="Current implementer model state",
     )
     parser.add_argument(
@@ -1522,8 +1546,8 @@ def main() -> None:
             print("ESCALATE: auto sonnet")
             sys.exit(0)
 
-        # Check manual path eligibility
-        if args.failures < 2 and implementer_model == "haiku":
+        # Check manual path eligibility (once-per-step: escalations must be 0)
+        if args.escalations == 0 and args.failures < 2 and implementer_model == "haiku":
             # Manual escalation applicable, determine reason
             if args.stop_source != "receipt":
                 print(f"ESCALATE: manual sonnet stop-source {args.stop_source}")
@@ -1549,16 +1573,16 @@ def main() -> None:
                 sys.exit(0)
 
         # None path
-        reason = None
-        if args.escalations >= 1:
-            reason = "escalations-spent"
-        elif args.failures >= 2:
-            reason = "failures-at-cap"
+        none_reason: Optional[str] = None
+        if args.escalations is not None and args.escalations >= 1:
+            none_reason = "escalations-spent"
+        elif args.failures is not None and args.failures >= 2:
+            none_reason = "failures-at-cap"
         elif implementer_model not in [None, "haiku"]:
-            reason = "model-not-haiku"
+            none_reason = "model-not-haiku"
 
-        if reason:
-            print(f"ESCALATE: none {reason}")
+        if none_reason:
+            print(f"ESCALATE: none {none_reason}")
         else:
             print("ESCALATE: none")
         sys.exit(0)
@@ -1575,12 +1599,18 @@ def main() -> None:
             sys.exit(1)
 
         # Parse receipt fields
-        implementer_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL")
+        receipt_impl_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL")
 
-        # Check model match
-        if implementer_model != args.expect_model:
-            print(f"implementer model mismatch (expected {args.expect_model}, receipt {implementer_model})")
-            sys.exit(1)
+        # Rule 8: For escalated receipts (escalations > 0), validate model match is required
+        if args.escalations is not None and args.escalations > 0:
+            if receipt_impl_model != args.expect_model:
+                print(f"implementer model mismatch: escalated receipt expected {args.expect_model}, got {receipt_impl_model}")
+                sys.exit(1)
+        else:
+            # Check model match (standard case)
+            if receipt_impl_model != args.expect_model:
+                print(f"implementer model mismatch (expected {args.expect_model}, receipt {receipt_impl_model})")
+                sys.exit(1)
 
         # Check discarded files (requires both repo and branch)
         if args.repo and args.branch:

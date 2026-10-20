@@ -639,6 +639,298 @@ Decision: OK
         )
 
     print()
+    print("[Test 20] DISCARDED_ADDED_FILES: template format (  - path)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        repo_path = f"{tmp_home}/repo"
+        create_git_repo(repo_path)
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True
+        ).stdout.strip()
+
+        receipt_path = f"{tmp_home}/receipt.md"
+        # Use verbatim template format with two spaces before dash
+        receipt = """IMPLEMENTER_MODEL: sonnet
+DISCARDED_ADDED_FILES:
+  - discarded.txt
+ROUND 1
+Decision: OK
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            escalation=False,
+            expect_model="sonnet",
+            repo=repo_path,
+            branch="HEAD",
+            base=base_sha
+        )
+        h.test_result(
+            "DISCARDED_ADDED_FILES: template format accepted",
+            exit_code == 0,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 21] Eligibility condition flip: stop-source != receipt (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="validation",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "eligibility: stop-source != receipt means no auto",
+            exit_code == 0 and "ESCALATE: manual" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 22] Eligibility condition flip: failure_class != implementer-shortfall (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: other
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "eligibility: failure_class != implementer-shortfall means no auto",
+            exit_code == 0 and "ESCALATE: manual" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 23] Eligibility condition flip: turns_exhausted != no (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 120
+MAX_TURNS: 120
+TURNS_EXHAUSTED: yes
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "eligibility: turns_exhausted != no means no auto",
+            exit_code == 0 and "ESCALATE: manual" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 24] Eligibility condition flip: implementer_model != haiku (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: sonnet
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "eligibility: implementer_model != haiku means no auto",
+            exit_code == 0 and "ESCALATE: none" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 25] Eligibility condition flip: implementer_model_state != unset (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="sonnet"
+        )
+        h.test_result(
+            "eligibility: implementer_model_state != unset means no auto",
+            exit_code == 0 and "ESCALATE: none" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 26] Eligibility condition flip: escalations != 0 (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=1,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "eligibility: escalations != 0 means no auto",
+            exit_code == 0 and "ESCALATE: none" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 27] Eligibility condition flip: failures >= 2 (should fail auto)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+INCOMPLETE_STEPS:
+  - 1: do the thing
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=2,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "eligibility: failures >= 2 means no auto",
+            exit_code == 0 and "ESCALATE: none" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 28] --expect-model with escalations=1: model must match")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        repo_path = f"{tmp_home}/repo"
+        create_git_repo(repo_path)
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True
+        ).stdout.strip()
+
+        # Add one new commit
+        Path(f"{repo_path}/file2.txt").write_text("new")
+        subprocess.run(["git", "add", "file2.txt"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
+
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """IMPLEMENTER_MODEL: sonnet
+ROUND 1
+Decision: OK
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        # Pass escalations=1 and expect-model
+        cmd = [
+            sys.executable,
+            str(VERIFIER),
+            "--step", "implement",
+            "--receipt", receipt_path,
+            "--expect-model", "sonnet",
+            "--escalations", "1",
+            "--repo", repo_path,
+            "--branch", "HEAD",
+            "--base", base_sha,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        h.test_result(
+            "--expect-model with escalations=1: model matches",
+            result.returncode == 0,
+            f"exit={result.returncode}, stdout={result.stdout}"
+        )
+
+    print()
     h.summarize_and_exit()
 
 
