@@ -806,7 +806,7 @@ for DISCARD_PATH in "${REPORTED_DISCARD_PATHS[@]}"; do
   fi
 
   # Validate the path is in the added set (git diff --diff-filter=A)
-  if ! git diff --name-only --literal-pathspecs --diff-filter=A "$START_SHA" -- "$DISCARD_PATH" | grep -Fx "$DISCARD_PATH" >/dev/null 2>&1; then
+  if ! git --literal-pathspecs diff --name-only --diff-filter=A "$START_SHA" -- "$DISCARD_PATH" | grep -Fx "$DISCARD_PATH" >/dev/null 2>&1; then
     INVALID_PATHS+=("$DISCARD_PATH (not in added set)")
     continue
   fi

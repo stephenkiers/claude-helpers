@@ -730,7 +730,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `gate_passed` | boolean | `true` only after the human answers Merge at the merge gate |
 | `gates` | object step → `"continue"` | step gates the human answered Continue; a gated step absent here is (re-)asked |
 | `bases` | object step → SHA | commit SHA at the first spawn of `implement` / `fix`; kept across Retry and `--resume` |
-| `implementer_model` | object step → `null`, `"haiku"`, `"sonnet"` | set when escalating to a non-Haiku model; sticky once set (never reset to Haiku); `implement` and `fix` only |
+| `implementer_model` | object step → `null`, `"sonnet"` | set when escalating to Sonnet; sticky once set; `implement` and `fix` only |
 | `escalations` | object step → integer | count of escalations per step (auto or manual); incremented on every escalation trigger; default: 0 per step on resume if absent |
 | `stop_source` | object step → `"receipt"`, `"validation"`, `"audit"` | how the step reached FAILED: from the receipt itself, from a validation rule, or from fidelity audit; cleared on every `begin` or `retry` |
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |

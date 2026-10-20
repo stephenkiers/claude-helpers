@@ -10,7 +10,6 @@ Covers behaviours from feature #315 action plan:
 Run with: python3 tests/test_flow_verify_receipt_discarded_files.py
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -129,10 +128,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         fx = ImplementFixture(tmp)
-        # Add files to the repo
-        fx.add_file("test.py")
-        fx.add_file("doc.md")
-        # Get current branch and base
+        # Get current branch and base BEFORE adding files
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=fx.repo,
@@ -147,6 +143,13 @@ def main():
             text=True,
             check=True,
         ).stdout.strip()
+
+        # Add a committed file (required for implement step to succeed)
+        fx.add_file("kept.py")
+
+        # Add files but don't commit them (so they're discarded)
+        (fx.repo / "test.py").write_text("content of test.py\n")
+        (fx.repo / "doc.md").write_text("content of doc.md\n")
 
         # F2a: DISCARDED_ADDED_FILES with template shape (two spaces + dash + path)
         fx.write_receipt(
@@ -169,7 +172,6 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         fx = ImplementFixture(tmp)
-        fx.add_file("single.py")
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=fx.repo,
@@ -184,6 +186,12 @@ def main():
             text=True,
             check=True,
         ).stdout.strip()
+
+        # Add a committed file (required for implement step to succeed)
+        fx.add_file("kept.py")
+
+        # Add file but don't commit it (so it's discarded)
+        (fx.repo / "single.py").write_text("content of single.py\n")
 
         # F2b: DISCARDED_ADDED_FILES with bare shape (just path, no leading spaces/dash)
         # Note: the spec says parser accepts both shapes
@@ -211,7 +219,6 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         fx = ImplementFixture(tmp)
-        fx.add_file("good.py")
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=fx.repo,
@@ -226,6 +233,9 @@ def main():
             text=True,
             check=True,
         ).stdout.strip()
+
+        # Add file after getting base (so we have commits to check)
+        fx.add_file("good.py")
 
         # F16a: Absolute paths should be rejected
         fx.write_receipt(
@@ -247,7 +257,6 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         fx = ImplementFixture(tmp)
-        fx.add_file("good.py")
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=fx.repo,
@@ -262,6 +271,9 @@ def main():
             text=True,
             check=True,
         ).stdout.strip()
+
+        # Add file after getting base (so we have commits to check)
+        fx.add_file("good.py")
 
         # F16b: Paths with .. should be rejected
         fx.write_receipt(
@@ -287,7 +299,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         fx = ImplementFixture(tmp)
-        fx.add_file("file.py")
+        # Get base BEFORE adding files
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=fx.repo,
@@ -302,6 +314,9 @@ def main():
             text=True,
             check=True,
         ).stdout.strip()
+
+        # Add file after getting base
+        fx.add_file("file.py")
 
         # F18a: When a field appears multiple times, last occurrence wins
         # Test with Decision field appearing twice (last one should be used)
@@ -323,7 +338,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         fx = ImplementFixture(tmp)
-        fx.add_file("file.py")
+        # Get base BEFORE adding files
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=fx.repo,
@@ -338,6 +353,9 @@ def main():
             text=True,
             check=True,
         ).stdout.strip()
+
+        # Add file after getting base
+        fx.add_file("file.py")
 
         # F18b: Field parsing should be anchored to the header block
         # (before step-end marker, not after)

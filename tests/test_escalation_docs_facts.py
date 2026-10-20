@@ -39,7 +39,6 @@ def main():
     implement_md = read_file("commands/implement-with-haiku.md")
     if implement_md:
         # Template should show shape with two spaces and dash
-        has_template = "  - " in implement_md and "DISCARDED_ADDED_FILES" in implement_md
         # Look for the actual template in context
         # The template should be in a code block showing example format
         template_pattern = r"DISCARDED_ADDED_FILES:\s*\n\s+- "
@@ -82,7 +81,7 @@ def main():
         )
         h.test_result(
             'F7a: ADR-0023 mentions post-escalation menu "Take over / Abort"',
-            has_takeoverbot,
+            has_takeoverbot and has_post_esc_menu,
             "menu options not clearly mentioned",
         )
     else:

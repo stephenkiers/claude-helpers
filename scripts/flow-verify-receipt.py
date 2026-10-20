@@ -1135,6 +1135,14 @@ def check_implement(
     if count < 1:
         return f"implement artifacts missing (no new commits on {branch} since step began)"
 
+    # Check discarded files (parse from receipt and validate against branch)
+    receipt = read_file(receipt_file)
+    discarded_files = parse_discarded_files_block(receipt)
+    if discarded_files:
+        discard_error = check_discarded_files(repo, branch, discarded_files)
+        if discard_error:
+            return discard_error
+
     return None
 
 

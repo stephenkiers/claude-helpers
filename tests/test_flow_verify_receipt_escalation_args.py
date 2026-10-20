@@ -11,7 +11,6 @@ Covers behaviours from feature #315 action plan:
 Run with: python3 tests/test_flow_verify_receipt_escalation_args.py
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -96,13 +95,14 @@ def main():
             [
                 "Implement summary",
                 "FLOW_DIR: " + str(fx.flow),
-                "Decision: OK",
+                "Decision: FAILED",
+                "FAILURE_CLASS: implementer-shortfall",
                 "<!-- step-end -->",
             ]
         )
         # F20a: --escalation requires --stop-source and --escalations
         rc, out, err = run_verifier(
-            fx, escalation_mode=True
+            fx, escalation_mode=True, failures=0
         )
         # Should fail (exit 1) when required args are missing
         h.test_result(
@@ -117,13 +117,14 @@ def main():
             [
                 "Implement summary",
                 "FLOW_DIR: " + str(fx.flow),
-                "Decision: OK",
+                "Decision: FAILED",
+                "FAILURE_CLASS: implementer-shortfall",
                 "<!-- step-end -->",
             ]
         )
         # F20b: --escalation requires --escalations count
         rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="receipt"
+            fx, escalation_mode=True, stop_source="receipt", failures=0
         )
         h.test_result(
             "F20b: --escalation without --escalations fails",
@@ -143,7 +144,7 @@ def main():
         )
         # F20c: --escalation with all required args succeeds
         rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="receipt", escalations=0
+            fx, escalation_mode=True, stop_source="receipt", escalations=0, failures=0
         )
         h.test_result(
             "F20c: --escalation with valid args succeeds (exit 0)",
@@ -163,7 +164,7 @@ def main():
         )
         # F20d: --stop-source must be one of {receipt, validation, audit}
         rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="invalid", escalations=0
+            fx, escalation_mode=True, stop_source="invalid", escalations=0, failures=0
         )
         h.test_result(
             "F20d: --stop-source with invalid value fails",
@@ -237,7 +238,7 @@ def main():
         # F9a: In escalation mode with --stop-source, the verifier should use it
         # The output should reflect the escalation with the source
         rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="receipt", escalations=0
+            fx, escalation_mode=True, stop_source="receipt", escalations=0, failures=0
         )
         # In escalation mode, should print ESCALATE line
         has_escalate_line = "ESCALATE" in out or "ESCALATE" in err
@@ -257,19 +258,20 @@ def main():
             [
                 "Implement summary",
                 "FLOW_DIR: " + str(fx.flow),
-                "Decision: OK",
+                "Decision: FAILED",
+                "FAILURE_CLASS: implementer-shortfall",
                 "<!-- step-end -->",
             ]
         )
-        # F17a: With --escalations > 0 and --escalation flag, should fail
+        # F17a: With --escalations > 0 the verifier must refuse to escalate again
         # (once-per-step guard: only escalate if escalations == 0)
         rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="receipt", escalations=1
+            fx, escalation_mode=True, stop_source="receipt", escalations=1, failures=0
         )
         h.test_result(
-            "F17a: --escalation with escalations=1 should be rejected (once-per-step)",
-            rc != 0,
-            f"exit code {rc}, should prevent multiple escalations per step",
+            "F17a: --escalation with escalations=1 yields none escalations-spent (once-per-step)",
+            rc == 0 and out.strip() == "ESCALATE: none escalations-spent",
+            f"exit code {rc}, out {out!r}",
         )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -284,7 +286,7 @@ def main():
         )
         # F17b: With --escalations == 0 and --escalation flag, should succeed
         rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="receipt", escalations=0
+            fx, escalation_mode=True, stop_source="receipt", escalations=0, failures=0
         )
         h.test_result(
             "F17b: --escalation with escalations=0 is allowed (first escalation)",
