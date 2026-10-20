@@ -43,7 +43,7 @@ SYNTH = REPO_ROOT / "prompts" / "plan-synthesize-and-check.md"
 STAGE_LINT = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 
 STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
-FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--no-gates", "--from", "--resume", "--list", "--epic"]
+FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--gates", "--from", "--resume", "--list", "--epic"]
 
 # Allowlist for the orchestrator's allowed-tools grants. Bash grants must be read-only
 # git/gh, read/inspection utilities, or the run-metrics script. Matching is done on the
@@ -591,8 +591,9 @@ def main():
                   "**Continue**" in gate and "**Pause**" in gate and "**Abort**" in gate)
     h.test_result("Step gate runs after plan, implement, review, fix, verify and never ship/merge",
                   "`plan`,\n`implement`, `review`, `fix`, and `verify`" in gate and "never after `worktree`" in gate)
-    h.test_result("Step gate is skipped by flags.no_gates and a recorded continue",
-                  "`flags.no_gates` is true" in gate and "`gates[STEP]` is already `continue`" in gate)
+    h.test_result("Step gate is opt-in: skipped unless flags.step_gates, or on a recorded continue",
+                  "`flags.step_gates` is false (the default)" in gate and "`gates[STEP]` is already `continue`" in gate
+                  and "**It is opt-in** (`--gates`" in gate)
     h.test_result("Step gate prints each step's digest",
                   "`decisions.md`" in gate and "claude-action-plan.md" in gate and "git log --oneline <bases[STEP]>..HEAD" in gate)
     h.test_result("Step gate writes the digest to gates/<NN>-<STEP>.md",
@@ -653,13 +654,20 @@ def main():
                   "never re-run — whatever `status` says" in text and "`--resume`" in enclosing_section(text, "**Abort** — set `status: failed`"))
     h.test_result("gate writes status: paused before the Ask",
                   "Before asking: set `status: paused`, log `paused`, `WRITE-STATE`" in gate)
-    h.test_result("flags.no_gates is forced false on resume", "`flags.no_gates` is forced to `false`" in text)
-    h.test_result("state documents gates and flags.no_gates",
+    h.test_result("flags.step_gates is restored on resume; auto_merge still forced false",
+                  "`flags.step_gates` is restored from\n   `state.json`" in text
+                  and "`flags.auto_merge` is forced to `false` on resume" in text)
+    h.test_result("state documents gates and flags.step_gates",
                   re.search(r"^\| `gates` \|", flow_state, re.M) is not None
-                  and re.search(r"^\| `flags\.no_gates` \| boolean \| per-run", flow_state, re.M) is not None)
-    h.test_result("--no-gates is per-run only in Arguments", "--no-gates" in args_sec and "Per-run only" in args_sec)
-    h.test_result("--no-gates is rejected with --resume/--abandon/--retro/--list",
-                  text.count('|| [ "$NO_GATES" = yes ]') == 4)
+                  and re.search(r"^\| `flags\.step_gates` \| boolean \| `--gates` was passed; stored and restored", flow_state, re.M) is not None)
+    h.test_result("--gates is off by default and stored in Arguments",
+                  "--gates" in args_sec and "**Off by default:**" in args_sec and "restored on `--resume`" in args_sec)
+    h.test_result("--gates is rejected with --resume/--abandon/--retro/--list",
+                  text.count('|| [ "$GATES" = yes ]') == 4)
+    h.test_result("--no-gates is gone from the command",
+                  "no-gates" not in text and "no_gates" not in text and "NO_GATES" not in text)
+    h.test_result("epic children inherit flags.step_gates",
+                  "inherit the parent's `flags.step_gates`" in text)
     h.test_result("Every Exit Path has Pause and Abort at a step gate rows",
                   re.search(r"^\| Pause at a step gate", exit_sec, re.M) is not None
                   and re.search(r"^\| Abort at a step gate", exit_sec, re.M) is not None)
@@ -693,8 +701,11 @@ def main():
                   "reduced run:\nrulings dropped" in review_cmd and "`summary`" in review_cmd and "`review-01`, `review-02`" in review_cmd)
     h.test_result("ADR has the more-human-in-the-loop amendment",
                   "## Amendment (2026-10-14): more human in the loop" in adr and "`--no-gates`" in adr)
-    h.test_result("CLAUDE.md mentions step gates and --no-gates",
-                  "step gate" in CLAUDE_MD.read_text() and "--no-gates" in CLAUDE_MD.read_text())
+    h.test_result("ADR has the step-gates-opt-in amendment",
+                  "## Amendment (2026-10-16, third): step gates are opt-in" in adr and "`flags.step_gates`" in adr)
+    h.test_result("CLAUDE.md mentions step gates and --gates as opt-in",
+                  "step gate" in CLAUDE_MD.read_text() and "`--gates`" in CLAUDE_MD.read_text()
+                  and "--no-gates" not in CLAUDE_MD.read_text())
 
     print()
     print("[F1] Answers-file jq gate fixture tests")
