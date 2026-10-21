@@ -313,7 +313,7 @@ def _step_floor(flow_dir: Optional[Path], step: str, since: float) -> Tuple[floa
     for line in log_content.split("\n"):
         line = line.rstrip()
         # Pattern: timestamp (ISO-8601) followed by step and "begin"
-        match = re.match(rf"^(\S+)\s+{re.escape(step)}\s+begin$", line)
+        match = re.match(rf"^(\S+) {re.escape(step)} begin$", line)
         if match:
             iso_str = match.group(1)
             try:
@@ -1307,7 +1307,14 @@ def count_relayed_questions(
             # Out of scope: not current attempt and not explicitly reused
             if basename in awaiting_basenames:
                 # awaiting-answers marker names a file from a different attempt
-                out_of_attempt.append(basename)
+                # Check if it has answers before classifying
+                answers_file = adir / basename if adir.exists() else None
+                if answers_file is not None and answers_file.is_file():
+                    # Has answers but out of attempt
+                    out_of_attempt.append(basename)
+                else:
+                    # No answers: is unanswered regardless of attempt
+                    unanswered.append(basename)
             continue
 
         # File is selected. Check for answers file.

@@ -513,6 +513,29 @@ def main():
         h.test_result("Test A15", exit_code == 1 and "unanswered" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
+    # Test A16: awaiting-answers marker on unanswered out-of-attempt file
+    # (Finding 2 regression: should be classified as unanswered, not out-of-attempt)
+    print("[Test A16] awaiting-answers on unanswered attempt:1 file under ATTEMPT:2")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        tmp_path = Path(tmp)
+
+        create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
+        # NO answers file for this attempt:1 file
+
+        plan_dir = tmp_path / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+
+        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 2\n<!-- awaiting-answers: questions/plan-01.json -->\n**Brief B1**"
+        since = iso_timestamp(time.time())
+
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
+        # Should fail with unanswered, not out-of-attempt (because the file has no answers)
+        h.test_result("Test A16", exit_code == 1 and "unanswered" in stdout and "out-of-attempt" not in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
+
     h.summarize_and_exit()
 
 
