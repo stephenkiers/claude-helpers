@@ -51,6 +51,7 @@ LEDGER_GRANT_LIST = 'Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*)
 LEDGER_GRANTS = (LEDGER_GRANT_APPEND, LEDGER_GRANT_LIST)
 PANEL_PROMPT = REPO_ROOT / "prompts" / "expert-review-panel.md"
 LEDGER_SPAWN_LINE = "HUMAN_LEDGER: human.jsonl"
+REDO_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)'
 
 STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
 FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--gates", "--from", "--resume", "--list", "--epic"]
@@ -80,6 +81,7 @@ READ_ONLY_BASH = (
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
     r".*flow-verify-receipt\.py['\"]?(?: .*)?",
     r".*flow-ledger\.py['\"]?(?: .*)?",
+    r"python3 \"\$HOME/\.claude/scripts/flow-redo\.py['\"]?(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -849,8 +851,9 @@ def main():
     flow_md = COMMAND.read_text()
     flat = " ".join(flow_md.split())
     fm = frontmatter(flow_md)
-    h.test_result("allowed-tools grants flow-ledger.py append and list only (no mark)",
-                  all(g in fm for g in LEDGER_GRANTS) and "flow-ledger.py\" mark" not in fm,
+    h.test_result("allowed-tools grants flow-ledger.py append, list and mark (mark: Redo marks its direction record addressed, #286)",
+                  all(g in fm for g in LEDGER_GRANTS) and "flow-ledger.py\" mark" in fm
+                  and "flow-ledger.py\":*" not in fm,
                   fm)
 
     # Spawn line: every fenced step-spawn block with an ATTEMPT=<k> line carries the ledger line
@@ -983,6 +986,107 @@ def main():
     adr_text = ADR.read_text()
     h.test_result("ADR-0023 has the per-flow human-input ledger amendment",
                   "## Amendment (2026-10-14): per-flow human-input ledger (#287)" in adr_text)
+
+    print()
+    print("[Section 16] Redo with notes (#286)")
+    flow_md = COMMAND.read_text()
+    plan_md = PLAN_CMD.read_text()
+    review_md = REVIEW_CMD.read_text()
+    adr_text = ADR.read_text()
+    claude_text = CLAUDE_MD.read_text()
+
+    # Every assertion below reads only the section it names (scoped by heading or by an anchor
+    # paragraph), so a phrase elsewhere in the doc cannot satisfy it. Anchors are checked first so a
+    # missing anchor fails loudly instead of slicing the wrong text.
+    steps_sec = heading_section(flow_md, "## Steps")
+    state_sec = heading_section(flow_md, "## Flow state")
+    gate_sec = sub_section(flow_md, "### Step gate")
+    redo_note_sec = sub_section(flow_md, "### Redo note")
+    resume_sec = sub_section(flow_md, "### `--resume`")
+    hard_sec = sub_section(flow_md, "### Hard stop")
+    amendment = heading_section(adr_text, "## Amendment (2026-10-20): Redo with notes")
+    exit_start = flow_md.find("**Exit Path table updates.**")
+    exit_end = flow_md.find("### Stop lines")
+    exit_tbl_sec = flow_md[exit_start:exit_end] if exit_start >= 0 and exit_end > exit_start else ""
+    spawn_start = flow_md.find("7. **Spawn:**")
+    spawn_end = flow_md.find("8. **After OK:**")
+    spawn_step = flow_md[spawn_start:spawn_end] if spawn_start >= 0 and spawn_end > spawn_start else ""
+    worked_start = flow_md.find("**Worked example:**")
+    worked_end = flow_md.find("The preamble line is defined", worked_start)
+    worked = flow_md[worked_start:worked_end] if worked_start >= 0 and worked_end > worked_start else ""
+
+    for label, sec in (("Steps", steps_sec), ("Flow state", state_sec), ("Step gate", gate_sec),
+                       ("Redo note", redo_note_sec), ("--resume", resume_sec), ("Hard stop", hard_sec),
+                       ("ADR 2026-10-20 amendment", amendment), ("Exit Path table updates", exit_tbl_sec),
+                       ("redo spawn step 7", spawn_step), ("worked example", worked)):
+        h.test_result(f"section anchor found: {label}", bool(sec.strip()), "anchor missing")
+
+    h.test_result("Redo-able steps line names exactly plan and review",
+                  "Redo-able steps: plan, review." in steps_sec)
+
+    gate_order = [gate_sec.find(f"   - **{opt}**") for opt in ("Continue", "Redo with notes", "Pause", "Abort")]
+    h.test_result("Step gate lists Continue, Redo with notes, Pause, Abort as option bullets in order",
+                  all(i >= 0 for i in gate_order) and gate_order == sorted(gate_order), f"positions={gate_order}")
+    h.test_result("Step gate Redo with notes option names plan and review re-run costs",
+                  'plan: "re-runs the full /expert-plan panel' in gate_sec
+                  and 'review: "re-runs the full /expert-review panel' in gate_sec)
+    h.test_result("Step gate: free text (\"Other\") is a Pause with a note",
+                  'Free text ("Other") is a Pause with a note' in gate_sec)
+
+    h.test_result("Redo note question offers the Cancel redo option",
+                  "Options: `Cancel redo` and `Pause`." in redo_note_sec)
+    h.test_result("Redo note gate entry: Cancel redo re-asks the gate",
+                  "On the gate entry, **Cancel redo** re-asks the gate" in redo_note_sec)
+
+    h.test_result("state table has a redos row",
+                  "| `redos` |" in state_sec)
+    h.test_result("state example shows \"redos\": {}",
+                  '"redos": {}' in state_sec)
+    h.test_result("--resume TSV reads redos with the absent-means-empty fallback",
+                  "(.redos // {}|tostring)" in resume_sec)
+    h.test_result("redo log event format is documented in the Flow state section",
+                  "is logged as `<STEP> redo attempt=<k> redos=<n> note_chars=<kept_len>`" in state_sec)
+
+    h.test_result("worked example fences the note in <<<NOTE and NOTE>>> lines",
+                  "<<<NOTE\n" in worked and "\nNOTE>>>\n" in worked)
+    i_ledger = spawn_step.find("`HUMAN_LEDGER` line")
+    i_note = spawn_step.find("`HUMAN_NOTE` block")
+    h.test_result("redo spawn places the HUMAN_NOTE block after the HUMAN_LEDGER line",
+                  i_ledger >= 0 and i_note >= 0 and i_ledger < i_note, f"ledger={i_ledger}, note={i_note}")
+    h.test_result("redo spawn carries no PRIOR_ANSWERS lines (initial spawn)",
+                  "Initial redo spawns carry no `PRIOR_ANSWERS` lines" in spawn_step)
+
+    h.test_result("Hard stop offers Keep previous attempt (Recommended) first",
+                  "**Keep previous attempt (Recommended) — offered first.**" in hard_sec)
+
+    h.test_result("Exit Path table has a Redo launched row",
+                  re.search(r"^\| Redo launched \(at any point after spawn\)", exit_tbl_sec, re.M) is not None)
+    h.test_result("Exit Path table has a Redo cancelled or paused row for the gate entry",
+                  re.search(r"^\| Redo cancelled or paused at the Redo note question, gate entry", exit_tbl_sec, re.M)
+                  is not None)
+    h.test_result("Exit Path table has a Keep previous attempt row",
+                  re.search(r"^\| Keep previous attempt \(Hard stop or resume\)", exit_tbl_sec, re.M) is not None)
+
+    h.test_result("allowed-tools grants flow-redo.py",
+                  REDO_GRANT in frontmatter(flow_md))
+
+    h.test_result("expert-plan reads HUMAN_NOTE into context.md under the redo heading",
+                  bool(paragraphs_with(plan_md, "`HUMAN_NOTE` block", "`context.md`"))
+                  and "## Human direction for this redo" in plan_md)
+    h.test_result("expert-review keeps HUMAN_NOTE out of PROJECT_CONTEXT (blind Pass 1, ADR-0002)",
+                  bool(paragraphs_with(review_md, "`HUMAN_NOTE` block", "do NOT add it to `PROJECT_CONTEXT`", "blind Pass 1"))
+                  and "## Human direction for this redo (from /expert-flow)" not in review_md)
+
+    h.test_result("ADR amendment states the six-attempt ceiling",
+                  "six attempts" in amendment)
+    h.test_result("ADR amendment states the decision-point count stays six",
+                  "decision-point" in amendment and "six" in amendment)
+
+    bullet_start = claude_text.find("- `/expert-flow`")
+    bullet_end = claude_text.find("\n- ", bullet_start + 1)
+    flow_bullet = claude_text[bullet_start:bullet_end] if bullet_start >= 0 and bullet_end > bullet_start else ""
+    h.test_result("CLAUDE.md /expert-flow bullet mentions Redo with notes",
+                  "Redo with notes" in flow_bullet)
 
     print()
     h.summarize_and_exit()
