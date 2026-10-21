@@ -727,6 +727,7 @@ def main():
                   "plan artifacts missing (FINAL_PLAN_PATH file does not exist)" in rule8
                   and "plan artifacts missing (plan.md)" in rule8)
     audit = sub("### Fidelity audit")
+<<<<<<< HEAD
     # Wording guard: the audit assertions below pin exact prose. A deliberate reword must update them in the same change.
     h.test_result("audit preamble names rule 8 (verifier exit 0) as preceding the audit",
                   "rule 8's" in audit.lower() and "flow-verify-receipt.py" in audit and "exits 0" in audit)
@@ -742,6 +743,12 @@ def main():
     h.test_result("audit keeps wording checks (not asked, defaults adopted, reduced run, a ruling was made for the human)",
                   "not asked" in audit and "defaults adopted" in audit and "reduced run" in audit and
                   "a ruling was made for the human" in audit)
+=======
+    h.test_result("fidelity audit compares briefs/Needs-you items with relayed question files",
+                  "questions/plan-*.json" in audit and "questions/review-*.json" in audit and "no checkpoint questions" in audit)
+    h.test_result("fidelity audit counts question files by attempt and reused-answers markers",
+                  "`attempt` equals the receipt's `ATTEMPT`" in audit and "reused-answers: … -->" in audit)
+>>>>>>> b2d7ee5 (fix verifier suffix selection and stale test expectations for attempt-scoped counting)
     h.test_result("fidelity audit has zero-brief carve-out",
                   "zero `#### Q` headings" in audit and "carries no D/W/Q handles" in audit)
     h.test_result("plan audit line names <FLOW_DIR> before the plan-sessions glob (glob must be present)",

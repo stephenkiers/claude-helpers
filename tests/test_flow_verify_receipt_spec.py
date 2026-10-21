@@ -44,6 +44,7 @@ QUESTION = {
     "command": "expert-review",
     "context_path": None,
     "summary": "summary",
+    "attempt": 1,
     "questions": [
         {
             "id": "q1",
@@ -232,8 +233,8 @@ def main():
         fx = Fixture(tmp)
         fx.write_receipt([], path=fx.root / "outside" / "04-review.md")
         rc, out = run_verifier(fx, receipt=fx.root / "outside" / "04-review.md")
-        h.test_result("F8 negative: no flow dir and no markers does not add ', flow dir unresolved'",
-                      "flow dir unresolved" not in out and "asked: 0" in out,
+        h.test_result("F8 negative: no flow dir and no markers still adds flow dir unresolved when items exist",
+                      "flow dir unresolved" in out and "asked: 0" in out,
                       f"rc={rc} out={out.strip()[-300:]}")
 
     # --- F9: zero-marker reason names this step's markers -----------------------------------

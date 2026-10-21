@@ -206,21 +206,39 @@ def main():
             content = doc_path.read_text()
             # Find the relevant section
             if "plan" in location:
-                # Look for plan fidelity audit around line 966
-                if "fidelity audit" in content and "plan" in content:
-                    # Simple heuristic: check if the counting rule appears near "fidelity"
-                    sections = content.split("fidelity audit")
-                    for section in sections[1:]:  # Check all sections after "fidelity audit" appears
-                        if "plan" in section[:500] and counting_rule_regex.search(section[:500]):
-                            break
+                # Look for the plan audit line starting with "plan: `ls` the glob"
+                if "fidelity audit" in content:
+                    # Find the section after "Fidelity audit" heading
+                    fidelity_start = content.find("### Fidelity audit")
+                    if fidelity_start >= 0:
+                        fidelity_section = content[fidelity_start:]
+                        # Find the line starting with "plan:" in the fidelity audit section
+                        if re.search(r"^plan:\s+`ls`", fidelity_section, re.MULTILINE):
+                            plan_match = re.search(r"^plan:\s+.*?(?=^[a-z]+:|^Write |$)", fidelity_section, re.MULTILINE | re.DOTALL)
+                            if plan_match and counting_rule_regex.search(plan_match.group()):
+                                pass  # Found it
+                            else:
+                                missing_counting_rule.append(f"{location}: counting rule not found")
+                        else:
+                            missing_counting_rule.append(f"{location}: counting rule not found")
                     else:
                         missing_counting_rule.append(f"{location}: counting rule not found")
             elif "review" in location:
-                if "fidelity audit" in content and "review" in content:
-                    sections = content.split("fidelity audit")
-                    for section in sections[1:]:
-                        if "review" in section[:500] and counting_rule_regex.search(section[:500]):
-                            break
+                # Look for the review audit line starting with "review: REVIEW_DIR="
+                if "fidelity audit" in content:
+                    # Find the section after "Fidelity audit" heading
+                    fidelity_start = content.find("### Fidelity audit")
+                    if fidelity_start >= 0:
+                        fidelity_section = content[fidelity_start:]
+                        # Find the line starting with "review:" in the fidelity audit section
+                        if re.search(r"^review:\s+REVIEW_DIR=", fidelity_section, re.MULTILINE):
+                            review_match = re.search(r"^review:\s+.*?(?=^[a-z]+:|^Write |$)", fidelity_section, re.MULTILINE | re.DOTALL)
+                            if review_match and counting_rule_regex.search(review_match.group()):
+                                pass  # Found it
+                            else:
+                                missing_counting_rule.append(f"{location}: counting rule not found")
+                        else:
+                            missing_counting_rule.append(f"{location}: counting rule not found")
                     else:
                         missing_counting_rule.append(f"{location}: counting rule not found")
             elif "Receipt section" in location:

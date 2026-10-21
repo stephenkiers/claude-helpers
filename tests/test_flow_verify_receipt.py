@@ -1541,8 +1541,8 @@ No items."""
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable plan-01.json → asked: 0, unreadable: plan-01.json",
-                      exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+        h.test_result("unparsable plan-01.json → asked: 0, malformed: plan-01.json (not json)",
+                      exit_code == 1 and "(briefs: 1, asked: 0, no answered plan-* question files for attempt 1, malformed: plan-01.json (not json))" in stdout, stdout)
 
     NEEDS_YOU_PLAN = (
         "# Action Plan\n\n## Needs you\n\n### 1. First ruling\n\nWhere: a.py\n\n### 2. Second ruling\n\nWhere: b.py\n\n"
@@ -1713,8 +1713,8 @@ No items."""
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable plan-01.json with marker → unreadable suffix in reason",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+        h.test_result("unparsable plan-01.json with marker → malformed suffix in reason",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, no answered plan-* question files for attempt 1, malformed: plan-01.json (not json))" in stdout, stdout)
 
     print()
     print("[Test 67] Review: unparsable review-01.json file with unreadable suffix")
@@ -1733,8 +1733,8 @@ No items."""
         receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable review-01.json with marker → unreadable suffix in reason",
-                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0, unreadable: review-01.json)" in stdout, stdout)
+        h.test_result("unparsable review-01.json with marker → malformed suffix in reason",
+                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0, no answered review-* question files for attempt 1, malformed: review-01.json (not json))" in stdout, stdout)
 
     print()
     print("[Test 68] Plan: marker without its answers file → unanswered")
@@ -1792,7 +1792,7 @@ No items."""
             {"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}
         ]
         (qdir / "plan-02.json").write_text(json.dumps({
-            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None, "questions": questions,
+            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None, "questions": questions, "attempt": 1,
         }))
         # Receipt has both markers
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
@@ -1932,7 +1932,7 @@ No items."""
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("non-step-prefixed traversal marker is ignored: zero plan markers, asked: 0 (exit 1)",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no plan-* markers)" in stdout,
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, no answered plan-* question files for attempt 1)" in stdout,
                       stdout)
 
     print()

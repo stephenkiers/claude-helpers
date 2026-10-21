@@ -1066,10 +1066,11 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     briefs = count_briefs(decisions_text)
     if relay_count.asked < briefs or relay_count.unanswered or relay_count.unreadable:
         reason = f"{REASON_PLAN_INCOMPLETE} (briefs: {briefs}, asked: {relay_count.asked}"
-        if len(relay_count.files) == 0:
-            reason += SUFFIX_NO_ANSWERED_FMT.format(step="plan", attempt=attempt)
-        if flow_dir is None and relay_count.markers:
+        # Choose suffix based on flow_dir resolution
+        if flow_dir is None and briefs > 0:
             reason += SUFFIX_FLOW_DIR_UNRESOLVED
+        elif len(relay_count.files) == 0:
+            reason += SUFFIX_NO_ANSWERED_FMT.format(step="plan", attempt=attempt)
         if relay_count.unanswered:
             reason += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
         if relay_count.unreadable:
@@ -1137,10 +1138,11 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
     relay_count = count_relayed_questions(flow_dir, "review", receipt, attempt)
     if relay_count.asked < needs_you or relay_count.unanswered:
         reason = f"{REASON_REVIEW_INCOMPLETE} (needs-you: {needs_you}, asked: {relay_count.asked}"
-        if len(relay_count.files) == 0:
-            reason += SUFFIX_NO_ANSWERED_FMT.format(step="review", attempt=attempt)
-        if flow_dir is None and relay_count.markers:
+        # Choose suffix based on flow_dir resolution
+        if flow_dir is None and needs_you > 0:
             reason += SUFFIX_FLOW_DIR_UNRESOLVED
+        elif len(relay_count.files) == 0:
+            reason += SUFFIX_NO_ANSWERED_FMT.format(step="review", attempt=attempt)
         if relay_count.unanswered:
             reason += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
         if relay_count.unreadable:
@@ -1279,6 +1281,10 @@ def count_relayed_questions(
         if problem is not None:
             # Schema invalid
             malformed.append(f"{basename} ({problem})")
+            # Also check if this file has no answers and is named by awaiting-answers marker
+            answers_file = adir / basename if adir.exists() else None
+            if basename in awaiting_basenames and (answers_file is None or not answers_file.is_file()):
+                unanswered.append(basename)
             continue
 
         # Extract attempt field
