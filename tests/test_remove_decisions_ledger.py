@@ -38,6 +38,21 @@ if __name__ == "__main__":
 
     expert_review_file = COMMANDS_DIR / "expert-review.md"
     expert_review_content = expert_review_file.read_text() if expert_review_file.exists() else ""
+    # #287: the human-ledger delivery wiring (human.jsonl, not the removed decisions ledger) uses
+    # these exact phrases. Only these phrases are exempt, not whole lines: the replacement runs
+    # longest-first and case-sensitively, so any other "ledger" wording still fails the check.
+    HUMAN_LEDGER_EXEMPT_PHRASES = [
+        "Ledger block of `~/.claude/prompts/flow-reference.md`",
+        "Human ledger (from /expert-flow)",
+        "HUMAN_LEDGER_BLOCK",
+        "HUMAN_LEDGER",
+        "human ledger",
+        "ledger records",
+        "human.jsonl",
+    ]
+    expert_review_no_human_ledger = expert_review_content
+    for exempt_phrase in sorted(HUMAN_LEDGER_EXEMPT_PHRASES, key=len, reverse=True):
+        expert_review_no_human_ledger = expert_review_no_human_ledger.replace(exempt_phrase, "")
 
     test_result(
         "expert-review.md exists",
@@ -84,7 +99,7 @@ if __name__ == "__main__":
     # 1.6: Cross-run memory explanation should be shortened (mention REVIEW_DIR but not ledger/decisions)
     test_result(
         "Ledger/decisions mention removed from cross-run memory explanation",
-        "ledger" not in expert_review_content.lower() and "DECISIONS_FILE" not in expert_review_content,
+        "ledger" not in expert_review_no_human_ledger.lower() and "DECISIONS_FILE" not in expert_review_content,
         "Found ledger or DECISIONS_FILE reference in cross-run memory section"
     )
 
@@ -406,7 +421,7 @@ if __name__ == "__main__":
         violations = []
         for filename in should_not_be_in:
             if filename == "expert-review.md":
-                content = expert_review_content
+                content = expert_review_no_human_ledger
             elif filename == "expert-framework.md":
                 content = expert_framework_content
             elif filename == "triage.md":
