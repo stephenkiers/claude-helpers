@@ -17,9 +17,11 @@ Run with: python3 tests/test_implement_ledger.py
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -843,6 +845,467 @@ def test_success_event_failure_leaves_run_open():
         sb.close()
 
 
+# --- bounded cross-session locate (#316): --flow-dir/--step derives the attempt start from log.md ---
+
+def _now():
+    return int(time.time())
+
+
+def _iso(epoch):
+    """The shape `date -u +%Y-%m-%dT%H:%M:%SZ` writes into log.md."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _flow(sb, name="flow-316"):
+    """A flow dir under the sandbox HOME (the only place --flow-dir is accepted), with an empty log.md."""
+    d = sb.home / ".claude" / "flows" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "log.md").write_text("")
+    return d
+
+
+def _log(flow, lines):
+    (flow / "log.md").write_text("".join(f"{line}\n" for line in lines))
+
+
+def _rewrite(paths, **fields):
+    """Set each record field in every pointer/tombstone file (JSON); a None value deletes the field."""
+    for p in paths:
+        data = json.loads(p.read_text())
+        for key, value in fields.items():
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
+        p.write_text(json.dumps(data))
+
+
+def _start(sb, run, session, cwd=None):
+    args = ["init", "--scratch", str(run.scratch), "--start-sha", START_SHA, "--run-key", run.rk,
+            "--session-id", session]
+    return sb.run(args, cwd=cwd)
+
+
+def _finished(sb, rk, scratch, session, cwd=None, created=None):
+    """Init, complete every required row, and finish a run (leaves a tombstone); created sets its created_epoch."""
+    run = Run(sb, rk, scratch)
+    init = _start(sb, run, session, cwd)
+    if init.returncode != 0:
+        raise AssertionError(f"init {rk}: {_brief(init)}")
+    run.append(full_rows(run))
+    fin = sb.run(["finish", "--run-key", rk, "--log", str(sb.log), "--state-dir", str(sb.metrics_state)],
+                 session=session, cwd=cwd)
+    if fin.returncode != 0:
+        raise AssertionError(f"finish {rk}: {_brief(fin)}")
+    if created is not None:
+        _rewrite(sb.pointers(rk, "finished"), created_epoch=created)
+    return run
+
+
+def _pointer_only(sb, rk, scratch, session, created=None):
+    """Init only (an unfinished pointer, as a session that never finished leaves it); created sets created_epoch."""
+    run = Run(sb, rk, scratch)
+    init = _start(sb, run, session)
+    if init.returncode != 0:
+        raise AssertionError(f"init {rk}: {_brief(init)}")
+    if created is not None:
+        _rewrite(sb.pointers(rk), created_epoch=created)
+    return run
+
+
+def _locate(sb, flow, step="implement", session="sess-S2", cwd=None):
+    args = ["locate", "--repo", sb.repo_real, "--flow-dir", str(flow), "--step", step]
+    return sb.run(args, session=session, cwd=cwd)
+
+
+def test_cross_session_finished_run_found_with_bound():
+    """Acceptance: S1 finished its run; S2 locates it via --flow-dir/--step (bounded scan reaches the tombstone)."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 30)} implement begin"])
+        s1 = _finished(sb, "run-x-s1", "scratch-x-s1", "sess-S1")
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        out = _out(r)
+        problems = []
+        if r.returncode != 0:
+            problems.append(f"locate: {_brief(r)}")
+        if not re.search(rf"RUN_KEY:\s*{re.escape(s1.rk)}\b", out):
+            problems.append(f"S1 RUN_KEY not printed: {_brief(r)}")
+        if "already finished" not in out:
+            problems.append("tombstone not reported as already finished")
+        if "SINCE:" not in out:
+            problems.append("SINCE line not printed")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_same_tombstone_without_bound_is_not_found():
+    """W1: the same cross-session tombstone with no --flow-dir/--step (unbounded) still exits 3."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 30)} implement begin"])
+        _finished(sb, "run-x-unbounded", "scratch-x-unb", "sess-S1")
+        r = sb.run(["locate", "--repo", sb.repo_real], session="sess-S2")
+        return r.returncode == 3, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_retry_with_leftover_pointer_returns_newer_tombstone():
+    """D1: S1's unfinished pointer predates the newest retry line; S2's tombstone postdates it. S2's run wins."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 200)} implement begin", f"{_iso(now - 50)} implement retry"])
+        old = _pointer_only(sb, "run-d1-old", "scratch-d1-old", "sess-S1", created=now - 100)
+        new = _finished(sb, "run-d1-new", "scratch-d1-new", "sess-S2")
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        problems = []
+        if r.returncode != 0 or not _mentions(_out(r), new.scratch):
+            problems.append(f"expected S2's run: {_brief(r)}")
+        if _mentions(_out(r), old.scratch):
+            problems.append("S1's leftover pointer returned ahead of the retry-era tombstone")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_stale_implement_run_does_not_pass_fix_audit():
+    """A tombstone created before the newest fix begin line is outside the bound: fix locate exits 3."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _finished(sb, "run-stale-impl", "scratch-stale-impl", "sess-S1", created=now - 300)
+        _log(flow, [f"{_iso(now - 100)} fix begin"])
+        r = _locate(sb, flow, "fix", session="sess-S2")
+        return r.returncode == 3, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_bounded_locate_filters_by_repo():
+    """F12: a tombstone from another repo inside the window is not returned; exit 3."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        other = sb.other_repo()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        _finished(sb, "run-other-repo", "scratch-other-repo", "sess-S1", cwd=other)
+        landed = sb.pointers("run-other-repo", "finished")
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        problems = []
+        if not landed:
+            problems.append("other-repo tombstone was not written (fixture problem)")
+        if r.returncode != 3:
+            problems.append(f"another repo's tombstone was returned: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_missing_begin_or_retry_line_exits_3_with_reason():
+    """No fix begin|retry line in log.md: exit 3 and stderr names the missing line."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        _finished(sb, "run-no-fix-line", "scratch-no-fix", "sess-S1")
+        r = _locate(sb, flow, "fix", session="sess-S2")
+        ok = r.returncode == 3 and "no begin or retry line for fix" in r.stderr
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_forged_begin_lines_are_ignored_or_fail_closed():
+    """Non-matching lines are ignored (older valid line used); a newest garbage-prefixed line fails closed."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        t0 = _iso(now - 100)
+        _finished(sb, "run-forge", "scratch-forge", "sess-S1")
+        _log(flow, [f"{t0} implement begin",
+                    f"{_iso(now - 1)} implement begin extra",
+                    f" {_iso(now - 1)} implement begin",
+                    f"{_iso(now - 1)} implementx begin",
+                    f"{_iso(now - 1)} fix begin"])
+        ignored = _locate(sb, flow, "implement", session="sess-S2")
+        problems = []
+        if ignored.returncode != 0 or f"SINCE: {t0}" not in _out(ignored):
+            problems.append(f"non-matching lines moved the bound: {_brief(ignored)}")
+        _log(flow, [f"{t0} implement begin", "garbage implement begin"])
+        garbage = _locate(sb, flow, "implement", session="sess-S2")
+        if garbage.returncode != 3:
+            problems.append(f"newest garbage line did not fail closed: {_brief(garbage)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_malformed_timestamp_on_newest_line_fails_closed():
+    """2026-13-45T99:00:00Z as the newest matching line: exit 3, no fallback to the valid older line."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _finished(sb, "run-malformed-ts", "scratch-malformed", "sess-S1")
+        _log(flow, [f"{_iso(now - 100)} implement begin", "2026-13-45T99:00:00Z implement begin"])
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        return r.returncode == 3, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_naive_timestamp_handling():
+    """A naive newest log line exits 3; --since without Z is an argparse error (2); --since with Z is accepted."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _finished(sb, "run-naive", "scratch-naive", "sess-S1")
+        problems = []
+        _log(flow, [f"{_iso(now - 100)} implement begin", "2026-10-19T15:58:14 implement begin"])
+        naive_log = _locate(sb, flow, "implement", session="sess-S2")
+        if naive_log.returncode != 3:
+            problems.append(f"naive newest log line: {_brief(naive_log)}")
+        _log(flow, [f"{_iso(now - 100)} implement begin"])
+        naive_since = sb.run(["locate", "--repo", sb.repo_real, "--since", "2026-10-19T15:58:14"], session="sess-S2")
+        if naive_since.returncode != 2:
+            problems.append(f"naive --since not an argparse error: {_brief(naive_since)}")
+        z_since = sb.run(["locate", "--repo", sb.repo_real, "--since", _iso(now - 60)], session="sess-S2")
+        if z_since.returncode != 0:
+            problems.append(f"Z --since rejected or not found: {_brief(z_since)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_skew_boundary_is_five_seconds():
+    """created_epoch == since - 5 is eligible; since - 6 is not."""
+    now = _now()
+    b = now - 100
+    sb_in = Sandbox()
+    try:
+        flow = _flow(sb_in)
+        _log(flow, [f"{_iso(b)} implement begin"])
+        _finished(sb_in, "run-skew-in", "scratch-skew-in", "sess-S1", created=b - 5)
+        r_in = _locate(sb_in, flow, "implement", session="sess-S2")
+        in_ok = r_in.returncode == 0 and re.search(r"RUN_KEY:\s*run-skew-in\b", _out(r_in)) is not None
+    finally:
+        sb_in.close()
+    sb_out = Sandbox()
+    try:
+        flow = _flow(sb_out)
+        _log(flow, [f"{_iso(b)} implement begin"])
+        _finished(sb_out, "run-skew-out", "scratch-skew-out", "sess-S1", created=b - 6)
+        r_out = _locate(sb_out, flow, "implement", session="sess-S2")
+        out_ok = r_out.returncode == 3
+    finally:
+        sb_out.close()
+    return in_ok and out_ok, f"since-5 eligible={in_ok} (rc={r_in.returncode}); since-6 excluded={out_ok} (rc={r_out.returncode})"
+
+
+def test_run_created_in_begin_second_is_eligible():
+    """Clock truncation: a run created in the same second as the begin line is eligible (5 s skew)."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now)} implement begin"])
+        _finished(sb, "run-same-second", "scratch-same-second", "sess-S1")
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        return r.returncode == 0, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_missing_created_epoch_is_not_eligible():
+    """A pointer with no created_epoch is ineligible even with a fresh mtime; stderr counts it."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        run = _pointer_only(sb, "run-no-created", "scratch-no-created", "sess-S1")
+        _rewrite(sb.pointers(run.rk), created_epoch=None)
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        ok = r.returncode == 3 and "1 without created_epoch" in r.stderr
+        return ok, _brief(r)
+    finally:
+        sb.close()
+
+
+def test_unreadable_tombstone_is_skipped_and_counted():
+    """A corrupt newest tombstone is skipped (older valid run returned) and stderr reports 1 unreadable."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        _finished(sb, "run-unread-bad", "scratch-unread-bad", "sess-S1", created=now - 5)
+        for p in sb.pointers("run-unread-bad", "finished"):
+            p.write_text("{not json")
+        _finished(sb, "run-unread-good", "scratch-unread-good", "sess-S3", created=now - 10)
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        problems = []
+        if r.returncode != 0 or not re.search(r"RUN_KEY:\s*run-unread-good\b", _out(r)):
+            problems.append(f"valid older run not returned: {_brief(r)}")
+        if "1 unreadable" not in r.stderr:
+            problems.append(f"stderr does not count the unreadable record: {r.stderr.strip()[:200]!r}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_bound_argument_validation():
+    """--since with --flow-dir is 2; --flow-dir without --step is 2; --step without --flow-dir is 2;
+    relative, outside-flows, and symlinked-log flow dirs are 3."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        _finished(sb, "run-validation", "scratch-validation", "sess-S1")
+        outside = sb.home / "escape-target"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "log.md").write_text(f"{_iso(now - 60)} implement begin\n")
+        linked = sb.home / ".claude" / "flows" / "flow-linked"
+        linked.mkdir(parents=True, exist_ok=True)
+        (linked / "log.md").symlink_to(flow / "log.md")
+        since = _iso(now - 60)
+        cases = [
+            ("--since with --flow-dir", ["--since", since, "--flow-dir", str(flow), "--step", "implement"], None, 2),
+            ("--flow-dir without --step", ["--flow-dir", str(flow)], None, 2),
+            ("--step without --flow-dir", ["--step", "implement"], None, 2),
+            ("relative --flow-dir", ["--flow-dir", ".claude/flows/flow-316", "--step", "implement"], sb.home, 3),
+            ("flow dir outside HOME/.claude/flows", ["--flow-dir", str(outside), "--step", "implement"], None, 3),
+            ("symlinked log.md", ["--flow-dir", str(linked), "--step", "implement"], None, 3),
+        ]
+        problems = []
+        for label, extra, cwd, want in cases:
+            r = sb.run(["locate", "--repo", sb.repo_real, *extra], session="sess-S2", cwd=cwd)
+            if r.returncode != want:
+                problems.append(f"{label}: want {want}, {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_attempt_start_is_newest_begin_or_retry_in_file_order():
+    """Non-begin events never move the bound: the SINCE line is the newest begin|retry, not a later awaiting/resumed."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _finished(sb, "run-boundary", "scratch-boundary", "sess-S1")
+        t1, t2, t3, t4, t5 = (_iso(now - d) for d in (500, 400, 300, 200, 100))
+        problems = []
+        _log(flow, [f"{t1} implement begin", f"{t2} implement failed", f"{t3} implement retry",
+                    f"{t4} implement awaiting", f"{t5} implement resumed"])
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        if r.returncode != 0 or f"SINCE: {t3}" not in _out(r):
+            problems.append(f"begin/failed/retry/awaiting/resumed: want SINCE {t3}: {_brief(r)}")
+        _log(flow, [f"{t1} implement begin", f"{t2} implement awaiting", f"{t3} implement resumed"])
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        if r.returncode != 0 or f"SINCE: {t1}" not in _out(r):
+            problems.append(f"begin/awaiting/resumed: want SINCE {t1}: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_hardening_cases_fail_closed():
+    """CRLF, NUL, future-dated newest lines, a symlinked flow dir escaping HOME/.claude/flows, and a ../ path: all exit 3."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _finished(sb, "run-hardening", "scratch-hardening", "sess-S1")
+        valid = f"{_iso(now - 100)} implement begin"
+        cases = [
+            ("CRLF newest line", [valid, f"{_iso(now - 50)} implement begin\r"]),
+            ("NUL byte in newest candidate", [valid, f"{_iso(now - 50)}\x00 implement begin"]),
+            ("future-dated newest line", [valid, f"{_iso(now + 3600)} implement begin"]),
+        ]
+        problems = []
+        for label, lines in cases:
+            _log(flow, lines)
+            r = _locate(sb, flow, "implement", session="sess-S2")
+            if r.returncode != 3:
+                problems.append(f"{label}: {_brief(r)}")
+        escape = sb.home / "escape-target"
+        escape.mkdir(parents=True, exist_ok=True)
+        (escape / "log.md").write_text(f"{valid}\n")
+        symlinked = sb.home / ".claude" / "flows" / "flow-symlinked"
+        symlinked.symlink_to(escape, target_is_directory=True)
+        r = _locate(sb, symlinked, "implement", session="sess-S2")
+        if r.returncode != 3:
+            problems.append(f"symlinked flow dir escaping flows: {_brief(r)}")
+        dotdot = sb.home / ".claude" / "flows" / ".." / ".." / "escape-target"
+        r = _locate(sb, dotdot, "implement", session="sess-S2")
+        if r.returncode != 3:
+            problems.append(f"../ path escaping flows: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_resolve_for_check_render_finish_unchanged_by_bound():
+    """_resolve (check, render, finish without a run key) still does not resolve another session's tombstone."""
+    sb = Sandbox()
+    try:
+        now = _now()
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        s1 = _finished(sb, "run-resolve", "scratch-resolve", "sess-S1")
+        fin = sb.run(["finish", "--log", str(sb.log), "--state-dir", str(sb.metrics_state)], session="sess-S2")
+        chk = sb.run(["check"], session="sess-S2")
+        ren = sb.run(["render"], session="sess-S2")
+        problems = []
+        if fin.returncode != 3:
+            problems.append(f"finish without key resolved another session's tombstone: {_brief(fin)}")
+        for label, r in (("check", chk), ("render", ren)):
+            if r.returncode == 0 or _mentions(_out(r), s1.scratch):
+                problems.append(f"{label} without key resolved S1's run: {_brief(r)}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_decision_ask_done_row_is_not_not_run():
+    """D2: a mechanical-class usage-check-final DONE row whose evidence reads DECISION: ask is done, not NOT RUN."""
+    sb = Sandbox()
+    try:
+        run = Run(sb, "run-d2-ask")
+        run.init()
+        evidence = run.evidence("usage-check-final", "state=over-threshold-unreported DECISION: ask\n")
+        run.append(mechanical_rows(run, drop=("usage-check-final",))
+                   + [f"{run.rk} DONE usage-check-final {evidence}"])
+        c = run.check()
+        rendered = _out(run.render())
+        row_lines = [ln for ln in rendered.splitlines() if "usage-check-final" in ln]
+        problems = []
+        if c.returncode != 0:
+            problems.append(f"check blocked on a DONE row with DECISION: ask: {_brief(c)}")
+        if not row_lines:
+            problems.append("render has no usage-check-final line")
+        if any("NOT RUN" in ln for ln in row_lines):
+            problems.append(f"usage-check-final rendered NOT RUN: {row_lines}")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
 TESTS = [
     ("STEP_IDS and SKIP_REASONS match the plan vocabulary", test_vocabulary_pinned),
     ("init writes ledger and pointer", test_init_writes_ledger_and_pointer),
@@ -878,6 +1341,24 @@ TESTS = [
     ("unknown session: finish and locate do not resolve another repo's pointer", test_unknown_session_finish_does_not_resolve_other_repo),
     ("foreign tombstone is not reported as already finished", test_foreign_tombstone_is_not_already_finished),
     ("failed success emission leaves the run open (no FINISHED, no tombstone)", test_success_event_failure_leaves_run_open),
+    ("bounded locate: cross-session finished run is found with --flow-dir/--step", test_cross_session_finished_run_found_with_bound),
+    ("unbounded locate: cross-session tombstone is still not found (W1)", test_same_tombstone_without_bound_is_not_found),
+    ("bounded locate: retry with leftover pointer returns the newer tombstone (D1)", test_retry_with_leftover_pointer_returns_newer_tombstone),
+    ("bounded locate: stale implement run does not pass the fix audit", test_stale_implement_run_does_not_pass_fix_audit),
+    ("bounded locate: another repo's tombstone inside the window is not returned", test_bounded_locate_filters_by_repo),
+    ("bounded locate: missing begin|retry line exits 3 with a reason", test_missing_begin_or_retry_line_exits_3_with_reason),
+    ("bounded locate: forged begin lines ignored or fail closed", test_forged_begin_lines_are_ignored_or_fail_closed),
+    ("bounded locate: malformed timestamp on newest line fails closed", test_malformed_timestamp_on_newest_line_fails_closed),
+    ("bounded locate: naive timestamps (log line exit 3, --since argparse exit 2)", test_naive_timestamp_handling),
+    ("bounded locate: created_epoch skew boundary is 5 s", test_skew_boundary_is_five_seconds),
+    ("bounded locate: run created in the begin second is eligible", test_run_created_in_begin_second_is_eligible),
+    ("bounded locate: pointer without created_epoch is not eligible and is counted", test_missing_created_epoch_is_not_eligible),
+    ("bounded locate: unreadable tombstone is skipped and counted", test_unreadable_tombstone_is_skipped_and_counted),
+    ("bounded locate: --flow-dir/--step/--since validation and flow-dir rules", test_bound_argument_validation),
+    ("bounded locate: attempt start is the newest begin|retry in file order", test_attempt_start_is_newest_begin_or_retry_in_file_order),
+    ("bounded locate: CRLF, NUL, future-dated, escaping symlink, and ../ fail closed", test_hardening_cases_fail_closed),
+    ("check, render, finish without a key still do not resolve another session's tombstone", test_resolve_for_check_render_finish_unchanged_by_bound),
+    ("D2: usage-check-final DONE with DECISION: ask is not NOT RUN", test_decision_ask_done_row_is_not_not_run),
 ]
 
 

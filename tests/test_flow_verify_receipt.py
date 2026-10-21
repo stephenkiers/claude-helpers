@@ -8,11 +8,13 @@ review dirs with checkpoints and action plans, and commit counts for implement/f
 Run with: python3 tests/test_flow_verify_receipt.py
 """
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -153,6 +155,35 @@ def create_git_repo(repo_path: str) -> None:
     Path(f"{repo_path}/file.txt").write_text("initial")
     subprocess.run(["git", "add", "file.txt"], cwd=repo_path, capture_output=True)
     subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_path, capture_output=True)
+
+
+def run_verifier_argv(args: list, env_home: str) -> tuple:
+    """Run the verifier with an exact argv (for modes that take no --since); return (exit_code, stdout, stderr)."""
+    env = os.environ.copy()
+    env["HOME"] = env_home
+    result = subprocess.run([sys.executable, str(VERIFIER), *args], capture_output=True, text=True, env=env)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def iso_z(epoch: float) -> str:
+    """The UTC shape `date -u +%Y-%m-%dT%H:%M:%SZ` writes into log.md."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def load_verifier_module():
+    """Import scripts/flow-verify-receipt.py as a module (for the _parse_iso8601 alias check)."""
+    spec = importlib.util.spec_from_file_location("flow_verify_receipt", VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_flow_log_module():
+    """Import scripts/flow_log.py as a module."""
+    spec = importlib.util.spec_from_file_location("flow_log", REPO_ROOT / "scripts" / "flow_log.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main():
@@ -2055,6 +2086,86 @@ No items."""
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("missing question file with answers present fails",
                       exit_code == 1 and "plan checkpoint incomplete" in stdout, stdout)
+
+    print("[Test 88] --since-from-log with a valid log matches --since with the same logged timestamp")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        repo_path = f"{tmp_home}/repo"
+        create_git_repo(repo_path)
+        base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True).stdout.strip()
+        Path(f"{repo_path}/file2.txt").write_text("new")
+        subprocess.run(["git", "add", "file2.txt"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, "ROUND 1\nDecision: OK\n<!-- step-end -->")
+        ts = iso_z(time.time() - 3600)
+        flow_dir = f"{tmp_home}/.claude/flows/flow-79"
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        Path(f"{flow_dir}/log.md").write_text(f"{ts} implement begin\n")
+        common = ["--step", "implement", "--receipt", receipt_path, "--repo", repo_path, "--branch", "HEAD", "--base", base_sha]
+        by_since = run_verifier_argv([*common, "--since", ts], tmp_home)
+        by_log = run_verifier_argv([*common, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
+        h.test_result("--since with the logged timestamp passes (baseline exit 0)", by_since[0] == 0, by_since[1])
+        h.test_result("--since-from-log gives the same exit and output as --since with the logged timestamp",
+                      by_log[0] == by_since[0] and by_log[1] == by_since[1],
+                      f"since: rc={by_since[0]} out={by_since[1]!r}; from-log: rc={by_log[0]} out={by_log[1]!r}")
+
+    print()
+    print("[Test 89] --since-from-log with no begin or retry line for the step exits 1 with the documented reason")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
+        flow_dir = f"{tmp_home}/.claude/flows/flow-80"
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        Path(f"{flow_dir}/log.md").write_text(f"{iso_z(time.time() - 60)} fix begin\n")
+        exit_code, stdout, stderr = run_verifier_argv(
+            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
+        h.test_result("missing begin|retry line for implement exits 1",
+                      exit_code == 1, f"rc={exit_code} stdout={stdout!r} stderr={stderr!r}")
+        h.test_result("missing line names 'Reason: no begin or retry line for implement'",
+                      "Reason: no begin or retry line for implement" in stdout + stderr,
+                      f"stdout={stdout!r} stderr={stderr!r}")
+
+    print()
+    print("[Test 90] --since-from-log with a malformed newest begin|retry line exits 1")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
+        flow_dir = f"{tmp_home}/.claude/flows/flow-81"
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        Path(f"{flow_dir}/log.md").write_text(f"{iso_z(time.time() - 300)} implement begin\ngarbage implement begin\n")
+        exit_code, stdout, stderr = run_verifier_argv(
+            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
+        h.test_result("malformed newest line exits 1 with the malformed reason (no fallback to the older line)",
+                      exit_code == 1 and "malformed begin or retry line for implement" in stdout + stderr,
+                      f"rc={exit_code} stdout={stdout!r} stderr={stderr!r}")
+
+    print()
+    print("[Test 91] --since and --since-from-log are a required mutually-exclusive pair (neither or both is exit 2)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
+        flow_dir = f"{tmp_home}/.claude/flows/flow-82"
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        Path(f"{flow_dir}/log.md").write_text(f"{iso_z(time.time() - 300)} implement begin\n")
+        neither = run_verifier_argv(["--step", "implement", "--receipt", receipt_path, "--flow-dir", flow_dir], tmp_home)
+        both = run_verifier_argv(["--step", "implement", "--receipt", receipt_path, "--since", iso_z(time.time() - 300),
+                                  "--since-from-log", "--flow-dir", flow_dir], tmp_home)
+        h.test_result("neither --since nor --since-from-log exits 2", neither[0] == 2, f"rc={neither[0]} stderr={neither[2][:200]!r}")
+        h.test_result("both --since and --since-from-log exit 2", both[0] == 2, f"rc={both[0]} stderr={both[2][:200]!r}")
+
+    print()
+    print("[Test 92] _parse_iso8601 is kept as an alias that matches flow_log.parse_iso8601")
+    vf = load_verifier_module()
+    fl = load_flow_log_module()
+    samples = ["2026-10-19T15:58:14Z", "2026-10-19T15:58:14+00:00", "2026-10-19T15:58:14"]
+    same = all(vf._parse_iso8601(s) == fl.parse_iso8601(s) for s in samples)
+    garbage_raises = False
+    try:
+        vf._parse_iso8601("garbage")
+    except ValueError:
+        garbage_raises = True
+    h.test_result("_parse_iso8601 returns the flow_log value for Z, offset, and naive inputs", same)
+    h.test_result("_parse_iso8601 still raises ValueError on garbage", garbage_raises)
 
     h.summarize_and_exit()
 

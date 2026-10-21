@@ -473,8 +473,15 @@ def main():
     h.test_result("Retry after a reduced run adds the extra line",
                   "Previous attempt was rejected as a reduced run" in audit.replace("\n", " ")
                   and "<<<REASON" in audit)
-    h.test_result("ledger render uses --run-key (render has no --repo)",
-                  "implement-ledger.py\" locate --repo" in audit and "render --run-key" in audit)
+    h.test_result("ledger locate passes --flow-dir and --step; render uses --run-key (render has no --repo)",
+                  'locate --repo "<WORKTREE>" --flow-dir "$FLOW_DIR" --step <STEP>' in audit
+                  and "render --run-key" in audit)
+    checklist_lines = text.splitlines()
+    checklist = " ".join(" ".join(checklist_lines[i:i + 4])
+                         for i, ln in enumerate(checklist_lines) if "implement, fix:" in ln)
+    h.test_result("implement, fix checklist: DECISION: ask done row is non-blocking, not NOT RUN (D2)",
+                  "DECISION: ask" in checklist and "NOT RUN" in checklist and "reduced" in checklist
+                  and "over-threshold-unreported" in checklist, checklist[:200])
     h.test_result("--list prints the reduced-runs tally from audits.jsonl",
                   "audits.jsonl" in list_sec and "reduced runs:" in list_sec)
     h.test_result("Arguments documents --retro", "--retro <flow-dir|issue#>" in args_sec)
@@ -676,9 +683,8 @@ def main():
                   bool(take_over_gate) and "also log `taken-over` for `merge`" in take_over_gate.group(0))
     h.test_result("ADR-0023 second 2026-10-16 amendment keys hand-finished to taken-over",
                   "`taken-over`" in " ".join(adr.split()).split("## Amendment (2026-10-16, second)")[-1])
-    h.test_result("resume: --since reads the newest begin or retry line, failing validation if neither exists",
-                  'grep -E "^[^ ]+ <STEP> (begin|retry)$" "$FLOW_DIR/log.md" | tail -n 1' in resume
-                  and "no begin or retry line for <STEP>" in resume)
+    h.test_result("resume: rule 8 derives --since with --since-from-log, failing validation if no begin or retry line exists",
+                  "--since-from-log" in resume and "no begin or retry line for <STEP>" in resume)
     h.test_result("resume: a resume-time validation failure does not increment failures[STEP]",
                   "**Do not increment `failures[STEP]`** — no attempt ran on resume" in resume)
     h.test_result("ADR-0023 records the 2026-10-16 second amendment (hand-finished is human-attested)",
