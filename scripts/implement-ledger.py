@@ -428,9 +428,12 @@ def _scan_since(
     """One bounded, repo-gated scan over pointers and tombstones. Returns (found, unreadable, no_epoch).
 
     A record is eligible only when its repo equals repo, its created_epoch is an int or float (not a
-    bool), and created_epoch >= since - SINCE_SKEW_SECS. The newest eligible record wins. Session is
-    ignored. unreadable counts every unreadable record under root. no_epoch counts records of this repo
-    that lack a numeric created_epoch (the mtime fallback is never used here). repo None yields no match.
+    bool), and created_epoch >= since - SINCE_SKEW_SECS. The newest eligible record wins. Ties on
+    created_epoch are broken by the run key (the file name without its suffix), then by preferring the
+    tombstone over the pointer of the same run key, so the result does not depend on directory order.
+    Session is ignored. unreadable counts every unreadable record under root. no_epoch counts records of
+    this repo that lack a numeric created_epoch (the mtime fallback is never used here). repo None yields
+    no match.
     """
     if repo is None:
         return None, 0, 0
@@ -438,7 +441,7 @@ def _scan_since(
     floor = since - SINCE_SKEW_SECS
     no_epoch = 0
     best: Optional[Tuple[Path, str, Dict[str, Any]]] = None
-    best_epoch = 0.0
+    best_key: Optional[Tuple[float, str, bool]] = None
     for path, kind, data in records:
         if data.get("repo") != repo:
             continue
@@ -448,8 +451,9 @@ def _scan_since(
             continue
         if created < floor:
             continue
-        if best is None or created > best_epoch:
-            best, best_epoch = (path, kind, data), float(created)
+        key = (float(created), path.name.rsplit(".", 1)[0], kind == "finished")
+        if best_key is None or key > best_key:
+            best, best_key = (path, kind, data), key
     found = None if best is None else (best[0], best[1] == "finished", best[2])
     return found, len(unreadable), no_epoch
 
@@ -460,8 +464,11 @@ def locate_record(
     repo: Optional[str],
     run_key: Optional[str],
     since: Optional[float] = None,
+    skips: Optional[Dict[str, int]] = None,
 ) -> Optional[Tuple[Path, bool, Dict[str, Any]]]:
     """Find a run's pointer. Returns (path, is_tombstone, data) or None.
+
+    skips, when given and a bound is used, receives the counts "unreadable" and "no_epoch" from the scan.
 
     Resolution contract:
     - run_key given: the exact pointer, or else its tombstone, by name only. The repo filter is NOT
@@ -478,7 +485,10 @@ def locate_record(
       scripts/flow_log.py), so it is always produced by code and never copied by the model.
     """
     if run_key is None and since is not None:
-        found, _unreadable, _no_epoch = _scan_since(root, repo, since)
+        found, unreadable, no_epoch = _scan_since(root, repo, since)
+        if skips is not None:
+            skips["unreadable"] = unreadable
+            skips["no_epoch"] = no_epoch
         return found
     if run_key is not None:
         if not RUN_KEY_RE.match(run_key):
@@ -634,10 +644,11 @@ def cmd_locate(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"NOT FOUND: {e}", file=sys.stderr)
             return 3
-        found, unreadable, no_epoch = _scan_since(root, repo, since_epoch)
-        if unreadable or no_epoch:
+        skips: Dict[str, int] = {}
+        found = locate_record(root, None, repo, None, since=since_epoch, skips=skips)
+        if skips["unreadable"] or skips["no_epoch"]:
             print(
-                f"locate: skipped {unreadable} unreadable, {no_epoch} without created_epoch",
+                f"locate: skipped {skips['unreadable']} unreadable, {skips['no_epoch']} without created_epoch",
                 file=sys.stderr,
             )
     else:

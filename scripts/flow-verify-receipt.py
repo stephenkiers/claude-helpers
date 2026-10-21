@@ -7,8 +7,7 @@ expert-flow Fidelity audit, and `--since-from-log` in the expert-flow resume pat
 Why it matters: a bound that is too early or wrong lets a stale run pass the audit (a false pass that
 masks a skipped step), and a bound that is too late or missing gives a false `ledger unavailable`.
 Design: ADR-0013 (deterministic logic lives in scripts, not prose) and ADR-0023 (the receipt is a claim
-that the Fidelity audit exists to check). The general ADR for deterministic helpers is pending
-(pending (follow-up issue to be filed)).
+that the Fidelity audit exists to check). The general ADR for deterministic helpers is pending (follow-up issue to be filed).
 
 Exit codes:
   0: artifacts OK
@@ -1644,11 +1643,11 @@ def main() -> None:
         if flow_dir_arg is None:
             error("--since-from-log needs --flow-dir (or a receipt under steps/)")
         try:
-            flow_log.validate_flow_dir(str(flow_dir_arg))
+            flow_dir_real = flow_log.validate_flow_dir(str(flow_dir_arg))
         except flow_log.FlowLogError as e:
             error(f"--since-from-log: {e}")
         try:
-            log_ts = flow_log.newest_attempt_start(flow_dir_arg / "log.md", args.step)
+            log_ts = flow_log.newest_attempt_start(flow_dir_real / "log.md", args.step)
         except flow_log.FlowLogError:
             print(f"Reason: malformed begin or retry line for {args.step}")
             sys.exit(1)

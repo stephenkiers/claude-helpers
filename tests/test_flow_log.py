@@ -162,6 +162,27 @@ def test_nul_byte_in_newest_candidate_raises():
     return _raises_flow_log_error(text), "NUL-bearing newest candidate did not raise"
 
 
+def test_trailing_nul_on_newest_candidate_raises():
+    """A NUL byte after a valid newest begin line (trailing, not mid-token) raises rather than falling back to the older line."""
+    text = f"{_iso(NOW - 2 * 3600)} implement begin\n{_iso(NOW - 30)} implement begin\x00\n"
+    return _raises_flow_log_error(text), "trailing-NUL newest candidate did not raise (fell back to an older line?)"
+
+
+def test_symlinked_log_md_raises():
+    """A log.md that is a symlink to a valid log raises on its own (newest_attempt_start does not rely on validate_flow_dir)."""
+    with tempfile.TemporaryDirectory() as td:
+        target = Path(td) / "real-log.md"
+        target.write_text(f"{_iso(NOW - 60)} implement begin\n")
+        link = Path(td) / "log.md"
+        os.symlink(target, link)
+        raised = False
+        try:
+            fl.newest_attempt_start(link, "implement")
+        except fl.FlowLogError:
+            raised = True
+    return raised, "symlinked log.md was read instead of refused"
+
+
 def test_future_dated_newest_line_raises():
     """A newest line later than now plus the skew allowance raises (fail closed)."""
     text = f"{_iso(NOW - 100)} implement begin\n{_iso(NOW + 3600)} implement begin\n"
@@ -287,6 +308,8 @@ TESTS = [
     ("naive newest line raises", test_naive_newest_line_raises),
     ("CRLF newest line raises", test_crlf_newest_line_raises),
     ("NUL byte in newest candidate raises", test_nul_byte_in_newest_candidate_raises),
+    ("trailing NUL on newest candidate raises, no fallback", test_trailing_nul_on_newest_candidate_raises),
+    ("symlinked log.md raises", test_symlinked_log_md_raises),
     ("future-dated newest line raises", test_future_dated_newest_line_raises),
     ("loose non-matches are ignored", test_loose_non_matches_are_ignored),
     ("parse_iso8601 contract", test_parse_iso8601_contract),

@@ -475,7 +475,11 @@ Resume rules, applied in this order:
      never proves a human finished the step. The receipt is treated as spawned-agent output and is
      validated, never passed unchecked. Run rule 8 with `--since-from-log` instead of `--since`: the verifier
      reads the attempt start from the newest `<STEP> begin` or `<STEP> retry` line in `log.md` itself, so no
-     timestamp is copied.
+     timestamp is copied. Concretely, the resume-path rule-8 command is the `Run:` line of rule 8 below with
+     `--since "<live.since>"` replaced by `--since-from-log` (keep `--flow-dir "$FLOW_DIR"`, `--step <STEP>`,
+     and the `--repo/--branch/--base/--review-dir` flags that apply to the step). For `plan` or `review` the
+     complete command is:
+     `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --step <STEP> --receipt "$FLOW_DIR/steps/<NN>-<STEP>.md" --flow-dir "$FLOW_DIR" --since-from-log`.
      If neither line exists, the validation fails with reason `no begin or retry line for <STEP>`.
      Otherwise run step 5's receipt validation (rules 1–8, with `K` = `attempts[STEP]`; rule 8 uses
      `--since-from-log`, because rule 1 cleared `live`), then, for `plan`, `implement`, `review`, and `fix`,

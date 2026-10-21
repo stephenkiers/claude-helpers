@@ -500,7 +500,9 @@ decides how a receipt reading `OK` reaches its step gate:
 - **`ok`** → the loop validated the receipt; the gate follows as before.
 - **`failed`, `begin`, or `retry`, or no line** → not hand-finished. The receipt is spawned-agent output and is
   validated before its gate, the same as the loop would have done. An empty result is never passed through
-  unchecked. `--since` is the newest `begin` or `retry` line's timestamp; if neither exists the validation fails.
+  unchecked. On the live path `--since` is the newest `begin` or `retry` line's timestamp; on the resume path
+  rule 8 passes `--since-from-log`, which derives the same bound from `log.md` in code (scripts/flow_log.py).
+  If neither line exists the validation fails.
 
 Take over writes `taken-over` at the Hard stop (for the failed step) and at the merge gate (for `merge`). The merge
 gate's Take over is audit only: its step has no step gate, so resume rule 2 never reads it.

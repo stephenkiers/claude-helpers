@@ -1167,6 +1167,39 @@ def test_unreadable_tombstone_is_skipped_and_counted():
         sb.close()
 
 
+def test_created_epoch_tie_is_deterministic_and_prefers_tombstone():
+    """Equal created_epoch inside the window: a run key's tombstone beats its own pointer; across run keys the greater key wins."""
+    problems = []
+    now = _now()
+    tie = now - 10
+
+    sb = Sandbox()
+    try:
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        _finished(sb, "run-tie-a", "scratch-tie-a", "sess-S1", created=tie)
+        tomb = sb.pointers("run-tie-a", "finished")[0]
+        (sb.state / "run-tie-a.pointer").write_text(tomb.read_text())
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        if r.returncode != 0 or not re.search(r"RUN_KEY:\s*run-tie-a\b", _out(r)) or "already finished" not in _out(r):
+            problems.append(f"same-key pointer and tombstone: tombstone not preferred: {_brief(r)}")
+    finally:
+        sb.close()
+
+    sb = Sandbox()
+    try:
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 60)} implement begin"])
+        _finished(sb, "run-tie-a", "scratch-tie-a", "sess-S1", created=tie)
+        _finished(sb, "run-tie-b", "scratch-tie-b", "sess-S3", created=tie)
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        if r.returncode != 0 or not re.search(r"RUN_KEY:\s*run-tie-b\b", _out(r)):
+            problems.append(f"two run keys at one created_epoch: greater run key not chosen: {_brief(r)}")
+    finally:
+        sb.close()
+    return not problems, "; ".join(problems) or "ok"
+
+
 def test_bound_argument_validation():
     """--since with --flow-dir is 2; --flow-dir without --step is 2; --step without --flow-dir is 2;
     relative, outside-flows, and symlinked-log flow dirs are 3."""
@@ -1235,6 +1268,7 @@ def test_hardening_cases_fail_closed():
         cases = [
             ("CRLF newest line", [valid, f"{_iso(now - 50)} implement begin\r"]),
             ("NUL byte in newest candidate", [valid, f"{_iso(now - 50)}\x00 implement begin"]),
+            ("trailing NUL on newest candidate", [valid, f"{_iso(now - 50)} implement begin\x00"]),
             ("future-dated newest line", [valid, f"{_iso(now + 3600)} implement begin"]),
         ]
         problems = []
@@ -1354,6 +1388,7 @@ TESTS = [
     ("bounded locate: run created in the begin second is eligible", test_run_created_in_begin_second_is_eligible),
     ("bounded locate: pointer without created_epoch is not eligible and is counted", test_missing_created_epoch_is_not_eligible),
     ("bounded locate: unreadable tombstone is skipped and counted", test_unreadable_tombstone_is_skipped_and_counted),
+    ("bounded locate: created_epoch ties are deterministic and prefer the tombstone", test_created_epoch_tie_is_deterministic_and_prefers_tombstone),
     ("bounded locate: --flow-dir/--step/--since validation and flow-dir rules", test_bound_argument_validation),
     ("bounded locate: attempt start is the newest begin|retry in file order", test_attempt_start_is_newest_begin_or_retry_in_file_order),
     ("bounded locate: CRLF, NUL, future-dated, escaping symlink, and ../ fail closed", test_hardening_cases_fail_closed),

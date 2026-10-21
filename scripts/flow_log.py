@@ -63,15 +63,16 @@ def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
     "Newest" is the last matching line in file order (log.md is append-only). Lines of other events
     are ignored. If the newest candidate is malformed, or its timestamp is not a valid UTC Z value,
     or it lies in the future, FlowLogError is raised. The function never falls back to an older line,
-    because that would widen the bound. A missing, unreadable, or non-regular log.md raises FlowLogError.
+    because that would widen the bound. A missing, unreadable, symlinked, or non-regular log.md raises FlowLogError.
     """
     if not STEP_RE.fullmatch(step):
         raise FlowLogError(f"invalid step name {step!r}")
-    loose_re = re.compile(r"(\S+) " + re.escape(step) + r" (?:begin|retry)\s*")
+    # Trailing NUL bytes count as candidate noise, so a NUL-bearing newest line raises instead of being skipped.
+    loose_re = re.compile(r"(\S+) " + re.escape(step) + r" (?:begin|retry)[\s\x00]*")
     strict_re = re.compile(r"(\S+) " + re.escape(step) + r" (?:begin|retry)")
 
-    if not log_path.is_file():
-        raise FlowLogError("log.md is missing or not a regular file")
+    if log_path.is_symlink() or not log_path.is_file():
+        raise FlowLogError("log.md is missing, a symlink, or not a regular file")
     try:
         size = log_path.stat().st_size
         truncated = size > LOG_READ_CAP_BYTES
