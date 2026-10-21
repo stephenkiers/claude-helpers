@@ -32,7 +32,9 @@ authoritative skip matrix.
 Exit codes:
     init    0 ok; 2 invalid arguments or refused overwrite or I/O failure.
     locate  0 found (also when already finished); 3 nothing found, no begin or retry line for --step, an
-            invalid flow dir, or an unreadable flow log; 2 invalid arguments or unreadable state.
+            invalid flow dir, or an unreadable flow log; 2 invalid arguments, unreadable state, or (bounded
+            --since/--flow-dir only) ANY unreadable pointer or tombstone under the state dir, or a non-finite
+            created_epoch. A bounded locate fails closed: it never skips an unreadable record.
     check   0 complete; 1 incomplete or malformed, or no pointer found; 2 unreadable state.
     render  0 rendered; 3 nothing found; 2 unreadable state.
     finish  0 success, or already finished (no-op); 1 gate failed (command-end recorded as
@@ -46,11 +48,13 @@ required_steps, permitted_skip_reasons, parse_ledger, evaluate, render_lines, ch
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple
@@ -119,7 +123,9 @@ POINTER_SUFFIX = ".pointer"
 FINISHED_SUFFIX = ".finished"
 SUPERSEDED_SUFFIX = ".superseded"
 TOMBSTONE_TTL_DAYS = 14
-# Clock skew between log.md's `date -u` and created_epoch (int(time.time())) tolerated by the bounded scan.
+# Clock skew between log.md's `date -u` (whole seconds) and created_epoch (int(time.time())) tolerated by the
+# bounded scan. Residual: a record created up to this many seconds before an attempt's begin line is still
+# eligible for that attempt, so a run that finished just before the attempt started can be matched to it.
 SINCE_SKEW_SECS = 5
 RUN_METRICS = Path(__file__).resolve().parent / "run-metrics.py"
 
@@ -422,40 +428,56 @@ def _created_key(path: Path, data: Dict[str, Any]) -> float:
         return 0.0
 
 
-def _scan_since(
-    root: Path, repo: Optional[str], since: float
-) -> Tuple[Optional[Tuple[Path, bool, Dict[str, Any]]], int, int]:
-    """One bounded, repo-gated scan over pointers and tombstones. Returns (found, unreadable, no_epoch).
+@dataclass
+class ScanSkips:
+    """Counts from one bounded scan (filled in place by _scan_since).
 
-    A record is eligible only when its repo equals repo, its created_epoch is an int or float (not a
-    bool), and created_epoch >= since - SINCE_SKEW_SECS. The newest eligible record wins. Ties on
-    created_epoch are broken by the run key (the file name without its suffix), then by preferring the
-    tombstone over the pointer of the same run key, so the result does not depend on directory order.
-    Session is ignored. unreadable counts every unreadable record under root. no_epoch counts records of
-    this repo that lack a numeric created_epoch (the mtime fallback is never used here). repo None yields
-    no match.
+    unreadable: pointer or tombstone files under the state dir that could not be read or judged. Fatal:
+        a bounded locate exits 2 when this is non-zero.
+    unreadable_paths: the file names behind unreadable, for the stderr message.
+    no_epoch: records of this repo with no numeric created_epoch. Ineligible, reported, not fatal.
     """
-    if repo is None:
-        return None, 0, 0
+
+    unreadable: int = 0
+    unreadable_paths: List[str] = field(default_factory=list)
+    no_epoch: int = 0
+
+
+def _scan_since(root: Path, repo: str, since: float, stats: ScanSkips) -> Optional[Tuple[Path, bool, Dict[str, Any]]]:
+    """One bounded, repo-gated scan over pointers and tombstones. Returns the newest eligible record, or None.
+
+    Fail closed: every unreadable file under root, and every record whose created_epoch is not a finite
+    number (NaN and infinities parse as JSON but cannot be ordered), is counted in stats.unreadable
+    whatever its repo, and is never skipped silently. A record is eligible only when its repo equals repo,
+    its created_epoch is a finite int or float (not a bool), and created_epoch >= since - SINCE_SKEW_SECS.
+    The newest eligible record wins. Ties on created_epoch are broken by the run key (the file name without
+    its suffix), then by preferring the tombstone over the pointer of the same run key, so the result does
+    not depend on directory order. Session is ignored. The mtime fallback is never used here.
+    """
     records, unreadable = _scan_records(root)
+    stats.unreadable += len(unreadable)
+    stats.unreadable_paths.extend(p.name for p in unreadable)
     floor = since - SINCE_SKEW_SECS
-    no_epoch = 0
     best: Optional[Tuple[Path, str, Dict[str, Any]]] = None
     best_key: Optional[Tuple[float, str, bool]] = None
     for path, kind, data in records:
+        created = data.get("created_epoch")
+        is_number = isinstance(created, (int, float)) and not isinstance(created, bool)
+        if is_number and not math.isfinite(created):
+            stats.unreadable += 1
+            stats.unreadable_paths.append(path.name)
+            continue
         if data.get("repo") != repo:
             continue
-        created = data.get("created_epoch")
-        if not isinstance(created, (int, float)) or isinstance(created, bool):
-            no_epoch += 1
+        if not is_number:
+            stats.no_epoch += 1
             continue
         if created < floor:
             continue
         key = (float(created), path.name.rsplit(".", 1)[0], kind == "finished")
         if best_key is None or key > best_key:
             best, best_key = (path, kind, data), key
-    found = None if best is None else (best[0], best[1] == "finished", best[2])
-    return found, len(unreadable), no_epoch
+    return None if best is None else (best[0], best[1] == "finished", best[2])
 
 
 def locate_record(
@@ -464,11 +486,11 @@ def locate_record(
     repo: Optional[str],
     run_key: Optional[str],
     since: Optional[float] = None,
-    skips: Optional[Dict[str, int]] = None,
+    skips: Optional[ScanSkips] = None,
 ) -> Optional[Tuple[Path, bool, Dict[str, Any]]]:
     """Find a run's pointer. Returns (path, is_tombstone, data) or None.
 
-    skips, when given and a bound is used, receives the counts "unreadable" and "no_epoch" from the scan.
+    skips, when given and a bound is used, is filled in place by the scan (see ScanSkips).
 
     Resolution contract:
     - run_key given: the exact pointer, or else its tombstone, by name only. The repo filter is NOT
@@ -478,18 +500,18 @@ def locate_record(
       tombstones alike) when repo is given. _resolve (check, render, finish) always takes this path.
     - since given (epoch seconds UTC), no run_key: one bounded scan that replaces passes 1-2. Pointers
       and tombstones are both eligible. The comparison is created_epoch >= since - 5 (SINCE_SKEW_SECS).
-      Records without a numeric created_epoch are ineligible. repo is required and session is ignored,
-      so a finished run from another session is found. Without a bound, a tombstone from another
-      session is not found (the bound is mandatory for that fallback; see W1).
+      Records without a numeric created_epoch are ineligible and counted as no_epoch. Any unreadable file
+      under root, or a non-finite created_epoch, is counted as unreadable, and cmd_locate fails closed
+      (exit 2) on it. repo is required: a bounded locate with repo None raises LedgerError, because no
+      record could match it. Session is ignored, so a finished run from another session is found. Without
+      a bound, a tombstone from another session is not found (the bound is mandatory for that fallback).
     - The bound comes from the newest `<STEP> begin|retry` line in the flow's log.md (see
       scripts/flow_log.py), so it is always produced by code and never copied by the model.
     """
     if run_key is None and since is not None:
-        found, unreadable, no_epoch = _scan_since(root, repo, since)
-        if skips is not None:
-            skips["unreadable"] = unreadable
-            skips["no_epoch"] = no_epoch
-        return found
+        if repo is None:
+            raise LedgerError("bounded locate needs a repo (the toplevel of the current directory)")
+        return _scan_since(root, repo, since, skips if skips is not None else ScanSkips())
     if run_key is not None:
         if not RUN_KEY_RE.match(run_key):
             raise LedgerError(f"invalid run key {run_key!r}")
@@ -618,9 +640,13 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_locate(args: argparse.Namespace) -> int:
     """Locate the run. Unbounded (no --since/--flow-dir) keeps today's passes; a bound uses one scan.
 
-    `already finished` means the record found is a tombstone. A bound derived from --flow-dir/--step
-    is printed as `SINCE:`. Skip counts go to stderr only when non-zero. Any failure to derive or match
-    the bound exits 3 (reported as "ledger unavailable" by the Fidelity audit).
+    A bound is given either directly by --since (ISO-8601 UTC) or derived from --flow-dir/--step (the
+    newest begin|retry line of the flow's log.md). Either way the bound is printed as `SINCE:` on success.
+    `already finished` means the record found is a tombstone. In a bounded scan any unreadable pointer or
+    tombstone under the state dir exits 2 (fail closed, never skipped); records without created_epoch are
+    counted to stderr only when non-zero. Any failure to derive or match the bound exits 3 (reported as
+    "ledger unavailable" by the Fidelity audit). A bounded miss prints a distinct NOT FOUND hint: finished
+    runs are tombstones pruned after TOMBSTONE_TTL_DAYS days, so an old run may simply be gone.
     """
     root = state_root()
     repo = args.repo or git_toplevel()
@@ -644,17 +670,29 @@ def cmd_locate(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"NOT FOUND: {e}", file=sys.stderr)
             return 3
-        skips: Dict[str, int] = {}
+        skips = ScanSkips()
         found = locate_record(root, None, repo, None, since=since_epoch, skips=skips)
-        if skips["unreadable"] or skips["no_epoch"]:
+        if skips.unreadable:
+            names = ", ".join(sorted(skips.unreadable_paths)[:5])
             print(
-                f"locate: skipped {skips['unreadable']} unreadable, {skips['no_epoch']} without created_epoch",
+                f"error: locate: {skips.unreadable} unreadable pointer or tombstone file(s) under {root} "
+                f"({names}); a bounded locate fails closed. Repair or remove them and retry.",
                 file=sys.stderr,
             )
+            return 2
+        if skips.no_epoch:
+            print(f"locate: skipped {skips.no_epoch} without created_epoch", file=sys.stderr)
     else:
         found = locate_record(root, env_session() or "unknown", repo, args.run_key)
     if found is None:
-        print("NOT FOUND: no implement-with-haiku run pointer", file=sys.stderr)
+        if since_iso is not None:
+            print(
+                f"NOT FOUND: no run record for this repo at or after {since_iso}; finished runs are "
+                f"tombstones pruned after {TOMBSTONE_TTL_DAYS} days, so an older run may be gone",
+                file=sys.stderr,
+            )
+        else:
+            print("NOT FOUND: no implement-with-haiku run pointer", file=sys.stderr)
         return 3
     _path, finished, data = found
     ledger = Path(data["scratch"]) / LEDGER_NAME
@@ -847,7 +885,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--since",
         default=None,
         type=_iso_utc_arg,
-        help="ISO-8601 UTC (Z) bound in epoch seconds; one bounded scan that also finds tombstones",
+        help="ISO-8601 UTC timestamp with Z suffix (e.g. 2026-10-19T12:00:00Z) as the lower bound; one bounded scan that also finds tombstones",
     )
     bound.add_argument(
         "--flow-dir",

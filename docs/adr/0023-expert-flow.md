@@ -671,3 +671,13 @@ Neither path adds an unconditional stop. The default flow still does not pause b
 **Review redo side effects.** A review redo re-runs the full panel (all reviewers routed by the Router). It writes a new timestamped `REVIEW_DIR`, not a numbered `review-02/` directory. The cache entry for the commit is repointed to the new `REVIEW_DIR` on OK. A second token-usage entry is logged in the yield ledger (token logging is unchanged: one entry per run). The prior `REVIEW_DIR` and its `claude-action-plan.md` are kept untouched, so the human can compare old and new action plans side by side. Redos do not mutate the old results.
 
 **No repository mutation, no artifact editing.** The redo mechanism never mutates the repository (no rebase, reset, or force push from the redo itself). Artifacts (code, tests, docs) are read-only at the redo gate; the human can only add notes, not edit them. If code changes are needed before a redo, the human must Take over (stop the flow, edit code manually, and resume manually) or Abort and re-run in a new flow.
+
+## Amendment (2026-10-20): a bounded `implement-ledger.py locate` fails closed on unreadable records
+
+The bounded locate (`--since`, or `--flow-dir`/`--step`, which derives `--since` from log.md) scans every pointer and
+tombstone under the state dir. An unreadable file, or a record whose `created_epoch` is not a finite number, could hide
+the run that the Fidelity audit is looking for, so the bounded scan no longer skips such a record with a stderr note.
+It exits 2 with a message that names the unreadable file, and prints no run. Records that merely lack a numeric
+`created_epoch` stay ineligible and are reported on stderr without failing. The unbounded locate (no bound given) is
+unchanged. A bounded miss now prints a distinct NOT FOUND hint, because finished runs are tombstones pruned after 14
+days.

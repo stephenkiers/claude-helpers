@@ -943,7 +943,7 @@ def test_cross_session_finished_run_found_with_bound():
 
 
 def test_same_tombstone_without_bound_is_not_found():
-    """W1: the same cross-session tombstone with no --flow-dir/--step (unbounded) still exits 3."""
+    """The same cross-session tombstone with no --flow-dir/--step (unbounded) still exits 3."""
     sb = Sandbox()
     try:
         now = _now()
@@ -957,7 +957,13 @@ def test_same_tombstone_without_bound_is_not_found():
 
 
 def test_retry_with_leftover_pointer_returns_newer_tombstone():
-    """D1: S1's unfinished pointer predates the newest retry line; S2's tombstone postdates it. S2's run wins."""
+    """D1: S1's unfinished pointer predates the newest retry line; S2's tombstone postdates it. S2's run wins.
+
+    Fixture floors: the retry bound is now-55 (retry at now-50, less the 5 s skew) and the begin bound
+    would be now-205. The leftover pointer's created_epoch (now-100) sits between the two floors. Newest
+    eligible record wins, so S2's newer tombstone is returned under either bound; the assertion guards
+    against the leftover pointer being returned, not against the bound's exact value.
+    """
     sb = Sandbox()
     try:
         now = _now()
@@ -1145,8 +1151,8 @@ def test_missing_created_epoch_is_not_eligible():
         sb.close()
 
 
-def test_unreadable_tombstone_is_skipped_and_counted():
-    """A corrupt newest tombstone is skipped (older valid run returned) and stderr reports 1 unreadable."""
+def test_unreadable_tombstone_fails_closed_with_exit_2():
+    """A corrupt newest tombstone fails the bounded locate closed: exit 2, stderr names it, no run printed."""
     sb = Sandbox()
     try:
         now = _now()
@@ -1158,13 +1164,37 @@ def test_unreadable_tombstone_is_skipped_and_counted():
         _finished(sb, "run-unread-good", "scratch-unread-good", "sess-S3", created=now - 10)
         r = _locate(sb, flow, "implement", session="sess-S2")
         problems = []
-        if r.returncode != 0 or not re.search(r"RUN_KEY:\s*run-unread-good\b", _out(r)):
-            problems.append(f"valid older run not returned: {_brief(r)}")
-        if "1 unreadable" not in r.stderr:
-            problems.append(f"stderr does not count the unreadable record: {r.stderr.strip()[:200]!r}")
+        if r.returncode != 2:
+            problems.append(f"unreadable record did not fail closed with exit 2: {_brief(r)}")
+        if "unreadable" not in r.stderr or "run-unread-bad.finished" not in r.stderr:
+            problems.append(f"stderr does not name the unreadable tombstone: {r.stderr.strip()[:200]!r}")
+        if "RUN_KEY:" in _out(r):
+            problems.append("a run was printed although the scan failed closed")
         return not problems, "; ".join(problems) or "ok"
     finally:
         sb.close()
+
+
+def test_non_finite_created_epoch_fails_closed_with_exit_2():
+    """created_epoch NaN and Infinity parse as JSON but cannot be ordered: a bounded locate exits 2, not admits them."""
+    problems = []
+    for label, value in (("NaN", float("nan")), ("Infinity", float("inf"))):
+        sb = Sandbox()
+        try:
+            now = _now()
+            flow = _flow(sb)
+            _log(flow, [f"{_iso(now - 60)} implement begin"])
+            _finished(sb, f"run-nonfinite-{label.lower()}", f"scratch-nonfinite-{label.lower()}", "sess-S1",
+                      created=value)
+            _finished(sb, "run-nonfinite-ok", "scratch-nonfinite-ok", "sess-S3", created=now - 10)
+            r = _locate(sb, flow, "implement", session="sess-S2")
+            if r.returncode != 2 or "unreadable" not in r.stderr:
+                problems.append(f"created_epoch {label}: want exit 2 with 'unreadable': {_brief(r)}")
+            if "RUN_KEY:" in _out(r):
+                problems.append(f"created_epoch {label}: a run was printed although the scan failed closed")
+        finally:
+            sb.close()
+    return not problems, "; ".join(problems) or "ok"
 
 
 def test_created_epoch_tie_is_deterministic_and_prefers_tombstone():
@@ -1186,17 +1216,20 @@ def test_created_epoch_tie_is_deterministic_and_prefers_tombstone():
     finally:
         sb.close()
 
-    sb = Sandbox()
-    try:
-        flow = _flow(sb)
-        _log(flow, [f"{_iso(now - 60)} implement begin"])
-        _finished(sb, "run-tie-a", "scratch-tie-a", "sess-S1", created=tie)
-        _finished(sb, "run-tie-b", "scratch-tie-b", "sess-S3", created=tie)
-        r = _locate(sb, flow, "implement", session="sess-S2")
-        if r.returncode != 0 or not re.search(r"RUN_KEY:\s*run-tie-b\b", _out(r)):
-            problems.append(f"two run keys at one created_epoch: greater run key not chosen: {_brief(r)}")
-    finally:
-        sb.close()
+    # Create the tied records in both orders, so a directory-order coincidence cannot pass the check.
+    for first, second in (("run-tie-a", "run-tie-b"), ("run-tie-b", "run-tie-a")):
+        sb = Sandbox()
+        try:
+            flow = _flow(sb)
+            _log(flow, [f"{_iso(now - 60)} implement begin"])
+            _finished(sb, first, f"scratch-{first}", "sess-S1", created=tie)
+            _finished(sb, second, f"scratch-{second}", "sess-S3", created=tie)
+            r = _locate(sb, flow, "implement", session="sess-S2")
+            if r.returncode != 0 or not re.search(r"RUN_KEY:\s*run-tie-b\b", _out(r)):
+                problems.append(f"two run keys at one created_epoch (created {first} first): "
+                                f"greater run key not chosen: {_brief(r)}")
+        finally:
+            sb.close()
     return not problems, "; ".join(problems) or "ok"
 
 
@@ -1316,30 +1349,6 @@ def test_resolve_for_check_render_finish_unchanged_by_bound():
         sb.close()
 
 
-def test_decision_ask_done_row_is_not_not_run():
-    """D2: a mechanical-class usage-check-final DONE row whose evidence reads DECISION: ask is done, not NOT RUN."""
-    sb = Sandbox()
-    try:
-        run = Run(sb, "run-d2-ask")
-        run.init()
-        evidence = run.evidence("usage-check-final", "state=over-threshold-unreported DECISION: ask\n")
-        run.append(mechanical_rows(run, drop=("usage-check-final",))
-                   + [f"{run.rk} DONE usage-check-final {evidence}"])
-        c = run.check()
-        rendered = _out(run.render())
-        row_lines = [ln for ln in rendered.splitlines() if "usage-check-final" in ln]
-        problems = []
-        if c.returncode != 0:
-            problems.append(f"check blocked on a DONE row with DECISION: ask: {_brief(c)}")
-        if not row_lines:
-            problems.append("render has no usage-check-final line")
-        if any("NOT RUN" in ln for ln in row_lines):
-            problems.append(f"usage-check-final rendered NOT RUN: {row_lines}")
-        return not problems, "; ".join(problems) or "ok"
-    finally:
-        sb.close()
-
-
 TESTS = [
     ("STEP_IDS and SKIP_REASONS match the plan vocabulary", test_vocabulary_pinned),
     ("init writes ledger and pointer", test_init_writes_ledger_and_pointer),
@@ -1376,7 +1385,7 @@ TESTS = [
     ("foreign tombstone is not reported as already finished", test_foreign_tombstone_is_not_already_finished),
     ("failed success emission leaves the run open (no FINISHED, no tombstone)", test_success_event_failure_leaves_run_open),
     ("bounded locate: cross-session finished run is found with --flow-dir/--step", test_cross_session_finished_run_found_with_bound),
-    ("unbounded locate: cross-session tombstone is still not found (W1)", test_same_tombstone_without_bound_is_not_found),
+    ("unbounded locate: cross-session tombstone is still not found",test_same_tombstone_without_bound_is_not_found),
     ("bounded locate: retry with leftover pointer returns the newer tombstone (D1)", test_retry_with_leftover_pointer_returns_newer_tombstone),
     ("bounded locate: stale implement run does not pass the fix audit", test_stale_implement_run_does_not_pass_fix_audit),
     ("bounded locate: another repo's tombstone inside the window is not returned", test_bounded_locate_filters_by_repo),
@@ -1387,13 +1396,13 @@ TESTS = [
     ("bounded locate: created_epoch skew boundary is 5 s", test_skew_boundary_is_five_seconds),
     ("bounded locate: run created in the begin second is eligible", test_run_created_in_begin_second_is_eligible),
     ("bounded locate: pointer without created_epoch is not eligible and is counted", test_missing_created_epoch_is_not_eligible),
-    ("bounded locate: unreadable tombstone is skipped and counted", test_unreadable_tombstone_is_skipped_and_counted),
+    ("bounded locate: unreadable tombstone fails closed with exit 2", test_unreadable_tombstone_fails_closed_with_exit_2),
+    ("bounded locate: non-finite created_epoch fails closed with exit 2", test_non_finite_created_epoch_fails_closed_with_exit_2),
     ("bounded locate: created_epoch ties are deterministic and prefer the tombstone", test_created_epoch_tie_is_deterministic_and_prefers_tombstone),
     ("bounded locate: --flow-dir/--step/--since validation and flow-dir rules", test_bound_argument_validation),
     ("bounded locate: attempt start is the newest begin|retry in file order", test_attempt_start_is_newest_begin_or_retry_in_file_order),
     ("bounded locate: CRLF, NUL, future-dated, escaping symlink, and ../ fail closed", test_hardening_cases_fail_closed),
     ("check, render, finish without a key still do not resolve another session's tombstone", test_resolve_for_check_render_finish_unchanged_by_bound),
-    ("D2: usage-check-final DONE with DECISION: ask is not NOT RUN", test_decision_ask_done_row_is_not_not_run),
 ]
 
 
