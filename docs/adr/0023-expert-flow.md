@@ -35,7 +35,8 @@ boundary; and a resume must verify the answers file exists on disk before `SendM
 spawning one `general-purpose` subagent per step with a one-line prompt: run this command in this
 directory, you are inside a flow, follow `prompts/flow-reference.md`. The orchestrator is pinned to
 `model: sonnet` (ADR-0004: it is coordination, not judgment); each step's command keeps its own
-frontmatter model.
+frontmatter model, with one exception: a single automatic Haiku-to-Sonnet escalation for implement/fix
+shortfalls (see the 2026-10-16 amendment).
 
 The orchestrator does no engineering work. Its `allowed-tools` grant read-only `git`/`gh`, `Write`
 (for files under the flow directory and one marker file), `Task`, `SendMessage`, and
@@ -48,7 +49,7 @@ full capability: they are not panel agents and carry none of the `tools:` restri
 expert-flow and deferred. A step that fails produces a
 hard stop with three options — Retry (capped at two attempts per step), Take over, Abort — and
 nothing else, except that base-stale verify failures also offer a fourth, human-gated option, Rebase
-(see the gated Rebase amendment below). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
+(see the gated Rebase amendment below), and single-unit implement/fix shortfalls offer a bounded automatic Sonnet escalation followed by the same menu (see the 2026-10-16 amendment). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
 never invoked. This is the same stance ADR-0021 took for the merge queue: no auto-remediation,
 because remediation is where an orchestrator starts making engineering decisions nobody reviewed.
 
@@ -160,7 +161,9 @@ Recorded here so the dogfooding phase (#252) argues with a decision, not a blank
    `--auto-merge` trusts the plan and PR author; this ADR does not require enforcement of that trust.
 3. **Epic v1 is sequential.** Ticket N+1 branches from main after N merges, because the flow already
    ends each ticket in `/merge-and-cleanup`; a stack buys nothing unless Hold is chosen. `--stack`
-   is deferred until "Hold" is observed in practice (proposal §9 lists what it needs).
+   is deferred until "Hold" is observed in practice (proposal §9 lists what it needs). Merges within
+   an epic should be sequenced to avoid conflicts and ensure each ticket's work is stable before the
+   next begins (see #320, #322 for overlap analysis).
 4. **Verify is the project's `commands.check` only.** Coverage, performance, and E2E remain
    `/expert-is-it-done`'s job after merge, where there is a merged diff to judge.
 
@@ -582,3 +585,56 @@ Any `mark` on a record that is not `pending` exits non-zero and leaves the file 
 - `/expert-review --effort 2` reviewer pods do not receive the ledger, which goes only to Pass 2, the Amalgamator and the Triage Chief.
 
 **Out of scope:** Cross-flow use (#291, #298, reading ledger from one flow in another); enforcement (#288, what happens if a step ignores a direction); dictation / prose-input (#277, extending directions to free-form); redo / `HUMAN_NOTE` (#286, replaying or correcting prior work).
+
+## Amendment (2026-10-16, fourth): one implementer escalation path (#315)
+
+When the `/implement-with-haiku` step for `implement` or `fix` fails because the Haiku `plan-implementer` unit could not finish the plan (a single-unit shortfall), a fourth hard-stop option `Retry with sonnet` is offered for manual escalation. An automatic escalation mechanism is designed but dormant — it would re-run the step once on Sonnet under a narrow, bounded path once a turns source becomes available (see #325). Every escalation is logged for later review. The manual `Retry with sonnet` option is the live path until the automatic mechanism activates.
+
+### The dormant automatic path (reserved for when a turns source exists)
+
+When a turns source becomes available, the orchestrator would check whether the step reached Hard stop by direct receipt failure. It would tell `flow-verify-receipt.py --escalation` how the step reached Hard stop (`--stop-source`) and ask whether the receipt meets all seven conditions. Only a direct receipt failure would qualify (not a validation rule or fidelity-audit rejection). The conditions would be:
+
+1. `STEP` is `implement` or `fix`.
+2. The receipt's `Decision: FAILED` came from the receipt itself, not from a validation rule or fidelity audit.
+3. The receipt has the exact line `FAILURE_CLASS: implementer-shortfall` — a typed field only written for single-unit runs.
+4. The receipt has the exact line `TURNS_EXHAUSTED: no` (not `yes`, `unknown`, or absent).
+5. The receipt has `IMPLEMENTER_MODEL: haiku`, and `state.json` `implementer_model[STEP]` is unset, so there is no path back to Haiku after this escalation.
+6. `escalations[STEP] == 0` — this is the first and only automatic escalation per step per flow.
+7. `failures[STEP] < 2` after this failure was counted.
+
+On `ESCALATE: auto sonnet`, the orchestrator would set `implementer_model[STEP]="sonnet"`, increment `escalations[STEP]`, log `escalated`, and re-run the step through the normal loop, passing `--implementer-model sonnet --partial-base <START_SHA>` to carry the partial work. The escalated attempt would count under the existing two-attempt cap; if it fails, the menu shows Take over / Abort only (no Retry).
+
+### The turns-exhaustion exclusion
+
+A failure with `TURNS_EXHAUSTED: yes` or `unknown` would never escalate automatically, because the larger Sonnet unit would face the same cap under the same `maxTurns`. Every attempt records `TURNS_USED` from a step-established source and `TURNS_EXHAUSTED` (computed as `yes` when the trailer is missing, `no` when complete and `TURNS_USED` is known and below the cap, or `unknown` otherwise). Currently, no reliable turns source exists, so every receipt carries `TURNS_USED: unknown` and `TURNS_EXHAUSTED: unknown`, and the automatic path remains inert (fail-closed) until a turns source exists (see #325).
+
+### The partial-work contract (for escalated attempts)
+
+When an escalated `/implement-with-haiku` runs, it would be told what is already present via `Partial work since: <START_SHA>` and makes one judgment: keep (the failed work is sound; finish the remaining steps and clean up its stubs) or reset (the failed work is broken; restore each changed file from `START_SHA` through `git show` and `Write`). The judgment and its reason would go into the receipt. The original `START_SHA` is preserved across the escalation, so the full run's anti-tamper scan covers all of the work. The escalated attempt would list files it added that should not survive in `DISCARDED_ADDED_FILES:`; the `/implement-with-haiku` orchestrator removes them with validation before committing, or stops for the human.
+
+### Manual `Retry with sonnet` option
+
+A fourth hard-stop menu option `Retry with sonnet` is offered to escalate manually to Sonnet. It is listed after Retry and labelled with its model, and shares the `failures[STEP]` cap with any future automatic escalations. It is available whenever a shortfall failure occurs, independent of whether the automatic path's conditions are met. A multi-unit failed attempt whose label mentions "single unit" shows the human what the collapse entails.
+
+### Telemetry
+
+On every escalation (auto or manual), the step appends one line to `$FLOWS_ROOT/escalations.jsonl` with: `flow`, `issue`, `step`, `attempt`, `trigger` (`auto|manual`), `stop_source`, `from_model`, `to_model`, `failure_class`, `units`, `turns_used`, `turns_exhausted`, `incomplete_steps` (array of `{id, source}`), and `ts`. After the escalated attempt validates, an outcome line is appended with `event: "outcome"`, `outcome` (`ok|failed`), `partial_work` (`keep|reset` with its reason), and `discarded_added_files`. Every failed attempt records `units`, `stop_source`, `TURNS_USED`, `TURNS_EXHAUSTED`, and incomplete-step count in an `event: "attempt"` line for after-ship analysis.
+
+### Probe result
+
+The probe in a throwaway git repo showed that the Agent `model` parameter override works: with `model: "sonnet"` the subagent ran on `claude-sonnet-5-5`; without it, it ran on `claude-haiku-4-5-20251001`. No sibling agent file is needed. The turns source: the Agent completion tool-use count does not equal assistant turns, and no reliable way was found for the orchestrator to locate a background subagent transcript, so `TURNS_USED` always reads `unknown` (fail-closed). The automatic path therefore ships disabled until a turns source exists.
+
+### Still out of scope
+
+- Pre-run size checks and automatic sequential split of a single-unit plan.
+- A user-facing model flag on `/expert-flow` at start.
+- Raising or overriding `maxTurns`.
+- A third implementer attempt after a failed escalation.
+- Automatic escalation of multi-unit runs.
+- Opus for implementer escalation (Sonnet only, never Opus).
+- Orchestrator-side destructive git.
+- Branch and unit-worktree cleanup after an escalated run.
+
+### Amending §1
+
+The "nothing else" sentence (in the Decision section) now points to this amendment for the one exception to "the step's command keeps its own frontmatter model". The exception is: a fourth hard-stop option `Retry with sonnet` is available for single-unit shortfalls to allow manual Haiku-to-Sonnet escalation. An automatic escalation from Haiku to Sonnet for `plan-implementer` is designed but dormant (reserved for when a turns source exists); when active, it would run once per step per flow, only on a typed shortfall class for a single-unit run, with turn exhaustion excluded, always logged, and Opus never used for implementer escalation.

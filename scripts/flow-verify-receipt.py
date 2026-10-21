@@ -1135,6 +1135,14 @@ def check_implement(
     if count < 1:
         return f"implement artifacts missing (no new commits on {branch} since step began)"
 
+    # Check discarded files (parse from receipt and validate against branch)
+    receipt = read_file(receipt_file)
+    discarded_files = parse_discarded_files_block(receipt)
+    if discarded_files:
+        discard_error = check_discarded_files(repo, branch, discarded_files)
+        if discard_error:
+            return discard_error
+
     return None
 
 
@@ -1338,6 +1346,100 @@ def _count_doing_it_items(action_plan: str) -> int:
     return count
 
 
+def parse_receipt_field(receipt: str, field_name: str) -> Optional[str]:
+    """Parse a single receipt field (e.g., IMPLEMENTER_MODEL, FAILURE_CLASS).
+
+    Searches for field_name in the header block (fields before the first blank line
+    or <!-- step-end --> marker). Returns the value of the last matching line, or None
+    if not found.
+    """
+    result = None
+    for line in receipt.split("\n"):
+        # Stop at blank line or step-end marker
+        if not line.strip() or "<!-- step-end -->" in line:
+            break
+        if line.startswith(f"{field_name}:"):
+            result = line.split(":", 1)[1].strip()
+    return result
+
+
+def parse_discarded_files_block(receipt: str) -> List[str]:
+    """Parse DISCARDED_ADDED_FILES block from receipt.
+
+    Returns a list of file paths from indented lines under the block.
+    """
+    files: List[str] = []
+    in_block = False
+    for line in receipt.split("\n"):
+        if line.startswith("DISCARDED_ADDED_FILES:"):
+            in_block = True
+            continue
+        if in_block:
+            # Check if line is indented (part of the block)
+            if line and line[0] == " ":
+                # Strip leading whitespace and extract the path
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and not stripped.startswith("<!--"):
+                    # Handle both "- path" and plain "path" formats
+                    if stripped.startswith("- "):
+                        files.append(stripped[2:])
+                    else:
+                        files.append(stripped)
+            elif line and line[0] != " ":
+                # End of block (non-indented line)
+                break
+    return files
+
+
+def check_discarded_files(repo: str, branch: str, discarded_files: List[str]) -> Optional[str]:
+    """Check that discarded files are absent from the branch via git ls-tree.
+
+    Requires repo and branch to be non-empty. Rejects absolute paths and .. components.
+    Returns error reason if any files are present or if validation fails, None if all are absent.
+    """
+    if not discarded_files:
+        return None
+
+    # Validate that repo and branch are provided
+    if not repo or not branch:
+        return "discarded files check requires --repo and --branch"
+
+    # Validate each file path
+    for file_path in discarded_files:
+        # Reject absolute paths
+        if file_path.startswith("/"):
+            return f"discarded files check: absolute path not allowed ({file_path})"
+        # Reject .. components
+        if ".." in file_path:
+            return f"discarded files check: .. component not allowed ({file_path})"
+
+    present_files = []
+    for file_path in discarded_files:
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo, "ls-tree", "-r", branch, "--", file_path],
+                capture_output=True,
+                text=True,
+                timeout=GIT_TIMEOUT_SECS,
+            )
+            # If exit code is 0 and there's output, the file exists
+            if result.returncode == 0 and result.stdout.strip():
+                present_files.append(file_path)
+            # On non-zero exit or other git errors, fail closed
+            elif result.returncode != 0 and result.returncode != 128:
+                # 128 typically means "not found", which is OK
+                return f"git operation failed checking {file_path}: {result.stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            return f"git operation timed out checking {file_path}"
+        except Exception as e:
+            # Fail closed: any other error is treated as a check failure
+            return f"git operation error checking {file_path}: {e}"
+
+    if present_files:
+        return f"discarded files still present ({', '.join(present_files)})"
+    return None
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -1350,7 +1452,7 @@ def main() -> None:
         help="Step name",
     )
     parser.add_argument("--receipt", required=True, help="Path to receipt file")
-    parser.add_argument("--since", required=True, help="ISO-8601 UTC timestamp")
+    parser.add_argument("--since", help="ISO-8601 UTC timestamp")
     parser.add_argument("--repo", help="Repo directory (for implement/fix)")
     parser.add_argument("--branch", help="Branch name (for implement/fix)")
     parser.add_argument("--base", help="Base SHA (for implement/fix)")
@@ -1359,8 +1461,179 @@ def main() -> None:
         "--flow-dir",
         help="Flow directory holding questions/ (plan/review); default: the receipt's grandparent when it sits in steps/",
     )
+    parser.add_argument(
+        "--escalation",
+        action="store_true",
+        help="Escalation mode: print ESCALATE line and exit 0",
+    )
+    parser.add_argument(
+        "--stop-source",
+        choices=["receipt", "validation", "audit"],
+        help="Stop source for escalation mode",
+    )
+    parser.add_argument(
+        "--escalations",
+        type=int,
+        help="Number of escalations so far",
+    )
+    parser.add_argument(
+        "--failures",
+        type=int,
+        help="Number of failures so far",
+    )
+    parser.add_argument(
+        "--implementer-model-state",
+        choices=["unset", "sonnet"],
+        help="Current implementer model state",
+    )
+    parser.add_argument(
+        "--expect-model",
+        help="Expected implementer model for OK receipts",
+    )
 
     args = parser.parse_args()
+
+    # Read receipt file
+    receipt_file = Path(args.receipt)
+    if not receipt_file.exists():
+        error(f"Receipt file not found: {args.receipt}")
+
+    receipt = read_file(receipt_file)
+
+    # Handle --escalation mode (check before any --since requirement)
+    if args.escalation:
+        # Check if receipt has a decision of OK
+        decision = parse_receipt_field(receipt, "Decision")
+        if decision == "OK":
+            print("ESCALATE: none receipt-ok")
+            sys.exit(0)
+
+        # For non-implement/fix steps, print none and exit 0
+        if args.step not in ["implement", "fix"]:
+            print(f"ESCALATE: none step-{args.step}")
+            sys.exit(0)
+
+        # For implement/fix steps, validate required arguments
+        if not args.stop_source:
+            error("--escalation requires --stop-source")
+        if args.escalations is None:
+            error("--escalation requires --escalations")
+        if args.failures is None:
+            error("--escalation requires --failures")
+
+        # Validate stop_source value
+        if args.stop_source not in ["receipt", "validation", "audit"]:
+            error(f"unknown --stop-source value: {args.stop_source}")
+
+        # Default --implementer-model-state to 'unset' if missing
+        implementer_model_state = args.implementer_model_state or "unset"
+
+        # Parse receipt fields
+        failure_class = parse_receipt_field(receipt, "FAILURE_CLASS")
+        turns_exhausted = parse_receipt_field(receipt, "TURNS_EXHAUSTED")
+        # Treat missing IMPLEMENTER_MODEL as haiku (pre-feature attempts ran Haiku)
+        implementer_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL") or "haiku"
+
+        # Determine if it's a failure
+        if not failure_class:
+            print("ESCALATE: none not-failed")
+            sys.exit(0)
+
+        # Check auto path eligibility (all 7 conditions)
+        auto_eligible = (
+            args.stop_source == "receipt"
+            and failure_class == "implementer-shortfall"
+            and turns_exhausted == "no"
+            and implementer_model == "haiku"
+            and implementer_model_state == "unset"
+            and args.escalations == 0
+            and args.failures < 2
+        )
+
+        if auto_eligible:
+            print("ESCALATE: auto sonnet")
+            sys.exit(0)
+
+        # Check manual path eligibility (once-per-step: escalations must be 0)
+        if args.escalations == 0 and args.failures < 2 and implementer_model == "haiku":
+            # Manual escalation applicable, determine reason
+            if args.stop_source != "receipt":
+                print(f"ESCALATE: manual sonnet stop-source {args.stop_source}")
+                sys.exit(0)
+            elif failure_class != "implementer-shortfall":
+                print("ESCALATE: manual sonnet class-other")
+                sys.exit(0)
+            elif turns_exhausted != "no":
+                # Determine reason for turns being exhausted/unknown/absent
+                if turns_exhausted == "yes":
+                    reason = "turns-yes"
+                elif turns_exhausted == "unknown":
+                    reason = "turns-unknown"
+                else:
+                    reason = "turns-absent"
+                print(f"ESCALATE: manual sonnet {reason}")
+                sys.exit(0)
+            elif implementer_model_state != "unset" or args.escalations > 0:
+                # Go to none path instead
+                pass
+            else:
+                print("ESCALATE: manual sonnet")
+                sys.exit(0)
+
+        # None path
+        none_reason: Optional[str] = None
+        if args.escalations is not None and args.escalations >= 1:
+            none_reason = "escalations-spent"
+        elif args.failures is not None and args.failures >= 2:
+            none_reason = "failures-at-cap"
+        elif implementer_model not in [None, "haiku"]:
+            none_reason = "model-not-haiku"
+
+        if none_reason:
+            print(f"ESCALATE: none {none_reason}")
+        else:
+            print("ESCALATE: none")
+        sys.exit(0)
+
+    # Handle --expect-model mode (does not require --since)
+    if args.expect_model:
+        # Expect-model mode for implement/fix on OK receipts
+        if args.step not in ["implement", "fix"]:
+            error("--expect-model only supported for implement/fix steps")
+
+        # Check for deviation
+        if scan_for_deviation(receipt):
+            print("Reason: receipt admits deviation")
+            sys.exit(1)
+
+        # Parse receipt fields
+        receipt_impl_model = parse_receipt_field(receipt, "IMPLEMENTER_MODEL")
+
+        # Rule 8: For escalated receipts (escalations > 0), validate model match is required
+        if args.escalations is not None and args.escalations > 0:
+            if receipt_impl_model != args.expect_model:
+                print(f"implementer model mismatch: escalated receipt expected {args.expect_model}, got {receipt_impl_model}")
+                sys.exit(1)
+        else:
+            # Check model match (standard case)
+            if receipt_impl_model != args.expect_model:
+                print(f"implementer model mismatch (expected {args.expect_model}, receipt {receipt_impl_model})")
+                sys.exit(1)
+
+        # Check discarded files (requires both repo and branch)
+        if args.repo and args.branch:
+            discarded_files = parse_discarded_files_block(receipt)
+            if discarded_files:
+                discarded_error = check_discarded_files(args.repo, args.branch, discarded_files)
+                if discarded_error:
+                    print(discarded_error)
+                    sys.exit(1)
+
+        sys.exit(0)
+
+    # Standard artifact verification mode
+    if args.since is None:
+        error("--since required for standard verification")
 
     # Parse --since once; bad value exits with code 2
     try:
@@ -1368,12 +1641,6 @@ def main() -> None:
     except ValueError as e:
         error(str(e))
 
-    # Deviation scan applies to all steps
-    receipt_file = Path(args.receipt)
-    if not receipt_file.exists():
-        error(f"Receipt file not found: {args.receipt}")
-
-    receipt = read_file(receipt_file)
     if scan_for_deviation(receipt):
         print("Reason: receipt admits deviation")
         sys.exit(1)

@@ -2610,7 +2610,7 @@ IMPLEMENT_HAIKU_SNAKE_CLASSES = [
     "resume_sha_not_found", "ancestry_invalid", "ancestry_invalid_after_drift",
     "working_tree_dirty", "detached_head", "outstanding_worktree", "resume_cancelled",
 ]
-NEW_FAILURE_CLASSES = ["steps_skipped"] + IMPLEMENT_HAIKU_SNAKE_CLASSES
+NEW_FAILURE_CLASSES = ["steps_skipped", "implementer_shortfall"] + IMPLEMENT_HAIKU_SNAKE_CLASSES
 
 
 def test_new_failure_classes_accepted_by_outcome_failure():
@@ -2670,6 +2670,15 @@ def test_kebab_forms_of_implement_haiku_classes_rejected():
             unflagged.append(kebab)
     ok = not accepted and not unflagged
     return ok, f"accepted by outcome_failure: {accepted}; not flagged by validate_event: {unflagged}"
+
+
+def test_implementer_shortfall_kebab_rejected():
+    """The kebab-case 'implementer-shortfall' is rejected by outcome_failure."""
+    try:
+        telemetry_schema.outcome_failure("implementer-shortfall")
+        return False, "should have raised ValueError for kebab-case"
+    except ValueError:
+        return True, ""
 
 
 def test_metrics_doc_names_every_failure_class():
@@ -3158,9 +3167,9 @@ if __name__ == "__main__":
     print()
 
     # Failure-class vocabulary for /implement-with-haiku (issue #259)
-    print("[Section 17] implement-with-haiku failure classes and steps_skipped")
+    print("[Section 17] implement-with-haiku failure classes, implementer_shortfall, and steps_skipped")
     passed, msg = test_new_failure_classes_accepted_by_outcome_failure()
-    test_result("outcome_failure accepts steps_skipped and the 11 snake_case doc classes", passed, msg)
+    test_result("outcome_failure accepts steps_skipped, implementer_shortfall and the 11 snake_case doc classes", passed, msg)
 
     passed, msg = test_new_failure_classes_are_schema_members()
     test_result("new failure classes are FAILURE_CLASSES members", passed, msg)
@@ -3170,6 +3179,9 @@ if __name__ == "__main__":
 
     passed, msg = test_kebab_forms_of_implement_haiku_classes_rejected()
     test_result("kebab-case forms of the doc classes are rejected", passed, msg)
+
+    passed, msg = test_implementer_shortfall_kebab_rejected()
+    test_result("kebab-case 'implementer-shortfall' is rejected", passed, msg)
 
     passed, msg = test_metrics_doc_names_every_failure_class()
     test_result("docs/metrics.md names every FAILURE_CLASSES member", passed, msg)

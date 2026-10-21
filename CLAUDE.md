@@ -75,7 +75,7 @@ See the ADRs for the full rationale:
 - [ADR-0007 Triage and decision memory](docs/adr/0007-triage-and-decision-memory.md) — the pipeline
   ends in triage, not synthesis; see the amendment for what was removed in chore/29.
 - [ADR-0021 Local merge queue](docs/adr/0021-local-merge-queue.md) — serialized per-repo merge queue for testing every PR against the exact base it lands on, with unverified-main detection and the force-push carve-out.
-- [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation, sequential epics.
+- [ADR-0023 /expert-flow](docs/adr/0023-expert-flow.md) — lifecycle orchestrator with a file-based question relay; subagent-per-step engine (spike #246), behaviour-neutral conversions of the lifecycle commands, no auto-remediation (except one bounded escalation: single-unit implement/fix shortfalls from Haiku to Sonnet, once per step), sequential epics.
 - [ADR-0024 Precedent Pat](docs/adr/0024-precedent-pat.md) — a prompt-the-human design that surfaces the user's past answers beside pending questions, display-only, never suppresses or pre-selects, triage never reads it.
 
 ## Triage: the review ends with decisions, not findings
@@ -214,7 +214,7 @@ separate from the reviewer-context cascade.
   item, enforced by `scripts/flow-verify-receipt.py --flow-dir`, with the fidelity audit judging evidence quality and receipt wording. Between steps the flow does not
   stop; `--gates` (stored per flow, inherited by epic children) opts into a step gate (Continue / Pause / Abort) after plan,
   implement, review, fix, and verify that shows what the step produced.
-  Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment) — never auto-remediated. State
+  Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment; a single-unit implement/fix implementer-shortfall offers a fourth option `Retry with sonnet` for manual escalation, and automatic escalation is dormant until a turns source exists per the 2026-10-16 amendment) — never auto-remediated. State
   under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
   (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
   scope: `FLOW_DIR` and the marker file). Its step agents are `general-purpose` subagents with full

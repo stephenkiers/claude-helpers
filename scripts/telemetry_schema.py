@@ -195,7 +195,7 @@ FAILURE_CLASSES = frozenset({
     "steps_skipped", "plan_not_found", "all_units_failed", "gate_not_converged",
     "resume_format_invalid", "resume_sha_not_found", "ancestry_invalid",
     "ancestry_invalid_after_drift", "working_tree_dirty", "detached_head",
-    "outstanding_worktree", "resume_cancelled",
+    "outstanding_worktree", "resume_cancelled", "implementer_shortfall",
 })
 EFFORT_LEVELS = frozenset({"1", "2", "3", "4", "5"})
 RUN_MODES = frozenset({"local", "pr", "coworker"})
