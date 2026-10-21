@@ -151,13 +151,13 @@ in the receipt instead of an awaiting marker. Each `PRIOR_ANSWERS` file may be r
 attempt. Any difference in question text or labels means it is a new question: ask normally with the
 next `SEQ`. The match must be exact because the human answered that question, not a similar one.
 `/expert-plan` questions outside a flow are derived from a fresh panel and often differ, so the human may be asked
-again there; the plan checkpoint report variant (`kind: report` files) is never reused across attempts (a retried attempt re-asks everything); `/expert-review` rulings are deterministic from checkpoints and usually match.
+again there; the plan checkpoint report variant (`kind: report` files) is never reused across attempts (a retried attempt re-asks everything); `/expert-review` rulings are deterministic from checkpoints and usually match. A reused question file is not rewritten; it keeps its original `attempt` field from when it was first written and is selected through the `reused-answers` marker.
 Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from either the step gate or `--resume --redo`) carry no `PRIOR_ANSWERS` lines, even if a prior attempt has answered matching questions: the human is replaying the step by choice, and fresh answers are expected. The one exception is a Re-run of a failed redo after a resume (`commands/expert-flow.md` rule 3b), which follows the ordinary retry rule above.
 
 2. **Write the question file** `${FLOW_DIR}/questions/<STEP_NAME>-<SEQ>.json` with the `Write`
    tool (not a shell redirect — the question text can derive from untrusted ticket or diff
    content, and `Write` keeps it out of a shell string). Its shape is the `AskUserQuestion` input
-   **verbatim**, plus four top-level fields the orchestrator needs (`summary` may be `null`), and
+   **verbatim**, plus five top-level fields the orchestrator needs (`summary` may be `null`), and
    an `id` plus an optional `brief` per question:
 
    ```json
@@ -165,6 +165,7 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
      "step": "<STEP_NAME>",
      "command": "<slash command without the leading slash, e.g. expert-plan>",
      "context_path": "<absolute path of the file a human should skim before answering, or null>",
+     "attempt": <k>,
      "summary": "<markdown the human reads before the questions, or null>",
      "questions": [
        { "id": "q1", "brief": "<markdown: the decision brief for this one question, or null>", ...the question entry exactly as you would have passed it to AskUserQuestion... },
@@ -173,6 +174,8 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
    }
    ```
 
+   `attempt` is the step prompt's `ATTEMPT=<k>`, with `1` when absent. The verifier ignores a question file without an integer `attempt` ≥ 1.
+   
    `id` is `q1`, `q2`, … in the order asked, unique within the file, and it is the key the answers
    file uses. `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
    strips both before the call. Each entry otherwise keeps the tool's own schema — `question`,
@@ -521,7 +524,7 @@ Each state's meaning:
 - `AWAITING` — the command ended its turn via the Ask block. This is not a decision. The receipt
   stays open: it has the awaiting marker(s) and no `Decision:` line and no `<!-- step-end -->`. On
   resume the command rewrites the file with the rest of the summary and the final trailer for its
-  shape (`OK` or `FAILED`), **keeping** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` counts relayed questions from them.
+  shape (`OK` or `FAILED`), **keeping** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` uses them to find reused and unanswered question files, and counts asked questions from this attempt's files on disk.
 
 **Forbidden trailer shapes** (the orchestrator rejects these): `Decision: AWAITING`; `MERGED: no`
 (omit the line instead); `MERGED: yes` with any `Decision` other than `OK`; `<!-- step-end -->` without a `Decision:` line; any receipt
@@ -545,7 +548,7 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 
 **Artifact verification.** A receipt is a claim. On `OK`, the orchestrator verifies the step's on-disk artifacts with
 `scripts/flow-verify-receipt.py`. For plan, that is the session dir named by `FINAL_PLAN_PATH`'s
-invocation id, with every `selected-experts.md` row's contribution (except `auditor` and `synthesis` rows). For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. The verifier's exit codes: 0 = artifacts OK; 1 = receipt admits deviation or artifact missing (and, with `--since-from-log`, a missing, malformed, or window-cut begin/retry line in log.md); 2 = bad arguments or internal error. The fix step accepts zero commits if the action plan has no *Doing it* items. All steps check mtime freshness: artifact mtimes must be >= `--since` minus 5 seconds. Point to `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2.
+invocation id, with every `selected-experts.md` row's contribution (except `auditor` and `synthesis` rows). For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. The verifier's exit codes: 0 = artifacts OK; 1 = receipt admits deviation or artifact missing (and, with `--since-from-log`, a missing, malformed, or window-cut begin/retry line in log.md); 2 = bad arguments or internal error. The fix step accepts zero commits if the action plan has no *Doing it* items. `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2. Plan and review steps verify that artifact mtimes are >= a first-attempt identity floor (the timestamp of this flow's newest `<STEP> begin` line in `log.md`) minus 5 seconds, or `--since` if no floor can be read. This identity check (amendment 2026-10-21) rejects artifacts from a prior flow or before this step began, the same anti-replay purpose the earlier mtime rule served. Point to `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2.
 
 Write the receipt with the `Write` tool (one file, one path, the path the orchestrator gave you).
 Copy that path **character for character** — never retype, shorten, or "correct" it from the

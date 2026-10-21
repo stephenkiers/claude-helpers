@@ -894,7 +894,7 @@ fi
 **Flow receipt (only when `FLOW_DIR` is set; skip entirely otherwise).** After Step 14 and before
 the happy-path `command-end`, write the step receipt per the Receipt block of
 `prompts/flow-reference.md`, with the `Write` tool, to the path the orchestrator named in its step
-prompt (default `${FLOW_DIR}/steps/04-review.md`; if an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` counts relayed questions from them;
+prompt (default `${FLOW_DIR}/steps/04-review.md`; if an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` uses them to find reused and unanswered question files, and counts asked questions from this attempt's files on disk;
 `<k>` is the step prompt's `ATTEMPT=<k>`, `1` when none). Content: the in-conversation closing message (see "Template for the
 in-conversation message" below), unchanged, followed by the two required lines, each on its own line,
 then the trailer. Compute the required lines from the same CONFIRMED-by-severity counts Step 13
