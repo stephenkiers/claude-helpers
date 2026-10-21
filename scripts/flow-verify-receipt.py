@@ -7,7 +7,7 @@ expert-flow Fidelity audit, and `--since-from-log` in the expert-flow resume pat
 Why it matters: a bound that is too early or wrong lets a stale run pass the audit (a false pass that
 masks a skipped step), and a bound that is too late or missing gives a false `ledger unavailable`.
 Design: ADR-0013 (deterministic logic lives in scripts, not prose) and ADR-0023 (the receipt is a claim
-that the Fidelity audit exists to check). The general ADR for deterministic helpers is pending (follow-up issue to be filed).
+that the Fidelity audit exists to check).
 
 Exit codes:
   0: artifacts OK
@@ -1646,10 +1646,15 @@ def main() -> None:
             flow_dir_real = flow_log.validate_flow_dir(str(flow_dir_arg))
         except flow_log.FlowLogError as e:
             error(f"--since-from-log: {e}")
+        # Reason lines go to stdout as the verdict; error() (stderr, exit 2) is reserved for bad arguments.
         try:
-            log_ts = flow_log.newest_attempt_start(flow_dir_real / "log.md", args.step)
-        except flow_log.FlowLogError:
-            print(f"Reason: malformed begin or retry line for {args.step}")
+            log_ts, window_cut = flow_log.newest_attempt_start_detail(flow_dir_real / "log.md", args.step)
+        except flow_log.FlowLogError as e:
+            print(f"Reason: malformed begin or retry line for {args.step} ({e})")
+            sys.exit(1)
+        if log_ts is None and window_cut:
+            print(f"Reason: no begin or retry line for {args.step} in the readable tail of log.md "
+                  f"(log.md is truncated to its last {flow_log.LOG_READ_CAP_BYTES} bytes; an older line may exist)")
             sys.exit(1)
         if log_ts is None:
             print(f"Reason: no begin or retry line for {args.step}")

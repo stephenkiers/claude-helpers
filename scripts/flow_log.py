@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Shared leaf helpers for expert-flow's log.md and ISO-8601 UTC timestamps (stdlib only).
 
-Owns the log.md attempt-start line format (the "log.md" block in commands/expert-flow.md,
-lines 744-751): `<ISO-8601 UTC Z> <step> begin|retry`. This is the one place in code where that
+Owns the log.md attempt-start line format (the "log.md" block in commands/expert-flow.md):
+`<ISO-8601 UTC Z> <step> begin|retry`. This is the one place in code where that
 format lives. Imported in-process by scripts/implement-ledger.py (`locate --flow-dir --step`) and
 scripts/flow-verify-receipt.py (`--since-from-log`, and its `_parse_iso8601` alias). This module
 imports no other repo script, so neither importer depends on the other.
@@ -17,9 +17,9 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
-ISO_UTC_Z_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+ISO_UTC_Z_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 STEP_RE = re.compile(r"[a-z][a-z-]*")
 # Only the last 1 MiB of log.md is read (about 25,000 log lines of ~40 bytes each).
 LOG_READ_CAP_BYTES = 1_048_576
@@ -36,6 +36,10 @@ def parse_iso8601(iso_str: str) -> float:
 
     Handles formats like "2026-10-14T22:20:13Z" and "2026-10-14T22:20:13+00:00"
     with or without timezone offsets.
+
+    Raises:
+        ValueError: if iso_str is not a parseable ISO-8601 timestamp. Callers that take the value
+            from log.md pre-validate it with ISO_UTC_Z_RE first.
     """
     try:
         # Normalize trailing Z to +00:00 for fromisoformat
@@ -53,17 +57,25 @@ def parse_iso8601(iso_str: str) -> float:
             dt = dt.replace(tzinfo=timezone.utc)
 
         return dt.timestamp()
-    except ValueError:
-        raise ValueError(f"Could not parse ISO timestamp: {iso_str}")
+    except ValueError as e:
+        raise ValueError(f"Could not parse ISO timestamp: {iso_str}") from e
 
 
-def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
-    """Return the timestamp of the newest `<step> begin|retry` line in log.md, or None if there is none.
+def newest_attempt_start_detail(log_path: Path, step: str) -> Tuple[Optional[str], bool]:
+    """Return (stamp, window_cut) for the newest `<step> begin|retry` line in log.md.
+
+    stamp is the timestamp of that line, or None when no line matched. window_cut is True only when
+    stamp is None and log.md is larger than LOG_READ_CAP_BYTES, so the search covered just the tail and
+    an older matching line may exist outside it. Callers that must tell "no line" apart from "no line
+    in the readable tail" use this function; newest_attempt_start is the plain view.
 
     "Newest" is the last matching line in file order (log.md is append-only). Lines of other events
     are ignored. If the newest candidate is malformed, or its timestamp is not a valid UTC Z value,
     or it lies in the future, FlowLogError is raised. The function never falls back to an older line,
     because that would widen the bound. A missing, unreadable, symlinked, or non-regular log.md raises FlowLogError.
+
+    Raises:
+        FlowLogError: for an invalid step name, an unusable log.md, or a malformed or future-dated newest line.
     """
     if not STEP_RE.fullmatch(step):
         raise FlowLogError(f"invalid step name {step!r}")
@@ -81,7 +93,7 @@ def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
                 fh.seek(size - LOG_READ_CAP_BYTES)
             raw = fh.read()
     except OSError as e:
-        raise FlowLogError(f"cannot read log.md: {e}")
+        raise FlowLogError(f"cannot read log.md: {e}") from e
     if truncated:
         # Drop the partial first line left by the seek.
         newline = raw.find(b"\n")
@@ -93,7 +105,7 @@ def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
         if loose_re.fullmatch(line):
             newest = line
     if newest is None:
-        return None
+        return None, truncated
 
     match = strict_re.fullmatch(newest)
     if match is None:
@@ -104,9 +116,22 @@ def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
     try:
         epoch = parse_iso8601(stamp)
     except ValueError:
-        raise FlowLogError(f"malformed {step} begin or retry line in log.md")
+        raise FlowLogError(f"malformed {step} begin or retry line in log.md") from None
     if epoch > time.time() + FUTURE_SKEW_SECS:
         raise FlowLogError(f"{step} begin or retry timestamp is in the future")
+    return stamp, False
+
+
+def newest_attempt_start(log_path: Path, step: str) -> Optional[str]:
+    """Return the timestamp of the newest `<step> begin|retry` line in log.md, or None if there is none.
+
+    Same contract as newest_attempt_start_detail, without the truncation flag. A None return does not
+    say whether the log was truncated; use newest_attempt_start_detail when that distinction matters.
+
+    Raises:
+        FlowLogError: under the same conditions as newest_attempt_start_detail.
+    """
+    stamp, _window_cut = newest_attempt_start_detail(log_path, step)
     return stamp
 
 

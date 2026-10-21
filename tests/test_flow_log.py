@@ -296,6 +296,39 @@ def test_symlinked_verifier_imports_flow_log():
         return not hit, f"rc={r.returncode} module_markers={hit} output={out[:300]!r}"
 
 
+def test_iso_regex_is_ascii_only():
+    """ISO_UTC_Z_RE accepts ASCII digits only; non-ASCII decimal digits (fullwidth, Arabic-Indic) do not match."""
+    ascii_ok = fl.ISO_UTC_Z_RE.fullmatch("2026-10-19T15:58:14Z") is not None
+    fullwidth = "２０２６-10-19T15:58:14Z"
+    arabic_indic = "٢٠٢٦-10-19T15:58:14Z"
+    non_ascii_rejected = fl.ISO_UTC_Z_RE.fullmatch(fullwidth) is None and fl.ISO_UTC_Z_RE.fullmatch(arabic_indic) is None
+    return ascii_ok and non_ascii_rejected, f"ascii_ok={ascii_ok} non_ascii_rejected={non_ascii_rejected}"
+
+
+def test_detail_reports_window_cut_only_for_truncated_miss():
+    """newest_attempt_start_detail flags a miss as window_cut only when the log exceeds the cap; a small log miss is not flagged."""
+    cap = fl.LOG_READ_CAP_BYTES
+    filler = "filler line without any marker\n" * ((2 * cap) // len("filler line without any marker\n") + 1)
+    with tempfile.TemporaryDirectory() as td:
+        big = Path(td) / "big.md"
+        big.write_text(filler)
+        small = Path(td) / "small.md"
+        small.write_text(f"{_iso(NOW - 60)} fix begin\n")
+        big_result = fl.newest_attempt_start_detail(big, "implement")
+        small_result = fl.newest_attempt_start_detail(small, "implement")
+    return big_result == (None, True) and small_result == (None, False), f"big={big_result!r} small={small_result!r}"
+
+
+def test_detail_returns_stamp_with_no_window_cut_when_found():
+    """newest_attempt_start_detail returns the stamp and window_cut False when a matching line is in the window."""
+    ts = _iso(NOW - 60)
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "log.md"
+        log.write_text(f"{ts} implement retry\n")
+        got = fl.newest_attempt_start_detail(log, "implement")
+    return got == (ts, False), f"got={got!r} expected={(ts, False)!r}"
+
+
 TESTS = [
     ("newest matching line is the last in file order", test_newest_of_several_matching_lines_is_last_in_file_order),
     ("file order beats a larger timestamp", test_last_in_file_order_beats_larger_timestamp),
@@ -316,6 +349,9 @@ TESTS = [
     ("validate_flow_dir contract", test_validate_flow_dir_contract),
     ("symlinked implement-ledger.py imports flow_log", test_symlinked_implement_ledger_imports_flow_log),
     ("symlinked flow-verify-receipt.py imports flow_log", test_symlinked_verifier_imports_flow_log),
+    ("ISO_UTC_Z_RE rejects non-ASCII digits", test_iso_regex_is_ascii_only),
+    ("detail: window cut flagged only for a truncated miss", test_detail_reports_window_cut_only_for_truncated_miss),
+    ("detail: found stamp has no window cut", test_detail_returns_stamp_with_no_window_cut_when_found),
 ]
 
 

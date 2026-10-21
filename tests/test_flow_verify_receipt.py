@@ -2167,6 +2167,50 @@ No items."""
     h.test_result("_parse_iso8601 returns the flow_log value for Z, offset, and naive inputs", same)
     h.test_result("_parse_iso8601 still raises ValueError on garbage", garbage_raises)
 
+    print()
+    print("[Test 84] --since-from-log exits 2 when there is no flow dir, and when the flow dir is invalid")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
+        no_flow = run_verifier_argv(["--step", "implement", "--receipt", receipt_path, "--since-from-log"], tmp_home)
+        h.test_result("--since-from-log with no --flow-dir and a receipt outside steps/ exits 2",
+                      no_flow[0] == 2, f"rc={no_flow[0]} stderr={no_flow[2][:200]!r}")
+        outside = Path(tmp_home) / "not-a-flow"
+        outside.mkdir(parents=True)
+        (outside / "log.md").write_text(f"{iso_z(time.time() - 60)} implement begin\n")
+        bad_flow = run_verifier_argv(
+            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", str(outside)], tmp_home)
+        h.test_result("--since-from-log with a flow dir outside ~/.claude/flows exits 2",
+                      bad_flow[0] == 2, f"rc={bad_flow[0]} stderr={bad_flow[2][:200]!r}")
+        relative = run_verifier_argv(
+            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", "relative/flow"], tmp_home)
+        h.test_result("--since-from-log with a relative --flow-dir exits 2",
+                      relative[0] == 2, f"rc={relative[0]} stderr={relative[2][:200]!r}")
+
+    print()
+    print("[Test 85] --since-from-log distinguishes a truncated log with no line in its tail, and names the malformed error")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, "Decision: OK\n<!-- step-end -->")
+        flow_dir = f"{tmp_home}/.claude/flows/flow-85"
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        cap = load_flow_log_module().LOG_READ_CAP_BYTES
+        filler = "filler line without any marker\n" * ((2 * cap) // len("filler line without any marker\n") + 1)
+        Path(f"{flow_dir}/log.md").write_text(f"{iso_z(time.time() - 3600)} implement begin\n" + filler)
+        truncated = run_verifier_argv(
+            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir], tmp_home)
+        h.test_result("truncated log with no line in its tail exits 1 with the window-cut reason",
+                      truncated[0] == 1 and "in the readable tail of log.md" in truncated[1] + truncated[2],
+                      f"rc={truncated[0]} stdout={truncated[1]!r} stderr={truncated[2]!r}")
+        flow_dir_bad = f"{tmp_home}/.claude/flows/flow-85-bad"
+        Path(flow_dir_bad).mkdir(parents=True, exist_ok=True)
+        Path(f"{flow_dir_bad}/log.md").write_text("garbage implement begin\n")
+        malformed = run_verifier_argv(
+            ["--step", "implement", "--receipt", receipt_path, "--since-from-log", "--flow-dir", flow_dir_bad], tmp_home)
+        h.test_result("malformed newest line reason includes the underlying error message",
+                      malformed[0] == 1 and "(malformed implement begin or retry line in log.md)" in malformed[1],
+                      f"rc={malformed[0]} stdout={malformed[1]!r}")
+
     h.summarize_and_exit()
 
 
