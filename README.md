@@ -56,6 +56,9 @@ is `./install.sh` (add `--with-zsh-keybindings` to opt into Option+Arrow word ju
 - **Research** — `/expert-spike`: resumable research spikes on a closed question, with a persisted
   knowledge base under `spikes/` (see [ADR-0022](docs/adr/0022-expert-spike.md)).
 - **Lifecycle** — `/track`, `/implement-with-haiku`, `/shipit`, `/cleanup`, `/expert-rebase`, and more.
+- **Local merge queue** (`scripts/workflow/merge_queue.py`, Python) — serializes PRs and tests
+  each against the exact base it lands on, then drives the GitHub API through a single timed,
+  argument-list wrapper (`scripts/workflow/git.py`). See [ADR-0021](docs/adr/0021-local-merge-queue.md).
 
 See [CLAUDE.md](CLAUDE.md) for the full command and persona catalog.
 
