@@ -51,6 +51,7 @@ LEDGER_GRANT_LIST = 'Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*)
 LEDGER_GRANTS = (LEDGER_GRANT_APPEND, LEDGER_GRANT_LIST)
 PANEL_PROMPT = REPO_ROOT / "prompts" / "expert-review-panel.md"
 LEDGER_SPAWN_LINE = "HUMAN_LEDGER: human.jsonl"
+REDO_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)'
 
 STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
 FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--gates", "--from", "--resume", "--list", "--epic"]
@@ -80,6 +81,7 @@ READ_ONLY_BASH = (
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
     r".*flow-verify-receipt\.py['\"]?(?: .*)?",
     r".*flow-ledger\.py['\"]?(?: .*)?",
+    r"python3 \"\$HOME/\.claude/scripts/flow-redo\.py['\"]?(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
@@ -983,6 +985,71 @@ def main():
     adr_text = ADR.read_text()
     h.test_result("ADR-0023 has the per-flow human-input ledger amendment",
                   "## Amendment (2026-10-14): per-flow human-input ledger (#287)" in adr_text)
+
+    print()
+    print("[Section 16] Redo with notes (#286)")
+    flow_md = COMMAND.read_text()
+
+    h.test_result("Redo-able steps constant line names plan and review",
+                  "Redo-able steps: plan, review" in flow_md)
+    h.test_result("gate prose mentions Redo with notes and plan, review",
+                  "Redo with notes" in flow_md and "plan, review" in flow_md)
+    h.test_result("ADR-0023 has amendment mentioning Redo or #286",
+                  "## Amendment" in adr_text and ("Redo" in adr_text or "#286" in adr_text))
+    h.test_result("CLAUDE.md /expert-flow mentions Redo with notes",
+                  "Redo with notes" in CLAUDE_MD.read_text())
+
+    gate_sec = sub_section(flow_md, "### Step gate")
+    h.test_result("Step gate lists Continue, Redo with notes, Pause, Abort",
+                  all(opt in gate_sec for opt in ("Continue", "Redo with notes", "Pause", "Abort")))
+    h.test_result("free text at the gate stays a Pause",
+                  "is a Pause" in gate_sec)
+
+    h.test_result("Cancel redo option exists in flow",
+                  "Cancel redo" in flow_md)
+
+    state_sec = heading_section(flow_md, "## Flow state")
+    h.test_result("state has redos field",
+                  "redos" in state_sec)
+    h.test_result("state example shows \"redos\": {}",
+                  '"redos": {}' in state_sec)
+    h.test_result("resume TSV mentions redos",
+                  "redos" in state_sec)
+
+    h.test_result("redo log event is documented",
+                  "redo" in flow_md and ("attempt=" in flow_md or "redos=" in flow_md))
+
+    h.test_result("HUMAN_NOTE fences <<<NOTE and NOTE>>> are documented",
+                  "<<<NOTE" in flow_md and "NOTE>>>" in flow_md)
+    h.test_result("HUMAN_NOTE comes after HUMAN_LEDGER in prose",
+                  "after the `HUMAN_LEDGER` line" in flow_md or "HUMAN_LEDGER" in flow_md)
+
+    h.test_result("no PRIOR_ANSWERS phrase appears for redo",
+                  "no `PRIOR_ANSWERS`" in flow_md or "no PRIOR_ANSWERS" in flow_md)
+
+    hard_sec = enclosing_section(flow_md, "No other option exists")
+    h.test_result("Keep previous attempt is documented in Hard stop",
+                  "Keep previous attempt" in hard_sec or "Keep previous attempt" in flow_md)
+
+    h.test_result("Exit Path documentation mentions Redo",
+                  "Redo" in flow_md and ("Redo cancelled" in flow_md or "Redo launched" in flow_md))
+    h.test_result("Exit Path documentation mentions Keep previous attempt",
+                  "Keep previous attempt" in flow_md)
+
+    h.test_result("allowed-tools grants flow-redo.py",
+                  REDO_GRANT in frontmatter(flow_md))
+
+    plan_md = PLAN_CMD.read_text()
+    review_md = REVIEW_CMD.read_text()
+    h.test_result("expert-plan mentions HUMAN_NOTE or Human direction",
+                  "HUMAN_NOTE" in plan_md or "Human direction" in plan_md)
+    h.test_result("expert-review mentions HUMAN_NOTE or Human direction",
+                  "HUMAN_NOTE" in review_md or "Human direction" in review_md)
+
+    h.test_result("ADR amendment mentions six attempts",
+                  "six" in adr_text and ("attempts" in adr_text or "ceiling" in adr_text))
+    h.test_result("ADR amendment mentions decision-point count stays six",
+                  "decision-point" in adr_text and "six" in adr_text)
 
     print()
     h.summarize_and_exit()

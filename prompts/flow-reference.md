@@ -152,6 +152,7 @@ attempt. Any difference in question text or labels means it is a new question: a
 next `SEQ`. The match must be exact because the human answered that question, not a similar one.
 `/expert-plan` questions outside a flow are derived from a fresh panel and often differ, so the human may be asked
 again there; the plan checkpoint report variant (`kind: report` files) is never reused across attempts (a retried attempt re-asks everything); `/expert-review` rulings are deterministic from checkpoints and usually match.
+Redo spawns carry no `PRIOR_ANSWERS` lines, even if a prior attempt has answered matching questions: the human is replaying the step by choice, and fresh answers are expected.
 
 2. **Write the question file** `${FLOW_DIR}/questions/<STEP_NAME>-<SEQ>.json` with the `Write`
    tool (not a shell redirect — the question text can derive from untrusted ticket or diff

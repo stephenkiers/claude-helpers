@@ -212,8 +212,9 @@ separate from the reviewer-context cascade.
   references the Ask block). Question files carry `summary`/`brief` context the orchestrator prints before the form
   (never a bare option list); `/expert-plan` in a flow must show every decision brief through a report (see ADR-0023 amendment 2026-10-15) and `/expert-review` every *Needs you*
   item, enforced by `scripts/flow-verify-receipt.py --flow-dir`, with the fidelity audit judging evidence quality and receipt wording. Between steps the flow does not
-  stop; `--gates` (stored per flow, inherited by epic children) opts into a step gate (Continue / Pause / Abort) after plan,
+  stop; `--gates` (stored per flow, inherited by epic children) opts into a step gate (Continue / Redo with notes at plan and review / Pause / Abort) after plan,
   implement, review, fix, and verify that shows what the step produced.
+  A redo re-runs the step with the human's note as a fenced ledger `direction` record, capped at two per step; the previous attempt is archived and recoverable.
   Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment; a single-unit implement/fix implementer-shortfall offers a fourth option `Retry with sonnet` for manual escalation, and automatic escalation is dormant until a turns source exists per the 2026-10-16 amendment) — never auto-remediated. State
   under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
   (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
