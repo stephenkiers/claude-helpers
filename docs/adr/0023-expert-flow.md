@@ -675,9 +675,13 @@ Neither path adds an unconditional stop. The default flow still does not pause b
 ## Amendment (2026-10-20): a bounded `implement-ledger.py locate` fails closed on unreadable records
 
 The bounded locate (`--since`, or `--flow-dir`/`--step`, which derives `--since` from log.md) scans every pointer and
-tombstone under the state dir. An unreadable file, or a record whose `created_epoch` is not a finite number, could hide
-the run that the Fidelity audit is looking for, so the bounded scan no longer skips such a record with a stderr note.
-It exits 2 with a message that names the unreadable file, and prints no run. Records that merely lack a numeric
-`created_epoch` stay ineligible and are reported on stderr without failing. The unbounded locate (no bound given) is
-unchanged. A bounded miss now prints a distinct NOT FOUND hint, because finished runs are tombstones pruned after 14
-days.
+tombstone under the state dir. An unreadable file, or a record whose `created_epoch` is not a finite number (NaN,
+infinity, or an integer too large for a float), could hide the run that the Fidelity audit is looking for, so the
+bounded scan no longer skips such a record with a stderr note. It exits 2 with a message that names up to five
+unreadable files and gives their total count, and prints no run. Records that merely lack a numeric `created_epoch`
+stay ineligible and are reported on stderr without failing. The fail-closed check runs before the repo filter, so one
+unreadable or non-finite record anywhere under the state dir makes every bounded locate exit 2, in every repo, until
+the file is repaired or removed; that blast radius is the accepted trade-off of the fail-closed ruling. The unbounded
+locate (no bound given) is unchanged. A bounded miss now prints a distinct NOT FOUND hint, because finished runs are
+tombstones pruned after 14 days. A `--flow-dir` locate whose newest begin/retry line lies outside the readable tail of
+log.md prints a distinct NOT FOUND reason on stderr and still exits 3.

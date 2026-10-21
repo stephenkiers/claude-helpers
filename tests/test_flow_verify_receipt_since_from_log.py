@@ -87,8 +87,8 @@ def test_invalid_flow_dir_exits_2(h, tmp):
     flow, receipt = make_flow(home)
     missing = home / ".claude" / "flows" / "repo" / "does-not-exist"
     rc, out = run_verifier(verifier_args(receipt, missing), home, home)
-    h.test_result("invalid flow dir (missing): --since-from-log exits 2",
-                  rc == 2, f"rc={rc} output={out.strip()}")
+    h.test_result("invalid flow dir (missing): --since-from-log exits 2 and names the missing log.md",
+                  rc == 2 and "--since-from-log: log.md is missing" in out, f"rc={rc} output={out.strip()}")
 
     outside = Path(tmp) / "outside-flows"
     outside.mkdir()
@@ -103,8 +103,9 @@ def test_invalid_flow_dir_exits_2(h, tmp):
 def test_reason_carries_underlying_error(h, tmp):
     cases = (
         ("malformed timestamp", "2026-13-45T99:00:00Z implement begin\n",
-         "malformed implement begin or retry line"),
-        ("future timestamp", "2099-01-01T00:00:00Z implement begin\n", "future"),
+         "Reason: malformed begin or retry line for implement (malformed implement begin or retry line in log.md)"),
+        ("future timestamp", "2099-01-01T00:00:00Z implement begin\n",
+         "Reason: malformed begin or retry line for implement (implement begin or retry timestamp is in the future)"),
     )
     for label, log_text, expected in cases:
         home = Path(tmp) / label.replace(" ", "-")
@@ -113,8 +114,8 @@ def test_reason_carries_underlying_error(h, tmp):
         (flow / "log.md").write_text(log_text)
         rc, out = run_verifier(verifier_args(receipt, flow), home, home)
         reason = reason_line(out)
-        h.test_result(f"reason includes underlying error ({label})",
-                      expected in reason, f"rc={rc} reason={reason!r} output={out.strip()}")
+        h.test_result(f"reason carries the underlying error and exits 1 ({label})",
+                      rc == 1 and reason == expected, f"rc={rc} reason={reason!r} output={out.strip()}")
 
 
 def test_valid_begin_line_bounds_verifier(h, tmp):
@@ -127,9 +128,9 @@ def test_valid_begin_line_bounds_verifier(h, tmp):
     args = ["--step", "implement", "--receipt", str(receipt), "--since-from-log",
             "--flow-dir", str(flow), "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", head]
     rc, out = run_verifier(args, home, home)
-    h.test_result("happy: valid begin line is accepted by --since-from-log (no bound error)",
-                  "since-from-log" not in out and "no begin or retry" not in out
-                  and "Could not count commits" not in out,
+    h.test_result("happy: valid begin line bounds the verifier and reaches the artifacts check",
+                  "Reason: implement artifacts missing" in out and "since-from-log" not in out
+                  and "no begin or retry" not in out and "Could not count commits" not in out,
                   f"rc={rc} output={out.strip()}")
 
 
@@ -148,10 +149,12 @@ def test_truncated_tail_reason_is_distinct(h, tmp):
     (small_flow / "log.md").write_text("some unrelated line\n")
     _, out_small = run_verifier(verifier_args(small_receipt, small_flow), small, small)
 
-    h.test_result("truncated tail: Reason differs from the plain no-begin-line Reason",
-                  reason_line(out_small) == PLAIN_NO_LINE_REASON and reason_line(out_big) != ""
-                  and reason_line(out_big) != reason_line(out_small),
-                  f"big={reason_line(out_big)!r} small={reason_line(out_small)!r}")
+    expected_big = ("Reason: no begin or retry line for implement in the readable tail of log.md "
+                    "(only the last 1048576 bytes of log.md were read; an older line may exist)")
+    h.test_result("truncated tail: Reason is the exact tail-window reason",
+                  reason_line(out_big) == expected_big, f"big={reason_line(out_big)!r}")
+    h.test_result("truncated tail: plain no-begin-line Reason is the exact plain text",
+                  reason_line(out_small) == PLAIN_NO_LINE_REASON, f"small={reason_line(out_small)!r}")
 
 
 def main():

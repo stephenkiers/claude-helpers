@@ -960,26 +960,41 @@ def test_retry_with_leftover_pointer_returns_newer_tombstone():
     """D1: S1's unfinished pointer predates the newest retry line; S2's tombstone postdates it. S2's run wins.
 
     Fixture floors: the retry bound is now-55 (retry at now-50, less the 5 s skew) and the begin bound
-    would be now-205. The leftover pointer's created_epoch (now-100) sits between the two floors. Newest
-    eligible record wins, so S2's newer tombstone is returned under either bound; the assertion guards
-    against the leftover pointer being returned, not against the bound's exact value.
+    would be now-205. The leftover pointer's created_epoch (now-100) sits between the two floors, so it is
+    eligible only under the begin bound. Scenario 1 (S2 present) checks that the newest eligible record
+    wins. Scenario 2 (S2 absent) is the discriminator: with no newer record to win, the leftover pointer
+    must not be returned, so the locate exits 3. A begin-bound implementation returns it and fails here.
     """
+    problems = []
+    now = _now()
+
     sb = Sandbox()
     try:
-        now = _now()
         flow = _flow(sb)
         _log(flow, [f"{_iso(now - 200)} implement begin", f"{_iso(now - 50)} implement retry"])
         old = _pointer_only(sb, "run-d1-old", "scratch-d1-old", "sess-S1", created=now - 100)
         new = _finished(sb, "run-d1-new", "scratch-d1-new", "sess-S2")
         r = _locate(sb, flow, "implement", session="sess-S2")
-        problems = []
         if r.returncode != 0 or not _mentions(_out(r), new.scratch):
             problems.append(f"expected S2's run: {_brief(r)}")
         if _mentions(_out(r), old.scratch):
             problems.append("S1's leftover pointer returned ahead of the retry-era tombstone")
-        return not problems, "; ".join(problems) or "ok"
     finally:
         sb.close()
+
+    sb = Sandbox()
+    try:
+        flow = _flow(sb)
+        _log(flow, [f"{_iso(now - 200)} implement begin", f"{_iso(now - 50)} implement retry"])
+        _pointer_only(sb, "run-d1-only", "scratch-d1-only", "sess-S1", created=now - 100)
+        r = _locate(sb, flow, "implement", session="sess-S2")
+        if r.returncode != 3:
+            problems.append(f"leftover pointer before the retry floor was not excluded (want exit 3): {_brief(r)}")
+        if _mentions(_out(r), "scratch-d1-only"):
+            problems.append("leftover pointer older than the retry floor was returned (begin bound used)")
+    finally:
+        sb.close()
+    return not problems, "; ".join(problems) or "ok"
 
 
 def test_stale_implement_run_does_not_pass_fix_audit():

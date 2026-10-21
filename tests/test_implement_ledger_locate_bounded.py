@@ -13,7 +13,11 @@ Covers:
 4. Distinct hint: a bounded locate with no record in the window exits 3 and names the pruning
    window on stderr; the no-pointer run-key lookup does not.
 5. Tie-break: two records with equal created_epoch resolve to the same run whichever order they
-   were created in.
+   were created in, and that run is the greater run key.
+6. Boundary: created_epoch exactly at since - 5 is eligible; one second earlier is not.
+7. Fail closed: an integer created_epoch too large for a float exits 2 with 'unreadable' (no traceback).
+8. Audit path: --flow-dir with a truncated log.md reports the truncated-tail reason on stderr (exit 3),
+   distinct from the plain no-begin-line message.
 
 Run with: python3 tests/test_implement_ledger_locate_bounded.py
 """
@@ -24,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -34,6 +39,8 @@ LEDGER = REPO_ROOT / "scripts" / "implement-ledger.py"
 WINDOW = "2020-01-01T00:00:00Z"
 FUTURE_WINDOW = "2099-01-01T00:00:00Z"
 START_SHA = "0000000000000000000000000000000000000001"
+SKEW_SECS = 5
+FILLER = "noise line padding for the tail read\n"
 
 
 def run_ledger(args, home, cwd):
@@ -120,6 +127,8 @@ def test_non_finite_created_epoch_fails_closed(h, tmp):
         rc, out, err = fx.locate_since()
         h.test_result(f"non-finite created_epoch ({label}): bounded locate exits 2",
                       rc == 2, f"rc={rc} stdout={out.strip()} stderr={err.strip()}")
+        h.test_result(f"non-finite created_epoch ({label}): stderr says unreadable, no run on stdout",
+                      "unreadable" in err and "RUN_KEY:" not in out, f"stdout={out.strip()} stderr={err.strip()}")
 
 
 def test_empty_window_emits_distinct_hint(h, tmp):
@@ -131,8 +140,11 @@ def test_empty_window_emits_distinct_hint(h, tmp):
                   rc_since == 3, f"rc={rc_since} stdout={out_since.strip()}")
     h.test_result("empty window: stderr names the pruning window",
                   "pruned" in err_since and "14 days" in err_since, f"stderr={err_since.strip()}")
+    h.test_result("empty window: plain no-pointer message is the exact run-key miss text",
+                  rc_nokey == 3 and err_nokey.strip() == "NOT FOUND: no implement-with-haiku run pointer",
+                  f"nokey={err_nokey.strip()}")
     h.test_result("empty window: hint differs from the plain no-pointer message",
-                  rc_nokey == 3 and err_since.strip() != err_nokey.strip(),
+                  err_since.strip() != err_nokey.strip(),
                   f"since={err_since.strip()} nokey={err_nokey.strip()}")
 
     fx2 = LedgerFixture(Path(tmp) / "future")
@@ -170,6 +182,68 @@ def test_equal_created_epoch_tie_break_is_order_independent(h, tmp):
     h.test_result("tie-break: same run is chosen regardless of creation order",
                   len(results) == 2 and results[0][1] == results[1][1] and len(results[0][1]) == 1,
                   f"results={results}")
+    h.test_result("tie-break: the greater run key (tie-b) is the chosen run",
+                  len(results) == 2 and all(run == ["RUN_KEY: tie-b"] for _, run in results),
+                  f"results={results}")
+
+
+def _boundary_case(tmp, label, created):
+    fx = LedgerFixture(Path(tmp) / label)
+    run_key = "boundary-" + label
+    rc, _, err = fx.init_run(run_key)
+    if rc != 0:
+        raise AssertionError(f"init {run_key}: {err.strip()}")
+    record = fx.read_pointer(run_key)
+    record["created_epoch"] = created
+    fx.write_pointer(run_key, record)
+    return fx.locate_since()
+
+
+def test_created_epoch_boundary_is_exactly_since_minus_skew(h, tmp):
+    base = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp())
+    rc, out, err = _boundary_case(tmp, "at", base - SKEW_SECS)
+    h.test_result("boundary: created_epoch == since - 5 is eligible (exit 0, run named)",
+                  rc == 0 and "RUN_KEY: boundary-at" in out, f"rc={rc} stderr={err.strip()}")
+    rc, out, err = _boundary_case(tmp, "below", base - SKEW_SECS - 1)
+    h.test_result("boundary: created_epoch == since - 6 is not eligible (exit 3, no run)",
+                  rc == 3 and "RUN_KEY:" not in out, f"rc={rc} stdout={out.strip()} stderr={err.strip()}")
+
+
+def test_huge_int_created_epoch_fails_closed(h, tmp):
+    fx = LedgerFixture(Path(tmp) / "huge")
+    fx.init_run("seed-huge")
+    record = fx.read_pointer("seed-huge")
+    record["run_key"] = "bad-huge"
+    record["created_epoch"] = 10 ** 400
+    fx.write_pointer("bad-huge", record)
+    rc, out, err = fx.locate_since()
+    h.test_result("huge-int created_epoch: bounded locate exits 2 (no traceback)",
+                  rc == 2 and "Traceback" not in err, f"rc={rc} stderr={err.strip()[-300:]}")
+    h.test_result("huge-int created_epoch: stderr says unreadable, no run on stdout",
+                  "unreadable" in err and "RUN_KEY:" not in out, f"stdout={out.strip()} stderr={err.strip()}")
+
+
+def test_flow_dir_truncated_log_reports_truncation_reason(h, tmp):
+    fx = LedgerFixture(Path(tmp) / "trunc")
+    flow = fx.home / ".claude" / "flows" / "repo" / "flow-trunc"
+    flow.mkdir(parents=True)
+    (flow / "log.md").write_text(
+        "2026-10-20T10:00:00Z implement begin\n" + FILLER * (3 * 1024 * 1024 // len(FILLER)))
+    rc, out, err = run_ledger(["locate", "--repo", str(fx.repo), "--flow-dir", str(flow), "--step", "implement"],
+                              fx.home, fx.repo)
+    h.test_result("flow-dir truncated log: audit locate exits 3 and prints nothing on stdout",
+                  rc == 3 and out == "", f"rc={rc} stdout={out!r}")
+    h.test_result("flow-dir truncated log: stderr names the readable tail and the older-line caveat",
+                  "readable tail of log.md" in err and "an older line may exist" in err, f"stderr={err.strip()}")
+
+    plain = fx.home / ".claude" / "flows" / "repo" / "flow-plain"
+    plain.mkdir(parents=True)
+    (plain / "log.md").write_text("some unrelated line\n")
+    rc_p, _, err_p = run_ledger(["locate", "--repo", str(fx.repo), "--flow-dir", str(plain), "--step", "implement"],
+                                fx.home, fx.repo)
+    h.test_result("flow-dir plain miss: exit 3 with the exact no-begin-line message",
+                  rc_p == 3 and err_p.strip() == "NOT FOUND: no begin or retry line for implement",
+                  f"rc={rc_p} stderr={err_p.strip()}")
 
 
 def main():
@@ -180,6 +254,9 @@ def main():
         test_non_finite_created_epoch_fails_closed,
         test_empty_window_emits_distinct_hint,
         test_equal_created_epoch_tie_break_is_order_independent,
+        test_created_epoch_boundary_is_exactly_since_minus_skew,
+        test_huge_int_created_epoch_fails_closed,
+        test_flow_dir_truncated_log_reports_truncation_reason,
     )
     for case in cases:
         with tempfile.TemporaryDirectory() as tmp:

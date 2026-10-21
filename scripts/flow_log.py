@@ -31,6 +31,10 @@ class FlowLogError(ValueError):
     """Raised when a flow directory or its log.md cannot yield a trustworthy attempt start."""
 
 
+class MalformedLineError(FlowLogError):
+    """The newest begin|retry line is malformed or future-dated (as opposed to log.md being unreadable)."""
+
+
 def parse_iso8601(iso_str: str) -> float:
     """Parse ISO-8601 UTC timestamp to float (epoch seconds).
 
@@ -75,7 +79,8 @@ def newest_attempt_start_detail(log_path: Path, step: str) -> Tuple[Optional[str
     because that would widen the bound. A missing, unreadable, symlinked, or non-regular log.md raises FlowLogError.
 
     Raises:
-        FlowLogError: for an invalid step name, an unusable log.md, or a malformed or future-dated newest line.
+        FlowLogError: for an invalid step name or an unusable log.md (missing, symlinked, unreadable).
+        MalformedLineError (a FlowLogError): for a malformed or future-dated newest line.
     """
     if not STEP_RE.fullmatch(step):
         raise FlowLogError(f"invalid step name {step!r}")
@@ -109,16 +114,16 @@ def newest_attempt_start_detail(log_path: Path, step: str) -> Tuple[Optional[str
 
     match = strict_re.fullmatch(newest)
     if match is None:
-        raise FlowLogError(f"malformed {step} begin or retry line in log.md")
+        raise MalformedLineError(f"malformed {step} begin or retry line in log.md")
     stamp = match.group(1)
     if not ISO_UTC_Z_RE.fullmatch(stamp):
-        raise FlowLogError(f"malformed {step} begin or retry line in log.md")
+        raise MalformedLineError(f"malformed {step} begin or retry line in log.md")
     try:
         epoch = parse_iso8601(stamp)
     except ValueError:
-        raise FlowLogError(f"malformed {step} begin or retry line in log.md") from None
+        raise MalformedLineError(f"malformed {step} begin or retry line in log.md") from None
     if epoch > time.time() + FUTURE_SKEW_SECS:
-        raise FlowLogError(f"{step} begin or retry timestamp is in the future")
+        raise MalformedLineError(f"{step} begin or retry timestamp is in the future")
     return stamp, False
 
 

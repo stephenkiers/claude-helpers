@@ -1649,12 +1649,15 @@ def main() -> None:
         # Reason lines go to stdout as the verdict; error() (stderr, exit 2) is reserved for bad arguments.
         try:
             log_ts, window_cut = flow_log.newest_attempt_start_detail(flow_dir_real / "log.md", args.step)
-        except flow_log.FlowLogError as e:
+        except flow_log.MalformedLineError as e:
             print(f"Reason: malformed begin or retry line for {args.step} ({e})")
+            sys.exit(1)
+        except flow_log.FlowLogError as e:
+            print(f"Reason: cannot read begin or retry line for {args.step} ({e})")
             sys.exit(1)
         if log_ts is None and window_cut:
             print(f"Reason: no begin or retry line for {args.step} in the readable tail of log.md "
-                  f"(log.md is truncated to its last {flow_log.LOG_READ_CAP_BYTES} bytes; an older line may exist)")
+                  f"(only the last {flow_log.LOG_READ_CAP_BYTES} bytes of log.md were read; an older line may exist)")
             sys.exit(1)
         if log_ts is None:
             print(f"Reason: no begin or retry line for {args.step}")

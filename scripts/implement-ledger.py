@@ -34,7 +34,8 @@ Exit codes:
     locate  0 found (also when already finished); 3 nothing found, no begin or retry line for --step, an
             invalid flow dir, or an unreadable flow log; 2 invalid arguments, unreadable state, or (bounded
             --since/--flow-dir only) ANY unreadable pointer or tombstone under the state dir, or a non-finite
-            created_epoch. A bounded locate fails closed: it never skips an unreadable record.
+            created_epoch (NaN, infinity, or an integer too large for a float). A bounded locate fails closed:
+            it never skips an unreadable record.
     check   0 complete; 1 incomplete or malformed, or no pointer found; 2 unreadable state.
     render  0 rendered; 3 nothing found; 2 unreadable state.
     finish  0 success, or already finished (no-op); 1 gate failed (command-end recorded as
@@ -418,6 +419,14 @@ def _scan_records(root: Path, warn_unreadable: bool = False) -> Tuple[List[Tuple
     return out, unreadable
 
 
+def _is_finite_epoch(created: Any) -> bool:
+    """True when created is a number that converts to a finite float. A huge int raises OverflowError: not finite."""
+    try:
+        return math.isfinite(float(created))
+    except OverflowError:
+        return False
+
+
 def _created_key(path: Path, data: Dict[str, Any]) -> float:
     created = data.get("created_epoch")
     if isinstance(created, (int, float)) and not isinstance(created, bool):
@@ -447,7 +456,7 @@ def _scan_since(root: Path, repo: str, since: float, stats: ScanSkips) -> Option
     """One bounded, repo-gated scan over pointers and tombstones. Returns the newest eligible record, or None.
 
     Fail closed: every unreadable file under root, and every record whose created_epoch is not a finite
-    number (NaN and infinities parse as JSON but cannot be ordered), is counted in stats.unreadable
+    number (NaN, infinities, and integers too large for a float), is counted in stats.unreadable
     whatever its repo, and is never skipped silently. A record is eligible only when its repo equals repo,
     its created_epoch is a finite int or float (not a bool), and created_epoch >= since - SINCE_SKEW_SECS.
     The newest eligible record wins. Ties on created_epoch are broken by the run key (the file name without
@@ -463,7 +472,7 @@ def _scan_since(root: Path, repo: str, since: float, stats: ScanSkips) -> Option
     for path, kind, data in records:
         created = data.get("created_epoch")
         is_number = isinstance(created, (int, float)) and not isinstance(created, bool)
-        if is_number and not math.isfinite(created):
+        if is_number and not _is_finite_epoch(created):
             stats.unreadable += 1
             stats.unreadable_paths.append(path.name)
             continue
@@ -501,8 +510,8 @@ def locate_record(
     - since given (epoch seconds UTC), no run_key: one bounded scan that replaces passes 1-2. Pointers
       and tombstones are both eligible. The comparison is created_epoch >= since - 5 (SINCE_SKEW_SECS).
       Records without a numeric created_epoch are ineligible and counted as no_epoch. Any unreadable file
-      under root, or a non-finite created_epoch, is counted as unreadable, and cmd_locate fails closed
-      (exit 2) on it. repo is required: a bounded locate with repo None raises LedgerError, because no
+      under root, or a non-finite created_epoch (NaN, infinity, or an integer too large for a float), is
+      counted as unreadable, and cmd_locate fails closed (exit 2) on it. repo is required: a bounded locate with repo None raises LedgerError, because no
       record could match it. Session is ignored, so a finished run from another session is found. Without
       a bound, a tombstone from another session is not found (the bound is mandatory for that fallback).
     - The bound comes from the newest `<STEP> begin|retry` line in the flow's log.md (see
@@ -643,10 +652,13 @@ def cmd_locate(args: argparse.Namespace) -> int:
     A bound is given either directly by --since (ISO-8601 UTC) or derived from --flow-dir/--step (the
     newest begin|retry line of the flow's log.md). Either way the bound is printed as `SINCE:` on success.
     `already finished` means the record found is a tombstone. In a bounded scan any unreadable pointer or
-    tombstone under the state dir exits 2 (fail closed, never skipped); records without created_epoch are
-    counted to stderr only when non-zero. Any failure to derive or match the bound exits 3 (reported as
-    "ledger unavailable" by the Fidelity audit). A bounded miss prints a distinct NOT FOUND hint: finished
-    runs are tombstones pruned after TOMBSTONE_TTL_DAYS days, so an old run may simply be gone.
+    tombstone under the state dir exits 2 (fail closed, never skipped), as does a non-finite created_epoch;
+    records without created_epoch are counted to stderr only when non-zero. Exit 3 means the bound cannot be
+    derived or matched (reported as "ledger unavailable" by the Fidelity audit), including a log.md whose
+    newest matching line lies outside the readable tail. A bounded miss prints a distinct NOT FOUND hint:
+    finished runs are tombstones pruned after TOMBSTONE_TTL_DAYS days, so an old run may simply be gone.
+    The CLI always supplies a repo (the toplevel of the current directory), so the repo-None LedgerError of
+    locate_record is reachable only from library callers, and it exits 2 there.
     """
     root = state_root()
     repo = args.repo or git_toplevel()
@@ -654,9 +666,16 @@ def cmd_locate(args: argparse.Namespace) -> int:
     if args.flow_dir is not None:
         try:
             flow_dir = flow_log.validate_flow_dir(args.flow_dir)
-            since_iso = flow_log.newest_attempt_start(flow_dir / "log.md", args.step)
+            since_iso, window_cut = flow_log.newest_attempt_start_detail(flow_dir / "log.md", args.step)
         except flow_log.FlowLogError as e:
             print(f"NOT FOUND: {e}", file=sys.stderr)
+            return 3
+        if since_iso is None and window_cut:
+            print(
+                f"NOT FOUND: no begin or retry line for {args.step} in the readable tail of log.md (only the "
+                f"last {flow_log.LOG_READ_CAP_BYTES} bytes were read; an older line may exist)",
+                file=sys.stderr,
+            )
             return 3
         if since_iso is None:
             print(f"NOT FOUND: no begin or retry line for {args.step}", file=sys.stderr)
