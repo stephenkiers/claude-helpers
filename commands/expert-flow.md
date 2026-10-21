@@ -1,6 +1,6 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
-argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
+argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> [--redo plan|review] | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
 allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
@@ -107,7 +107,11 @@ wake-up with no completion notification, re-read the receipt from disk and other
   into sub-tickets, create them, run the single-ticket flow for each in order. See "Epic mode". Not
   combinable with `--from`.
 - `--resume <flow-dir|issue#>` — continue a flow from its state on disk. A bare number picks the
-  most recently updated flow for that issue in this repo. Mutually exclusive with every other flag.
+  most recently updated flow for that issue in this repo. Takes no other flag except `--redo`.
+- `--redo <plan|review>` — only with `--resume`: redo that finished step with a human note, in any flow
+  (gate-less or `--gates`). It runs the shared Redo procedure (see "Redo"). Refused with a one-line
+  reason and the state untouched when the flow is running or live, the step is not `plan` or `review`,
+  its receipt is not a finished `Decision: OK`, `redos[STEP]` is already 2, or the worktree is missing.
 - `--abandon <flow-dir|issue#>` — mark a flow the human has walked away from as `abandoned` and
   exit (see "`--abandon`"). Resolved like `--resume`. Takes no other flags. Nothing is deleted.
 - `--retro <flow-dir|issue#>` — grade a finished (or stopped) flow and exit: one Opus agent writes
@@ -116,7 +120,7 @@ wake-up with no completion notification, re-read the receipt from disk and other
   `running`/`awaiting` flow untouched for 3 hours is marked `(stale)`. Takes no other flags.
 
 Unknown flags, a bad `--from` value, a value flag with no value, two issue arguments, `--abandon`
-or `--retro` combined with any other flag, a `--plan-file` path outside the allowed character set, bare `/expert-flow` with other flags, an argument string that is present but parses to nothing, or a missing issue without a bare run in a ticket worktree stop before any telemetry with a `guard_block` exit. Only a run with no arguments at all is a bare run.
+or `--retro` combined with any other flag, `--redo` without `--resume` or with a value other than `plan` or `review`, a `--plan-file` path outside the allowed character set, bare `/expert-flow` with other flags, an argument string that is present but parses to nothing, or a missing issue without a bare run in a ticket worktree stop before any telemetry with a `guard_block` exit. Only a run with no arguments at all is a bare run.
 
 ## Step 0: Setup
 
@@ -124,7 +128,7 @@ or `--retro` combined with any other flag, a `--plan-file` path outside the allo
 
 ```bash
 PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
-RESUME_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
+RESUME_REF=""; REDO_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
 RAW_ARGC=$#
 flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
 while [ $# -gt 0 ]; do
@@ -134,9 +138,10 @@ while [ $# -gt 0 ]; do
     --from=*) FROM_STEP="${1#--from=}"; [ -n "$FROM_STEP" ] || flag_bad "--from requires a value" ;;
     --plan-file=*) PLAN_FILE_FLAG="${1#--plan-file=}"; [ -n "$PLAN_FILE_FLAG" ] || flag_bad "--plan-file requires a value" ;;
     --resume=*) RESUME_REF="${1#--resume=}"; [ -n "$RESUME_REF" ] || flag_bad "--resume requires a value" ;;
+    --redo=*) REDO_REF="${1#--redo=}"; [ -n "$REDO_REF" ] || flag_bad "--redo requires a value" ;;
     --abandon=*) ABANDON_REF="${1#--abandon=}"; [ -n "$ABANDON_REF" ] || flag_bad "--abandon requires a value" ;;
     --retro=*) RETRO_REF="${1#--retro=}"; [ -n "$RETRO_REF" ] || flag_bad "--retro requires a value" ;;
-    --plan-effort|--review-effort|--from|--plan-file|--resume|--abandon|--retro)
+    --plan-effort|--review-effort|--from|--plan-file|--resume|--redo|--abandon|--retro)
       if [ $# -lt 2 ] || [ -z "${2}" ]; then flag_bad "${1} requires a value"; else
         case "${1}" in
           --plan-effort) PLAN_EFFORT="${2}" ;;
@@ -144,6 +149,7 @@ while [ $# -gt 0 ]; do
           --from) FROM_STEP="${2}" ;;
           --plan-file) PLAN_FILE_FLAG="${2}" ;;
           --resume) RESUME_REF="${2}" ;;
+          --redo) REDO_REF="${2}" ;;
           --abandon) ABANDON_REF="${2}" ;;
           --retro) RETRO_REF="${2}" ;;
         esac
@@ -165,6 +171,8 @@ case "$FROM_STEP" in ""|implement|review|verify|ship|merge) ;; *) flag_bad "--fr
 [ -n "$PLAN_FILE_FLAG" ] && [ "$FROM_STEP" != implement ] && flag_bad "--plan-file requires --from implement"
 case "$PLAN_FILE_FLAG" in *[!A-Za-z0-9._/~+:=@,-]*) flag_bad "--plan-file path may contain only letters, digits, and . _ / ~ + : = @ , -" ;; esac
 [ -n "$FROM_STEP" ] && [ "$EPIC" = yes ] && flag_bad "--from cannot be combined with --epic"
+[ -n "$REDO_REF" ] && [ -z "$RESUME_REF" ] && flag_bad "--redo requires --resume"
+case "$REDO_REF" in ""|plan|review) ;; *) flag_bad "--redo must be plan or review" ;; esac
 [ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
 [ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
 [ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
@@ -432,6 +440,7 @@ re-runs the `worktree` step and then hands off like a fresh run.
 
 Resume rules, applied in this order:
 
+0. **Redo entry (`--redo <STEP>` only; skip otherwise).** Runs before rule 1, in any flow, gate-less or not. Refuse with a one-line reason and leave state untouched (`guard_block`, no telemetry) unless all hold: `live` is `null`; `status` is not `running` or `awaiting`; `STEP` is `plan` or `review`; `steps/<NN>-<STEP>.md` is `Decision: OK` with `<!-- step-end -->`; `(.redos[STEP] // 0) < 2`; and the recorded worktree exists when one is recorded. Then run "Redo note" from its follow-up question; a Cancel or Pause answer stops with state untouched. Only a note runs the "Redo procedure" (steps 1–8), which also rewinds `step` to `STEP` and deletes `gates[STEP]` (step 6 sets both). The rules 1–8 below do not run for this invocation. Telemetry begin runs, then the step loop takes over at the spawn. Downstream steps re-run through the normal loop; a track re-run on an existing worktree is not verified by this procedure.
 1. **Live step.** If `live` is not `null`, the previous session left a step agent that was running or
    waiting for answers, and a new session cannot reach it. `--resume` is the only way back into a
    crashed or interrupted `running`/`awaiting` flow, so this is not a refusal: ask once with
@@ -497,7 +506,10 @@ Resume rules, applied in this order:
    sequence number. Answered `answers/*.json` files are replayed only through `PRIOR_ANSWERS`
    exact-match reuse (see `flow-reference.md` "Ask" → "Prior answers"); otherwise they are kept for
    reference.
-3b. **Flow resume.** Before rule 4: when the recorded step's receipt is a stub or `FAILED`, the current attempt is in the redo lineage, and a complete archive exists, ask once (header `Flow resume`): **Keep previous attempt (Recommended)** / **Re-run the redo** / **Abort**. On **Keep previous attempt**: run `flow-redo.py restore`, set `plan_path`/`review_dir` from the restored receipt, mark the record `parked`, set `status: paused`, log `kept-previous`, `WRITE-STATE`, re-ask the gate. On **Re-run the redo**: set `status: running`, log `resumed`, `WRITE-STATE` (same as a regular resume), increment `attempts[STEP]`, stub the receipt, and spawn the step at its stage-open point with the redo `HUMAN_NOTE` rebuilt from the pending record; `redos` is not incremented again; `PRIOR_ANSWERS` from this redo attempt's own questions are allowed. On **Abort**: mark the record `parked`, set `status: failed`, log `aborted`, `WRITE-STATE`, print the stop lines, `command-end --outcome failure --failure-class other`, end the turn.
+3b. **Flow resume after a failed redo.** Before rule 4: when the recorded step's receipt is a stub or `FAILED`, the current attempt is a redo attempt, and its archive is complete (the "Hard stop" definitions), ask once (header `Flow resume`): **Keep previous attempt (Recommended)** / **Re-run the redo** / **Abort**. Use the options and procedure of "Hard stop" item 4 (Keep previous attempt) and item 5 (Abort), plus Re-run the redo as defined here, with `J` = the recorded `ATTEMPT`:
+   - **Keep previous attempt:** run `flow-redo.py restore --flow-dir "$FLOW_DIR" --nn <NN> --step <STEP> --attempt <J>`; it prints the restored attempt number, which is `J`. Set `attempts[STEP]` to that number, set `plan_path`/`review_dir` from the restored receipt, mark the redo record `parked` (`flow-ledger.py mark --flow-dir "$FLOW_DIR" --seq <seq> --status parked`), set `status: paused`, log `kept-previous`, `WRITE-STATE`, re-ask the gate.
+   - **Re-run the redo:** set `status: running`, log `resumed`, `WRITE-STATE`, increment `attempts[STEP]`, stub the receipt, and spawn the step at its stage-open point with the `HUMAN_NOTE` block rebuilt from the still-pending record. The record stays `pending`; `redos` is not incremented again; `PRIOR_ANSWERS` from this attempt's own questions are allowed.
+   - **Abort:** mark the redo record `parked` (same command as above), set `status: failed`, log `aborted`, `WRITE-STATE`, print the stop lines, `command-end --outcome failure --failure-class other`, end the turn.
 6. **Step `merge`.** Check the PR first: `gh pr view "<PR_URL>" --json state -q .state`.
    - `MERGED` → set `status: done`, log `done`, `WRITE-STATE`, then "Telemetry begin", close with
      `command-end --outcome success`, print the done line, end. No worktree is needed.
@@ -708,7 +720,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
   "live": {"step": "review", "attempt": 2, "since": "2026-10-09T11:01:58Z"},
   "started": "2026-10-09T10:15:00Z", "updated": "2026-10-09T11:02:13Z",
   "flags": {"plan_effort": null, "review_effort": null, "auto_merge": false, "step_gates": false, "from": null},
-  "redos": {},
+  "redos": {}, "redo_archive": null,
   "epic": null
 }
 ```
@@ -736,6 +748,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `escalations` | object step → integer | count of escalations per step (auto or manual); incremented on every escalation trigger; default: 0 per step on resume if absent |
 | `stop_source` | object step → `"receipt"`, `"validation"`, `"audit"` | how the step reached FAILED: from the receipt itself, from a validation rule, or from fidelity audit; cleared on every `begin` or `retry` |
 | `redos` | object step → integer | human-chosen redos per step, cap 2, incremented at launch, never decremented, kept as history; a redo leaves `gates[STEP]` absent so the gate is asked again after the redo closes OK |
+| `redo_archive` | object or `null` | `{step, attempt, nn}` written at Redo step 6 (after the archive succeeds, before the counters) and cleared when the redo lineage closes; a `null` value with an archive file present is a crash window and is handled by the redo's crash rule |
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |
 | `started`, `updated` | ISO-8601 UTC | `updated` is set on every `WRITE-STATE` |
 | `flags.plan_effort` | `null`, `2`, `3` | forwarded to plan |
@@ -768,7 +781,7 @@ printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<STEP>" "<EVENT>" >> "$FLO
 ```
 
 where `<EVENT>` is one of `begin`, `retry`, `ok`, `failed`, `taken-over`, `hand-finished`, `awaiting`, `resumed`, `gate`, `paused`,
-`skipped`, `rebased`, `rebase-worker`, `aborted`, `abandoned`, `handoff`, `escalated`, `done`, `redo`. (`handoff` is logged once, by the fresh-run hand-off. `redo` is logged with step=<STEP>, attempt=<k>, redos=<n>, note_chars=<kept_len>.
+`skipped`, `rebased`, `rebase-worker`, `aborted`, `abandoned`, `handoff`, `escalated`, `done`, `redo`, `kept-previous`. (`handoff` is logged once, by the fresh-run hand-off. `redo` is logged as `<STEP> redo attempt=<k> redos=<n> note_chars=<kept_len>`, with `<kept_len>` the sanitised note's character count. `kept-previous` is logged as `<STEP> kept-previous attempt=<J>` when a failed redo is restored.)
 `taken-over` is written by Take over at the Hard stop and at the merge gate; it is the only record that a human chose to finish a step by hand, and resume rule 2 reads it. `escalated` is logged when an escalation (automatic or manual) is triggered.)
 
 ## Steps
@@ -1295,7 +1308,7 @@ skipped when `flags.step_gates` is false (the default) or `gates[STEP]` is alrea
    `<next step>`." Options:
    - **Continue** (Recommended) — flip `status` to `running`, record `gates[STEP]: "continue"`, remove a legacy `gate_note` key if present, log `gate`,
      `WRITE-STATE`, advance `STEP`, and continue the loop.
-   - **Redo with notes** — offered only when `STEP` is in Redo-able steps and `.redos[STEP] // 0 < 2`; otherwise not shown. Option description names what is re-run and the cost: plan: "re-runs the full /expert-plan panel at effort <PLAN_EFFORT or auto> and asks every brief again; your note steers it"; review: "re-runs the full /expert-review panel at effort <REVIEW_EFFORT or auto>; findings may differ; every *Needs you* is asked again; the old review dir is kept". Picking Redo asks ONE follow-up question (see the "Redo note" section below).
+   - **Redo with notes** — offered only when `STEP` is in Redo-able steps and `((.redos[STEP] // 0) < 2)`; otherwise not shown. The same redo procedure is reachable without `--gates` through `--resume <flow> --redo <STEP>` (resume rule 0). Option description names what is re-run and the cost: plan: "re-runs the full /expert-plan panel at effort <PLAN_EFFORT or auto> and asks every brief again; your note steers it"; review: "re-runs the full /expert-review panel at effort <REVIEW_EFFORT or auto>; findings may differ; every *Needs you* is asked again; the old review dir is kept". Picking Redo asks ONE follow-up question (see the "Redo note" section below).
    - **Pause** — leave `status: paused` (already set), with `STEP` unchanged (the completed step; its receipt stays `OK`),
      log `paused` (already logged), print the stop lines with `paused at: <STEP> (gate: human paused)`
      and `skim:` the gate's main file (per the table above), `command-end --outcome interrupted` (no stage is open at a
@@ -1315,13 +1328,15 @@ HUMAN_TEXT_<8 random hex>
 
 ### Redo note
 
-This section is entered when the human picks "Redo with notes" at a step gate. Ask ONE follow-up question (header `Redo note`): "What should the redo of `<STEP>` do differently? Type it through Other." Options: `Cancel redo` (re-ask the gate) and `Pause` (as the gate's Pause). Only an "Other" reply is a note. Every `AskUserQuestion` site must reference the Ask block (tests/test_flow_ask_sites.py enforces this; mimic existing sites).
+There is one redo procedure with two entries. The **gate entry** is the "Redo with notes" option at a step gate (shown only with `--gates`). The **resume entry** is `--resume <flow> --redo <STEP>` (resume rule 0), available in every flow, gate-less or not. Both enter at the same follow-up question, and steps 2–8 below run once for either entry. No entry adds an unconditional stop.
+
+Ask ONE follow-up question (header `Redo note`): "What should the redo of `<STEP>` do differently? Type it through Other." Options: `Cancel redo` and `Pause`. Only an "Other" reply is a note. On the gate entry, **Cancel redo** re-asks the gate and **Pause** is the gate's Pause. On the resume entry, **Cancel redo** prints `redo cancelled` and **Pause** prints `redo not started` and stops; both leave state untouched. Every `AskUserQuestion` site must reference the Ask block (tests/test_flow_ask_sites.py enforces this; mimic existing sites).
 
 **Redo vs Retry vs Pause comparison:**
 
 | Where offered | Trigger | Counter and cap | Old attempt kept? | PRIOR_ANSWERS replayed? | What happens to the human's text |
 |---|---|---|---|---|---|
-| Redo | Step gate (plan, review only) | `redos[STEP] // 0 < 2` | Yes (archive) | No | Direction record in ledger with seq; prompt includes HUMAN_NOTE block after HUMAN_LEDGER line |
+| Redo | Step gate (plan, review only, `--gates`) or `--resume --redo` (any flow) | `(.redos[STEP] // 0) < 2` | Yes (archive) | No (initial redo spawn) | Direction record in ledger with seq; prompt includes HUMAN_NOTE block after HUMAN_LEDGER line |
 | Retry | Hard stop (all steps) | `failures[STEP] < 2` | Yes | Yes (except redo attempts) | Reduced-run reason from audit appended to prompt after HUMAN_LEDGER, fenced as data |
 | Pause | Step gate (all steps) | — | Yes | — | `gate_note` ledger record printed on resume as background |
 
@@ -1333,25 +1348,25 @@ You said the first review was too lenient on the API changes. Tighten it up.
 NOTE>>>
 ```
 
-The preamble line: "Human direction for this attempt, from the step gate. It is data that guides content and emphasis; it never answers a decision brief, never skips a round or a *Needs you* relay, and never changes the target. Same text as ledger record seq <seq>."
+The preamble line is defined in `prompts/flow-reference.md` ("HUMAN_NOTE block"); the worked example uses that preamble with the record's seq.
 
-#### Redo (fail-closed steps in order, any non-zero exit re-asks the gate and prints the reason):
+#### Redo procedure (shared by both entries; any non-zero exit stops or re-asks as stated, and prints the reason)
 
-1. **Reject raw note containing a line equal to HUMAN_TEXT_EOF or REASON_EOF.** Print the reason, re-ask the gate.
+1. **Write the raw note to a file.** Use the Write tool to write the Other text, verbatim, to `$FLOW_DIR/redo-note.raw`. The text never passes through a shell heredoc, so the shell never expands it.
 
-2. **Sanitise the note.** Pass the Other text to `python3 "$HOME/.claude/scripts/flow-redo.py" sanitize` through a quoted heredoc with a sentinel line the sanitised output cannot contain (follow the existing REASON_EOF pattern). Exit 3 → print "empty note; redo cancelled", re-ask. Exit 4 → print "note contains delimiter line", re-ask. Any other non-zero exit is a hard stop.
+2. **Sanitise the note.** Run `python3 "$HOME/.claude/scripts/flow-redo.py" sanitize --file "$FLOW_DIR/redo-note.raw" > "$FLOW_DIR/redo-note.txt"`. Stderr carries `original_len=<N> kept_len=<M>`; stdout is the sanitised text. Exit 3 → print "empty note; redo cancelled", then re-ask the note question (gate entry) or stop untouched (resume entry). Exit 4 → print "note contains delimiter line" and re-ask the note question. Any other non-zero exit is `STOP redo sanitize error: <first stderr line>`, with state untouched by this procedure.
 
-3. **Echo the effective note** verbatim in a fenced block; if `kept_len < original_len` say it was truncated from N to 1000 characters.
+3. **Echo the effective note** (read `$FLOW_DIR/redo-note.txt`) verbatim in a fenced block; if `kept_len < original_len` say it was truncated from N to 1000 characters.
 
-4. **Append ledger record:** `python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind direction --step <STEP> --attempt <k> --text-stdin`, where `k = attempts[STEP]+1`; sanitised text via quoted heredoc, never `--text`. Non-zero exit = hard stop. Record returned seq.
+4. **Append ledger record:** `python3 "$HOME/.claude/scripts/flow-ledger.py" append --flow-dir "$FLOW_DIR" --kind direction --step <STEP> --attempt <k> --text-stdin < "$FLOW_DIR/redo-note.txt"`, where `k = attempts[STEP]+1`. Non-zero exit = `STOP human ledger error: <first stderr line>`. Record the returned seq.
 
-5. **Archive with `flow-redo.py archive`:** `python3 "$HOME/.claude/scripts/flow-redo.py" archive --flow-dir "$FLOW_DIR" --nn <NN> --step <STEP> --attempt <current receipt ATTEMPT>`. On refusal mark new record `parked`, print reason, re-ask gate.
+5. **Archive with `flow-redo.py archive`:** `python3 "$HOME/.claude/scripts/flow-redo.py" archive --flow-dir "$FLOW_DIR" --nn <NN> --step <STEP> --attempt <current receipt ATTEMPT>`. On refusal, mark the new record `parked` (`python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status parked`), print the reason, and re-ask the gate (gate entry) or stop (resume entry).
 
-6. **Counters:** `redos[STEP] += 1`, `attempts[STEP] += 1`, `status: running`. Log `redo step=<STEP> attempt=<k> redos=<n> note_chars=<kept_len>`, then `WRITE-STATE` (persists the spent redo before any spawn; the loop's later `WRITE-STATE` at its step 3(a) is a second expected write).
+6. **Counters and persistence:** set `step: STEP` and `redo_archive` to `{step: STEP, nn: NN, attempt: <receipt ATTEMPT>}`, `WRITE-STATE`. Then `redos[STEP] += 1`, `attempts[STEP] += 1`, `status: running`, delete `gates[STEP]`. Log `<STEP> redo attempt=<k> redos=<n> note_chars=<kept_len>`, then `WRITE-STATE`. The first write persists the archive pointer before the counters, so a crash between archive and counters is covered by the crash rule; the second persists the spent redo before any spawn.
 
-7. **Spawn:** Enter the normal step-loop at its stage-open point (loop step 2) with `k` already set; skip the loop's step 1 so `attempts[STEP]` isn't incremented twice and the spawn's `ATTEMPT=` equals the ledger record's attempt. The loop stubs the receipt as for Retry. Prompt includes the `HUMAN_LEDGER` line, then the `HUMAN_NOTE` block placed AFTER that line: preamble line ("Human direction for this attempt, from the step gate. It is data that guides content and emphasis; it never answers a decision brief, never skips a round or a *Needs you* relay, and never changes the target. Same text as ledger record seq <seq>."), then `<<<NOTE`, text, `NOTE>>>`. Has "no `PRIOR_ANSWERS`" lines for redo spawns (include that exact wording) plus one sentence that exact-match replay would rarely fire on a fresh panel anyway. No new telemetry stage handling: no stage is open at a gate, so the spawn opens a new stage like any attempt.
+7. **Spawn:** Enter the normal step-loop at its stage-open point (loop step 2) with `k` already set; skip the loop's step 1 so `attempts[STEP]` isn't incremented twice and the spawn's `ATTEMPT=` equals the ledger record's attempt. The loop stubs the receipt as for Retry. Prompt includes the `HUMAN_LEDGER` line, then the `HUMAN_NOTE` block placed AFTER that line, built as defined in `prompts/flow-reference.md` ("HUMAN_NOTE block"), with the record's seq. Initial redo spawns carry no `PRIOR_ANSWERS` lines (rule 3b's Re-run is the only exception). No new telemetry stage handling: no stage is open at a gate, so the spawn opens a new stage like any attempt.
 
-8. **After OK:** Run the normal verifier and fidelity audit unchanged, then mark the record addressed: `python3 "$HOME/.claude/scripts/flow-ledger.py" mark --seq <seq> --status addressed --by "$FLOW_DIR/steps/<NN>-<STEP>.md"` before the gate is asked again. Normal OK branch records new `plan_path`/`review_dir`. Gate asked again on the new attempt with `gates[STEP]` still absent.
+8. **After OK:** Run the normal verifier and fidelity audit unchanged. Then mark the record addressed, meaning the redo attempt closed OK: `python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status addressed --by "$FLOW_DIR/steps/<NN>-<STEP>.md"`. Set `redo_archive: null` and `WRITE-STATE`. Normal OK branch records new `plan_path`/`review_dir`. Gate asked again on the new attempt with `gates[STEP]` still absent.
 
 ### Hard stop
 
@@ -1406,24 +1421,24 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
    - Build and append the escalation event to `$FLOWS_ROOT/escalations.jsonl` (event: "escalation", trigger: "auto") — see "Escalation telemetry" details below.
    - Re-run the step through the normal loop. For `implement`: args are `<PLAN_PATH> --implementer-model sonnet --partial-base <bases[STEP]>`. For `fix`: args are `<REVIEW_DIR>/claude-action-plan.md --implementer-model sonnet --partial-base <bases[STEP]>`.
    On `ESCALATE: manual sonnet` or `ESCALATE: none`, fall through to the menu below.
-4. **Keep previous attempt (Recommended).** Shown whenever the failed attempt is in the redo lineage (defined below) and its archive is complete. To determine if this option should appear: check the ledger for a `direction` record with `step=<STEP>` and `attempt=<current failed ATTEMPT>` and a complete archive `steps/<NN>-<STEP>.a*.md`. If so, offer this option:
-   1. Run `python3 "$HOME/.claude/scripts/flow-redo.py" restore --flow-dir "$FLOW_DIR" --nn <NN> --step <STEP> --attempt <failed ATTEMPT>`. If it exits non-zero, drop the option and print the reason; keep the others.
-   2. Set `plan_path` or `review_dir` from the restored receipt's `FINAL_PLAN_PATH:` or `REVIEW_DIR:` line.
-   3. Mark the redo record `parked`: `python3 "$HOME/.claude/scripts/flow-ledger.py" mark --seq <seq> --status parked --by "$FLOW_DIR/steps/<NN>-<STEP>.md"`.
-   4. Set `status: paused`, log `kept-previous`, `WRITE-STATE`.
+4. **Keep previous attempt (Recommended) — offered first.** Shown whenever the failed attempt is a redo attempt with a complete archive: the ledger has a `direction` record with `step=<STEP>` and `attempt=<failed ATTEMPT>` (call it `J`), and `steps/<NN>-<STEP>.a*.md` exists. When offered, the procedure is:
+   1. Run `python3 "$HOME/.claude/scripts/flow-redo.py" restore --flow-dir "$FLOW_DIR" --nn <NN> --step <STEP> --attempt <J>`. If it exits non-zero, drop the option and print the reason; keep the others. On success it prints the restored attempt number, which is `J`.
+   2. Set `attempts[STEP]` to that number, and set `plan_path` or `review_dir` from the restored receipt's `FINAL_PLAN_PATH:` or `REVIEW_DIR:` line.
+   3. Mark the redo record `parked`: `python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status parked`.
+   4. Set `redo_archive: null`, `status: paused`, log `<STEP> kept-previous attempt=<J>`, `WRITE-STATE`.
    5. Re-ask the gate.
-   `redos[STEP]` stays spent (not decremented). Retry remains offered while `failures[STEP] < 2`, re-runs with the same `HUMAN_NOTE` rebuilt from the still-pending record, does not increment `redos`.
+   `redos[STEP]` stays spent (not decremented). Retry remains offered while `failures[STEP] < 2`, re-runs with the same `HUMAN_NOTE` rebuilt from the still-pending record, and does not increment `redos`.
 
-5. Ask (header `Flow stop`):
-   When the eligibility line is `ESCALATE: manual sonnet <reason>` and the failed step is `implement` or `fix`, offer the following options first:
+5. Ask (header `Flow stop`), in this order:
+   - **Keep previous attempt (Recommended)** — only when item 4 offers it; procedure above.
+   When the eligibility line is `ESCALATE: manual sonnet <reason>` and the failed step is `implement` or `fix`, offer the following option after Keep previous attempt and before Retry:
    - **Retry with sonnet** (or `Retry with sonnet (single unit; plan had <n> units)` if the receipt's `UNITS:` is greater than 1, so the human sees the collapse) — set `implementer_model[STEP] = "sonnet"`, `escalations[STEP] += 1`, log `escalated`, `WRITE-STATE`, build and append the escalation event to `$FLOWS_ROOT/escalations.jsonl` (event: "escalation", trigger: "manual"), and re-run the step through the normal loop. For `implement`: args are `<PLAN_PATH> --implementer-model sonnet --partial-base <bases[STEP]>`. For `fix`: args are `<REVIEW_DIR>/claude-action-plan.md --implementer-model sonnet --partial-base <bases[STEP]>`. Offered only while `failures[STEP] < 2`.
-   Then offer the standard menu:
    - **Retry** — where the model is the model from `implementer_model[STEP]` if set (Sonnet, after a failed escalation), otherwise `haiku` (first attempt). Re-run the step. Offered only while `failures[STEP] < 2`. After a reduced-run rejection the spawn carries the extra line from "Fidelity audit".
-   - **Take over** — leave everything as is. If there's a redo in progress (check the ledger for a `direction` record with `step=<STEP>` and `attempt=<current failed ATTEMPT>` and a complete archive `steps/<NN>-<STEP>.a*.md`), mark it `parked`: `python3 "$HOME/.claude/scripts/flow-ledger.py" mark --seq <seq> --status parked --by "$FLOW_DIR/steps/<NN>-<STEP>.md"`. Then log `taken-over` for `<STEP>` (written now, at the moment of
+   - **Take over** — leave everything as is. If there's a redo in progress (the item 4 condition holds), mark its record `parked` (`python3 "$HOME/.claude/scripts/flow-ledger.py" mark --flow-dir "$FLOW_DIR" --seq <seq> --status parked`). Then log `taken-over` for `<STEP>` (written now, at the moment of
      choice; resume rule 2 reads it as the human's attestation); `status: paused`; if the failed step is
      `merge`, reset `gate_passed: false`; print the stop lines again; close telemetry (`command-end
      --outcome interrupted`); end the turn.
-   - **Abort** — If there's a redo in progress (check the ledger for a `direction` record with `step=<STEP>` and `attempt=<current failed ATTEMPT>` and a complete archive `steps/<NN>-<STEP>.a*.md`), mark it `parked`: `python3 "$HOME/.claude/scripts/flow-ledger.py" mark --seq <seq> --status parked --by "$FLOW_DIR/steps/<NN>-<STEP>.md"`. Then `status: failed`, log `aborted`, `command-end --outcome failure --failure-class
+   - **Abort** — If there's a redo in progress (the item 4 condition holds), mark its record `parked` (same command as Take over). Then `status: failed`, log `aborted`, `command-end --outcome failure --failure-class
      other`; end the turn. Nothing is deleted.
 
    **Post-escalation menu** (after an escalated Sonnet retry fails): only **Take over** and **Abort** are offered, plus **Keep previous attempt** when the failed attempt is a redo with a complete archive; no further `Retry` or `Retry with sonnet`. The escalation-once limit is binding at this point.
@@ -1451,7 +1466,8 @@ The scope of the hard stop menu is: for implement and fix steps, when a single-u
 
 | Exit | `<STEP>` stage | Command |
 |---|---|---|
-| Redo cancelled (user picks Cancel redo at Redo note question) | none (the step was already closed as `success` by loop step 5) | `command-end --outcome interrupted` |
+| Redo cancelled or paused at the Redo note question, gate entry (the step was already closed as `success` by loop step 5) | none | none: the gate is re-asked (Cancel) or the gate's Pause runs (Pause) |
+| Redo cancelled or paused at the Redo note question, resume entry (rule 0, before telemetry begins) | none | none: state untouched, no `command-end` |
 | Redo launched (at any point after spawn) | none (opened at spawn) | none extra |
 | Keep previous attempt (Hard stop or resume) | none (FAILED already closed it as `failure` for Hard stop; not opened for resume) | none extra (gate is re-asked) |
 | Sanitise/append/archive refusal | none (no spawn yet) | `command-end --outcome interrupted` |
@@ -1725,7 +1741,11 @@ FAILED outcome is issued in loop step 5, so no later exit closes that stage agai
 | Hold at the merge gate | none (merge stage not yet opened) | `command-end --outcome interrupted` |
 | Pause at a step gate (`Pause`, or free text recorded as a `gate_note` ledger record) | none (the step was already closed as `success` by loop step 5) | `command-end --outcome interrupted` |
 | Abort at a step gate | none (already closed as `success`) | `command-end --outcome failure --failure-class other` |
+| Hard stop → Keep previous attempt | none (FAILED already closed it as `failure`) | none extra (the gate is re-asked in the same turn; its own exit row applies) |
 | Hard stop → Take over | none (FAILED already closed it as `failure`) | `command-end --outcome interrupted` |
+| Resume rule 0 (`--redo`) refused (running, live, not finished, cap reached, worktree missing) | none | none (`guard_block`, state untouched) |
+| Resume rule 3b → Keep previous attempt | none (not opened for resume) | none extra (gate is re-asked) |
+| Resume rule 3b → Abort | none | `command-end --outcome failure --failure-class other` |
 | Hard stop → auto-Rebase (verify base-stale), clean → verify re-run | verify re-opened by the loop (no stage open in between) | none extra |
 | Hard stop → auto-Rebase, conflicts → `git rebase --abort`, `/expert-rebase` worker → `REBASED` → verify re-run | verify re-opened by the loop | none extra |
 | Hard stop → auto-Rebase, conflicts, worker `NEEDS_HUMAN` → menu (Take over outcome if chosen) | none (FAILED already closed it as `failure`) | `command-end --outcome interrupted` |
