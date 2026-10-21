@@ -851,8 +851,9 @@ def main():
     flow_md = COMMAND.read_text()
     flat = " ".join(flow_md.split())
     fm = frontmatter(flow_md)
-    h.test_result("allowed-tools grants flow-ledger.py append and list only (no mark)",
-                  all(g in fm for g in LEDGER_GRANTS) and "flow-ledger.py\" mark" not in fm,
+    h.test_result("allowed-tools grants flow-ledger.py append, list and mark (mark: Redo marks its direction record addressed, #286)",
+                  all(g in fm for g in LEDGER_GRANTS) and "flow-ledger.py\" mark" in fm
+                  and "flow-ledger.py\":*" not in fm,
                   fm)
 
     # Spawn line: every fenced step-spawn block with an ATTEMPT=<k> line carries the ledger line
