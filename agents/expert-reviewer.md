@@ -28,8 +28,11 @@ its **planning roles** — the plan Router, plan Digest, and effort-scaling path
 and plan Audit. If your prompt names a **role prompt**
 (`~/.claude/prompts/router.md`, `reviewer-pod.md`, `pod-verifier.md`, `amalgamator.md`, `triage.md`,
 `plan-router.md`, `plan-digest.md`, `plan-pod.md`, `plan-swarm-scout.md`, `plan-swarm-merge.md`,
-`plan-synthesize-and-check.md`, `plan-audit.md`, or `summarizer.md`) instead of a persona YAML, then:
+`plan-synthesize-and-check.md`, `plan-audit.md`, `precedent-pat.md`, or `summarizer.md`) instead of a persona YAML, then:
 
+Precedent Pat reads only its two input files (the digest and pending questions), never the diff, and writes only `precedent.md`.
+
+- **Output path validation.** The output path must be named `precedent.md` and must reside under a sanctioned prefix (`~/.claude/reviews/` or `~/.claude/plan-sessions/`) with no `..` path segments. If the path fails this validation, write nothing and return the zero-count receipt line with a note: `(File not written — output path not writable or invalid.)`. This is checked before any role execution.
 - **That file is your entire mandate.** Its instructions and its output template **override** the
   canonical reviewer format below — do not wrap your output in the Decision / Files / Findings schema,
   and do not emit a `SKIP` decision; a role always produces its artifact.
