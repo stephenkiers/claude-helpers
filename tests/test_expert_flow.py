@@ -1073,9 +1073,9 @@ def main():
     h.test_result("expert-plan reads HUMAN_NOTE into context.md under the redo heading",
                   bool(paragraphs_with(plan_md, "`HUMAN_NOTE` block", "`context.md`"))
                   and "## Human direction for this redo" in plan_md)
-    h.test_result("expert-review reads HUMAN_NOTE into PROJECT_CONTEXT under the redo heading",
-                  bool(paragraphs_with(review_md, "`HUMAN_NOTE` block", "`PROJECT_CONTEXT`"))
-                  and "## Human direction for this redo (from /expert-flow)" in review_md)
+    h.test_result("expert-review keeps HUMAN_NOTE out of PROJECT_CONTEXT (blind Pass 1, ADR-0002)",
+                  bool(paragraphs_with(review_md, "`HUMAN_NOTE` block", "do NOT add it to `PROJECT_CONTEXT`", "blind Pass 1"))
+                  and "## Human direction for this redo (from /expert-flow)" not in review_md)
 
     h.test_result("ADR amendment states the six-attempt ceiling",
                   "six attempts" in amendment)

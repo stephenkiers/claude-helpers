@@ -90,6 +90,8 @@ def documented_calls(h):
     calls, skipped = [], []
     for doc in DOC_FILES:
         text = doc.read_text(encoding="utf-8")
+        # The frontmatter allowed-tools grants (`flow-ledger.py" append:*`) are permissions, not documented calls.
+        text = re.sub(r"\A---\n.*?\n---\n", "", text, count=1, flags=re.S)
         for m in CALL.finditer(text):
             key = f"flow-{m.group(1)}"
             sub = m.group(2)
@@ -227,7 +229,7 @@ def section_probe(h, root):
     result = run_script("flow-ledger", ["mark", "--flow-dir", str(flow), "--seq", "1",
                                         "--status", "parked", "--by", str(flow / "steps" / "01-plan.md")])
     h.test_result("mark --by with status parked is refused by the script (exit 1)",
-                  result.returncode == 1 and "--by only allowed with status addressed" in result.stderr,
+                  result.returncode == 1 and "--by only allowed with --status addressed" in result.stderr,
                   f"rc={result.returncode}, err={result.stderr!r}")
 
 
