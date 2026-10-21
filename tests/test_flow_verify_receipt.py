@@ -66,6 +66,7 @@ def create_session(home: str, invocation_id: str, briefs: int = 0) -> str:
     for n in range(1, briefs + 1):
         body += f"#### Q{n}. Question {n}\n\nWhy it matters: because.\n\n"
     Path(f"{session_dir}/decisions.md").write_text(body)
+    Path(f"{session_dir}/plan.md").write_text("# Plan")
     return session_dir
 
 
@@ -1852,6 +1853,208 @@ No items."""
         h.test_result("non-step-prefixed traversal marker is ignored: zero plan markers, asked: 0 (exit 1)",
                       exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no plan-* markers)" in stdout,
                       stdout)
+
+    print()
+    print("[Test 79] Plan: split-location positive (legacy) - questions in FLOW_DIR, decoy in session")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=2)
+        flow_dir = f"{tmp_home}/flow"
+        # Create actual question and answer files in FLOW_DIR
+        create_flow_questions(flow_dir, "plan", [2])
+        # Decoy in the session dir: a complete question file named like the real marker, with NO
+        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
+        # of a session-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
+        Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
+            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None,
+            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
+        }))
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("Legacy plan split-location positive: FLOW_DIR questions/answers work, session decoy ignored",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 80] Plan: split-location negative (legacy) - questions only in decoy session dir")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=2)
+        flow_dir = f"{tmp_home}/flow"
+        # Create EMPTY FLOW_DIR
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        # Create question files ONLY in session dir (decoy location; pins the absence of a session-dir read path)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        Path(f"{session_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
+        Path(f"{session_dir}/pending-questions/plan-01.json").write_text(json.dumps({
+            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None,
+            "questions": [{"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False} for i in range(1, 3)]
+        }))
+        # Create answers file also only in session
+        Path(f"{session_dir}/answers").mkdir(parents=True, exist_ok=True)
+        Path(f"{session_dir}/answers/plan-01.json").write_text(json.dumps({
+            "step": "plan", "seq": 1, "answers": [{"id": f"q{i}", "response": f"A{i}"} for i in range(1, 3)]
+        }))
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("Legacy plan split-location negative: no fallback to session dir, fails unanswered",
+                      exit_code == 1 and "plan checkpoint incomplete (" in stdout and "unanswered: plan-01.json" in stdout, stdout)
+
+    print()
+    print("[Test 81] Review: split-location positive - questions in FLOW_DIR, decoy in session")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        # Create actual question and answer files in FLOW_DIR
+        create_flow_questions(flow_dir, "review", [2])
+        # Decoy in the review dir: a complete question file named like the real marker, with NO
+        # answer beside it. The decoy sits where the verifier never reads, so this pins the absence
+        # of a review-dir read path. It does not catch a fallback unless that fallback reads pending-questions.
+        Path(f"{review_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
+        Path(f"{review_dir}/pending-questions/review-01.json").write_text(json.dumps({
+            "step": "review", "command": "expert-review", "kind": "report", "summary": None,
+            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
+        }))
+        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("Review split-location positive: FLOW_DIR questions/answers work, session decoy ignored",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
+
+    print()
+    print("[Test 82] Review: split-location negative - questions only in decoy session dir")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        review_dir = create_review_dir(tmp_home)
+        Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
+        receipt_path = f"{tmp_home}/receipt.md"
+        flow_dir = f"{tmp_home}/flow"
+        # Create EMPTY FLOW_DIR
+        Path(flow_dir).mkdir(parents=True, exist_ok=True)
+        # Create questions ONLY in review session
+        Path(f"{review_dir}/pending-questions").mkdir(parents=True, exist_ok=True)
+        Path(f"{review_dir}/pending-questions/review-01.json").write_text(json.dumps({
+            "step": "review", "command": "expert-review", "context_path": None, "summary": None,
+            "questions": [{"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False} for i in range(1, 3)]
+        }))
+        # Create answers file also only in session
+        Path(f"{review_dir}/answers").mkdir(parents=True, exist_ok=True)
+        Path(f"{review_dir}/answers/review-01.json").write_text(json.dumps({
+            "step": "review", "seq": 1, "answers": [{"id": f"q{i}", "response": f"A{i}"} for i in range(1, 3)]
+        }))
+        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
+        create_receipt(receipt_path, receipt_body)
+        exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("Review split-location negative: no fallback to session dir, fails unanswered",
+                      exit_code == 1 and "review rulings incomplete (" in stdout and "unanswered: review-01.json" in stdout, stdout)
+
+    print()
+    print("[Test 83] Plan: missing plan.md in session → plan artifacts missing (plan.md)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        # Remove the plan.md that create_plan_fixture created
+        os.remove(f"{session_dir}/plan.md")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("missing plan.md fails", exit_code == 1 and "plan artifacts missing (plan.md)" in stdout, stdout)
+
+    print()
+    print("[Test 84] Plan: missing FINAL_PLAN_PATH file → plan artifacts missing (FINAL_PLAN_PATH file does not exist)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        create_reviewer_index(tmp_home)
+        invocation_id = "20261013T222013-30924"
+        session_dir = create_session(tmp_home, invocation_id, briefs=0)
+        plan_path = f"{tmp_home}/.claude/plans/issue-slug-{invocation_id}.md"
+        # Do NOT create the plan file
+        Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(f"{session_dir}/context.md").write_text("# Context")
+        Path(f"{session_dir}/selected-experts.md").write_text("| Expert |\n|--------|\n| Danielle the Designer |")
+        create_contribution(f"{session_dir}/danielle-designer-contribution.md")
+        Path(f"{session_dir}/plan.md").write_text("# Plan")
+        receipt_path = f"{tmp_home}/receipt.md"
+        create_receipt(receipt_path, f"FINAL_PLAN_PATH: {plan_path}\nDecision: OK\n<!-- step-end -->")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("missing FINAL_PLAN_PATH file fails", exit_code == 1 and "plan artifacts missing (FINAL_PLAN_PATH file does not exist)" in stdout, stdout)
+
+    print()
+    print("[Test 85] Plan: unreadable question file in legacy path → fails with unreadable reason")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        Path(f"{flow_dir}/questions").mkdir(parents=True)
+        Path(f"{flow_dir}/questions/plan-01.json").write_text("{not json")
+        # Create answers file so it's not marked unanswered, only unreadable
+        adir = Path(flow_dir) / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
+        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        Path(receipt_path).write_text(receipt_body)
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("unreadable question file in legacy path → fails with unreadable",
+                      exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+
+    print()
+    print("[Test 86] Plan: zero #### Q headings but ledger carries D/W/Q handles, no report validated -> fails closed")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        with open(f"{session_dir}/decisions.md", "a") as f:
+            f.write("\n## Checkpoint ledger\n\n```json\n" + json.dumps({"D1": {"tier": "decided"}}) + "\n```\n")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("ledger D handle without validated report fails closed",
+                      exit_code == 1 and "ledger has D/W/Q handles" in stdout, stdout)
+
+    print()
+    print("[Test 86b] Plan: ledger with an empty-string key does not crash the verifier (empty key is not a handle)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        # A report-kind marker routes the run into check_report_checkpoint, whose ledger loop is
+        # the one that indexes key[0]. The marker has no answers file, so the run fails closed.
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        ledger = {"seated": ["contrarian-carl"], "expected_reactions": [], "": {"tier": "decided"}}
+        with open(f"{session_dir}/decisions.md", "a") as f:
+            f.write("\n## Checkpoint ledger\n\n```json\n" + json.dumps(ledger) + "\n```\n")
+        flow_dir = f"{tmp_home}/flow"
+        Path(f"{flow_dir}/questions").mkdir(parents=True)
+        Path(f"{flow_dir}/questions/plan-01.json").write_text(json.dumps({
+            "step": "plan", "command": "expert-plan", "kind": "report", "summary": None,
+            "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
+        }))
+        Path(receipt_path).write_text(f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n"
+                                      "<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->")
+        exit_code, stdout, stderr = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("empty-string ledger key is not a handle: verifier does not raise (no IndexError/Traceback), fails closed on the unanswered report",
+                      "IndexError" not in stderr and "Traceback" not in stderr and "Traceback" not in stdout
+                      and exit_code == 1 and "marker files without a readable answered report" in stdout,
+                      f"exit={exit_code}\nstdout={stdout[-300:]}\nstderr={stderr[-500:]}")
+
+    print()
+    print("[Test 86c] Plan: non-dict D1 value with no report marker and briefs satisfied -> fails closed (key-only handle match)")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=0)
+        session_dir = f"{tmp_home}/.claude/plan-sessions/repo_key/plan-20261013T222013-30924"
+        with open(f"{session_dir}/decisions.md", "a") as f:
+            f.write("\n## Checkpoint ledger\n\n```json\n" + json.dumps({"D1": "oops"}) + "\n```\n")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
+        h.test_result("non-dict D1 value fails closed: exit 1, ledger reason names D1, no traceback",
+                      exit_code == 1 and "ledger has D/W/Q handles" in stdout and "handles: D1" in stdout
+                      and "Traceback" not in stdout, stdout)
+
+    print()
+    print("[Test 87] Plan: report receipt with answers file present but question file missing -> fails")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = create_plan_fixture(tmp_home, briefs=1)
+        flow_dir = f"{tmp_home}/flow"
+        (Path(flow_dir) / "answers").mkdir(parents=True)
+        (Path(flow_dir) / "answers" / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
+        Path(receipt_path).write_text(
+            f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n"
+            "<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->")
+        exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
+        h.test_result("missing question file with answers present fails",
+                      exit_code == 1 and "plan checkpoint incomplete" in stdout, stdout)
 
     h.summarize_and_exit()
 

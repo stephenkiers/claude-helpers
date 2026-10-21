@@ -124,7 +124,7 @@ so a rejected step leaves no poisoned state for `--resume`.
 3. **Contribution filename fallback:** The verifier first looks for a contribution file named `<file_stem>-contribution.md` (where `file_stem` comes from the reviewer index), then falls back to `<kebab-cased expert name>-contribution.md` as a second candidate.
 
 The checks per step:
-- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row (except `auditor` and `synthesis`) must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`). Context mtime must be >= `--since` - 5 seconds.
+- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row (except `auditor` and `synthesis`) must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`). Context mtime must be >= `--since` - 5 seconds. `FINAL_PLAN_PATH` must exist, and the session directory must contain `plan.md`. A marker-named question with no answers file, or an unreadable one, fails closed: in the report-checkpoint branch with `plan checkpoint incomplete (marker files without a readable answered report: <basenames>)`, and on the legacy path with the `unanswered:` / `unreadable:` suffixes. A checkpoint ledger carrying D/W/Q handles without a validated report fails closed with the `ledger has D/W/Q handles` reason. (Verifier widening: 2026-10-19 amendment.)
 - **review**: `REVIEW_DIR` contains `claude-action-plan.md`, `final-report.md`, `findings.json`, and ≥2 reviewer checkpoints (`*-pass1.md` or `*-pod.md`). Action plan mtime must be >= `--since` - 5 seconds.
 - **implement**: ≥1 new commit on the branch since the step began (base SHA recorded at spawn).
 - **fix**: ≥1 new commit, with a carve-out: zero commits are accepted when `claude-action-plan.md` has no *Doing it* items. When a fix has nothing actionable, zero commits is correct.
@@ -335,8 +335,7 @@ verifier and the fidelity audit checked that artifacts existed, not that the hum
   `rulings dropped`). `flow-verify-receipt.py` enforces it from disk (`--flow-dir`): the briefs in
   `decisions.md` against the questions in `questions/plan-*.json` (`plan checkpoint incomplete`), the
   *Needs you* items against `questions/review-*.json` (`review rulings incomplete`); `decisions.md` is
-  now a required plan artifact. The fidelity auditor checks the same counts and treats "not asked" /
-  "defaults adopted" receipt wording as `FIDELITY: reduced`. **Amendment 2026-10-15:** for the plan step
+  now a required plan artifact. The verifier is the sole owner of these counts. The fidelity auditor judges evidence quality and receipt wording for reduced runs. **Amendment 2026-10-15:** for the plan step
   with a report-kind checkpoint, the completeness rule is refined — see the amendment below. This rule
   applies to `/expert-review` Needs-you relay without change.
   Standalone `/expert-plan` outside a flow still applies the rule above.
@@ -371,7 +370,7 @@ than it raised is a failed step, not a quiet default.
 
 1. `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers stay on `OK` and `FAILED` receipts. They are this attempt's relay record. The receipt is stubbed per attempt (Attempt scope in Lifecycle), so markers are attempt-scoped.
 2. The "`Decision:` together with an awaiting marker" forbidden shape is deleted.
-3. The verifier and the fidelity audit count a marker only when `answers/<STEP>-<SEQ>.json` exists. A marker without its answers file is a failed step with `unanswered: <basenames>`.
+3. The verifier counts a marker only when `answers/<STEP>-<SEQ>.json` exists. On the legacy path, a marker without its answers file is a failed step with `unanswered: <basenames>`; in the report-checkpoint branch the same case fails with the marker-files reason (see the 2026-10-19 amendment).
 4. Disk globbing is not a counting source. A receipt with zero markers fails closed when briefs or needs-you items exist, even when answered question files exist on disk. A zero-brief, zero-item checkpoint with zero markers passes.
 5. Resume rule 5 re-asks only from receipts without `<!-- step-end -->`.
 
@@ -393,6 +392,20 @@ So: numbering is 0-based; a bare token with no matching argument stays literal; 
 **Substitution re-probe (2026-10-17).** A follow-up probe via the Skill tool re-tested the awk field form with the command `commands/handoff-resume.md` (which contains `awk '{print $(2)}'`), invoked with args `"alpha beta gamma delta"` (4 arguments). The expanded awk field reference `$(2)` was substituted to `gamma` (the third argument, 0-based indexing), resulting in `{print gamma}`. With the single argument `"alpha"`, the out-of-range reference `$(2)` stayed literal. The form `$(3)` was not probed. This contradicts the 2026-10-15 claim that "`$(N)` follows the same rule" as the unsubstituted `$(1)`: the 2026-10-15 result (`$(1)` unsubstituted with two arguments) does not generalize. With four arguments, `$(2)` **is substituted**, so `$(N)` for N >= 2 is not a safe awk form and should be avoided. The earlier `$(1)` result remains unexplained and unreproduced with four arguments, suggesting the probe was incomplete. The five live awk sites that used `$(1)`/`$(2)` (in `commands/handoff-resume.md`, `commands/expert-rebase.md` and `commands/stack-sync.md`) were exposed to substitution when invoked with 3+ arguments; all were replaced in the same PR with `cut`, `grep`, `git diff` and `python3` forms, and `tests/test_command_doc_shell_conventions.py` now fails on any `$(N)` token in `commands/*.md`.
 
 **Consequences.** An agent that drops markers still hard-fails, now with an error that says why (`, receipt carries no plan-* markers` or `, receipt carries no review-* markers`). If that keeps happening, a robustness upgrade (an `attempt` field plus disk-only counting scoped to the attempt) becomes the fix.
+
+## Amendment (2026-10-19): fidelity audit owns judgment only, verifier owns counts (#318)
+
+**Problem.** The fidelity auditor re-resolved receipt marker paths against the plan-session directory instead of `FLOW_DIR`, contradicting the verifier's count on #293 even though every question and answers file existed in the right place.
+
+**Decision.**
+
+- **Ownership.** Rule 8's verifier (`flow-verify-receipt.py --flow-dir`) is the sole owner of every mechanical checkpoint fact: question counts, answers-file existence, dispositions, excerpts, ledger and reaction completeness, contributions, and artifact existence. The auditor's `plan:` and `review:` checklists are judgment-and-wording only: does the evidence show no protest, are excerpts substantive, did anyone push back twice, and does wording admit a reduced run. Receipt marker paths are relative to `FLOW_DIR`; the auditor is handed absolute `<FLOW_DIR>/…` evidence paths.
+- **Verifier widening.** The verifier now also checks artifact existence: `FINAL_PLAN_PATH` must exist, the plan session directory must contain `plan.md`, a marker-named question with no answers file or an unreadable one fails closed (`plan checkpoint incomplete (marker files without a readable answered report: …)`), a checkpoint ledger carrying D/W/Q handles without a validated report fails closed, and an unreadable marker fails closed with the marker-files reason in the report branch and with the legacy `unreadable: <basenames>` suffix otherwise (an unreadable answers file for a report question also fails closed with the marker-files reason). This widening is what makes the verifier the sole owner of artifact existence.
+- **Rejected.** Ticket proposal 3 (contradiction → `unavailable` reason code) — moot under this decision; a `RELAY:` stdout line — avoids a new contract that #310 and #308 will rework (they will rework the marker logic); audit re-run budget — moot, because the re-run existed to let the auditor recover from a mechanical miscount, and counts are now the verifier's alone, so there is nothing for the auditor to re-run. Each stands.
+
+**Consequences.** The auditor can never diagnose a mechanical shortfall — that job moved wholly to the verifier. The auditor can only read the checkpoint's evidence files from their absolute FLOW_DIR paths, judge the quality of the excerpts it finds, and flag suspect wording. Coverage is verifier-resolution tests (split-location fixtures: answers in FLOW_DIR, decoys in the session directory) plus prompt pins that hold the auditor's `plan:` and `review:` checklists to judgment and wording.
+
+**Related.** #310 and #308 will rework the marker logic this amendment depends on; the marker-resolution and fail-closed rules above should be re-checked when those land.
 
 ## Amendment (2026-10-15): bare /expert-flow in the ticket worktree (#302)
 
