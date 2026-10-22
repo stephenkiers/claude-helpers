@@ -1884,6 +1884,234 @@ def check_discarded_files(repo: str, branch: str, discarded_files: List[str]) ->
     return None
 
 
+def parse_outstanding(receipt: str) -> List[tuple]:
+    """Parse OUTSTANDING: lines from receipt.
+
+    Returns a list of tuples: (unit_id, reason, provenance) where provenance is
+    'self-report' or 'both'. Returns empty list if no OUTSTANDING: lines found.
+    """
+    items: List[tuple] = []
+    for line in receipt.split("\n"):
+        # Stop at blank line or step-end marker
+        if not line.strip() or "<!-- step-end -->" in line:
+            break
+        if line.startswith("OUTSTANDING:"):
+            # Parse: OUTSTANDING: <unit id> (<reason>) [provenance]
+            rest = line[len("OUTSTANDING:"):].strip()
+            if rest == "none":
+                continue
+            # Match pattern: <unit id> (<reason>) [provenance]
+            match = re.match(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$", rest)
+            if match:
+                unit_id = match.group(1)
+                reason = match.group(2)
+                provenance = match.group(3)
+                items.append((unit_id, reason, provenance))
+    return items
+
+
+def _enumerate_step_headings(plan_text: str) -> List[str]:
+    """Enumerate ### Step N headings from plan text.
+
+    Returns list of unit ids like ['Step 1', 'Step 2', ...] in order.
+    """
+    units: List[str] = []
+    for line in plan_text.split("\n"):
+        match = re.match(r"^###\s+Step\s+(\d+)\b", line)
+        if match:
+            units.append(f"Step {match.group(1)}")
+    return units
+
+
+def _enumerate_doing_it_items(action_plan_text: str) -> List[str]:
+    """Enumerate D<n> directives from 'Doing it' section of action plan.
+
+    Returns list of unit ids like ['D1', 'D2', ...] in order.
+    """
+    units: List[str] = []
+    in_doing_it = False
+    table_started = False
+    doing_it_count = 0
+
+    for line in action_plan_text.split("\n"):
+        # Match "## Doing it:" heading
+        if re.match(r"^##\s+Doing it:", line):
+            in_doing_it = True
+            table_started = False
+            continue
+
+        # Stop at next ## heading
+        if in_doing_it and re.match(r"^##\s+", line):
+            break
+
+        if in_doing_it:
+            stripped = line.strip()
+
+            # Check for table start (first line starting with |)
+            if stripped.startswith("|") and not table_started:
+                table_started = True
+                continue
+
+            # In table: count data rows, skip header and separator
+            if table_started and stripped.startswith("|"):
+                # Skip separator rows (all dashes and pipes)
+                if not re.match(r"^\|\s*-+\s*(\|\s*-+\s*)*\|$", stripped):
+                    doing_it_count += 1
+                    units.append(f"D{doing_it_count}")
+            elif table_started and not stripped.startswith("|"):
+                # Table ended
+                table_started = False
+
+    return units
+
+
+def _get_file_names_from_plan_section(plan_text: str, unit_id: str) -> List[str]:
+    """Extract file names mentioned in a plan unit's section.
+
+    Looks for backtick-quoted tokens that look like file paths in the section
+    from unit_id heading to the next ### heading.
+    Returns list of file paths found.
+    """
+    # Find the section from the unit heading to the next ###
+    lines = plan_text.split("\n")
+    start_idx = None
+    end_idx = len(lines)
+
+    for i, line in enumerate(lines):
+        if unit_id in line and line.strip().startswith("###"):
+            start_idx = i
+        elif start_idx is not None and line.strip().startswith("###"):
+            end_idx = i
+            break
+
+    if start_idx is None:
+        return []
+
+    section_text = "\n".join(lines[start_idx:end_idx])
+
+    # Find all backtick-quoted tokens that look like paths
+    # Match `path/to/file` patterns
+    files: List[str] = []
+    for match in re.finditer(r"`([^`]+(?:/[^`]+)*)`", section_text):
+        path = match.group(1)
+        # Only include if it looks like a repo path (contains /)
+        if "/" in path or path.endswith((".py", ".js", ".ts", ".rs", ".md", ".yaml", ".json")):
+            files.append(path)
+
+    return files
+
+
+def _git_diff_names(repo: str, base: str, branch: str) -> set:
+    """Get set of file names changed from base to branch.
+
+    Returns set of file paths from git diff --name-only.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "diff", "--name-only", f"{base}..{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+        if result.returncode != 0:
+            return set()
+        return set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
+    except (subprocess.TimeoutExpired, Exception):
+        return set()
+
+
+def coverage_mode(
+    step: str,
+    plan_path: str,
+    receipt_path: str,
+    repo: str,
+    branch: str,
+    base: str,
+) -> None:
+    """Run coverage mode: enumerate units and classify by coverage.
+
+    Prints to stdout:
+      UNITS: <n> (or UNITS: 0 (no step headings) / UNITS: 0 if empty)
+      <id> | <status> | <evidence>
+
+    Exits with 0 unless plan is unreadable (exit 2).
+    """
+    # Read plan file
+    plan_file = Path(plan_path)
+    if not plan_file.exists():
+        error(f"Plan file not found: {plan_path}")
+
+    plan_text = read_file(plan_file)
+
+    # Read receipt file
+    receipt_file = Path(receipt_path)
+    receipt_text = ""
+    if receipt_file.exists():
+        receipt_text = read_file(receipt_file)
+
+    # Enumerate units based on step
+    units: List[str] = []
+    if step == "implement":
+        units = _enumerate_step_headings(plan_text)
+    elif step == "fix":
+        # For fix, read the action plan from the receipt's path or infer it
+        # The receipt is named in --receipt, but we need claude-action-plan.md
+        # which is typically in the same review directory
+        action_plan_path = plan_file  # The --plan argument is the action plan for fix
+        if action_plan_path.exists():
+            action_plan_text = read_file(action_plan_path)
+            units = _enumerate_doing_it_items(action_plan_text)
+
+    # Get the changed files from git diff
+    changed_files = _git_diff_names(repo, base, branch)
+
+    # Parse outstanding items from receipt
+    outstanding_dict: Dict[str, tuple] = {}
+    for unit_id, reason, provenance in parse_outstanding(receipt_text):
+        outstanding_dict[unit_id] = (reason, provenance)
+
+    # Classify each unit
+    results: List[tuple] = []
+    unknown_declared: List[str] = []
+
+    for unit_id in units:
+        # Check if covered: files in the unit appear in the diff
+        unit_files = _get_file_names_from_plan_section(plan_text, unit_id)
+        is_covered = any(f in changed_files for f in unit_files) if unit_files else False
+
+        # Check if declared in OUTSTANDING
+        is_declared = unit_id in outstanding_dict
+
+        # Classify
+        if is_covered:
+            status = "covered"
+            evidence = f"files in diff: {', '.join(unit_files)}"
+        elif is_declared:
+            reason, provenance = outstanding_dict[unit_id]
+            status = "declared"
+            evidence = f"{provenance}: {reason}"
+        else:
+            status = "uncovered"
+            evidence = "not in diff, not in OUTSTANDING"
+
+        results.append((unit_id, status, evidence))
+
+    # Check for unknown declared items (in OUTSTANDING but not in plan)
+    for declared_id in outstanding_dict:
+        if declared_id not in units:
+            unknown_declared.append(declared_id)
+
+    # Print output
+    print(f"UNITS: {len(units)}" + (" (no step headings)" if len(units) == 0 else ""))
+    for unit_id, status, evidence in results:
+        print(f"{unit_id} | {status} | {evidence}")
+
+    for unknown_id in unknown_declared:
+        print(f"unknown-declared: {unknown_id}")
+
+    sys.exit(0)
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -1941,6 +2169,15 @@ def main() -> None:
         "--expect-model",
         help="Expected implementer model for OK receipts",
     )
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help="Coverage mode: enumerate and classify plan units by coverage",
+    )
+    parser.add_argument(
+        "--plan",
+        help="Plan file path (for coverage mode)",
+    )
 
     args = parser.parse_args()
 
@@ -1950,6 +2187,18 @@ def main() -> None:
         error(f"Receipt file not found: {args.receipt}")
 
     receipt = read_file(receipt_file)
+
+    # Handle --coverage mode (read-only, no --since required)
+    if args.coverage:
+        if not args.plan:
+            error("--coverage requires --plan")
+        if args.step not in ["implement", "fix"]:
+            error("--coverage only supported for implement/fix steps")
+        if not all([args.repo, args.branch, args.base]):
+            error("--coverage requires --repo, --branch, --base")
+        coverage_mode(args.step, args.plan, args.receipt, args.repo, args.branch, args.base)
+        # coverage_mode exits, but for safety:
+        sys.exit(0)
 
     # Handle --escalation mode (check before any --since requirement)
     if args.escalation:
@@ -2123,6 +2372,27 @@ def main() -> None:
     if scan_for_deviation(receipt):
         print("Reason: receipt admits deviation")
         sys.exit(1)
+
+    # Validate OUTSTANDING: line for implement/fix OK receipts
+    decision = parse_receipt_field(receipt, "Decision")
+    if decision == "OK" and args.step in ["implement", "fix"]:
+        # Check for OUTSTANDING: line
+        outstanding_found = False
+        for line in receipt.split("\n"):
+            if line.startswith("OUTSTANDING:"):
+                outstanding_found = True
+                # Validate format: either "OUTSTANDING: none" or "OUTSTANDING: <id> (<reason>) [prov]"
+                rest = line[len("OUTSTANDING:"):].strip()
+                if rest == "none":
+                    break
+                # Validate format with regex
+                if not re.match(r"^.+?\s+\(.+?\)\s+\[[^\]]+\]$", rest):
+                    print("Reason: receipt missing OUTSTANDING (malformed)")
+                    sys.exit(1)
+                break
+        if not outstanding_found:
+            print("Reason: receipt missing OUTSTANDING")
+            sys.exit(1)
 
     # Home directory for artifact roots
     home = Path.home().resolve()

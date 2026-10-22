@@ -539,8 +539,8 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 |---|---|---|
 | plan | `FINAL_PLAN_PATH: <abs path>` | `FINAL_PLAN_PATH: /Users/me/.claude/plans/add-relay-20261009T101500-00042.md` |
 | track | `WORKTREE: <abs path>` and `BRANCH: <name>` | written by the orchestrator itself (see `commands/expert-flow.md`) |
-| implement | the existing `ROUND 1`…`ROUND 4` lines | unchanged from the command's final summary; there is no `ACTION PLAN SOURCE:` line for a plan-file source |
-| fix | the existing `ROUND 1`…`ROUND 4` lines and `ACTION PLAN SOURCE: …` | unchanged from the command's final summary (the source is the review's `claude-action-plan.md`) |
+| implement | the existing `ROUND 1`…`ROUND 4` lines, and `OUTSTANDING: <line>` on OK receipts | unchanged from the command's final summary; `OUTSTANDING: none` or `OUTSTANDING: <unit id> (<reason>) [self-report\|both]` |
+| fix | the existing `ROUND 1`…`ROUND 4` lines, `ACTION PLAN SOURCE: …`, and `OUTSTANDING: <line>` on OK receipts | unchanged from the command's final summary (the source is the review's `claude-action-plan.md`); `OUTSTANDING: none` or `OUTSTANDING: D<n> (<reason>) [self-report\|both]` |
 | review | `REVIEW_DIR: <abs path>` and `CONFIRMED: critical=<n> high=<n> medium=<n> low=<n>` | counts of CONFIRMED findings by severity from `claude-action-plan.md` |
 | verify | `CHECK: <command>` and `CHECK_EXIT: <n>` | written by the orchestrator itself |
 | ship | `PR_URL: <url>` | `PR_URL: https://github.com/o/r/pull/123` |

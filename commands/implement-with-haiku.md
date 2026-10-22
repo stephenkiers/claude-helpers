@@ -47,13 +47,16 @@ These are wired into the shell commands throughout this doc at each terminal pat
 through to the end in one pass, interrupting only when it genuinely needs the human (failed units,
 unassigned-file conflicts, gate non-convergence). `--implementer-model <haiku|sonnet|opus>` sets
 the model for the implementing agent (unset defaults to the frontmatter model). `--partial-base <SHA>`
-carries a prior partial-work base for an escalated attempt.
+carries a prior partial-work base for an escalated attempt; note that `--partial-base` alone only
+replaces `START_SHA` and does not scope the run to specific units. `--only-units "<comma-separated unit ids>"`
+(e.g., `"Step 8,Step 10"`) scopes the run to only those plan units; other units are treated as already built.
 
 ```bash
 RESUMED_FROM=""
 PAUSE=""
 IMPLEMENTER_MODEL=""
 PARTIAL_BASE=""
+ONLY_UNITS=""
 for arg in "$@"; do
   if [[ "$prev_arg" == "--resumed-from" ]]; then
     RESUMED_FROM="$arg"
@@ -63,6 +66,9 @@ for arg in "$@"; do
   fi
   if [[ "$prev_arg" == "--partial-base" ]]; then
     PARTIAL_BASE="$arg"
+  fi
+  if [[ "$prev_arg" == "--only-units" ]]; then
+    ONLY_UNITS="$arg"
   fi
   if [[ "$arg" == "--pause" ]]; then
     PAUSE="yes"
@@ -1923,12 +1929,24 @@ from `~/.claude/prompts/flow-reference.md`: write `RECEIPT_PATH` with the `Write
 summary exactly as emitted above — the orchestrator parses its `ROUND 1` … `ROUND 4` lines and, for
 an action-plan source, its `ACTION PLAN SOURCE:` line, so don't reformat, reorder, or drop them —
 followed by
+
+For OK receipts, compute the `OUTSTANDING:` line as follows: run the "Incomplete steps (diff heuristic)"
+union (the union of the agent's self-report `INCOMPLETE_STEPS:` block with the diff-detected list,
+labeled `[self-report|heuristic|both]`). Extract only the `[self-report]` and `[both]` entries. For each,
+emit one line `OUTSTANDING: <step id> (<reason>) [self-report|both]`. When no entries remain, emit
+`OUTSTANDING: none`. Drop heuristic-only entries (a silent miss stays silent for the verifier to classify
+as `uncovered`). Then write:
+
 ```
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
+OUTSTANDING: <line>
 <!-- step-end -->
 ```
+
+Where `OUTSTANDING: <line>` is either `none` or the lines computed above.
+
 If an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` uses them to find reused and unanswered question files, and counts asked questions from this attempt's files on disk. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Skip this entirely when `FLOW_DIR` is empty.
 
 
