@@ -177,11 +177,9 @@ def main():
         ("2026-10-21T10:06:00Z implement failed (reason)", False, "wrong step name"),
     ]
 
-    all_passed = True
     for line, should_match, desc in test_cases:
         matched = bool(re.match(lifecycle_pattern, line))
         if matched != should_match:
-            all_passed = False
             h.test_result(f"Pattern match: {desc}", False, f"line={line}, expected={should_match}, got={matched}")
         else:
             h.test_result(f"Pattern match: {desc}", True, "")
