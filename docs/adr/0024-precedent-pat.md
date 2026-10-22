@@ -26,7 +26,7 @@ Pat reads pending questions from two sources; in each, the calling command's own
 - **#294**: plan decision briefs relayed by `/expert-flow` from `/expert-plan`, rendered at the `/expert-plan` step gate
 - **#296**: Needs-you items relayed by `/expert-flow` from `/expert-review`, rendered at the `/expert-review` step gate
 
-Pat has no integration with any command yet. These insertion points and their relay surfaces are specified as obligations on the wiring tickets, not implemented here.
+Pat is wired into `/expert-plan` Step 5 per amendment below (#294); `/expert-review` wiring is pending (#296). These insertion points and their relay surfaces are specified as obligations on the wiring tickets.
 
 ### 3. Sonnet, per ADR-0004
 
@@ -94,6 +94,26 @@ Prediction-influenced answers are not independent priors. #292/#295 own marking 
 
 - **The anchoring feedback loop.** Predictions influence answers. Answers trained on predictions become less independent. The #295/#300 measurement owns marking anchored answers and tracking prediction hit rate separately. This remains a residual risk and a known limitation of the design.
 
-## Amendment — (reserved for future decisions)
+## Amendment (2026-10-22) — /expert-plan wiring (#294)
 
-If ADR-0024 is amended (for example, when #297 enables curated rules, or #299 adds personal scope, or #300 finalizes thresholds), add amendments here following the format of [ADR-0023](0023-expert-flow.md).
+Pat is now wired into `/expert-plan` Step 5 as specified here; `/expert-review` wiring is pending (#296).
+
+**Insertion points per branch:**
+- **Non-flow:** Pat runs after decision briefs and index are built and before the first Ask. The `## Precedent` section is written to `decisions.md` at the later write, after all Asks are answered.
+- **Flow:** Pat runs after `plan-checkpoint-tiers.py` and the D/W/Q write, before the round-1 `kind: report` file. The `## Precedent` section is appended to `decisions.md` after the ledger block.
+
+**Flow surface (orchestrator-rendered):** A fixed-prefix `Precedent:` line is appended to Q items' `why` field (no schema change to the Q item itself, no edits to the flow renderer or `flow-verify-receipt.py`). Rationale: the orchestrator already prints and escapes the `why` field; the prefix is the only provenance marker, built by `scripts/precedent-render.py` from validated, sanitized digest fields, so if the output reads as panel advocacy, a dedicated report field is the follow-up design.
+
+**Annotation scope:** Q items only; D and W items are never annotated. Once per checkpoint at round 1; later rounds reuse the stored line and Pat is never re-dispatched.
+
+**Path self-exclusion:** The caller filters the digest by `path`, dropping the current session directory, the current flow directory, and flow directories matching the pattern `<ISSUE>-*`. The filter runs after the `--top 60` limit, so fewer than 60 entries may reach Pat; same-issue plan sessions outside a flow are not caught by this filter.
+
+**Security exclusion (fallback keyword):** Plan briefs carry no `security` or `severity` field. The caller excludes briefs matching case-insensitive keywords: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`.
+
+**Sanctioned reader — `decisions.md` `## Precedent` copy:** The copy written to `decisions.md` is a logging reader only, not decision logic. Step 6/7 readers (plan synthesizer and auditor) are instructed to ignore this section entirely (per the amendments to `plan-synthesize-and-check.md` and `plan-audit.md`).
+
+**Telemetry:** A new conditional stage `precedent` is added to run-metrics. The orchestrator keeps one open-stage slot; Step 5 closes `checkpoint`, runs `precedent`, then re-opens `checkpoint`. A Pat run results in two `checkpoint` records, which analysis sums.
+
+**Known reader gap:** `scripts/precedent-digest.py` does not yet read plan briefs with options or report answers by handle (follow-up #349). Gate 1 awaits this; once it lands, the path filter becomes load-bearing.
+
+If ADR-0024 is further amended (for example, when #297 enables curated rules, or #299 adds personal scope, or #300 finalizes thresholds), add amendments following the format of [ADR-0023](0023-expert-flow.md).
