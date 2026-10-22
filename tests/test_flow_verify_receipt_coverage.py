@@ -11,7 +11,6 @@ Tests the plan-coverage table feature (Step 5 and part of Step 6 of #320):
 Run with: python3 tests/test_flow_verify_receipt_coverage.py
 """
 
-import os
 import subprocess
 import sys
 import tempfile
@@ -163,7 +162,7 @@ def main():
 
         # Verify UNITS header starts with "UNITS: 0" and message is present
         lines = stdout.split('\n') if stdout else []
-        units_line = next((l for l in lines if l.startswith("UNITS:")), None)
+        units_line = next((ln for ln in lines if ln.startswith("UNITS:")), None)
         has_units_header = units_line and units_line.startswith("UNITS: 0")
         passed = (
             exit_code == 0

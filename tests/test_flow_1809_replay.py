@@ -16,8 +16,6 @@ The #1809 fixture reproduces a flow where:
 Run with: python3 tests/test_flow_1809_replay.py
 """
 
-import json
-import os
 import re
 import subprocess
 import sys
@@ -81,13 +79,13 @@ def create_fixture_git_repo(repo_path: str) -> tuple:
         Path(file_path).write_text(f"Step {step} content")
 
     subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
-    result = subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, capture_output=True, text=True, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, capture_output=True, text=True, check=True)
     base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
 
     # Branch commit: modify step 1's file (but not step 8), so step 8 is absent from the diff
     Path(f"{repo_path}/src/step1/file.py").write_text("Step 1 modified content")
     subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
-    result = subprocess.run(["git", "commit", "-m", "branch"], cwd=repo_path, capture_output=True, text=True, check=True)
+    subprocess.run(["git", "commit", "-m", "branch"], cwd=repo_path, capture_output=True, text=True, check=True)
     branch_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
 
     return base_sha, branch_sha
@@ -162,7 +160,6 @@ def main():
 
     print()
     print("[Test 2] Fix 3: Rule 2 grep matches `plan failed (reason)` line")
-    cmd_text = EXPERT_FLOW_CMD.read_text()
     # Extract the regex pattern from the doc (searches for the anchor "Rule 2 grep")
     # The plan says the grep should be: ^[^ ]+ <STEP> (begin|retry|ok|taken-over|failed( \(.*\))?$
     # Let's find it in the doc and verify it matches a failed line with reason
@@ -181,7 +178,6 @@ def main():
     print()
     print("[Test 3] Fix 3: Sanitiser sanitises multi-line reason to one line")
     # The plan specifies: newlines and control characters become spaces, capped at 300 characters
-    reason_with_newline = "validation: receipt incomplete\nextra line with control\x01char"
 
     # Use the sanitiser snippet from the doc
     # The plan says to run the documented snippet in a subprocess
@@ -250,7 +246,7 @@ echo "$reason_text"
 
         # Verify UNITS header starts with "UNITS: 0" and message is present
         lines = stdout.split('\n') if stdout else []
-        units_line = next((l for l in lines if l.startswith("UNITS:")), None)
+        units_line = next((ln for ln in lines if ln.startswith("UNITS:")), None)
         has_units_header = units_line and units_line.startswith("UNITS: 0")
         passed = exit_code == 0 and has_units_header and "no step headings" in stdout
         h.test_result("Plan with no step headings exits 0 with unit count message", passed, f"exit_code={exit_code}, units_line={units_line}, stdout:\n{stdout}")
