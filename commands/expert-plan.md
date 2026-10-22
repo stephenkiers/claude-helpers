@@ -1,7 +1,7 @@
 ---
 description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
 argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic] [--allow-degraded]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -550,7 +550,9 @@ state a why, write `WHY: not stated in ticket` rather than inventing one. For a 
 3. **Decision index** — last, a compact table (Topic · Q# · Disagreement · Recommended default) as
    a quick-scan summary that points back into the briefs. It is an index, not a substitute for them.
 
-**Non-flow branch:** For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
+**Non-flow branch:** Call the Precedent block (defined above) after the decision briefs and index are built and before the Ask. The block writes `precedent.md` and sets `PRECEDENT_TRACE`. For each 2-4-option question whose labeled options match the pre-Precedent list exactly (byte-identical labels and count), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json"` to get the Precedent line for that question. Append that line to the `description` field of the option object matching the `recommended` label — never reorder options, never modify labels or the `(Recommended)` marker, never skip questions that changed. When appending, append a blank line first, then the Precedent line. For open-ended questions (single `Answer in your own words` option), print the Precedent line in the chat round-up directly below the matching brief. If the options list for any question differs from the pre-Precedent list, skip all Precedent annotation for that question. For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
+
+After all Asks are answered and the checkpoint results are recorded, append two sections to `decisions.md`: first, call `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"` to get the `## Precedent` section and append it; then append the trace line `precedent: <PRECEDENT_TRACE>` on its own line. Both sections go after the checkpoint results.
 
 **Every decision brief is asked; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`.
 
@@ -603,6 +605,8 @@ Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- 
 
 If more than five Qs survive, set `headline` to "This ticket looks under-specified — N questions survived the panel; let's talk it through." Five follows Danielle's observation that people drop items past about five. Keep this as a named constant. There is no halt and no cap.
 
+**Flow branch: Precedent handling.** Call the Precedent block (defined below) after the D/W/Q sections are written and before the round-1 report file is written. The block runs once per checkpoint and sets `PRECEDENT_TRACE`. For each spoken Q item whose `why` does not already start with `Precedent:` (checking prior rounds), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json"` to get the Precedent line for that item's id. Store all per-handle lines in `${SESSION_DIR}/precedent-lines.json` (a JSON object `{id: "Precedent: ..."}`). For each Q item, append to its `why` field a blank line followed by the stored line (if it exists). D and W items are never annotated; their `options[]`, `for`, `against`, `recommendation`, and `must_answer` fields remain unchanged. On later rounds resuming the same attempt, re-emitting a Q item reuses the stored line from `precedent-lines.json` and skips the append if the `why` already contains a line starting `Precedent:` (Pat is never re-dispatched within an attempt). After the checkpoint loop ends, append two sections to `decisions.md` after the ledger block: first, the `## Precedent` section from `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"`, then the trace line `precedent: <PRECEDENT_TRACE>`. The ledger's handle keys stay at the top level of its JSON block.
+
 Write the round-1 `kind: report` question file per the Ask block in `~/.claude/prompts/flow-reference.md` — one question file with `kind: report`, `attempt: 1`, `round: 1`, and all briefs, with `must_answer` true for Qs and items with recorded disagreement or protest. Record the `awaiting` marker.
 
 **On each later conversation round** (when resumed via `SendMessage`): Read the round's answers file and raw reply. If `loop_end` is `"continue"`, skip the reply-mode pass and go to "The loop ends". Otherwise, append the round's reply-mode entries to the ledger's `expected_reactions`, then dispatch the reply-mode reaction pass as parallel `Task` calls in one message, one per seated expert whenever any ruling exists (disposition `answered` or `overridden`), `subagent_type: "expert-reviewer"`, per the join-barrier pattern. Each prompt names: the persona YAML path, `~/.claude/prompts/plan-checkpoint-reaction.md`, mode `reply`, round `{n}` (the conversation round), `${FLOW_DIR}/answers/plan-<SEQ>.json` (round's answers), `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md` (raw reply, if it exists), the list of that expert's prior pushbacks in this attempt (so it never pushes back on the same ruling twice), and output path `{SESSION_DIR}/reactions/{slug}-reply-r{n}.json`. Output format is described in flow-reference.md "Checkpoint ledger and reaction schema" (reply mode). Model per Step 2's record. Expected receipt:
@@ -620,6 +624,94 @@ Collect first-time pushbacks; any ruling with a pushback, plus any changed item,
 
 Replace the flow-branch completeness rule: the verifier no longer counts "brief asked ≥ briefs in decisions.md." Instead, it checks: every brief is shown with its rationale, every Q and changed item carries a quoted excerpt from the human (disposition `answered` or `overridden`) or is explicitly accepted on the human's `"continue"` (disposition `accepted-on-continue`), no handling of must-answer items is guessed, and the expected reaction set comes from the ledger. A reaction dispatch that errors or returns a file without the `"complete": true` sentinel is retried once; if it still fails, write `Decision: FAILED` with `Reason: reaction pass failed: <expert>`. Keep `Decision: FAILED` / `reduced run: checkpoint questions dropped` for any skipped reaction pass, any must-answer item settled without a quote, or any adopted default on a Q.
 
+**Precedent block (display-only).** Run once per checkpoint when the decision index is ready. This block surfaces the human's past answers to similar pending questions as display-only annotations (ADR-0024). No decision logic reads the precedent file. Precedent never influences which option is offered, which is presented as recommended, or how options are ordered. The block runs regardless of the branch and is transparent when the digest is empty or Pat times out.
+
+Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the outcome (one of the closed-set reasons listed at step 10, below). Define `FLOWS_ROOT="$HOME/.claude/flows"`.
+
+1. **Eligible questions.** Extract pending questions from the checkpoint work:
+   - **Non-flow**: Read all `#### Q[n].` briefs from the checkpoint section as-built above (before any Ask is called).
+   - **Flow**: Read Q items only from the ledger you built with `plan-checkpoint-tiers.py` (D and W items are excluded).
+   
+   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. If zero questions remain, set `PRECEDENT_TRACE="no-eligible-questions"` and stop (skip steps 2–10).
+
+2. **Write questions file.** Use the `Write` tool to create `${SESSION_DIR}/precedent-questions.json` with one entry per eligible question:
+   ```json
+   {"questions":[
+     {"id":"Q1","header":"the brief header","question":"brief question + Why-it-matters, whitespace-normalised, capped at 600 chars","options":["Option A","Option B"],"recommended":"Option B"},
+     ...
+   ]}
+   ```
+   Fields: `id` = brief handle (e.g., `Q1`, `Q2`); `header` = brief title line; `question` = the question text and Why-it-matters prose joined and normalised; `options` = exact option label strings (no `(Recommended)` marker); `recommended` = the panel's recommended option label.
+
+3. **Digest.** Dispatch to `precedent-digest.py` with project scope:
+   ```bash
+   DIGEST_RC=0
+   python3 "$HOME/.claude/scripts/precedent-digest.py" "$REPO_KEY" --match "${SESSION_DIR}/precedent-questions.json" --top 60 --out "${SESSION_DIR}/precedent-digest.raw.jsonl" 2>/dev/null || DIGEST_RC=$?
+   if [ "$DIGEST_RC" -ne 0 ]; then
+     PRECEDENT_TRACE="digest-failed"
+     # Skip to step 10 (trace line)
+   fi
+   ```
+   The REPO_KEY format is `owner-name` (hyphen-separated). See `scripts/precedent-digest.py` docstring for how it resolves a repo argument.
+
+4. **Self-exclusion filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt. Use one `jq -c` filter with three `--arg` variables to drop entries whose `path` starts with any of the session, flow, or issue prefix:
+   ```bash
+   printf '%s\n' "$(printf '%s' "${SESSION_DIR}" | jq -R -s -c 'ltrimstr("/Users/stephenkiers/.claude/plan-sessions/") | split("/")[0]')" > /dev/null  # extract session key for trace only
+   jq -c --arg sd "${SESSION_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOWS_ROOT}/$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; print(sys.stdin.read().strip().split("/")[-1].split("-", 1)[0])' 2>/dev/null)-" '
+     select((.path | startswith($sd) or startswith($fd) or startswith($fp)) | not)
+   ' "${SESSION_DIR}/precedent-digest.raw.jsonl" > "${SESSION_DIR}/precedent-digest.jsonl" 2>/dev/null || true
+   ```
+   Pipe all variable interpolations with `printf '%s'` and a pipe, never with `echo` or bare `$VAR`. Use only `${N}` braced form for shell positional tokens; no bare `$1`, `$2`, etc.
+
+5. **Empty digest check.** If the filtered digest is empty (zero lines in `precedent-digest.jsonl`), set `PRECEDENT_TRACE="no-digest-entries"` and stop (skip steps 6–9). Do not emit telemetry for this path.
+
+6. **Telemetry: close checkpoint, open precedent.** The `run-metrics.py` script maintains one open stage slot; nesting stages overwrites it. Close the checkpoint stage and open precedent in two separate invocations:
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome success 2>/dev/null || true
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
+   ```
+
+7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`) with:
+   - Role prompt: `~/.claude/prompts/precedent-pat.md`
+   - Filtered digest path: `${SESSION_DIR}/precedent-digest.jsonl`
+   - Questions path: `${SESSION_DIR}/precedent-questions.json`
+   - Output path: `${SESSION_DIR}/precedent.md` (always under `~/.claude/plan-sessions/`, **never under `FLOW_DIR`**)
+   
+   Join on file-exists (`-f "${SESSION_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails, retry once. On second failure, set `PRECEDENT_TRACE="pat-failed"` and go to step 9.
+
+8. **Validate.** Check the file's completeness with `precedent-render.py`:
+   ```bash
+   RENDER_RC=0
+   python3 "$HOME/.claude/scripts/precedent-render.py" validate --precedent "${SESSION_DIR}/precedent.md" --questions "${SESSION_DIR}/precedent-questions.json" --digest "${SESSION_DIR}/precedent-digest.jsonl" --out "${SESSION_DIR}/precedent-validated.json" 2>/dev/null || RENDER_RC=$?
+   case "$RENDER_RC" in
+     0) VALIDATED=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""))' 2>/dev/null) ;;
+     *) RENDER_RC=1 ;;
+   esac
+   ```
+   Set `PRECEDENT_TRACE` based on the result:
+   - If `precedent-render.py` is missing or any call exits non-zero → `PRECEDENT_TRACE="render-failed"`
+   - If it succeeds but the validated status is `invalid` → `PRECEDENT_TRACE="pat-invalid"`
+   - If the validated file exists and has status `ok` but the blocks show zero spoke-on → `PRECEDENT_TRACE="pat-silent"`
+   - Otherwise (valid, non-silent) → `PRECEDENT_TRACE="shown K of N"` (extracted from the receipt line or receipt field)
+
+9. **Close telemetry.** Always emit this when step 6 was reached (digest was non-empty):
+   ```bash
+   if [ "$PRECEDENT_TRACE" = "pat-failed" ] || [ "$PRECEDENT_TRACE" = "pat-invalid" ]; then
+     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage precedent --outcome failure --failure-class other 2>/dev/null || true
+   else
+     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage precedent --outcome success 2>/dev/null || true
+   fi
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/dev/null 2>&1 || true
+   ```
+
+10. **Trace line.** Write exactly one line (held for the branch's final decisions.md write):
+    ```
+    precedent: <PRECEDENT_TRACE>
+    ```
+    `PRECEDENT_TRACE` must be one of these eight values (write all eight verbatim in the doc): `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. This trace is internal telemetry; never printed to the human.
+
+**Display-only rule:** The `precedent.md` file is read-only by the calling step (for rendering Precedent lines beside questions) and by logging. Nothing in Step 5's decision path — checkpoint reactions, the tier script, automatic answering, the ledger, or any other logic — reads `precedent.md` or the digest files. Option labels and the `(Recommended)` marker are never modified based on precedent. Precedent never influences which option is offered, which is highlighted, or which is presented as recommended. No decision path uses it to pick, reorder, or change any default for any question.
+
 **Both branches:** once the checkpoint is complete, emit:
 ```bash
 python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage checkpoint --outcome success 2>/dev/null || true
@@ -633,6 +725,8 @@ One `Task` call, `subagent_type: "expert-reviewer"`, `model: opus`, role prompt 
 - All `{expert}-contribution.md` files (by path)
 - `{SESSION_DIR}/contrarian-carl-contribution.md`
 - `{SESSION_DIR}/decisions.md`
+
+Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
@@ -678,6 +772,8 @@ python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage synthesize-plan
   - `{SESSION_DIR}/contrarian-carl-contribution.md`
   - `{SESSION_DIR}/decisions.md`
   - `{SESSION_DIR}/plan.md`
+
+  Ignore any `## Precedent` section in `decisions.md`; it is display-only (ADR-0024) and not a decision or requirement.
 
   **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
@@ -805,6 +901,8 @@ Every code path that CAN reach an exit must emit appropriate telemetry before st
 
 Use `--outcome interrupted` for user-initiated stops (declined dialogs, checkpoint stops). Use `--outcome failure` with a `--failure-class` for technical failures.
 
+**Precedent stage telemetry note:** The `precedent` stage (Step 5, Precedent block) never asks the human — it reads past answers and writes an annotation file. Therefore, an interrupt can only originate from the checkpoint stage itself. When Pat is dispatched and completes (or fails), the telemetry closes the `checkpoint` stage and opens `precedent`, then closes `precedent` and reopens `checkpoint` (steps 6 and 9 of the Precedent block). In telemetry analysis, a run with Precedent Pat shows two separate `checkpoint` stage records; their durations should be summed to get the total checkpoint time.
+
 **In a flow (`FLOW_DIR` set), every failure or stop exit also writes the receipt** (Receipt block of
 `~/.claude/prompts/flow-reference.md`, same path as Step 9) after its telemetry: whatever summary exists so
 far, then `ATTEMPT: <k>`, `Decision: FAILED`, `Reason: <one line naming the stop — e.g. "plan context resolved empty",
@@ -828,6 +926,7 @@ These stages must each appear in a `stage-begin`/`stage-end` pair:
 - `expert-contributions`
 - `contrarian`
 - `checkpoint`
+- `precedent` (conditional, Step 5: only when there are eligible questions and a non-empty filtered digest)
 - `synthesize-plan` (Step 6: both synthesis and self-consistency-check in one dispatch)
 - `audit-plan` (conditional, Step 7: effort 3 only or recorded effort-2 escalation)
 - `repair-plan` (conditional, Step 8: only if Step 7's audit found findings)
@@ -837,11 +936,21 @@ These stages must each appear in a `stage-begin`/`stage-end` pair:
 
 ## References
 
-This command references five role prompts:
+This command references these role prompts and scripts:
+
+**Role prompts:**
 - `~/.claude/prompts/plan-contribution-contract.md` — output-format contract read alongside a persona YAML by each contributor and Carl
 - `~/.claude/prompts/plan-checkpoint-reaction.md` — hybrid-mode contract defining input/output format for each expert's pre-show and reply-mode reactions (Step 5, flow branch only)
 - `~/.claude/prompts/plan-synthesize-and-check.md` — role prompt for Step 6 (single dispatch combining Synthesize then Consistency-check; subagent writes then self-checks plan.md)
 - `~/.claude/prompts/plan-audit.md` — role prompt for Step 7 (Audit subagent, effort 3 or escalation)
+- `~/.claude/prompts/precedent-pat.md` — Precedent Pat role prompt, surfaces past answers to similar questions (Step 5, both branches; ADR-0024)
+
+**Supporting scripts:**
+- `scripts/precedent-digest.py` — reads the repo's prior decision rulings and filters by keyword match; called in Step 5's Precedent block
+- `scripts/precedent-render.py` — validates Precedent Pat's output and renders display lines; called in Step 5's Precedent block and by both branches when using the results
+
+**Design documents:**
+- `docs/adr/0024-precedent-pat.md` — the design decision for Precedent Pat as a display-only role (ADR-0024)
 
 Subagents in this command run as `subagent_type: "expert-reviewer"`, exactly like `/expert-review` reviewers. The agent has `permissionMode: bypassPermissions`, no `Edit` tool, no write-capable Bash — it can only Read/Grep/Glob/Write-one-file.
 
