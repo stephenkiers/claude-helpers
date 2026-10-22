@@ -717,16 +717,16 @@ def check_report_checkpoint(
                         if not isinstance(adata, dict):
                             continue
 
-                        # Check for required keys
-                        if adata.get("attempt") is None:
-                            return f"plan checkpoint incomplete (report answers file missing 'attempt' key: {answer_file.name})"
-
+                        # Step 3: Check for required keys (kind first, then attempt)
                         if adata.get("kind") is None:
                             # No kind key - might be legacy {"answers": {...}} shape
                             # Validate as report shape to get the specific error
                             shape_err = schema.validate_answers_file_shape(adata, "report")
                             if shape_err:
                                 return f"plan checkpoint incomplete ({shape_err}: {answer_file.name})"
+
+                        if adata.get("attempt") is None:
+                            return f"plan checkpoint incomplete (report answers file missing 'attempt' key: {answer_file.name})"
 
                     except (OSError, UnicodeDecodeError, ValueError):
                         pass
