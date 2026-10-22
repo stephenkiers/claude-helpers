@@ -500,7 +500,9 @@ decides how a receipt reading `OK` reaches its step gate:
 - **`ok`** → the loop validated the receipt; the gate follows as before.
 - **`failed`, `begin`, or `retry`, or no line** → not hand-finished. The receipt is spawned-agent output and is
   validated before its gate, the same as the loop would have done. An empty result is never passed through
-  unchecked. `--since` is the newest `begin` or `retry` line's timestamp; if neither exists the validation fails.
+  unchecked. On the live path `--since` is the newest `begin` or `retry` line's timestamp; on the resume path
+  rule 8 passes `--since-from-log`, which derives the same bound from `log.md` in code (scripts/flow_log.py).
+  If neither line exists the validation fails.
 
 Take over writes `taken-over` at the Hard stop (for the failed step) and at the merge gate (for `merge`). The merge
 gate's Take over is audit only: its step has no step gate, so resume rule 2 never reads it.
@@ -669,3 +671,17 @@ Neither path adds an unconditional stop. The default flow still does not pause b
 **Review redo side effects.** A review redo re-runs the full panel (all reviewers routed by the Router). It writes a new timestamped `REVIEW_DIR`, not a numbered `review-02/` directory. The cache entry for the commit is repointed to the new `REVIEW_DIR` on OK. A second token-usage entry is logged in the yield ledger (token logging is unchanged: one entry per run). The prior `REVIEW_DIR` and its `claude-action-plan.md` are kept untouched, so the human can compare old and new action plans side by side. Redos do not mutate the old results.
 
 **No repository mutation, no artifact editing.** The redo mechanism never mutates the repository (no rebase, reset, or force push from the redo itself). Artifacts (code, tests, docs) are read-only at the redo gate; the human can only add notes, not edit them. If code changes are needed before a redo, the human must Take over (stop the flow, edit code manually, and resume manually) or Abort and re-run in a new flow.
+
+## Amendment (2026-10-20): a bounded `implement-ledger.py locate` fails closed on unreadable records
+
+The bounded locate (`--since`, or `--flow-dir`/`--step`, which derives `--since` from log.md) scans every pointer and
+tombstone under the state dir. An unreadable file, or a record whose `created_epoch` is not a finite number (NaN,
+infinity, or an integer too large for a float), could hide the run that the Fidelity audit is looking for, so the
+bounded scan no longer skips such a record with a stderr note. It exits 2 with a message that names up to five
+unreadable files and gives their total count, and prints no run. Records that merely lack a numeric `created_epoch`
+stay ineligible and are reported on stderr without failing. The fail-closed check runs before the repo filter, so one
+unreadable or non-finite record anywhere under the state dir makes every bounded locate exit 2, in every repo, until
+the file is repaired or removed; that blast radius is the accepted trade-off of the fail-closed ruling. The unbounded
+locate (no bound given) is unchanged. A bounded miss now prints a distinct NOT FOUND hint, because finished runs are
+tombstones pruned after 14 days. A `--flow-dir` locate whose newest begin/retry line lies outside the readable tail of
+log.md prints a distinct NOT FOUND reason on stderr and still exits 3.

@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """Verify step receipts against on-disk artifacts for /expert-flow.
 
+The attempt-start bound for --since-from-log is derived from the flow's log.md by code (scripts/flow_log.py)
+and is never copied by the model. Where it is used: `implement-ledger.py locate --flow-dir --step` in the
+expert-flow Fidelity audit, and `--since-from-log` in the expert-flow resume path's rule-8 validation.
+Why it matters: a bound that is too early or wrong lets a stale run pass the audit (a false pass that
+masks a skipped step), and a bound that is too late or missing gives a false `ledger unavailable`.
+Design: ADR-0013 (deterministic logic lives in scripts, not prose) and ADR-0023 (the receipt is a claim
+that the Fidelity audit exists to check).
+
 Exit codes:
   0: artifacts OK
   1: receipt admits deviation, artifact missing, or a plan/review checkpoint was not fully relayed
      (counting is marker-based: the questions in files named by receipt's awaiting-answers /
-     reused-answers markers that have a corresponding answers/ file)
-  2: bad arguments or internal error (message on stderr)
+     reused-answers markers that have a corresponding answers/ file). With --since-from-log, a
+     missing or malformed begin/retry line in log.md is exit 1.
+  2: bad arguments or internal error (message on stderr). With --since-from-log, an absent or
+     invalid flow dir is exit 2.
 """
 
 import argparse
@@ -14,7 +24,6 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, NamedTuple, NoReturn, Optional
 
@@ -25,6 +34,13 @@ except ImportError:
     # If not in path, add scripts directory
     sys.path.insert(0, str(Path(__file__).parent))
     import plan_checkpoint_schema as schema
+
+# Shared leaf module (log.md attempt-start parsing and ISO-8601); same pattern as plan_checkpoint_schema.
+try:
+    import flow_log
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    import flow_log
 
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
@@ -1181,30 +1197,8 @@ def check_fix(
     return None
 
 
-def _parse_iso8601(iso_str: str) -> float:
-    """Parse ISO-8601 UTC timestamp to float (epoch seconds).
-
-    Handles formats like "2026-10-14T22:20:13Z" and "2026-10-14T22:20:13+00:00"
-    with or without timezone offsets.
-    """
-    try:
-        # Normalize trailing Z to +00:00 for fromisoformat
-        normalized = iso_str.rstrip("Z")
-        if normalized == iso_str:
-            # Z was not present, so no normalization needed
-            dt = datetime.fromisoformat(iso_str)
-        else:
-            # Z was present, add +00:00
-            normalized = normalized + "+00:00"
-            dt = datetime.fromisoformat(normalized)
-
-        # Ensure timezone-aware, defaulting to UTC
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        return dt.timestamp()
-    except ValueError:
-        raise ValueError(f"Could not parse ISO timestamp: {iso_str}")
+# Alias kept so existing call sites and tests keep working; the implementation lives in flow_log.
+_parse_iso8601 = flow_log.parse_iso8601
 
 
 def _parse_roster_table(content: str) -> List[str]:
@@ -1452,7 +1446,14 @@ def main() -> None:
         help="Step name",
     )
     parser.add_argument("--receipt", required=True, help="Path to receipt file")
-    parser.add_argument("--since", help="ISO-8601 UTC timestamp")
+    since_group = parser.add_mutually_exclusive_group(required=False)
+    since_group.add_argument("--since", help="ISO-8601 UTC timestamp")
+    since_group.add_argument(
+        "--since-from-log",
+        action="store_true",
+        dest="since_from_log",
+        help="derive the bound from the newest --step begin|retry line in the flow's log.md",
+    )
     parser.add_argument("--repo", help="Repo directory (for implement/fix)")
     parser.add_argument("--branch", help="Branch name (for implement/fix)")
     parser.add_argument("--base", help="Base SHA (for implement/fix)")
@@ -1632,14 +1633,42 @@ def main() -> None:
         sys.exit(0)
 
     # Standard artifact verification mode
-    if args.since is None:
-        error("--since required for standard verification")
+    if args.since is None and not args.since_from_log:
+        error("--since or --since-from-log required for standard verification")
 
-    # Parse --since once; bad value exits with code 2
-    try:
-        since_ts = _parse_iso8601(args.since)
-    except ValueError as e:
-        error(str(e))
+    if args.since_from_log:
+        # Bound from code, never from the model: exit 2 on a bad flow dir, exit 1 on a missing or
+        # malformed begin/retry line.
+        flow_dir_arg = resolve_flow_dir(args.flow_dir, Path(args.receipt))
+        if flow_dir_arg is None:
+            error("--since-from-log needs --flow-dir (or a receipt under steps/)")
+        try:
+            flow_dir_real = flow_log.validate_flow_dir(str(flow_dir_arg))
+        except flow_log.FlowLogError as e:
+            error(f"--since-from-log: {e}")
+        # Reason lines go to stdout as the verdict; error() (stderr, exit 2) is reserved for bad arguments.
+        try:
+            log_ts, window_cut = flow_log.newest_attempt_start_detail(flow_dir_real / "log.md", args.step)
+        except flow_log.MalformedLineError as e:
+            print(f"Reason: malformed begin or retry line for {args.step} ({e})")
+            sys.exit(1)
+        except flow_log.FlowLogError as e:
+            print(f"Reason: cannot read begin or retry line for {args.step} ({e})")
+            sys.exit(1)
+        if log_ts is None and window_cut:
+            print(f"Reason: no begin or retry line for {args.step} in the readable tail of log.md "
+                  f"(only the last {flow_log.LOG_READ_CAP_BYTES} bytes of log.md were read; an older line may exist)")
+            sys.exit(1)
+        if log_ts is None:
+            print(f"Reason: no begin or retry line for {args.step}")
+            sys.exit(1)
+        since_ts = flow_log.parse_iso8601(log_ts)
+    else:
+        # Parse --since once; bad value exits with code 2
+        try:
+            since_ts = _parse_iso8601(args.since)
+        except ValueError as e:
+            error(str(e))
 
     if scan_for_deviation(receipt):
         print("Reason: receipt admits deviation")
