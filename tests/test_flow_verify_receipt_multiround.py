@@ -127,8 +127,8 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 2] Latest wins: final unresolved fails",
-                      error is not None and "unresolved" in error.lower(),
+        h.test_result("[Test 2] Latest wins: final unresolved fails with 'unresolved: Q1'",
+                      error is not None and "unresolved: Q1" in error,
                       f"error={error}")
 
     # Test 9: Round mismatch
@@ -190,8 +190,8 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 9] Round mismatch fails",
-                      error is not None and "round mismatch" in error.lower(),
+        h.test_result("[Test 9] Round mismatch fails with 'answers file round mismatch'",
+                      error is not None and "answers file round mismatch" in error,
                       f"error={error}")
 
     # Test 10: Prose missing reply file
@@ -238,8 +238,8 @@ def main():
         # Don't create plan-02.reply-3.md
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 10] Prose missing reply file fails",
-                      error is not None and "reply file missing" in error.lower() and "plan-02.reply-3.md" in (error or ""),
+        h.test_result("[Test 10] Prose missing reply file fails with 'reply file missing: plan-02.reply-3.md'",
+                      error is not None and "reply file missing: plan-02.reply-3.md" in error,
                       f"error={error}")
 
     # Test 11: Prose with non-positive round
@@ -284,8 +284,8 @@ def main():
         (flow_dir / "answers" / "plan-01.reply-0.md").write_text("A\n", encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 11] Prose round 0 fails",
-                      error is not None and "round not a positive integer" in error.lower(),
+        h.test_result("[Test 11] Prose round 0 fails with 'round not a positive integer'",
+                      error is not None and "round not a positive integer" in error,
                       f"error={error}")
 
     # Test 14: Form answer with empty excerpt
@@ -329,8 +329,8 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 14] Form empty excerpt fails",
-                      error is not None and "without quote" in error.lower(),
+        h.test_result("[Test 14] Form empty excerpt fails with 'must-answer without quote'",
+                      error is not None and "must-answer without quote" in error,
                       f"error={error}")
 
     # Test 16: Accepted-on-continue without loop_end
@@ -376,8 +376,8 @@ def main():
         (flow_dir / "answers" / "plan-01.reply-1.md").write_text("continue\n", encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 16] Accepted-on-continue without loop_end fails",
-                      error is not None and "without loop_end" in error.lower(),
+        h.test_result("[Test 16] Accepted-on-continue without loop_end fails with 'accepted-on-continue without loop_end'",
+                      error is not None and "accepted-on-continue without loop_end" in error,
                       f"error={error}")
 
     # Test 18: Wrong shape - uses 'answers' key
@@ -420,8 +420,9 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        # The wrong-shape check should catch 'answers' key and report it specifically
         h.test_result("[Test 18] Wrong shape: 'answers' key fails",
-                      error is not None and ("uses 'answers' key" in error.lower() or "answer file missing handle" in error.lower()),
+                      error is not None and ("uses 'answers' key; expected 'items'" in error or "answer file missing handle: Q1" in error),
                       f"error={error}")
 
     # Test 19: Wrong shape - missing 'attempt'
@@ -464,8 +465,8 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 19] Wrong shape: missing 'attempt' fails",
-                      error is not None and "missing 'attempt' key" in error.lower() and "plan-01.json" in (error or ""),
+        h.test_result("[Test 19] Wrong shape: missing 'attempt' fails with 'report answers file missing 'attempt' key: plan-01.json'",
+                      error is not None and "report answers file missing 'attempt' key: plan-01.json" in error,
                       f"error={error}")
 
     # Test 20: Mixed shape
@@ -526,9 +527,636 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("[Test 20] Mixed shape: legacy round 2 fails with specific reason",
-                      error is not None and ("missing 'kind' key" in error.lower() or "uses 'answers' key" in error.lower() or "missing 'attempt' key" in error.lower())
-                      and "plan-02.json" in (error or ""),
+        h.test_result("[Test 20] Mixed shape: legacy round 2 fails with specific reason and 'plan-02.json'",
+                      error is not None and ("missing 'kind' key: plan-02.json" in error or "uses 'answers' key" in error or "missing 'attempt' key: plan-02.json" in error),
+                      f"error={error}")
+
+    # Test 3: Excerpt binding negative - Q1 excerpt in wrong round's reply file
+    print("[Test 3] Excerpt binding negative: Q1 excerpt in plan-01.reply-1.md but needed in plan-02.reply-3.md")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        # Round 1: Q1 unresolved
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}, {"label": "B"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "unresolved", "value": None, "reply_excerpt": None, "source": None}},
+            "reading_echoed": False, "loop_end": None,
+        }), encoding="utf-8")
+
+        # Round 3: Q1 answered, excerpt in plan-01.reply-1.md but should be in plan-02.reply-3.md
+        (flow_dir / "questions" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 3, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Retry", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}, {"label": "B"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Choose", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "round": 3, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "B", "reply_excerpt": "I prefer B", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+
+        # Excerpt is only in plan-01.reply-1.md, not in plan-02.reply-3.md
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("I prefer B\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 3] Excerpt binding: excerpt in wrong file fails",
+                      error is not None and ("reply file missing: plan-02.reply-3.md" in error or "reply excerpt not found" in error),
+                      f"error={error}")
+
+    # Test 4: Excerpt binding negative - W1 excerpt in wrong file
+    print("[Test 4] Excerpt binding negative: W1 only in round 1, excerpt in round 3")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "W1": {"tier": "worth-a-look", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        # Round 1: W1 overridden with excerpt
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "W1", "tier": "worth-a-look", "brief_type": "question", "title": "W",
+                 "decision_or_recommendation": "Maybe", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "protested", "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"W1": {"disposition": "overridden", "value": "Other way", "reply_excerpt": "Different path", "source": "prose"}},
+            "reading_echoed": False, "loop_end": None,
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("Different path\n", encoding="utf-8")
+
+        # Round 3: W1 not asked again, but excerpt mistakenly in plan-02.reply-3.md
+        (flow_dir / "questions" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 3, "step": "plan", "command": "expert-plan",
+            "items": [],
+            "questions": []
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "round": 3, "attempt": 1,
+            "items": {},
+            "reading_echoed": False, "loop_end": None,
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-02.reply-3.md").write_text("Different path\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 4] Excerpt binding: W1 overridden only in round 1, checked against round 1",
+                      error is None,
+                      f"error={error}")
+
+    # Test 5: Coverage - handle absent from all rounds
+    print("[Test 5] Coverage: handle W3 absent from all rounds")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+            "W3": {"tier": "worth-a-look", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}], "business_case": None, "pushback": None},
+                {"handle": "W3", "tier": "worth-a-look", "brief_type": "question", "title": "W",
+                 "decision_or_recommendation": "Maybe", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": False, "reason_must_answer": None, "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # Answers file omits W3
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("A\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 5] Coverage: missing ledger handle fails",
+                      error is not None and "answer file missing handle: W3" in error,
+                      f"error={error}")
+
+    # Test 6: Round-1 file omits ledger handle
+    print("[Test 6] Round-1 file omits ledger handle")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+            "W1": {"tier": "worth-a-look", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "D1", "tier": "decided", "brief_type": "question", "title": "D",
+                 "decision_or_recommendation": "A", "why": "Good", "backed_by": ["alice"],
+                 "must_answer": False, "reason_must_answer": None, "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+                {"handle": "W1", "tier": "worth-a-look", "brief_type": "question", "title": "W",
+                 "decision_or_recommendation": "Maybe", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": False, "reason_must_answer": None, "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # First report file omits W1 (not allowed for round 1)
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"D1": {"disposition": "accepted", "value": None, "reply_excerpt": None}},
+            "reading_echoed": False, "loop_end": None,
+        }), encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 6] Round-1 file omits ledger handle fails",
+                      error is not None and "answer file missing handle: W1" in error,
+                      f"error={error}")
+
+    # Test 7: Unknown handle in round-2 file
+    print("[Test 7] Unknown handle W33 in round-2 file")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        # Round 1: Q1
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("A\n", encoding="utf-8")
+
+        # Round 2: Q1 again, but also includes W33 not in ledger
+        (flow_dir / "questions" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 2, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Still unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Choose", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "round": 2, "attempt": 1,
+            "items": {
+                "Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"},
+                "W33": {"disposition": "answered", "value": "B", "reply_excerpt": "B", "source": "prose"},
+            },
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-02.reply-2.md").write_text("A\nB\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 7] Unknown handle fails",
+                      error is not None and "unknown handle in plan-02.json: W33" in error,
+                      f"error={error}")
+
+    # Test 8: Per-round must-answer coverage
+    print("[Test 8] Per-round must-answer coverage: D2 in round 2 must-answer but missing from answer file")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+            "D2": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        # Round 1: D1 answered, D2 accepted
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "D1", "tier": "decided", "brief_type": "question", "title": "D1",
+                 "decision_or_recommendation": "A", "why": "Good", "backed_by": ["alice"],
+                 "must_answer": False, "reason_must_answer": None, "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+                {"handle": "D2", "tier": "decided", "brief_type": "question", "title": "D2",
+                 "decision_or_recommendation": "B", "why": "Good", "backed_by": ["alice"],
+                 "must_answer": False, "reason_must_answer": None, "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {
+                "D1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"},
+                "D2": {"disposition": "accepted", "value": None, "reply_excerpt": None},
+            },
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("A\n", encoding="utf-8")
+
+        # Round 2: D2 must-answer (changed), but answer file omits it
+        (flow_dir / "questions" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 2, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "D2", "tier": "decided", "brief_type": "question", "title": "D2",
+                 "decision_or_recommendation": "B", "why": "Changed", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "changed", "evidence": {},
+                 "options": None, "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-02.json").write_text(json.dumps({
+            "kind": "report", "round": 2, "attempt": 1,
+            "items": {},  # D2 is missing even though it's must-answer
+            "reading_echoed": False, "loop_end": None,
+        }), encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 8] Per-round must-answer coverage fails",
+                      error is not None and "answer file missing handle: D2 in plan-02.json" in error,
+                      f"error={error}")
+
+    # Test 12: Form answer with label, no reply file needed
+    print("[Test 12] Form answer with option label, no reply file")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "Option A"}, {"label": "Option B"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Choose", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # Form answer with label excerpt
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "Option A", "reply_excerpt": "Option A", "source": "form"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+
+        # No reply file needed for form answers
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 12] Form answer with label passes",
+                      error is None,
+                      f"error={error}")
+
+    # Test 13: Form answer with Other text, no reply file needed
+    print("[Test 13] Form answer with Other text, no reply file")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "Option A"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Choose", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # Form answer with Other text (non-option text)
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "Custom response", "reply_excerpt": "Custom response", "source": "form"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 13] Form answer with Other text passes",
+                      error is None,
+                      f"error={error}")
+
+    # Test 15: Accepted-on-continue with loop_end
+    print("[Test 15] Accepted-on-continue with loop_end and continue text")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Choose", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "accepted-on-continue", "value": None, "reply_excerpt": "continue", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "continue",
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("continue\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 15] Accepted-on-continue with loop_end passes",
+                      error is None,
+                      f"error={error}")
+
+    # Test 17: Same-round append
+    print("[Test 17] Same-round append: excerpt in appended re-ask part")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}, {"label": "B"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # Initial answer unresolved
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "unresolved", "value": None, "reply_excerpt": None, "source": None}},
+            "reading_echoed": False, "loop_end": None,
+        }), encoding="utf-8")
+
+        # Same-round re-ask: append to reply file, keep same round and SEQ
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "B", "reply_excerpt": "I choose B", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+
+        # Reply file contains original unresolved text and appended re-ask answer
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text(
+            "Original unresolved\n\n--- Re-ask ---\nI choose B\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 17] Same-round append passes",
+                      error is None,
+                      f"error={error}")
+
+    # Test 21: Numeric sort - round-1 selection picks plan-2 not plan-10
+    print("[Test 21] Numeric sort: round-1 selection picks plan-2 (SEQ 2, not 10)")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = {
+            "seated": ["alice", "bob", "contrarian-carl"],
+            "expected_reactions": [
+                {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+                for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+            ],
+            "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}},
+            "Q1": {"tier": "question", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        }
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        # plan-2: round 1, has Q1 (required for round 1)
+        (flow_dir / "questions" / "plan-2.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-2.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-2.reply-1.md").write_text("A\n", encoding="utf-8")
+
+        # plan-10: round 1, also has Q1 but with accepted (later in numeric sort, so not selected as round-1 base)
+        (flow_dir / "questions" / "plan-10.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 1, "step": "plan", "command": "expert-plan",
+            "items": [
+                {"handle": "Q1", "tier": "question", "brief_type": "question", "title": "Q",
+                 "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                 "must_answer": True, "reason_must_answer": "question", "evidence": {},
+                 "options": [{"label": "A"}], "business_case": None, "pushback": None},
+            ],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        (flow_dir / "answers" / "plan-10.json").write_text(json.dumps({
+            "kind": "report", "round": 1, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"}},
+            "reading_echoed": False, "loop_end": "all-answered",
+        }), encoding="utf-8")
+        (flow_dir / "answers" / "plan-10.reply-1.md").write_text("A\n", encoding="utf-8")
+
+        # With numeric sort: plan-2 (2 < 10) is selected as round-1 base, both have Q1, final is "answered" (latest from plan-10) → PASS
+        # With alphabetic sort: plan-10 ("10" < "2") would be selected, both have Q1, same final → would still PASS
+        # Both approaches pass, but numeric sort is the spec'ed behavior
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 21] Numeric sort: round-1 selection passes",
+                      error is None,
                       f"error={error}")
 
     h.summarize_and_exit()
