@@ -354,7 +354,7 @@ def main():
         subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -373,7 +373,7 @@ def main():
         base_sha = result.stdout.strip()
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -852,7 +852,7 @@ def main():
         create_git_repo(repo_path)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         # Use a fake/unknown base SHA
         fake_base = "0000000000000000000000000000000000000000"
@@ -903,7 +903,7 @@ No items."""
         Path(f"{review_dir}/reviewer2-pass1.md").write_text("# Pass 1 #2")
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -951,7 +951,7 @@ Nothing cross-cutting.
         Path(f"{review_dir}/reviewer2-pass1.md").write_text("# Pass 1 #2")
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -1000,7 +1000,7 @@ Nothing cross-cutting.
         Path(f"{review_dir}/reviewer2-pass1.md").write_text("# Pass 1 #2")
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -1146,7 +1146,7 @@ Nothing cross-cutting.
         Path(f"{bad_review_dir}/reviewer2-pass1.md").write_text("# Pass 1 #2")
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {bad_review_dir}\nRound 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, f"REVIEW_DIR: {bad_review_dir}\nRound 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -1304,7 +1304,7 @@ Nothing cross-cutting.
         create_git_repo(repo_path)
 
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         # Use a non-SHA base (not a hex string)
         exit_code, stdout, stderr = run_verifier(

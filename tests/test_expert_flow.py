@@ -653,15 +653,16 @@ def main():
     resume = " ".join(resume_m.group(0).split()) if resume_m else ""
     h.test_result("resume rule 2 checks how a taken-over OK was reached before its gate",
                   "Check how the `OK` was reached before the gate." in resume
-                  and 'grep -E "^[^ ]+ <STEP> (begin|retry|ok|failed|taken-over)$" "$FLOW_DIR/log.md" | tail -n 1' in resume)
+                  and 'grep -E "^[^ ]+ <STEP> (begin|retry|ok|taken-over|failed( \\(.*\\))?)$" "$FLOW_DIR/log.md" | tail -n 1' in resume)
     h.test_result("resume: newest ok line goes to the gate as-is",
-                  "**Newest line is `ok`** → the loop validated this receipt; go to the gate as-is." in resume)
+                  "**Newest line is `ok`** → **for `plan`, `implement`, `review`, and `fix`**: read `steps/<NN>-<STEP>.audit.md`." in resume
+                  and "**For `verify`** (not audited): go to the gate as-is." in resume)
     h.test_result("resume: hand-finished is keyed to the newest taken-over line, not to failed",
                   "**Newest line is `taken-over`** → **hand-finished**" in resume
                   and "Skip receipt validation entirely (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit." in resume
                   and "**Newest line is `failed`** → **hand-finished**" not in resume)
     h.test_result("resume: a failed, begin, or retry newest line (or none) is validated, never hand-finished",
-                  "**Newest line is `failed`, `begin`, or `retry`, or there is none** → not hand-finished" in resume
+                  "**Newest line is `begin`, `retry`, or there is none** → keep today's validate-then-audit path (not hand-finished" in resume
                   and "never passed unchecked" in resume)
     h.test_result("resume: hand-finished gate digest says not audited",
                   "digest prefixed by the line `hand-finished, not audited`" in resume)
@@ -669,10 +670,10 @@ def main():
                   "Log `hand-finished` (the newest line stays `taken-over`" in resume
                   and "`hand-finished`, `awaiting`" in text)
     h.test_result("resume: no outcome line is validated, never passed unchecked",
-                  "or there is none** → not hand-finished" in resume and "never passed unchecked" in resume)
+                  "or there is none** → keep today's validate-then-audit path" in resume and "never passed unchecked" in resume)
     # Take over is the only writer of taken-over, so the event must be written at both Take over sites.
     h.test_result("event list names taken-over beside failed and hand-finished",
-                  "`failed`, `taken-over`, `hand-finished`" in " ".join(text.split()))
+                  "`failed` (optionally with `(<reason>)`), `taken-over`, `hand-finished`" in " ".join(text.split()))
     hard_stop = " ".join(subsection(text, "### Hard stop").split())
     take_over_hs = re.search(r"\*\*Take over\*\* — leave everything as is.*?(?=\*\*Abort\*\*)", hard_stop)
     h.test_result("Hard stop Take over logs taken-over (section-scoped, whitespace-normalized)",

@@ -491,8 +491,9 @@ Resume rules, applied in this order:
    line gives `malformed begin or retry line for <STEP> (<detail>)`, and an unreadable `log.md` gives
    `cannot read begin or retry line for <STEP> (<detail>)`. All of these are exit 1.
    Otherwise run step 5's receipt validation (rules 1–8, with `K` = `attempts[STEP]`; rule 8 uses
-   `--since-from-log`, because rule 1 cleared `live`), then, for `plan`, `implement`, `review`, and `fix`,
-   the "Fidelity audit" (its telemetry line included). Both pass → log `ok` and run the gate. Either
+   `--since-from-log`, because rule 1 cleared `live`), then, where the branch calls for it and for `plan`,
+   `implement`, `review`, and `fix`, the "Fidelity audit" (its telemetry line included; any audit run from
+   here appends its `audits.jsonl` line with the extra field `resume: true`). Both pass → log `ok` and run the gate. Either
    fails → no stage is open, so none is closed: log `failed (<reason>)` (sanitised, per the log snippet),
    `WRITE-STATE`, and go to "Hard stop" with the reason. **Do not increment `failures[STEP]`** — no attempt
    ran on resume, so the Retry budget is untouched. The human can still Take over again.
