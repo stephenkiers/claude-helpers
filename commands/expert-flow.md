@@ -1697,12 +1697,11 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 
 At the start of ship's per-step details, before spawning the step, read the newest `implement` and `fix` receipts' `OUTSTANDING:` lines. Union them with the `uncovered` and `declared` rows of each step's persisted `steps/<NN>-<STEP>.coverage.txt` (keeping their labels; table-only `uncovered` rows are labelled `verifier`). For a taken-over `implement` or `fix`, run the read-only `--coverage` mode to gather its uncovered rows (if it cannot run, the done line prints `outstanding: unknown (taken-over <step>)`). If the union is empty, or `steps/<NN>-ship.outstanding.md` exists with an `<!-- outstanding-end -->` sentinel, skip the relay.
 
-Otherwise ask one batched `AskUserQuestion` (header `Outstanding`; apply the Ask block from `~/.claude/prompts/flow-reference.md` — every AskUserQuestion in this doc must reference the block): "These planned units are still outstanding:" then one line per item with its reason and provenance label (`[self-report|both|verifier]`). Each item gets three choices:
-- **Do it now in ship** (option text warns that work done here skips review and verify, and is checked only by `/shipit`'s CI).
+Otherwise ask one batched `AskUserQuestion` (header `Outstanding`; apply the Ask block from `~/.claude/prompts/flow-reference.md` — every AskUserQuestion in this doc must reference the block): "These planned units are still outstanding:" then one line per item with its reason and provenance label (`[self-report|both|verifier]`). Each item gets two choices:
 - **Open an issue** (runs `gh issue create` with `--title` and `--body-file`, never interpolated).
 - **Drop**.
 
-On answering, "Do it now" items go to the ship spawn as fenced data lines `DO_BEFORE_SHIP: <id> (<reason>)`. "Open an issue" items record their URL. Drop items are recorded. Write `steps/<NN>-ship.outstanding.md`: one line per item with its disposition and issue URL (where opened), then the sentinel `<!-- outstanding-end -->`. Log `outstanding`, and add it to the event list.
+On answering, "Open an issue" items record their URL. Drop items are recorded. Write `steps/<NN>-ship.outstanding.md`: one disposition line per item (skip already-recorded items from previous attempts) with the issue URL first if opened, then the disposition, then the sentinel `<!-- outstanding-end -->`. Log `outstanding`, and add it to the event list.
 
 Then spawn `/shipit`. Force-push confirmations for stacked children and the ambiguous-PR-body
 question are relayed; a failing check or a rebase conflict is a hard stop whose reason carries the
