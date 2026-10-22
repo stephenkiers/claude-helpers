@@ -166,11 +166,11 @@ def main():
 
         try:
             result = json.loads(out) if out else {}
-            is_valid = result.get("status") == "ok"
+            is_valid = result.get("status") == "ok" and isinstance(result.get("blocks"), dict) and "q-001" in result.get("blocks", {})
             h.test_result(
-                "validate: valid precedent.md returns status: ok",
+                "validate: valid precedent.md returns status: ok with blocks",
                 is_valid,
-                f"status={result.get('status')}, reason={result.get('reason')}" if not is_valid else "",
+                f"status={result.get('status')}, reason={result.get('reason')}, blocks={list(result.get('blocks', {}).keys())}" if not is_valid else "",
             )
         except Exception as e:
             h.test_result(
@@ -313,7 +313,57 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
                 f"parse error: {e}",
             )
 
-    # 3.4: Too many citations (6 instead of max 5)
+    # 3.4: Too many citations per question (4 instead of max 3)
+    with TempFiles() as tmp:
+        citations = "\n".join([
+            f'**Precedent**: 2026-01-15 · #{140+i} · review · chose "A" (recommended was "B") · reason: "test{i}"'
+            for i in range(4)
+        ])
+        body = f"""# Precedent — session-123
+
+precedent-pat | questions: 1 | spoke-on: 1 | citations: 4 | confidence: high=0 medium=1
+
+## Q1 [q-001] Sample question
+
+{citations}
+**Prediction**: A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+"""
+        precedent_path = tmp.write("precedent.md", body)
+        questions_path = tmp.write("questions.json", make_questions([{
+            "id": "q-001", "header": "Q1", "question": "Q?", "options": ["A", "B"], "recommended": "B",
+        }]))
+        digest_entries = "\n".join([
+            json.dumps(make_digest_entry(ref=140+i, reason=f"test{i}"))
+            for i in range(4)
+        ])
+        digest_path = tmp.write("digest.jsonl", digest_entries)
+
+        rc, out, err = run_render([
+            "validate",
+            "--precedent", precedent_path,
+            "--questions", questions_path,
+            "--digest", digest_path,
+        ])
+
+        try:
+            result = json.loads(out) if out else {}
+            is_invalid = result.get("status") == "invalid"
+            h.test_result(
+                "validate: 4 citations per question gives invalid status",
+                is_invalid,
+                f"status={result.get('status')}" if not is_invalid else "",
+            )
+        except Exception as e:
+            h.test_result(
+                "validate: 4 citations per question gives invalid status",
+                False,
+                f"parse error: {e}",
+            )
+
+    # 3.5: Too many citations (6 instead of max 5)
     with TempFiles() as tmp:
         citations = "\n".join([
             f'**Precedent**: 2026-01-15 · #{140+i} · review · chose "A" (recommended was "B") · reason: "test{i}"'
@@ -350,11 +400,11 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 6 | confidence: high=0 m
 
         try:
             result = json.loads(out) if out else {}
-            is_invalid = result.get("status") == "invalid"
+            is_invalid = result.get("status") == "invalid" and result.get("reason") == "pat-invalid"
             h.test_result(
-                "validate: 6 citations gives invalid status",
+                "validate: 6 citations gives invalid status with pat-invalid reason",
                 is_invalid,
-                f"status={result.get('status')}" if not is_invalid else "",
+                f"status={result.get('status')}, reason={result.get('reason')}" if not is_invalid else "",
             )
         except Exception as e:
             h.test_result(
@@ -752,12 +802,21 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             try:
                 result = json.loads(out) if out else {}
                 line = result.get("q-001", "")
-                # Check that the line is a single line (no structural markup introduced)
-                is_single_line = "\n" not in line or line.count("\n") == 0
+                # Check that the line is a single line (no newlines) and injection content is sanitized
+                is_single_line = "\n" not in line
+                # Verify specific injections are removed or neutralized
+                injection_removed = True
+                if case_name == "newline":
+                    injection_removed = "\n" not in line
+                elif case_name == "leading #":
+                    injection_removed = not line.startswith("#")
+                elif case_name == "forged Precedent:":
+                    # The injected "Precedent: fake" should be neutralized to "precedent: fake" and not appear verbatim
+                    injection_removed = "Precedent: fake" not in line and line.count("precedent:") <= 1  # Only sanitized lowercase should appear
                 h.test_result(
-                    f"line: injection case '{case_name}' yields single line",
-                    is_single_line,
-                    "line has newline" if not is_single_line else "",
+                    f"line: injection case '{case_name}' yields sanitized single line",
+                    is_single_line and injection_removed,
+                    f"single_line={is_single_line}, injection_removed={injection_removed}, line={line[:60]}" if not (is_single_line and injection_removed) else "",
                 )
             except Exception as e:
                 h.test_result(
@@ -816,10 +875,12 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             line = result.get("q-001", "")
             if line:  # Only test budget if a line was generated
                 is_under_budget = len(line) <= 240
+                has_prediction = "Prediction:" in line
+                has_precedent = "Precedent:" in line
                 h.test_result(
-                    "line: output line stays under 240 chars when provided",
-                    is_under_budget,
-                    f"len={len(line)}" if not is_under_budget else "",
+                    "line: output line stays under 240 chars with Prediction and Precedent",
+                    is_under_budget and has_prediction and has_precedent,
+                    f"len={len(line)}, has_prediction={has_prediction}, has_precedent={has_precedent}" if not (is_under_budget and has_prediction and has_precedent) else "",
                 )
             else:
                 # If no line was generated, that's also valid behavior
@@ -911,12 +972,14 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             "--validated", validated_path,
         ])
 
-        # Check that no injected headings match the h4 pattern
+        # Check that no injected headings match the h4 pattern and no leading # appears in blockquote content
         matches_h4 = re.search(r"^####\s+Q\d+", out, re.MULTILINE)
+        # Also verify the injected content doesn't appear as plain heading syntax
+        has_injected_heading = "## Q9 [x]" in out or "#### Q1." in out
         h.test_result(
-            "section: injected #### headings never start a line",
-            not matches_h4,
-            f"matched: {matches_h4.group()}" if matches_h4 else "",
+            "section: injected #### headings never start a line and injection is sanitized",
+            not matches_h4 and not has_injected_heading,
+            f"matched_h4={bool(matches_h4)}, has_injected_heading={has_injected_heading}" if matches_h4 or has_injected_heading else "",
         )
 
     print()

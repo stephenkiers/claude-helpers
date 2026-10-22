@@ -277,6 +277,12 @@ def _validate_blocks(
     if citations > 5:
         return False, "pat-invalid", []
 
+    # Check per-block citation limit: each question must have <= 3 citations
+    for block in blocks:
+        if not block["silent"]:
+            if len(block["precedent_lines"]) > 3:
+                return False, "pat-invalid", []
+
     # Validate each spoken block, tracking which ones are valid
     valid_ids: List[str] = []
     for block in blocks:
