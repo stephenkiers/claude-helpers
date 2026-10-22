@@ -136,6 +136,13 @@ NEEDS_YOU_ITEM_RE = re.compile(r"^###\s+\d+\.", re.MULTILINE)
 NEEDS_YOU_HEADING_RE = re.compile(r"^##\s+Needs you\b.*$", re.MULTILINE)
 # OUTSTANDING: line format: <unit id> (<reason>) [provenance]
 OUTSTANDING_ITEM_RE = re.compile(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$")
+# Markdown table separator row (allow :?-+:? per cell)
+MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")
+
+
+def _is_markdown_separator_row(line: str) -> bool:
+    """Check if a line is a markdown table separator row (e.g., | --- | --- |)."""
+    return bool(MARKDOWN_SEPARATOR_RE.match(line))
 
 
 def error(msg: str) -> NoReturn:
@@ -1789,8 +1796,8 @@ def _count_doing_it_items(action_plan: str) -> int:
 
             # In table: count data rows, skip header and separator
             if table_started and stripped.startswith("|"):
-                # Skip separator rows: cells with optional colons and dashes (allow :?-+:? per cell)
-                if not re.match(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$", stripped):
+                # Skip separator rows: cells with optional colons and dashes
+                if not _is_markdown_separator_row(stripped):
                     count += 1
             elif table_started and not stripped.startswith("|"):
                 # Table ended
@@ -1907,17 +1914,29 @@ def iter_outstanding_lines(receipt: str) -> tuple:
     - has_none: True if any line was "OUTSTANDING: none"
     - has_items: True if any item was parsed (non-none lines matching format)
 
-    Raises ValueError if "none" is mixed with other items (in same receipt block).
+    Raises ValueError if "none" is mixed with other items (in same receipt block) or if
+    blank lines appear within the OUTSTANDING block.
     """
     valid_items: List[OutstandingItem] = []
     has_none = False
     has_items = False
+    in_outstanding_block = False
 
     for line in receipt.split("\n"):
-        # Stop at blank line or step-end marker
-        if not line.strip() or "<!-- step-end -->" in line:
+        # Check for step-end marker - stops the block
+        if "<!-- step-end -->" in line:
             break
+
+        # If we've started an OUTSTANDING block and hit a blank line, that's an error
+        if in_outstanding_block and not line.strip():
+            raise ValueError("blank line in OUTSTANDING block")
+
+        # Stop at blank line if we haven't entered OUTSTANDING yet
+        if not line.strip() and not in_outstanding_block:
+            break
+
         if line.startswith("OUTSTANDING:"):
+            in_outstanding_block = True
             # Parse: OUTSTANDING: <unit id> (<reason>) [provenance] or OUTSTANDING: none
             rest = line[len("OUTSTANDING:"):].strip()
             if rest == "none":
@@ -1999,8 +2018,8 @@ def _enumerate_doing_it_items(action_plan_text: str) -> List[str]:
 
             # In table: count data rows, skip header and separator
             if table_started and stripped.startswith("|"):
-                # Skip separator rows: cells with optional colons and dashes (allow :?-+:? per cell)
-                if not re.match(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$", stripped):
+                # Skip separator rows: cells with optional colons and dashes
+                if not _is_markdown_separator_row(stripped):
                     doing_it_count += 1
                     units.append(f"D{doing_it_count}")
             elif table_started and not stripped.startswith("|"):
@@ -2048,8 +2067,8 @@ def _get_file_names_from_plan_section(plan_text: str, unit_id: str) -> List[str]
         # Normalize: strip ./ prefix and :\d+ suffix
         path = re.sub(r"^\.\/", "", path)
         path = re.sub(r":\d+$", "", path)
-        # Only include if it looks like a repo path (contains /)
-        if "/" in path or path.endswith((".py", ".js", ".ts", ".rs", ".md", ".yaml", ".json")):
+        # Only include if it looks like a repo path (contains / or has extension)
+        if "/" in path or path.endswith((".py", ".js", ".ts", ".rs", ".md", ".yaml", ".json", ".txt")):
             files.append(path)
 
     return files
@@ -2130,10 +2149,14 @@ def coverage_mode(
     # Get the changed files from git diff (None = unknown state)
     changed_files = _git_diff_names(repo, base, branch)
 
-    # Parse outstanding items from receipt
+    # Parse outstanding items from receipt (validate format first)
     outstanding_dict: Dict[str, OutstandingItem] = {}
-    for item in parse_outstanding(receipt_text):
-        outstanding_dict[item.unit_id] = item
+    try:
+        valid_items, has_none, has_items = iter_outstanding_lines(receipt_text)
+        for item in valid_items:
+            outstanding_dict[item.unit_id] = item
+    except ValueError as e:
+        error(f"OUTSTANDING validation error: {e}")
 
     # Classify each unit
     results: List[tuple] = []

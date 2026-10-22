@@ -168,19 +168,38 @@ def main():
             receipt_path, plan_path, bad_repo, "HEAD", base_sha
         )
 
-        # git failure should exit 2 (not 0), not cause a blocking uncovered verdict
-        passed = exit_code == 2
-        h.test_result("Git failure on bad repo exits 2", passed, f"exit_code={exit_code}, stderr={stderr[:100]}")
+        # git failure should exit 0 with unknown state (non-blocking), not all-uncovered
+        # [WEAK_ASSERTION strengthened] Verify both units show unknown, not just substring match
+        passed = exit_code == 0 and all(
+            f"Step {i} | unknown | " in stdout for i in range(1, 3)
+        )
+        h.test_result("Git failure on bad repo returns unknown state", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
     print("[Test 3] Anchored unit-id lookup: Step 1 does not match Step 12")
     print("  Behavior: unit-id lookup is anchored (\\b(?!\\d))")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
-        base_sha, _ = create_git_repo_with_files(repo_path, ["step1.txt", "step12.txt"])
+        # Create base commit with both files
+        Path(repo_path).mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_path, capture_output=True, check=True)
+
+        Path(repo_path, "step1.txt").write_text("content of step1.txt")
+        Path(repo_path, "step12.txt").write_text("content of step12.txt")
+        subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, capture_output=True, check=True)
+        base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
+
+        # Modify both files to show in diff
+        Path(repo_path, "step1.txt").write_text("modified: step1.txt")
+        Path(repo_path, "step12.txt").write_text("modified: step12.txt")
+        subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "branch"], cwd=repo_path, capture_output=True, check=True)
 
         plan_path = f"{tmpdir}/plan.md"
-        content = "# Plan\n\n### Step 1\n\nFirst step.\n\n### Step 12\n\nTwelfth step.\n\n"
+        content = "# Plan\n\n### Step 1\n\nModify `step1.txt`.\n\n### Step 12\n\nModify `step12.txt`.\n\n"
         Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
         Path(plan_path).write_text(content)
 
@@ -195,7 +214,7 @@ OUTSTANDING: Step 1 (deferred) [self-report]
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Step 1 is declared, Step 12 should be covered (in diff)
+        # Step 1 is declared, Step 12 should be covered (in diff, and anchored match ensures they don't mix)
         passed = (
             exit_code == 0
             and "Step 1 | declared | " in stdout
@@ -314,8 +333,9 @@ OUTSTANDING: Step 2 (deferred) [self-report]
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Blank line in OUTSTANDING block should fail validation
-        passed = exit_code != 0
+        # Blank line in OUTSTANDING block should fail validation (exit 2)
+        # [WEAK_ASSERTION strengthened] Check specific error exit code, not just != 0
+        passed = exit_code == 2 and "blank line" in stderr.lower()
         h.test_result("Blank line in OUTSTANDING block causes validation error", passed, f"exit_code={exit_code}, stderr={stderr[:100]}")
 
     print()
@@ -340,8 +360,9 @@ OUTSTANDING: Step 1 (deferred) [self-report]
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Mixing 'none' with items should fail validation
-        passed = exit_code != 0
+        # Mixing 'none' with items should fail validation (exit 2)
+        # [WEAK_ASSERTION strengthened] Check specific error exit code and error message
+        passed = exit_code == 2 and "mixes" in stderr.lower()
         h.test_result("OUTSTANDING: none mixed with items is invalid", passed, f"exit_code={exit_code}, stderr={stderr[:100]}")
 
     print()
@@ -371,8 +392,9 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
-        # Should fail or reject the argument
-        passed = result.returncode != 0
+        # Should fail or reject the argument (exit 2 for bad args)
+        # [WEAK_ASSERTION strengthened] Check specific error exit code
+        passed = result.returncode == 2
         h.test_result("--base starting with - is rejected", passed, f"exit_code={result.returncode}, stderr={result.stderr[:100]}")
 
     print()
@@ -402,8 +424,9 @@ OUTSTANDING: Step 1 (deferred) [self-report]
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
-        # Should fail or reject the argument
-        passed = result.returncode != 0
+        # Should fail or reject the argument (exit 2 for bad args)
+        # [WEAK_ASSERTION strengthened] Check specific error exit code
+        passed = result.returncode == 2
         h.test_result("--branch starting with - is rejected", passed, f"exit_code={result.returncode}, stderr={result.stderr[:100]}")
 
     print()
