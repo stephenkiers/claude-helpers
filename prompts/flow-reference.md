@@ -174,8 +174,8 @@ Initial redo spawns (the redo procedure in `commands/expert-flow.md`, from eithe
    }
    ```
 
-   `attempt` is the step prompt's `ATTEMPT=<k>`, with `1` when absent. The verifier ignores a question file without an integer `attempt` ≥ 1.
-   
+   `attempt` is the step prompt's `ATTEMPT=<k>`, with `1` when absent. The verifier never counts a question file without an integer `attempt` ≥ 1 and reports it as malformed, which fails the plan or review check closed.
+
    `id` is `q1`, `q2`, … in the order asked, unique within the file, and it is the key the answers
    file uses. `id` and `brief` are the only additions to each `questions[]` entry; the orchestrator
    strips both before the call. Each entry otherwise keeps the tool's own schema — `question`,
@@ -507,7 +507,7 @@ Exactly three trailer shapes are valid:
 | FAILED | `ATTEMPT: <k>`, `Decision: FAILED`, `Reason: <why>`, `<!-- step-end -->` | `MERGED:` line |
 | AWAITING | `ATTEMPT: <k>`, one or more `<!-- awaiting-answers: … -->` markers | `Decision:`, `Reason:`, `<!-- step-end -->` |
 
-**Note on OK and FAILED:** body lines may include this attempt's `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers; each marker correlates with an `answers/<STEP>-<SEQ>.json` file.
+**Note on OK and FAILED:** body lines may include this attempt's `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers; each marker correlates with an `answers/<STEP>-<SEQ>.json` file. Markers are an index, not the counting source: the verifier counts a `questions/<STEP>-<SEQ>.json` when its `attempt` equals this receipt's `ATTEMPT` (or a `reused-answers` marker names it) and its `answers/` file exists.
 
 Each state's meaning:
 
@@ -548,7 +548,7 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 
 **Artifact verification.** A receipt is a claim. On `OK`, the orchestrator verifies the step's on-disk artifacts with
 `scripts/flow-verify-receipt.py`. For plan, that is the session dir named by `FINAL_PLAN_PATH`'s
-invocation id, with every `selected-experts.md` row's contribution (except `auditor` and `synthesis` rows). For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. The verifier's exit codes: 0 = artifacts OK; 1 = receipt admits deviation or artifact missing (and, with `--since-from-log`, a missing, malformed, or window-cut begin/retry line in log.md); 2 = bad arguments or internal error. The fix step accepts zero commits if the action plan has no *Doing it* items. `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2. Plan and review steps verify that artifact mtimes are >= a first-attempt identity floor (the timestamp of this flow's newest `<STEP> begin` line in `log.md`) minus 5 seconds, or `--since` if no floor can be read. This identity check (amendment 2026-10-21) rejects artifacts from a prior flow or before this step began, the same anti-replay purpose the earlier mtime rule served. Point to `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2.
+invocation id, with every `selected-experts.md` row's contribution (except `auditor` and `synthesis` rows). For review, it is `REVIEW_DIR`'s action plan, report, findings and checkpoints. For implement and fix, it is new commits. A missing artifact is `FAILED` `<step> artifacts missing (<what>)`. The verifier's exit codes: 0 = artifacts OK; 1 = receipt admits deviation or artifact missing (and, with `--since-from-log`, a missing, malformed, or window-cut begin/retry line in log.md); 2 = bad arguments or internal error. The fix step accepts zero commits if the action plan has no *Doing it* items. Plan and review steps verify that artifact mtimes are >= a first-attempt identity floor (the timestamp of this flow's newest `<STEP> begin` line in `log.md`, or of a later `<STEP> redo` line, since a redo starts a new identity) minus 5 seconds, or `--since` if no floor can be read; implement and fix skip the floor and check commits instead. This identity check (amendment 2026-10-21) rejects artifacts from a prior flow or before this step began, the same anti-replay purpose the earlier mtime rule served. Point to `commands/expert-flow.md` loop step 5, rule 8 and `docs/adr/0023-expert-flow.md` §2.2.
 
 Write the receipt with the `Write` tool (one file, one path, the path the orchestrator gave you).
 Copy that path **character for character** — never retype, shorten, or "correct" it from the
