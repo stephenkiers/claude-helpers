@@ -150,13 +150,15 @@ def main():
             plan=plan_path
         )
 
-        # Check that coverage mode succeeded
+        # Check that coverage mode succeeded with exact status rows
         passed = exit_code == 0
         if passed:
-            # Check for Step 8 uncovered and Step 10 declared
-            passed = "Step 8 | uncovered" in stdout and "Step 10 | declared" in stdout
+            # Check for exact Step 8 uncovered and Step 10 declared rows
+            passed = (
+                "Step 8 | uncovered | " in stdout and "Step 10 | declared | " in stdout
+            )
 
-        h.test_result("Coverage mode reports Step 8 uncovered, Step 10 declared", passed, "" if passed else f"stdout:\n{stdout}\nstderr:\n{stderr}")
+        h.test_result("Coverage mode reports Step 8 uncovered, Step 10 declared", passed, "" if passed else f"exit_code={exit_code}, stdout:\n{stdout}\nstderr:\n{stderr}")
 
     print()
     print("[Test 2] Fix 3: Rule 2 grep matches `plan failed (reason)` line")
@@ -246,8 +248,12 @@ echo "$reason_text"
             plan=plan_path
         )
 
-        passed = exit_code == 0 and "UNITS: 0" in stdout and "no step headings" in stdout
-        h.test_result("Plan with no step headings exits 0 with unit count message", passed, f"stdout:\n{stdout}")
+        # Verify UNITS header starts with "UNITS: 0" and message is present
+        lines = stdout.split('\n') if stdout else []
+        units_line = next((l for l in lines if l.startswith("UNITS:")), None)
+        has_units_header = units_line and units_line.startswith("UNITS: 0")
+        passed = exit_code == 0 and has_units_header and "no step headings" in stdout
+        h.test_result("Plan with no step headings exits 0 with unit count message", passed, f"exit_code={exit_code}, units_line={units_line}, stdout:\n{stdout}")
 
     print()
     print("[Test 7] Fix 4 / OUTSTANDING line: Missing OUTSTANDING line -> exit 1")
@@ -295,8 +301,8 @@ echo "$reason_text"
             since="2026-10-21T10:00:00Z"
         )
 
-        # Should not fail on OUTSTANDING check
-        passed = exit_code != 1 or "receipt missing OUTSTANDING" not in stdout
+        # Should succeed, not fail on OUTSTANDING check
+        passed = exit_code == 0 and "receipt missing OUTSTANDING" not in stdout
         h.test_result("OUTSTANDING: none is valid", passed, f"exit_code={exit_code}, stdout={stdout}")
 
     print()
@@ -324,8 +330,8 @@ OUTSTANDING: Step 10 (GitHub housekeeping) [both]
             since="2026-10-21T10:00:00Z"
         )
 
-        # Should not fail on OUTSTANDING check
-        passed = exit_code != 1 or "receipt missing OUTSTANDING" not in stdout
+        # Should succeed, not fail on OUTSTANDING check
+        passed = exit_code == 0 and "receipt missing OUTSTANDING" not in stdout
         h.test_result("Multiple OUTSTANDING items are valid", passed, f"exit_code={exit_code}, stdout={stdout}")
 
     h.summarize_and_exit()

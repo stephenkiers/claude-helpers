@@ -109,13 +109,13 @@ def main():
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Check for covered and uncovered rows
+        # Check for exact covered and uncovered rows with pipe delimiter
         passed = (
             exit_code == 0
-            and "Step 1 | covered" in stdout
-            and "Step 2 | uncovered" in stdout
+            and "Step 1 | covered | " in stdout
+            and "Step 2 | uncovered | " in stdout
         )
-        h.test_result("Basic coverage: Step 1 covered, Step 2 uncovered", passed, f"stdout:\n{stdout}")
+        h.test_result("Basic coverage: Step 1 covered, Step 2 uncovered", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
     print("[Test 2] Coverage mode: declared items from OUTSTANDING:")
@@ -136,13 +136,13 @@ def main():
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Check for declared items
+        # Check for exact declared rows with pipe delimiter
         passed = (
             exit_code == 0
-            and "Step 2 | declared" in stdout
-            and "Step 3 | declared" in stdout
+            and "Step 2 | declared | " in stdout
+            and "Step 3 | declared | " in stdout
         )
-        h.test_result("Declared items show as declared", passed, f"stdout:\n{stdout}")
+        h.test_result("Declared items show as declared", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
     print("[Test 3] Plan with no step headings -> UNITS: 0")
@@ -161,12 +161,16 @@ def main():
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
+        # Verify UNITS header starts with "UNITS: 0" and message is present
+        lines = stdout.split('\n') if stdout else []
+        units_line = next((l for l in lines if l.startswith("UNITS:")), None)
+        has_units_header = units_line and units_line.startswith("UNITS: 0")
         passed = (
             exit_code == 0
-            and "UNITS: 0" in stdout
+            and has_units_header
             and "no step headings" in stdout
         )
-        h.test_result("Plan with no step headings exits 0 with UNITS: 0", passed, f"stdout:\n{stdout}")
+        h.test_result("Plan with no step headings exits 0 with UNITS: 0", passed, f"exit_code={exit_code}, units_line={units_line}, stdout:\n{stdout}")
 
     print()
     print("[Test 4] Unreadable plan -> exit 2")
@@ -203,13 +207,12 @@ def main():
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Should still succeed and list the unknown item
+        # Should still succeed and list the unknown declared item
         passed = (
             exit_code == 0
-            and "Step 99" in stdout
-            and "unknown-declared" in stdout
+            and "unknown-declared: Step 99" in stdout
         )
-        h.test_result("Unknown declared item listed as unknown-declared", passed, f"stdout:\n{stdout}")
+        h.test_result("Unknown declared item listed as unknown-declared", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     print()
     print("[Test 6] Fix mode: enumerate D<n> from action plan, not implement plan")
@@ -244,14 +247,14 @@ def main():
         )
 
         # In fix mode, should enumerate D<n> from action plan table (not Step <n>)
-        # Files aren't extracted from action plan table rows, so D1 and D2 are uncovered/declared
+        # Files aren't extracted from action plan table rows, so D1 is uncovered and D2 is declared
         passed = (
             exit_code == 0
-            and "D1" in stdout  # D1 is enumerated
-            and "D2 | declared" in stdout  # D2 is declared in OUTSTANDING
+            and "D1 | uncovered | " in stdout  # D1 is enumerated as uncovered
+            and "D2 | declared | " in stdout  # D2 is declared in OUTSTANDING
             and "Step 1" not in stdout  # Should not mention implement steps
         )
-        h.test_result("Fix mode enumerates D<n> and ignores implement plan", passed, f"stdout:\n{stdout}")
+        h.test_result("Fix mode enumerates D<n> and ignores implement plan", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     h.summarize_and_exit()
 
