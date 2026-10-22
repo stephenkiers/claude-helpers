@@ -787,8 +787,18 @@ def main():
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
-        # Should pass because attempt 2 files are valid, attempt 1 is ignored
-        h.test_result("Ruling #2: check_plan with ATTEMPT: 2 ignores attempt-1",
+        # Malformed question files (the attempt-1 stub and the abandoned plan-02) fail closed:
+        # a schema-invalid file may be a question that never reached the human (#310).
+        h.test_result("Ruling #2: check_plan fails closed on malformed question files",
+                     result.returncode == 1 and "malformed: plan-01.json" in result.stdout
+                     and "plan-02.json" in result.stdout,
+                     f"returncode={result.returncode}, stdout={result.stdout[:300]}")
+
+        # Once the malformed files are gone, the valid attempt-2 report passes and attempt 1 is ignored.
+        (questions_dir / "plan-01.json").unlink()
+        (questions_dir / "plan-02.json").unlink()
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        h.test_result("Ruling #2: check_plan with ATTEMPT: 2 passes on the valid attempt-2 report",
                      result.returncode == 0 and "ARTIFACTS: ok" in result.stdout,
                      f"returncode={result.returncode}, stdout={result.stdout[:200]}")
 
@@ -845,10 +855,10 @@ def main():
         (session_dir / "pending-answers").mkdir(parents=True, exist_ok=True)
         (session_dir / "pending-answers" / "plan-01.json").write_text(json.dumps({"step": "plan", "seq": 1, "answers": []}))
         relay_count = flow_verify_module.count_relayed_questions(
-            flow_dir, "plan", "<!-- awaiting-answers: questions/plan-01.json -->")
+            flow_dir, "plan", "<!-- awaiting-answers: questions/plan-01.json -->", 1)
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text, 1, relay_count)
         h.test_result("Report-kind plan split-location negative (report-branch): answers only in decoy fails",
-                      error is not None and "marker files without a readable answered report" in error, f"error={error}")
+                      error is not None and "question files without an answers file" in error, f"error={error}")
         print(f"  reason: {error}")
 
     h.summarize_and_exit()

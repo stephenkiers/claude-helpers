@@ -61,6 +61,8 @@ def run_verifier(step: str, receipt_text: str, flow_dir: Path, since: str) -> tu
         home = str(flow_dir.parent)
         env["HOME"] = home
         create_reviewer_index(home)
+        # Coupling: the session's decisions.md gets one brief per "**Brief B" marker in the receipt
+        # text, so a test states its expected brief count by writing that many markers into it.
         session_dir = create_session(home, "20261013T222013-30924", briefs=receipt_text.count("**Brief B"))
         Path(f"{session_dir}/context.md").write_text("# Context")
         # Freshness tests stage the wanted mtime on flow_dir/context.md; carry it to the session artifact.
@@ -70,8 +72,32 @@ def run_verifier(step: str, receipt_text: str, flow_dir: Path, since: str) -> tu
             os.utime(f"{session_dir}/context.md", (m, m))
         Path(f"{session_dir}/selected-experts.md").write_text("| Expert |\n|--------|\n| Danielle the Designer |")
         create_contribution(f"{session_dir}/danielle-designer-contribution.md")
+    else:
+        # Review artifacts must live under $HOME/.claude/reviews; make_review_fixture builds them
+        # under the same HOME (flow_dir.parent), so the review check reaches freshness and rulings.
+        env["HOME"] = str(flow_dir.parent)
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     return result.returncode, result.stdout, result.stderr
+
+
+def make_review_fixture(tmp_path: Path, needs_you: int, action_plan_mtime: float = None) -> Path:
+    """Build a complete review dir under <tmp_path>/.claude/reviews (the HOME run_verifier uses).
+
+    The action plan has `needs_you` *Needs you* items, so the only thing a test can trip on is the
+    behaviour it sets up (attempt scoping or the freshness floor).
+    """
+    review_dir = tmp_path / ".claude" / "reviews" / "repo" / "review-20261013T222013-30924"
+    review_dir.mkdir(parents=True)
+    items = "".join(f"### {i}. Item {i}\n- **Why**: x\n\n" for i in range(1, needs_you + 1))
+    action_plan = review_dir / "claude-action-plan.md"
+    action_plan.write_text(f"# Action Plan\n\n## Needs you: {needs_you}\n\n{items}## Doing it: 0\n", encoding="utf-8")
+    if action_plan_mtime is not None:
+        os.utime(action_plan, (action_plan_mtime, action_plan_mtime))
+    (review_dir / "final-report.md").write_text("# Report", encoding="utf-8")
+    (review_dir / "findings.json").write_text("[]", encoding="utf-8")
+    (review_dir / "alice-pass1.md").write_text("x", encoding="utf-8")
+    (review_dir / "bob-pass1.md").write_text("x", encoding="utf-8")
+    return review_dir
 
 
 def create_plan_question_file(flow_dir: Path, seq: int, attempt: int = 1, num_questions: int = 1, include_attempt: bool = True) -> Path:
@@ -372,7 +398,7 @@ def main():
         since_time = iso_timestamp(now - 50)
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A9", exit_code == 1,
+        h.test_result("Test A9", exit_code == 1 and "older than this step's first attempt" in stdout,
                      f"exit={exit_code}, expected 1. stdout={stdout[:300]}")
 
     # Test A10: No log.md fallback to --since
@@ -398,7 +424,7 @@ def main():
         receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
-        h.test_result("Test A10", exit_code == 1,
+        h.test_result("Test A10", exit_code == 1 and "older than this attempt" in stdout,
                      f"exit={exit_code}, expected 1. stdout={stdout[:300]}")
 
     # Test A11: Review with attempt scoping
@@ -409,18 +435,15 @@ def main():
 
         create_review_question_file(flow_dir, 1, attempt=1, num_questions=2)
         create_answers_file(flow_dir, "review", 1)
+        review_dir = make_review_fixture(tmp_path, needs_you=2)
 
-        review_dir = tmp_path / "reviews"
-        review_dir.mkdir(parents=True)
-        review_file = review_dir / "review-20261013T222013-30924.md"
-        review_file.write_text("# Review", encoding="utf-8")
-
-        receipt = f"REVIEW_DIR: {review_dir}\nARTIFACTS: ok\nATTEMPT: 2\n## Needs you\n- **Item N1**\n- **Item N2**"
-        since = iso_timestamp(time.time())
+        receipt = f"REVIEW_DIR: {review_dir}\nARTIFACTS: ok\nATTEMPT: 2\n"
+        since = iso_timestamp(time.time() - 3600)
 
         exit_code, stdout, stderr = run_verifier("review", receipt, flow_dir, since)
-        h.test_result("Test A11", exit_code == 1,
-                     f"exit={exit_code}, expected 1. stdout={stdout[:300]}")
+        h.test_result("Test A11", exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0" in stdout
+                      and "no answered review-* question files for attempt 2" in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A12: Review identity floor
     print("[Test A12] Review: identity floor using log.md")
@@ -433,22 +456,13 @@ def main():
         since_time = iso_timestamp(now - 10)
 
         create_log_file(flow_dir, "review", begin_time)
-
-        action_plan = flow_dir / "claude-action-plan.md"
-        action_plan.write_text("# Action Plan", encoding="utf-8")
-        action_plan_mtime = begin_time - 50
-        os.utime(action_plan, (action_plan_mtime, action_plan_mtime))
-
-        review_dir = tmp_path / "reviews"
-        review_dir.mkdir(parents=True)
-        review_file = review_dir / "review-20261013T222013-30924.md"
-        review_file.write_text("# Review", encoding="utf-8")
+        review_dir = make_review_fixture(tmp_path, needs_you=0, action_plan_mtime=begin_time - 50)
 
         receipt = f"REVIEW_DIR: {review_dir}\nARTIFACTS: ok\nATTEMPT: 1"
 
         exit_code, stdout, stderr = run_verifier("review", receipt, flow_dir, since_time)
-        h.test_result("Test A12", exit_code == 1,
-                     f"exit={exit_code}, expected 1. stdout={stdout[:300]}")
+        h.test_result("Test A12", exit_code == 1 and "review artifacts missing (action plan older than this step's first attempt)" in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
 
     # Test A13: Current-attempt unanswered file
     print("[Test A13] Current-attempt question file with no answers")
@@ -534,6 +548,131 @@ def main():
         exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since)
         # Should fail with unanswered, not out-of-attempt (because the file has no answers)
         h.test_result("Test A16", exit_code == 1 and "unanswered" in stdout and "out-of-attempt" not in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
+
+    # Test A17: floor is min(begin, since): a since OLDER than begin lowers the floor to since
+    print("[Test A17] Identity floor direction: artifact newer than since but older than begin passes (min, not max)")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        now = time.time()
+        begin_time = now - 10
+        since_time = iso_timestamp(now - 100)
+        create_log_file(flow_dir, "plan", begin_time)
+        context_file = flow_dir / "context.md"
+        context_file.write_text("# Plan context", encoding="utf-8")
+        os.utime(context_file, (now - 50, now - 50))
+        plan_dir = Path(tmp) / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1"
+        # min(begin=now-10, since=now-100) = now-100 passes; max would be now-10 and fail.
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, since_time)
+        h.test_result("Test A17", exit_code == 0, f"exit={exit_code}, stdout={stdout[:300]}")
+
+    # Test A18: a redo line supersedes the first-attempt begin line as the floor
+    print("[Test A18] Redo: artifact from before the redo line fails even though it postdates begin")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        flow_dir.mkdir(parents=True)
+        now = time.time()
+        begin_time, redo_time = now - 300, now - 100
+        (flow_dir / "log.md").write_text(
+            f"{iso_timestamp(begin_time)} plan begin\n{iso_timestamp(redo_time)} plan redo attempt=2 redos=1 note_chars=0\n",
+            encoding="utf-8")
+        context_file = flow_dir / "context.md"
+        context_file.write_text("# Old plan context", encoding="utf-8")
+        os.utime(context_file, (now - 200, now - 200))
+        plan_dir = Path(tmp) / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 2"
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(now - 90))
+        h.test_result("Test A18", exit_code == 1 and "older than this step's first attempt" in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
+
+    # Test A19: malformed file fails closed even when enough valid files satisfy the count
+    print("[Test A19] Fail closed: one malformed current-attempt file alongside enough valid ones")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
+        create_answers_file(flow_dir, "plan", 1)
+        (flow_dir / "questions" / "plan-02.json").write_text("{not json", encoding="utf-8")
+        create_answers_file(flow_dir, "plan", 2)
+        plan_dir = Path(tmp) / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 1\n**Brief B1**"
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
+        h.test_result("Test A19", exit_code == 1 and "malformed: plan-02.json (not json)" in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
+
+    # Test A20: out-of-attempt marker-named file fails closed despite enough valid current files
+    print("[Test A20] Fail closed: out-of-attempt marker-named file alongside enough valid ones")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
+        create_answers_file(flow_dir, "plan", 1)
+        create_plan_question_file(flow_dir, 2, attempt=2, num_questions=1)
+        create_answers_file(flow_dir, "plan", 2)
+        plan_dir = Path(tmp) / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        receipt = (f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: 2\n"
+                   "<!-- awaiting-answers: questions/plan-01.json -->\n**Brief B1**")
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
+        h.test_result("Test A20", exit_code == 1 and "out-of-attempt: plan-01.json" in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
+
+    # Test A21: unanswered current-attempt report-kind file is unanswered
+    print("[Test A21] Report-kind current-attempt file without answers is unanswered")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        qdir = flow_dir / "questions"
+        qdir.mkdir(parents=True)
+        (qdir / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "step": "plan", "attempt": 1, "round": 1,
+        }), encoding="utf-8")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "flow_verify_receipt_a21", Path(__file__).parent.parent / "scripts" / "flow-verify-receipt.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        rc = mod.count_relayed_questions(flow_dir, "plan", "", 1)
+        h.test_result("Test A21", rc.unanswered == ["plan-01.json"] and rc.asked == 0 and not rc.malformed,
+                     f"unanswered={rc.unanswered}, asked={rc.asked}, malformed={rc.malformed}")
+
+    # Test A22: a missing ATTEMPT line fails closed when a question file is attempt > 1
+    print("[Test A22] Missing ATTEMPT line with an attempt-2 question file fails closed")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        create_plan_question_file(flow_dir, 1, attempt=2, num_questions=1)
+        create_answers_file(flow_dir, "plan", 1)
+        plan_dir = Path(tmp) / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\n**Brief B1**"
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
+        h.test_result("Test A22", exit_code == 1 and "no ATTEMPT: line" in stdout,
+                     f"exit={exit_code}, stdout={stdout[:300]}")
+
+    # Test A23: an invalid ATTEMPT value fails closed instead of defaulting to 1
+    print("[Test A23] Invalid ATTEMPT value fails closed")
+    with tempfile.TemporaryDirectory() as tmp:
+        flow_dir = Path(tmp) / "flow"
+        create_plan_question_file(flow_dir, 1, attempt=1, num_questions=1)
+        create_answers_file(flow_dir, "plan", 1)
+        plan_dir = Path(tmp) / ".claude" / "plans"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "issue-slug-20261013T222013-30924.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        receipt = f"FINAL_PLAN_PATH: {plan_file}\nARTIFACTS: ok\nATTEMPT: two\n**Brief B1**"
+        exit_code, stdout, stderr = run_verifier("plan", receipt, flow_dir, iso_timestamp(time.time() - 3600))
+        h.test_result("Test A23", exit_code == 1 and "invalid ATTEMPT" in stdout,
                      f"exit={exit_code}, stdout={stdout[:300]}")
 
     h.summarize_and_exit()

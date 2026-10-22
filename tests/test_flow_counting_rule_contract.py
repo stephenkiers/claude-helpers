@@ -42,7 +42,6 @@ def load_verifier_constants(verifier_path):
         'SUFFIX_NO_ANSWERED_FMT': getattr(module, 'SUFFIX_NO_ANSWERED_FMT', None),
         'SUFFIX_FLOW_DIR_UNRESOLVED': getattr(module, 'SUFFIX_FLOW_DIR_UNRESOLVED', None),
         'SUFFIX_UNANSWERED': getattr(module, 'SUFFIX_UNANSWERED', None),
-        'SUFFIX_UNREADABLE': getattr(module, 'SUFFIX_UNREADABLE', None),
         'SUFFIX_MALFORMED': getattr(module, 'SUFFIX_MALFORMED', None),
         'SUFFIX_OUT_OF_ATTEMPT': getattr(module, 'SUFFIX_OUT_OF_ATTEMPT', None),
         'REASON_PLAN_OLDER_FIRST': getattr(module, 'REASON_PLAN_OLDER_FIRST', None),
@@ -86,68 +85,21 @@ def main():
     else:
         expert_flow_text = expert_flow_doc.read_text()
 
-        # Check for presence of key constant values (fixed parts, not format strings with {})
+        # Every constant's VALUE (the fixed prefix, for format strings) must appear in the doc.
+        # The needles are derived from the loaded constants, so renaming a value in the script
+        # without updating the doc fails here (no hard-coded literal to drift alongside it).
         rule8_checks = []
-
-        # Checkpoint reasons (fixed prefixes)
-        rule8_checks.append((
-            constants['REASON_PLAN_INCOMPLETE'],
-            "plan checkpoint incomplete"
-        ))
-        rule8_checks.append((
-            constants['REASON_REVIEW_INCOMPLETE'],
-            "review rulings incomplete"
-        ))
-
-        # Suffixes (fixed or fixed prefix for format strings)
-        rule8_checks.append((
-            constants['SUFFIX_FLOW_DIR_UNRESOLVED'],
-            ", flow dir unresolved"
-        ))
-        rule8_checks.append((
-            constants['SUFFIX_UNANSWERED'],
-            ", unanswered: "
-        ))
-        rule8_checks.append((
-            constants['SUFFIX_UNREADABLE'],
-            ", unreadable: "
-        ))
-        rule8_checks.append((
-            constants['SUFFIX_MALFORMED'],
-            ", malformed: "
-        ))
-        rule8_checks.append((
-            constants['SUFFIX_OUT_OF_ATTEMPT'],
-            ", out-of-attempt: "
-        ))
-
-        # Identity floor reasons (all four)
-        rule8_checks.append((
-            constants['REASON_PLAN_OLDER_FIRST'],
-            "plan artifacts missing (session dir older than this step's first attempt)"
-        ))
-        rule8_checks.append((
-            constants['REASON_PLAN_OLDER_ATTEMPT'],
-            "plan artifacts missing (session dir older than this attempt)"
-        ))
-        rule8_checks.append((
-            constants['REASON_REVIEW_OLDER_FIRST'],
-            "review artifacts missing (action plan older than this step's first attempt)"
-        ))
-        rule8_checks.append((
-            constants['REASON_REVIEW_OLDER_ATTEMPT'],
-            "review artifacts missing (action plan older than this attempt)"
-        ))
-
-        # Fixed prefix of the format string (for SUFFIX_NO_ANSWERED_FMT)
-        rule8_checks.append((
-            ", no answered ",
-            ", no answered "
-        ))
+        for name, value in constants.items():
+            if value is None:
+                continue
+            needle = value.split("{", 1)[0]
+            rule8_checks.append((value, needle))
 
         missing_in_rule8 = []
         for const_val, search_text in rule8_checks:
-            if const_val and search_text not in expert_flow_text:
+            if not search_text:
+                missing_in_rule8.append(f"empty needle for constant {const_val!r}")
+            elif search_text not in expert_flow_text:
                 missing_in_rule8.append(f"'{search_text}' (from constant value)")
 
         if missing_in_rule8:
@@ -194,58 +146,40 @@ def main():
         re.IGNORECASE | re.DOTALL
     )
 
-    locations_to_check = {
-        "expert-flow.md plan audit": expert_flow_doc,
-        "expert-flow.md review audit": expert_flow_doc,
-        "flow-reference.md Receipt section": flow_reference_doc,
-    }
+    def audit_line(content, step_prefix):
+        """The fidelity-audit checklist line for a step: from `<prefix>` to the next checklist line."""
+        m = re.search(rf"^{re.escape(step_prefix)}.*?(?=^[a-z, ]+: |^Write |\Z)", content, re.MULTILINE | re.DOTALL)
+        return m.group(0) if m else None
+
+    def receipt_section(content):
+        """The flow-reference `## Receipt` section, up to the next `## ` heading."""
+        m = re.search(r"^## Receipt\b.*?(?=^## |\Z)", content, re.MULTILINE | re.DOTALL)
+        return m.group(0) if m else None
 
     missing_counting_rule = []
-    for location, doc_path in locations_to_check.items():
-        if doc_path.exists():
-            content = doc_path.read_text()
-            # Find the relevant section
-            if "plan" in location:
-                # Look for the plan audit line starting with "plan: `ls` the glob"
-                if "fidelity audit" in content:
-                    # Find the section after "Fidelity audit" heading
-                    fidelity_start = content.find("### Fidelity audit")
-                    if fidelity_start >= 0:
-                        fidelity_section = content[fidelity_start:]
-                        # Find the line starting with "plan:" in the fidelity audit section
-                        if re.search(r"^plan:\s+`ls`", fidelity_section, re.MULTILINE):
-                            plan_match = re.search(r"^plan:\s+.*?(?=^[a-z]+:|^Write |$)", fidelity_section, re.MULTILINE | re.DOTALL)
-                            if plan_match and counting_rule_regex.search(plan_match.group()):
-                                pass  # Found it
-                            else:
-                                missing_counting_rule.append(f"{location}: counting rule not found")
-                        else:
-                            missing_counting_rule.append(f"{location}: counting rule not found")
-                    else:
-                        missing_counting_rule.append(f"{location}: counting rule not found")
-            elif "review" in location:
-                # Look for the review audit line starting with "review: REVIEW_DIR="
-                if "fidelity audit" in content:
-                    # Find the section after "Fidelity audit" heading
-                    fidelity_start = content.find("### Fidelity audit")
-                    if fidelity_start >= 0:
-                        fidelity_section = content[fidelity_start:]
-                        # Find the line starting with "review:" in the fidelity audit section
-                        if re.search(r"^review:\s+REVIEW_DIR=", fidelity_section, re.MULTILINE):
-                            review_match = re.search(r"^review:\s+.*?(?=^[a-z]+:|^Write |$)", fidelity_section, re.MULTILINE | re.DOTALL)
-                            if review_match and counting_rule_regex.search(review_match.group()):
-                                pass  # Found it
-                            else:
-                                missing_counting_rule.append(f"{location}: counting rule not found")
-                        else:
-                            missing_counting_rule.append(f"{location}: counting rule not found")
-                    else:
-                        missing_counting_rule.append(f"{location}: counting rule not found")
-            elif "Receipt section" in location:
-                if "Receipt" in content and counting_rule_regex.search(content):
-                    pass  # Found it
-                else:
-                    missing_counting_rule.append(f"{location}: counting rule not found")
+    flow_text = expert_flow_doc.read_text() if expert_flow_doc.exists() else ""
+    ref_text = flow_reference_doc.read_text() if flow_reference_doc.exists() else ""
+    # A missing anchor is a failure, never a silent skip.
+    for location, section in (
+        ("expert-flow.md plan audit", audit_line(flow_text, "plan: Rule 8")),
+        ("expert-flow.md review audit", audit_line(flow_text, "review: Rule 8")),
+    ):
+        if section is None:
+            missing_counting_rule.append(f"{location}: anchor not found")
+        elif not counting_rule_regex.search(section):
+            missing_counting_rule.append(f"{location}: counting rule not found")
+    # flow-reference: the Ask section's attempt text and the counting rule must both be present
+    # in the Receipt (Artifact verification / Ask) text, not merely somewhere in the file.
+    ask_m = re.search(r"`attempt` is the step prompt's `ATTEMPT=<k>`[^\n]*", ref_text)
+    if ask_m is None:
+        missing_counting_rule.append("flow-reference.md: attempt definition anchor not found")
+    elif "malformed" not in ask_m.group(0):
+        missing_counting_rule.append("flow-reference.md: attempt-less file is not described as malformed")
+    rec = receipt_section(ref_text)
+    if rec is None:
+        missing_counting_rule.append("flow-reference.md Receipt section: anchor not found")
+    elif not counting_rule_regex.search(rec):
+        missing_counting_rule.append("flow-reference.md Receipt section: counting rule not found")
 
     if missing_counting_rule:
         h.test_result(
@@ -288,11 +222,14 @@ def main():
         )
 
         # Check that Decision 4 of the 2026-10-14 amendment is marked superseded
-        superseded_check = "superseded" in adr_text and "2026-10-14" in adr_text
+        amend_m = re.search(r"^## Amendment \(2026-10-21\):.*?(?=^## Amendment \(|\Z)", adr_text, re.MULTILINE | re.DOTALL)
+        amend = amend_m.group(0) if amend_m else ""
+        superseded_check = ("supersedes Decision point 4" in amend and "2026-10-14" in amend
+                            and "narrows the 2026-10-19" in amend)
         h.test_result(
             "2026-10-14 amendment Decision 4 marked as superseded",
             superseded_check,
-            "expected 'superseded' or '2026-10-14' reference not found" if not superseded_check else ""
+            "2026-10-21 amendment must supersede Decision point 4 of 2026-10-14 and narrow the 2026-10-19 wording" if not superseded_check else ""
         )
     else:
         h.test_result("docs/adr/0023-expert-flow.md exists", False)

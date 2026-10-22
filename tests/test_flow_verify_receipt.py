@@ -106,18 +106,6 @@ def create_flow_questions(flow_dir: str, step: str, counts: list, answered: bool
             (adir / f"{step}-{seq:02d}.json").write_text(json.dumps(answers))
 
 
-def create_flow_log_begin(flow_dir: str, step: str, timestamp: str) -> None:
-    """Write a begin line to flow_dir/log.md with the given timestamp and step."""
-    log_path = Path(flow_dir) / "log.md"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    line = f"{timestamp} {step} begin\n"
-    if log_path.exists():
-        with open(log_path, "a") as f:
-            f.write(line)
-    else:
-        log_path.write_text(line)
-
-
 def create_plan_fixture(tmp_home: str, briefs: int) -> str:
     """A complete, passing plan fixture with `briefs` decision briefs; returns the receipt path."""
     create_reviewer_index(tmp_home)
@@ -2060,7 +2048,7 @@ No items."""
         h.test_result("missing FINAL_PLAN_PATH file fails", exit_code == 1 and "plan artifacts missing (FINAL_PLAN_PATH file does not exist)" in stdout, stdout)
 
     print()
-    print("[Test 85] Plan: unreadable question file in legacy path → fails with unreadable reason")
+    print("[Test 85] Plan: unreadable question file in legacy path → fails closed as malformed (not json)")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
         flow_dir = f"{tmp_home}/flow"
@@ -2073,8 +2061,8 @@ No items."""
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unreadable question file in legacy path → fails with unreadable",
-                      exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+        h.test_result("unreadable question file in legacy path → fails closed as malformed (not json)",
+                      exit_code == 1 and "malformed: plan-01.json (not json)" in stdout and "unreadable" not in stdout, stdout)
 
     print()
     print("[Test 86] Plan: zero #### Q headings but ledger carries D/W/Q handles, no report validated -> fails closed")
@@ -2100,7 +2088,7 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         Path(f"{flow_dir}/questions").mkdir(parents=True)
         Path(f"{flow_dir}/questions/plan-01.json").write_text(json.dumps({
-            "step": "plan", "command": "expert-plan", "kind": "report", "summary": None,
+            "step": "plan", "command": "expert-plan", "kind": "report", "attempt": 1, "round": 1, "summary": None,
             "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
         }))
         Path(receipt_path).write_text(f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n"
@@ -2108,7 +2096,7 @@ No items."""
         exit_code, stdout, stderr = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("empty-string ledger key is not a handle: verifier does not raise (no IndexError/Traceback), fails closed on the unanswered report",
                       "IndexError" not in stderr and "Traceback" not in stderr and "Traceback" not in stdout
-                      and exit_code == 1 and "marker files without a readable answered report" in stdout,
+                      and exit_code == 1 and "question files without an answers file" in stdout,
                       f"exit={exit_code}\nstdout={stdout[-300:]}\nstderr={stderr[-500:]}")
 
     print()

@@ -114,7 +114,7 @@ def write_question_file(qdir: Path, step: str, seq: int, count: int) -> None:
         for i in range(1, count + 1)
     ]
     (qdir / f"{step}-{seq:02d}.json").write_text(json.dumps({
-        "step": step, "command": f"expert-{step}", "context_path": None, "summary": None,
+        "step": step, "attempt": 1, "command": f"expert-{step}", "context_path": None, "summary": None,
         "questions": questions,
     }))
 
@@ -216,7 +216,7 @@ Decision: OK
         rc, out = run_verifier("plan", str(receipt_path), str(flow_dir), tmp_home)
         h.test_result(
             "L2: No files in FLOW_DIR (only in session decoy) → exit 1, exact unanswered reason",
-            rc == 1 and "plan checkpoint incomplete (briefs: 2, asked: 0, unanswered: plan-01.json)" in out,
+            rc == 1 and "plan checkpoint incomplete (briefs: 2, asked: 0, no answered plan-* question files for attempt 1, unanswered: plan-01.json)" in out,
             f"rc={rc}\nout={out[-500:]}"
         )
 
@@ -255,7 +255,7 @@ Decision: OK
             f"rc={rc}\nout={out[-500:]}"
         )
 
-    print("Test P2: Fewer markers than questions on disk → exit 1, asked counts markers only")
+    print("Test P2: Fewer markers than questions on disk → exit 0, disk is authoritative (markers are only an index)")
 
     with tempfile.TemporaryDirectory() as tmp_home:
         create_reviewer_index(tmp_home)
@@ -278,8 +278,8 @@ Decision: OK
 
         rc, out = run_verifier("plan", str(receipt_path), str(flow_dir), tmp_home)
         h.test_result(
-            "P2: 3 briefs, 1 marker (3 files on disk, 1 marked) → exit 1, exact reason (briefs: 3, asked: 1)",
-            rc == 1 and "plan checkpoint incomplete (briefs: 3, asked: 1)" in out,
+            "P2: 3 briefs, 1 marker (3 answered current-attempt files on disk) → exit 0, all 3 counted",
+            rc == 0 and "ARTIFACTS: ok" in out,
             f"rc={rc}\nout={out[-500:]}"
         )
 
@@ -445,8 +445,8 @@ Decision: OK
 
         rc, out = run_verifier("review", str(receipt_path), str(flow_dir), tmp_home)
         h.test_result(
-            "RV1c: Needs-you item with no marker → exit 1, exact reason (needs-you: 1, asked: 0, receipt carries no review-* markers)",
-            rc == 1 and "review rulings incomplete (needs-you: 1, asked: 0, receipt carries no review-* markers)" in out,
+            "RV1c: Needs-you item with no marker → exit 1, exact reason (needs-you: 1, asked: 0, no answered review-* question files for attempt 1)",
+            rc == 1 and "review rulings incomplete (needs-you: 1, asked: 0, no answered review-* question files for attempt 1)" in out,
             f"rc={rc}\nout={out[-500:]}"
         )
 
@@ -470,8 +470,8 @@ Decision: OK
 
         rc, out = run_verifier("review", str(receipt_path), str(flow_dir), tmp_home)
         h.test_result(
-            "RV2: No files in FLOW_DIR (only in review dir decoy) → exit 1, exact reason (needs-you: 1, asked: 0, unanswered: review-01.json)",
-            rc == 1 and "review rulings incomplete (needs-you: 1, asked: 0, unanswered: review-01.json)" in out,
+            "RV2: No files in FLOW_DIR (only in review dir decoy) → exit 1, exact reason (needs-you: 1, asked: 0, no answered review-* question files for attempt 1, unanswered: review-01.json)",
+            rc == 1 and "review rulings incomplete (needs-you: 1, asked: 0, no answered review-* question files for attempt 1, unanswered: review-01.json)" in out,
             f"rc={rc}\nout={out[-500:]}"
         )
 
