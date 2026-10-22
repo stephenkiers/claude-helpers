@@ -246,14 +246,104 @@ def main():
         )
 
         # In fix mode, should enumerate D<n> from action plan table (not Step <n>)
-        # Files aren't extracted from action plan table rows, so D1 is uncovered and D2 is declared
+        # Files aren't extracted from action plan table rows, so D1 is unknown and D2 is declared
         passed = (
             exit_code == 0
-            and "D1 | uncovered | " in stdout  # D1 is enumerated as uncovered
+            and "D1 | unknown | " in stdout  # D1 is enumerated as unknown (no files)
             and "D2 | declared | " in stdout  # D2 is declared in OUTSTANDING
             and "Step 1" not in stdout  # Should not mention implement steps
         )
-        h.test_result("Fix mode enumerates D<n> and ignores implement plan", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
+        h.test_result("Fix mode: D1 unknown (no files), D2 declared", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
+
+    print()
+    print("[Test 7] Fix mode with table having alignment colons (F14)")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_path = f"{tmpdir}/repo"
+        base_sha, branch_sha = create_git_repo_with_files(repo_path, ["f1.txt"])
+
+        # Create an action plan with alignment colons in separator (e.g., |:----|:---|)
+        action_plan_path = f"{tmpdir}/action-plan.md"
+        action_plan = """# Action Plan
+
+## Doing it:
+
+| Item | Work |
+|:-----|:-----|
+| D1 | Left aligned |
+| D2 | Right aligned |
+
+"""
+        Path(action_plan_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(action_plan_path).write_text(action_plan)
+
+        receipt_path = f"{tmpdir}/receipt.md"
+        create_receipt(receipt_path)
+
+        exit_code, stdout, stderr = run_verifier_coverage(
+            receipt_path, action_plan_path, repo_path, "HEAD", base_sha, step="fix"
+        )
+
+        # Should correctly skip separator rows with alignment colons and enumerate D1, D2
+        passed = (
+            exit_code == 0
+            and "UNITS: 2" in stdout
+            and "D1 | unknown | " in stdout
+            and "D2 | unknown | " in stdout
+        )
+        h.test_result("Fix mode: alignment colons in separator row (F14)", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
+
+    print()
+    print("[Test 8] Malformed OUTSTANDING: lines (F2)")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_path = f"{tmpdir}/repo"
+        base_sha, branch_sha = create_git_repo_with_files(repo_path, ["file.txt"])
+
+        plan_path = f"{tmpdir}/plan.md"
+        create_plan(plan_path, 2)
+
+        # Create receipt with malformed OUTSTANDING (missing brackets)
+        receipt_path = f"{tmpdir}/receipt.md"
+        content = """Decision: OK
+OUTSTANDING: Step 1 (deferred) self-report
+<!-- step-end -->"""
+        Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(receipt_path).write_text(content)
+
+        exit_code, stdout, stderr = run_verifier_coverage(
+            receipt_path, plan_path, repo_path, "HEAD", base_sha
+        )
+
+        # Malformed lines should be skipped, both steps unmarked
+        passed = (
+            exit_code == 0
+            and "Step 1 | uncovered | " in stdout
+            and "Step 2 | uncovered | " in stdout
+        )
+        h.test_result("Malformed OUTSTANDING lines are skipped", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
+
+    print()
+    print("[Test 9] OUTSTANDING: none in receipt")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_path = f"{tmpdir}/repo"
+        base_sha, branch_sha = create_git_repo_with_files(repo_path, ["file.txt"])
+
+        plan_path = f"{tmpdir}/plan.md"
+        create_plan(plan_path, 1)
+
+        receipt_path = f"{tmpdir}/receipt.md"
+        create_receipt(receipt_path)  # Creates "OUTSTANDING: none"
+
+        exit_code, stdout, stderr = run_verifier_coverage(
+            receipt_path, plan_path, repo_path, "HEAD", base_sha
+        )
+
+        # Step 1 not in diff, not declared -> uncovered
+        passed = (
+            exit_code == 0
+            and "UNITS: 1" in stdout
+            and "Step 1 | uncovered | " in stdout
+        )
+        h.test_result("OUTSTANDING: none results in uncovered steps", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
 
     h.summarize_and_exit()
 
