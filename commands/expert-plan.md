@@ -656,7 +656,6 @@ Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the 
 
 4. **Self-exclusion filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt. Use one `jq -c` filter with three `--arg` variables to drop entries whose `path` starts with any of the session, flow, or issue prefix:
    ```bash
-   printf '%s\n' "$(printf '%s' "${SESSION_DIR}" | jq -R -s -c 'ltrimstr("/Users/stephenkiers/.claude/plan-sessions/") | split("/")[0]')" > /dev/null  # extract session key for trace only
    jq -c --arg sd "${SESSION_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOWS_ROOT}/$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; print(sys.stdin.read().strip().split("/")[-1].split("-", 1)[0])' 2>/dev/null)-" '
      select((.path | startswith($sd) or startswith($fd) or startswith($fp)) | not)
    ' "${SESSION_DIR}/precedent-digest.raw.jsonl" > "${SESSION_DIR}/precedent-digest.jsonl" 2>/dev/null || true
