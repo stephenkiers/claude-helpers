@@ -661,7 +661,7 @@ Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the 
      select((.path | startswith($sd) or startswith($fd) or startswith($fp)) | not)
    ' "${SESSION_DIR}/precedent-digest.raw.jsonl" > "${SESSION_DIR}/precedent-digest.jsonl" 2>/dev/null || true
    ```
-   Pipe all variable interpolations with `printf '%s'` and a pipe, never with `echo` or bare `$VAR`. Use only `${N}` braced form for shell positional tokens; no bare `$1`, `$2`, etc.
+   Pipe all variable interpolations with `printf '%s'` and a pipe, never with `echo` or bare `$VAR`. Use only the braced form `${N}` for shell positional tokens; no bare positional tokens.
 
 5. **Empty digest check.** If the filtered digest is empty (zero lines in `precedent-digest.jsonl`), set `PRECEDENT_TRACE="no-digest-entries"` and stop (skip steps 6–9). Do not emit telemetry for this path.
 

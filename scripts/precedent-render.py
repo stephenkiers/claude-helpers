@@ -352,8 +352,6 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
             sys.stdout.write(output + "\n")
         return 0
 
-    q_count = receipt[0]
-
     # Load questions and digest
     questions = _load_questions(questions_path)
     digest_refs = _load_digest(digest_path)
@@ -418,7 +416,6 @@ def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) 
             continue
 
         question = questions[qid]
-        options = question.get("options", [])
         prediction = block.get("prediction", "")
 
         # Check if prediction differs from recommendation
@@ -479,7 +476,6 @@ def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) 
             date_part = "\" on " + date
             if ref is not None:
                 date_part += " (#" + str(ref) + ")"
-            reason_part = ": \"" + _sanitize(reason) + "\"" if reason else ""
 
             # Try to fit as much as possible
             available = budget - len(base_start) - len(date_part)
