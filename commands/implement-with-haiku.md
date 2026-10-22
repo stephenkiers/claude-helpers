@@ -571,6 +571,61 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
   directive, the split must carry that tag through verbatim into the sub-task text — never strip it.
 - Always emit **≥ 1** unit. If the plan is too coupled to split safely, emit 1 unit.
 
+**Unit filtering (--only-units):** After analyzing and emitting all units, if `ONLY_UNITS` is
+non-empty, filter to include **only** units whose `id` is in the comma-separated list. All ownership
+and forbidden-file rules remain unchanged for the filtered set. If any `id` in `ONLY_UNITS` matches
+no analyzed unit, **fail loudly with an error message listing which requested ids were not found**
+and exit 1. (In `/expert-flow` retry spawns, this flag is automatically passed to scope the implement
+step to previously incomplete units.)
+
+Implement this by building a set of requested ids and filtering the emitted units:
+
+```bash
+FILTERED_UNITS=()
+
+# Parse ONLY_UNITS into an array
+if [[ -n "$ONLY_UNITS" ]]; then
+  IFS=',' read -ra REQUESTED_IDS <<< "$ONLY_UNITS"
+  FOUND_IDS=()
+
+  for unit in "${ALL_UNITS[@]}"; do
+    # Extract unit id from unit object (assumes structured format like jq output or similar)
+    unit_id=$(echo "$unit" | jq -r '.id' 2>/dev/null || echo "")
+    if [[ -z "$unit_id" ]]; then
+      continue
+    fi
+
+    # Check if this unit id is in the requested list
+    for requested_id in "${REQUESTED_IDS[@]}"; do
+      if [[ "$unit_id" == "$requested_id" ]]; then
+        FILTERED_UNITS+=("$unit")
+        FOUND_IDS+=("$requested_id")
+        break
+      fi
+    done
+  done
+
+  # Verify all requested ids were found
+  MISSING_IDS=()
+  for requested_id in "${REQUESTED_IDS[@]}"; do
+    if [[ ! " ${FOUND_IDS[@]} " =~ " ${requested_id} " ]]; then
+      MISSING_IDS+=("$requested_id")
+    fi
+  done
+
+  if [[ ${#MISSING_IDS[@]} -gt 0 ]]; then
+    printf '%s\n' "Error: --only-units requested these ids but they were not found in the plan: ${MISSING_IDS[*]}" >&2
+    exit 1
+  fi
+
+  # Use filtered units for the rest of the run
+  ALL_UNITS=("${FILTERED_UNITS[@]}")
+else
+  # No filtering requested; use all units as-is
+  FILTERED_UNITS=("${ALL_UNITS[@]}")
+fi
+```
+
 **Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
 directly in the main working directory (background, `run_in_background: true`) with `model: <IMPLEMENTER_MODEL>`
 (the literal resolved model value) and the same self-contained prompt described in Step 4b.
