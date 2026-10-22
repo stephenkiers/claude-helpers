@@ -158,8 +158,294 @@ def create_minimal_fixture(tmp_path: Path) -> tuple:
     return session_dir, flow_dir, decisions_text
 
 
+def create_two_round_fixture(tmp_path: Path) -> tuple:
+    """Create a two-round report checkpoint fixture (Step 1).
+
+    Round 1 (plan-01): asks D/W/Q, with Q1 unresolved and W1 overridden (prose)
+    Round 3 (plan-02): asks only Q1, answered by prose
+    Reply files: plan-01.reply-1.md and plan-02.reply-3.md
+
+    Returns (session_dir, flow_dir, decisions_text) tuple.
+    """
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    reactions_dir = session_dir / "reactions"
+    reactions_dir.mkdir()
+
+    flow_dir = tmp_path / "flow"
+    flow_dir.mkdir()
+    answers_dir = flow_dir / "answers"
+    answers_dir.mkdir()
+    questions_dir = flow_dir / "questions"
+    questions_dir.mkdir()
+
+    # Ledger with D1, W1, Q1
+    ledger = {
+        "seated": ["alice", "bob", "contrarian-carl"],
+        "expected_reactions": [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+            {"slug": "contrarian-carl", "mode": "pre-show", "round": 1, "path": "reactions/contrarian-carl-pre-show-r1.json"},
+            {"slug": "alice", "mode": "reply", "round": 1, "path": "reactions/alice-reply-r1.json"},
+            {"slug": "bob", "mode": "reply", "round": 1, "path": "reactions/bob-reply-r1.json"},
+            {"slug": "contrarian-carl", "mode": "reply", "round": 1, "path": "reactions/contrarian-carl-reply-r1.json"},
+        ],
+        "briefs": {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+            "B2": {"brief_type": "question", "raiser": "bob"},
+            "B3": {"brief_type": "question", "raiser": "alice"},
+        },
+        "D1": {
+            "tier": "decided",
+            "brief_id": "B1",
+            "brief_type": "question",
+            "evidence": ["reactions/alice-pre-show-r1.json", "reactions/bob-pre-show-r1.json"],
+        },
+        "W1": {
+            "tier": "worth-a-look",
+            "brief_id": "B2",
+            "brief_type": "question",
+            "evidence": ["reactions/alice-pre-show-r1.json"],
+        },
+        "Q1": {
+            "tier": "question",
+            "brief_id": "B3",
+            "brief_type": "question",
+            "evidence": ["reactions/alice-pre-show-r1.json"],
+        },
+    }
+
+    decisions_text = f"""# Decisions
+
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+
+## Decided
+
+## Worth a look
+
+## Questions for you
+"""
+
+    # Create pre-show reactions
+    # B1 (D1): alice resolves, others agree
+    # B2 (W1): alice has concerns (resolved+could-go-other-way), not protested
+    # B3 (Q1): alice needs-human
+    for slug in ["alice", "bob", "contrarian-carl"]:
+        reaction_file = reactions_dir / f"{slug}-pre-show-r1.json"
+        if slug == "alice":
+            reaction_file.write_text(json.dumps({
+                "B1": {"resolved": True},
+                "B2": {"resolved": True, "could-go-other-way": True},
+                "B3": {"needs-human": True},
+                "complete": True
+            }), encoding="utf-8")
+        else:
+            reaction_file.write_text(json.dumps({
+                "B1": {"agreed": True},
+                "B2": {"agreed": True},
+                "B3": {"agreed": True},
+                "complete": True
+            }), encoding="utf-8")
+
+    # Create reply-mode reactions
+    for slug in ["alice", "bob", "contrarian-carl"]:
+        reaction_file = reactions_dir / f"{slug}-reply-r1.json"
+        reaction_file.write_text(json.dumps({
+            "D1": {"accept": True},
+            "W1": {"accept": True},
+            "Q1": {"accept": True},
+            "complete": True
+        }), encoding="utf-8")
+
+    # Round 1 question file (plan-01.json) - asks D/W/Q
+    (questions_dir / "plan-01.json").write_text(json.dumps({
+        "kind": "report",
+        "attempt": 1,
+        "round": 1,
+        "step": "plan",
+        "command": "expert-plan",
+        "context_path": None,
+        "ticket": "Test ticket",
+        "headline": None,
+        "items": [
+            {
+                "handle": "D1",
+                "tier": "decided",
+                "brief_type": "question",
+                "title": "Test D item",
+                "decision_or_recommendation": "Recommend A",
+                "why": "It's better",
+                "backed_by": ["alice"],
+                "business_case": None,
+                "options": None,
+                "must_answer": False,
+                "reason_must_answer": None,
+                "evidence": {"alice": "resolved", "bob": "agreed"},
+                "pushback": None,
+            },
+            {
+                "handle": "W1",
+                "tier": "worth-a-look",
+                "brief_type": "question",
+                "title": "Test W item",
+                "decision_or_recommendation": "Recommend B",
+                "why": "It's reasonable",
+                "backed_by": ["bob"],
+                "business_case": None,
+                "options": None,
+                "must_answer": True,
+                "reason_must_answer": "protested",
+                "evidence": {"alice": "protested"},
+                "pushback": None,
+            },
+            {
+                "handle": "Q1",
+                "tier": "question",
+                "brief_type": "question",
+                "title": "Test Q item",
+                "decision_or_recommendation": "Choose an option",
+                "why": "Unclear",
+                "backed_by": ["alice"],
+                "business_case": None,
+                "options": [
+                    {"label": "Option A", "for": "reason1"},
+                    {"label": "Option B", "for": "reason2"},
+                ],
+                "must_answer": True,
+                "reason_must_answer": "question",
+                "evidence": {"alice": "needs-human"},
+                "pushback": None,
+            }
+        ],
+        "questions": [
+            {
+                "id": "reply",
+                "brief": None,
+                "question": "Reply",
+                "header": None,
+                "options": [{"label": "Answer", "description": ""}],
+            }
+        ]
+    }), encoding="utf-8")
+
+    # Round 1 answers file (plan-01.json) - D accepted, W overridden, Q unresolved
+    (answers_dir / "plan-01.json").write_text(json.dumps({
+        "kind": "report",
+        "round": 1,
+        "attempt": 1,
+        "items": {
+            "D1": {
+                "disposition": "accepted",
+                "value": None,
+                "reply_excerpt": None,
+                "source": "form",
+                "ambiguous": False,
+            },
+            "W1": {
+                "disposition": "overridden",
+                "value": "Different approach",
+                "reply_excerpt": "I'd prefer a different approach",
+                "source": "prose",
+                "ambiguous": False,
+            },
+            "Q1": {
+                "disposition": "unresolved",
+                "value": None,
+                "reply_excerpt": None,
+                "source": None,
+                "ambiguous": False,
+            }
+        },
+        "reading_echoed": False,
+        "loop_end": "all-answered",
+    }), encoding="utf-8")
+
+    # Create reply file for round 1
+    (answers_dir / "plan-01.reply-1.md").write_text(
+        "I'd prefer a different approach\n", encoding="utf-8")
+
+    # Round 3 question file (plan-02.json) - re-asks only Q1
+    (questions_dir / "plan-02.json").write_text(json.dumps({
+        "kind": "report",
+        "attempt": 1,
+        "round": 3,
+        "step": "plan",
+        "command": "expert-plan",
+        "context_path": None,
+        "ticket": "Test ticket",
+        "headline": None,
+        "items": [
+            {
+                "handle": "Q1",
+                "tier": "question",
+                "brief_type": "question",
+                "title": "Test Q item (retry)",
+                "decision_or_recommendation": "Choose an option",
+                "why": "Still unclear",
+                "backed_by": ["alice"],
+                "business_case": None,
+                "options": [
+                    {"label": "Option A", "for": "reason1"},
+                    {"label": "Option B", "for": "reason2"},
+                ],
+                "must_answer": True,
+                "reason_must_answer": "question",
+                "evidence": {"alice": "needs-human"},
+                "pushback": None,
+            }
+        ],
+        "questions": [
+            {
+                "id": "reply",
+                "brief": None,
+                "question": "Choose an option",
+                "header": None,
+                "options": [{"label": "Answer", "description": ""}],
+            }
+        ]
+    }), encoding="utf-8")
+
+    # Round 3 answers file (plan-02.json) - Q1 answered by prose
+    (answers_dir / "plan-02.json").write_text(json.dumps({
+        "kind": "report",
+        "round": 3,
+        "attempt": 1,
+        "items": {
+            "Q1": {
+                "disposition": "answered",
+                "value": "Option B",
+                "reply_excerpt": "I choose Option B for good reasons",
+                "source": "prose",
+                "ambiguous": False,
+            }
+        },
+        "reading_echoed": False,
+        "loop_end": "all-answered",
+    }), encoding="utf-8")
+
+    # Create reply file for round 3
+    (answers_dir / "plan-02.reply-3.md").write_text(
+        "I choose Option B for good reasons\n", encoding="utf-8")
+
+    return session_dir, flow_dir, decisions_text
+
+
 def main():
     h = Harness("FLOW-VERIFY-RECEIPT REPORT VERIFIER TEST SUITE")
+
+    # Step 1 Test: Two-round report checkpoint (red-first test, now fixed)
+    print("[Step 1] Two-round report checkpoint: round 1 with D/W/Q unresolved, round 3 with Q1 answered")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = create_two_round_fixture(Path(tmp))
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        # This test passes with the fixed code (multi-round support via fold)
+        # On unfixed code, it would fail with "answer file missing handle:"
+        h.test_result("[Step 1] Two-round report checkpoint (accepts multi-round, latest wins, must-answer per-round)",
+                     error is None,
+                     f"error={error}" if error else "")
 
     # Test 1: Valid minimal fixture passes
     print("[Test 1] Valid minimal fixture -> pass")
@@ -188,20 +474,22 @@ def main():
         h.test_result("Retry first attempt passes", error is None,
                      f"error={error}" if error else "")
 
-    # Test 4: Resume case (attempt 2 with new answers)
-    print("[Test 4] Resume - new round with second answers file")
+    # Test 4: Same-round rewrite keeps round (Q1 = B, audit finding 1)
+    print("[Test 4] Same-round rewrite keeps round")
     with tempfile.TemporaryDirectory() as tmp:
         session_dir, flow_dir, decisions_text = create_minimal_fixture(Path(tmp))
-        # Add second answers file for round 2
+        # Rewrite the same file with the same round, appending to the reply file
         answers_dir = flow_dir / "answers"
-        answers_file_r2 = answers_dir / "plan-01.reply-2.md"
-        answers_file_r2.write_text("continuing discussion", encoding="utf-8")
 
-        # Create new answers file for round 2
-        answers_file_r2_json = answers_dir / "plan-01.json"
+        # Append to the existing reply file (not creating a new one)
+        reply_file = answers_dir / "plan-01.reply-1.md"
+        reply_file.write_text("Original answer\nContinuing discussion\n", encoding="utf-8")
+
+        # Rewrite the answers file with the SAME round: 1 (not round 2)
+        answers_file_json = answers_dir / "plan-01.json"
         new_answers = {
             "kind": "report",
-            "round": 2,
+            "round": 1,  # Same round, not bumped to 2
             "attempt": 1,
             "items": {
                 "D1": {
@@ -212,9 +500,9 @@ def main():
             },
             "loop_end": "all-answered",
         }
-        answers_file_r2_json.write_text(json.dumps(new_answers), encoding="utf-8")
+        answers_file_json.write_text(json.dumps(new_answers), encoding="utf-8")
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        h.test_result("Resume with new round answers", error is None,
+        h.test_result("Same-round rewrite keeps round", error is None,
                      f"error={error}" if error else "")
 
     # Test 5: Missing pre-show reaction file -> fail

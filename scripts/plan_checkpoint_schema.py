@@ -149,6 +149,9 @@ def validate_answers_file_shape(data: Dict, kind: str) -> Optional[str]:
         if "attempt" not in data:
             return "answers file missing 'attempt' key"
         if "items" not in data:
+            # D1 (#340): check if file uses legacy 'answers' key instead of 'items'
+            if "answers" in data:
+                return "report answers file uses 'answers' key; expected 'items'"
             return "answers file missing 'items' key"
 
         items = data.get("items")

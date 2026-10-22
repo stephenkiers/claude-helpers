@@ -457,19 +457,19 @@ For `kind: "report"` files (the plan checkpoint report):
 For other `kind` values (standard Ask block forms): the existing `{"answers": {...}, "annotations": {...}}` shape.
 
 Fields (report kind only):
-- `kind: "report"`, `round`, `attempt` — marks this as a report answers file with round and attempt numbers.
-- `items` — keyed by handle, with dispositions and excerpts as below.
+- `kind: "report"`, `round`, `attempt` — marks this as a report answers file with round and attempt numbers. A report answers file never uses the legacy `answers` key.
+- `items` — keyed by handle, with dispositions and excerpts as below. Each round's file holds the items asked that round. The first round's file holds every ledger handle. Later files hold at least every must-answer item their same-SEQ question file lists. Across an attempt, every ledger handle must appear in at least one file, and no file may hold a handle that is not in the ledger. The latest file in SEQ order sets a handle's final disposition.
 - `disposition` — `"accepted"` (unmentioned D or W), `"answered"` (explicit answer), `"overridden"` (changed prior answer), `"accepted-on-continue"` (must-answer item left open when human said continue), or `"unresolved"` (unanswered must-answer item, blocks resume).
 - `value` — the human's chosen or stated value, or the panel recommendation for `accepted-on-continue`.
-- `reply_excerpt` — verbatim text from the human's reply. Required for `answered` and `overridden`; must be non-empty. For `accepted-on-continue`, the excerpt containing the human's "continue".
-- `source` — `"prose"` (direct from reply text), `"form"` (escape-hatch form), or null (for `accepted`).
+- `reply_excerpt` — verbatim text from the human's reply. Required for `answered` and `overridden`; must be non-empty. For `accepted-on-continue`, the excerpt containing the human's "continue". For `source: "prose"`, the reply file must exist and must contain this excerpt. For `source: "form"`, the excerpt is a non-empty label or Other text and is not verified against any file.
+- `source` — `"prose"` (direct from reply text), `"form"` (escape-hatch form), or null (for `accepted`). `source: "form"` turns off the reply-file check.
 - `ambiguous` — true when the reading required an echo.
 - `reading_echoed` — true when this round's reading was ambiguous and echoed back.
 - `loop_end` — `"continue"` when the human said continue; `"all-answered"` when every must-answer item in the round is `answered` or `overridden`; otherwise null.
 
 **Raw reply file** `${FLOW_DIR}/answers/plan-<SEQ>.reply-<round>.md`:
 
-The human's prose reply, verbatim, saved by the orchestrator with the `Write` tool before interpretation. A round answered entirely through the form escape hatch has no prose to save and no reply file.
+The human's prose reply, verbatim, saved by the orchestrator with the `Write` tool before interpretation. Each answers file's `round` equals its same-SEQ question file's `round`. A same-round re-ask or confirm rewrites the same answers file with the same `round` and appends replies to the round's reply file. A round answered entirely through the form escape hatch has no prose to save and no reply file. For `source: "prose"` answers, the reply file must exist and must be a positive-integer-keyed file (`plan-<SEQ>.reply-<round>.md`).
 
 ---
 

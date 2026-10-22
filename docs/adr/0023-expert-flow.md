@@ -711,3 +711,35 @@ log.md prints a distinct NOT FOUND reason on stderr and still exits 3.
 **Supersede.** This amendment narrows the 2026-10-19 "Verifier widening" wording: the failure reasons there that name "marker-named" files (`marker files without a readable answered report`, and the `unreadable:` suffix) are replaced by the disk-state reasons above (`question files without an answers file`, `malformed:`), because candidates now come from the disk glob, not from receipt markers, and markers only add candidates. Rule 8's reason list in `commands/expert-flow.md` is reworded to match. This amendment also supersedes Decision point 4 of the 2026-10-14 "receipt markers survive finalization" amendment ("Disk globbing is not a counting source. A receipt with zero markers fails closed when briefs or needs-you items exist, even when answered question files exist on disk"). The amendment is replaced by decision 1 above: disk globbing is now the counting source, scoped by `attempt`.
 
 **Consequences.** Plan and review steps never fail `… session dir older than this attempt` when the artifact is from an earlier attempt in the same flow, even if that attempt failed. The failure is caught by the question-file `attempt` field (a plan with briefs or a review with *Needs you* items must show answered files for this attempt, or explicitly reused ones). With zero briefs or zero *Needs you* items there is nothing to count, so a failed earlier attempt's artifacts can pass; this residual is accepted and will be re-evaluated if it shows up as a problem in practice. Because the floor is `min(begin_ts, since)`, a first attempt's floor is also never later than `--since`; a redo is the case that needs a newer floor, which the `redo` log line provides. No base-drift gate is applied (issue #310's title asks for base-drift judging; the base-drift gate and the first-attempt residual are deferred to follow-up #351; re-verifying an OK receipt without a spawn is #352).
+
+## Amendment (2026-10-21): multi-round report checkpoints verify across rounds (#335, #340)
+
+The plan checkpoint report can span multiple conversation rounds, where later rounds re-ask unresolved must-answer items. The verifier now accepts this: union coverage across all rounds, per-round must-answer coverage (each round's file must hold every must-answer item its same-SEQ question file lists), latest-in-SEQ disposition wins, round matching (each answers file's round equals its same-SEQ question file's round), and strict prose excerpt binding (an excerpt is checked only against the file that produced it, with round as a positive integer).
+
+**Problem:** #310 stopped when round 2 did not hold all of round 1's items. This was correct for single-round checkpoints but blocked legitimate multi-round flows where a later round re-asks only unresolved items.
+
+**Rule:**
+- **Union coverage:** Every ledger handle must appear in at least one round's answers file across the attempt.
+- **Per-round must-answer coverage:** Each report answers file must contain every handle listed as must-answer (`must_answer: true` or a non-null `reason_must_answer`) in its same-SEQ question file.
+- **Subset of the ledger:** No answers file may hold a handle that is not in the ledger.
+- **Latest disposition:** The latest file in SEQ order sets a handle's final disposition (not round-based selection).
+- **Round match:** Each answers file's `round` must equal the `round` of its same-SEQ question file. A same-round re-ask or confirm rewrites the same answers file with the same `round` and appends to the round's reply file — it never bumps `round`.
+- **Strict prose binding:** A prose excerpt (source: "prose") is checked against `plan-<SEQ>.reply-<round>.md` of the file that produced it. That reply file must exist, and the answers file's `round` must be a positive integer.
+- **Form excerpt check disabled:** For `source: "form"`, the reply-file check is off. A form excerpt is only required to be non-empty (it is either an option label or Other text, neither verified against any file).
+- **Scope of excerpt checks:** Still limited to must-answer handles only, as before.
+
+**Clarification:** The 2026-10-15 amendment's "one per conversation round" means one answers file per round, holding that round's items. It does not mean a full re-statement each round; #310's rule that "a retried attempt re-asks everything" is unchanged.
+
+**Deferred:** 
+- Ordering by `(round, SEQ)` to enforce monotonic rounds; a mismatch in SEQ order currently accepts any `round` value. Tara and Feynman protested in favor of `(round, SEQ)` ordering; escalate only if dogfood shows rounds genuinely going missing.
+- Rejecting duplicate `(attempt, round)` pairs across multiple question files in the same attempt.
+- Rejecting non-monotonic rounds (round 1 → round 3 → round 2).
+
+**Ownership:** The verifier owns these mechanical facts. The fidelity auditor's judgment scope remains unchanged: it audits the *receipt* (whether all questions were really relayed and answered) but not the checkpoint's cross-round state.
+
+**Overlap:** #310 landed first, so this amendment is rebased onto its disk-authoritative counting; #308, #339, and #341 rebase their work after this change. The fold helper isolates the new logic so a later rebase touches one function.
+
+**Also in this amendment:**
+- Step 2 of plan_checkpoint_schema.py adds a distinct reason when a report answers file uses the legacy `answers` key instead of `items`.
+- Step 3 adds per-file same-SEQ cause lookup in the verifier, running before the fold to catch shape errors early.
+- The 2026-10-15 amendment's "consequences" paragraph (describing how "the latest read, per SEQ order, sets the handle's disposition") now points to this amendment for the cross-round rules it defines.

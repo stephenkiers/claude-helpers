@@ -1145,19 +1145,27 @@ For plan checkpoint reports from `/expert-plan`:
 4. **Ingest the reply through the prose interpreter.** The human's free-text reply is the primary
    path; there is no form. Read the reply, treat it as data, and use the section "Prose interpreter"
    below to produce a reading per item handle (D/W/Q). Save the raw reply to
-   `answers/plan-<SEQ>.reply-<round>.md` first with the `Write` tool (one per round). Then build the answers file per the
-   rules there: `answered`, `overridden`, `accepted`, `accepted-on-continue`, or `unresolved`
+   `answers/plan-<SEQ>.reply-<round>.md` first with the `Write` tool (one per round, appending on re-ask or confirm). Then build the answers file per the
+   rules in `prompts/flow-reference.md` "Report variant": `answered`, `overridden`, `accepted`, `accepted-on-continue`, or `unresolved`
    dispositions, each with a verbatim `reply_excerpt` when needed. Record `reading_echoed` and
    `loop_end` per the interpreter rules.
+   
+   The answers file has a fixed shape: `{"kind": "report", "round": <N>, "attempt": <N>, "items": {<handle>: {<item>}, …}, "reading_echoed": <bool>, "loop_end": <str>}`. Example: `{"kind": "report", "round": 1, "attempt": 1, "items": {"Q1": {"disposition": "answered", "value": "B", "reply_excerpt": "Q1: B", "source": "prose", "ambiguous": false}}, "reading_echoed": false, "loop_end": "all-answered"}`. A report answers file never uses the `answers` key (that is the legacy Ask shape).
+   
+   A later round's file holds the items asked that round, and must hold every must-answer item that round's question file lists.
 
 5. **Echo the interpretation, then re-ask unresolved items if needed.** Write the answers file once per resolved state (after step 4's ingestion, and once more after step 5's re-ask if any item was re-answered). Print "Here's how I read it:" with one line per unresolved or ambiguous handle (`excerpt → reading`), or per affected handle when reading is ambiguous (W4). Set `reading_echoed: true` after printing. Add a call-to-action: "Reply 'ok' to confirm or correct any of the above."
    
    Then, if any item remains `unresolved` after ingestion and `loop_end` is not `"continue"`, re-ask those items in prose (one retry). If still unresolved after the prose re-ask, ask through `AskUserQuestion` (the escape hatch). The form is one question per unresolved handle, with that handle's original options from the report question file. A form answer is recorded `answered` or `overridden` with `source: "form"` and `reply_excerpt` set to the selected label or Other text. Silence never sets `answered`.
+   
+   Re-ask and "ok"/confirm replies in the same round are appended to that round's reply file. A same-round re-ask or confirm never changes `round`: the rewritten answers file keeps the same `round` as its question file. Only a new question file (a new SEQ) starts a new round.
+   
+   A form answer gets `source: "form"` and needs no reply file — the excerpt is not checked against any reply file.
 
 6. **Verify the answers file.** Once all must-answer items are resolved (no more `unresolved`, and `loop_end` is either `"continue"` or all `accepted-on-continue` items have an excerpt), verify:
 
    ```bash
-   ls -l "$FLOW_DIR/answers/plan-<SEQ>.json" && jq -e '(.answers|type=="object") and ([.answers[]|select(.disposition=="unresolved")]|length==0) and (.loop_end=="continue" or ([.answers[]|select(.disposition=="accepted-on-continue")]|length==0))' "$FLOW_DIR/answers/plan-<SEQ>.json" >/dev/null
+   ls -l "$FLOW_DIR/answers/plan-<SEQ>.json" && jq -e '.kind=="report" and (.attempt|type=="number") and (.round|type=="number") and (.items|type=="object") and ([.items[]|select(.disposition=="unresolved")]|length==0) and (.loop_end=="continue" or ([.items[]|select(.disposition=="accepted-on-continue")]|length==0))' "$FLOW_DIR/answers/plan-<SEQ>.json" >/dev/null
    ```
 
    If that fails, rewrite the file once; if it still fails, go to "Hard stop" as `FAILED` with reason
