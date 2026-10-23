@@ -2134,7 +2134,7 @@ No items."""
         subprocess.run(["git", "add", "file2.txt"], cwd=repo_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
         ts = iso_z(time.time() - 3600)
         flow_dir = f"{tmp_home}/.claude/flows/flow-79"
         Path(flow_dir).mkdir(parents=True, exist_ok=True)

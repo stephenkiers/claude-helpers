@@ -154,7 +154,7 @@ def main():
     print("  Behavior: git failure => unknown")
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = f"{tmpdir}/repo"
-        base_sha, _ = create_git_repo_with_files(repo_path, ["step1.txt"])
+        base_sha, _ = create_git_repo_with_files(repo_path, ["step1.py"])
 
         plan_path = f"{tmpdir}/plan.md"
         create_plan(plan_path, 2)
@@ -186,20 +186,20 @@ def main():
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, capture_output=True, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_path, capture_output=True, check=True)
 
-        Path(repo_path, "step1.txt").write_text("content of step1.txt")
-        Path(repo_path, "step12.txt").write_text("content of step12.txt")
+        Path(repo_path, "step1.py").write_text("content of step1.py")
+        Path(repo_path, "step12.py").write_text("content of step12.py")
         subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, capture_output=True, check=True)
         base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
 
         # Modify both files to show in diff
-        Path(repo_path, "step1.txt").write_text("modified: step1.txt")
-        Path(repo_path, "step12.txt").write_text("modified: step12.txt")
+        Path(repo_path, "step1.py").write_text("modified: step1.py")
+        Path(repo_path, "step12.py").write_text("modified: step12.py")
         subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "branch"], cwd=repo_path, capture_output=True, check=True)
 
         plan_path = f"{tmpdir}/plan.md"
-        content = "# Plan\n\n### Step 1\n\nModify `step1.txt`.\n\n### Step 12\n\nModify `step12.txt`.\n\n"
+        content = "# Plan\n\n### Step 1\n\nModify `step1.py`.\n\n### Step 12\n\nModify `step12.py`.\n\n"
         Path(plan_path).parent.mkdir(parents=True, exist_ok=True)
         Path(plan_path).write_text(content)
 

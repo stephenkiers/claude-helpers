@@ -2068,7 +2068,7 @@ def _get_file_names_from_plan_section(plan_text: str, unit_id: str) -> List[str]
         path = re.sub(r"^\.\/", "", path)
         path = re.sub(r":\d+$", "", path)
         # Only include if it looks like a repo path (contains / or has extension)
-        if "/" in path or path.endswith((".py", ".js", ".ts", ".rs", ".md", ".yaml", ".json", ".txt")):
+        if "/" in path or path.endswith((".py", ".js", ".ts", ".rs", ".md", ".yaml", ".json")):
             files.append(path)
 
     return files
