@@ -118,15 +118,15 @@ so a rejected step leaves no poisoned state for `--resume`.
 
 **Decision — A. Document all three in the ADR:** Three verifier details are now recorded here:
 
-1. **Mtime freshness:** For plan and review steps, the verifier checks that `context.md` (plan) and `claude-action-plan.md` (review) mtime are >= `--since` minus 5 seconds, to verify artifacts were written during this flow step's window. Timing is necessary because the session dir or review dir could theoretically be reused from an older run.
+1. **Identity floor (amendment 2026-10-21):** For plan and review steps, the verifier checks that `context.md` (plan) and `claude-action-plan.md` (review) mtime are >= a first-attempt identity floor minus 5 seconds. The floor is the timestamp of the newest `<STEP> begin` line in the flow's `log.md`, or `--since` if no `log.md` or `begin` line can be read. This floor's purpose is to reject an artifact from a prior flow or from before this step began in this flow, the same purpose the mtime rule served before. No base-drift gate is applied.
 
 2. **Roster exemptions:** The plan verifier skips `auditor` and `synthesis` roster rows when checking for contributions; only seated experts' contributions are verified.
 
 3. **Contribution filename fallback:** The verifier first looks for a contribution file named `<file_stem>-contribution.md` (where `file_stem` comes from the reviewer index), then falls back to `<kebab-cased expert name>-contribution.md` as a second candidate.
 
 The checks per step:
-- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row (except `auditor` and `synthesis`) must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`). Context mtime must be >= `--since` - 5 seconds. `FINAL_PLAN_PATH` must exist, and the session directory must contain `plan.md`. A marker-named question with no answers file, or an unreadable one, fails closed: in the report-checkpoint branch with `plan checkpoint incomplete (marker files without a readable answered report: <basenames>)`, and on the legacy path with the `unanswered:` / `unreadable:` suffixes. A checkpoint ledger carrying D/W/Q handles without a validated report fails closed with the `ledger has D/W/Q handles` reason. (Verifier widening: 2026-10-19 amendment.)
-- **review**: `REVIEW_DIR` contains `claude-action-plan.md`, `final-report.md`, `findings.json`, and ≥2 reviewer checkpoints (`*-pass1.md` or `*-pod.md`). Action plan mtime must be >= `--since` - 5 seconds.
+- **plan**: session dir named by `FINAL_PLAN_PATH`'s invocation id; every `selected-experts.md` roster row (except `auditor` and `synthesis`) must have a contribution file with both properties: its last non-empty line is `<!-- contribution-end -->`, and it is not a stand-in (§2 Receipt defines stand-in as `## Decision` followed by `FAILED`). Context mtime must be >= identity floor - 5 seconds (amendment 2026-10-21). `FINAL_PLAN_PATH` must exist, and the session directory must contain `plan.md`. A current-attempt or marker-named question file (including a report-kind file) with no answers file fails closed: in the report-checkpoint branch with `plan checkpoint incomplete (question files without an answers file: <basenames>)`, and on the legacy path with the `unanswered:` suffix. A malformed or out-of-attempt question file also fails closed (`malformed:` / `out-of-attempt:`), even when enough other valid files satisfy the count (amendment 2026-10-21). A checkpoint ledger carrying D/W/Q handles without a validated report fails closed with the `ledger has D/W/Q handles` reason. (Verifier widening: 2026-10-19 amendment.)
+- **review**: `REVIEW_DIR` contains `claude-action-plan.md`, `final-report.md`, `findings.json`, and ≥2 reviewer checkpoints (`*-pass1.md` or `*-pod.md`). Action plan mtime must be >= identity floor - 5 seconds (amendment 2026-10-21).
 - **implement**: ≥1 new commit on the branch since the step began (base SHA recorded at spawn).
 - **fix**: ≥1 new commit, with a carve-out: zero commits are accepted when `claude-action-plan.md` has no *Doing it* items. When a fix has nothing actionable, zero commits is correct.
 
@@ -373,8 +373,8 @@ than it raised is a failed step, not a quiet default.
 
 1. `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` markers stay on `OK` and `FAILED` receipts. They are this attempt's relay record. The receipt is stubbed per attempt (Attempt scope in Lifecycle), so markers are attempt-scoped.
 2. The "`Decision:` together with an awaiting marker" forbidden shape is deleted.
-3. The verifier counts a marker only when `answers/<STEP>-<SEQ>.json` exists. On the legacy path, a marker without its answers file is a failed step with `unanswered: <basenames>`; in the report-checkpoint branch the same case fails with the marker-files reason (see the 2026-10-19 amendment).
-4. Disk globbing is not a counting source. A receipt with zero markers fails closed when briefs or needs-you items exist, even when answered question files exist on disk. A zero-brief, zero-item checkpoint with zero markers passes.
+3. The verifier counts a marker only when `answers/<STEP>-<SEQ>.json` exists. A marker without its answers file is a failed step with `unanswered: <basenames>`. In the report-checkpoint branch the same case fails with the marker-files reason (see the 2026-10-19 amendment).
+4. **Superseded by the 2026-10-21 amendment (#310).** ~~Disk globbing is not a counting source. A receipt with zero markers fails closed when briefs or needs-you items exist, even when answered question files exist on disk. A zero-brief, zero-item checkpoint with zero markers passes.~~
 5. Resume rule 5 re-asks only from receipts without `<!-- step-end -->`.
 
 **Clarification.** This amendment clarifies §2.1 ("Earlier markers are answered or stale") and makes the 2026-10-14 amendment's "against the questions in `questions/plan-*.json`" precise: it means the questions in the files named by answered markers.
@@ -685,3 +685,29 @@ the file is repaired or removed; that blast radius is the accepted trade-off of 
 locate (no bound given) is unchanged. A bounded miss now prints a distinct NOT FOUND hint, because finished runs are
 tombstones pruned after 14 days. A `--flow-dir` locate whose newest begin/retry line lies outside the readable tail of
 log.md prints a distinct NOT FOUND reason on stderr and still exits 3.
+
+## Amendment (2026-10-21): relayed questions are counted from disk by attempt; plan/review freshness is a first-attempt identity floor (#310)
+
+**Problem.** After the 2026-10-14 receipt-markers amendment, steps still failed with `plan checkpoint incomplete (briefs: N, asked: 0)` when every question was answered, because the verifier counted only markers on the receipt. A dropped marker was indistinguishable from no-file-on-disk. (#293, lotl-co/lotl#1650).
+
+**Decision.** Relayed questions are disk-authoritative, scoped by an `attempt` field on each question file. Markers are kept as an optional index and a `reused-answers` selector, but they are not the counting source.
+
+**Key changes:**
+
+1. **Counting is disk-authoritative and scoped by `attempt`.** A `questions/<step>-NN.json` file counts when:
+   - Its `attempt` field equals the receipt's `ATTEMPT` (or a `<!-- reused-answers: questions/<step>-NN.json -->` marker names it) AND
+   - Its corresponding `answers/<step>-NN.json` file exists.
+   - A question file without an `attempt` field does not count and is rejected with `malformed`.
+   - An `<!-- awaiting-answers: … -->` marker naming a file with no answers file still fails with `unanswered:`.
+
+2. **Plan and review artifacts are checked against a first-attempt identity floor, not base drift.** A new `_step_floor(flow_dir, step, since)` helper reads the newest line matching `^<STEP> begin$` or `^<STEP> redo ` in `log.md` and uses its timestamp as the floor, so a redo (which starts a new identity for the step) is not defeated by the first attempt's older `begin` line; `retry` lines never move the floor. The floor serves a single purpose: rejecting an artifact from a prior flow or from before this step began in this flow. When no `begin` line can be read, the floor falls back to `--since`, which is never more permissive than today. Drift for plan or review will be re-evaluated later only if it becomes a real problem.
+
+3. **Plan and review get no base-drift gate.** Base drift is handled by verify's `base-stale` auto-Rebase and `/expert-rebase`, not by plan/review validation. `git fetch origin` happens only at the rebase/ship step.
+
+4. **Anomalies fail closed.** A question file that is schema-invalid (`malformed:`, which includes an unreadable or unparseable file), or answered but named by an `awaiting-answers` marker from a different attempt (`out-of-attempt:`), fails the check even when enough other valid files satisfy the count. A current-attempt report-kind file without an answers file is `unanswered:`. The old separate `unreadable:` suffix is gone: an unreadable file reports as malformed (`not json`). A missing `ATTEMPT:` line defaults to attempt 1 only when no question file for the step carries an attempt above 1, and an `ATTEMPT:` value that is not an integer >= 1 is an error; the last `ATTEMPT:` line wins.
+
+5. **A retried attempt re-asks everything**, using only the current attempt's files. Prior-attempt files selected through `reused-answers` markers are an exception and count only when the marker is present (no reuse without an explicit marker).
+
+**Supersede.** This amendment narrows the 2026-10-19 "Verifier widening" wording: the failure reasons there that name "marker-named" files (`marker files without a readable answered report`, and the `unreadable:` suffix) are replaced by the disk-state reasons above (`question files without an answers file`, `malformed:`), because candidates now come from the disk glob, not from receipt markers, and markers only add candidates. Rule 8's reason list in `commands/expert-flow.md` is reworded to match. This amendment also supersedes Decision point 4 of the 2026-10-14 "receipt markers survive finalization" amendment ("Disk globbing is not a counting source. A receipt with zero markers fails closed when briefs or needs-you items exist, even when answered question files exist on disk"). The amendment is replaced by decision 1 above: disk globbing is now the counting source, scoped by `attempt`.
+
+**Consequences.** Plan and review steps never fail `… session dir older than this attempt` when the artifact is from an earlier attempt in the same flow, even if that attempt failed. The failure is caught by the question-file `attempt` field (a plan with briefs or a review with *Needs you* items must show answered files for this attempt, or explicitly reused ones). With zero briefs or zero *Needs you* items there is nothing to count, so a failed earlier attempt's artifacts can pass; this residual is accepted and will be re-evaluated if it shows up as a problem in practice. Because the floor is `min(begin_ts, since)`, a first attempt's floor is also never later than `--since`; a redo is the case that needs a newer floor, which the `redo` log line provides. No base-drift gate is applied (issue #310's title asks for base-drift judging; the base-drift gate and the first-attempt residual are deferred to follow-up #351; re-verifying an OK receipt without a spawn is #352).

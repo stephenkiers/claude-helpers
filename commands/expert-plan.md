@@ -912,7 +912,7 @@ Next steps:
 
 **Flow receipt (only when `FLOW_DIR` is set).** Before the closing telemetry below, write the step
 receipt per the Receipt block of `~/.claude/prompts/flow-reference.md`, with the `Write` tool, to the path the
-orchestrator named in its step prompt (default `${FLOW_DIR}/steps/01-plan.md`). If an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` counts relayed questions from them. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Content: the closing message above, unchanged, followed by:
+orchestrator named in its step prompt (default `${FLOW_DIR}/steps/01-plan.md`). If an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` uses them to find reused and unanswered question files, and counts asked questions from this attempt's files on disk. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Content: the closing message above, unchanged, followed by:
 
 ```
 FINAL_PLAN_PATH: <absolute FINAL_PLAN_PATH, $HOME expanded>

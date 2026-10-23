@@ -12,9 +12,10 @@ that the Fidelity audit exists to check).
 Exit codes:
   0: artifacts OK
   1: receipt admits deviation, artifact missing, or a plan/review checkpoint was not fully relayed
-     (counting is marker-based: the questions in files named by receipt's awaiting-answers /
-     reused-answers markers that have a corresponding answers/ file). With --since-from-log, a
-     missing or malformed begin/retry line in log.md is exit 1.
+     (counting is disk-authoritative and scoped by attempt: questions in files matching
+     questions/<step>-NN.json whose attempt equals the receipt's ATTEMPT, or a
+     reused-answers marker names, counted only when their answers/<step>-NN.json exists).
+     With --since-from-log, a missing or malformed begin/retry line in log.md is exit 1.
   2: bad arguments or internal error (message on stderr). With --since-from-log, an absent or
      invalid flow dir is exit 2.
 """
@@ -25,7 +26,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, NamedTuple, NoReturn, Optional
+from typing import Dict, List, NamedTuple, NoReturn, Optional, Tuple
 
 # Import shared schema module
 try:
@@ -51,21 +52,51 @@ CONTRIB_ABSENT = "absent"
 CONTRIB_UNTERMINATED = "unterminated"
 CONTRIB_STANDIN = "stand-in"
 
+# Question file pattern
+QUESTION_FILE_RE = r"^(?P<step>[a-z0-9-]+)-(?P<seq>\d{2})\.json$"
+
+# Checkpoint incompleteness reason strings (printed with parenthesized context)
+REASON_PLAN_INCOMPLETE = "plan checkpoint incomplete"
+REASON_REVIEW_INCOMPLETE = "review rulings incomplete"
+
+# Artifact freshness reason strings (used when mtime checks fail)
+REASON_PLAN_OLDER_FIRST = "plan artifacts missing (session dir older than this step's first attempt)"
+REASON_PLAN_OLDER_ATTEMPT = "plan artifacts missing (session dir older than this attempt)"
+REASON_REVIEW_OLDER_FIRST = "review artifacts missing (action plan older than this step's first attempt)"
+REASON_REVIEW_OLDER_ATTEMPT = "review artifacts missing (action plan older than this attempt)"
+
+# Suffixes for relay incompleteness
+SUFFIX_NO_ANSWERED_FMT = ", no answered {step}-* question files for attempt {attempt}"
+SUFFIX_FLOW_DIR_UNRESOLVED = ", flow dir unresolved"
+SUFFIX_UNANSWERED = ", unanswered: "
+SUFFIX_MALFORMED = ", malformed: "
+SUFFIX_OUT_OF_ATTEMPT = ", out-of-attempt: "
+
 
 class RelayCount(NamedTuple):
-    """Result of counting relayed questions from receipt markers.
+    """Result of counting relayed questions from disk, scoped by attempt.
 
-    Invariants (see count_relayed_questions):
-    - markers is the number of distinct `<step>-*.json` basenames named by the receipt.
-    - Each marker basename lands in at most one of unanswered / unreadable / (answered and
-      parsed). With no flow dir, nothing is classified, so unanswered and unreadable stay empty.
-    - When the questions/ dir is missing, every marker basename is reported as unanswered.
-    - asked counts only questions from answered, parsed marker files; it is 0 otherwise.
+    Relayed questions are counted from disk: a `questions/<step>-NN.json` counts when its
+    `attempt` equals the receipt's `ATTEMPT` (or a `reused-answers` marker names it) and its
+    `answers/<step>-NN.json` exists; a question file without `attempt` does not count, and an
+    `awaiting-answers` marker whose answers file is missing is reduced.
+
+    Fields:
+    - asked: sum of len(questions[]) across selected files with answers/ existing
+    - files: list of selected question file basenames (the files that were scoped and counted)
+    - unanswered: basenames of selected files without an answers/ file
+    - malformed: list of "<basename> (<problem>)" strings for schema-invalid files (including
+      files that fail to read or parse). Gating: any entry fails the check closed.
+    - out_of_attempt: basenames named by awaiting-answers markers but from a different attempt.
+      Gating: any entry fails the check closed.
+    - markers: count of distinct marker-named basenames (diagnostic only)
     """
     asked: int
-    markers: int
+    files: List[str]
     unanswered: List[str]
-    unreadable: List[str]
+    malformed: List[str]
+    out_of_attempt: List[str]
+    markers: int
 
 
 # A decision brief heading in a plan session's decisions.md (`#### Q1. …`, `#### Q2 — …`).
@@ -168,36 +199,178 @@ def scan_for_deviation(content: str) -> bool:
     return False
 
 
-def _is_report_checkpoint(flow_dir: Path, relay_count: RelayCount) -> bool:
-    """Check if any marker-named report question file has kind: "report"."""
-    qdir = flow_dir / "questions"
-    if not qdir.exists():
-        return False
+def validate_question_file(path: Path, step: str) -> Tuple[Optional[dict], Optional[str]]:
+    """Validate a question file's schema. Return (data, None) if valid, or (None, problem).
 
-    for marker in relay_count.unanswered:
-        qfile = qdir / marker
-        try:
-            data = json.loads(qfile.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("kind") == "report":
-                return True
-        except (OSError, UnicodeDecodeError, ValueError):
-            pass
+    Problems (short, fixed strings):
+    - "bad name": filename doesn't match <step>-NN.json
+    - "not json": file is not valid JSON
+    - "step mismatch": JSON's "step" field doesn't equal the step argument
+    - "no attempt field": non-report file missing integer "attempt" >= 1
+    - "bad questions": "questions" field is not a non-empty list (for non-report files), or a
+      question entry is malformed (not a dict, missing id/question, or id not of the form qN)
+    - "bad round": a "kind": "report" file whose "round" is not an int >= 1
+    - "duplicate id": question ids are not unique
 
-    # Also check answered files
-    adir = flow_dir / "answers"
-    if adir.exists():
-        for answer_file in adir.glob("plan-*.json"):
-            # Find corresponding question file by name
-            qfile = qdir / answer_file.name
-            if qfile.exists():
+    For "kind": "report" files, validates "attempt" and "round" as ints >= 1.
+    For non-report files, validates "attempt" as int >= 1 and "questions" as non-empty list.
+    """
+    # Check filename
+    if not re.match(QUESTION_FILE_RE, path.name):
+        return (None, "bad name")
+
+    # Parse JSON
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return (None, "not json")
+
+    # Must be a dict
+    if not isinstance(data, dict):
+        return (None, "not json")
+
+    # Check step field
+    if data.get("step") != step:
+        return (None, "step mismatch")
+
+    # Check if report kind
+    kind = data.get("kind")
+    if kind == "report":
+        # Report files: validate attempt and round as ints >= 1
+        attempt = data.get("attempt")
+        round_num = data.get("round")
+        if not isinstance(attempt, int) or attempt < 1:
+            return (None, "no attempt field")
+        if not isinstance(round_num, int) or round_num < 1:
+            return (None, "bad round")
+        return (data, None)
+
+    # Non-report files: validate attempt and questions
+    attempt = data.get("attempt")
+    if not isinstance(attempt, int) or attempt < 1:
+        return (None, "no attempt field")
+
+    questions = data.get("questions")
+    if not isinstance(questions, list) or len(questions) == 0:
+        return (None, "bad questions")
+
+    # Check that all questions have id and question field, and ids are unique
+    seen_ids = set()
+    for q in questions:
+        if not isinstance(q, dict):
+            return (None, "bad questions")
+        if "id" not in q or "question" not in q:
+            return (None, "bad questions")
+        q_id = q.get("id")
+        if not isinstance(q_id, str) or not re.match(r"^q\d+$", q_id):
+            return (None, "bad questions")
+        if q_id in seen_ids:
+            return (None, "duplicate id")
+        seen_ids.add(q_id)
+
+    return (data, None)
+
+
+def _receipt_attempt(receipt: str) -> Optional[int]:
+    """Extract the attempt from the receipt's `ATTEMPT:` header lines.
+
+    Only lines that start with `ATTEMPT:` count, and the LAST such line wins. Returns None when
+    no line is present, or when the winning line is not an integer >= 1 (callers treat an invalid
+    value as an error, never as attempt 1).
+    """
+    found = False
+    attempt: Optional[int] = None
+    for line in receipt.split("\n"):
+        if line.startswith("ATTEMPT:"):
+            found = True
+            attempt_str = line.split(":", 1)[1].strip()
+            try:
+                parsed = int(attempt_str)
+                attempt = parsed if parsed >= 1 else None
+            except ValueError:
+                attempt = None
+    return attempt if found else None
+
+
+def _receipt_attempt_error(receipt: str) -> bool:
+    """True when the receipt has an ATTEMPT: line whose winning value is not an integer >= 1."""
+    has_line = any(ln.startswith("ATTEMPT:") for ln in receipt.split("\n"))
+    return has_line and _receipt_attempt(receipt) is None
+
+
+def _resolve_attempt(receipt: str, flow_dir: Optional[Path], step: str) -> Tuple[Optional[int], Optional[str]]:
+    """Resolve the attempt to count against. Returns (attempt, error_reason).
+
+    An explicit, valid `ATTEMPT:` line is used as-is. An invalid one is an error. A missing one
+    defaults to 1 only when no `<step>-*.json` question file on disk carries attempt > 1;
+    otherwise the default would silently count the wrong attempt, so it is an error.
+    """
+    if _receipt_attempt_error(receipt):
+        return (None, "invalid ATTEMPT line in receipt (must be an integer >= 1)")
+    explicit = _receipt_attempt(receipt)
+    if explicit is not None:
+        return (explicit, None)
+    if flow_dir is not None:
+        qdir = flow_dir / "questions"
+        if qdir.is_dir():
+            for qfile in qdir.glob(f"{step}-*.json"):
                 try:
                     data = json.loads(qfile.read_text(encoding="utf-8"))
-                    if isinstance(data, dict) and data.get("kind") == "report":
-                        return True
                 except (OSError, UnicodeDecodeError, ValueError):
-                    pass
+                    continue
+                if isinstance(data, dict):
+                    att = data.get("attempt")
+                    if isinstance(att, int) and not isinstance(att, bool) and att > 1:
+                        return (None, f"receipt has no ATTEMPT: line but {qfile.name} is attempt {att}")
+    return (1, None)
 
-    return False
+
+def _step_floor(flow_dir: Optional[Path], step: str, since: float) -> Tuple[float, bool]:
+    """Get the first-attempt identity floor for a step.
+
+    Reads flow_dir / "log.md" and finds the newest line matching "^(\\S+) <step> begin$" or
+    "^(\\S+) <step> redo( .*)?$", parsing the timestamp with _parse_iso8601. A redo line starts a
+    new identity for the step (the human asked for a fresh attempt), so once one exists it
+    supersedes the first-attempt `begin` line as the floor; `retry` lines never move the floor.
+    Returns (min(floor_ts, since), True) if found.
+
+    Fallback (no flow dir, no log.md, no matching line, or parse error): returns (since, False),
+    which is exactly today's rule and never more permissive.
+
+    Returns (floor_timestamp, from_log_md).
+    """
+    if flow_dir is None:
+        return (since, False)
+
+    log_file = flow_dir / "log.md"
+    if not log_file.exists():
+        return (since, False)
+
+    try:
+        log_content = log_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return (since, False)
+
+    # Find the newest line matching "^(\S+) <step> begin$"
+    newest_begin_ts = None
+    for line in log_content.split("\n"):
+        line = line.rstrip()
+        # Pattern: timestamp (ISO-8601) followed by step and "begin"
+        match = re.match(rf"^(\S+) {re.escape(step)} (?:begin|redo(?: .*)?)$", line)
+        if match:
+            iso_str = match.group(1)
+            try:
+                ts = _parse_iso8601(iso_str)
+                if newest_begin_ts is None or ts > newest_begin_ts:
+                    newest_begin_ts = ts
+            except ValueError:
+                # Unparseable timestamp, skip
+                pass
+
+    if newest_begin_ts is None:
+        return (since, False)
+
+    return (min(newest_begin_ts, since), True)
 
 
 def _load_answers_file(path: Path) -> Optional[Dict]:
@@ -267,6 +440,21 @@ def _ledger_handle_keys(ledger: dict) -> set:
     return {key for key in ledger if isinstance(key, str) and _LEDGER_HANDLE_RE.fullmatch(key)}
 
 
+def _relay_anomaly_suffix(relay_count: RelayCount) -> str:
+    """Reason suffix naming malformed and out-of-attempt question files; "" when there are none.
+
+    Both anomalies are gating: a question file that is schema-invalid, or answered but from a
+    different attempt than the receipt's, may be a question that never reached the human, so a
+    check that finds either fails closed instead of counting the remaining valid files.
+    """
+    out = ""
+    if relay_count.malformed:
+        out += f"{SUFFIX_MALFORMED}{', '.join(relay_count.malformed)}"
+    if relay_count.out_of_attempt:
+        out += f"{SUFFIX_OUT_OF_ATTEMPT}{', '.join(relay_count.out_of_attempt)}"
+    return out
+
+
 def check_report_checkpoint(
     session_dir: Path, flow_dir: Path, decisions_text: str, attempt: int = 1, relay_count: Optional[RelayCount] = None
 ) -> Optional[str]:
@@ -318,12 +506,17 @@ def check_report_checkpoint(
 
     # Fail closed: a marker-named report whose answers file is absent (or whose question file
     # is unreadable) never provably reached the human, wherever a decoy copy may sit.
-    if relay_count and (relay_count.unanswered or relay_count.unreadable):
-        bad = relay_count.unanswered + relay_count.unreadable
-        return f"plan checkpoint incomplete (marker files without a readable answered report: {', '.join(sorted(bad))})"
+    if relay_count and relay_count.unanswered:
+        return (
+            "plan checkpoint incomplete (question files without an answers file: "
+            f"{', '.join(sorted(relay_count.unanswered))})"
+        )
+    anomaly = _relay_anomaly_suffix(relay_count) if relay_count else ""
+    if anomaly:
+        return f"plan checkpoint incomplete ({anomaly.lstrip(', ')})"
 
     # Rule 1: Verify we have plan-* question files
-    # (reaching this point means relay_count has no unanswered/unreadable markers)
+    # (reaching this point means relay_count has no unanswered files or anomalies)
     marker_files = set()
     unreadable_answers: List[str] = []
     if relay_count:
@@ -801,17 +994,21 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
 
     session_dir = matches[0]
 
-    # Check context.md mtime
+    # Get the first-attempt identity floor for plan
+    floor, from_log = _step_floor(flow_dir, "plan", since)
+    floor_reason = REASON_PLAN_OLDER_FIRST if from_log else REASON_PLAN_OLDER_ATTEMPT
+
+    # Check context.md mtime against the floor
     context_file = session_dir / "context.md"
     if not context_file.exists():
-        return "plan artifacts missing (session dir older than this attempt)"
+        return floor_reason
 
     try:
         context_mtime = context_file.stat().st_mtime
-        if context_mtime < since - MTIME_SKEW_SECS:
-            return "plan artifacts missing (session dir older than this attempt)"
+        if context_mtime < floor - MTIME_SKEW_SECS:
+            return floor_reason
     except OSError:
-        return "plan artifacts missing (session dir older than this attempt)"
+        return floor_reason
 
     # Check selected-experts.md
     roster_file = session_dir / "selected-experts.md"
@@ -877,24 +1074,28 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
 
     decisions_text = read_file(decisions_file)
 
-    # Parse ATTEMPT from receipt (default to 1 if not found)
-    attempt = 1
-    for line in receipt.split("\n"):
-        if line.startswith("ATTEMPT:"):
-            attempt_str = line.split(":", 1)[1].strip()
-            try:
-                attempt = int(attempt_str)
-            except ValueError:
-                pass
-            break
+    # Get attempt from receipt
+    attempt, attempt_err = _resolve_attempt(receipt, flow_dir, "plan")
+    if attempt_err or attempt is None:
+        return f"{REASON_PLAN_INCOMPLETE} ({attempt_err})"
 
-    # Branch on checkpoint kind: report vs. legacy per-question
-    relay_count = count_relayed_questions(flow_dir, "plan", receipt)
-    if relay_count.markers > 0 and flow_dir is not None:
-        # Check if any marker-named report has kind: "report"
-        is_report_checkpoint = _is_report_checkpoint(flow_dir, relay_count)
-        if is_report_checkpoint:
-            return check_report_checkpoint(session_dir, flow_dir, decisions_text, attempt, relay_count)
+    # Count relayed questions, scoped by attempt
+    relay_count = count_relayed_questions(flow_dir, "plan", receipt, attempt)
+
+    # Check for report-kind checkpoint: any questions/plan-NN.json with kind: "report" and attempt == ATTEMPT
+    is_report_checkpoint = False
+    if flow_dir is not None:
+        qdir = flow_dir / "questions"
+        if qdir.exists():
+            for qfile in qdir.glob("plan-*.json"):
+                if qfile.is_file():
+                    data, _ = validate_question_file(qfile, "plan")
+                    if data is not None and data.get("kind") == "report" and data.get("attempt") == attempt:
+                        is_report_checkpoint = True
+                        break
+
+    if is_report_checkpoint:
+        return check_report_checkpoint(session_dir, flow_dir, decisions_text, attempt, relay_count)
 
     # Fail closed: if ledger carries D/W/Q handles but we didn't take the report branch,
     # or if unreadable is non-empty in the legacy branch.
@@ -911,33 +1112,33 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
             handles_txt = ", ".join(sorted(ledger_handles))
             detail_parts = []
             if relay_count.markers == 0:
-                detail_parts.append("no relayed marker-named report files")
+                detail_parts.append("no relayed report files")
             elif flow_dir is None:
                 detail_parts.append("flow dir unresolved")
             else:
-                detail_parts.append("marker-named files exist but none is a kind: report checkpoint")
+                detail_parts.append("question files exist but none is a current-attempt kind: report checkpoint")
             if relay_count.unanswered:
                 detail_parts.append(f"unanswered: {', '.join(relay_count.unanswered)}")
-            if relay_count.unreadable:
-                detail_parts.append(f"unreadable: {', '.join(relay_count.unreadable)}")
+            if relay_count.malformed:
+                detail_parts.append(f"malformed: {', '.join(relay_count.malformed)}")
             detail = ", ".join(detail_parts)
             return (
                 f"plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated: "
                 f"{detail}; handles: {handles_txt})"
             )
 
-    # Legacy per-question rule (fail closed if unreadable files present)
+    # Legacy per-question rule (fails closed on unanswered, malformed and out-of-attempt files)
     briefs = count_briefs(decisions_text)
-    if relay_count.asked < briefs or relay_count.unanswered or relay_count.unreadable:
-        reason = f"plan checkpoint incomplete (briefs: {briefs}, asked: {relay_count.asked}"
-        if relay_count.markers == 0:
-            reason += ", receipt carries no plan-* markers"
-        if flow_dir is None and relay_count.markers:
-            reason += ", flow dir unresolved"
+    if relay_count.asked < briefs or relay_count.unanswered or _relay_anomaly_suffix(relay_count):
+        reason = f"{REASON_PLAN_INCOMPLETE} (briefs: {briefs}, asked: {relay_count.asked}"
+        # Choose suffix based on flow_dir resolution
+        if flow_dir is None and briefs > 0:
+            reason += SUFFIX_FLOW_DIR_UNRESOLVED
+        elif len(relay_count.files) == 0:
+            reason += SUFFIX_NO_ANSWERED_FMT.format(step="plan", attempt=attempt)
         if relay_count.unanswered:
-            reason += f", unanswered: {', '.join(relay_count.unanswered)}"
-        if relay_count.unreadable:
-            reason += f", unreadable: {', '.join(relay_count.unreadable)}"
+            reason += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
+        reason += _relay_anomaly_suffix(relay_count)
         reason += ")"
         return reason
 
@@ -971,33 +1172,42 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
         if not (review_dir / filename).exists():
             return f"review artifacts missing ({filename})"
 
-    # Check claude-action-plan.md mtime
+    # Get the first-attempt identity floor for review
+    floor, from_log = _step_floor(flow_dir, "review", since)
+    floor_reason = REASON_REVIEW_OLDER_FIRST if from_log else REASON_REVIEW_OLDER_ATTEMPT
+
+    # Check claude-action-plan.md mtime against the floor
     action_plan = review_dir / "claude-action-plan.md"
     try:
         mtime = action_plan.stat().st_mtime
-        if mtime < since - MTIME_SKEW_SECS:
-            return "review artifacts missing (action plan older than this attempt)"
+        if mtime < floor - MTIME_SKEW_SECS:
+            return floor_reason
     except OSError:
-        return "review artifacts missing (action plan older than this attempt)"
+        return floor_reason
 
     # Check for reviewer checkpoints: >=2 *-pass1.md or *-pod.md
     checkpoints = list(review_dir.glob("*-pass1.md")) + list(review_dir.glob("*-pod.md"))
     if len(checkpoints) < 2:
         return f"review artifacts missing (reviewer checkpoints: {len(checkpoints)})"
 
+    # Get attempt from receipt
+    attempt, attempt_err = _resolve_attempt(receipt, flow_dir, "review")
+    if attempt_err or attempt is None:
+        return f"{REASON_REVIEW_INCOMPLETE} ({attempt_err})"
+
     # Rulings completeness: every *Needs you* item must have been put to the human through the relay.
     needs_you = count_needs_you_items(read_file(action_plan))
-    relay_count = count_relayed_questions(flow_dir, "review", receipt)
-    if relay_count.asked < needs_you or relay_count.unanswered:
-        reason = f"review rulings incomplete (needs-you: {needs_you}, asked: {relay_count.asked}"
-        if relay_count.markers == 0:
-            reason += ", receipt carries no review-* markers"
-        if flow_dir is None and relay_count.markers:
-            reason += ", flow dir unresolved"
+    relay_count = count_relayed_questions(flow_dir, "review", receipt, attempt)
+    if relay_count.asked < needs_you or relay_count.unanswered or _relay_anomaly_suffix(relay_count):
+        reason = f"{REASON_REVIEW_INCOMPLETE} (needs-you: {needs_you}, asked: {relay_count.asked}"
+        # Choose suffix based on flow_dir resolution
+        if flow_dir is None and needs_you > 0:
+            reason += SUFFIX_FLOW_DIR_UNRESOLVED
+        elif len(relay_count.files) == 0:
+            reason += SUFFIX_NO_ANSWERED_FMT.format(step="review", attempt=attempt)
         if relay_count.unanswered:
-            reason += f", unanswered: {', '.join(relay_count.unanswered)}"
-        if relay_count.unreadable:
-            reason += f", unreadable: {', '.join(relay_count.unreadable)}"
+            reason += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
+        reason += _relay_anomaly_suffix(relay_count)
         reason += ")"
         return reason
 
@@ -1028,87 +1238,167 @@ def count_needs_you_items(action_plan: str) -> int:
 
 
 def count_relayed_questions(
-    flow_dir: Optional[Path], step: str, receipt_text: str
+    flow_dir: Optional[Path], step: str, receipt_text: str, attempt: int
 ) -> RelayCount:
-    r"""Sum `questions[]` across files named by receipt markers.
+    r"""Count relayed questions from disk, scoped by attempt.
 
-    Parses the receipt's `<!-- awaiting-answers: questions/<STEP>-<SEQ>.json -->` and
-    `<!-- reused-answers: questions/<STEP>-<SEQ>.json -->` markers (captured by regexes
-    `<!-- awaiting-answers: (questions/[^ ]+\.json) -->` and
-    `<!-- reused-answers: (questions/[^ ]+\.json) -->`). Only question files named by
-    these markers are counted.
+    Relayed questions are counted from disk: a `questions/<step>-NN.json` counts when its
+    `attempt` equals the receipt's `ATTEMPT` (or a `reused-answers` marker names it) and its
+    `answers/<step>-NN.json` exists; a question file without `attempt` does not count, and an
+    `awaiting-answers` marker whose answers file is missing is reduced.
 
-    Returns RelayCount with:
-    - asked: sum of questions[] across all successfully parsed, marker-named files with answers/
-    - markers: total number of distinct marker-named basenames found
-    - unanswered: basenames of marker-named files without an answers/ file
-    - unreadable: basenames of marker-named files that failed to read/parse
+    Selection rule. Candidates are the `questions/<step>-NN.json` files. A file is selected when:
+    - it is non-report, passes the schema check, and its `attempt` equals the receipt's `ATTEMPT`; or
+    - a `<!-- reused-answers: questions/<step>-NN.json -->` marker in the receipt names it and it
+      passes the schema check.
 
-    Zero markers returns RelayCount(asked=0, markers=0, unanswered=[], unreadable=[]).
-    With no flow dir but markers present, returns asked=0 and no "no markers" claim.
-    The check fails closed when briefs or items exist and nothing provably reached the human.
+    Classification:
+    - A selected file with an answers file adds len(questions) to asked.
+    - A selected file without one is unanswered.
+    - An awaiting-answers marker naming a file with no answers file is also unanswered.
+    - An awaiting-answers marker naming a question file that is answered but out of this attempt
+      (its attempt differs, and no reused-answers marker names it) fails closed and is listed in
+      out_of_attempt. It is never counted.
+    - A current-attempt report-kind file without an answers file is unanswered.
+    - A schema-invalid candidate is listed in malformed and never counted. Callers treat malformed
+      and out_of_attempt entries as failures (fail closed), not merely as diagnostics.
+
+    Returns RelayCount with: asked, files (selected filenames), unanswered,
+    malformed, out_of_attempt, and markers (diagnostic).
     """
-    # Find marker-named files from receipt text, before checking flow_dir
+    # Find marker-named files from receipt text
     awaiting_re = re.compile(r"<!-- awaiting-answers: (questions/[^ ]+\.json) -->")
     reused_re = re.compile(r"<!-- reused-answers: (questions/[^ ]+\.json) -->")
 
-    marker_paths_raw = []
-    marker_paths_raw.extend(awaiting_re.findall(receipt_text))
-    marker_paths_raw.extend(reused_re.findall(receipt_text))
+    awaiting_paths = awaiting_re.findall(receipt_text)
+    reused_paths = reused_re.findall(receipt_text)
 
-    # Keep only files matching <step>-*.json, deduplicate
-    marker_files = set()
-    for path_str in marker_paths_raw:
-        # Extract basename and check it matches <step>-*.json
+    # Extract basenames and keep only those matching <step>-*.json
+    awaiting_basenames = set()
+    reused_basenames = set()
+
+    for path_str in awaiting_paths:
         basename = Path(path_str).name
         if basename.startswith(f"{step}-"):
-            marker_files.add(basename)
+            awaiting_basenames.add(basename)
 
-    marker_count = len(marker_files)
+    for path_str in reused_paths:
+        basename = Path(path_str).name
+        if basename.startswith(f"{step}-"):
+            reused_basenames.add(basename)
 
-    # If no markers, return early
-    if marker_count == 0:
-        return RelayCount(asked=0, markers=0, unanswered=[], unreadable=[])
+    marker_count = len(awaiting_basenames | reused_basenames)
 
-    # If no flow dir, return with asked=0 but don't claim "no markers"
+    # If no flow dir, return zeros
     if flow_dir is None:
-        return RelayCount(asked=0, markers=marker_count, unanswered=[], unreadable=[])
+        return RelayCount(
+            asked=0,
+            files=[],
+            unanswered=[],
+            malformed=[],
+            out_of_attempt=[],
+            markers=marker_count,
+        )
 
-    # Check that questions dir exists
     qdir = flow_dir / "questions"
-    if not qdir.exists():
-        # questions/ missing: nothing can be read, so every marker is reported as unanswered.
-        return RelayCount(asked=0, markers=marker_count, unanswered=sorted(marker_files), unreadable=[])
+    adir = flow_dir / "answers"
 
-    # Sum questions from files with answers/ and track unanswered/unreadable
-    total = 0
+    # Candidates: all <step>-NN.json files in questions/
+    candidates = set()
+    if qdir.exists():
+        for qfile in qdir.glob(f"{step}-*.json"):
+            if qfile.is_file():
+                candidates.add(qfile.name)
+
+    # Add marker-named files even if they don't exist on disk yet
+    candidates.update(awaiting_basenames)
+    candidates.update(reused_basenames)
+
+    # Select files according to the selection rule
+    selected = []
     unanswered = []
-    unreadable = []
-    answers_dir = flow_dir / "answers"
+    malformed = []
+    out_of_attempt = []
+    total = 0
 
-    for basename in sorted(marker_files):
-        # Answered means the answers file exists as a regular file. This is existence-only by
-        # design: the answers/ file is evidence the relay ran, and its content is not validated.
-        # Only the question file's questions[] are counted.
-        answers_file = answers_dir / basename
-        if not answers_file.is_file():
-            unanswered.append(basename)
+    for basename in sorted(candidates):
+        qfile = qdir / basename if qdir.exists() else None
+
+        # Check if file exists and is readable
+        if qfile is None or not qfile.is_file():
+            # File doesn't exist on disk
+            if basename in awaiting_basenames:
+                # awaiting-answers marker names a non-existent file: unanswered
+                unanswered.append(basename)
             continue
 
-        # Try to read and parse the question file
-        qfile = qdir / basename
-        try:
-            data = json.loads(qfile.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, ValueError):
-            unreadable.append(basename)
+        # Validate the file's schema
+        data, problem = validate_question_file(qfile, step)
+
+        if problem is not None:
+            # Schema invalid
+            malformed.append(f"{basename} ({problem})")
+            # Also check if this file has no answers and is named by awaiting-answers marker
+            answers_file = adir / basename if adir.exists() else None
+            if basename in awaiting_basenames and (answers_file is None or not answers_file.is_file()):
+                unanswered.append(basename)
             continue
-        questions = data.get("questions") if isinstance(data, dict) else None
-        if isinstance(questions, list):
-            total += len(questions)
+
+        # Extract attempt field
+        file_attempt = data.get("attempt")
+
+        # Selection rule:
+        # 1. Non-report, attempt matches receipt attempt: select
+        # 2. reused-answers marker names it: select
+        # Otherwise: out of scope
+        is_report = data.get("kind") == "report"
+        is_reused = basename in reused_basenames
+
+        if not is_report and file_attempt == attempt:
+            # Current-attempt file: select it
+            pass
+        elif is_reused:
+            # reused-answers marker: select it
+            pass
         else:
-            unreadable.append(basename)
+            # Out of scope: not a selected non-report file.
+            answers_file = adir / basename if adir.exists() else None
+            has_answers = answers_file is not None and answers_file.is_file()
+            if is_report and file_attempt == attempt:
+                # Current-attempt report-kind file: validated by the report checkpoint, not counted
+                # here. Without an answers file it never reached the human.
+                if not has_answers:
+                    unanswered.append(basename)
+            elif basename in awaiting_basenames:
+                if has_answers:
+                    # Answered but from a different attempt, and no reused-answers marker
+                    out_of_attempt.append(basename)
+                else:
+                    # No answers: unanswered regardless of attempt
+                    unanswered.append(basename)
+            continue
 
-    return RelayCount(asked=total, markers=marker_count, unanswered=unanswered, unreadable=unreadable)
+        # File is selected. Check for answers file.
+        selected.append(basename)
+        answers_file = adir / basename if adir.exists() else None
+
+        if answers_file is not None and answers_file.is_file():
+            # Has answers: count questions
+            questions = data.get("questions", [])
+            if isinstance(questions, list):
+                total += len(questions)
+        else:
+            # No answers file
+            unanswered.append(basename)
+
+    return RelayCount(
+        asked=total,
+        files=selected,
+        unanswered=unanswered,
+        malformed=malformed,
+        out_of_attempt=out_of_attempt,
+        markers=marker_count,
+    )
 
 
 def resolve_flow_dir(explicit: Optional[str], receipt_file: Path) -> Optional[Path]:

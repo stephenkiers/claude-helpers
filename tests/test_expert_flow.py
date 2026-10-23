@@ -718,8 +718,8 @@ def main():
     # depend on how the markdown is hard-wrapped.
     rule8_m = re.search(r"^8\. For `Decision: OK` only.*?(?=^Then branch on the validated)", text, re.M | re.S)
     rule8 = " ".join(rule8_m.group(0).split()) if rule8_m else ""
-    h.test_result("rule 8 lists the marker-without-readable-answer checkpoint failure reason",
-                  "plan checkpoint incomplete (marker files without a readable answered report" in rule8)
+    h.test_result("rule 8 lists the question-files-without-answers checkpoint failure reason",
+                  "plan checkpoint incomplete (question files without an answers file" in rule8)
     h.test_result("rule 8 lists the ledger-handles-without-validated-report checkpoint failure reason",
                   "plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated: " in rule8
                   and "; handles: <handles>)" in rule8)

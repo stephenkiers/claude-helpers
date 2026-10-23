@@ -72,10 +72,11 @@ def create_session(home: str, invocation_id: str, briefs: int = 0) -> str:
     return session_dir
 
 
-def create_flow_questions(flow_dir: str, step: str, counts: list, answered: bool = True) -> None:
+def create_flow_questions(flow_dir: str, step: str, counts: list, answered: bool = True, attempt: int = 1, omit_attempt: bool = False) -> None:
     """Write questions/<step>-NN.json files under flow_dir, one per entry in counts (its question count).
 
     If answered=True (default), also write answers/<step>-NN.json files so markers count.
+    If omit_attempt=True, the question file will not have an "attempt" field.
     """
     qdir = Path(flow_dir) / "questions"
     qdir.mkdir(parents=True, exist_ok=True)
@@ -89,9 +90,12 @@ def create_flow_questions(flow_dir: str, step: str, counts: list, answered: bool
             {"id": f"q{i}", "question": f"Q{i}?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}
             for i in range(1, count + 1)
         ]
-        (qdir / f"{step}-{seq:02d}.json").write_text(json.dumps({
+        file_data = {
             "step": step, "command": f"expert-{step}", "context_path": None, "summary": None, "questions": questions,
-        }))
+        }
+        if not omit_attempt:
+            file_data["attempt"] = attempt
+        (qdir / f"{step}-{seq:02d}.json").write_text(json.dumps(file_data))
 
         if answered:
             answers = {
@@ -1481,13 +1485,13 @@ No items."""
         h.test_result("3 briefs / 3 asked (plan-01 + plan-02) passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
-    print("[Test 54] Plan: briefs but no --flow-dir and receipt not under steps/ → counts zero asked")
+    print("[Test 54] Plan: briefs but no --flow-dir and receipt not under steps/ → flow dir unresolved")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
-        # Receipt has no markers; asking count is zero
+        # Receipt has no markers; no flow dir resolves, briefs exist
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home)
-        h.test_result("1 brief / unknown flow dir fails closed",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no plan-* markers)" in stdout, stdout)
+        h.test_result("1 brief / unknown flow dir → flow dir unresolved suffix",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, flow dir unresolved)" in stdout, stdout)
 
     print()
     print("[Test 55] Plan: flow dir derived from a receipt under <flow>/steps/")
@@ -1525,8 +1529,8 @@ No items."""
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable plan-01.json → asked: 0, unreadable: plan-01.json",
-                      exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+        h.test_result("unparsable plan-01.json → asked: 0, malformed: plan-01.json (not json)",
+                      exit_code == 1 and "(briefs: 1, asked: 0, no answered plan-* question files for attempt 1, malformed: plan-01.json (not json))" in stdout, stdout)
 
     NEEDS_YOU_PLAN = (
         "# Action Plan\n\n## Needs you\n\n### 1. First ruling\n\nWhere: a.py\n\n### 2. Second ruling\n\nWhere: b.py\n\n"
@@ -1570,63 +1574,95 @@ No items."""
         h.test_result("needs-you 0 / asked 0 passes", exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
-    print("[Test 61] Plan: stale question file not named by receipt → fails with stale count")
+    print("[Test 61] Plan: attempt-1 question file under ATTEMPT: 2 without reused marker → fails")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=3)
         flow_dir = f"{tmp_home}/flow"
-        # Create stale plan-01.json with 3 questions, and plan-02.json with 1 question
-        create_flow_questions(flow_dir, "plan", [3, 1])
-        # Receipt only names plan-02.json, not the stale plan-01.json
-        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
+        # Create plan-01.json with attempt: 1 (stale from prior attempt) and plan-02.json with attempt: 2
+        create_flow_questions(flow_dir, "plan", [3, 1], attempt=1)
+        # Update plan-02.json to have attempt: 2
+        qdir = Path(flow_dir) / "questions"
+        plan02_data = json.loads((qdir / "plan-02.json").read_text())
+        plan02_data["attempt"] = 2
+        (qdir / "plan-02.json").write_text(json.dumps(plan02_data))
+        # Create answer file for plan-02
+        adir = Path(flow_dir) / "answers"
+        (adir / "plan-02.json").write_text(json.dumps({"step": "plan", "seq": 2, "answers": [{"id": "q1", "response": "A1"}]}))
+        # Receipt with ATTEMPT: 2, only names plan-02.json, not the stale plan-01.json
+        receipt_body = f"ATTEMPT: 2\nFINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("stale plan-01.json (3q) not named by receipt, plan-02.json (1q) named → briefs 3 / asked 1 fails",
+        h.test_result("attempt-1 plan-01.json (3q) not selected, attempt-2 plan-02.json (1q) selected → briefs 3 / asked 1 fails",
                       exit_code == 1 and "plan checkpoint incomplete (briefs: 3, asked: 1)" in stdout, stdout)
 
     print()
-    print("[Test 62] Plan: stale question file with reused-answers marker → passes")
+    print("[Test 62] Plan: attempt-1 question file with reused-answers marker under ATTEMPT: 2 → passes")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=3)
         flow_dir = f"{tmp_home}/flow"
-        # Create stale plan-01.json with 3 questions, and plan-02.json with 1 question
-        create_flow_questions(flow_dir, "plan", [3, 1])
-        # Receipt names plan-01.json with reused-answers marker
-        receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- reused-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
+        # Create plan-01.json with attempt: 1 and plan-02.json with attempt: 2
+        create_flow_questions(flow_dir, "plan", [3, 1], attempt=1)
+        # Update plan-02.json to have attempt: 2
+        qdir = Path(flow_dir) / "questions"
+        plan02_data = json.loads((qdir / "plan-02.json").read_text())
+        plan02_data["attempt"] = 2
+        (qdir / "plan-02.json").write_text(json.dumps(plan02_data))
+        # Create answer file for plan-02
+        adir = Path(flow_dir) / "answers"
+        (adir / "plan-02.json").write_text(json.dumps({"step": "plan", "seq": 2, "answers": [{"id": "q1", "response": "A1"}]}))
+        # Receipt with ATTEMPT: 2; reused-answers marker names plan-01.json (attempt: 1)
+        receipt_body = f"ATTEMPT: 2\nFINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- reused-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("reused-answers marker names plan-01.json (3q) → briefs 3 / asked 3 passes",
+        h.test_result("reused-answers marker selects attempt-1 plan-01.json (3q) under ATTEMPT: 2 → briefs 3 / asked 3 passes",
                       exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
-    print("[Test 63] Review: stale question file not named by receipt → fails with stale count")
+    print("[Test 63] Review: attempt-1 question file under ATTEMPT: 2 without reused marker → fails")
     with tempfile.TemporaryDirectory() as tmp_home:
         review_dir = create_review_dir(tmp_home)
         Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
         receipt_path = f"{tmp_home}/receipt.md"
         flow_dir = f"{tmp_home}/flow"
-        # Create stale review-01.json with 2 questions, and review-02.json with 1 question
-        create_flow_questions(flow_dir, "review", [2, 1])
-        # Receipt only names review-02.json, not the stale review-01.json
-        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-02.json -->\nDecision: OK\n<!-- step-end -->"
+        # Create review-01.json with attempt: 1 and review-02.json with attempt: 2
+        create_flow_questions(flow_dir, "review", [2, 1], attempt=1)
+        # Update review-02.json to have attempt: 2
+        qdir = Path(flow_dir) / "questions"
+        review02_data = json.loads((qdir / "review-02.json").read_text())
+        review02_data["attempt"] = 2
+        (qdir / "review-02.json").write_text(json.dumps(review02_data))
+        # Create answer file for review-02
+        adir = Path(flow_dir) / "answers"
+        (adir / "review-02.json").write_text(json.dumps({"step": "review", "seq": 2, "answers": [{"id": "q1", "response": "A1"}]}))
+        # Receipt with ATTEMPT: 2, only names review-02.json, not the stale review-01.json
+        receipt_body = f"ATTEMPT: 2\nREVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-02.json -->\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("stale review-01.json (2q) not named by receipt, review-02.json (1q) named → needs-you 2 / asked 1 fails",
+        h.test_result("attempt-1 review-01.json (2q) not selected, attempt-2 review-02.json (1q) selected → needs-you 2 / asked 1 fails",
                       exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 1)" in stdout, stdout)
 
     print()
-    print("[Test 64] Review: stale question file with reused-answers marker → passes")
+    print("[Test 64] Review: attempt-1 question file with reused-answers marker under ATTEMPT: 2 → passes")
     with tempfile.TemporaryDirectory() as tmp_home:
         review_dir = create_review_dir(tmp_home)
         Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
         receipt_path = f"{tmp_home}/receipt.md"
         flow_dir = f"{tmp_home}/flow"
-        # Create stale review-01.json with 2 questions, and review-02.json with 1 question
-        create_flow_questions(flow_dir, "review", [2, 1])
-        # Receipt names review-01.json with reused-answers marker
-        receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- reused-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
+        # Create review-01.json with attempt: 1 and review-02.json with attempt: 2
+        create_flow_questions(flow_dir, "review", [2, 1], attempt=1)
+        # Update review-02.json to have attempt: 2
+        qdir = Path(flow_dir) / "questions"
+        review02_data = json.loads((qdir / "review-02.json").read_text())
+        review02_data["attempt"] = 2
+        (qdir / "review-02.json").write_text(json.dumps(review02_data))
+        # Create answer file for review-02
+        adir = Path(flow_dir) / "answers"
+        (adir / "review-02.json").write_text(json.dumps({"step": "review", "seq": 2, "answers": [{"id": "q1", "response": "A1"}]}))
+        # Receipt with ATTEMPT: 2; reused-answers marker names review-01.json (attempt: 1)
+        receipt_body = f"ATTEMPT: 2\nREVIEW_DIR: {review_dir}\n<!-- reused-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("reused-answers marker names review-01.json (2q) → needs-you 2 / asked 2 passes",
+        h.test_result("reused-answers marker selects attempt-1 review-01.json (2q) under ATTEMPT: 2 → needs-you 2 / asked 2 passes",
                       exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
@@ -1665,8 +1701,8 @@ No items."""
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable plan-01.json with marker → unreadable suffix in reason",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+        h.test_result("unparsable plan-01.json with marker → malformed suffix in reason",
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, no answered plan-* question files for attempt 1, malformed: plan-01.json (not json))" in stdout, stdout)
 
     print()
     print("[Test 67] Review: unparsable review-01.json file with unreadable suffix")
@@ -1685,11 +1721,11 @@ No items."""
         receipt_body = f"REVIEW_DIR: {review_dir}\n<!-- awaiting-answers: questions/review-01.json -->\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unparsable review-01.json with marker → unreadable suffix in reason",
-                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0, unreadable: review-01.json)" in stdout, stdout)
+        h.test_result("unparsable review-01.json with marker → malformed suffix in reason",
+                      exit_code == 1 and "review rulings incomplete (needs-you: 2, asked: 0, no answered review-* question files for attempt 1, malformed: review-01.json (not json))" in stdout, stdout)
 
     print()
-    print("[Test 68] Plan: marker without its answers file (no disk fallback)")
+    print("[Test 68] Plan: marker without its answers file → unanswered")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=2)
         flow_dir = f"{tmp_home}/flow"
@@ -1703,18 +1739,19 @@ No items."""
                       exit_code == 1 and "(briefs: 2, asked: 0, unanswered: plan-01.json)" in stdout, stdout)
 
     print()
-    print("[Test 69] Plan: the #287 incident shape (no markers, files on disk)")
+    print("[Test 69] Plan: the #287 incident shape (no markers, files on disk with attempt field)")
+    # Per ADR-0023 amendment 2026-10-21: disk-authoritative counting by attempt replaces marker-only counting.
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=3)
         flow_dir = f"{tmp_home}/flow"
-        # Create all 3 question and answer files
-        create_flow_questions(flow_dir, "plan", [1, 1, 1], answered=True)
-        # Receipt has NO markers (incident shape)
+        # Create all 3 question and answer files with attempt: 1 matching the receipt
+        create_flow_questions(flow_dir, "plan", [1, 1, 1], answered=True, attempt=1)
+        # Receipt has NO markers (incident shape) but files carry attempt field
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("no markers, files on disk → no disk fallback, fails",
-                      exit_code == 1 and "receipt carries no plan-* markers" in stdout, stdout)
+        h.test_result("no markers, files on disk with attempt field matching receipt → disk counting passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
     print("[Test 70] Plan: the #287 incident shape with markers kept")
@@ -1743,7 +1780,7 @@ No items."""
             {"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}
         ]
         (qdir / "plan-02.json").write_text(json.dumps({
-            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None, "questions": questions,
+            "step": "plan", "command": "expert-plan", "context_path": None, "summary": None, "questions": questions, "attempt": 1,
         }))
         # Receipt has both markers
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\n<!-- awaiting-answers: questions/plan-02.json -->\nDecision: OK\n<!-- step-end -->"
@@ -1753,20 +1790,21 @@ No items."""
                       exit_code == 1 and "(briefs: 3, asked: 2, unanswered: plan-02.json)" in stdout, stdout)
 
     print()
-    print("[Test 72] Review: zero markers with files on disk (no fallback)")
+    print("[Test 72] Review: zero markers with files on disk with attempt field")
+    # Per ADR-0023 amendment 2026-10-21: disk-authoritative counting by attempt replaces marker-only counting.
     with tempfile.TemporaryDirectory() as tmp_home:
         review_dir = create_review_dir(tmp_home)
         Path(f"{review_dir}/claude-action-plan.md").write_text(NEEDS_YOU_PLAN)
         receipt_path = f"{tmp_home}/receipt.md"
         flow_dir = f"{tmp_home}/flow"
-        # Create question and answer files
-        create_flow_questions(flow_dir, "review", [2], answered=True)
-        # Receipt has NO markers
+        # Create question and answer files with attempt: 1 matching the receipt
+        create_flow_questions(flow_dir, "review", [2], answered=True, attempt=1)
+        # Receipt has NO markers (incident shape) but files carry attempt field
         receipt_body = f"REVIEW_DIR: {review_dir}\nDecision: OK\n<!-- step-end -->"
         create_receipt(receipt_path, receipt_body)
         exit_code, stdout, _ = run_verifier("review", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("review: no markers, files on disk → fails with no-markers reason",
-                      exit_code == 1 and "receipt carries no review-* markers" in stdout, stdout)
+        h.test_result("review: no markers, files on disk with attempt field → disk counting passes",
+                      exit_code == 0 and "ARTIFACTS: ok" in stdout, stdout)
 
     print()
     print("[Test 73] Review: unanswered marker with needs-you items")
@@ -1882,7 +1920,7 @@ No items."""
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("non-step-prefixed traversal marker is ignored: zero plan markers, asked: 0 (exit 1)",
-                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, receipt carries no plan-* markers)" in stdout,
+                      exit_code == 1 and "plan checkpoint incomplete (briefs: 1, asked: 0, no answered plan-* question files for attempt 1)" in stdout,
                       stdout)
 
     print()
@@ -2010,7 +2048,7 @@ No items."""
         h.test_result("missing FINAL_PLAN_PATH file fails", exit_code == 1 and "plan artifacts missing (FINAL_PLAN_PATH file does not exist)" in stdout, stdout)
 
     print()
-    print("[Test 85] Plan: unreadable question file in legacy path → fails with unreadable reason")
+    print("[Test 85] Plan: unreadable question file in legacy path → fails closed as malformed (not json)")
     with tempfile.TemporaryDirectory() as tmp_home:
         receipt_path = create_plan_fixture(tmp_home, briefs=1)
         flow_dir = f"{tmp_home}/flow"
@@ -2023,8 +2061,8 @@ No items."""
         receipt_body = f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n<!-- awaiting-answers: questions/plan-01.json -->\nDecision: OK\n<!-- step-end -->"
         Path(receipt_path).write_text(receipt_body)
         exit_code, stdout, _ = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
-        h.test_result("unreadable question file in legacy path → fails with unreadable",
-                      exit_code == 1 and "(briefs: 1, asked: 0, unreadable: plan-01.json)" in stdout, stdout)
+        h.test_result("unreadable question file in legacy path → fails closed as malformed (not json)",
+                      exit_code == 1 and "malformed: plan-01.json (not json)" in stdout and "unreadable" not in stdout, stdout)
 
     print()
     print("[Test 86] Plan: zero #### Q headings but ledger carries D/W/Q handles, no report validated -> fails closed")
@@ -2050,7 +2088,7 @@ No items."""
         flow_dir = f"{tmp_home}/flow"
         Path(f"{flow_dir}/questions").mkdir(parents=True)
         Path(f"{flow_dir}/questions/plan-01.json").write_text(json.dumps({
-            "step": "plan", "command": "expert-plan", "kind": "report", "summary": None,
+            "step": "plan", "command": "expert-plan", "kind": "report", "attempt": 1, "round": 1, "summary": None,
             "questions": [{"id": "q1", "question": "Q1?", "header": "Q", "options": [{"label": "A", "description": "a"}], "multiSelect": False}]
         }))
         Path(receipt_path).write_text(f"FINAL_PLAN_PATH: {tmp_home}/.claude/plans/issue-slug-20261013T222013-30924.md\n"
@@ -2058,7 +2096,7 @@ No items."""
         exit_code, stdout, stderr = run_verifier("plan", receipt_path, SINCE, tmp_home, flow_dir=flow_dir)
         h.test_result("empty-string ledger key is not a handle: verifier does not raise (no IndexError/Traceback), fails closed on the unanswered report",
                       "IndexError" not in stderr and "Traceback" not in stderr and "Traceback" not in stdout
-                      and exit_code == 1 and "marker files without a readable answered report" in stdout,
+                      and exit_code == 1 and "question files without an answers file" in stdout,
                       f"exit={exit_code}\nstdout={stdout[-300:]}\nstderr={stderr[-500:]}")
 
     print()
