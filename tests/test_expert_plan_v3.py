@@ -166,8 +166,8 @@ def main():
             "present",
         }
 
-        # Conditional stages (audit-plan, repair-plan)
-        conditional_stages = {"audit-plan", "repair-plan"}
+        # Conditional stages (audit-plan, repair-plan, precedent)
+        conditional_stages = {"audit-plan", "repair-plan", "precedent"}
 
         # All stages should be either required or conditional
         all_expected = required_stages | conditional_stages

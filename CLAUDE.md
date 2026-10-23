@@ -113,7 +113,7 @@ for each spoken pending question. It is display-only — no panel reviewer, Amal
 logic reads it, and triage never reads it. Sanctioned readers are the calling command's own step (rendering Precedent 
 lines beside questions), logging, and the caller's own validation of the receipt. Nothing is suppressed; every question's 
 handling and the human's prior choice are visible. Pat runs on Sonnet (ADR-0004) and has no index entry or routing 
-configuration. It is not yet wired into any command (see #294/#296 for the insertion points).
+configuration. Pat is wired into `/expert-plan` Step 5 (#294); `/expert-review` wiring is pending (#296).
 
 ## User preferences
 

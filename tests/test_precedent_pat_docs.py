@@ -515,4 +515,198 @@ if __name__ == "__main__":
 
     print()
 
+    # ============================================================================
+    # SECTION 8: commands/expert-plan.md Step 5 wiring
+    # ============================================================================
+    print("[Section 8] commands/expert-plan.md Step 5 Precedent Pat wiring")
+
+    expert_plan_file = REPO_ROOT / "commands" / "expert-plan.md"
+    expert_plan_content = expert_plan_file.read_text() if expert_plan_file.exists() else ""
+
+    test_result(
+        "commands/expert-plan.md exists",
+        expert_plan_file.exists(),
+        "File not found"
+    )
+
+    if expert_plan_content:
+        # 8.1: Precedent block section exists
+        precedent_block_exists = "Precedent block (display-only)" in expert_plan_content or \
+                                 re.search(r"Precedent block", expert_plan_content, re.IGNORECASE)
+        test_result(
+            "commands/expert-plan.md has Precedent block subsection",
+            precedent_block_exists,
+            "No 'Precedent block' heading found"
+        )
+
+        # 8.2: precedent stage is in the All Stage Names list
+        precedent_in_stages = re.search(
+            r"All Stage Names.*precedent|precedent.*All Stage Names",
+            expert_plan_content,
+            re.IGNORECASE | re.DOTALL
+        ) or "precedent" in expert_plan_content
+        test_result(
+            "commands/expert-plan.md lists 'precedent' in stage names",
+            precedent_in_stages,
+            "precedent stage not found in stage list"
+        )
+
+        # 8.3: Forbidden words NOT in Precedent block
+        forbidden_words = ["pre-select", "preselect", "auto-answer", "default to the prediction", "suppress"]
+
+        # Extract the Precedent block (approximately, from heading to next equal/higher heading)
+        precedent_block_match = re.search(
+            r"#{1,3}\s+Precedent block.*?(?=^#{1,3}\s+|$)",
+            expert_plan_content,
+            re.MULTILINE | re.DOTALL | re.IGNORECASE
+        )
+        precedent_block_text = precedent_block_match.group() if precedent_block_match else ""
+
+        for forbidden_word in forbidden_words:
+            word_not_found = forbidden_word not in precedent_block_text.lower()
+            test_result(
+                f"commands/expert-plan.md Precedent block does NOT contain '{forbidden_word}'",
+                word_not_found,
+                f"Found '{forbidden_word}' in Precedent block" if not word_not_found else ""
+            )
+
+        # 8.4: SESSION_DIR mentioned but never FLOW_DIR for precedent.md storage
+        has_session_dir = "SESSION_DIR" in expert_plan_content and "precedent" in expert_plan_content
+        has_flow_dir_precedent = "FLOW_DIR" in precedent_block_text and "precedent.md" in precedent_block_text
+        test_result(
+            "commands/expert-plan.md: precedent.md under SESSION_DIR",
+            has_session_dir,
+            "SESSION_DIR not mentioned with precedent"
+        )
+        test_result(
+            "commands/expert-plan.md: precedent.md NOT under FLOW_DIR",
+            not has_flow_dir_precedent,
+            "FLOW_DIR incorrectly mentioned with precedent.md" if has_flow_dir_precedent else ""
+        )
+
+        # 8.5: Stage nesting guard (checkpoint → precedent → checkpoint)
+        # Look for: stage-end checkpoint before stage-begin precedent before stage-end precedent before re-stage-begin checkpoint
+        checkpoint_end_pos = expert_plan_content.find("stage-end --stage checkpoint")
+        precedent_begin_pos = expert_plan_content.find("stage-begin --stage precedent")
+        precedent_end_pos = expert_plan_content.find("stage-end --stage precedent")
+        checkpoint_begin_pos_after = expert_plan_content.find(
+            "stage-begin --stage checkpoint",
+            checkpoint_end_pos + 1 if checkpoint_end_pos >= 0 else 0
+        )
+
+        has_proper_nesting = (
+            checkpoint_end_pos >= 0 and
+            precedent_begin_pos > checkpoint_end_pos and
+            precedent_end_pos > precedent_begin_pos and
+            checkpoint_begin_pos_after > precedent_end_pos
+        )
+        test_result(
+            "commands/expert-plan.md: stage nesting order (checkpoint→precedent→checkpoint)",
+            has_proper_nesting,
+            "Stage order not found or out of sequence"
+        )
+
+        # 8.6: Security exclusion with keyword list present
+        security_exclusion = "security" in expert_plan_content.lower() and \
+                            ("auth" in expert_plan_content.lower() or "credential" in expert_plan_content.lower())
+        test_result(
+            "commands/expert-plan.md: security exclusion with keywords present",
+            security_exclusion,
+            "Security exclusion keywords not found"
+        )
+
+        # 8.7: The D7 closed reason set present verbatim
+        # Looking for exact reason strings from the plan's closed set
+        reason_set_strings = [
+            "shown K of N",
+            "no-eligible-questions",
+            "digest-failed",
+            "no-digest-entries",
+            "pat-failed",
+            "pat-invalid",
+            "pat-silent",
+            "render-failed",
+        ]
+        reason_strings_found = [r for r in reason_set_strings if r in expert_plan_content]
+        has_full_reason_set = len(reason_strings_found) >= 6  # Most should be present
+        test_result(
+            "commands/expert-plan.md: D7 closed reason set documented",
+            has_full_reason_set,
+            f"Found only {len(reason_strings_found)} of {len(reason_set_strings)} reason strings"
+        )
+
+    print()
+
+    # ============================================================================
+    # SECTION 8b: ADR-0024 and CLAUDE.md wiring status
+    # ============================================================================
+    print("[Section 8b] ADR-0024 and CLAUDE.md wiring status updates")
+
+    adr_0024_content_check = adr_0024_content if adr_0024_file.exists() else ""
+    claude_md_content_check = claude_md_content if claude_md_file.exists() else ""
+
+    # Check that old "not yet wired" text is GONE
+    adr_0024_still_says_not_wired = "not yet wired" in adr_0024_content_check.lower()
+    claude_still_says_not_wired = "not yet wired" in claude_md_content_check.lower()
+
+    test_result(
+        "docs/adr/0024-precedent-pat.md no longer says 'not yet wired'",
+        not adr_0024_still_says_not_wired,
+        "Found 'not yet wired' in ADR-0024" if adr_0024_still_says_not_wired else ""
+    )
+
+    test_result(
+        "CLAUDE.md no longer says 'not yet wired' for precedent Pat",
+        not claude_still_says_not_wired,
+        "Found 'not yet wired' in CLAUDE.md" if claude_still_says_not_wired else ""
+    )
+
+    # Check that wiring status is updated
+    adr_0024_mentions_expert_plan = "/expert-plan" in adr_0024_content_check or "expert-plan" in adr_0024_content_check
+    claude_mentions_expert_plan_wiring = "/expert-plan" in claude_md_content_check or "wired into `/expert-plan`" in claude_md_content_check
+
+    test_result(
+        "docs/adr/0024-precedent-pat.md mentions /expert-plan wiring",
+        adr_0024_mentions_expert_plan,
+        "No mention of /expert-plan in ADR-0024" if not adr_0024_mentions_expert_plan else ""
+    )
+
+    test_result(
+        "CLAUDE.md mentions /expert-plan wiring for Precedent Pat",
+        claude_mentions_expert_plan_wiring,
+        "No mention of /expert-plan wiring in CLAUDE.md" if not claude_mentions_expert_plan_wiring else ""
+    )
+
+    print()
+
+    # ============================================================================
+    # SECTION 8c: Downstream readers ignore ## Precedent
+    # ============================================================================
+    print("[Section 8c] Downstream reader updates (plan-synthesize-and-check, plan-audit)")
+
+    plan_synthesize_file = PROMPTS_DIR / "plan-synthesize-and-check.md"
+    plan_audit_file = PROMPTS_DIR / "plan-audit.md"
+
+    plan_synthesize_content = plan_synthesize_file.read_text() if plan_synthesize_file.exists() else ""
+    plan_audit_content = plan_audit_file.read_text() if plan_audit_file.exists() else ""
+
+    ignore_precedent_text = "Ignore any `## Precedent` section"
+
+    synthesize_has_ignore = ignore_precedent_text in plan_synthesize_content
+    audit_has_ignore = ignore_precedent_text in plan_audit_content
+
+    test_result(
+        "prompts/plan-synthesize-and-check.md ignores ## Precedent section",
+        synthesize_has_ignore,
+        "Missing 'Ignore any ## Precedent' instruction" if not synthesize_has_ignore else ""
+    )
+
+    test_result(
+        "prompts/plan-audit.md ignores ## Precedent section",
+        audit_has_ignore,
+        "Missing 'Ignore any ## Precedent' instruction" if not audit_has_ignore else ""
+    )
+
+    print()
+
     h.summarize_and_exit()
