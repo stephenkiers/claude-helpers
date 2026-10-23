@@ -34,11 +34,9 @@ Run with: python3 tests/test_precedent_pat_step5_spec_blind.py
 """
 
 import json
-import re
 import subprocess
 import sys
 import tempfile
-import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -154,17 +152,17 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
 
         try:
             result = json.loads(out) if out else {}
-            has_shown = "shown" in result
-            has_asked = "asked" in result
+            has_shown = "shown" in result and isinstance(result.get("shown"), int) and result.get("shown") >= 0
+            has_asked = "asked" in result and isinstance(result.get("asked"), int) and result.get("asked") >= 0
             h.test_result(
-                "validate: output JSON includes `shown` count",
+                "validate: output JSON includes `shown` count (numeric, non-negative)",
                 has_shown,
-                f"shown not in output; keys={list(result.keys())}" if not has_shown else "",
+                f"shown not valid; value={result.get('shown')}, type={type(result.get('shown'))}" if not has_shown else "",
             )
             h.test_result(
-                "validate: output JSON includes `asked` count",
+                "validate: output JSON includes `asked` count (numeric, non-negative)",
                 has_asked,
-                f"asked not in output; keys={list(result.keys())}" if not has_asked else "",
+                f"asked not valid; value={result.get('asked')}, type={type(result.get('asked'))}" if not has_asked else "",
             )
         except Exception as e:
             h.test_result(
@@ -210,12 +208,12 @@ precedent-pat | questions: 1 | spoke-on: 0 | citations: 0 | confidence: high=0 m
             h.test_result(
                 "validate: silent precedent has shown=0",
                 shown == 0,
-                f"shown={shown}" if shown != 0 else "",
+                f"shown={shown}, expected 0" if shown != 0 else "",
             )
             h.test_result(
-                "validate: asked count is numeric",
-                isinstance(asked, int),
-                f"asked={asked}, type={type(asked)}" if not isinstance(asked, int) else "",
+                "validate: asked count is numeric and >= 0",
+                isinstance(asked, int) and asked >= 0,
+                f"asked={asked}, type={type(asked)}" if not (isinstance(asked, int) and asked >= 0) else "",
             )
         except Exception as e:
             h.test_result(
@@ -413,12 +411,13 @@ precedent-pat | questions: 2 | spoke-on: 2 | citations: 2 | confidence: high=0 m
         try:
             result = json.loads(out) if out else {}
             line = result.get("q-001", "")
-            # Empty reason should be guarded (not shown in line output with ": " suffix)
-            reason_shown = 'reason: ""' in line or 'reason: ' in line
+            # Empty reason should be guarded (not shown in line output with reason: pattern)
+            # Check that the reason clause does NOT appear when reason is empty
+            reason_clause_count = line.count('reason: ')
             h.test_result(
-                "validate: empty reason is guarded (not displayed)",
-                not reason_shown,
-                f"empty reason shown in output: {line[:100]}" if reason_shown else "",
+                "validate: empty reason is not displayed (reason: pattern absent)",
+                reason_clause_count == 0,
+                f"reason clause found in output: {line[:100]}" if reason_clause_count > 0 else "",
             )
         except Exception as e:
             h.test_result(
@@ -575,11 +574,13 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
         try:
             result = json.loads(out) if out else {}
             line = result.get("q-001", "")
-            # Valid date should produce a line
+            # Valid date should produce a line containing the date and required elements
+            has_date = "2026-01-15" in line
+            has_precedent_prefix = line.startswith("Precedent:")
             h.test_result(
-                "line: valid YYYY-MM-DD date produces output",
-                len(line) > 0,
-                f"empty line output" if not line else "",
+                "line: valid YYYY-MM-DD date produces output with expected content",
+                has_date and has_precedent_prefix and len(line) > 20,
+                f"line missing expected content: {line[:50]}" if not (has_date and has_precedent_prefix) else "",
             )
         except Exception as e:
             h.test_result(
@@ -627,10 +628,12 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
         try:
             result = json.loads(out) if out else {}
             line = result.get("q-001", "")
-            # Invalid date should skip the line (empty or not in output)
+            # Invalid date should skip the line (q-001 not in result or empty string)
+            q001_missing = "q-001" not in result
+            q001_empty = result.get("q-001") == ""
             h.test_result(
                 "line: invalid date format (ISO) causes line to be skipped",
-                not line or "q-001" not in result,
+                q001_missing or q001_empty,
                 f"line present when it should be skipped: {line[:50]}" if line else "",
             )
         except Exception as e:
@@ -680,9 +683,11 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             result = json.loads(out) if out else {}
             line = result.get("q-001", "")
             # Invalid date should skip the line
+            q001_missing = "q-001" not in result
+            q001_empty = result.get("q-001") == ""
             h.test_result(
                 "line: invalid date string causes line to be skipped",
-                not line or "q-001" not in result,
+                q001_missing or q001_empty,
                 f"line present when it should be skipped: {line[:50]}" if line else "",
             )
         except Exception as e:
@@ -745,7 +750,7 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             h.test_result(
                 "line: null bytes (Cc control chars) are stripped",
                 not has_null_byte,
-                f"null byte found in output" if has_null_byte else "",
+                "null byte found in output" if has_null_byte else "",
             )
         except Exception as e:
             h.test_result(
@@ -801,7 +806,7 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             h.test_result(
                 "line: Unicode line/paragraph separators (Zl, Zp) are stripped",
                 not has_line_sep and not has_para_sep,
-                f"separators found in output" if (has_line_sep or has_para_sep) else "",
+                "separators found in output" if (has_line_sep or has_para_sep) else "",
             )
         except Exception as e:
             h.test_result(
@@ -856,9 +861,11 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             result = json.loads(out) if out else {}
             line = result.get("q-001", "")
             # Invalid confidence should skip the line
+            q001_missing = "q-001" not in result
+            q001_empty = result.get("q-001") == ""
             h.test_result(
                 "line: invalid confidence causes line to be skipped",
-                not line or "q-001" not in result,
+                q001_missing or q001_empty,
                 f"line present when it should be skipped: {line[:50]}" if line else "",
             )
         except Exception as e:
@@ -904,6 +911,271 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
             False,
             f"error reading script: {e}",
         )
+
+    print()
+
+    # ========================================================================
+    # SECTION 10: validate subcommand - citation limit boundaries [WEAK_ASSERTION]
+    # ========================================================================
+    print("[Section 10] validate: citation limit boundaries (per-question and total)")
+
+    # 10.1: Exactly 3 citations per question passes [WEAK_ASSERTION]
+    with TempFiles() as tmp:
+        precedent_text = """# Precedent — session-123
+
+precedent-pat | questions: 1 | spoke-on: 1 | citations: 3 | confidence: high=0 medium=1
+
+## Q1 [q-001] Sample question
+
+**Precedent**: 2026-01-15 · #142 · review · chose "Option A" (recommended was "Option B") · reason: "test1"
+**Precedent**: 2026-01-14 · #143 · review · chose "Option A" (recommended was "Option B") · reason: "test2"
+**Precedent**: 2026-01-13 · #144 · review · chose "Option A" (recommended was "Option B") · reason: "test3"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+"""
+        precedent_path = tmp.write("precedent.md", precedent_text)
+        questions_path = tmp.write("questions.json", make_questions([{
+            "id": "q-001",
+            "header": "Sample question",
+            "question": "What?",
+            "options": ["Option A", "Option B"],
+            "recommended": "Option B",
+        }]))
+        digest_entries = "\n".join([
+            json.dumps(make_digest_entry(ref=142)),
+            json.dumps(make_digest_entry(ref=143)),
+            json.dumps(make_digest_entry(ref=144)),
+        ])
+        digest_path = tmp.write("digest.jsonl", digest_entries)
+
+        rc, out, err = run_render([
+            "validate",
+            "--precedent", precedent_path,
+            "--questions", questions_path,
+            "--digest", digest_path,
+        ])
+
+        try:
+            result = json.loads(out) if out else {}
+            is_valid = result.get("status") == "ok"
+            shown = result.get("shown")
+            h.test_result(
+                "validate: exactly 3 citations per question passes (status=ok)",
+                is_valid and shown == 1,
+                f"status={result.get('status')}, shown={shown}" if not (is_valid and shown == 1) else "",
+            )
+        except Exception as e:
+            h.test_result(
+                "validate: exactly 3 citations per question passes (status=ok)",
+                False,
+                f"JSON parse error: {e}",
+            )
+
+    # 10.2: 4 citations per question fails [WEAK_ASSERTION]
+    with TempFiles() as tmp:
+        precedent_text = """# Precedent — session-123
+
+precedent-pat | questions: 1 | spoke-on: 1 | citations: 4 | confidence: high=0 medium=1
+
+## Q1 [q-001] Sample question
+
+**Precedent**: 2026-01-15 · #142 · review · chose "Option A" (recommended was "Option B") · reason: "test1"
+**Precedent**: 2026-01-14 · #143 · review · chose "Option A" (recommended was "Option B") · reason: "test2"
+**Precedent**: 2026-01-13 · #144 · review · chose "Option A" (recommended was "Option B") · reason: "test3"
+**Precedent**: 2026-01-12 · #145 · review · chose "Option A" (recommended was "Option B") · reason: "test4"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+"""
+        precedent_path = tmp.write("precedent.md", precedent_text)
+        questions_path = tmp.write("questions.json", make_questions([{
+            "id": "q-001",
+            "header": "Sample question",
+            "question": "What?",
+            "options": ["Option A", "Option B"],
+            "recommended": "Option B",
+        }]))
+        digest_entries = "\n".join([
+            json.dumps(make_digest_entry(ref=142)),
+            json.dumps(make_digest_entry(ref=143)),
+            json.dumps(make_digest_entry(ref=144)),
+            json.dumps(make_digest_entry(ref=145)),
+        ])
+        digest_path = tmp.write("digest.jsonl", digest_entries)
+
+        rc, out, err = run_render([
+            "validate",
+            "--precedent", precedent_path,
+            "--questions", questions_path,
+            "--digest", digest_path,
+        ])
+
+        try:
+            result = json.loads(out) if out else {}
+            is_invalid = result.get("status") == "invalid"
+            h.test_result(
+                "validate: 4 citations per question fails (status=invalid)",
+                is_invalid,
+                f"status={result.get('status')}" if not is_invalid else "",
+            )
+        except Exception as e:
+            h.test_result(
+                "validate: 4 citations per question fails (status=invalid)",
+                False,
+                f"JSON parse error: {e}",
+            )
+
+    # 10.3: Total of 5 citations across questions passes [WEAK_ASSERTION]
+    with TempFiles() as tmp:
+        precedent_text = """# Precedent — session-123
+
+precedent-pat | questions: 2 | spoke-on: 2 | citations: 5 | confidence: high=0 medium=2
+
+## Q1 [q-001] First question
+
+**Precedent**: 2026-01-15 · #142 · review · chose "Option A" (recommended was "Option B") · reason: "test1"
+**Precedent**: 2026-01-14 · #143 · review · chose "Option A" (recommended was "Option B") · reason: "test2"
+**Precedent**: 2026-01-13 · #144 · review · chose "Option A" (recommended was "Option B") · reason: "test3"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+
+## Q2 [q-002] Second question
+
+**Precedent**: 2026-01-12 · #145 · review · chose "Option X" (recommended was "Option Y") · reason: "test4"
+**Precedent**: 2026-01-11 · #146 · review · chose "Option X" (recommended was "Option Y") · reason: "test5"
+**Prediction**: Option X
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+"""
+        precedent_path = tmp.write("precedent.md", precedent_text)
+        questions_path = tmp.write("questions.json", make_questions([
+            {
+                "id": "q-001",
+                "header": "First question",
+                "question": "What?",
+                "options": ["Option A", "Option B"],
+                "recommended": "Option B",
+            },
+            {
+                "id": "q-002",
+                "header": "Second question",
+                "question": "What?",
+                "options": ["Option X", "Option Y"],
+                "recommended": "Option Y",
+            },
+        ]))
+        digest_entries = "\n".join([
+            json.dumps(make_digest_entry(ref=142)),
+            json.dumps(make_digest_entry(ref=143)),
+            json.dumps(make_digest_entry(ref=144)),
+            json.dumps(make_digest_entry(ref=145)),
+            json.dumps(make_digest_entry(ref=146)),
+        ])
+        digest_path = tmp.write("digest.jsonl", digest_entries)
+
+        rc, out, err = run_render([
+            "validate",
+            "--precedent", precedent_path,
+            "--questions", questions_path,
+            "--digest", digest_path,
+        ])
+
+        try:
+            result = json.loads(out) if out else {}
+            is_valid = result.get("status") == "ok"
+            shown = result.get("shown")
+            h.test_result(
+                "validate: total 5 citations across questions passes (status=ok, shown=2)",
+                is_valid and shown == 2,
+                f"status={result.get('status')}, shown={shown}" if not (is_valid and shown == 2) else "",
+            )
+        except Exception as e:
+            h.test_result(
+                "validate: total 5 citations across questions passes (status=ok, shown=2)",
+                False,
+                f"JSON parse error: {e}",
+            )
+
+    # 10.4: Total of 6 citations across questions fails [WEAK_ASSERTION]
+    with TempFiles() as tmp:
+        precedent_text = """# Precedent — session-123
+
+precedent-pat | questions: 2 | spoke-on: 2 | citations: 6 | confidence: high=0 medium=2
+
+## Q1 [q-001] First question
+
+**Precedent**: 2026-01-15 · #142 · review · chose "Option A" (recommended was "Option B") · reason: "test1"
+**Precedent**: 2026-01-14 · #143 · review · chose "Option A" (recommended was "Option B") · reason: "test2"
+**Precedent**: 2026-01-13 · #144 · review · chose "Option A" (recommended was "Option B") · reason: "test3"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+
+## Q2 [q-002] Second question
+
+**Precedent**: 2026-01-12 · #145 · review · chose "Option X" (recommended was "Option Y") · reason: "test4"
+**Precedent**: 2026-01-11 · #146 · review · chose "Option X" (recommended was "Option Y") · reason: "test5"
+**Precedent**: 2026-01-10 · #147 · review · chose "Option X" (recommended was "Option Y") · reason: "test6"
+**Prediction**: Option X
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+"""
+        precedent_path = tmp.write("precedent.md", precedent_text)
+        questions_path = tmp.write("questions.json", make_questions([
+            {
+                "id": "q-001",
+                "header": "First question",
+                "question": "What?",
+                "options": ["Option A", "Option B"],
+                "recommended": "Option B",
+            },
+            {
+                "id": "q-002",
+                "header": "Second question",
+                "question": "What?",
+                "options": ["Option X", "Option Y"],
+                "recommended": "Option Y",
+            },
+        ]))
+        digest_entries = "\n".join([
+            json.dumps(make_digest_entry(ref=142)),
+            json.dumps(make_digest_entry(ref=143)),
+            json.dumps(make_digest_entry(ref=144)),
+            json.dumps(make_digest_entry(ref=145)),
+            json.dumps(make_digest_entry(ref=146)),
+            json.dumps(make_digest_entry(ref=147)),
+        ])
+        digest_path = tmp.write("digest.jsonl", digest_entries)
+
+        rc, out, err = run_render([
+            "validate",
+            "--precedent", precedent_path,
+            "--questions", questions_path,
+            "--digest", digest_path,
+        ])
+
+        try:
+            result = json.loads(out) if out else {}
+            is_invalid = result.get("status") == "invalid"
+            h.test_result(
+                "validate: total 6 citations across questions fails (status=invalid)",
+                is_invalid,
+                f"status={result.get('status')}" if not is_invalid else "",
+            )
+        except Exception as e:
+            h.test_result(
+                "validate: total 6 citations across questions fails (status=invalid)",
+                False,
+                f"JSON parse error: {e}",
+            )
 
     print()
 

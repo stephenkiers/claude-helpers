@@ -70,7 +70,7 @@ Prediction-influenced answers are not independent priors. #292/#295 own marking 
 
 1. **Behaviour-neutral when the digest is empty, the script fails, or Pat fails or times out.** Pat produces a file or nothing; the caller treats nothing the same as an empty digest.
 
-2. **A file counts as complete only if it exists, its receipt matches the pinned regex, its receipt counts match the body, every spoken question has a Distinguish line, and it has at most 5 citations.** Otherwise the caller treats it as absent (safe by construction because the orchestrator does not read Pat's output — only a command wiring it into an insertion point would be affected; missing or invalid files are equivalent to a failed role invocation).
+2. **A file counts as complete only if it exists, its receipt matches the pinned regex, its receipt counts match the body, every spoken question has a Distinguish line, and it has at most 5 citations.** Otherwise the caller treats it as absent (safe by construction because the orchestrator does not read Pat's output — only a command wiring it into an insertion point would be affected; missing or invalid files are equivalent to a failed role invocation). Blocks with unknown question ids or predictions that do not match any option label are dropped gracefully (reduced to zero blocks with status "ok"); blocks with missing or stale digest references fail validation immediately (status "invalid").
 
 3. **The caller excludes security/CRITICAL items from Pat's input.** These stay out of reach of any display-only annotation or digested past answers.
 

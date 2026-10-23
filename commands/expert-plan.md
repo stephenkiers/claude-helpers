@@ -605,7 +605,7 @@ Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- 
 
 If more than five Qs survive, set `headline` to "This ticket looks under-specified — N questions survived the panel; let's talk it through." Five follows Danielle's observation that people drop items past about five. Keep this as a named constant. There is no halt and no cap.
 
-**Flow branch: Precedent handling.** Call the Precedent block (defined below) after the D/W/Q sections are written and before the round-1 report file is written. The block runs once per checkpoint and sets `PRECEDENT_TRACE`. For each spoken Q item whose `why` does not already start with `Precedent:` (checking prior rounds), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json"` to get the Precedent line for that item's id. Store all per-handle lines in `${SESSION_DIR}/precedent-lines.json` (a JSON object `{id: "Precedent: ..."}`). For each Q item, append to its `why` field a blank line followed by the stored line (if it exists). D and W items are never annotated; their `options[]`, `for`, `against`, `recommendation`, and `must_answer` fields remain unchanged. On later rounds resuming the same attempt, re-emitting a Q item reuses the stored line from `precedent-lines.json` and skips the append if the `why` already contains a line starting `Precedent:` (Pat is never re-dispatched within an attempt). After the checkpoint loop ends, append two sections to `decisions.md` after the ledger block: first, the `## Precedent` section from `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"`, then the trace line `precedent: <PRECEDENT_TRACE>`. The ledger's handle keys stay at the top level of its JSON block.
+**Flow branch: Precedent handling.** Call the Precedent block (defined below) after the D/W/Q sections are written and before the round-1 report file is written. The block runs once per checkpoint and sets `PRECEDENT_TRACE`. For each spoken Q item whose `why` does not already start with `Precedent:` (checking prior rounds), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json" --out "${SESSION_DIR}/precedent-lines.json"` to get the Precedent line for that item's id. Store all per-handle lines in `${SESSION_DIR}/precedent-lines.json` (a JSON object `{id: "Precedent: ..."}`). For each Q item, append to its `why` field a blank line followed by the stored line (if it exists). D and W items are never annotated; their `options[]`, `for`, `against`, `recommendation`, and `must_answer` fields remain unchanged. On later rounds resuming the same attempt, re-emitting a Q item reuses the stored line from `precedent-lines.json` and skips the append if the `why` already contains a line starting `Precedent:` (Pat is never re-dispatched within an attempt). After the checkpoint loop ends, append two sections to `decisions.md` after the ledger block: first, the `## Precedent` section from `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"`, then the trace line `precedent: <PRECEDENT_TRACE>`. The ledger's handle keys stay at the top level of its JSON block.
 
 Write the round-1 `kind: report` question file per the Ask block in `~/.claude/prompts/flow-reference.md` — one question file with `kind: report`, `attempt: 1`, `round: 1`, and all briefs, with `must_answer` true for Qs and items with recorded disagreement or protest. Record the `awaiting` marker.
 
@@ -696,17 +696,36 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    python3 "$HOME/.claude/scripts/precedent-render.py" validate --precedent "${SESSION_DIR}/precedent.md" --questions "${SESSION_DIR}/precedent-questions.json" --digest "${SESSION_DIR}/precedent-digest.jsonl" --out "${SESSION_DIR}/precedent-validated.json" 2>/dev/null || RENDER_RC=$?
    
    VALIDATED_STATUS=""
+   VALIDATED_REASON=""
    SHOWN_COUNT=0
+   ASKED_COUNT=0
    if [ "$RENDER_RC" -eq 0 ]; then
      VALIDATED=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""))' 2>/dev/null)
+     VALIDATED_REASON=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("reason",""))' 2>/dev/null)
      SHOWN_COUNT=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("shown", 0))' 2>/dev/null)
      ASKED_COUNT=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("asked", 0))' 2>/dev/null)
      VALIDATED_STATUS="$VALIDATED"
    fi
+   
+   # Determine PRECEDENT_TRACE based on validation result
+   if [ "$RENDER_RC" -ne 0 ]; then
+     PRECEDENT_TRACE="render-failed"
+   elif [ "$VALIDATED_REASON" = "pat-failed" ]; then
+     PRECEDENT_TRACE="pat-failed"
+   elif [ "$VALIDATED_STATUS" = "invalid" ]; then
+     PRECEDENT_TRACE="pat-invalid"
+   elif [ "$VALIDATED_STATUS" = "ok" ] && [ "$SHOWN_COUNT" -eq 0 ]; then
+     PRECEDENT_TRACE="pat-silent"
+   elif [ "$VALIDATED_STATUS" = "ok" ]; then
+     PRECEDENT_TRACE="shown $SHOWN_COUNT of $ASKED_COUNT"
+   else
+     PRECEDENT_TRACE="render-failed"
+   fi
+   echo "$PRECEDENT_TRACE" > "${SESSION_DIR}/precedent-trace.txt"
    ```
-   Set `PRECEDENT_TRACE` based on the result and write it to `${SESSION_DIR}/precedent-trace.txt`:
+   The `PRECEDENT_TRACE` value is determined as follows:
    - If `precedent-render.py` is missing or any call exits non-zero → `"render-failed"`
-   - If the reason field in the validated JSON is `"pat-failed"` → `"pat-failed"` (read the `.reason` field)
+   - If the reason field in the validated JSON is `"pat-failed"` → `"pat-failed"` (the file was unreadable after validation dispatch)
    - If it succeeds but the validated status is `invalid` → `"pat-invalid"`
    - If the validated file exists and has status `ok` but `shown` count is zero → `"pat-silent"`
    - Otherwise (valid, non-silent) → `"shown ${SHOWN_COUNT} of ${ASKED_COUNT}"`
