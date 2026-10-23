@@ -91,9 +91,16 @@ class _ValidatedBlock(TypedDict, total=False):
 
 
 def _sanitize(text: str) -> str:
-    """Sanitize interpolated fields: collapse whitespace, strip markdown, neutralize injections."""
+    """Sanitize interpolated fields: collapse whitespace, strip markdown, strip control chars, neutralize injections.
+
+    Strips Unicode categories Cc (control), Cf (format), Zl (line separator), Zp (paragraph separator).
+    """
     # Replace line feeds/CRs/tabs with spaces
     text = re.sub(r"[\r\n\t]", " ", text)
+    # Strip control characters (Cc), format chars (Cf), line/paragraph separators (Zl/Zp)
+    text = "".join(c for c in text if not (c < ' ' or ord(c) in (0x7F,) or
+                                           (0x200B <= ord(c) <= 0x200D) or  # Cf: zero-width chars
+                                           (ord(c) in (0x2028, 0x2029))))     # Zl/Zp
     # Collapse multiple spaces
     text = re.sub(r" +", " ", text).strip()
     # Strip leading markdown chars and backticks
@@ -172,15 +179,17 @@ def _parse_blocks(text: str) -> List[_ValidatedBlock]:
     """Parse the body of the precedent file into Q blocks."""
     lines = text.splitlines()
     blocks: List[_ValidatedBlock] = []
+    seen_ids: set = set()
     current: Optional[_ValidatedBlock] = None
 
     for line in lines:
         # Check for Q header
         match = Q_HEADER_RE.match(line)
         if match:
+            block_id = match.group(2)
             current = {
                 "n": int(match.group(1)),
-                "id": match.group(2),
+                "id": block_id,
                 "header": match.group(3),
                 "silent": False,
                 "precedent_lines": [],
@@ -189,6 +198,7 @@ def _parse_blocks(text: str) -> List[_ValidatedBlock]:
                 "why": "",
                 "distinguish": "",
             }
+            seen_ids.add(block_id)
             blocks.append(current)
             continue
 
@@ -254,8 +264,17 @@ def _validate_blocks(
     """Validate blocks against questions and digest. Return (valid, reason, valid_ids).
 
     valid_ids is the list of block ids that pass validation (for building result_blocks).
+    Enforces: no duplicate ids, no null refs in citations, Distinguish present when spoken.
     """
     q_count, spoke_on, citations, high, medium = receipt
+
+    # Reject duplicate ids
+    seen_ids: set = set()
+    for block in blocks:
+        if not block["silent"]:
+            if block["id"] in seen_ids:
+                return False, "pat-invalid", []
+            seen_ids.add(block["id"])
 
     # Count spoke-on
     actual_spoke_on = sum(1 for b in blocks if not b["silent"])
@@ -298,11 +317,17 @@ def _validate_blocks(
         question = questions[qid]
         options = question.get("options", [])
 
-        # Must have at least one Precedent line
+        # Must have at least one Precedent line with non-null ref
         if not block["precedent_lines"]:
             return False, "pat-invalid", []
 
-        # Must have Prediction, Confidence, Why, Distinguish
+        # All refs must be non-null (requirement: mandatory ref per obligation)
+        for prec_line in block["precedent_lines"]:
+            ref = prec_line["ref"]
+            if ref is None:
+                return False, "pat-invalid", []
+
+        # Must have Prediction, Confidence, Why, Distinguish (Distinguish guard: non-empty when spoken)
         if not block["prediction"] or not block["confidence"] or not block["why"] or not block["distinguish"]:
             return False, "pat-invalid", []
 
@@ -313,7 +338,7 @@ def _validate_blocks(
         # All cited refs must exist in digest (missing -> invalid)
         for prec_line in block["precedent_lines"]:
             ref = prec_line["ref"]
-            if ref is not None and ref not in digest_refs:
+            if ref not in digest_refs:
                 return False, "pat-invalid", []
 
         # This block is valid
@@ -326,7 +351,12 @@ def _validate_blocks(
 
 
 def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out_path: Optional[str]) -> int:
-    """The validate subcommand: read Pat's output and validate it."""
+    """The validate subcommand: read Pat's output and validate it.
+
+    Exit codes:
+    - 0: data-side outcome (valid or invalid)
+    - 2: invocation error (missing input files)
+    """
     # Try to read and parse the precedent file
     try:
         pat_text = _read_text(precedent_path)
@@ -338,7 +368,10 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
         }
         output = json.dumps(result, ensure_ascii=False)
         if out_path:
-            _write_atomic(out_path, output)
+            try:
+                _write_atomic(out_path, output)
+            except _Usage:
+                return 2
         else:
             sys.stdout.write(output + "\n")
         return 0
@@ -353,17 +386,44 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
         }
         output = json.dumps(result, ensure_ascii=False)
         if out_path:
-            _write_atomic(out_path, output)
+            try:
+                _write_atomic(out_path, output)
+            except _Usage:
+                return 2
         else:
             sys.stdout.write(output + "\n")
         return 0
 
-    # Load questions and digest
-    questions = _load_questions(questions_path)
-    digest_refs = _load_digest(digest_path)
+    # Load questions and digest; exit 2 if files are unreadable
+    try:
+        questions_text = _read_text(questions_path)
+        questions_data = json.loads(questions_text)
+        if not isinstance(questions_data, dict) or "questions" not in questions_data:
+            questions = {}
+        else:
+            questions = {}
+            for item in questions_data.get("questions", []):
+                if isinstance(item, dict) and "id" in item:
+                    qid = item["id"]
+                    questions[qid] = {
+                        "header": item.get("header", ""),
+                        "question": item.get("question", ""),
+                        "options": item.get("options", []),
+                        "recommended": item.get("recommended"),
+                    }
+    except (OSError, json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        raise _Usage("cannot read or parse questions file: %s" % questions_path)
+
+    try:
+        digest_refs = _load_digest(digest_path)
+    except (OSError, UnicodeDecodeError):
+        raise _Usage("cannot read digest file: %s" % digest_path)
 
     # Parse blocks
     blocks = _parse_blocks(pat_text)
+
+    # Count total asked (non-silent blocks in input)
+    asked_count = sum(1 for b in blocks if not b["silent"])
 
     # Validate blocks
     valid, reason, valid_ids = _validate_blocks(blocks, questions, digest_refs, receipt)
@@ -375,6 +435,7 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
         status = "invalid"
 
     result_blocks: Dict[str, Any] = {}
+    shown_count = 0
     if status == "ok":
         # Build result blocks only for valid ids
         for block in blocks:
@@ -386,16 +447,22 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
                     "why": block["why"],
                     "distinguish": block["distinguish"],
                 }
+                shown_count += 1
 
     result = {
         "status": status,
         "reason": reason if status == "invalid" else ("pat-silent" if reason == "pat-silent" else ""),
         "blocks": result_blocks,
+        "shown": shown_count,
+        "asked": asked_count,
     }
 
     output = json.dumps(result, ensure_ascii=False)
     if out_path:
-        _write_atomic(out_path, output)
+        try:
+            _write_atomic(out_path, output)
+        except _Usage:
+            return 2
     else:
         sys.stdout.write(output + "\n")
 
@@ -403,7 +470,10 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
 
 
 def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) -> int:
-    """The line subcommand: extract display lines for spoken questions."""
+    """The line subcommand: extract display lines for spoken questions.
+
+    Returns JSON object {<id>: "<one display line, <=240 chars>"} for spoken ids only.
+    """
     # Load validated result
     try:
         validated_text = _read_text(validated_path)
@@ -422,7 +492,7 @@ def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) 
             continue
 
         question = questions[qid]
-        prediction = block.get("prediction", "")
+        prediction = _sanitize(block.get("prediction", ""))
 
         # Check if prediction differs from recommendation
         recommended = question.get("recommended")
@@ -435,13 +505,21 @@ def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) 
 
         prec = prec_list[0]
         date = prec.get("date", "")
+        # Validate date format: YYYY-MM-DD
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            # Invalid date; skip this line
+            continue
         ref = prec.get("ref")
         reason = prec.get("reason")
-        answer = prec.get("answer", "")
+        answer = _sanitize(prec.get("answer", ""))
 
         # Build the line
         confidence = block.get("confidence", "")
-        line_parts = ["Precedent: you chose \"", _sanitize(answer), "\" on ", date]
+        if confidence not in ("high", "medium"):
+            # Invalid confidence; skip this line
+            continue
+
+        line_parts = ["Precedent: you chose \"", answer, "\" on ", date]
 
         if ref is not None:
             line_parts.append(" (#")
@@ -594,7 +672,11 @@ def section_cmd(validated_path: str, out_path: Optional[str]) -> int:
 
 
 def _write_atomic(path: str, text: str) -> None:
-    """Write text to path via a temp file in the same dir, then os.replace."""
+    """Write text to path via a temp file in the same dir, then os.replace.
+
+    Raises _Usage for invocation errors (parent dir missing, --out argument invalid).
+    May raise OSError for post-parse I/O failures; callers must map to exit code 1.
+    """
     target = os.path.abspath(path)
     parent = os.path.dirname(target)
     if not os.path.isdir(parent):
@@ -618,7 +700,8 @@ def _write_atomic(path: str, text: str) -> None:
             os.unlink(temp_name)
         except BaseException:
             pass
-        raise _Usage("cannot write --out %s: %s" % (path, exc.strerror or exc))
+        # Post-parse I/O error: raise as OSError, not _Usage
+        raise exc
     except BaseException:
         try:
             os.unlink(temp_name)

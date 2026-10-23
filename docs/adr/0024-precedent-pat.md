@@ -99,21 +99,25 @@ Prediction-influenced answers are not independent priors. #292/#295 own marking 
 Pat is now wired into `/expert-plan` Step 5 as specified here; `/expert-review` wiring is pending (#296).
 
 **Insertion points per branch:**
-- **Non-flow:** Pat runs after decision briefs and index are built and before the first Ask. The `## Precedent` section is written to `decisions.md` at the later write, after all Asks are answered.
-- **Flow:** Pat runs after `plan-checkpoint-tiers.py` and the D/W/Q write, before the round-1 `kind: report` file. The `## Precedent` section is appended to `decisions.md` after the ledger block.
+- **Non-flow:** Pat runs after decision briefs and index are built and before the first Ask. The Precedent lines are rendered in the chat round-up directly below each matching brief (display-only, no AskUserQuestion option annotation). The `## Precedent` section is written to `decisions.md` after all Asks are answered.
+- **Flow:** Pat runs after `plan-checkpoint-tiers.py` and the D/W/Q write, before the round-1 `kind: report` file. The Precedent lines are written to a stored map and appended to Q items' `why` field (orchestrator-rendered). The `## Precedent` section is appended to `decisions.md` after the ledger block.
+
+**Non-flow surface:** Display-only rendering in brief section, not option description mutation. Avoids wrong-option attachment when prediction differs from recommended. Chat shows line below brief.
 
 **Flow surface (orchestrator-rendered):** A fixed-prefix `Precedent:` line is appended to Q items' `why` field (no schema change to the Q item itself, no edits to the flow renderer or `flow-verify-receipt.py`). Rationale: the orchestrator already prints and escapes the `why` field; the prefix is the only provenance marker, built by `scripts/precedent-render.py` from validated, sanitized digest fields, so if the output reads as panel advocacy, a dedicated report field is the follow-up design.
 
-**Annotation scope:** Q items only; D and W items are never annotated. Once per checkpoint at round 1; later rounds reuse the stored line and Pat is never re-dispatched.
+**Annotation scope:** Q items only; D and W items are never annotated. Once per checkpoint at round 1; later rounds reuse the stored line and Pat is never re-dispatched within an attempt.
 
-**Path self-exclusion:** The caller filters the digest by `path`, dropping the current session directory, the current flow directory, and flow directories matching the pattern `<ISSUE>-*`. The filter runs after the `--top 60` limit, so fewer than 60 entries may reach Pat; same-issue plan sessions outside a flow are not caught by this filter.
+**Path self-exclusion:** The caller filters the digest by `path`, dropping the current session directory, the current flow directory, and flow directories matching the pattern `<ISSUE>-*`. The filter runs after the `--top 60` limit, so fewer than 60 entries may reach Pat; same-issue plan sessions outside a flow are not caught by this filter. Build prefixes from non-empty values only.
 
-**Security exclusion (fallback keyword):** Plan briefs carry no `security` or `severity` field. The caller excludes briefs matching case-insensitive keywords: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`.
+**Security exclusion:** The caller applies the keyword denylist to both pending question briefs (at extraction) and digest entries (at filter time), dropping entries with `question` or `reason` containing: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`.
+
+**Trace persistence:** The outcome (one of eight closed-set reasons) is persisted to `${SESSION_DIR}/precedent-trace.txt` at step 10 and read back at every subsequent step. Validation gates against the eight-value set.
 
 **Sanctioned reader — `decisions.md` `## Precedent` copy:** The copy written to `decisions.md` is a logging reader only, not decision logic. Step 6/7 readers (plan synthesizer and auditor) are instructed to ignore this section entirely (per the amendments to `plan-synthesize-and-check.md` and `plan-audit.md`).
 
 **Telemetry:** A new conditional stage `precedent` is added to run-metrics. The orchestrator keeps one open-stage slot; Step 5 closes `checkpoint`, runs `precedent`, then re-opens `checkpoint`. A Pat run results in two `checkpoint` records, which analysis sums.
 
-**Known reader gap:** `scripts/precedent-digest.py` does not yet read plan briefs with options or report answers by handle (follow-up #349). Gate 1 awaits this; once it lands, the path filter becomes load-bearing.
+**Known reader gaps:** `scripts/precedent-digest.py` does not yet read plan briefs with options or report answers by handle (follow-up #349); and the flow triage renderer does not yet mark Q items sourced from precedent for measurement tracking (follow-up #335/#343). Gate 1 awaits #349; once it lands, the path filter becomes load-bearing. #335/#343 are measurement/audit concerns outside the wiring scope.
 
 If ADR-0024 is further amended (for example, when #297 enables curated rules, or #299 adds personal scope, or #300 finalizes thresholds), add amendments following the format of [ADR-0023](0023-expert-flow.md).

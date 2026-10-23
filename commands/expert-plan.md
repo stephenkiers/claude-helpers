@@ -550,9 +550,9 @@ state a why, write `WHY: not stated in ticket` rather than inventing one. For a 
 3. **Decision index** — last, a compact table (Topic · Q# · Disagreement · Recommended default) as
    a quick-scan summary that points back into the briefs. It is an index, not a substitute for them.
 
-**Non-flow branch:** Call the Precedent block (defined above) after the decision briefs and index are built and before the Ask. The block writes `precedent.md` and sets `PRECEDENT_TRACE`. For each 2-4-option question whose labeled options match the pre-Precedent list exactly (byte-identical labels and count), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json"` to get the Precedent line for that question. Append that line to the `description` field of the option object matching the `recommended` label — never reorder options, never modify labels or the `(Recommended)` marker, never skip questions that changed. When appending, append a blank line first, then the Precedent line. For open-ended questions (single `Answer in your own words` option), print the Precedent line in the chat round-up directly below the matching brief. If the options list for any question differs from the pre-Precedent list, skip all Precedent annotation for that question. For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
+**Non-flow branch:** Call the Precedent block (defined below) after the decision briefs and index are built and before the Ask. The block writes `precedent.md` and sets `PRECEDENT_TRACE`. For each 2-4-option or open-ended question eligible for Precedent annotation, call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json"` (only when `PRECEDENT_TRACE` starts with `shown`) to get the Precedent line and display it in the brief/chat round-up directly below the matching brief — never modify the brief text or option descriptions. For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
 
-After all Asks are answered and the checkpoint results are recorded, append two sections to `decisions.md`: first, call `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"` to get the `## Precedent` section and append it; then append the trace line `precedent: <PRECEDENT_TRACE>` on its own line. Both sections go after the checkpoint results.
+After all Asks are answered and the checkpoint results are recorded, append two sections to `decisions.md`: first, call `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"` (only when `PRECEDENT_TRACE` starts with `shown`) to get the `## Precedent` section and append it; then append the trace line `precedent: <PRECEDENT_TRACE>` on its own line. Both sections go after the checkpoint results.
 
 **Every decision brief is asked; none is answered for the human.** The checkpoint exists so the human keeps control of the plan, so every `#### Q[n]` brief above becomes a question — including the uncontested two-line ones, whose recommendation is still the human's call. Dropping a batch after the first, adopting a recommended default without asking, or skipping the checkpoint because the run is "effort-low", "fully specified", "small", or otherwise reduced is not a judgement call this command may make: it is a reduced run — write `Decision: FAILED` with `Reason: reduced run: checkpoint questions dropped`.
 
@@ -626,15 +626,15 @@ Replace the flow-branch completeness rule: the verifier no longer counts "brief 
 
 **Precedent block (display-only).** Run once per checkpoint when the decision index is ready. This block surfaces the human's past answers to similar pending questions as display-only annotations (ADR-0024). No decision logic reads the precedent file. Precedent never influences which option is offered, which is presented as recommended, or how options are ordered. The block runs regardless of the branch and is transparent when the digest is empty or Pat times out.
 
-Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the outcome (one of the closed-set reasons listed at step 10, below). Define `FLOWS_ROOT="$HOME/.claude/flows"`.
+Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. Define `FLOWS_ROOT="$HOME/.claude/flows"`.
 
 1. **Eligible questions.** Extract pending questions from the checkpoint work:
-   - **Non-flow**: Read all `#### Q[n].` briefs from the checkpoint section as-built above (before any Ask is called).
+   - **Non-flow**: Read all `#### Q[n].` briefs from the checkpoint section as-built below (before any Ask is called).
    - **Flow**: Read Q items only from the ledger you built with `plan-checkpoint-tiers.py` (D and W items are excluded).
    
-   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. If zero questions remain, set `PRECEDENT_TRACE="no-eligible-questions"` and stop (skip steps 2–10).
+   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. If zero questions remain, write `PRECEDENT_TRACE="no-eligible-questions"` to `${SESSION_DIR}/precedent-trace.txt` and stop (skip steps 2–10).
 
-2. **Write questions file.** Use the `Write` tool to create `${SESSION_DIR}/precedent-questions.json` with one entry per eligible question:
+2. **Write questions file and clean stale files.** Remove any stale precedent files from prior attempts: `rm -f "${SESSION_DIR}/precedent-questions.json" "${SESSION_DIR}/precedent-validated.json" "${SESSION_DIR}/precedent-digest.jsonl"`. Then use the `Write` tool to create `${SESSION_DIR}/precedent-questions.json` with one entry per eligible question:
    ```json
    {"questions":[
      {"id":"Q1","header":"the brief header","question":"brief question + Why-it-matters, whitespace-normalised, capped at 600 chars","options":["Option A","Option B"],"recommended":"Option B"},
@@ -648,21 +648,32 @@ Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the 
    DIGEST_RC=0
    python3 "$HOME/.claude/scripts/precedent-digest.py" "$REPO_KEY" --match "${SESSION_DIR}/precedent-questions.json" --top 60 --out "${SESSION_DIR}/precedent-digest.raw.jsonl" 2>/dev/null || DIGEST_RC=$?
    if [ "$DIGEST_RC" -ne 0 ]; then
-     PRECEDENT_TRACE="digest-failed"
+     echo "digest-failed" > "${SESSION_DIR}/precedent-trace.txt"
      # Skip to step 10 (trace line)
    fi
    ```
    The REPO_KEY format is `owner-name` (hyphen-separated). See `scripts/precedent-digest.py` docstring for how it resolves a repo argument.
 
-4. **Self-exclusion filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt. Use one `jq -c` filter with three `--arg` variables to drop entries whose `path` starts with any of the session, flow, or issue prefix:
+4. **Self-exclusion and security filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt, and drop entries with security-related `question` or `reason` text. Use one `jq -c` filter with five variables to drop entries whose `path` matches self-exclusion patterns or whose `question`/`reason` contain security keywords:
    ```bash
-   jq -c --arg sd "${SESSION_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOWS_ROOT}/$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; print(sys.stdin.read().strip().split("/")[-1].split("-", 1)[0])' 2>/dev/null)-" '
-     select((.path | startswith($sd) or startswith($fd) or startswith($fp)) | not)
-   ' "${SESSION_DIR}/precedent-digest.raw.jsonl" > "${SESSION_DIR}/precedent-digest.jsonl" 2>/dev/null || true
+   # Build the flow prefix only if FLOW_DIR is non-empty
+   FLOW_PREFIX=""
+   if [ -n "${FLOW_DIR}" ]; then
+     FLOW_PREFIX="$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; p=sys.stdin.read().strip().split("/")[-1].split("-", 1)[0]; print("${FLOWS_ROOT}/" + p + "-")' 2>/dev/null)" || FLOW_PREFIX=""
+   fi
+   
+   jq -c --arg sd "${SESSION_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOW_PREFIX}" '
+     select(
+       ((.path | startswith($sd) or (if ($fd | length) > 0 then startswith($fd) else false end) or (if ($fp | length) > 0 then startswith($fp) else false end)) | not) and
+       ((.question + " " + (.reason // "") | test("(?i:security|auth|credential|secret|token|injection|permission|crypt|vulnerab|CRITICAL)")) | not)
+     )
+   ' "${SESSION_DIR}/precedent-digest.raw.jsonl" > "${SESSION_DIR}/precedent-digest.jsonl" 2>/dev/null || {
+     echo '{"status":"invalid","reason":"digest-failed","blocks":{},"shown":0,"asked":0}' > "${SESSION_DIR}/precedent-validated.json"
+   }
    ```
    Pipe all variable interpolations with `printf '%s'` and a pipe, never with `echo` or bare `$VAR`. Use only the braced form `${N}` for shell positional tokens; no bare positional tokens.
 
-5. **Empty digest check.** If the filtered digest is empty (zero lines in `precedent-digest.jsonl`), set `PRECEDENT_TRACE="no-digest-entries"` and stop (skip steps 6–9). Do not emit telemetry for this path.
+5. **Empty digest check.** If the filtered digest is empty (zero lines in `precedent-digest.jsonl`), write `PRECEDENT_TRACE="no-digest-entries"` to `${SESSION_DIR}/precedent-trace.txt` and stop (skip steps 6–9). Do not emit telemetry for this path.
 
 6. **Telemetry: close checkpoint, open precedent.** The `run-metrics.py` script maintains one open stage slot; nesting stages overwrites it. Close the checkpoint stage and open precedent in two separate invocations:
    ```bash
@@ -675,27 +686,35 @@ Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the 
    - Filtered digest path: `${SESSION_DIR}/precedent-digest.jsonl`
    - Questions path: `${SESSION_DIR}/precedent-questions.json`
    - Output path: `${SESSION_DIR}/precedent.md` (always under `~/.claude/plan-sessions/`, **never under `FLOW_DIR`**)
+   - Timeout: 120 seconds (bounded wait; on timeout go to step 9 without retry)
    
-   Join on file-exists (`-f "${SESSION_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails, retry once. On second failure, set `PRECEDENT_TRACE="pat-failed"` and go to step 9.
+   Join on file-exists (`-f "${SESSION_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `PRECEDENT_TRACE="pat-failed"` to `${SESSION_DIR}/precedent-trace.txt` and go to step 9.
 
 8. **Validate.** Check the file's completeness with `precedent-render.py`:
    ```bash
    RENDER_RC=0
    python3 "$HOME/.claude/scripts/precedent-render.py" validate --precedent "${SESSION_DIR}/precedent.md" --questions "${SESSION_DIR}/precedent-questions.json" --digest "${SESSION_DIR}/precedent-digest.jsonl" --out "${SESSION_DIR}/precedent-validated.json" 2>/dev/null || RENDER_RC=$?
-   case "$RENDER_RC" in
-     0) VALIDATED=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""))' 2>/dev/null) ;;
-     *) RENDER_RC=1 ;;
-   esac
+   
+   VALIDATED_STATUS=""
+   SHOWN_COUNT=0
+   if [ "$RENDER_RC" -eq 0 ]; then
+     VALIDATED=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""))' 2>/dev/null)
+     SHOWN_COUNT=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("shown", 0))' 2>/dev/null)
+     ASKED_COUNT=$(cat "${SESSION_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("asked", 0))' 2>/dev/null)
+     VALIDATED_STATUS="$VALIDATED"
+   fi
    ```
-   Set `PRECEDENT_TRACE` based on the result:
-   - If `precedent-render.py` is missing or any call exits non-zero → `PRECEDENT_TRACE="render-failed"`
-   - If it succeeds but the validated status is `invalid` → `PRECEDENT_TRACE="pat-invalid"`
-   - If the validated file exists and has status `ok` but the blocks show zero spoke-on → `PRECEDENT_TRACE="pat-silent"`
-   - Otherwise (valid, non-silent) → `PRECEDENT_TRACE="shown K of N"` (extracted from the receipt line or receipt field)
+   Set `PRECEDENT_TRACE` based on the result and write it to `${SESSION_DIR}/precedent-trace.txt`:
+   - If `precedent-render.py` is missing or any call exits non-zero → `"render-failed"`
+   - If the reason field in the validated JSON is `"pat-failed"` → `"pat-failed"` (read the `.reason` field)
+   - If it succeeds but the validated status is `invalid` → `"pat-invalid"`
+   - If the validated file exists and has status `ok` but `shown` count is zero → `"pat-silent"`
+   - Otherwise (valid, non-silent) → `"shown ${SHOWN_COUNT} of ${ASKED_COUNT}"`
 
 9. **Close telemetry.** Always emit this when step 6 was reached (digest was non-empty):
    ```bash
-   if [ "$PRECEDENT_TRACE" = "pat-failed" ] || [ "$PRECEDENT_TRACE" = "pat-invalid" ]; then
+   TRACE_VALUE=$(cat "${SESSION_DIR}/precedent-trace.txt" 2>/dev/null || echo "")
+   if [[ "$TRACE_VALUE" == "pat-failed" ]] || [[ "$TRACE_VALUE" == "pat-invalid" ]] || [[ "$TRACE_VALUE" == "render-failed" ]]; then
      python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage precedent --outcome failure --failure-class other 2>/dev/null || true
    else
      python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage precedent --outcome success 2>/dev/null || true
@@ -703,11 +722,11 @@ Follow these steps in order. Hold a `PRECEDENT_TRACE=""` variable to record the 
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage checkpoint >/dev/null 2>&1 || true
    ```
 
-10. **Trace line.** Write exactly one line (held for the branch's final decisions.md write):
+10. **Persist trace.** Validate and write the trace to `${SESSION_DIR}/precedent-trace.txt`. The trace must be one of these eight values (write all eight verbatim in the doc): `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. Reject invalid values. This trace is internal telemetry; never printed to the human. For the branch's final decisions.md write, the line format is:
     ```
-    precedent: <PRECEDENT_TRACE>
+    precedent: <TRACE_VALUE>
     ```
-    `PRECEDENT_TRACE` must be one of these eight values (write all eight verbatim in the doc): `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. This trace is internal telemetry; never printed to the human.
+    where `<TRACE_VALUE>` is read from `${SESSION_DIR}/precedent-trace.txt`.
 
 **Display-only rule:** The `precedent.md` file is read-only by the calling step (for rendering Precedent lines beside questions) and by logging. Nothing in Step 5's decision path — checkpoint reactions, the tier script, automatic answering, the ledger, or any other logic — reads `precedent.md` or the digest files. Option labels and the `(Recommended)` marker are never modified based on precedent. Precedent never influences which option is offered, which is highlighted, or which is presented as recommended. No decision path uses it to pick, reorder, or change any default for any question.
 
