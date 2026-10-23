@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import tempfile
-import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -96,7 +96,9 @@ def main():
         origin = {"schema_version": 1, "cwd": "/x", "project_dir": "proj", "session_id": None,
                   "resolution": "unavailable", "recorded_at": "2026-09-22T09:42:12Z"}
         review_dir, sub = _setup(tmp, origin)
-        old = time.time() - 30 * 86400
+        # Anchor to recorded_at, not the wall clock, so the files stay stale forever.
+        recorded = datetime.fromisoformat(origin["recorded_at"].replace("Z", "+00:00"))
+        old = recorded.timestamp() - 30 * 86400
         for f in sub.glob("*.jsonl"):
             os.utime(f, (old, old))
         res = _find(tmp, review_dir)
