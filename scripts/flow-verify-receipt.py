@@ -99,6 +99,22 @@ class RelayCount(NamedTuple):
     markers: int
 
 
+class FoldRecord(NamedTuple):
+    """A single entry in the fold of report answers files.
+
+    disposition: the answer disposition (e.g., "answered", "accepted", "unresolved")
+    item_data: the full item dict from the answers file
+    source_file: basename of the answers file (e.g., "plan-02.json")
+    round_num: the round number from the answers file
+    loop_end: the loop_end value from the answers file (e.g., "all-answered", "continue")
+    """
+    disposition: Optional[str]
+    item_data: Dict
+    source_file: str
+    round_num: int
+    loop_end: Optional[str]
+
+
 # A decision brief heading in a plan session's decisions.md (`#### Q1. …`, `#### Q2 — …`).
 # Captures the Q number as group 1 to allow deduplication.
 BRIEF_HEADING_RE = re.compile(r"^####\s+Q(\d+)\b", re.MULTILINE)
@@ -414,63 +430,105 @@ def _validate_reply_excerpt(excerpt: str, reply_file: Path) -> bool:
 
 
 def _fold_report_answers(
-    adir: Path, attempt: int, ledger_handles: set, report_files: Dict
-) -> tuple:
-    """Fold report answers files by SEQ order into a handle disposition dict.
+    adir: Path, attempt: int
+) -> Tuple[Dict[str, FoldRecord], Optional[str]]:
+    r"""Fold report answers files by SEQ order into a handle disposition dict.
 
-    Returns (fold_dict, error_msg). fold_dict maps handle -> (disposition, item_data, source_file, round, loop_end).
-    error_msg is set on unreadable or shape error.
+    Parses and validates all answers files in a single pass with fail-closed policy:
+    - Rejects files not matching plan-\d+\.json pattern (F1)
+    - Rejects unparseable or duplicate SEQ numbers (F1)
+    - Rejects unreadable or non-dict files (F2)
+    - Validates shape for all kind == "report" files (F3)
+    - Rejects falsy dispositions (F12)
+
+    Returns (fold_dict, error_msg). fold_dict maps handle -> FoldRecord.
+    error_msg is set on any unreadable, shape, or validation error.
     """
-    fold: Dict[str, tuple] = {}  # handle -> (disposition, item_data, source_file, round, loop_end)
+    fold: Dict[str, FoldRecord] = {}
 
     if not adir.exists():
         return fold, None
 
+    # F1: Filter glob to plan-\d+\.json, reject unparseable or duplicate SEQ
+    pattern = re.compile(r'^plan-(\d+)\.json$')
+    answer_files_raw = list(adir.glob("plan-*.json"))
+
+    # Validate and extract SEQ numbers for matching files only
+    seq_map: Dict[int, Path] = {}
+    answer_files_filtered = []
+    for answer_file in answer_files_raw:
+        match = pattern.match(answer_file.name)
+        if not match:
+            # F1: Skip non-matching filenames silently (they're not plan-\d+.json format)
+            continue
+
+        try:
+            seq = int(match.group(1))
+        except ValueError:
+            return {}, f"plan checkpoint incomplete (invalid answer file SEQ: {answer_file.name})"
+
+        if seq in seq_map:
+            return {}, f"plan checkpoint incomplete (duplicate answer file SEQ {seq}: {answer_file.name}, {seq_map[seq].name})"
+        seq_map[seq] = answer_file
+        answer_files_filtered.append(answer_file)
+
     # Sort by SEQ order (numeric sort)
-    answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+    answer_files = sorted(answer_files_filtered, key=lambda f: schema.answer_file_sort_key(f.name))
 
     for answer_file in answer_files:
         try:
             answers_data = json.loads(answer_file.read_text(encoding="utf-8"))
-            if not isinstance(answers_data, dict):
-                return {}, f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
-
-            kind = answers_data.get("kind")
-            file_attempt = answers_data.get("attempt")
-
-            # Only process files for this attempt
-            if file_attempt != attempt:
-                continue
-
-            if kind == "report":
-                items = answers_data.get("items", {})
-                if not isinstance(items, dict):
-                    return {}, f"plan checkpoint incomplete (malformed answers file: {answer_file.name})"
-
-                round_num = answers_data.get("round")
-                loop_end = answers_data.get("loop_end")
-
-                for handle, item in items.items():
-                    if isinstance(item, dict):
-                        disposition = item.get("disposition")
-                        # Fold: later file overwrites earlier one for same handle
-                        fold[handle] = (disposition, item, answer_file.name, round_num, loop_end)
-
         except (OSError, UnicodeDecodeError, ValueError):
+            # F2: Fail closed on unreadable files
             return {}, f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
+
+        if not isinstance(answers_data, dict):
+            # F2: Fail closed on non-dict files
+            return {}, f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
+
+        kind = answers_data.get("kind")
+        file_attempt = answers_data.get("attempt")
+
+        # Only process files for this attempt
+        if file_attempt != attempt:
+            continue
+
+        if kind == "report":
+            # F3: Validate shape for all report-kind files
+            shape_err = schema.validate_answers_file_shape(answers_data, "report")
+            if shape_err:
+                return {}, f"plan checkpoint incomplete ({shape_err}: {answer_file.name})"
+
+            items = answers_data.get("items", {})
+            if not isinstance(items, dict):
+                return {}, f"plan checkpoint incomplete (malformed answers file: {answer_file.name})"
+
+            round_num = answers_data.get("round")
+            loop_end = answers_data.get("loop_end")
+
+            for handle, item in items.items():
+                if isinstance(item, dict):
+                    disposition = item.get("disposition")
+                    # F12: Reject items with falsy disposition
+                    if not disposition:
+                        return {}, f"plan checkpoint incomplete (answer file item missing disposition: {handle} in {answer_file.name})"
+                    # Fold: later file overwrites earlier one for same handle
+                    fold[handle] = FoldRecord(disposition, item, answer_file.name, round_num, loop_end)
 
     return fold, None
 
 
 def _check_excerpt_validity(
-    handle: str, fold_record: tuple, adir: Path
+    handle: str, fold_record: FoldRecord, adir: Path
 ) -> Optional[str]:
     """Check excerpt validity for a must-answer handle using the fold record.
 
-    fold_record is (disposition, item_data, source_file, round_num, loop_end).
+    fold_record is a FoldRecord(disposition, item_data, source_file, round_num, loop_end).
     Returns error reason or None.
 
     Implements W1 and Q2: branches on source, fails closed for prose.
+    F5: Restores reply-file and round check for all non-form fold records.
+    F8: Whitelists source to {"form", "prose"}, rejects unknown values.
     """
     disposition, item_data, source_file, round_num, loop_end = fold_record
 
@@ -484,6 +542,12 @@ def _check_excerpt_validity(
     if not reply_excerpt:
         return f"plan checkpoint incomplete (must-answer without quote: {handle})"
 
+    # F8: Whitelist source values to {"form", "prose"}; missing source defaults to prose
+    if source is None:
+        source = "prose"  # Default to prose for backward compatibility with legacy answers
+    elif source not in {"form", "prose"}:
+        return f"plan checkpoint incomplete (unknown source value '{source}': {handle})"
+
     # Branch on source
     if source == "form":
         # W1: form answers don't need reply-file check, only non-empty excerpt check
@@ -491,7 +555,6 @@ def _check_excerpt_validity(
     else:
         # Q2 and default: prose check - strict excerpt binding
         # Extract SEQ from source_file (e.g., "plan-02.json" -> "02")
-        import re
         seq_match = re.match(r'plan-(\d+)', source_file)
         if not seq_match:
             return None
@@ -500,11 +563,11 @@ def _check_excerpt_validity(
         reply_filename = f"plan-{seq}.reply-{round_num}.md"
         reply_file = adir / reply_filename
 
-        # Round must be a positive int
+        # F5: Round must be a positive int (restored for all non-form records)
         if not (isinstance(round_num, int) and not isinstance(round_num, bool) and round_num > 0):
             return f"plan checkpoint incomplete (answers file round not a positive integer: {source_file})"
 
-        # Reply file must exist
+        # F5: Reply file must exist (restored for all non-form records)
         if not reply_file.exists():
             return f"plan checkpoint incomplete (reply file missing: {reply_filename})"
 
@@ -668,7 +731,8 @@ def check_report_checkpoint(
         return "plan checkpoint incomplete (no report question files for this attempt)"
 
     # Rule 2: Check that round-1 report's handle set matches ledger handles
-    # Use SEQ order (numeric) instead of alphabetic min for round-1 selection
+    # (Round-1 is the first report file by numeric SEQ order; every ledger handle must appear in round-1).
+    # Union coverage across all files is checked separately below.
     round1_basename = None
     if report_files:
         sorted_basenames = sorted(report_files.keys(), key=lambda f: schema.answer_file_sort_key(f))
@@ -702,47 +766,52 @@ def check_report_checkpoint(
             # Find same-SEQ question file
             qfile = qdir / answer_file.name
             if not qfile.exists():
+                # F2: Fail closed on missing question file
                 continue
 
             try:
                 qdata = json.loads(qfile.read_text(encoding="utf-8"))
-                if not isinstance(qdata, dict):
-                    continue
-
-                # If the question file is a report for this attempt,
-                # the answers file must also be a report for this attempt
-                if qdata.get("kind") == "report" and qdata.get("attempt") == attempt:
-                    try:
-                        adata = json.loads(answer_file.read_text(encoding="utf-8"))
-                        if not isinstance(adata, dict):
-                            continue
-
-                        # Step 3: Check for required keys (kind first, then attempt)
-                        if adata.get("kind") is None:
-                            # No kind key - might be legacy {"answers": {...}} shape
-                            # Validate as report shape to get the specific error
-                            shape_err = schema.validate_answers_file_shape(adata, "report")
-                            if shape_err:
-                                return f"plan checkpoint incomplete ({shape_err}: {answer_file.name})"
-
-                        if adata.get("attempt") is None:
-                            return f"plan checkpoint incomplete (report answers file missing 'attempt' key: {answer_file.name})"
-
-                    except (OSError, UnicodeDecodeError, ValueError):
-                        pass
             except (OSError, UnicodeDecodeError, ValueError):
-                pass
+                # F2: Fail closed on unreadable question file
+                return f"plan checkpoint incomplete (unreadable question file: {answer_file.name})"
 
-    # Step 4: Fold pre-pass and coverage checks
-    fold, fold_err = _fold_report_answers(adir, attempt, ledger_handles, report_files)
+            if not isinstance(qdata, dict):
+                # F2: Fail closed on non-dict question file
+                return f"plan checkpoint incomplete (unreadable question file: {answer_file.name})"
+
+            # If the question file is a report for this attempt,
+            # the answers file must also be a report for this attempt
+            if qdata.get("kind") == "report" and qdata.get("attempt") == attempt:
+                try:
+                    adata = json.loads(answer_file.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, ValueError):
+                    # Already handled by _fold_report_answers, but double-check here
+                    return f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
+
+                if not isinstance(adata, dict):
+                    # Already handled by _fold_report_answers
+                    return f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
+
+                # Step 3: Check for required keys (kind first, then attempt)
+                if adata.get("kind") is None:
+                    # No kind key - might be legacy {"answers": {...}} shape
+                    # Validate as report shape to get the specific error
+                    shape_err = schema.validate_answers_file_shape(adata, "report")
+                    if shape_err:
+                        return f"plan checkpoint incomplete ({shape_err}: {answer_file.name})"
+
+                if adata.get("attempt") is None:
+                    return f"plan checkpoint incomplete (report answers file missing 'attempt' key: {answer_file.name})"
+
+    # Step 4: Fold pre-pass and coverage checks (F10: parse once, no dead parameters)
+    fold, fold_err = _fold_report_answers(adir, attempt)
     if fold_err:
         return fold_err
 
     # Extract dispositions from fold
     final_dispositions: Dict[str, str] = {}
     for handle, fold_record in fold.items():
-        disposition, _, _, _, _ = fold_record
-        final_dispositions[handle] = disposition
+        final_dispositions[handle] = fold_record.disposition
 
     # Rule 3, replaced: Union coverage and per-round must-answer coverage
     # First, check that the first report file (round-1) contains every ledger handle
@@ -751,50 +820,53 @@ def check_report_checkpoint(
         for answer_file in answer_files:
             try:
                 adata = json.loads(answer_file.read_text(encoding="utf-8"))
-                if not isinstance(adata, dict) or adata.get("attempt") != attempt:
+            except (OSError, UnicodeDecodeError, ValueError):
+                # Already validated by _fold_report_answers
+                continue
+
+            if not isinstance(adata, dict) or adata.get("attempt") != attempt:
+                continue
+
+            if adata.get("kind") == "report":
+                items = adata.get("items", {})
+                if not isinstance(items, dict):
                     continue
 
-                if adata.get("kind") == "report":
-                    items = adata.get("items", {})
-                    if not isinstance(items, dict):
-                        continue
+                # Check which question file corresponds to this answer file (same basename)
+                qfile = qdir / answer_file.name
+                if not qfile.exists():
+                    # F2: Fail closed on missing question file
+                    return f"plan checkpoint incomplete (unreadable question file: {answer_file.name})"
 
-                    # Check which question file corresponds to this answer file (same basename)
-                    qfile = qdir / answer_file.name
-                    if not qfile.exists():
-                        continue
+                try:
+                    qdata = json.loads(qfile.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, ValueError):
+                    # F2: Fail closed on unreadable question file
+                    return f"plan checkpoint incomplete (unreadable question file: {answer_file.name})"
 
-                    try:
-                        qdata = json.loads(qfile.read_text(encoding="utf-8"))
-                        if not isinstance(qdata, dict) or qdata.get("attempt") != attempt:
+                if not isinstance(qdata, dict) or qdata.get("attempt") != attempt:
+                    continue
+
+                # This is a report file. Check round match
+                afile_round = adata.get("round")
+                qfile_round = qdata.get("round")
+                if afile_round != qfile_round:
+                    return f"plan checkpoint incomplete (answers file round mismatch: {answer_file.name} round {afile_round}, question file round {qfile_round})"
+
+                # Get must-answer items from this round's question file
+                q_items = qdata.get("items", [])
+                if isinstance(q_items, list):
+                    for q_item in q_items:
+                        if not isinstance(q_item, dict):
                             continue
+                        handle = q_item.get("handle")
+                        must_answer = q_item.get("must_answer", False)
+                        reason_must_answer = q_item.get("reason_must_answer")
 
-                        # This is a report file. Check round match
-                        afile_round = adata.get("round")
-                        qfile_round = qdata.get("round")
-                        if afile_round != qfile_round:
-                            return f"plan checkpoint incomplete (answers file round mismatch: {answer_file.name} round {afile_round}, question file round {qfile_round})"
-
-                        # Get must-answer items from this round's question file
-                        q_items = qdata.get("items", [])
-                        if isinstance(q_items, list):
-                            for q_item in q_items:
-                                if not isinstance(q_item, dict):
-                                    continue
-                                handle = q_item.get("handle")
-                                must_answer = q_item.get("must_answer", False)
-                                reason_must_answer = q_item.get("reason_must_answer")
-
-                                # If this item is must-answer in this round's question file,
-                                # it must appear in this round's answer file
-                                if (must_answer or reason_must_answer) and handle not in items:
-                                    return f"plan checkpoint incomplete (answer file missing handle: {handle} in {answer_file.name})"
-
-                    except (OSError, UnicodeDecodeError, ValueError):
-                        pass
-
-            except (OSError, UnicodeDecodeError, ValueError):
-                pass
+                        # If this item is must-answer in this round's question file,
+                        # it must appear in this round's answer file
+                        if (must_answer or reason_must_answer) and handle not in items:
+                            return f"plan checkpoint incomplete (answer file missing handle: {handle} in {answer_file.name})"
 
     # Check that all ledger handles appear in at least one file (union coverage)
     for handle in ledger_handles:
@@ -804,17 +876,9 @@ def check_report_checkpoint(
     # Check that no file holds an unknown handle (subset of ledger)
     for handle in fold.keys():
         if handle not in ledger_handles:
-            # Find which file holds this unknown handle
-            if adir.exists():
-                for answer_file in sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name)):
-                    try:
-                        adata = json.loads(answer_file.read_text(encoding="utf-8"))
-                        if adata.get("kind") == "report" and adata.get("attempt") == attempt:
-                            items = adata.get("items", {})
-                            if handle in items:
-                                return f"plan checkpoint incomplete (unknown handle in {answer_file.name}: {handle})"
-                    except (OSError, UnicodeDecodeError, ValueError):
-                        pass
+            # We know which file holds this unknown handle from the fold
+            fold_record = fold[handle]
+            return f"plan checkpoint incomplete (unknown handle in {fold_record.source_file}: {handle})"
 
     # Rule 4: Check for unresolved dispositions
     for handle, disposition in final_dispositions.items():
@@ -866,8 +930,7 @@ def check_report_checkpoint(
             if not fold_record:
                 return f"plan checkpoint incomplete (accepted-on-continue not found: {handle})"
 
-            _, item_data, source_file, round_num, loop_end = fold_record
-            if loop_end != "continue":
+            if fold_record.loop_end != "continue":
                 return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
 
             # Check excerpt validity

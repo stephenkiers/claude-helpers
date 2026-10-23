@@ -737,9 +737,8 @@ The plan checkpoint report can span multiple conversation rounds, where later ro
 
 **Ownership:** The verifier owns these mechanical facts. The fidelity auditor's judgment scope remains unchanged: it audits the *receipt* (whether all questions were really relayed and answered) but not the checkpoint's cross-round state.
 
-**Overlap:** #310 landed first, so this amendment is rebased onto its disk-authoritative counting; #308, #339, and #341 rebase their work after this change. The fold helper isolates the new logic so a later rebase touches one function.
+**Overlap:** #310 landed first, so this amendment is rebased onto its disk-authoritative counting; #308, #339, and #341 rebase their work after this change. The new multi-round logic is concentrated in `_fold_report_answers()` (the answers-file parser and validator) and the per-round checks in `check_report_checkpoint()`, so a later rebase touches those functions.
 
 **Also in this amendment:**
 - Step 2 of plan_checkpoint_schema.py adds a distinct reason when a report answers file uses the legacy `answers` key instead of `items`.
 - Step 3 adds per-file same-SEQ cause lookup in the verifier, running before the fold to catch shape errors early.
-- The 2026-10-15 amendment's "consequences" paragraph (describing how "the latest read, per SEQ order, sets the handle's disposition") now points to this amendment for the cross-round rules it defines.

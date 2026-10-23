@@ -142,11 +142,12 @@ def validate_answers_file_shape(data: Dict, kind: str) -> Optional[str]:
 
     if kind == "report":
         # Report variant: {kind, round, attempt, items, loop_end}
-        # Step 2: Check for legacy 'answers' key FIRST (most specific error)
-        if "answers" in data:
-            # Legacy shape check - more specific than generic missing-key error
-            if "kind" not in data or "attempt" not in data:
-                return "report answers file uses 'answers' key; expected 'items'"
+        # F11: Check for legacy 'answers' key FIRST (most specific error).
+        # This precedence ensures we report the specific legacy shape issue rather than
+        # generic missing-key errors when the file uses the old 'answers' structure.
+        # Only one check needed (not both here and in the "items not in data" branch).
+        if "answers" in data and ("kind" not in data or "attempt" not in data or "items" not in data):
+            return "report answers file uses 'answers' key; expected 'items'"
 
         # Check required keys
         if "kind" not in data:
@@ -156,9 +157,6 @@ def validate_answers_file_shape(data: Dict, kind: str) -> Optional[str]:
         if "attempt" not in data:
             return "answers file missing 'attempt' key"
         if "items" not in data:
-            # D1 (#340): check if file uses legacy 'answers' key instead of 'items'
-            if "answers" in data:
-                return "report answers file uses 'answers' key; expected 'items'"
             return "answers file missing 'items' key"
 
         items = data.get("items")

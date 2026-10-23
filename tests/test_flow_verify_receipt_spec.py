@@ -284,59 +284,69 @@ def main():
                       rc == 1 and "unanswered: review-01.json" in out,
                       f"rc={rc} out={out.strip()[-300:]}")
 
-    # Test 22: Spec guard - expert-flow.md relay step 4 skeleton and step 6 jq filter
-    print("[Test 22] Spec guard: expert-flow.md relay steps 4 and 6 are correct")
+    # Test 22: Spec guard - extract step 4 JSON and step 6 jq filter from the real commands/expert-flow.md
+    print("[Test 22] Spec guard: extract step 4 JSON and step 6 jq from commands/expert-flow.md")
     import importlib.util
+    import re
     schema_path = Path(__file__).parent.parent / "scripts" / "plan_checkpoint_schema.py"
     spec = importlib.util.spec_from_file_location("plan_checkpoint_schema", schema_path)
     schema_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(schema_module)
     validate_answers_file_shape = schema_module.validate_answers_file_shape
 
-    # The JSON skeleton from commands/expert-flow.md relay step 4
-    skeleton = {
-        "kind": "report",
-        "round": 1,
-        "attempt": 1,
-        "items": {
-            "Q1": {
-                "disposition": "answered",
-                "value": "B",
-                "reply_excerpt": "Q1: B",
-                "source": "prose",
-                "ambiguous": False
-            }
-        },
-        "reading_echoed": False,
-        "loop_end": "all-answered"
-    }
+    # Read commands/expert-flow.md and extract the skeleton from step 4 description
+    expert_flow_path = REPO_ROOT / "commands" / "expert-flow.md"
+    expert_flow_content = expert_flow_path.read_text(encoding="utf-8")
 
-    # Validate the skeleton
-    error = validate_answers_file_shape(skeleton, "report")
-    h.test_result("[Test 22a] Relay step 4 skeleton passes validate_answers_file_shape",
-                  error is None,
-                  f"error={error}")
-
-    # The jq filter from commands/expert-flow.md relay step 6
-    jq_filter = (
-        '.kind=="report" and '
-        '(.attempt|type=="number") and '
-        '(.round|type=="number") and '
-        '(.items|type=="object") and '
-        '([.items[]|select(.disposition=="unresolved")]|length==0) and '
-        '(.loop_end=="continue" or ([.items[]|select(.disposition=="accepted-on-continue")]|length==0))'
+    # Extract skeleton from the "Example:" line in step 4 (around line 1123)
+    skeleton_match = re.search(
+        r'Example: `(\{.*?"kind": "report".*?\})`',
+        expert_flow_content,
+        re.DOTALL
     )
+    skeleton = None
+    if skeleton_match:
+        try:
+            skeleton = json.loads(skeleton_match.group(1))
+        except json.JSONDecodeError:
+            pass
 
-    # Check that the jq filter references the required fields
-    has_kind = '.kind' in jq_filter
-    has_attempt = '.attempt' in jq_filter
-    has_round = '.round' in jq_filter
-    has_items = '.items' in jq_filter
-    not_has_answers = '.answers' not in jq_filter
+    # Validate the extracted skeleton
+    error = None
+    if skeleton:
+        error = validate_answers_file_shape(skeleton, "report")
+        h.test_result("[Test 22a] Step 4 skeleton from commands/expert-flow.md is valid",
+                      error is None,
+                      f"error={error}")
+    else:
+        h.test_result("[Test 22a] Could not extract skeleton from commands/expert-flow.md",
+                      False,
+                      "skeleton not found or not JSON")
 
-    h.test_result("[Test 22b] Relay step 6 jq filter checks .kind, .attempt, .round, .items and not .answers",
-                  has_kind and has_attempt and has_round and has_items and not_has_answers,
-                  f"has_kind={has_kind}, has_attempt={has_attempt}, has_round={has_round}, has_items={has_items}, not_has_answers={not_has_answers}")
+    # Extract jq filter from step 6 (the bash command with jq -e)
+    jq_match = re.search(
+        r"jq -e '(.+?)' \"\$FLOW_DIR/answers/plan-<SEQ>\.json\"",
+        expert_flow_content
+    )
+    jq_filter = None
+    if jq_match:
+        jq_filter = jq_match.group(1)
+
+    # Check that the jq filter has required structure
+    if jq_filter:
+        has_kind = '.kind' in jq_filter
+        has_attempt = '.attempt' in jq_filter
+        has_round = '.round' in jq_filter
+        has_items = '.items' in jq_filter
+        not_has_answers = '.answers' not in jq_filter
+
+        h.test_result("[Test 22b] Step 6 jq from commands/expert-flow.md checks required fields",
+                      has_kind and has_attempt and has_round and has_items and not_has_answers,
+                      f"has_kind={has_kind}, has_attempt={has_attempt}, has_round={has_round}, has_items={has_items}, not_has_answers={not_has_answers}")
+    else:
+        h.test_result("[Test 22b] Could not extract jq filter from commands/expert-flow.md",
+                      False,
+                      "jq filter not found")
 
     h.summarize_and_exit()
 
