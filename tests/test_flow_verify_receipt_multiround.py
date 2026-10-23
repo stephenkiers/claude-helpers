@@ -420,9 +420,9 @@ def main():
         }), encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        # The wrong-shape check should catch 'answers' key and report it specifically
-        h.test_result("[Test 18] Wrong shape: 'answers' key fails",
-                      error is not None and ("uses 'answers' key; expected 'items'" in error or "answer file missing handle: Q1" in error),
+        # F3: The shape validation check must catch 'answers' key and report the specific legacy-key reason
+        h.test_result("[Test 18] Wrong shape: 'answers' key fails with specific reason",
+                      error is not None and "uses 'answers' key; expected 'items'" in error,
                       f"error={error}")
 
     # Test 19: Wrong shape - missing 'attempt'
@@ -571,6 +571,7 @@ def main():
             "reading_echoed": False, "loop_end": None,
         }), encoding="utf-8")
 
+        # Round 2 intentionally skipped (testing excerpt binding across non-contiguous rounds)
         # Round 3: Q1 answered, excerpt in plan-01.reply-1.md but should be in plan-02.reply-3.md
         (flow_dir / "questions" / "plan-02.json").write_text(json.dumps({
             "kind": "report", "attempt": 1, "round": 3, "step": "plan", "command": "expert-plan",

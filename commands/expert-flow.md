@@ -1152,7 +1152,7 @@ For plan checkpoint reports from `/expert-plan`:
    
    The answers file has a fixed shape: `{"kind": "report", "round": <N>, "attempt": <N>, "items": {<handle>: {<item>}, …}, "reading_echoed": <bool>, "loop_end": <str>}`. Example: `{"kind": "report", "round": 1, "attempt": 1, "items": {"Q1": {"disposition": "answered", "value": "B", "reply_excerpt": "Q1: B", "source": "prose", "ambiguous": false}}, "reading_echoed": false, "loop_end": "all-answered"}`. A report answers file never uses the `answers` key (that is the legacy Ask shape).
    
-   A later round's file holds the items asked that round, and must hold every must-answer item that round's question file lists.
+   Union coverage across an attempt: the first round's file holds every ledger handle; a later round's file holds the items asked that round and must hold every must-answer item that round's question file lists; every ledger handle must appear in at least one file across the attempt; no file may hold a handle that is not in the ledger.
 
 5. **Echo the interpretation, then re-ask unresolved items if needed.** Write the answers file once per resolved state (after step 4's ingestion, and once more after step 5's re-ask if any item was re-answered). Print "Here's how I read it:" with one line per unresolved or ambiguous handle (`excerpt → reading`), or per affected handle when reading is ambiguous (W4). Set `reading_echoed: true` after printing. Add a call-to-action: "Reply 'ok' to confirm or correct any of the above."
    

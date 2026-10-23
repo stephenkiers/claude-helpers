@@ -134,7 +134,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 1] Non-standard filename fails closed",
-                      error is not None,
+                      error is not None and "answer file missing handle" in error,
                       f"error={error}")
 
     print("[Test 2] Non-plan-<digits> filename: plan-abc.json")
@@ -165,7 +165,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 2] plan-abc.json fails closed",
-                      error is not None,
+                      error is not None and "unreadable question file" in error,
                       f"error={error}")
 
     print("[Test 3] Non-plan-<digits> filename: plan01.json (no dash)")
@@ -196,7 +196,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 3] plan01.json fails closed",
-                      error is not None,
+                      error is not None and "answer file missing handle" in error,
                       f"error={error}")
 
     # --- Unreadable question file (F2) ---------------------------------------------------------------
@@ -256,7 +256,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 5] Question file as list fails closed",
-                      error is not None,
+                      error is not None and ("no report question files" in error or "unreadable question file" in error),
                       f"error={error}")
 
     # --- Orphaned question file (F2) ----------------------------------------------------------------
@@ -285,7 +285,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 6] Orphaned question file fails closed",
-                      error is not None,
+                      error is not None and "answer file missing handle" in error,
                       f"error={error}")
 
     # --- Falsy disposition (F12) -------------------------------------------------------------------
@@ -317,7 +317,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 7] Empty-string disposition fails closed",
-                      error is not None,
+                      error is not None and "missing disposition" in error,
                       f"error={error}")
 
     print("[Test 8] Falsy disposition: None disposition")
@@ -348,7 +348,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 8] None disposition fails closed",
-                      error is not None,
+                      error is not None and "missing disposition" in error,
                       f"error={error}")
 
     # --- Invalid source values (F8) -----------------------------------------------------------------
@@ -380,7 +380,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 9] Invalid source 'question' fails closed",
-                      error is not None,
+                      error is not None and "unknown source value" in error,
                       f"error={error}")
 
     print("[Test 10] Invalid source: source is 'user'")
@@ -411,15 +411,13 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 10] Invalid source 'user' fails closed",
-                      error is not None,
+                      error is not None and "unknown source value" in error,
                       f"error={error}")
 
     # --- Non-must-answer prose handling (F5) -------------------------------------------------------
-    # Note: F5 reports that reply-file checks are ONLY for must-answer handles (bug).
-    # The fix is to restore the check for ALL non-form records. Until that fix is applied,
-    # non-must-answer prose without a reply file will NOT fail. This test verifies the
-    # current (buggy) behavior so we can detect when F5 is fixed.
-    print("[Test 11] Non-must-answer prose: currently passes even without reply file (F5 bug)")
+    # F5: Reply-file checks must apply to ALL non-form records, not just must-answer items.
+    # This test verifies that non-must-answer prose without a reply file is rejected.
+    print("[Test 11] Non-must-answer prose: fails without reply file (F5 fix)")
     with tempfile.TemporaryDirectory() as tmp:
         session_dir, flow_dir = create_base_fixture(Path(tmp))
         create_base_reactions(session_dir)
@@ -448,10 +446,10 @@ def main():
         # Note: No plan-01.reply-1.md file exists
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
-        # This test documents the F5 bug: currently non-must-answer prose doesn't require reply file
-        h.test_result("[Test 11] Non-must-answer prose without reply file currently passes (F5 bug)",
-                      error is None,
-                      f"error={error} (should fail once F5 is fixed)")
+        # F5 fix: non-must-answer prose must have reply file, same as must-answer
+        h.test_result("[Test 11] Non-must-answer prose without reply file fails",
+                      error is not None and "reply file missing" in error,
+                      f"error={error}")
 
     print("[Test 12] Non-must-answer prose: valid with reply file")
     with tempfile.TemporaryDirectory() as tmp:
@@ -479,8 +477,8 @@ def main():
             "loop_end": None,
         }), encoding="utf-8")
 
-        # Create reply file for prose source (now with non-must-answer, this should still work)
-        (flow_dir / "plan-01.reply-1.md").write_text("I choose A\n", encoding="utf-8")
+        # Create reply file for prose source in answers directory (now with non-must-answer, this should still work)
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("I choose A\n", encoding="utf-8")
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 12] Non-must-answer prose with reply file passes",
@@ -542,7 +540,7 @@ def main():
 
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 14] Answer file as list fails closed",
-                      error is not None,
+                      error is not None and "unreadable answers file" in error,
                       f"error={error}")
 
     # --- Shape validation on fold data (F3) ------------------------------------------------
@@ -575,6 +573,76 @@ def main():
         error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
         h.test_result("[Test 15] Missing 'kind' key in answer file fails closed",
                       error is not None and ("missing 'kind'" in error or "plan-01" in error),
+                      f"error={error}")
+
+    # --- Mutation flag: round validation (0 and bool must be rejected) --------
+    print("[Test 16] Invalid round: round is 0")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = create_ledger()
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": 0, "step": "plan", "command": "expert-plan",
+            "items": [create_question_item("Q1")],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # Answer file with round 0 (invalid)
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": 0, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"}},
+            "loop_end": None,
+        }), encoding="utf-8")
+
+        # Create reply file in answers directory
+        (flow_dir / "answers" / "plan-01.reply-0.md").write_text("A\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 16] Round 0 fails closed",
+                      error is not None and "not a positive integer" in error,
+                      f"error={error}")
+
+    print("[Test 17] Invalid round: round is a bool (true)")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir = create_base_fixture(Path(tmp))
+        create_base_reactions(session_dir)
+
+        ledger = create_ledger()
+        decisions_text = f"""# Decisions
+## Checkpoint ledger
+```json
+{json.dumps(ledger)}
+```
+"""
+
+        # Note: bool True will be treated as round 1 by JSON, so we need a different round value in question file
+        (flow_dir / "questions" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": True, "step": "plan", "command": "expert-plan",
+            "items": [create_question_item("Q1")],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}]
+        }), encoding="utf-8")
+
+        # Answer file with round as bool (invalid)
+        (flow_dir / "answers" / "plan-01.json").write_text(json.dumps({
+            "kind": "report", "round": True, "attempt": 1,
+            "items": {"Q1": {"disposition": "answered", "value": "A", "reply_excerpt": "A", "source": "prose"}},
+            "loop_end": None,
+        }), encoding="utf-8")
+
+        # Create reply file in answers directory
+        (flow_dir / "answers" / "plan-01.reply-1.md").write_text("A\n", encoding="utf-8")
+
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 17] Bool round fails closed",
+                      error is not None and "not a positive integer" in error,
                       f"error={error}")
 
     h.summarize_and_exit()

@@ -521,13 +521,13 @@ def _fold_report_answers(
 def _check_excerpt_validity(
     handle: str, fold_record: FoldRecord, adir: Path
 ) -> Optional[str]:
-    """Check excerpt validity for a must-answer handle using the fold record.
+    """Check excerpt validity for any handle using the fold record.
 
     fold_record is a FoldRecord(disposition, item_data, source_file, round_num, loop_end).
     Returns error reason or None.
 
     Implements W1 and Q2: branches on source, fails closed for prose.
-    F5: Restores reply-file and round check for all non-form fold records.
+    F5: Checks reply-file and round validity for all non-form fold records (not just must-answer).
     F8: Whitelists source to {"form", "prose"}, rejects unknown values.
     """
     disposition, item_data, source_file, round_num, loop_end = fold_record
@@ -732,7 +732,8 @@ def check_report_checkpoint(
 
     # Rule 2: Check that round-1 report's handle set matches ledger handles
     # (Round-1 is the first report file by numeric SEQ order; every ledger handle must appear in round-1).
-    # Union coverage across all files is checked separately below.
+    # Union coverage across an attempt (every ledger handle appears in at least one file, and no file
+    # holds an unknown handle) is checked separately below.
     round1_basename = None
     if report_files:
         sorted_basenames = sorted(report_files.keys(), key=lambda f: schema.answer_file_sort_key(f))
@@ -937,6 +938,26 @@ def check_report_checkpoint(
             excerpt_err = _check_excerpt_validity(handle, fold_record, adir)
             if excerpt_err:
                 return excerpt_err
+
+    # F5: Check excerpt validity for ALL non-form records in fold (not just must-answer)
+    # Only check records with dispositions that require excerpts: answered, overridden, accepted-on-continue
+    for handle, fold_record in fold.items():
+        item_data = fold_record.item_data
+        source = item_data.get("source")
+        disposition = fold_record.disposition
+
+        # Skip form source (they don't need reply file check)
+        if source == "form":
+            continue
+
+        # Only check dispositions that require excerpts
+        if disposition not in ["answered", "overridden", "accepted-on-continue"]:
+            continue
+
+        # For all non-form records with excerpt-requiring dispositions, check validity
+        excerpt_err = _check_excerpt_validity(handle, fold_record, adir)
+        if excerpt_err:
+            return excerpt_err
 
     # Rule 6: Check accepted items are only D or W
     for handle, disposition in final_dispositions.items():
