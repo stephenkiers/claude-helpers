@@ -160,6 +160,7 @@ These rules are non-negotiable:
 - **Never propose new options, rank options, or mention severity.** Your role is to surface precedent, not to advise on the substance of the decision.
 - **Distinguish is mandatory whenever you speak.** Every spoken question must have a Distinguish line explaining how this case differs from the cited ones, or stating "No material difference seen".
 - **Stay silent when nothing relates.** If the digest holds no precedent relevant to a question, render `(silent — nothing related)` and move on. Silence is not a failure.
+- **Never read, open or cite `~/.claude/precedent/*/predictions.jsonl`** (the prediction log). The log is measurement only and never an input to any decision or display.
 
 ---
 

@@ -46,8 +46,9 @@ follows epic #291's information-only rule and ADR-0005's "lens not law".
 
 Provenance. This reader is proposed under epic #291 as the first cross-run reader of
 claude-action-plan.md. It relies on ADR-0007's chore/29 escape hatch, and that hatch
-needs an ADR update first. The ADR-0007 amendment and ADR-0024 are owned by #293 and
-have not landed, so this reader does not yet exercise the escape hatch.
+needs an ADR update first. ADR-0024 (Precedent Pat, Status: Proposed) has landed; the
+ADR-0007 amendment that covers all three sources is still owed under #293, so this
+reader does not yet exercise the escape hatch.
 
 Consumer boundary: read only by Pat (#293) and humans; never by reviewer prompts or
 Triage (preserves ADR-0002 blind-first).
@@ -59,6 +60,9 @@ Exit and stderr contract:
     uncaught exceptions. The --out file is left unwritten or incomplete on exit 1.
   - Exit 2, with one stderr line and no traceback, for invocation errors: bad
     arguments, --top < 1, a missing or malformed --match file, an unwritable --out.
+  - --stats: a prediction log that exists but cannot be read is not reported as empty.
+    The predictions section carries read_error (JSON key, null when fine) and a
+    "Read error" line (md). Counts are zero in that case.
 
 Provenance note: This reader is proposed under epic #291 as the first cross-run
 reader of claude-action-plan.md. The ADR-0007 amendment (#293) must explicitly
@@ -78,6 +82,47 @@ import sys
 import tempfile
 import traceback
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Sequence, Set, Tuple, TypedDict
+
+# Prediction-log stats shapes (--stats "predictions" section). Keys are the JSON contract.
+_NullCounts = TypedDict("_NullCounts", {"free_text": int, "accepted-on-continue": int})
+_ConfidenceStats = TypedDict("_ConfidenceStats", {
+    "logged": int,
+    "scored": int,
+    "hits": int,
+    "hit_rate": Optional[float],
+    "baseline_n": int,
+    "baseline_hit_rate": Optional[float],
+})
+_DeviationStats = TypedDict("_DeviationStats", {
+    "n": int,
+    "excluded_null": int,
+    "pat_right": int,
+    "panel_right": int,
+    "neither": int,
+})
+
+
+class PredictionStats(TypedDict):
+    """The --stats predictions section. Always has every key, even when the log is absent."""
+    log_path: str
+    logged: int
+    runs: int
+    scored: int
+    null: _NullCounts
+    malformed_lines: int
+    duplicate_keys: int
+    read_error: Optional[str]
+    hit_rate: Optional[float]
+    baseline_recommended_hit_rate: Optional[float]
+    pat_baseline_hit_rate: Optional[float]
+    baseline_n: int
+    by_confidence: Dict[str, _ConfidenceStats]
+    deviation: _DeviationStats
+    anchoring_caveat: str
+
+
+PREDICTION_LOG_PATH_LABEL = "~/.claude/precedent/<owner-name>/predictions.jsonl"
+ANCHORING_CAVEAT = "All rows are anchored; hit rate is an upper bound"
 
 PINNED_KEYS = (
     "id", "source", "repo_key", "date", "ref", "path", "header", "question",
@@ -1076,11 +1121,216 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
     return [entry for _score, _index, entry in scored[:top]]
 
 
-def _count_sources(entries: List[Dict[str, Any]]) -> Dict[str, int]:
-    counts = {source: 0 for source in SOURCES}
+def _count_sources(entries: List[Dict[str, Any]], sources: Sequence[str] = SOURCES) -> Dict[str, int]:
+    counts = {source: 0 for source in sources}
     for entry in entries:
         counts[entry["source"]] = counts.get(entry["source"], 0) + 1
     return counts
+
+
+PRED_KEY_RE = re.compile(r"[A-Za-z0-9_.-]+")  # same allowlist as precedent-log.py
+
+
+def _valid_pred_key(repo_key: str) -> bool:
+    """owner-name spelling accepted for the prediction log: ASCII [A-Za-z0-9_.-], at least
+    one hyphen, no "..", not starting with "."."""
+    return (
+        PRED_KEY_RE.fullmatch(repo_key) is not None
+        and "-" in repo_key
+        and ".." not in repo_key
+        and not repo_key.startswith(".")
+    )
+
+
+def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], int, int]:
+    """Load prediction log for project scope (project-scoped only).
+
+    Returns (rows, malformed_lines, duplicate_keys).
+    A missing file gives an empty list and zero counts. Any other OSError (or a
+    UnicodeDecodeError while reading) propagates: an unreadable log must not look empty.
+    The caller reports it as read_error.
+    """
+    repo_key_normalized = _fold(repo_key)
+    log_path = os.path.join(home, ".claude", "precedent", repo_key_normalized, "predictions.jsonl")
+
+    rows: List[Dict[str, Any]] = []
+    malformed = 0
+    duplicates = 0
+    seen_keys: Set[Tuple[str, str, str]] = set()
+
+    try:
+        f = open(log_path)
+    except FileNotFoundError:
+        # A dangling symlink is an unreadable log, not an absent one: re-raise it
+        if os.path.islink(log_path):
+            raise
+        return rows, malformed, duplicates
+
+    with f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    malformed += 1
+                    continue
+                # Rows are counted as malformed unless the fields the stats use have their
+                # expected types: run, question_id and command are strings, hit is bool or null.
+                run_val = row.get("run")
+                qid_val = row.get("question_id")
+                cmd_val = row.get("command")
+                if not all(isinstance(v, str) for v in (run_val, qid_val, cmd_val)):
+                    malformed += 1
+                    continue
+                hit_val = row.get("hit")
+                if hit_val is not None and not isinstance(hit_val, bool):
+                    malformed += 1
+                    continue
+                # First-wins dedup on (run, question_id, command)
+                key = (str(run_val), str(qid_val), str(cmd_val))
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                rows.append(row)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                malformed += 1
+
+    return rows, malformed, duplicates
+
+
+def _exc_text(exc: BaseException) -> str:
+    strerror = getattr(exc, "strerror", None)
+    return str(strerror) if strerror else str(exc)
+
+
+def _prediction_section(repo_key: str, home: str) -> PredictionStats:
+    """The --stats predictions section for the project-scoped log.
+
+    An unreadable log yields zero counts and a read_error string, never a silent empty.
+    A repo key outside the writer's allowlist is never joined into a path: the log is not
+    read and the section reports the reason as read_error.
+    """
+    read_error: Optional[str] = None
+    rows: List[Dict[str, Any]] = []
+    malformed = 0
+    duplicates = 0
+    if not _valid_pred_key(repo_key):
+        read_error = "repo key %r is not a valid owner-name; the log was not read" % repo_key
+    else:
+        try:
+            rows, malformed, duplicates = _load_predictions(repo_key, home)
+        except (OSError, UnicodeDecodeError) as exc:
+            rows, malformed, duplicates = [], 0, 0
+            read_error = _exc_text(exc)
+    stats = build_prediction_stats(rows)
+    stats["malformed_lines"] = malformed
+    stats["duplicate_keys"] = duplicates
+    stats["read_error"] = read_error
+    return stats
+
+
+def build_prediction_stats(rows: List[Dict[str, Any]]) -> PredictionStats:
+    """Compute prediction statistics from logged rows.
+
+    Always has the same keys (see PredictionStats). malformed_lines, duplicate_keys and
+    read_error are set by the caller; this function leaves them at zero and None.
+    The --match path builds its stub from build_prediction_stats([]).
+    """
+    # Count logged rows (across all attempts, since we loaded per repo_key)
+    logged = len(rows)
+
+    # Count unique runs
+    runs = set(row.get("run") for row in rows)
+    run_count = len(runs)
+
+    # Classify null rows by actual_source
+    null_rows = [r for r in rows if r.get("hit") is None]
+    free_text_count = sum(1 for r in null_rows if r.get("actual_source") == "free_text")
+    accepted_on_continue_count = sum(1 for r in null_rows if r.get("actual_source") == "accepted-on-continue")
+
+    # Scored rows: hit is not None
+    scored_rows = [r for r in rows if r.get("hit") is not None]
+    scored = len(scored_rows)
+
+    # Overall hit rate
+    hits = sum(1 for r in scored_rows if r.get("hit") is True)
+    hit_rate = round(hits / float(scored), 4) if scored > 0 else None
+
+    # Baseline: recommended always chosen, over scored rows whose recommended is not null
+    baseline_rows = [r for r in scored_rows if r.get("recommended") is not None]
+    baseline_n = len(baseline_rows)
+    baseline_hits = sum(1 for r in baseline_rows if r.get("actual") == r.get("recommended"))
+    baseline_recommended_hit_rate = round(baseline_hits / float(baseline_n), 4) if baseline_n > 0 else None
+    # Pat rate on baseline subset (F6: same denominators)
+    pat_baseline_hits = sum(1 for r in baseline_rows if r.get("hit") is True)
+    pat_baseline_hit_rate = round(pat_baseline_hits / float(baseline_n), 4) if baseline_n > 0 else None
+
+    # By confidence
+    by_confidence: Dict[str, Any] = {}
+    for confidence in ("high", "medium"):
+        conf_rows = [r for r in scored_rows if r.get("confidence") == confidence]
+        conf_logged = len([r for r in rows if r.get("confidence") == confidence])
+        conf_hits = sum(1 for r in conf_rows if r.get("hit") is True)
+        conf_hit_rate = round(conf_hits / float(len(conf_rows)), 4) if conf_rows else None
+
+        # Baseline for this confidence
+        conf_baseline = [r for r in conf_rows if r.get("recommended") is not None]
+        conf_baseline_n = len(conf_baseline)
+        conf_baseline_hits = sum(1 for r in conf_baseline if r.get("actual") == r.get("recommended"))
+        conf_baseline_rate = round(conf_baseline_hits / float(conf_baseline_n), 4) if conf_baseline_n > 0 else None
+
+        by_confidence[confidence] = {
+            "logged": conf_logged,
+            "scored": len(conf_rows),
+            "hits": conf_hits,
+            "hit_rate": conf_hit_rate,
+            "baseline_n": conf_baseline_n,
+            "baseline_hit_rate": conf_baseline_rate,
+        }
+
+    # Deviation cell: rows where recommended is not null and predicted != recommended
+    deviation_rows = [
+        r for r in scored_rows
+        if r.get("recommended") is not None and r.get("predicted") != r.get("recommended")
+    ]
+    deviation_n = len(deviation_rows)
+    deviation_excluded_null = sum(
+        1 for r in rows
+        if r.get("recommended") is not None and r.get("predicted") != r.get("recommended") and r.get("hit") is None
+    )
+    deviation_pat_right = sum(1 for r in deviation_rows if r.get("actual") == r.get("predicted"))
+    deviation_panel_right = sum(1 for r in deviation_rows if r.get("actual") == r.get("recommended"))
+    deviation_neither = deviation_n - deviation_pat_right - deviation_panel_right
+
+    return {
+        "log_path": PREDICTION_LOG_PATH_LABEL,
+        "logged": logged,
+        "runs": run_count,
+        "scored": scored,
+        "null": {
+            "free_text": free_text_count,
+            "accepted-on-continue": accepted_on_continue_count,
+        },
+        "malformed_lines": 0,  # Set by caller
+        "duplicate_keys": 0,   # Set by caller
+        "read_error": None,    # Set by caller
+        "hit_rate": hit_rate,
+        "baseline_recommended_hit_rate": baseline_recommended_hit_rate,
+        "pat_baseline_hit_rate": pat_baseline_hit_rate,
+        "baseline_n": baseline_n,
+        "by_confidence": by_confidence,
+        "deviation": {
+            "n": deviation_n,
+            "excluded_null": deviation_excluded_null,
+            "pat_right": deviation_pat_right,
+            "panel_right": deviation_panel_right,
+            "neither": deviation_neither,
+        },
+        "anchoring_caveat": ANCHORING_CAVEAT,
+    }
 
 
 def build_stats(
@@ -1091,6 +1341,9 @@ def build_stats(
     unkeyed: int,
     kept: int,
     total: int,
+    top_token_count: int,
+    sources: Sequence[str] = SOURCES,
+    skip_buckets: Sequence[str] = SKIP_BUCKETS,
 ) -> Dict[str, Any]:
     decided = [e["deviated"] for e in entries if e["deviated"] is not None]
     deviation_rate = (
@@ -1108,11 +1361,11 @@ def build_stats(
     free_text_rate = round(free_text / float(len(entries)), 4) if entries else None
     top_tokens = [
         {"token": tok, "count": count}
-        for tok, count in sorted(doc_freq.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_TOKENS]
+        for tok, count in sorted(doc_freq.items(), key=lambda kv: (-kv[1], kv[0]))[:top_token_count]
     ]
     return {
-        "per_source": _count_sources(entries),
-        "skipped": {s: {b: skipped[s][b] for b in SKIP_BUCKETS} for s in SOURCES},
+        "per_source": _count_sources(entries, sources),
+        "skipped": {s: {b: skipped[s][b] for b in skip_buckets} for s in sources},
         "kept": kept,
         "total": total,
         "deviation_rate": deviation_rate,
@@ -1147,6 +1400,11 @@ def _render_md_entry(entry: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_rate(rate: Optional[float]) -> str:
+    """Format a rate value as string, showing 'null' if None."""
+    return "%.4f" % rate if rate is not None else "null"
+
+
 def render(entries: List[Dict[str, Any]], fmt: str) -> str:
     """jsonl: one entry per line in pinned key order. md: one block per entry."""
     if fmt == "md":
@@ -1160,10 +1418,66 @@ def render(entries: List[Dict[str, Any]], fmt: str) -> str:
 
 def render_stats(stats: Dict[str, Any], fmt: str) -> str:
     if fmt == "md":
-        sections = [
-            "## %s\n\n```json\n%s\n```" % (key, json.dumps(value, indent=2, ensure_ascii=False))
-            for key, value in stats.items()
-        ]
+        sections = []
+        for key, value in stats.items():
+            if key == "predictions":
+                # Special formatting for predictions with rates next to numbers
+                pred_md = "## Predictions\n\n"
+                pred_md += "**Counts**: logged=%d, runs=%d, scored=%d, null (free_text=%d, accepted-on-continue=%d), malformed=%d, duplicate=%d\n\n" % (
+                    value.get("logged", 0),
+                    value.get("runs", 0),
+                    value.get("scored", 0),
+                    value.get("null", {}).get("free_text", 0),
+                    value.get("null", {}).get("accepted-on-continue", 0),
+                    value.get("malformed_lines", 0),
+                    value.get("duplicate_keys", 0),
+                )
+                read_error = value.get("read_error")
+                if read_error:
+                    pred_md += (
+                        "**Read error**: the log could not be read (%s); the counts above "
+                        "are zero because nothing was read, not because nothing was logged.\n\n"
+                    ) % read_error
+                # Add anchoring caveat (D-C: all rows are anchored, so hit rate is upper bound)
+                pred_md += "**Note**: %s.\n\n" % value.get("anchoring_caveat", ANCHORING_CAVEAT)
+
+                hit_rate = value.get("hit_rate")
+                hit_rate_str = _fmt_rate(hit_rate)
+                baseline_rate = value.get("baseline_recommended_hit_rate")
+                baseline_rate_str = _fmt_rate(baseline_rate)
+                pat_baseline_str = _fmt_rate(value.get("pat_baseline_hit_rate"))
+                pred_md += (
+                    "**Hit rates**: pat overall=(%s, n=%d); on the baseline subset (the rows "
+                    "baseline-recommended scores): pat=(%s), baseline-recommended=(%s, n=%d)\n\n"
+                ) % (
+                    hit_rate_str, value.get("scored", 0), pat_baseline_str,
+                    baseline_rate_str, value.get("baseline_n", 0),
+                )
+                for confidence in ("high", "medium"):
+                    conf = value.get("by_confidence", {}).get(confidence, {})
+                    conf_hit_rate = conf.get("hit_rate")
+                    conf_baseline_rate = conf.get("baseline_hit_rate")
+                    conf_n = conf.get("baseline_n", 0)
+                    pred_md += "**%s**: logged=%d, scored=%d, hits=%d, pat=(%s), baseline-recommended=(%s, n=%d)\n\n" % (
+                        confidence.capitalize(),
+                        conf.get("logged", 0),
+                        conf.get("scored", 0),
+                        conf.get("hits", 0),
+                        _fmt_rate(conf_hit_rate),
+                        _fmt_rate(conf_baseline_rate),
+                        conf_n,
+                    )
+                dev = value.get("deviation", {})
+                pred_md += "**Deviation** (pat vs. panel): n=%d, excluded_null=%d, pat_right=%d, panel_right=%d, neither=%d" % (
+                    dev.get("n", 0),
+                    dev.get("excluded_null", 0),
+                    dev.get("pat_right", 0),
+                    dev.get("panel_right", 0),
+                    dev.get("neither", 0),
+                )
+                sections.append(pred_md)
+            else:
+                sections.append("## %s\n\n```json\n%s\n```" % (key, json.dumps(value, indent=2, ensure_ascii=False)))
         return "\n\n".join(sections) + "\n"
     return json.dumps(stats, ensure_ascii=False) + "\n"
 
@@ -1263,7 +1577,13 @@ def _run(argv: Optional[Sequence[str]]) -> int:
         stats = build_stats(
             entries, collected["skipped"], collected["census"],
             collected["legacy"], collected["unkeyed"], len(output), total,
+            top_token_count=TOP_TOKENS,
         )
+        # Predictions section: project-scoped only. The --match path never loads the log.
+        if questions is None:
+            stats["predictions"] = _prediction_section(repo, home)
+        else:
+            stats["predictions"] = build_prediction_stats([])
         text = render_stats(stats, args.format)
     else:
         text = render(output, args.format)
@@ -1274,14 +1594,18 @@ def _run(argv: Optional[Sequence[str]]) -> int:
         sys.stdout.write(text)
         sys.stdout.flush()
 
-    skipped_total = sum(
-        collected["skipped"][s][b] for s in SOURCES for b in SKIP_BUCKETS if b != "linked_skipped"
-    )
-    linked_skipped = sum(
-        collected["skipped"][s]["linked_skipped"] for s in SOURCES
-    )
+    skipped_total, linked_skipped = _skip_totals(collected["skipped"])
     _stderr(_summary(repo, _count_sources(entries), skipped_total, linked_skipped, len(output), total, reason))
     return 0
+
+
+def _skip_totals(skipped: Dict[str, Dict[str, int]]) -> Tuple[int, int]:
+    """(skipped, linked_skipped) summed over sources. linked_skipped is reported apart."""
+    skipped_total = sum(
+        skipped[s][b] for s in SOURCES for b in SKIP_BUCKETS if b != "linked_skipped"
+    )
+    linked_skipped = sum(skipped[s]["linked_skipped"] for s in SOURCES)
+    return skipped_total, linked_skipped
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

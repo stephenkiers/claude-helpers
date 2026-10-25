@@ -115,6 +115,8 @@ lines beside questions), logging, and the caller's own validation of the receipt
 handling and the human's prior choice are visible. Pat runs on Sonnet (ADR-0004) and has no index entry or routing 
 configuration. Pat is wired into `/expert-plan` Step 5 (#294); `/expert-review` wiring is pending (#296).
 
+Predictions are logged to measure Pat's accuracy. `scripts/precedent-log.py append` writes one JSONL row per answered question that Pat spoke on, to `~/.claude/precedent/<owner-name>/predictions.jsonl` (append-only, per repo). It is called after Step 5 answers in both `/expert-plan` branches (non-flow and flow). `scripts/precedent-digest.py --stats` is its sole reader other than the writer's own dedup read (project-scoped only), and prints hit rate by confidence alongside an always-recommended baseline. Pat, triage, reviewers, and the digest `--match` path never read it.
+
 ## User preferences
 
 Create `~/.claude/preferences.yaml` to define personal code review taste and style. Preferences are
