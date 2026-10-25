@@ -605,14 +605,26 @@ Then exit cleanly.
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
-Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md"`, which reads the ledger's expected reaction files and the briefs' types and prints handle → tier JSON. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
+Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --fragment`, which reads the ledger's expected reaction files and the briefs' types and prints the handle-keyed checkpoint ledger fragment (handles numbered per tier in brief_id order) with `tier`, `brief_id`, `brief_type`, and `evidence` fields. Without `--fragment` it prints brief_id → tier JSON instead. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
 - **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists, or any expert marked `needs-human`.
 - **D:** no Q condition applies, at least one expert `resolved`, at least one expert OTHER THAN the one(s) who resolved `agreed` (self-agreement does not count), and no `could-go-other-way` flag. `no-view` does NOT demote D to W.
 - **W:** every other item.
 
-Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- **D<n>. …**`), `## Worth a look` (`- **W<n>. …**`), and `## Questions for you` (`#### Q<n>.` briefs). Each Q carries its recommendation, backing experts, why, and business case. Extend the ledger with handle → tier, `brief_type`, and evidence paths: add each handle (`"D1"`, `"W1"`, `"Q1"`, …) as a TOP-LEVEL key of the ledger object, each mapping to `{tier, brief_id, brief_type, evidence: [paths]}` (placement and value shape: flow-reference.md "Checkpoint ledger and reaction schema").
+Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- **D<n>. …**`), `## Worth a look` (`- **W<n>. …**`), and `## Questions for you` (`#### Q<n>.` briefs). Each Q carries its recommendation, backing experts, why, and business case. Copy each fragment member into the checkpoint ledger as a **top-level key** beside `seated`/`briefs`/`expected_reactions`, never nested under `handles` or any other key, each value carrying all four fields. Example:
+```json
+{
+  "seated": [...],
+  "briefs": {...},
+  "expected_reactions": [...],
+  "D1": {"tier": "decided", "brief_id": "B4", "brief_type": "question", "evidence": [...]},
+  "Q1": {"tier": "question", "brief_id": "B2", "brief_type": "disagreement", "evidence": [...]}
+}
+```
+See prompts/flow-reference.md "Checkpoint ledger and reaction schema" for the full format.
 
 If more than five Qs survive, set `headline` to "This ticket looks under-specified — N questions survived the panel; let's talk it through." Five follows Danielle's observation that people drop items past about five. Keep this as a named constant. There is no halt and no cap.
+
+**Self-check (before the round-1 report):** run `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --check-ledger`. On a non-zero exit, rewrite the ledger extension from the `--fragment` output and re-run once. If it still fails, write `Decision: FAILED` with `Reason: checkpoint ledger shape: <stderr reason>` and stop before any question file is written. The verifier remains the backstop.
 
 **Flow branch: Precedent handling.** Call the Precedent block (defined below) after the D/W/Q sections are written and before the round-1 report file is written. The block runs once per checkpoint and sets `PRECEDENT_TRACE`. For each spoken Q item whose `why` does not already start with `Precedent:` (checking prior rounds), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json" --out "${SESSION_DIR}/precedent-lines.json"` to get the Precedent line for that item's id. Store all per-handle lines in `${SESSION_DIR}/precedent-lines.json` (a JSON object `{id: "Precedent: ..."}`). For each Q item, append to its `why` field a blank line followed by the stored line (if it exists). D and W items are never annotated; their `options[]`, `for`, `against`, `recommendation`, and `must_answer` fields remain unchanged. On later rounds resuming the same attempt, re-emitting a Q item reuses the stored line from `precedent-lines.json` and skips the append if the `why` already contains a line starting `Precedent:` (Pat is never re-dispatched within an attempt). After the checkpoint loop ends, append two sections to `decisions.md` after the ledger block: first, the `## Precedent` section from `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"`, then the trace line `precedent: <PRECEDENT_TRACE>`. The ledger's handle keys stay at the top level of its JSON block.
 

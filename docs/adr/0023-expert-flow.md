@@ -813,3 +813,21 @@ With zero observed `yes` or `no` values, the turns-exhaustion rate cannot be est
 That stream does not exist yet (0 lines), so neither condition can fire today.
 
 **Pointers.** `docs/adr/0004-model-cost-routing.md` (the escalate-once amendment) and the `CLAUDE.md` `/expert-flow` bullet now point to this amendment. Both keep the "dormant" status and the `Retry with sonnet` option.
+
+## Amendment (2026-10-25): Unambiguous post-tier checkpoint ledger (#344)
+
+This amendment hardens the checkpoint ledger shape and names all error causes, so a plan run does not hard-stop after every round is answered when handles are nested or entries lack required fields.
+
+**Decision.**
+
+- **W1: Reject nested handle maps** (handle keys under a `"handles"` or other key, not top-level). A content-based detector in `scripts/plan_checkpoint_schema.py` names the nested key and the handles found under it. The verifier calls it before Rule 2 and on the legacy path; on a nested map, returns `plan checkpoint incomplete (checkpoint ledger nests handle keys under '<key>' (<handles>); handle keys must be top-level ledger keys)`. No normalizing; fail closed.
+- **Q1=B: Shared detector** for nested maps, called in two places (report and legacy path), so the reason is consistent.
+- **Q3=A: Presence validation** on all top-level handle entries: each entry must be a dict with required fields `tier`, `brief_id`, `brief_type` (checking in that order). Missing means the key is absent, `null`, or empty string. Returns `checkpoint ledger entry <handle> has no <field>`.
+- **Q2=A: Three Rule 6 reasons** (not one collapsed check): handle not in ledger, entry has no tier, or tier not in ACCEPTABLE_TIERS. Names the specific cause for every accepted item that fails.
+- **D1: Step 5 self-check** before the round-1 report. Runs `--check-ledger` pure-read mode, which compares the ledger against a freshly computed fragment. On mismatch, names the cause (missing/unexpected handle, mismatched tier/brief_id, etc.). Returns exit 1 with a named reason on stderr, exit 0 on pass.
+- **Q4=B2: Fragment mode** in the tier script. `--fragment` prints handle-keyed entries with all four fields, numbered per tier in brief_id sort order. Script-owned numbering is binding on the report. A test round-trips the fragment into a ledger and asserts the verifier passes Rule 2.
+- **Legacy path**: when no report checkpoint is found but the ledger carries nested handles, the nested-map reason is named instead of silently passing.
+
+**Consequences.** A shape error is named by cause, not by symptom (e.g., `entry D1 has no tier` instead of `accepted non-D/W`). Nested ledgers fail with a specific reason listing the nested key and handles. The Step 5 self-check catches renumbering, dropped or added handles before the report is shown, so the human is not re-asked after fixing numbering. The verifier remains the backstop for mechanical facts (ADR-0023:405).
+
+**Verifier ownership (unchanged).** The verifier stays sole owner of mechanical checkpoint facts. The schema module provides shared constants and validators; the verifier makes the final fail-closed/pass decision.

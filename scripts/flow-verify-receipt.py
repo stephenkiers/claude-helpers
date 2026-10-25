@@ -735,6 +735,14 @@ def check_report_checkpoint(
     if "contrarian-carl" not in seated:
         return "plan checkpoint incomplete (missing contrarian-carl from seated list)"
 
+    # Early checks: nested handle map and entry field validation (Q1=B, Q3=A)
+    nested_reason = schema.nested_handle_map_reason(ledger)
+    if nested_reason:
+        return f"plan checkpoint incomplete ({nested_reason})"
+    entry_reason = schema.validate_handle_entries(ledger)
+    if entry_reason:
+        return f"plan checkpoint incomplete ({entry_reason})"
+
     # Get all handles from ledger (post-tier handles: D1, W1, Q1, ...)
     ledger_handles_and_tiers = _ledger_handles(ledger)
     ledger_handles = set(ledger_handles_and_tiers.keys())
@@ -1053,8 +1061,16 @@ def check_report_checkpoint(
     # Rule 6: Check accepted items are only D or W
     for handle, disposition in final_dispositions.items():
         if disposition == "accepted":
-            tier = ledger_handles_and_tiers.get(handle, {}).get("tier")
-            if tier not in ["decided", "worth-a-look"]:
+            handle_entry = ledger_handles_and_tiers.get(handle)
+            if handle_entry is None:
+                # Handle not in ledger at all
+                return f"plan checkpoint incomplete (accepted handle not in checkpoint ledger: {handle})"
+            tier = handle_entry.get("tier")
+            if tier is None:
+                # Entry exists but has no tier (defense in depth behind Step 2's early check)
+                return f"plan checkpoint incomplete (checkpoint ledger entry {handle} has no tier)"
+            if tier not in schema.ACCEPTABLE_TIERS:
+                # Tier exists but is not D or W
                 return f"plan checkpoint incomplete (accepted non-D/W: {handle})"
 
     # Rule 7: Check reaction files exist and are complete
@@ -1372,6 +1388,11 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
                 f"plan checkpoint incomplete (ledger has D/W/Q handles but no report file was validated: "
                 f"{detail}; handles: {handles_txt})"
             )
+        else:
+            # No top-level handles: check for nested handles (Q1=B, legacy path)
+            nested_reason = schema.nested_handle_map_reason(ledger)
+            if nested_reason:
+                return f"plan checkpoint incomplete ({nested_reason})"
 
     # Legacy per-question rule (fails closed on unanswered, malformed and out-of-attempt files)
     briefs = count_briefs(decisions_text)
