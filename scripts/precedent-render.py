@@ -24,6 +24,8 @@ Validation (Obligation 8.2):
   - Each block header `## Q{n} [{id}] {header}` must have an id that exists in the questions file.
   - `Prediction` must byte-equal one of that question's option labels.
   - Every non-null cited `ref` must appear as a `ref` in the digest JSONL.
+  - A curated citation (`**Precedent**: curated rule "<answer>" (<path>)`) must name the path of a
+    digest entry with `source: "curated"` and the same answer; it carries no ref.
 
 Failure modes (D7 reasons):
   - "pat-invalid": file missing, malformed, or validation failed
@@ -69,6 +71,11 @@ RECEIPT_RE = re.compile(
 Q_HEADER_RE = re.compile(r"^## Q(\d+) \[([^\]]+)\] (.*)$")
 PRECEDENT_LINE_RE = re.compile(
     r"^\*\*Precedent\*\*: (.+?)(?:\s*· #(\d+))?\s*· (.+?)\s*· chose \"(.+?)\"(?:\s*\(recommended was \"(.+?)\"\))?(?:\s*· reason: \"(.+)\")?\s*$"
+)
+# Curated citation shape (ADR-0024 amendment, #297): a project-written rule from a digest entry
+# with source "curated". The path is the absolute file path the digest recorded.
+CURATED_LINE_RE = re.compile(
+    r"^\*\*Precedent\*\*: curated rule \"(.+?)\" \((.+?)\)(?:\s*· spirit: \"(.+)\")?\s*$"
 )
 PREDICTION_RE = re.compile(r"^\*\*Prediction\*\*: (.+)$")
 CONFIDENCE_RE = re.compile(r"^\*\*Confidence\*\*: (high|medium)$")
@@ -117,6 +124,11 @@ def _read_text(path: str) -> str:
         return handle.read().decode("utf-8")
 
 
+def _is_curated(prec: Dict[str, Any]) -> bool:
+    """A Precedent line is curated when it carries a path (only the curated shape parses one)."""
+    return isinstance(prec.get("path"), str)
+
+
 def _parse_receipt(text: str) -> Optional[Tuple[int, int, int, int, int]]:
     """Parse receipt line: return (questions, spoke-on, citations, high, medium) or None."""
     for line in text.splitlines():
@@ -155,9 +167,16 @@ def _load_questions(path: str) -> Dict[str, Any]:
         return {}
 
 
-def _load_digest(path: str) -> Dict[Optional[int], Dict[str, Any]]:
-    """Load digest JSONL: {ref: entry, ...} where ref is the 'ref' field or None."""
+def _load_digest(path: str) -> Tuple[Dict[Optional[int], Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Load digest JSONL.
+
+    Returns (refs, curated_paths):
+    - refs: {ref: entry, ...} where ref is the 'ref' field or None.
+    - curated_paths: {path: entry, ...} for entries with source "curated" (ref is null for these,
+      so they are indexed by their absolute path instead).
+    """
     refs: Dict[Optional[int], Dict[str, Any]] = {}
+    curated_paths: Dict[str, Dict[str, Any]] = {}
     try:
         text = _read_text(path)
         for line in text.splitlines():
@@ -168,11 +187,13 @@ def _load_digest(path: str) -> Dict[Optional[int], Dict[str, Any]]:
                 entry = json.loads(line)
                 ref = entry.get("ref")
                 refs[ref] = entry
+                if entry.get("source") == "curated" and isinstance(entry.get("path"), str):
+                    curated_paths[entry["path"]] = entry
             except json.JSONDecodeError:
                 continue
     except (OSError, UnicodeDecodeError):
         pass
-    return refs
+    return refs, curated_paths
 
 
 def _parse_blocks(text: str) -> List[_ValidatedBlock]:
@@ -213,6 +234,19 @@ def _parse_blocks(text: str) -> List[_ValidatedBlock]:
         if SILENT_RE.match(stripped):
             current["silent"] = True
             current = None
+            continue
+
+        # Parse curated Precedent lines (project-written rules; no ref, carry a path)
+        curated_match = CURATED_LINE_RE.match(stripped)
+        if curated_match:
+            current["precedent_lines"].append({
+                "ref": None,
+                "source": "curated",
+                "answer": curated_match.group(1),
+                "path": curated_match.group(2),
+                "recommended": None,
+                "reason": curated_match.group(3),
+            })
             continue
 
         # Parse Precedent lines
@@ -259,12 +293,15 @@ def _validate_blocks(
     blocks: List[_ValidatedBlock],
     questions: Dict[str, Any],
     digest_refs: Dict[Optional[int], Dict[str, Any]],
+    curated_paths: Dict[str, Dict[str, Any]],
     receipt: Tuple[int, int, int, int, int],
 ) -> Tuple[bool, str, List[str]]:
     """Validate blocks against questions and digest. Return (valid, reason, valid_ids).
 
     valid_ids is the list of block ids that pass validation (for building result_blocks).
-    Enforces: no duplicate ids, no null refs in citations, Distinguish present when spoken.
+    Enforces: no duplicate ids, no null refs in raw citations, Distinguish present when spoken.
+    A curated citation (one carrying a path) must name a digest curated entry by path, with the
+    same answer; the ref rules do not apply to it.
     """
     q_count, spoke_on, citations, high, medium = receipt
 
@@ -321,8 +358,14 @@ def _validate_blocks(
         if not block["precedent_lines"]:
             return False, "pat-invalid", []
 
-        # All refs must be non-null (requirement: mandatory ref per obligation)
+        # Raw refs must be non-null (requirement: mandatory ref per obligation).
+        # Curated citations are checked against the curated path index instead.
         for prec_line in block["precedent_lines"]:
+            if _is_curated(prec_line):
+                entry = curated_paths.get(prec_line["path"])
+                if entry is None or entry.get("answer") != prec_line["answer"]:
+                    return False, "pat-invalid", []
+                continue
             ref = prec_line["ref"]
             if ref is None:
                 return False, "pat-invalid", []
@@ -335,8 +378,10 @@ def _validate_blocks(
         if block["prediction"] not in options:
             continue
 
-        # All cited refs must exist in digest (missing -> invalid)
+        # All cited raw refs must exist in digest (missing -> invalid)
         for prec_line in block["precedent_lines"]:
+            if _is_curated(prec_line):
+                continue
             ref = prec_line["ref"]
             if ref not in digest_refs:
                 return False, "pat-invalid", []
@@ -415,7 +460,7 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
         raise _Usage("cannot read or parse questions file: %s" % questions_path)
 
     try:
-        digest_refs = _load_digest(digest_path)
+        digest_refs, curated_paths = _load_digest(digest_path)
     except (OSError, UnicodeDecodeError):
         raise _Usage("cannot read digest file: %s" % digest_path)
 
@@ -426,7 +471,7 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
     asked_count = sum(1 for b in blocks if not b["silent"])
 
     # Validate blocks
-    valid, reason, valid_ids = _validate_blocks(blocks, questions, digest_refs, receipt)
+    valid, reason, valid_ids = _validate_blocks(blocks, questions, digest_refs, curated_paths, receipt)
 
     # Build result
     if valid or reason == "pat-silent":
@@ -469,6 +514,34 @@ def validate_cmd(precedent_path: str, questions_path: str, digest_path: str, out
     return 0
 
 
+def _curated_display_line(prec: Dict[str, Any], prediction: str, confidence: str, differs: Any) -> Optional[str]:
+    """Build the display line for a curated citation, or None to drop it.
+
+    Shape: Precedent: curated rule "<answer>" (<path>). Prediction: <p> (<conf>)[. Differs...]
+    Same 240-char budget priority as raw lines: Differs and Prediction are kept, then the answer is truncated.
+    """
+    if confidence not in ("high", "medium"):
+        return None
+
+    answer = _sanitize(prec.get("answer", ""))
+    path = _sanitize(prec.get("path", ""))
+    pred_clause = ". Prediction: %s (%s)." % (prediction, confidence)
+    diff_clause = " Differs from the panel's recommendation." if differs else ""
+
+    line_text = "Precedent: curated rule \"" + answer + "\" (" + path + ")" + pred_clause + diff_clause
+    if len(line_text) > 240:
+        frame = "Precedent: curated rule \"\" (" + path + ")"
+        budget = 240 - len(pred_clause) - len(diff_clause) - len(frame)
+        if budget < 2:
+            return None
+        answer = answer[:budget - 1] + "…"
+        line_text = "Precedent: curated rule \"" + answer + "\" (" + path + ")" + pred_clause + diff_clause
+
+    if len(line_text) > 240:
+        return None
+    return line_text
+
+
 def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) -> int:
     """The line subcommand: extract display lines for spoken questions.
 
@@ -504,6 +577,13 @@ def line_cmd(validated_path: str, questions_path: str, out_path: Optional[str]) 
             continue
 
         prec = prec_list[0]
+        if _is_curated(prec):
+            # Curated lines carry no date, so the date guard does not apply
+            curated_line = _curated_display_line(prec, prediction, block.get("confidence", ""), differs)
+            if curated_line is not None:
+                lines[qid] = curated_line
+            continue
+
         date = prec.get("date", "")
         # Validate date format: YYYY-MM-DD
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
@@ -625,6 +705,12 @@ def section_cmd(validated_path: str, out_path: Optional[str]) -> int:
         for qid, block in blocks.items():
             # Emit each field as a blockquote
             for prec in block.get("precedent_lines", []):
+                if _is_curated(prec):
+                    curated_answer = _sanitize(prec.get("answer", ""))
+                    curated_path = _sanitize(prec.get("path", ""))
+                    lines.append("> **Precedent**: curated rule \"" + curated_answer + "\" (" + curated_path + ")")
+                    continue
+
                 date = _sanitize(prec.get("date", ""))
                 ref = prec.get("ref")
                 source = _sanitize(prec.get("source", ""))
