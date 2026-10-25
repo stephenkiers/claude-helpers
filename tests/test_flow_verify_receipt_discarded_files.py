@@ -155,6 +155,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - test.py",
@@ -199,6 +200,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "single.py",
@@ -243,6 +245,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - /absolute/path.py",
@@ -284,6 +287,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - ../escape.py",
@@ -329,6 +333,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "Decision: WRONG",
                 "OUTSTANDING: none",
@@ -369,6 +374,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "OUTSTANDING: none",
                 "Decision: OK",

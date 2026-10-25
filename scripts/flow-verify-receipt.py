@@ -144,7 +144,7 @@ OUTSTANDING_ITEM_RE = re.compile(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$")
 # line. So prose that merely contains "round 1", and status-table lines such as `Round 1 join: ...` or
 # `Round 1 (implement): ...`, do not match. A line that matches is a section header only; whether round 1
 # actually ran is receipt rule 7's job.
-ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>*-]+[ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|$)"
+ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>*-]+[ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|\((?=\d)|$)"
 ROUND1_HEADER_RE = re.compile(ROUND1_HEADER_PATTERN)
 # Markdown table separator row (allow :?-+:? per cell)
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")
