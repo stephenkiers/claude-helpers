@@ -508,6 +508,7 @@ Decision: FAILED
         receipt = """IMPLEMENTER_MODEL: sonnet
 ROUND 1
 Decision: OK
+OUTSTANDING: none
 <!-- step-end -->"""
         create_receipt(receipt_path, receipt)
 
@@ -544,6 +545,7 @@ Decision: OK
         receipt = """IMPLEMENTER_MODEL: haiku
 ROUND 1
 Decision: OK
+OUTSTANDING: none
 <!-- step-end -->"""
         create_receipt(receipt_path, receipt)
 
@@ -582,6 +584,7 @@ DISCARDED_ADDED_FILES:
   - discarded.txt
 ROUND 1
 Decision: OK
+OUTSTANDING: none
 <!-- step-end -->"""
         create_receipt(receipt_path, receipt)
 
@@ -624,6 +627,7 @@ DISCARDED_ADDED_FILES:
   - discarded.txt
 ROUND 1
 Decision: OK
+OUTSTANDING: none
 <!-- step-end -->"""
         create_receipt(receipt_path, receipt)
 
@@ -658,6 +662,7 @@ DISCARDED_ADDED_FILES:
   - discarded.txt
 ROUND 1
 Decision: OK
+OUTSTANDING: none
 <!-- step-end -->"""
         create_receipt(receipt_path, receipt)
 
@@ -911,6 +916,7 @@ Decision: FAILED
         receipt = """IMPLEMENTER_MODEL: sonnet
 ROUND 1
 Decision: OK
+OUTSTANDING: none
 <!-- step-end -->"""
         create_receipt(receipt_path, receipt)
 
