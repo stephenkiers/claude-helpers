@@ -465,6 +465,7 @@ Decision: OK
         # The receipt marks no question at all; the verifier must count from disk.
         receipt_path = Path(tmp_home) / "receipt.md"
         receipt_path.write_text(f"""REVIEW_DIR: {review_dir}
+ATTEMPT: 1
 Decision: OK
 <!-- step-end -->""")
 

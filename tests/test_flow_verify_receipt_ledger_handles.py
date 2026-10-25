@@ -242,8 +242,12 @@ def main():
     print("[Test 8a] Receipt with awaiting-answers markers stripped still verifies from disk")
     with tempfile.TemporaryDirectory() as tmp:
         fx = PlanFixture(tmp, {"D1": ledger_entry("decided")}, item_handles=["D1"])
+        before = fx.receipt.read_text(encoding="utf-8")
+        h.test_result("Receipt has an awaiting-answers marker before stripping (8a precondition)",
+                      "awaiting-answers" in before,
+                      f"receipt={before[-300:]}")
         fx.receipt.write_text(
-            "\n".join(line for line in fx.receipt.read_text(encoding="utf-8").splitlines()
+            "\n".join(line for line in before.splitlines()
                       if "awaiting-answers" not in line) + "\n",
             encoding="utf-8")
         rc, out = run_verifier(fx)
@@ -256,13 +260,17 @@ def main():
         fx = PlanFixture(tmp, {"D1": ledger_entry("decided"), "Q1": ledger_entry("question")},
                          item_handles=["D1", "Q1"],
                          answers={"D1": {"disposition": "accepted", "value": None, "reply_excerpt": None}})
+        before = fx.receipt.read_text(encoding="utf-8")
+        h.test_result("Receipt has an awaiting-answers marker before stripping (8b precondition)",
+                      "awaiting-answers" in before,
+                      f"receipt={before[-300:]}")
         fx.receipt.write_text(
-            "\n".join(line for line in fx.receipt.read_text(encoding="utf-8").splitlines()
+            "\n".join(line for line in before.splitlines()
                       if "awaiting-answers" not in line) + "\n",
             encoding="utf-8")
         rc, out = run_verifier(fx)
         h.test_result("Markers stripped, Q1 unanswered on disk: exit 1 and reason names Q1",
-                      rc == 1 and "Q1" in out and "Traceback" not in out,
+                      rc == 1 and "answer file missing handle: Q1" in out and "Traceback" not in out,
                       f"rc={rc} out={out.strip()[-300:]}")
 
     # --- plan.md presence -----------------------------------------------------------------------
