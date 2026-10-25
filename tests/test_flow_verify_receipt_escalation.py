@@ -435,13 +435,15 @@ Decision: FAILED
             "--escalation",
             "--escalations", "0",
             "--failures", "1",
-            "--implementer-model-state", "haiku",
+            "--implementer-model-state", "unset",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
+        # Exit 2 alone also fits an argparse rejection (e.g. flag unknown on a
+        # reverted tree), so require the verifier's own message.
         h.test_result(
             "exit 2: missing --stop-source",
-            result.returncode == 2,
+            result.returncode == 2 and "--escalation requires --stop-source" in result.stderr,
             f"exit={result.returncode}, stderr={result.stderr}"
         )
 
@@ -461,9 +463,10 @@ Decision: FAILED
             failures=1,
             implementer_model_state="unset"
         )
+        # argparse choices rejects the value before the verifier's own check runs.
         h.test_result(
             "exit 2: unknown --stop-source",
-            exit_code == 2,
+            exit_code == 2 and "invalid choice: 'unknown_value'" in stderr,
             f"exit={exit_code}, stderr={stderr}"
         )
 
@@ -480,9 +483,10 @@ Decision: FAILED
             failures=1,
             implementer_model_state="unset"
         )
+        # The verifier's own missing-receipt check (after argument parsing) must fire.
         h.test_result(
             "exit 2: unreadable receipt",
-            exit_code == 2,
+            exit_code == 2 and "Receipt file not found" in stderr,
             f"exit={exit_code}, stderr={stderr}"
         )
 

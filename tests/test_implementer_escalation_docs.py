@@ -8,6 +8,7 @@ contracts for the --implementer-model flag, receipt fields, and escalation logic
 Run with: python3 tests/test_implementer_escalation_docs.py
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -67,8 +68,10 @@ def main():
     )
     h.test_result(
         "INCOMPLETE_STEPS: field in receipt template",
-        "INCOMPLETE_STEPS:" in impl_cmd,
-        "missing"
+        # The template line is bare "  INCOMPLETE_STEPS:" (indented, end of line). Pre-#334
+        # prose has "incomplete" but never this field line.
+        re.search(r"^\s*INCOMPLETE_STEPS:\s*$", impl_cmd, re.MULTILINE) is not None,
+        "missing receipt template line"
     )
     h.test_result(
         "PARTIAL_WORK: field in receipt template (escalated attempts)",
@@ -123,8 +126,10 @@ def main():
     print("[Section 5] Step 6 discard validation block")
     h.test_result(
         "git ls-tree validation",
-        "git ls-tree" in impl_cmd and "START_SHA" in impl_cmd,
-        "missing git ls-tree"
+        # The exact Step 6 "did not exist at base" check added by #334. Pre-#334 the doc
+        # has an unrelated "git ls-tree -r --name-only" listing, so match the full command.
+        r'ls-tree --literal-pathspecs "$START_SHA" -- "$DISCARD_PATH"' in impl_cmd,
+        "missing Step 6 ls-tree validation at START_SHA"
     )
     h.test_result(
         "--diff-filter=A validation",
@@ -176,9 +181,12 @@ def main():
     print()
     print("[Section 8] ADR amendments")
     h.test_result(
-        "ADR-0023 has third amendment heading",
-        "Amendment (2026-10-16" in adr23 or "Amendment (2026-10-16, third)" in adr23,
-        "missing amendment heading"
+        "ADR-0023 has fourth amendment heading (2026-10-16, #315 escalation)",
+        # #334 added the "fourth" heading. The pre-existing "third" heading and the
+        # bare "Amendment (2026-10-16" prefix both survive a revert, so match the
+        # fourth heading as a whole line.
+        re.search(r"^## Amendment \(2026-10-16, fourth\)", adr23, re.MULTILINE) is not None,
+        "missing fourth amendment heading"
     )
     h.test_result(
         "ADR-0004 has implementer escalation amendment",
