@@ -2,24 +2,25 @@
 """Tests for scripts/precedent-log.py (#295): record Pat's prediction against the actual pick.
 
 Testing strategy:
-- Call the real helper as a subprocess with temp HOME and --log-root pointing to a temp directory.
-- Test idempotency per (run, question_id): duplicate calls are skipped; different runs append.
-- Test malformed input handling: missing/invalid files log nothing, exit 0.
-- Test stats calculation: exact numbers on a fixture log (logged, scored, hit_rate, by confidence, baseline, deviation).
-- Test empty/absent log behavior: predictions key present in stats with zero counts.
-- Test flow answers: latest round wins per handle, both 'answers' and 'items' keys accepted.
-- Test normalized answers: exact label, (Recommended) strip, free text normalization.
-- Test row contract: PINNED_KEYS tuple, hit/actual_source invariant, citations as ref ints, anchored from trace.
-- Test all-or-nothing: one bad confidence means zero rows appended.
-- Test round trip: rows written by helper are read by --stats with no malformed_lines.
-- Test argv errors: exit 2 on missing args or conflicting options.
-- Test unwritable log root: exit 0 with log-unwritable stderr.
-- Test isolation: --match never opens predictions.jsonl.
+- Call the real helper as a subprocess with a temp HOME and --log-root under a temp directory.
+- The validated-file fixtures come from the real producer: the round-trip case runs
+  scripts/precedent-render.py validate on a fixture precedent.md, and the shape pin asserts that
+  make_validated() mirrors that output key for key.
+- Idempotency per (run, question_id, command): repeated calls skip; a new --run appends.
+- Missing or malformed inputs log nothing, exit 0, and name the specific reason on stderr.
+- All-or-nothing: one block that cannot be built drops the whole run (zero rows).
+- Unwritable log root: exit 0 with log-unwritable on stderr.
+- Answer normalization: exact label, trailing (Recommended) stripped, free text collapsed.
+- Stats: exact numbers on a fixture log, empty or absent log, corrupt lines counted as malformed.
+- Round trip: rows the helper writes are read back by --stats with malformed_lines == 0.
+- --match isolation: the digest --match path never opens predictions.jsonl (checked with an
+  audit hook; a --stats run in the same harness is the positive control).
+- Row contract: PINNED_KEYS order, hit/actual_source invariant, citations, anchored.
+- Argv errors exit 2.
 
 Run with: python3 tests/test_precedent_log.py
 """
 
-import importlib.util
 import json
 import os
 import shutil
@@ -33,11 +34,7 @@ from _test_harness import REPO_ROOT, Harness
 
 HELPER = REPO_ROOT / "scripts" / "precedent-log.py"
 DIGEST = REPO_ROOT / "scripts" / "precedent-digest.py"
-
-# Load the digest module to get constants if needed
-_spec = importlib.util.spec_from_file_location("precedent_digest", DIGEST)
-pdig = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(pdig)
+RENDER = REPO_ROOT / "scripts" / "precedent-render.py"
 
 
 def assert_temp_home(path):
@@ -87,73 +84,164 @@ class Fixture:
         return [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
 
 
-def run_helper(home, log_root, args, trace_content=None):
+def _env(home):
+    """Child environment: temp HOME, fixed TZ, no ambient session id."""
+    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
+    full_env.pop("CLAUDE_CODE_SESSION_ID", None)
+    return full_env
+
+
+def run_helper(home, log_root, args, trace_content):
     """Run the helper as subprocess with temp HOME and log-root. Returns (returncode, stdout, stderr)."""
     assert_temp_home(home)
     assert_temp_home(log_root)
 
-    # Create trace file if content provided
-    trace_file = None
-    if trace_content is not None:
-        trace_file = home / "precedent-trace.txt"
-        trace_file.write_text(trace_content, encoding="utf-8")
+    trace_file = home / "precedent-trace.txt"
+    trace_file.write_text(trace_content, encoding="utf-8")
 
-    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
-    full_env.pop("CLAUDE_CODE_SESSION_ID", None)
-
-    cmd = [sys.executable, str(HELPER), "append", "--log-root", str(log_root), *args]
-    if trace_file:
-        cmd.extend(["--trace-file", str(trace_file)])
-
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=full_env, cwd=str(home))
+    cmd = [sys.executable, str(HELPER), "append", "--log-root", str(log_root), *args,
+           "--trace-file", str(trace_file)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=_env(home), cwd=str(home))
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def install_log_in_home(home, log_root):
+    """Copy the log root into HOME/.claude/precedent, where the digest reads it."""
+    home_prec = home / ".claude" / "precedent"
+    home_prec.parent.mkdir(parents=True, exist_ok=True)
+    if home_prec.exists():
+        shutil.rmtree(home_prec)
+    if log_root.exists():
+        shutil.copytree(log_root, home_prec)
 
 
 def run_digest_stats(home, log_root, repo_key):
     """Run digest --stats with log_root configured. Returns (returncode, stats_obj, stderr)."""
     assert_temp_home(home)
     assert_temp_home(log_root)
-
-    # Symlink log_root into home/.claude/precedent
-    home_prec = home / ".claude" / "precedent"
-    home_prec.parent.mkdir(parents=True, exist_ok=True)
-    if home_prec.exists():
-        shutil.rmtree(home_prec)
-
-    # Copy log files from temp log_root
-    if log_root.exists():
-        shutil.copytree(log_root, home_prec)
-
-    full_env = {**os.environ, "HOME": str(home), "TZ": "UTC"}
-    full_env.pop("CLAUDE_CODE_SESSION_ID", None)
+    install_log_in_home(home, log_root)
 
     cmd = [sys.executable, str(DIGEST), repo_key, "--stats"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=full_env, cwd=str(home))
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=_env(home), cwd=str(home))
 
     stats = None
     if proc.returncode == 0 and proc.stdout.strip():
         try:
             stats = json.loads(proc.stdout)
         except json.JSONDecodeError:
-            pass
+            stats = None
 
     return proc.returncode, stats, proc.stderr
 
 
+# Audit-hook wrapper for the --match isolation check. It records every open() of a path that
+# names predictions.jsonl (open() and os.open() both raise the "open" audit event), then runs the
+# digest script in-process with the given argv. Written into the temp HOME at test time.
+AUDIT_WRAPPER = '''\
+import atexit
+import runpy
+import sys
+
+OPENED = []
+
+
+def _record(event, args):
+    if event == "open" and args and isinstance(args[0], str) and "predictions.jsonl" in args[0]:
+        OPENED.append(args[0])
+
+
+def _dump():
+    with open(OUT_PATH, "w", encoding="utf-8") as handle:
+        handle.write("\\n".join(OPENED))
+
+
+OUT_PATH = sys.argv[1]
+SCRIPT = sys.argv[2]
+sys.addaudithook(_record)
+atexit.register(_dump)
+sys.argv = [SCRIPT] + sys.argv[3:]
+runpy.run_path(SCRIPT, run_name="__main__")
+'''
+
+
+def run_digest_audited(home, log_root, repo_key, extra_args):
+    """Run the digest under the audit wrapper. Returns (returncode, stdout, stderr, opened_paths).
+
+    opened_paths is None if the wrapper never wrote its record (the run is then unusable).
+    """
+    install_log_in_home(home, log_root)
+    wrapper = home / "audit_digest.py"
+    wrapper.write_text(AUDIT_WRAPPER, encoding="utf-8")
+    opened_file = home / "opened.txt"
+    cmd = [sys.executable, str(wrapper), str(opened_file), str(DIGEST), repo_key, *extra_args]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=_env(home), cwd=str(home))
+    opened = None
+    if opened_file.exists():
+        opened = [line for line in opened_file.read_text(encoding="utf-8").splitlines() if line]
+    return proc.returncode, proc.stdout, proc.stderr, opened
+
+
+def run_real_validator(home, precedent_text, questions_obj, digest_refs):
+    """Run precedent-render.py validate on fixture inputs. Returns (rc, validated_obj, validated_path).
+
+    The fixture precedent.md, questions.json and digest.jsonl are written into home. validated_obj is
+    the parsed --out file, or {} if the validator wrote nothing.
+    """
+    precedent_path = home / "precedent.md"
+    precedent_path.write_text(precedent_text, encoding="utf-8")
+    questions_path = home / "validator-questions.json"
+    questions_path.write_text(json.dumps(questions_obj, indent=2), encoding="utf-8")
+    digest_path = home / "digest.jsonl"
+    digest_path.write_text(
+        "".join(json.dumps({"ref": ref, "plan": f"plan-{ref}.md"}) + "\n" for ref in digest_refs),
+        encoding="utf-8",
+    )
+    validated_path = home / "validated.json"
+    cmd = [sys.executable, str(RENDER), "validate",
+           "--precedent", str(precedent_path),
+           "--questions", str(questions_path),
+           "--digest", str(digest_path),
+           "--out", str(validated_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=_env(home), cwd=str(home))
+    validated = {}
+    if validated_path.exists():
+        validated = json.loads(validated_path.read_text(encoding="utf-8"))
+    return proc.returncode, validated, validated_path
+
+
 def make_validated(blocks):
-    """Build a precedent-validated.json object. blocks = list of (id, header, prediction, confidence, precedent_lines)."""
+    """Build a precedent-validated.json object shaped like `precedent-render.py validate` output.
+
+    blocks = list of (question_id, prediction, confidence, refs). The block key is the question id;
+    the header lives in the questions file, not in the block (the real validator emits neither
+    id nor header inside a block). refs become precedent_lines with the validator's six keys.
+    """
+    spoken = {}
+    for qid, prediction, confidence, refs in blocks:
+        lines = [
+            {
+                "date": "2026-10-01",
+                "ref": ref,
+                "source": f"plan-{ref}.md",
+                "answer": "A. Option A",
+                "recommended": None,
+                "reason": None,
+            }
+            for ref in refs
+        ]
+        spoken[qid] = {
+            "precedent_lines": lines,
+            "prediction": prediction,
+            "confidence": confidence,
+            "why": "Earlier plan faced the same choice.",
+            "distinguish": "This ticket differs in scope.",
+        }
     return {
         "status": "ok",
-        "blocks": {
-            block_id: {
-                "id": block_id,
-                "header": header,
-                "prediction": prediction,
-                "confidence": confidence,
-                "precedent_lines": precedent_lines,
-            }
-            for block_id, header, prediction, confidence, precedent_lines in blocks
-        },
+        "reason": "",
+        "blocks": spoken,
+        "shown": len(spoken),
+        "asked": len(spoken),
     }
 
 
@@ -186,213 +274,232 @@ def make_flow_answers(answer_dict, shape="answers"):
         return {"items": answer_dict}
 
 
+def _row_for(rows, qid):
+    """The single row for question qid, or {} so the field asserts that read it fail loudly."""
+    matches = [r for r in rows if r.get("question_id") == qid]
+    return matches[0] if len(matches) == 1 else {}
+
+
+def _only(rows):
+    """The single row, or {} so the field asserts that read it fail loudly."""
+    return rows[0] if len(rows) == 1 else {}
+
+
+def _predictions(stats):
+    """The predictions section of a --stats object, or {} so the asserts that read it fail loudly."""
+    if isinstance(stats, dict) and isinstance(stats.get("predictions"), dict):
+        return stats["predictions"]
+    return {}
+
+
+# Fixture for the real-producer round trip: two spoken blocks, valid per precedent-render.py.
+ROUND_TRIP_QUESTIONS = [
+    ("auth-scope", "Which auth scope?", ["A. Option A", "B. Option B"], "A. Option A"),
+    ("cache-ttl", "Cache TTL?", ["A. 30 seconds", "B. 5 minutes"], "A. 30 seconds"),
+]
+
+ROUND_TRIP_PRECEDENT = """# Precedent
+
+precedent-pat | questions: 2 | spoke-on: 2 | citations: 2 | confidence: high=1 medium=1
+
+## Q1 [auth-scope] Which auth scope?
+**Precedent**: 2026-10-01 · #1 · plan-a.md · chose "A. Option A" · reason: "small blast radius"
+**Prediction**: A. Option A
+**Confidence**: high
+**Why**: The earlier plan faced the same scope choice.
+**Distinguish**: This ticket also touches sessions.
+
+## Q2 [cache-ttl] Cache TTL?
+**Precedent**: 2026-10-02 · #2 · plan-b.md · chose "B. 5 minutes" (recommended was "A. 30 seconds")
+**Prediction**: B. 5 minutes
+**Confidence**: medium
+**Why**: Earlier cache work chose the longer TTL.
+**Distinguish**: No invalidation hook exists here.
+"""
+
+ROUND_TRIP_DIGEST_REFS = [1, 2]
+
+
 # ================================================================ Test cases
 
 def case_idempotent_per_key(h):
     """Acceptance: two identical calls leave the same N lines. Different --run appends."""
     with Fixture() as fx:
-        validated = make_validated([
-            ("Q1", "First question", "A. Option A", "high", [{"ref": 1}, {"ref": 2}])
-        ])
-        questions = make_questions([
-            ("Q1", "First question", ["A. Option A", "B. Option B"], "B. Option B")
-        ])
+        validated = make_validated([("Q1", "A. Option A", "high", [1, 2])])
+        questions = make_questions([("Q1", "First question", ["A. Option A", "B. Option B"], "B. Option B")])
         answers = make_answers({"Q1": "A"})
 
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
         answers_file = fx.put_json("answers.json", answers)
+        common = ["--validated", str(validated_file), "--questions", str(questions_file),
+                  "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan"]
 
-        # First call
-        rc1, _, stderr1 = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(validated_file), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-run1-p"],
-            trace_content="shown"
-        )
-
-        # Check first call succeeded and logged
+        rc1, _, stderr1 = run_helper(fx.home, fx.log_root, [*common, "--run", "1-run1-p"], "shown")
         rows1 = fx.read_log_file("owner-name")
         h.test_result("idempotent: first call exits 0", rc1 == 0, f"rc={rc1}")
         h.test_result("idempotent: first call logs 1 row", len(rows1) == 1, f"n={len(rows1)}")
+        h.test_result("idempotent: first call reports logged 1, skipped-duplicate 0",
+                      "logged 1, skipped-duplicate 0" in stderr1, f"stderr={stderr1}")
 
-        # Second identical call
-        rc2, _, stderr2 = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(validated_file), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-run1-p"],
-            trace_content="shown"
-        )
-
+        rc2, _, stderr2 = run_helper(fx.home, fx.log_root, [*common, "--run", "1-run1-p"], "shown")
         rows2 = fx.read_log_file("owner-name")
+        h.test_result("idempotent: second identical call exits 0", rc2 == 0, f"rc={rc2}")
         h.test_result("idempotent: second identical call still has 1 row", len(rows2) == 1, f"n={len(rows2)}")
-        h.test_result("idempotent: second call reports skipped-duplicate in stderr", "skipped-duplicate" in stderr2, f"stderr={stderr2}")
+        h.test_result("idempotent: second call reports logged 0, skipped-duplicate 1",
+                      "logged 0, skipped-duplicate 1" in stderr2, f"stderr={stderr2}")
 
-        # Third call with different --run
-        rc3, _, stderr3 = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(validated_file), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "2-run2-p"],
-            trace_content="shown"
-        )
-
+        rc3, _, _ = run_helper(fx.home, fx.log_root, [*common, "--run", "2-run2-p"], "shown")
         rows3 = fx.read_log_file("owner-name")
+        h.test_result("idempotent: different --run exits 0", rc3 == 0, f"rc={rc3}")
         h.test_result("idempotent: different --run appends a new row", len(rows3) == 2, f"n={len(rows3)}")
 
 
-def case_malformed_input_exits_0(h):
-    """Acceptance: malformed precedent logs nothing, exits 0."""
+def case_malformed_input_logs_nothing(h):
+    """Acceptance: malformed precedent logs nothing, exits 0, and names the reason on stderr."""
     with Fixture() as fx:
         questions = make_questions([("Q1", "A question", ["A. A", "B. B"], "A. A")])
         questions_file = fx.put_json("questions.json", questions)
         answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. A"}))
+        common = ["--questions", str(questions_file), "--answers", str(answers_file),
+                  "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-run-p"]
 
-        # Missing validated file
-        rc, _, stderr = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", "/nonexistent/validated.json", "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-run-p"],
-            trace_content="shown"
-        )
-        rows = fx.read_log_file("owner-name")
-        h.test_result("malformed: missing validated exits 0", rc == 0, f"rc={rc}")
-        h.test_result("malformed: missing validated logs nothing", len(rows) == 0, f"n={len(rows)}")
-        h.test_result("malformed: missing validated stderr", "nothing logged" in stderr, f"stderr={stderr}")
+        cases = []
 
-        # Invalid validated JSON (write bad JSON directly without json.dumps)
+        cases.append(("missing validated", ["--validated", "/nonexistent/validated.json"]))
+
         bad_validated_path = fx.home / "bad_validated.json"
         bad_validated_path.write_text("{ this is not valid json ]", encoding="utf-8")
-        bad_validated = bad_validated_path
-        rc, _, stderr = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(bad_validated), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-run-p"],
-            trace_content="shown"
-        )
-        rows = fx.read_log_file("owner-name")
-        h.test_result("malformed: invalid JSON exits 0", rc == 0, f"rc={rc}")
-        h.test_result("malformed: invalid JSON logs nothing", len(rows) == 0, f"n={len(rows)}")
+        cases.append(("invalid JSON", ["--validated", str(bad_validated_path)]))
 
-        # status: invalid
-        invalid_status = fx.put_json("invalid_status.json", {"status": "invalid", "blocks": []})
-        rc, _, stderr = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(invalid_status), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-run-p"],
-            trace_content="shown"
-        )
-        rows = fx.read_log_file("owner-name")
-        h.test_result("malformed: status != ok exits 0", rc == 0, f"rc={rc}")
-        h.test_result("malformed: status != ok logs nothing", len(rows) == 0, f"n={len(rows)}")
+        invalid_status = fx.put_json("invalid_status.json", {"status": "invalid", "blocks": {}})
+        cases.append(("status != ok", ["--validated", str(invalid_status)]))
 
-        # empty blocks
-        empty_blocks = fx.put_json("empty_blocks.json", {"status": "ok", "blocks": []})
+        empty_blocks = fx.put_json("empty_blocks.json", {"status": "ok", "blocks": {}})
+        cases.append(("empty blocks", ["--validated", str(empty_blocks)]))
+
+        for label, extra in cases:
+            rc, _, stderr = run_helper(fx.home, fx.log_root, [*extra, *common], "shown")
+            rows = fx.read_log_file("owner-name")
+            h.test_result(f"malformed: {label} exits 0", rc == 0, f"rc={rc}")
+            h.test_result(f"malformed: {label} logs nothing", len(rows) == 0, f"n={len(rows)}")
+            h.test_result(f"malformed: {label} reason is validated-invalid",
+                          "nothing logged (validated-invalid" in stderr, f"stderr={stderr}")
+
+
+def case_all_or_nothing_block_drop(h):
+    """One block that cannot be built drops the whole run; the same run with valid blocks logs both."""
+    with Fixture() as fx:
+        questions = make_questions([
+            ("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A"),
+            ("Q2", "Second", ["A. Option A", "B. Option B"], "B. Option B"),
+        ])
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. Option A", "Q2": "B. Option B"}))
+
+        bad = make_validated([("Q1", "A. Option A", "high", [1]), ("Q2", "B. Option B", "low", [2])])
+        bad_file = fx.put_json("bad_validated.json", bad)
         rc, _, stderr = run_helper(
             fx.home, fx.log_root,
-            ["--validated", str(empty_blocks), "--questions", str(questions_file),
+            ["--validated", str(bad_file), "--questions", str(questions_file),
              "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-run-p"],
-            trace_content="shown"
-        )
+             "--run", "1-bad-p"],
+            "shown")
         rows = fx.read_log_file("owner-name")
-        h.test_result("malformed: empty blocks exits 0", rc == 0, f"rc={rc}")
-        h.test_result("malformed: empty blocks logs nothing", len(rows) == 0, f"n={len(rows)}")
+        h.test_result("all-or-nothing: bad block exits 0", rc == 0, f"rc={rc}")
+        h.test_result("all-or-nothing: bad block drops every row (zero rows)", len(rows) == 0, f"n={len(rows)}")
+        h.test_result("all-or-nothing: reason is row-build-failed naming Q2",
+                      "row-build-failed" in stderr and "Q2" in stderr, f"stderr={stderr}")
+
+        good = make_validated([("Q1", "A. Option A", "high", [1]), ("Q2", "B. Option B", "medium", [2])])
+        good_file = fx.put_json("good_validated.json", good)
+        rc_c, _, stderr_c = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(good_file), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
+             "--run", "2-good-p"],
+            "shown")
+        rows_c = fx.read_log_file("owner-name")
+        h.test_result("all-or-nothing control: valid blocks exit 0", rc_c == 0, f"rc={rc_c}")
+        h.test_result("all-or-nothing control: valid blocks log both rows",
+                      len(rows_c) == 2 and "logged 2, skipped-duplicate 0" in stderr_c,
+                      f"n={len(rows_c)}, stderr={stderr_c}")
+
+
+def case_unwritable_log_root(h):
+    """A log root that cannot hold a directory: exit 0 with log-unwritable on stderr."""
+    with Fixture() as fx:
+        validated_file = fx.put_json("validated.json", make_validated([("Q1", "A. Option A", "high", [1])]))
+        questions_file = fx.put_json("questions.json", make_questions([("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A")]))
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. Option A"}))
+
+        blocked_root = fx.home / "log-root-is-a-file"
+        blocked_root.write_text("not a directory", encoding="utf-8")
+        rc, _, stderr = run_helper(
+            fx.home, blocked_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
+             "--run", "1-unwritable-p"],
+            "shown")
+        h.test_result("unwritable root: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("unwritable root: reason is log-unwritable",
+                      "nothing logged (log-unwritable" in stderr, f"stderr={stderr}")
 
 
 def case_row_contract(h):
     """Test the row schema: PINNED_KEYS, hit/actual_source invariant, citations, anchored."""
     with Fixture() as fx:
-        validated = make_validated([
-            ("Q1", "Test question", "A. Option A", "high", [{"ref": 10}, {"ref": 20}])
-        ])
-        questions = make_questions([
-            ("Q1", "Test question", ["A. Option A", "B. Option B"], "B. Option B")
-        ])
+        validated = make_validated([("Q1", "A. Option A", "high", [10, 20])])
+        questions = make_questions([("Q1", "Test question", ["A. Option A", "B. Option B"], "B. Option B")])
         answers = make_answers({"Q1": "A. Option A"})
 
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
         answers_file = fx.put_json("answers.json", answers)
+        common = ["--validated", str(validated_file), "--questions", str(questions_file),
+                  "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan"]
 
-        # With trace starting "shown"
-        rc, _, _ = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(validated_file), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "1-test-p"],
-            trace_content="shown K of N"
-        )
+        rc, _, _ = run_helper(fx.home, fx.log_root, [*common, "--run", "1-test-p"], "shown K of N")
 
         rows = fx.read_log_file("owner-name")
-        h.test_result("row contract: one row written", len(rows) == 1, f"n={len(rows)}")
+        h.test_result("row contract: one row written", rc == 0 and len(rows) == 1, f"rc={rc}, n={len(rows)}")
 
-        if rows:
-            row = rows[0]
-            expected_keys = ("ts", "repo_key", "command", "run", "question_id", "header", "recommended",
-                           "predicted", "confidence", "actual", "hit", "citations", "actual_source", "anchored")
-            actual_keys = tuple(row.keys())
-            h.test_result("row contract: keys match PINNED_KEYS", actual_keys == expected_keys,
-                         f"expected={expected_keys}, got={actual_keys}")
+        row = _only(rows)
+        expected_keys = ("ts", "repo_key", "command", "run", "question_id", "header", "recommended",
+                         "predicted", "confidence", "actual", "hit", "citations", "actual_source", "anchored")
+        h.test_result("row contract: keys match PINNED_KEYS", tuple(row.keys()) == expected_keys,
+                      f"expected={expected_keys}, got={tuple(row.keys())}")
+        h.test_result("row contract: repo_key is lowercase", row.get("repo_key") == "owner-name",
+                      f"repo_key={row.get('repo_key')}")
+        h.test_result("row contract: command is correct", row.get("command") == "expert-plan",
+                      f"command={row.get('command')}")
+        h.test_result("row contract: question_id is Q1", row.get("question_id") == "Q1",
+                      f"question_id={row.get('question_id')}")
 
-            h.test_result("row contract: repo_key is lowercase", row.get("repo_key") == "owner-name",
-                         f"repo_key={row.get('repo_key')}")
-            h.test_result("row contract: command is correct", row.get("command") == "expert-plan",
-                         f"command={row.get('command')}")
-            h.test_result("row contract: question_id is Q1", row.get("question_id") == "Q1",
-                         f"question_id={row.get('question_id')}")
+        hit_val = row.get("hit")
+        source_val = row.get("actual_source")
+        h.test_result("row contract: hit/actual_source invariant (hit is None iff source != option)",
+                      "hit" in row and "actual_source" in row and (hit_val is None) == (source_val != "option"),
+                      f"hit={hit_val}, actual_source={source_val}")
 
-            # Check that hit and actual_source are present (don't test specific values as they depend on classifier impl)
-            h.test_result("row contract: hit field present", "hit" in row,
-                         "hit not in row keys")
-            h.test_result("row contract: actual_source field present", "actual_source" in row,
-                         "actual_source not in row keys")
+        citations = row.get("citations")
+        h.test_result("row contract: citations are the ref ints in order",
+                      citations == [10, 20], f"citations={citations}")
+        h.test_result("row contract: anchored is True for shown trace", row.get("anchored") is True,
+                      f"anchored={row.get('anchored')}")
 
-            # Check the invariant: hit is None iff actual_source != "option"
-            hit_val = row.get("hit")
-            source_val = row.get("actual_source")
-            hit_none_if_not_option = (hit_val is None) == (source_val != "option")
-            h.test_result("row contract: hit/actual_source invariant", hit_none_if_not_option,
-                         f"hit={hit_val}, actual_source={source_val}")
-
-            # citations should be list of ints from precedent_lines[].ref
-            citations = row.get("citations", [])
-            h.test_result("row contract: citations is list of ints", isinstance(citations, list) and all(isinstance(c, int) for c in citations),
-                         f"citations={citations}")
-            h.test_result("row contract: citations contains refs 10 and 20", citations == [10, 20],
-                         f"citations={citations}")
-
-            # anchored should be True because trace starts with "shown"
-            h.test_result("row contract: anchored is True for shown trace", row.get("anchored") is True,
-                         f"anchored={row.get('anchored')}")
-
-        # Test with trace not starting "shown" (should log nothing)
-        rc2, _, stderr2 = run_helper(
-            fx.home, fx.log_root,
-            ["--validated", str(validated_file), "--questions", str(questions_file),
-             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
-             "--run", "2-test-p"],
-            trace_content="other content"
-        )
-
-        # Should exit 0 and log nothing (trace-not-shown)
+        # A trace that does not start with "shown" logs nothing, with that specific reason.
+        rc2, _, stderr2 = run_helper(fx.home, fx.log_root, [*common, "--run", "2-test-p"], "other content")
         h.test_result("row contract: non-shown trace exits 0", rc2 == 0, f"rc={rc2}")
-        h.test_result("row contract: non-shown trace logs nothing", "trace-not-shown" in stderr2,
-                     f"stderr={stderr2}")
+        h.test_result("row contract: non-shown trace reason is trace-not-shown",
+                      "nothing logged (trace-not-shown)" in stderr2, f"stderr={stderr2}")
         rows2_all = fx.read_log_file("owner-name")
-        h.test_result("row contract: only first row in log", len(rows2_all) == 1,
-                     f"n={len(rows2_all)}")
+        h.test_result("row contract: only first row in log", len(rows2_all) == 1, f"n={len(rows2_all)}")
 
 
 def case_stats_hit_rate(h):
     """Acceptance: stats computes hit rate from fixtures."""
     with Fixture() as fx:
-        # Write a fixture predictions.jsonl with known rows
         fixture_log = [
             # Row 1: high confidence, option match (hit=true)
             {
@@ -429,7 +536,8 @@ def case_stats_hit_rate(h):
                 "predicted": "B", "confidence": "high", "actual": "accepted", "hit": None,
                 "citations": [], "actual_source": "accepted-on-continue", "anchored": True
             },
-            # Row 6: deviation pat_right (predicted=actual, recommended!=actual)
+            # Row 6: deviation pat_right (predicted=actual, recommended!=actual); the writer
+            # sets hit = (predicted == actual) for option answers, so hit is True here.
             {
                 "ts": "2026-10-25T12:05:00", "repo_key": "owner-name", "command": "expert-plan",
                 "run": "run6", "question_id": "Q6", "header": "Q6. Sixth", "recommended": "A",
@@ -457,75 +565,104 @@ def case_stats_hit_rate(h):
                 "predicted": "B", "confidence": "high", "actual": "free", "hit": None,
                 "citations": [], "actual_source": "free_text", "anchored": True
             },
-            # Row 10: malformed line (no recommendation - will be invalid JSON on read)
-            # Skip this as the fixture needs to be valid JSONL
         ]
 
         log_content = "\n".join(json.dumps(row) for row in fixture_log) + "\n"
         fx.write_log_file("owner-name", log_content)
 
         rc, stats, _ = run_digest_stats(fx.home, fx.log_root, "owner-name")
+        pred = _predictions(stats)
 
         h.test_result("stats: exit 0", rc == 0, f"rc={rc}")
-        h.test_result("stats: has predictions key", stats and "predictions" in stats, f"keys={stats.keys() if stats else None}")
+        h.test_result("stats: has predictions section", "predictions" in pred or bool(pred),
+                      f"keys={list(stats.keys()) if isinstance(stats, dict) else stats}")
 
-        if stats and "predictions" in stats:
-            pred = stats["predictions"]
+        h.test_result("stats: logged count", pred.get("logged") == 9, f"logged={pred.get('logged')}")
+        h.test_result("stats: runs count (distinct run values)", pred.get("runs") == 9, f"runs={pred.get('runs')}")
+        h.test_result("stats: scored count (hit not null)", pred.get("scored") == 6, f"scored={pred.get('scored')}")
 
-            # Check counts
-            h.test_result("stats: logged count", pred.get("logged") == 9, f"logged={pred.get('logged')}")
-            h.test_result("stats: runs count (distinct run values)", pred.get("runs") == 9, f"runs={pred.get('runs')}")
-            h.test_result("stats: scored count (hit not null)", pred.get("scored") == 6, f"scored={pred.get('scored')}")
+        null_obj = pred.get("null", {})
+        h.test_result("stats: null.free_text", null_obj.get("free_text") == 2, f"free_text={null_obj.get('free_text')}")
+        h.test_result("stats: null.accepted-on-continue", null_obj.get("accepted-on-continue") == 1,
+                      f"accepted-on-continue={null_obj.get('accepted-on-continue')}")
 
-            # Check null breakdown
-            null_obj = pred.get("null", {})
-            h.test_result("stats: null.free_text", null_obj.get("free_text") == 2, f"free_text={null_obj.get('free_text')}")
-            h.test_result("stats: null.accepted-on-continue", null_obj.get("accepted-on-continue") == 1,
-                         f"accepted-on-continue={null_obj.get('accepted-on-continue')}")
+        # 3 hits (rows 1, 3, 6) out of 6 scored.
+        expected_hit_rate = round(3 / 6, 4)
+        h.test_result("stats: hit_rate", pred.get("hit_rate") == expected_hit_rate,
+                      f"expected={expected_hit_rate}, got={pred.get('hit_rate')}")
 
-            # Check hit rate: 2 hits out of 6 scored
-            expected_hit_rate = round(2 / 6, 4)
-            actual_hit_rate = pred.get("hit_rate")
-            h.test_result("stats: hit_rate", actual_hit_rate == expected_hit_rate,
-                         f"expected={expected_hit_rate}, got={actual_hit_rate}")
+        by_conf = pred.get("by_confidence", {})
+        high = by_conf.get("high", {})
+        medium = by_conf.get("medium", {})
+        h.test_result("stats: high.logged", high.get("logged") == 7, f"logged={high.get('logged')}")
+        h.test_result("stats: high.scored", high.get("scored") == 5, f"scored={high.get('scored')}")
+        h.test_result("stats: high.hits (rows 1 and 6)", high.get("hits") == 2, f"hits={high.get('hits')}")
+        h.test_result("stats: medium.logged", medium.get("logged") == 2, f"logged={medium.get('logged')}")
+        h.test_result("stats: medium.scored", medium.get("scored") == 1, f"scored={medium.get('scored')}")
+        h.test_result("stats: medium.hits", medium.get("hits") == 1, f"hits={medium.get('hits')}")
 
-            # Check by confidence
-            by_conf = pred.get("by_confidence", {})
-            h.test_result("stats: by_confidence has high", "high" in by_conf, f"keys={by_conf.keys()}")
-            h.test_result("stats: by_confidence has medium", "medium" in by_conf, f"keys={by_conf.keys()}")
+        # Baseline: 3 of the 6 scored rows picked the recommended option.
+        h.test_result("stats: baseline_n", pred.get("baseline_n") == 6, f"baseline_n={pred.get('baseline_n')}")
+        expected_baseline = round(3 / 6, 4)
+        h.test_result("stats: baseline_recommended_hit_rate",
+                      pred.get("baseline_recommended_hit_rate") == expected_baseline,
+                      f"baseline_rate={pred.get('baseline_recommended_hit_rate')}, expected={expected_baseline}")
 
-            if "high" in by_conf:
-                high = by_conf["high"]
-                h.test_result("stats: high.logged", high.get("logged") == 7, f"logged={high.get('logged')}")
-                h.test_result("stats: high.scored", high.get("scored") == 5, f"scored={high.get('scored')}")
-                h.test_result("stats: high.hits", high.get("hits") == 1, f"hits={high.get('hits')}")
+        dev = pred.get("deviation", {})
+        h.test_result("stats: deviation.n", dev.get("n") == 3, f"n={dev.get('n')}")
+        h.test_result("stats: deviation.excluded_null", dev.get("excluded_null") == 1, f"excluded_null={dev.get('excluded_null')}")
+        h.test_result("stats: deviation.pat_right", dev.get("pat_right") == 1, f"pat_right={dev.get('pat_right')}")
+        h.test_result("stats: deviation.panel_right", dev.get("panel_right") == 1, f"panel_right={dev.get('panel_right')}")
+        h.test_result("stats: deviation.neither", dev.get("neither") == 1, f"neither={dev.get('neither')}")
 
-            if "medium" in by_conf:
-                medium = by_conf["medium"]
-                h.test_result("stats: medium.logged", medium.get("logged") == 2, f"logged={medium.get('logged')}")
-                h.test_result("stats: medium.scored", medium.get("scored") == 1, f"scored={medium.get('scored')}")
-                h.test_result("stats: medium.hits", medium.get("hits") == 1, f"hits={medium.get('hits')}")
 
-            # Check baseline: 3 rows where actual == recommended out of 6 scored
-            h.test_result("stats: baseline_n", pred.get("baseline_n") == 6, f"baseline_n={pred.get('baseline_n')}")
-            expected_baseline = round(3 / 6, 4)
-            h.test_result("stats: baseline_recommended_hit_rate", pred.get("baseline_recommended_hit_rate") == expected_baseline,
-                         f"baseline_rate={pred.get('baseline_recommended_hit_rate')}, expected={expected_baseline}")
+def case_stats_corrupt_lines(h):
+    """Corrupt lines (not JSON, and JSON that is not an object) are counted as malformed; valid rows still count."""
+    with Fixture() as fx:
+        valid = [
+            {"ts": "2026-10-25T12:00:00", "repo_key": "owner-name", "command": "expert-plan",
+             "run": "run1", "question_id": "Q1", "header": "Q1. First", "recommended": "A",
+             "predicted": "A", "confidence": "high", "actual": "A", "hit": True,
+             "citations": [1], "actual_source": "option", "anchored": True},
+            {"ts": "2026-10-25T12:01:00", "repo_key": "owner-name", "command": "expert-plan",
+             "run": "run2", "question_id": "Q2", "header": "Q2. Second", "recommended": "B",
+             "predicted": "B", "confidence": "high", "actual": "A", "hit": False,
+             "citations": [], "actual_source": "option", "anchored": True},
+        ]
+        lines = [json.dumps(valid[0]), "{this is not json", json.dumps(valid[1]), "[1, 2]"]
+        fx.write_log_file("owner-name", "\n".join(lines) + "\n")
 
-            # Check deviation
-            dev = pred.get("deviation", {})
-            h.test_result("stats: deviation.n", dev.get("n") == 3, f"n={dev.get('n')}")
-            h.test_result("stats: deviation.excluded_null", dev.get("excluded_null") == 1, f"excluded_null={dev.get('excluded_null')}")
-            h.test_result("stats: deviation.pat_right", dev.get("pat_right") == 1, f"pat_right={dev.get('pat_right')}")
-            h.test_result("stats: deviation.panel_right", dev.get("panel_right") == 1, f"panel_right={dev.get('panel_right')}")
-            h.test_result("stats: deviation.neither", dev.get("neither") == 1, f"neither={dev.get('neither')}")
+        rc, stats, _ = run_digest_stats(fx.home, fx.log_root, "owner-name")
+        pred = _predictions(stats)
+        h.test_result("corrupt lines: stats exit 0", rc == 0, f"rc={rc}")
+        h.test_result("corrupt lines: two malformed lines counted", pred.get("malformed_lines") == 2,
+                      f"malformed_lines={pred.get('malformed_lines')}")
+        h.test_result("corrupt lines: valid rows still logged", pred.get("logged") == 2,
+                      f"logged={pred.get('logged')}")
+        h.test_result("corrupt lines: valid rows still scored", pred.get("scored") == 2,
+                      f"scored={pred.get('scored')}")
+        h.test_result("corrupt lines: hit_rate from valid rows", pred.get("hit_rate") == 0.5,
+                      f"hit_rate={pred.get('hit_rate')}")
+
+
+def case_empty_or_absent_log(h):
+    """Test: empty or absent log results in predictions section with zero counts."""
+    with Fixture() as fx:
+        rc, stats, _ = run_digest_stats(fx.home, fx.log_root, "owner-name")
+        pred = _predictions(stats)
+
+        h.test_result("empty log: exit 0", rc == 0, f"rc={rc}")
+        h.test_result("empty log: logged is 0", pred.get("logged") == 0, f"logged={pred.get('logged')}")
+        h.test_result("empty log: runs is 0", pred.get("runs") == 0, f"runs={pred.get('runs')}")
+        h.test_result("empty log: hit_rate is null", "hit_rate" in pred and pred.get("hit_rate") is None,
+                      f"hit_rate={pred.get('hit_rate')}")
 
 
 def case_argv_errors_exit_2(h):
     """Test: argv errors exit 2."""
     with Fixture() as fx:
-        validated_file = fx.put_json("validated.json", {"status": "ok", "blocks": {}})
-        questions_file = fx.put_json("questions.json", {"questions": []})
+        validated_file = fx.put_json("validated.json", make_validated([]))
+        questions_file = fx.put_json("questions.json", make_questions([]))
         answers_file = fx.put_json("answers.json", make_answers({}))
 
         # Missing --run
@@ -533,8 +670,7 @@ def case_argv_errors_exit_2(h):
             fx.home, fx.log_root,
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan"],
-            trace_content="shown"
-        )
+            "shown")
         h.test_result("argv errors: missing --run exits 2", rc == 2, f"rc={rc}")
 
         # Both --answers and --flow-answers
@@ -543,8 +679,7 @@ def case_argv_errors_exit_2(h):
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--answers", str(answers_file), "--flow-answers", str(answers_file),
              "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
-            trace_content="shown"
-        )
+            "shown")
         h.test_result("argv errors: both --answers and --flow-answers exits 2", rc == 2, f"rc={rc}")
 
         # Unknown --command
@@ -553,33 +688,16 @@ def case_argv_errors_exit_2(h):
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "unknown-command",
              "--run", "1-test-p"],
-            trace_content="shown"
-        )
+            "shown")
         h.test_result("argv errors: unknown --command exits 2", rc == 2, f"rc={rc}")
-
-
-def case_empty_or_absent_log(h):
-    """Test: empty or absent log results in predictions key with zero counts."""
-    with Fixture() as fx:
-        # Don't create any log file
-        rc, stats, _ = run_digest_stats(fx.home, fx.log_root, "owner-name")
-
-        h.test_result("empty log: exit 0", rc == 0, f"rc={rc}")
-        h.test_result("empty log: has predictions key", stats and "predictions" in stats, f"has key={bool(stats and 'predictions' in stats)}")
-
-        if stats and "predictions" in stats:
-            pred = stats["predictions"]
-            h.test_result("empty log: logged is 0", pred.get("logged") == 0, f"logged={pred.get('logged')}")
-            h.test_result("empty log: runs is 0", pred.get("runs") == 0, f"runs={pred.get('runs')}")
-            h.test_result("empty log: hit_rate is null", pred.get("hit_rate") is None, f"hit_rate={pred.get('hit_rate')}")
 
 
 def case_flow_answers_latest_wins(h):
     """Test: flow answers, latest round wins per handle, both answers and items shapes."""
     with Fixture() as fx:
         validated = make_validated([
-            ("Q1", "Question 1", "A. Option A", "high", [{"ref": 1}]),
-            ("Q2", "Question 2", "B. Option B", "high", [{"ref": 2}]),
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "B. Option B", "high", [2]),
         ])
         questions = make_questions([
             ("Q1", "Question 1", ["A. Option A", "B. Option B"], "B. Option B"),
@@ -589,102 +707,75 @@ def case_flow_answers_latest_wins(h):
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
 
-        # Create flow answers files: round 1 with answers shape, round 2 with items shape
-        flow_answers_1 = make_flow_answers({"Q1": "A. Option A", "Q2": "B. Option B"}, shape="answers")
-        flow_answers_2 = make_flow_answers({
+        # Round 1 uses the answers shape; round 2 uses the items shape and overrides Q1.
+        flow_file_1 = fx.put_json("flow_answers_1.json", make_flow_answers(
+            {"Q1": "A. Option A", "Q2": "B. Option B"}, shape="answers"))
+        flow_file_2 = fx.put_json("flow_answers_2.json", make_flow_answers({
             "Q1": {"value": "B. Option B", "disposition": "overridden"},
             "Q2": {"value": "A. Option A", "disposition": "answered"},
-        }, shape="items")
+        }, shape="items"))
 
-        flow_file_1 = fx.put_json("flow_answers_1.json", flow_answers_1)
-        flow_file_2 = fx.put_json("flow_answers_2.json", flow_answers_2)
-
-        # Call with both flow-answers files, latest round second
         rc, _, _ = run_helper(
             fx.home, fx.log_root,
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--flow-answers", str(flow_file_1), "--flow-answers", str(flow_file_2),
              "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-flow-p"],
-            trace_content="shown"
-        )
+            "shown")
 
         rows = fx.read_log_file("owner-name")
+        h.test_result("flow answers: exits 0", rc == 0, f"rc={rc}")
         h.test_result("flow answers: got 2 rows", len(rows) == 2, f"n={len(rows)}")
 
-        if len(rows) >= 2:
-            q1_row = [r for r in rows if r.get("question_id") == "Q1"][0]
-            q2_row = [r for r in rows if r.get("question_id") == "Q2"][0]
-
-            # Q1: round 2 overridden value should win ("B. Option B")
-            h.test_result("flow answers: Q1 latest round wins", q1_row.get("actual") == "B. Option B",
-                         f"actual={q1_row.get('actual')}")
-
-            # Q2: round 2 answered value should be used ("A. Option A")
-            h.test_result("flow answers: Q2 from round 2", q2_row.get("actual") == "A. Option A",
-                         f"actual={q2_row.get('actual')}")
-
-            # [WEAK_ASSERTION] Q1 should have actual_source="option" (exact match)
-            h.test_result("flow answers: Q1 has actual_source='option'", q1_row.get("actual_source") == "option",
-                         f"actual_source={q1_row.get('actual_source')}")
-
-            # [WEAK_ASSERTION] Q2 should have actual_source="option" (exact match)
-            h.test_result("flow answers: Q2 has actual_source='option'", q2_row.get("actual_source") == "option",
-                         f"actual_source={q2_row.get('actual_source')}")
+        q1_row = _row_for(rows, "Q1")
+        q2_row = _row_for(rows, "Q2")
+        h.test_result("flow answers: Q1 latest round wins ('B. Option B')",
+                      q1_row.get("actual") == "B. Option B", f"actual={q1_row.get('actual')}")
+        h.test_result("flow answers: Q2 from round 2 ('A. Option A')",
+                      q2_row.get("actual") == "A. Option A", f"actual={q2_row.get('actual')}")
+        h.test_result("flow answers: Q1 actual_source is 'option'",
+                      q1_row.get("actual_source") == "option", f"actual_source={q1_row.get('actual_source')}")
+        h.test_result("flow answers: Q2 actual_source is 'option'",
+                      q2_row.get("actual_source") == "option", f"actual_source={q2_row.get('actual_source')}")
 
 
 def case_flow_accepted_on_continue(h):
     """Test: flow answers with accepted-on-continue disposition yields actual_source='accepted-on-continue'."""
     with Fixture() as fx:
-        validated = make_validated([
-            ("Q1", "Should we accept?", "Yes", "high", [{"ref": 1}]),
-        ])
-        questions = make_questions([
-            ("Q1", "Should we accept?", ["A. Yes", "B. No"], "A. Yes"),
-        ])
+        validated = make_validated([("Q1", "A. Yes", "high", [1])])
+        questions = make_questions([("Q1", "Should we accept?", ["A. Yes", "B. No"], "A. Yes")])
 
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
-
-        # Flow answer with accepted-on-continue disposition
-        flow_answers = make_flow_answers({
+        flow_file = fx.put_json("flow_answers.json", make_flow_answers({
             "Q1": {"value": "User accepted the recommendation", "disposition": "accepted-on-continue"},
-        }, shape="items")
-        flow_file = fx.put_json("flow_answers.json", flow_answers)
+        }, shape="items"))
 
         rc, _, _ = run_helper(
             fx.home, fx.log_root,
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--flow-answers", str(flow_file),
              "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
-            trace_content="shown"
-        )
+            "shown")
 
         rows = fx.read_log_file("owner-name")
+        h.test_result("accepted-on-continue: exits 0", rc == 0, f"rc={rc}")
         h.test_result("accepted-on-continue: got 1 row", len(rows) == 1, f"n={len(rows)}")
 
-        if rows:
-            row = rows[0]
-            # [WEAK_ASSERTION] actual_source must be "accepted-on-continue"
-            h.test_result("accepted-on-continue: actual_source='accepted-on-continue'",
-                         row.get("actual_source") == "accepted-on-continue",
-                         f"actual_source={row.get('actual_source')}")
-
-            # [WEAK_ASSERTION] hit must be null
-            h.test_result("accepted-on-continue: hit is null", row.get("hit") is None,
-                         f"hit={row.get('hit')}")
-
-            # [WEAK_ASSERTION] actual must be the value
-            h.test_result("accepted-on-continue: actual is the value",
-                         row.get("actual") == "User accepted the recommendation",
-                         f"actual={row.get('actual')}")
+        row = _only(rows)
+        h.test_result("accepted-on-continue: actual_source='accepted-on-continue'",
+                      row.get("actual_source") == "accepted-on-continue", f"actual_source={row.get('actual_source')}")
+        h.test_result("accepted-on-continue: hit is null", "hit" in row and row.get("hit") is None,
+                      f"hit={row.get('hit')}")
+        h.test_result("accepted-on-continue: actual is the value",
+                      row.get("actual") == "User accepted the recommendation", f"actual={row.get('actual')}")
 
 
 def case_flow_unresolved_accepted_no_row(h):
-    """Test: flow answers with unresolved/accepted dispositions give no row."""
+    """Test: flow answers with unresolved/accepted dispositions give no row, with the answers-invalid reason."""
     with Fixture() as fx:
         validated = make_validated([
-            ("Q1", "Question 1", "A. Option A", "high", [{"ref": 1}]),
-            ("Q2", "Question 2", "B. Option B", "high", [{"ref": 2}]),
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "B. Option B", "high", [2]),
         ])
         questions = make_questions([
             ("Q1", "Question 1", ["A. Option A", "B. Option B"], "A. Option A"),
@@ -693,43 +784,37 @@ def case_flow_unresolved_accepted_no_row(h):
 
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
-
-        # Flow answers with unresolved and accepted dispositions (should be filtered out)
-        flow_answers = make_flow_answers({
+        flow_file = fx.put_json("flow_answers.json", make_flow_answers({
             "Q1": {"value": "ignored", "disposition": "unresolved"},
             "Q2": {"value": "ignored", "disposition": "accepted"},
-        }, shape="items")
-        flow_file = fx.put_json("flow_answers.json", flow_answers)
+        }, shape="items"))
 
         rc, _, stderr = run_helper(
             fx.home, fx.log_root,
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--flow-answers", str(flow_file),
              "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
-            trace_content="shown"
-        )
+            "shown")
 
         rows = fx.read_log_file("owner-name")
-        # [WEAK_ASSERTION] unresolved/accepted dispositions should not produce rows
-        h.test_result("unresolved/accepted: no rows logged", len(rows) == 0,
-                     f"n={len(rows)}, stderr={stderr}")
+        h.test_result("unresolved/accepted: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("unresolved/accepted: no rows logged", len(rows) == 0, f"n={len(rows)}")
+        h.test_result("unresolved/accepted: reason is answers-invalid",
+                      "nothing logged (answers-invalid" in stderr, f"stderr={stderr}")
 
 
 def case_letter_to_label_mapping(h):
     """Test: bare letter classification maps correctly to label and hit is computed correctly."""
     with Fixture() as fx:
         validated = make_validated([
-            ("Q1", "Question with B", "B. Option B", "high", [{"ref": 1}]),
-            ("Q2", "Question with A", "A. Option A", "high", [{"ref": 2}]),
+            ("Q1", "B. Option B", "high", [1]),
+            ("Q2", "A. Option A", "high", [2]),
         ])
         questions = make_questions([
             ("Q1", "Question with B", ["A. Option A", "B. Option B"], "B. Option B"),
             ("Q2", "Question with A", ["A. Option A", "B. Option B"], "A. Option A"),
         ])
-        answers = make_answers({
-            "Q1": "B",  # Bare letter should match "B. Option B"
-            "Q2": "A",  # Bare letter should match "A. Option A"
-        })
+        answers = make_answers({"Q1": "B", "Q2": "A"})
 
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
@@ -740,91 +825,227 @@ def case_letter_to_label_mapping(h):
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--answers", str(answers_file),
              "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
-            trace_content="shown"
-        )
+            "shown")
 
         rows = fx.read_log_file("owner-name")
+        h.test_result("letter mapping: exits 0", rc == 0, f"rc={rc}")
         h.test_result("letter mapping: got 2 rows", len(rows) == 2, f"n={len(rows)}")
 
-        if len(rows) >= 2:
-            q1_row = [r for r in rows if r.get("question_id") == "Q1"][0]
-            q2_row = [r for r in rows if r.get("question_id") == "Q2"][0]
-
-            # [WEAK_ASSERTION] Q1: bare "B" should map to "B. Option B"
-            h.test_result("letter mapping: Q1 'B' maps to 'B. Option B'",
-                         q1_row.get("actual") == "B. Option B",
-                         f"actual={q1_row.get('actual')}")
-
-            # [WEAK_ASSERTION] Q1: predicted=="B. Option B" and actual=="B. Option B", so hit should be True
-            h.test_result("letter mapping: Q1 hit is True",
-                         q1_row.get("hit") is True,
-                         f"hit={q1_row.get('hit')}")
-
-            # [WEAK_ASSERTION] Q2: bare "A" should map to "A. Option A"
-            h.test_result("letter mapping: Q2 'A' maps to 'A. Option A'",
-                         q2_row.get("actual") == "A. Option A",
-                         f"actual={q2_row.get('actual')}")
-
-            # [WEAK_ASSERTION] Q2: predicted=="A. Option A" and actual=="A. Option A", so hit should be True
-            h.test_result("letter mapping: Q2 hit is True",
-                         q2_row.get("hit") is True,
-                         f"hit={q2_row.get('hit')}")
+        q1_row = _row_for(rows, "Q1")
+        q2_row = _row_for(rows, "Q2")
+        h.test_result("letter mapping: Q1 'B' maps to 'B. Option B'",
+                      q1_row.get("actual") == "B. Option B", f"actual={q1_row.get('actual')}")
+        h.test_result("letter mapping: Q1 hit is True", q1_row.get("hit") is True, f"hit={q1_row.get('hit')}")
+        h.test_result("letter mapping: Q2 'A' maps to 'A. Option A'",
+                      q2_row.get("actual") == "A. Option A", f"actual={q2_row.get('actual')}")
+        h.test_result("letter mapping: Q2 hit is True", q2_row.get("hit") is True, f"hit={q2_row.get('hit')}")
 
 
 def case_ambiguous_letter_free_text(h):
-    """Test: ambiguous/unknown letters are classified as free_text."""
+    """Test: unknown letters are classified as free_text."""
     with Fixture() as fx:
-        validated = make_validated([
-            ("Q1", "Question", "A. Option A", "high", [{"ref": 1}]),
-        ])
-        questions = make_questions([
-            ("Q1", "Question", ["A. Option A", "B. Option B"], "A. Option A"),
-        ])
-        answers = make_answers({
-            "Q1": "C",  # Unknown letter
-        })
+        validated = make_validated([("Q1", "A. Option A", "high", [1])])
+        questions = make_questions([("Q1", "Question", ["A. Option A", "B. Option B"], "A. Option A")])
 
         validated_file = fx.put_json("validated.json", validated)
         questions_file = fx.put_json("questions.json", questions)
-        answers_file = fx.put_json("answers.json", answers)
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "C"}))
 
         rc, _, _ = run_helper(
             fx.home, fx.log_root,
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--answers", str(answers_file),
              "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
-            trace_content="shown"
-        )
+            "shown")
 
         rows = fx.read_log_file("owner-name")
+        h.test_result("ambiguous letter: exits 0", rc == 0, f"rc={rc}")
         h.test_result("ambiguous letter: got 1 row", len(rows) == 1, f"n={len(rows)}")
 
-        if rows:
-            row = rows[0]
-            # [WEAK_ASSERTION] unknown letter should be free_text
-            h.test_result("ambiguous letter: actual_source is 'free_text'",
-                         row.get("actual_source") == "free_text",
-                         f"actual_source={row.get('actual_source')}")
+        row = _only(rows)
+        h.test_result("ambiguous letter: actual_source is 'free_text'",
+                      row.get("actual_source") == "free_text", f"actual_source={row.get('actual_source')}")
+        h.test_result("ambiguous letter: actual is the normalized text 'C'",
+                      row.get("actual") == "C", f"actual={row.get('actual')}")
 
-            # [WEAK_ASSERTION] actual should be the normalized text
-            h.test_result("ambiguous letter: actual is normalized text",
-                         row.get("actual") == "C",
-                         f"actual={row.get('actual')}")
+
+def case_answer_normalization(h):
+    """Test: a trailing (Recommended) is stripped before the exact-label match; free text is whitespace-collapsed."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "B. Option B", "medium", [2]),
+        ])
+        questions = make_questions([
+            ("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A"),
+            ("Q2", "Second", ["A. Option A", "B. Option B"], "B. Option B"),
+        ])
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", make_answers({
+            "Q1": "A. Option A (Recommended)",
+            "Q2": "  multi word\n  answer  ",
+        }))
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            "shown")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("normalization: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("normalization: got 2 rows", len(rows) == 2, f"n={len(rows)}")
+
+        q1_row = _row_for(rows, "Q1")
+        q2_row = _row_for(rows, "Q2")
+        h.test_result("normalization: '(Recommended)' stripped to exact label",
+                      q1_row.get("actual") == "A. Option A" and q1_row.get("actual_source") == "option",
+                      f"actual={q1_row.get('actual')}, source={q1_row.get('actual_source')}")
+        h.test_result("normalization: exact label predicted correctly (hit True)",
+                      q1_row.get("hit") is True, f"hit={q1_row.get('hit')}")
+        h.test_result("normalization: free text collapsed to single spaces",
+                      q2_row.get("actual") == "multi word answer" and q2_row.get("actual_source") == "free_text",
+                      f"actual={q2_row.get('actual')}, source={q2_row.get('actual_source')}")
+        h.test_result("normalization: free text has null hit", "hit" in q2_row and q2_row.get("hit") is None,
+                      f"hit={q2_row.get('hit')}")
+
+
+def case_round_trip_real_validator(h):
+    """Real producer end to end: precedent-render.py validate -> precedent-log.py append -> digest --stats."""
+    with Fixture() as fx:
+        questions_obj = make_questions(ROUND_TRIP_QUESTIONS)
+        rc_v, validated, validated_path = run_real_validator(
+            fx.home, ROUND_TRIP_PRECEDENT, questions_obj, ROUND_TRIP_DIGEST_REFS)
+        h.test_result("round trip: validator exits 0", rc_v == 0, f"rc={rc_v}")
+        h.test_result("round trip: validator status is ok", validated.get("status") == "ok",
+                      f"validated={validated}")
+        h.test_result("round trip: validator blocks keyed by question id",
+                      set(validated.get("blocks", {})) == {"auth-scope", "cache-ttl"},
+                      f"keys={sorted(validated.get('blocks', {}))}")
+
+        questions_file = fx.put_json("questions.json", questions_obj)
+        answers_file = fx.put_json("answers.json", make_answers({
+            "auth-scope": "A. Option A",
+            "cache-ttl": "custom: 10 minutes",
+        }))
+        rc, _, stderr = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_path), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
+             "--run", "round-trip-1"],
+            "shown")
+        h.test_result("round trip: helper exits 0", rc == 0, f"rc={rc}")
+        h.test_result("round trip: helper logs both rows",
+                      "logged 2, skipped-duplicate 0" in stderr, f"stderr={stderr}")
+
+        rows = fx.read_log_file("owner-name")
+        auth = _row_for(rows, "auth-scope")
+        cache = _row_for(rows, "cache-ttl")
+        h.test_result("round trip: auth-scope header comes from questions metadata",
+                      auth.get("header") == "Which auth scope?", f"header={auth.get('header')}")
+        h.test_result("round trip: auth-scope recommended comes from questions metadata",
+                      auth.get("recommended") == "A. Option A", f"recommended={auth.get('recommended')}")
+        h.test_result("round trip: auth-scope predicted/actual/hit",
+                      auth.get("predicted") == "A. Option A" and auth.get("actual") == "A. Option A"
+                      and auth.get("hit") is True and auth.get("actual_source") == "option",
+                      f"row={auth}")
+        h.test_result("round trip: auth-scope citations come from the validated refs",
+                      auth.get("citations") == [1], f"citations={auth.get('citations')}")
+        h.test_result("round trip: cache-ttl header and recommended from questions metadata",
+                      cache.get("header") == "Cache TTL?" and cache.get("recommended") == "A. 30 seconds",
+                      f"header={cache.get('header')}, recommended={cache.get('recommended')}")
+        h.test_result("round trip: cache-ttl free text, null hit, confidence medium",
+                      cache.get("actual_source") == "free_text" and cache.get("hit") is None
+                      and cache.get("confidence") == "medium" and cache.get("predicted") == "B. 5 minutes",
+                      f"row={cache}")
+
+        rc_s, stats, _ = run_digest_stats(fx.home, fx.log_root, "owner-name")
+        pred = _predictions(stats)
+        h.test_result("round trip: stats exit 0", rc_s == 0, f"rc={rc_s}")
+        h.test_result("round trip: stats reads both rows with no malformed lines",
+                      pred.get("logged") == 2 and pred.get("malformed_lines") == 0,
+                      f"logged={pred.get('logged')}, malformed_lines={pred.get('malformed_lines')}")
+        h.test_result("round trip: stats scores the one option answer", pred.get("scored") == 1,
+                      f"scored={pred.get('scored')}")
+
+
+def case_make_validated_matches_real_validator(h):
+    """Shape pin: make_validated() has the same keys as real validator output, at every level."""
+    with Fixture() as fx:
+        rc, real, _ = run_real_validator(
+            fx.home, ROUND_TRIP_PRECEDENT, make_questions(ROUND_TRIP_QUESTIONS), ROUND_TRIP_DIGEST_REFS)
+        expected = make_validated([
+            ("auth-scope", "A. Option A", "high", [1]),
+            ("cache-ttl", "B. 5 minutes", "medium", [2]),
+        ])
+        h.test_result("shape: validator exits 0", rc == 0, f"rc={rc}")
+        h.test_result("shape: top-level keys match validator output",
+                      set(real.keys()) == set(expected.keys()),
+                      f"real={sorted(real.keys())}, helper={sorted(expected.keys())}")
+
+        real_block = real.get("blocks", {}).get("auth-scope", {})
+        expected_block = expected["blocks"]["auth-scope"]
+        h.test_result("shape: block keys match validator output",
+                      set(real_block.keys()) == set(expected_block.keys()),
+                      f"real={sorted(real_block.keys())}, helper={sorted(expected_block.keys())}")
+
+        real_line = (real_block.get("precedent_lines") or [{}])[0]
+        expected_line = expected_block["precedent_lines"][0]
+        h.test_result("shape: precedent_line keys match validator output",
+                      set(real_line.keys()) == set(expected_line.keys()),
+                      f"real={sorted(real_line.keys())}, helper={sorted(expected_line.keys())}")
+
+
+def case_match_never_opens_predictions(h):
+    """--match isolation: the digest --match path never opens predictions.jsonl; --stats does (control)."""
+    with Fixture() as fx:
+        log_rows = [
+            {"ts": "2026-10-25T12:00:00", "repo_key": "owner-name", "command": "expert-plan",
+             "run": "run1", "question_id": "Q1", "header": "Which auth scope?", "recommended": "A",
+             "predicted": "A", "confidence": "high", "actual": "A", "hit": True,
+             "citations": [1], "actual_source": "option", "anchored": True},
+        ]
+        fx.write_log_file("owner-name", "\n".join(json.dumps(r) for r in log_rows) + "\n")
+        questions_file = fx.put_json("match-questions.json", make_questions([
+            ("Q1", "Which auth scope?", ["A. Option A", "B. Option B"], "A. Option A"),
+        ]))
+
+        rc_m, _, _, opened_m = run_digest_audited(
+            fx.home, fx.log_root, "owner-name", ["--match", str(questions_file)])
+        h.test_result("match isolation: --match exits 0", rc_m == 0, f"rc={rc_m}")
+        h.test_result("match isolation: --match opened no predictions.jsonl",
+                      opened_m == [], f"opened={opened_m}")
+
+        rc_s, _, _, opened_s = run_digest_audited(fx.home, fx.log_root, "owner-name", ["--stats"])
+        h.test_result("match isolation control: --stats exits 0", rc_s == 0, f"rc={rc_s}")
+        h.test_result("match isolation control: --stats does open predictions.jsonl",
+                      bool(opened_s) and all("predictions.jsonl" in p for p in opened_s),
+                      f"opened={opened_s}")
 
 
 if __name__ == "__main__":
     h = Harness("PRECEDENT-LOG TEST SUITE")
 
     case_idempotent_per_key(h)
-    case_malformed_input_exits_0(h)
+    case_malformed_input_logs_nothing(h)
+    case_all_or_nothing_block_drop(h)
+    case_unwritable_log_root(h)
     case_row_contract(h)
     case_stats_hit_rate(h)
-    case_argv_errors_exit_2(h)
+    case_stats_corrupt_lines(h)
     case_empty_or_absent_log(h)
+    case_argv_errors_exit_2(h)
     case_flow_answers_latest_wins(h)
     case_flow_accepted_on_continue(h)
     case_flow_unresolved_accepted_no_row(h)
     case_letter_to_label_mapping(h)
     case_ambiguous_letter_free_text(h)
+    case_answer_normalization(h)
+    case_round_trip_real_validator(h)
+    case_make_validated_matches_real_validator(h)
+    case_match_never_opens_predictions(h)
 
     h.summarize_and_exit()
