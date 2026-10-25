@@ -46,8 +46,9 @@ follows epic #291's information-only rule and ADR-0005's "lens not law".
 
 Provenance. This reader is proposed under epic #291 as the first cross-run reader of
 claude-action-plan.md. It relies on ADR-0007's chore/29 escape hatch, and that hatch
-needs an ADR update first. The ADR-0007 amendment and ADR-0024 are owned by #293 and
-have not landed, so this reader does not yet exercise the escape hatch.
+needs an ADR update first. ADR-0024 (Precedent Pat, Status: Proposed) has landed; the
+ADR-0007 amendment that covers all three sources is still owed under #293, so this
+reader does not yet exercise the escape hatch.
 
 Consumer boundary: read only by Pat (#293) and humans; never by reviewer prompts or
 Triage (preserves ADR-0002 blind-first).
@@ -59,6 +60,9 @@ Exit and stderr contract:
     uncaught exceptions. The --out file is left unwritten or incomplete on exit 1.
   - Exit 2, with one stderr line and no traceback, for invocation errors: bad
     arguments, --top < 1, a missing or malformed --match file, an unwritable --out.
+  - --stats: a prediction log that exists but cannot be read is not reported as empty.
+    The predictions section carries read_error (JSON key, null when fine) and a
+    "Read error" line (md). Counts are zero in that case.
 
 Provenance note: This reader is proposed under epic #291 as the first cross-run
 reader of claude-action-plan.md. The ADR-0007 amendment (#293) must explicitly
@@ -78,6 +82,47 @@ import sys
 import tempfile
 import traceback
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Sequence, Set, Tuple, TypedDict
+
+# Prediction-log stats shapes (--stats "predictions" section). Keys are the JSON contract.
+_NullCounts = TypedDict("_NullCounts", {"free_text": int, "accepted-on-continue": int})
+_ConfidenceStats = TypedDict("_ConfidenceStats", {
+    "logged": int,
+    "scored": int,
+    "hits": int,
+    "hit_rate": Optional[float],
+    "baseline_n": int,
+    "baseline_hit_rate": Optional[float],
+})
+_DeviationStats = TypedDict("_DeviationStats", {
+    "n": int,
+    "excluded_null": int,
+    "pat_right": int,
+    "panel_right": int,
+    "neither": int,
+})
+
+
+class PredictionStats(TypedDict):
+    """The --stats predictions section. Always has every key, even when the log is absent."""
+    log_path: str
+    logged: int
+    runs: int
+    scored: int
+    null: _NullCounts
+    malformed_lines: int
+    duplicate_keys: int
+    read_error: Optional[str]
+    hit_rate: Optional[float]
+    baseline_recommended_hit_rate: Optional[float]
+    pat_baseline_hit_rate: Optional[float]
+    baseline_n: int
+    by_confidence: Dict[str, _ConfidenceStats]
+    deviation: _DeviationStats
+    anchoring_caveat: str
+
+
+PREDICTION_LOG_PATH_LABEL = "~/.claude/precedent/<owner-name>/predictions.jsonl"
+ANCHORING_CAVEAT = "All rows are anchored; hit rate is an upper bound"
 
 PINNED_KEYS = (
     "id", "source", "repo_key", "date", "ref", "path", "header", "question",
@@ -1076,8 +1121,8 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
     return [entry for _score, _index, entry in scored[:top]]
 
 
-def _count_sources(entries: List[Dict[str, Any]]) -> Dict[str, int]:
-    counts = {source: 0 for source in SOURCES}
+def _count_sources(entries: List[Dict[str, Any]], sources: Sequence[str] = SOURCES) -> Dict[str, int]:
+    counts = {source: 0 for source in sources}
     for entry in entries:
         counts[entry["source"]] = counts.get(entry["source"], 0) + 1
     return counts
@@ -1087,7 +1132,9 @@ def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], i
     """Load prediction log for project scope (project-scoped only).
 
     Returns (rows, malformed_lines, duplicate_keys).
-    Missing file gives empty list, zero counts.
+    A missing file gives an empty list and zero counts. Any other OSError (or a
+    UnicodeDecodeError while reading) propagates: an unreadable log must not look empty.
+    The caller reports it as read_error.
     """
     repo_key_normalized = _fold(repo_key)
     log_path = os.path.join(home, ".claude", "precedent", repo_key_normalized, "predictions.jsonl")
@@ -1100,46 +1147,64 @@ def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], i
     if not os.path.exists(log_path):
         return rows, malformed, duplicates
 
-    try:
-        with open(log_path) as f:
-            for line in f:
-                line = line.rstrip("\n")
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if not isinstance(row, dict):
-                        malformed += 1
-                        continue
-                    # First-wins dedup on (run, question_id, command) - ensure string values
-                    run_val = row.get("run", "")
-                    qid_val = row.get("question_id", "")
-                    cmd_val = row.get("command", "")
-                    # Convert to strings to ensure hashability
-                    key = (str(run_val) if run_val is not None else "",
-                           str(qid_val) if qid_val is not None else "",
-                           str(cmd_val) if cmd_val is not None else "")
-                    if key in seen_keys:
-                        duplicates += 1
-                        continue
-                    seen_keys.add(key)
-                    rows.append(row)
-                except (json.JSONDecodeError, ValueError, TypeError):
+    with open(log_path) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
                     malformed += 1
-    except (IOError, OSError):
-        pass
+                    continue
+                # First-wins dedup on (run, question_id, command) - ensure string values
+                run_val = row.get("run", "")
+                qid_val = row.get("question_id", "")
+                cmd_val = row.get("command", "")
+                # Convert to strings to ensure hashability
+                key = (str(run_val) if run_val is not None else "",
+                       str(qid_val) if qid_val is not None else "",
+                       str(cmd_val) if cmd_val is not None else "")
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                rows.append(row)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                malformed += 1
 
     return rows, malformed, duplicates
 
 
-def build_prediction_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _exc_text(exc: BaseException) -> str:
+    strerror = getattr(exc, "strerror", None)
+    return str(strerror) if strerror else str(exc)
+
+
+def _prediction_section(repo_key: str, home: str) -> PredictionStats:
+    """The --stats predictions section for the project-scoped log.
+
+    An unreadable log yields zero counts and a read_error string, never a silent empty.
+    """
+    read_error: Optional[str] = None
+    try:
+        rows, malformed, duplicates = _load_predictions(repo_key, home)
+    except (OSError, UnicodeDecodeError) as exc:
+        rows, malformed, duplicates = [], 0, 0
+        read_error = _exc_text(exc)
+    stats = build_prediction_stats(rows)
+    stats["malformed_lines"] = malformed
+    stats["duplicate_keys"] = duplicates
+    stats["read_error"] = read_error
+    return stats
+
+
+def build_prediction_stats(rows: List[Dict[str, Any]]) -> PredictionStats:
     """Compute prediction statistics from logged rows.
 
-    Always has the same keys:
-      - Counts: log_path, logged, runs, scored, null, malformed_lines, duplicate_keys
-      - Rates: hit_rate, baseline_recommended_hit_rate, baseline_n
-      - by_confidence: for each of high/medium, keys logged/scored/hits/hit_rate/baseline_n/baseline_hit_rate
-      - deviation: n, excluded_null, pat_right, panel_right, neither
+    Always has the same keys (see PredictionStats). malformed_lines, duplicate_keys and
+    read_error are set by the caller; this function leaves them at zero and None.
+    The --match path builds its stub from build_prediction_stats([]).
     """
     # Count logged rows (across all attempts, since we loaded per repo_key)
     logged = len(rows)
@@ -1208,7 +1273,7 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     deviation_neither = deviation_n - deviation_pat_right - deviation_panel_right
 
     return {
-        "log_path": "~/.claude/precedent/<owner-name>/predictions.jsonl",
+        "log_path": PREDICTION_LOG_PATH_LABEL,
         "logged": logged,
         "runs": run_count,
         "scored": scored,
@@ -1218,6 +1283,7 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         },
         "malformed_lines": 0,  # Set by caller
         "duplicate_keys": 0,   # Set by caller
+        "read_error": None,    # Set by caller
         "hit_rate": hit_rate,
         "baseline_recommended_hit_rate": baseline_recommended_hit_rate,
         "pat_baseline_hit_rate": pat_baseline_hit_rate,
@@ -1230,6 +1296,7 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "panel_right": deviation_panel_right,
             "neither": deviation_neither,
         },
+        "anchoring_caveat": ANCHORING_CAVEAT,
     }
 
 
@@ -1241,6 +1308,9 @@ def build_stats(
     unkeyed: int,
     kept: int,
     total: int,
+    top_token_count: int,
+    sources: Sequence[str] = SOURCES,
+    skip_buckets: Sequence[str] = SKIP_BUCKETS,
 ) -> Dict[str, Any]:
     decided = [e["deviated"] for e in entries if e["deviated"] is not None]
     deviation_rate = (
@@ -1258,11 +1328,11 @@ def build_stats(
     free_text_rate = round(free_text / float(len(entries)), 4) if entries else None
     top_tokens = [
         {"token": tok, "count": count}
-        for tok, count in sorted(doc_freq.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_TOKENS]
+        for tok, count in sorted(doc_freq.items(), key=lambda kv: (-kv[1], kv[0]))[:top_token_count]
     ]
     return {
-        "per_source": _count_sources(entries),
-        "skipped": {s: {b: skipped[s][b] for b in SKIP_BUCKETS} for s in SOURCES},
+        "per_source": _count_sources(entries, sources),
+        "skipped": {s: {b: skipped[s][b] for b in skip_buckets} for s in sources},
         "kept": kept,
         "total": total,
         "deviation_rate": deviation_rate,
@@ -1329,8 +1399,14 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
                     value.get("malformed_lines", 0),
                     value.get("duplicate_keys", 0),
                 )
+                read_error = value.get("read_error")
+                if read_error:
+                    pred_md += (
+                        "**Read error**: the log exists but cannot be read (%s); the counts above "
+                        "are zero because nothing was read, not because nothing was logged.\n\n"
+                    ) % read_error
                 # Add anchoring caveat (D-C: all rows are anchored, so hit rate is upper bound)
-                pred_md += "**Note**: All rows are anchored; hit rate is an upper bound.\n\n"
+                pred_md += "**Note**: %s.\n\n" % value.get("anchoring_caveat", ANCHORING_CAVEAT)
 
                 hit_rate = value.get("hit_rate")
                 hit_rate_str = _fmt_rate(hit_rate)
@@ -1463,39 +1539,13 @@ def _run(argv: Optional[Sequence[str]]) -> int:
         stats = build_stats(
             entries, collected["skipped"], collected["census"],
             collected["legacy"], collected["unkeyed"], len(output), total,
+            top_token_count=TOP_TOKENS,
         )
-        # Add predictions section (project-scoped only, when --match is not used)
+        # Predictions section: project-scoped only. The --match path never loads the log.
         if questions is None:
-            pred_rows, pred_malformed, pred_duplicates = _load_predictions(repo, home)
-            pred_stats = build_prediction_stats(pred_rows)
-            pred_stats["malformed_lines"] = pred_malformed
-            pred_stats["duplicate_keys"] = pred_duplicates
-            stats["predictions"] = pred_stats
+            stats["predictions"] = _prediction_section(repo, home)
         else:
-            # --match path: do not load predictions
-            stats["predictions"] = {
-                "log_path": "~/.claude/precedent/<owner-name>/predictions.jsonl",
-                "logged": 0,
-                "runs": 0,
-                "scored": 0,
-                "null": {"free_text": 0, "accepted-on-continue": 0},
-                "malformed_lines": 0,
-                "duplicate_keys": 0,
-                "hit_rate": None,
-                "baseline_recommended_hit_rate": None,
-                "baseline_n": 0,
-                "by_confidence": {
-                    "high": {
-                        "logged": 0, "scored": 0, "hits": 0, "hit_rate": None,
-                        "baseline_n": 0, "baseline_hit_rate": None,
-                    },
-                    "medium": {
-                        "logged": 0, "scored": 0, "hits": 0, "hit_rate": None,
-                        "baseline_n": 0, "baseline_hit_rate": None,
-                    },
-                },
-                "deviation": {"n": 0, "excluded_null": 0, "pat_right": 0, "panel_right": 0, "neither": 0},
-            }
+            stats["predictions"] = build_prediction_stats([])
         text = render_stats(stats, args.format)
     else:
         text = render(output, args.format)
@@ -1506,14 +1556,18 @@ def _run(argv: Optional[Sequence[str]]) -> int:
         sys.stdout.write(text)
         sys.stdout.flush()
 
-    skipped_total = sum(
-        collected["skipped"][s][b] for s in SOURCES for b in SKIP_BUCKETS if b != "linked_skipped"
-    )
-    linked_skipped = sum(
-        collected["skipped"][s]["linked_skipped"] for s in SOURCES
-    )
+    skipped_total, linked_skipped = _skip_totals(collected["skipped"])
     _stderr(_summary(repo, _count_sources(entries), skipped_total, linked_skipped, len(output), total, reason))
     return 0
+
+
+def _skip_totals(skipped: Dict[str, Dict[str, int]]) -> Tuple[int, int]:
+    """(skipped, linked_skipped) summed over sources. linked_skipped is reported apart."""
+    skipped_total = sum(
+        skipped[s][b] for s in SOURCES for b in SKIP_BUCKETS if b != "linked_skipped"
+    )
+    linked_skipped = sum(skipped[s]["linked_skipped"] for s in SOURCES)
+    return skipped_total, linked_skipped
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

@@ -26,12 +26,18 @@ Inputs:
 Exit and stderr contract:
   - Exit 0 on every data-side outcome: missing/invalid input, bad repo-key, nothing logged.
   - Exit 2 on invocation errors: bad arguments, both/neither --answers and --flow-answers.
-  - Every no-log path prints one stderr line: "precedent-log: nothing logged (<reason>)".
-  - Success: "precedent-log: logged N, skipped-duplicate M".
-  - OSError on read/write: "precedent-log: nothing logged (log-unwritable: <errno text>)", exit 0.
+  - Every no-log path prints one stderr line: "precedent-log: nothing logged (<reason>)". The
+    reason starts with a stable token (trace-not-shown, bad-repo-key, row-build-failed, ...)
+    followed by the path or question id and field involved.
+  - Success: "precedent-log: logged N, skipped-duplicate M, unanswered K" (K = validated
+    blocks with no answer in this run).
+  - An unreadable --flow-answers round file is reported on stderr and skipped; the other
+    rounds still count.
+  - OSError on read/write of the log: "precedent-log: nothing logged (log-unwritable: <path>: <errno text>)",
+    exit 0. An unreadable log is never treated as empty (that would silently disable dedup).
   - Never use bare except; OSError surfaces, no silent failures.
 
-Row schema (TypedDict, PINNED_KEYS order):
+Row schema (PredictionRow TypedDict, PINNED_KEYS order):
   ts, repo_key, command, run, question_id, header, recommended, predicted, confidence,
   actual, hit, citations, actual_source, anchored
 
@@ -44,11 +50,16 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
+from typing import Any, Dict, Final, List, Literal, NoReturn, Optional, Tuple, TypedDict
 
+
+Command = Literal["expert-plan", "expert-review"]
+Confidence = Literal["high", "medium"]
+ActualSource = Literal["option", "free_text", "accepted-on-continue"]
+AnswerSource = Literal["answered", "overridden", "accepted-on-continue"]
 
 # PINNED_KEYS defines the exact order of row fields (decision-level invariant).
-PINNED_KEYS = (
+PINNED_KEYS: Final = (
     "ts",
     "repo_key",
     "command",
@@ -66,44 +77,65 @@ PINNED_KEYS = (
 )
 
 
-class PredictionRow(TypedDict, total=False):
-    """Schema for one prediction log row."""
+class PredictionRow(TypedDict):
+    """One prediction log row. Total: every PINNED_KEYS entry is present."""
     ts: str
     repo_key: str
-    command: str
+    command: Command
     run: str
     question_id: str
     header: str
     recommended: Optional[str]
     predicted: str
-    confidence: str
+    confidence: Confidence
     actual: str
     hit: Optional[bool]
     citations: List[int]
-    actual_source: str
+    actual_source: ActualSource
     anchored: bool
-
-
-class _Usage(Exception):
-    """An invocation error: exit 2, one stderr line, no traceback."""
 
 
 class _Parser(argparse.ArgumentParser):
     """ArgumentParser that reports errors on one stderr line and exits 2."""
 
-    def error(self, message: str) -> str:  # type: ignore[override]
+    def error(self, message: str) -> NoReturn:  # type: ignore[override]
         sys.stderr.write("precedent-log: %s\n" % message)
         raise SystemExit(2)
 
 
+class _RowError(Exception):
+    """A validated block could not become a row. Carries the offending field name."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(field)
+        self.field = field
+
+
 def _stderr(message: str) -> None:
-    """Print a message to stderr without a trailing newline."""
+    """Print a message to stderr on one line."""
     sys.stderr.write(message + "\n")
+
+
+def _skip(reason: str) -> NoReturn:
+    """Print the single no-log stderr line and exit 0 (a data-side outcome)."""
+    _stderr("precedent-log: nothing logged (%s)" % reason)
+    sys.exit(0)
+
+
+def _exc_text(exc: BaseException) -> str:
+    """The errno text for an OSError when present, else the exception's own text."""
+    strerror = getattr(exc, "strerror", None)
+    return str(strerror) if strerror else str(exc)
 
 
 def _fold(repo_key: str) -> str:
     """Normalize repo_key to lowercase (same fold as precedent-digest.py)."""
     return repo_key.lower()
+
+
+def _log_path(log_root: str, repo_key: str) -> str:
+    """The predictions.jsonl path for one repo under log_root."""
+    return os.path.join(log_root, _fold(repo_key), "predictions.jsonl")
 
 
 def _validate_repo_key(repo_key: str, log_root: str) -> bool:
@@ -121,9 +153,7 @@ def _validate_repo_key(repo_key: str, log_root: str) -> bool:
 
     # Check path safety: resolved path must be under log_root
     try:
-        normalized_key = _fold(repo_key)
-        log_dir = os.path.join(log_root, normalized_key)
-        log_path = os.path.join(log_dir, "predictions.jsonl")
+        log_path = _log_path(log_root, repo_key)
 
         # Resolve both paths
         resolved_log_root = os.path.realpath(log_root)
@@ -139,42 +169,43 @@ def _validate_repo_key(repo_key: str, log_root: str) -> bool:
 
 
 def _load_validated(path: str) -> Optional[Dict[str, Any]]:
-    """Load and validate the precedent-validated.json file."""
+    """Load precedent-validated.json. None when missing, unparseable, not status 'ok', or without blocks."""
     try:
         with open(path) as f:
             data = json.load(f)
-        if data.get("status") != "ok":
-            return None
-        if not data.get("blocks"):
-            return None
-        return data
-    except (IOError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        return None
+    blocks = data.get("blocks")
+    if not isinstance(blocks, dict) or not blocks:
+        return None
+    return data
 
 
-def _load_questions(path: str) -> Optional[Dict[str, Any]]:
-    """Load the precedent-questions.json file."""
+def _load_questions(path: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Load precedent-questions.json as {id: question}. None when missing or without string ids."""
     try:
         with open(path) as f:
             data = json.load(f)
-        if not isinstance(data, dict):
-            return None
-        questions_list = data.get("questions", [])
-        if not isinstance(questions_list, list):
-            return None
-        # Build a dict keyed by id for quick lookup
-        questions = {}
-        for q in questions_list:
-            if isinstance(q, dict):
-                qid = q.get("id")
-                if isinstance(qid, str):
-                    questions[qid] = q
-        return questions if questions else None
-    except (IOError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
+    questions_list = data.get("questions", [])
+    if not isinstance(questions_list, list):
+        return None
+    # Build a dict keyed by id for quick lookup
+    questions: Dict[str, Dict[str, Any]] = {}
+    for q in questions_list:
+        if isinstance(q, dict):
+            qid = q.get("id")
+            if isinstance(qid, str):
+                questions[qid] = q
+    return questions if questions else None
 
 
-def _load_normalized_answers(path: str) -> Optional[Dict[str, Tuple[str, str]]]:
+def _load_normalized_answers(path: str) -> Optional[Dict[str, Tuple[str, AnswerSource]]]:
     """Load answers from normalized JSON file: {"answers": {"Q1": "...", ...}}
 
     Returns dict: {question_id: (value, source)} where source is "answered" for normalized answers.
@@ -182,40 +213,44 @@ def _load_normalized_answers(path: str) -> Optional[Dict[str, Tuple[str, str]]]:
     try:
         with open(path) as f:
             data = json.load(f)
-        if not isinstance(data, dict):
-            return None
-        answers_raw = data.get("answers", {})
-        if not isinstance(answers_raw, dict):
-            return None
-        # All normalized answers are sourced from "answered"
-        result = {}
-        for k, v in answers_raw.items():
-            if isinstance(k, str) and isinstance(v, str):
-                result[k] = (v, "answered")
-        return result if result else None
-    except (IOError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
+    answers_raw = data.get("answers", {})
+    if not isinstance(answers_raw, dict):
+        return None
+    # All normalized answers are sourced from "answered"
+    result: Dict[str, Tuple[str, AnswerSource]] = {}
+    for k, v in answers_raw.items():
+        if isinstance(k, str) and isinstance(v, str):
+            result[k] = (v, "answered")
+    return result if result else None
 
 
-def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, str]]]:
+def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, AnswerSource]]]:
     """Load and merge flow-mode answers from multiple files.
 
     Reads each file's top-level 'answers' or 'items' key.
     Merges with latest file winning per handle.
     Only includes handles with disposition 'answered', 'overridden', or 'accepted-on-continue'.
-    Returns dict: {question_id: (value, source)} where source is the disposition.
+    An unreadable or malformed round file is reported on stderr and skipped; the other
+    rounds still contribute. Returns dict: {question_id: (value, source)} where source is
+    the disposition, or None when no usable answers remain.
     """
-    merged: Dict[str, Tuple[str, str]] = {}
+    merged: Dict[str, Tuple[str, AnswerSource]] = {}
 
     for path in paths:
         try:
             with open(path) as f:
                 data = json.load(f)
-        except (IOError, json.JSONDecodeError, ValueError):
-            return None
+        except (OSError, ValueError) as exc:
+            _stderr("precedent-log: skipped unreadable round file %s: %s" % (path, _exc_text(exc)))
+            continue
 
         if not isinstance(data, dict):
-            return None
+            _stderr("precedent-log: skipped round file %s: top level is not a JSON object" % path)
+            continue
 
         # Try 'answers' key first (normal shape), then 'items' (documented fallback)
         answers_section = data.get("answers") or data.get("items")
@@ -283,48 +318,50 @@ def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "fr
 def _build_row(
     ts: str,
     repo_key: str,
-    command: str,
+    command: Command,
     run: str,
     question_id: str,
-    question_block: Dict[str, Any],
+    question_block: Any,
     question_meta: Optional[Dict[str, Any]],
     actual: str,
-    actual_source: str,
+    actual_source: ActualSource,
     anchored: bool,
-) -> Optional[PredictionRow]:
-    """Build a prediction row.
+) -> PredictionRow:
+    """Build one prediction row from a validated block.
 
-    Returns None if any required field is invalid.
-    Validates: hit ⇔ actual_source invariant, confidence in {high, medium}.
+    Raises _RowError naming the first field that is invalid. Validates: hit <=>
+    actual_source invariant, confidence in {high, medium}.
     """
-    # question_id comes from the blocks key
-    if not isinstance(question_id, str):
-        return None
+    if not isinstance(question_block, dict):
+        raise _RowError("block")
 
     # header and recommended come from questions metadata
     header = ""
-    recommended = None
+    recommended: Optional[str] = None
     if question_meta:
         header_val = question_meta.get("header")
         if isinstance(header_val, str):
             header = header_val
         recommended = question_meta.get("recommended")
 
-    predicted_val: Any = question_block.get("prediction")
+    predicted_val = question_block.get("prediction")
     if not isinstance(predicted_val, str):
-        return None
+        raise _RowError("prediction")
     predicted: str = predicted_val
 
     confidence = question_block.get("confidence")
-    precedent_lines = question_block.get("precedent_lines", [])
-
-    # Validate confidence
     if confidence not in ("high", "medium"):
-        return None
+        raise _RowError("confidence")
+
+    precedent_lines = question_block.get("precedent_lines", [])
+    if not isinstance(precedent_lines, list):
+        raise _RowError("precedent_lines")
 
     # Extract citations (ref integers from precedent_lines)
-    citations = []
+    citations: List[int] = []
     for line in precedent_lines:
+        if not isinstance(line, dict):
+            raise _RowError("precedent_lines")
         ref = line.get("ref")
         if isinstance(ref, int):
             citations.append(ref)
@@ -335,7 +372,6 @@ def _build_row(
         if c not in seen:
             seen.add(c)
             dedup_citations.append(c)
-    citations = dedup_citations
 
     # Compute hit: predicted == actual when actual_source == "option", else None
     hit: Optional[bool] = None
@@ -344,7 +380,7 @@ def _build_row(
     elif actual_source in ("free_text", "accepted-on-continue"):
         hit = None
     else:
-        return None  # Invalid actual_source
+        raise _RowError("actual_source")
 
     row: PredictionRow = {
         "ts": ts,
@@ -358,7 +394,7 @@ def _build_row(
         "confidence": confidence,
         "actual": actual,
         "hit": hit,
-        "citations": citations,
+        "citations": dedup_citations,
         "actual_source": actual_source,
         "anchored": anchored,
     }
@@ -368,34 +404,35 @@ def _build_row(
 def _read_existing_keys(log_path: str) -> set:
     """Read existing (run, question_id, command) keys from the log.
 
-    Dedup as the guarantee: all logged rows are unique per this key.
+    A missing log has no keys. Any other OSError propagates: an unreadable log must not
+    look empty, because that would silently disable dedup. The caller reports it as
+    log-unwritable. Dedup as the guarantee: all logged rows are unique per this key.
     """
     keys: set = set()
-    if not os.path.exists(log_path):
-        return keys
     try:
-        with open(log_path) as f:
-            for line in f:
-                line = line.rstrip("\n")
-                if not line:
+        f = open(log_path)
+    except FileNotFoundError:
+        return keys
+    with f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    # Skip non-object lines
                     continue
-                try:
-                    row = json.loads(line)
-                    if not isinstance(row, dict):
-                        # Skip non-object lines
-                        continue
-                    run_val = row.get("run")
-                    qid_val = row.get("question_id")
-                    cmd_val = row.get("command")
-                    # Only add hashable (string) keys
-                    if isinstance(run_val, str) and isinstance(qid_val, str) and isinstance(cmd_val, str):
-                        key = (run_val, qid_val, cmd_val)
-                        keys.add(key)
-                except (json.JSONDecodeError, TypeError):
-                    # Skip malformed lines
-                    pass
-    except IOError:
-        pass
+                run_val = row.get("run")
+                qid_val = row.get("question_id")
+                cmd_val = row.get("command")
+                # Only add hashable (string) keys
+                if isinstance(run_val, str) and isinstance(qid_val, str) and isinstance(cmd_val, str):
+                    key = (run_val, qid_val, cmd_val)
+                    keys.add(key)
+            except (json.JSONDecodeError, TypeError):
+                # Skip malformed lines
+                pass
     return keys
 
 
@@ -405,16 +442,14 @@ def _append_rows(log_dir: str, repo_key: str, rows: List[PredictionRow]) -> Tupl
     Returns (logged_count, skipped_count).
     Raises OSError on read/write failure.
     """
-    # Normalize repo_key
-    repo_key_normalized = _fold(repo_key)
-    log_subdir = os.path.join(log_dir, repo_key_normalized)
+    log_subdir = os.path.join(log_dir, _fold(repo_key))
     log_path = os.path.join(log_subdir, "predictions.jsonl")
 
     # Read existing keys
     existing_keys = _read_existing_keys(log_path)
 
     # Filter out duplicates
-    new_rows = []
+    new_rows: List[PredictionRow] = []
     skipped_count = 0
     for row in rows:
         key = (row.get("run"), row.get("question_id"), row.get("command"))
@@ -460,7 +495,7 @@ def _append_rows(log_dir: str, repo_key: str, rows: List[PredictionRow]) -> Tupl
     return (len(new_rows), skipped_count)
 
 
-def main() -> None:
+def _build_parser() -> _Parser:
     parser = _Parser(description="Log predictions after Step 5 answers.")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -474,13 +509,11 @@ def main() -> None:
     append_parser.add_argument("--run", required=True, help="Run identifier")
     append_parser.add_argument("--trace-file", required=True, help="Path to precedent-trace.txt")
     append_parser.add_argument("--log-root", default=os.path.expanduser("~/.claude/precedent"), help="Log root directory")
+    return parser
 
-    args = parser.parse_args()
 
-    if args.subcommand != "append":
-        parser.error("only 'append' subcommand is supported")
-
-    # Validate mutually exclusive --answers and --flow-answers
+def _check_answer_flags(parser: _Parser, args: argparse.Namespace) -> None:
+    """Exactly one of --answers and --flow-answers must be given (argv error, exit 2)."""
     has_answers = args.answers is not None
     has_flow_answers = len(args.flow_answers) > 0
     if has_answers and has_flow_answers:
@@ -488,114 +521,138 @@ def main() -> None:
     if not has_answers and not has_flow_answers:
         parser.error("one of --answers or --flow-answers is required")
 
-    # Check trace file: only proceed if it starts with "shown"
-    precedent_trace = ""
+
+def _trace_gate(trace_file: str) -> None:
+    """Proceed only when the trace's first line starts with 'shown'. Otherwise exit 0 with a reason."""
     try:
-        with open(args.trace_file) as f:
+        with open(trace_file) as f:
             first_line = f.readline().rstrip("\n")
-            precedent_trace = first_line
-    except IOError:
-        # Missing trace file: treat as no-proceed
-        _stderr("precedent-log: nothing logged (trace-file-missing)")
-        sys.exit(0)
+    except (OSError, ValueError) as exc:
+        _skip("trace-file-missing: %s: %s" % (trace_file, _exc_text(exc)))
+    if not first_line.startswith("shown"):
+        _skip(
+            "trace-not-shown: %s does not start with 'shown', so Pat did not speak "
+            "and nothing is expected to be logged" % trace_file
+        )
 
-    if not precedent_trace.startswith("shown"):
-        _stderr("precedent-log: nothing logged (trace-not-shown)")
-        sys.exit(0)
 
-    # Validate repo_key (must be hyphen-separated lowercase alphanumeric)
-    if not _validate_repo_key(args.repo_key, args.log_root):
-        _stderr("precedent-log: nothing logged (bad-repo-key)")
-        sys.exit(0)
+def _repo_key_gate(repo_key: str, log_root: str) -> None:
+    """Proceed only for a hyphen-separated key that resolves under log_root. Otherwise exit 0."""
+    if not _validate_repo_key(repo_key, log_root):
+        _skip("bad-repo-key: %r must be hyphen-separated alphanumerics (owner-name) resolving under %s" % (repo_key, log_root))
 
-    # Load validated JSON
+
+def _load_inputs(args: argparse.Namespace) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Tuple[str, AnswerSource]]]:
+    """Load validated blocks, questions and answers. Exits 0 with a reason on any invalid input."""
     validated = _load_validated(args.validated)
     if not validated:
-        _stderr("precedent-log: nothing logged (validated-invalid)")
-        sys.exit(0)
+        _skip("validated-invalid: %s is missing, unreadable, not status 'ok', or has no blocks" % args.validated)
 
-    # Load questions
     questions = _load_questions(args.questions)
     if not questions:
-        _stderr("precedent-log: nothing logged (questions-invalid)")
-        sys.exit(0)
+        _skip("questions-invalid: %s is missing, unreadable, or has no question objects with string ids" % args.questions)
 
-    # Load answers (either normalized or flow-based)
-    answers_dict: Optional[Dict[str, Tuple[str, str]]] = None
-    if has_answers:
-        answers_dict = _load_normalized_answers(args.answers)
+    if args.answers is not None:
+        answers = _load_normalized_answers(args.answers)
+        answers_source = args.answers
     else:
-        answers_dict = _load_flow_answers(args.flow_answers)
+        answers = _load_flow_answers(args.flow_answers)
+        answers_source = ", ".join(args.flow_answers)
+    if not answers:
+        _skip("answers-invalid: no usable answers in %s" % answers_source)
 
-    if not answers_dict:
-        _stderr("precedent-log: nothing logged (answers-invalid)")
-        sys.exit(0)
+    return validated, questions, answers
 
-    # At this point, trace_file starts with "shown", so anchored is True
-    anchored = True
 
-    # Build rows for all spoken-on questions that have answers
+def _options_of(question_meta: Optional[Dict[str, Any]]) -> List[str]:
+    """String option labels from the questions file (not from the validated block)."""
+    if not question_meta:
+        return []
+    opts = question_meta.get("options", [])
+    if not isinstance(opts, list):
+        return []
+    return [o for o in opts if isinstance(o, str)]
+
+
+def _build_rows(
+    validated: Dict[str, Any],
+    questions: Dict[str, Dict[str, Any]],
+    answers: Dict[str, Tuple[str, AnswerSource]],
+    args: argparse.Namespace,
+    ts: str,
+    anchored: bool,
+) -> Tuple[List[PredictionRow], int]:
+    """One row per validated block that has an answer. Returns (rows, unanswered count).
+
+    All-or-nothing: a block that cannot be built drops the whole run (exit 0, nothing
+    logged). The stderr reason names the question id and the offending field.
+    """
     rows: List[PredictionRow] = []
-    blocks = validated.get("blocks", {})
-
-    # Generate timestamp once before the loop (F15)
-    ts = datetime.now(timezone.utc).isoformat()
-
-    for question_id, question_block in blocks.items():
-        # Only process questions that have answers
-        if question_id not in answers_dict:
+    unanswered = 0
+    for question_id, question_block in validated["blocks"].items():
+        if question_id not in answers:
+            unanswered += 1
             continue
 
-        answer_value, answer_source = answers_dict[question_id]
-        # Get options from questions dict (not validated block)
+        answer_value, answer_source = answers[question_id]
         question_meta = questions.get(question_id)
-        options = []
-        if question_meta and isinstance(question_meta, dict):
-            opts = question_meta.get("options", [])
-            if isinstance(opts, list):
-                options = [o for o in opts if isinstance(o, str)]
 
         # If source is accepted-on-continue, use value and source directly
         if answer_source == "accepted-on-continue":
-            actual = answer_value
-            actual_source = "accepted-on-continue"
+            actual: str = answer_value
+            actual_source: ActualSource = "accepted-on-continue"
         else:
-            # Otherwise, classify the answer
-            actual, actual_source = classify(answer_value, options)
+            # Otherwise, classify the answer against the question's own options
+            actual, actual_source = classify(answer_value, _options_of(question_meta))
 
-        # Build the row
-        row = _build_row(
-            ts=ts,
-            repo_key=args.repo_key,
-            command=args.command,
-            run=args.run,
-            question_id=question_id,
-            question_block=question_block,
-            question_meta=question_meta,
-            actual=actual,
-            actual_source=actual_source,
-            anchored=anchored,
-        )
-
-        if row is None:
-            _stderr("precedent-log: nothing logged (row-build-failed: question %s)" % question_id)
-            sys.exit(0)
-
+        try:
+            row = _build_row(
+                ts=ts,
+                repo_key=args.repo_key,
+                command=args.command,
+                run=args.run,
+                question_id=question_id,
+                question_block=question_block,
+                question_meta=question_meta,
+                actual=actual,
+                actual_source=actual_source,
+                anchored=anchored,
+            )
+        except _RowError as exc:
+            _skip("row-build-failed: question %s, field %s" % (question_id, exc.field))
         rows.append(row)
 
-    # If no rows, nothing to log
-    if not rows:
-        _stderr("precedent-log: nothing logged (no-answered-questions)")
-        sys.exit(0)
+    return rows, unanswered
 
-    # Append to log
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.subcommand != "append":
+        parser.error("only 'append' subcommand is supported")
+
+    _check_answer_flags(parser, args)
+    _trace_gate(args.trace_file)
+    _repo_key_gate(args.repo_key, args.log_root)
+
+    validated, questions, answers = _load_inputs(args)
+
+    # At this point, trace_file starts with "shown", so anchored is True
+    anchored = True
+    # Generate timestamp once before the loop (F15)
+    ts = datetime.now(timezone.utc).isoformat()
+
+    rows, unanswered = _build_rows(validated, questions, answers, args, ts, anchored)
+    if not rows:
+        _skip("no-answered-questions: none of the %d validated blocks has an answer" % len(validated["blocks"]))
+
     try:
         logged_count, skipped_count = _append_rows(args.log_root, args.repo_key, rows)
-    except OSError as e:
-        _stderr("precedent-log: nothing logged (log-unwritable: %s)" % e.strerror)
-        sys.exit(0)
+    except OSError as exc:
+        _skip("log-unwritable: %s: %s" % (_log_path(args.log_root, args.repo_key), _exc_text(exc)))
 
-    _stderr("precedent-log: logged %d, skipped-duplicate %d" % (logged_count, skipped_count))
+    _stderr("precedent-log: logged %d, skipped-duplicate %d, unanswered %d" % (logged_count, skipped_count, unanswered))
     sys.exit(0)
 
 
