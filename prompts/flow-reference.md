@@ -457,7 +457,7 @@ For `kind: "report"` files (the plan checkpoint report):
 For other `kind` values (standard Ask block forms): the existing `{"answers": {...}, "annotations": {...}}` shape.
 
 Fields (report kind only):
-- `kind: "report"`, `round`, `attempt` — marks this as a report answers file with round and attempt numbers. A report answers file never uses the legacy `answers` key.
+- `kind: "report"`, `round`, `attempt` — marks this as a report answers file with round and attempt numbers. A report answers file never uses the legacy `answers` key. Every round's file, round 2 and later included, must repeat `"kind": "report"` and the same-SEQ question file's `attempt`; the verifier rejects a file with any other `kind` or `attempt` rather than skipping it.
 - `items` — keyed by handle, with dispositions and excerpts as below. Each round's file holds the items asked that round. Union coverage across an attempt: the first round's file holds every ledger handle; later files hold at least every must-answer item their same-SEQ question file lists; every ledger handle must appear in at least one file; no file may hold a handle that is not in the ledger. The latest file in SEQ order sets a handle's final disposition.
 - `disposition` — `"accepted"` (unmentioned D or W), `"answered"` (explicit answer), `"overridden"` (changed prior answer), `"accepted-on-continue"` (must-answer item left open when human said continue), or `"unresolved"` (unanswered must-answer item, blocks resume).
 - `value` — the human's chosen or stated value, or the panel recommendation for `accepted-on-continue`.
