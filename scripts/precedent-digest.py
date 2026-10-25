@@ -76,7 +76,8 @@ CURATED_CAP = 20 bounds them; survivors beyond it are counted in curated_capped.
 entries keep their full budget.
 
 Status file. --status-out FILE writes one JSON object on every exit-0 path: repo_resolved,
-curated_root ("ok" or "none"), yaml ("ok", "missing", "unreadable" or "no_keys"), curated,
+curated_root ("ok" or "none"), yaml ("ok", "missing", "unreadable", "no_keys" or
+"not_applicable" when there is no curated root), curated,
 curated_capped, curated_rejected, curated_no_rule, curated_screened, and reason. Step 5 of
 /expert-plan reads it so that no-root and overflow outcomes are visible.
 
@@ -1163,7 +1164,9 @@ def _curated_dir(real_root: str, value: str) -> Optional[str]:
     if ".." in value.replace("\\", "/").split("/"):
         return None
     real = os.path.realpath(os.path.join(real_root, value))
-    if not os.path.isdir(real) or os.path.commonpath([real_root, real]) != real_root:
+    if real == real_root or not os.path.isdir(real):
+        return None
+    if os.path.commonpath([real_root, real]) != real_root:
         return None
     return real
 
@@ -1270,10 +1273,14 @@ def _curated_screened(parts: Sequence[str]) -> bool:
     return any(keyword.lower() in folded for keyword in SECURITY_KEYWORDS)
 
 
-def _scan_curated(root: str, repo_key: str, counts: Dict[str, int]) -> List[Tuple[int, str, Dict[str, Any]]]:
+def _scan_curated(
+    root: str,
+    repo_key: str,
+    pairs: List[Tuple[str, str]],
+    counts: Dict[str, int],
+) -> List[Tuple[int, str, Dict[str, Any]]]:
     """(kind rank, realpath, entry) for every qualifying curated file, before the cap."""
     real_root = os.path.realpath(root)
-    pairs, _status = _read_curated_dirs(real_root)
     found: List[Tuple[int, str, Dict[str, Any]]] = []
     seen_dirs: Set[str] = set()
     seen_files: Set[str] = set()
@@ -1339,16 +1346,18 @@ def collect_curated(
     root: str,
     repo_key: str,
     skipped: Dict[str, Dict[str, int]],
+    pairs: List[Tuple[str, str]],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Curated entries for one repo root, capped at CURATED_CAP. Never raises.
 
+    pairs is the (kind, value) list from _read_curated_dirs, read once by the caller.
     Counts go into skipped["curated"]; the returned dict repeats the four curated
     counters for the caller's status file. Any exception counts once as
     curated_rejected and yields zero curated entries, so raw entries are unaffected.
     """
     counts = {"rejected": 0, "no_rule": 0, "screened": 0}
     try:
-        found = _scan_curated(root, repo_key, counts)
+        found = _scan_curated(root, repo_key, pairs, counts)
     except Exception:
         found = []
         counts = {"rejected": 1, "no_rule": 0, "screened": 0}
@@ -1942,13 +1951,24 @@ def _run(argv: Optional[Sequence[str]]) -> int:
     repo = collected["repo_key"]
 
     curated_root = _curated_root(args.repo) if key is not None else None
-    yaml_status = "missing"
+    yaml_status = "not_applicable"
     curated_counts: Dict[str, int] = {
         "curated_capped": 0, "curated_rejected": 0, "curated_no_rule": 0, "curated_screened": 0,
     }
     if curated_root is not None:
-        _pairs, yaml_status = _read_curated_dirs(curated_root)
-        curated_entries, curated_counts = collect_curated(curated_root, repo, collected["skipped"])
+        curated_entries: List[Dict[str, Any]] = []
+        try:
+            pairs, yaml_status = _read_curated_dirs(curated_root)
+            curated_entries, curated_counts = collect_curated(curated_root, repo, collected["skipped"], pairs)
+        except Exception:
+            # Fail closed: any curated-path failure yields zero curated entries and one counted
+            # rejection. Raw entries are untouched and the status file is still written.
+            yaml_status = "unreadable"
+            curated_entries = []
+            curated_counts = {
+                "curated_capped": 0, "curated_rejected": 1, "curated_no_rule": 0, "curated_screened": 0,
+            }
+            collected["skipped"][CURATED_SOURCE]["curated_rejected"] += 1
         collected["entries"].extend(curated_entries)
 
     entries = order(collected["entries"])

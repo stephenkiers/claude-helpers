@@ -333,7 +333,7 @@ strategicDocuments:
 
 - The paths are repo-relative directories. Absolute paths, `..` segments, and symlinks that point outside the repo are rejected.
 - Only the block-style yaml subset is read: a column-0 `strategicDocuments:` key with directly nested scalar keys. Flow style (`{...}`) and nested maps are not supported. Commented-out keys are inactive.
-- The digest reads the `*.md` files directly in each directory (not recursively). `README.md` and `index.md` are excluded. Each file's H1 becomes the rule's header, and its first `Rule:` / `Decision:` line (or first row of a `## Decisions` table) becomes the rule text.
+- The digest reads the `*.md` files directly in each directory (not recursively). `README.md` and `index.md` are excluded. Each file's H1 becomes the rule's header. The rule text is the first `Rule:` / `Decision:` line; failing that, the first prose line under a `## Rule`, `## Decision` or `## Decisions` heading, or the first data row of that section's table (cells joined with ` — `). The reason is the first `Spirit:` / `Rationale:` line; failing that, the first prose line under `## Spirit` or `## Rationale`.
 - At most 20 curated entries are used. Overflow is counted and reported, not silently dropped.
 
 Example structure:

@@ -658,7 +658,7 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    - **Non-flow**: Read all `#### Q[n].` briefs from the checkpoint section as-built below (before any Ask is called).
    - **Flow**: Read Q items only from the ledger you built with `plan-checkpoint-tiers.py` (D and W items are excluded).
    
-   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. If zero questions remain, write `PRECEDENT_TRACE="no-eligible-questions"` to `${SESSION_DIR}/precedent-trace.txt` and stop (skip steps 2–10).
+   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. Before that check, remove stale digest outputs from any earlier attempt, so an early stop cannot leave a previous digest line for `decisions.md` to append: `rm -f "${SESSION_DIR}/precedent-questions.json" "${SESSION_DIR}/precedent-validated.json" "${SESSION_DIR}/precedent-digest.jsonl" "${SESSION_DIR}/precedent-digest.status.json" "${SESSION_DIR}/precedent-digest-line.txt"`. If zero questions remain, write `PRECEDENT_TRACE="no-eligible-questions"` to `${SESSION_DIR}/precedent-trace.txt` and stop (skip steps 2–10).
 
 2. **Write questions file and clean stale files.** Remove any stale precedent files from prior attempts: `rm -f "${SESSION_DIR}/precedent-questions.json" "${SESSION_DIR}/precedent-validated.json" "${SESSION_DIR}/precedent-digest.jsonl" "${SESSION_DIR}/precedent-digest.status.json" "${SESSION_DIR}/precedent-digest-line.txt"`. Then use the `Write` tool to create `${SESSION_DIR}/precedent-questions.json` with one entry per eligible question:
    ```json
@@ -698,9 +698,9 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ]; then
      DIGEST_LINE="precedent-digest: curated_root=${DG_ROOT} yaml=${DG_YAML} curated=${DG_CURATED} capped=${DG_CAPPED} rejected=${DG_REJECTED} no_rule=${DG_NO_RULE} screened=${DG_SCREENED}${DG_REASON:+ reason=${DG_REASON}}"
    fi
-   printf '%s' "${DIGEST_LINE}" > "${SESSION_DIR}/precedent-digest-line.txt"
+   if [ -n "${DIGEST_LINE}" ]; then printf '%s\n' "${DIGEST_LINE}" > "${SESSION_DIR}/precedent-digest-line.txt"; fi
    ```
-   If `repo_resolved` is `false`, or the digest exited non-zero, the trace is `digest-failed` and steps 4–9 are skipped (go to step 10). Otherwise continue to step 4. The file `precedent-digest-line.txt` holds one `precedent-digest:` line when the curated layer is empty, capped, or rejected, and is empty otherwise. The decisions.md steps below append it.
+   If `repo_resolved` is `false`, or the digest exited non-zero, the trace is `digest-failed` and steps 4–9 are skipped (go to step 10). Otherwise continue to step 4. The file `precedent-digest-line.txt` holds one `precedent-digest:` line (newline-terminated) when the curated layer is empty, capped, or rejected, and does not exist otherwise. The decisions.md steps below append it.
 
 4. **Self-exclusion and security filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt, and drop entries with security-related `question` or `reason` text. Use one `jq -c` filter with five variables to drop entries whose `path` matches self-exclusion patterns or whose `question`/`reason` contain security keywords:
    ```bash
