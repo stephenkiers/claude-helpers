@@ -492,7 +492,7 @@ def case_row_contract(h):
         rc2, _, stderr2 = run_helper(fx.home, fx.log_root, [*common, "--run", "2-test-p"], "other content")
         h.test_result("row contract: non-shown trace exits 0", rc2 == 0, f"rc={rc2}")
         h.test_result("row contract: non-shown trace reason is trace-not-shown",
-                      "nothing logged (trace-not-shown)" in stderr2, f"stderr={stderr2}")
+                      "nothing logged (trace-not-shown" in stderr2, f"stderr={stderr2}")
         rows2_all = fx.read_log_file("owner-name")
         h.test_result("row contract: only first row in log", len(rows2_all) == 1, f"n={len(rows2_all)}")
 

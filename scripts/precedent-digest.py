@@ -1142,7 +1142,7 @@ def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], i
     rows: List[Dict[str, Any]] = []
     malformed = 0
     duplicates = 0
-    seen_keys: Set[Tuple[str, str]] = set()
+    seen_keys: Set[Tuple[str, str, str]] = set()
 
     if not os.path.exists(log_path):
         return rows, malformed, duplicates
