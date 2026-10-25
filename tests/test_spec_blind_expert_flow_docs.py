@@ -111,7 +111,7 @@ t("amendment records 'insufficient data' for the maxTurns look-back",
   "insufficient data" in amend_text.lower(),
   "the amendment does not say 'insufficient data'")
 t("amendment keeps maxTurns at 120",
-  "maxTurns" in amend_text and "120" in amend_text,
+  bool(re.search(r"maxTurns[^\n]*120", amend_text)),
   "the amendment does not state that maxTurns stays 120")
 t("amendment names escalations.jsonl as the re-check stream",
   "escalations.jsonl" in amend_text,
@@ -120,7 +120,7 @@ t("amendment names the event: \"attempt\" lines as the trigger stream",
   'event: "attempt"' in amend_text,
   'the event: "attempt" stream is not named in the amendment')
 t("ADR-0023 still carries the 'Raising or overriding maxTurns' out-of-scope line",
-  "Raising or overriding" in adr23 and "maxTurns" in adr23,
+  bool(re.search(r"Raising or overriding[^\n]*maxTurns", adr23, re.IGNORECASE)),
   "the out-of-scope line for raising maxTurns was removed")
 
 # ---------------------------------------------------------------------------
