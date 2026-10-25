@@ -4,6 +4,7 @@
 Usage:
     precedent-digest.py <repo-root-or-owner/name> [--format jsonl|md]
         [--match <questions.json> [--top N]] [--stats] [--out FILE]
+        [--status-out FILE]
 
 Reads three on-disk sources under $HOME/.claude for one repo and writes one
 bounded digest of the human rulings found there:
@@ -11,12 +12,14 @@ bounded digest of the human rulings found there:
   - plan-sessions/<key>/*/decisions.md                  (source "plan-session")
   - flows/<key>/*/questions|answers/<step>-NN.json      (source "flow")
   - reviews/<key>/*/claude-action-plan.md               (source "review")
+  - <root>/<decisionsDirectory>/*.md, <root>/<constraintsDirectory>/*.md
+                                                        (source "curated", see below)
 
 Model-free and read-only. The only file it ever writes is the one named by --out.
 
 Entry schema (the contract with #293, Pat). Keys, in this exact order:
   id           str    sha256(path + "\\n" + question + "\\n" + header) hex digest, first 16 chars.
-  source       str    open enum. Today: "plan-session", "flow", "review".
+  source       str    open enum. Today: "plan-session", "flow", "review", "curated".
                       Consumers MUST tolerate unknown source values.
   repo_key     str    hyphen spelling, "owner-name".
   date         str    ISO 8601 "YYYY-MM-DDTHH:MM:SS", naive local time.
@@ -43,6 +46,39 @@ With --match, output is bounded by --top N (default 60) and the 300 cap does not
 apply; scoring runs over the full deduplicated corpus. Both bounds are volume
 prefilters, not rulings. Absence from the digest does not mean "never asked". This
 follows epic #291's information-only rule and ADR-0005's "lens not law".
+
+Curated layer (#297). When the positional argument resolves to an on-disk repo root,
+the digest reads two optional keys, strategicDocuments.decisionsDirectory and
+strategicDocuments.constraintsDirectory, from <root>/.claude/reviewers/north-star-nick-local.yaml.
+A stdlib line scanner reads only the block-style subset: a column-0 strategicDocuments:
+block with scalar children. Commented keys are inactive; flow style, anchors and nested
+maps are not read. Every *.md file directly inside a named directory, except README.md and
+index.md, becomes one entry with source "curated":
+
+  - ref null, options [], recommended null, deviated null;
+  - answer is the Rule/Decision text, or the first data row of a Rule/Decision table;
+  - reason is the Spirit/Rationale text, or null;
+  - path is the absolute realpath of the file.
+
+Path safety. A directory value must be relative, contain no ".." segment, and resolve
+inside the root. Files must be regular, non-symlink, at most 64 KiB, and resolve inside
+the root. Each rejection is counted in curated_rejected. A file with no H1 or no rule is
+counted in curated_no_rule. A curated entry whose header, question, answer or reason
+contains one of SECURITY_KEYWORDS (case-insensitive) is dropped and counted in
+curated_screened.
+
+Curated text is read from the working tree, not from the default branch. A branch can
+therefore add a rule that the digest reports (ADR-0024 amendment, accepted risk).
+
+Curated entries are partitioned out before scoring. They sort first, in collector order
+(decisions before constraints, then path), and sit outside --top and the 300 raw cap.
+CURATED_CAP = 20 bounds them; survivors beyond it are counted in curated_capped. Raw
+entries keep their full budget.
+
+Status file. --status-out FILE writes one JSON object on every exit-0 path: repo_resolved,
+curated_root ("ok" or "none"), yaml ("ok", "missing", "unreadable" or "no_keys"), curated,
+curated_capped, curated_rejected, curated_no_rule, curated_screened, and reason. Step 5 of
+/expert-plan reads it so that no-root and overflow outcomes are visible.
 
 Provenance. This reader is proposed under epic #291 as the first cross-run reader of
 claude-action-plan.md. It relies on ADR-0007's chore/29 escape hatch, and that hatch
@@ -128,8 +164,11 @@ PINNED_KEYS = (
     "id", "source", "repo_key", "date", "ref", "path", "header", "question",
     "options", "recommended", "answer", "reason", "deviated",
 )
-SOURCES = ("plan-session", "flow", "review")
-SKIP_BUCKETS = ("unreadable", "malformed", "unanswered", "orphan_answer", "linked_skipped")
+SOURCES = ("plan-session", "flow", "review", "curated")
+SKIP_BUCKETS = (
+    "unreadable", "malformed", "unanswered", "orphan_answer", "linked_skipped",
+    "curated_rejected", "curated_no_rule", "curated_screened", "curated_capped",
+)
 SOURCE_ROOTS = (("plan-sessions", "plan-session"), ("flows", "flow"), ("reviews", "review"))
 PLAN_DOC = "decisions.md"
 REVIEW_DOC = "claude-action-plan.md"
@@ -180,6 +219,29 @@ REVIEW_OPTIONS_START_RE = re.compile(r"^- \*\*Options\*\*\s*:")  # options secti
 REVIEW_KEY_SPLIT_RE = re.compile(r"\s*(?:—|:)\s*|\s+-\s*|\s*-\s+")  # splits on em-dash, colon, or hyphen
 REVIEW_LEAD_SPLIT_RE = re.compile(r"[,;.(]")  # splits on comma, semicolon, period, or paren
 LEADING_LETTER_RE = re.compile(r"^([A-Za-z])(?=[.)\s—:]|$)")  # lone letter before specific punct or end
+
+# Curated layer (#297): project-written decision and constraint files.
+CURATED_SOURCE = "curated"
+CURATED_CAP = 20
+CURATED_YAML = os.path.join(".claude", "reviewers", "north-star-nick-local.yaml")
+CURATED_YAML_MAX = 64 * 1024
+CURATED_FILE_MAX = 64 * 1024
+CURATED_EXCLUDED = frozenset({"readme.md", "index.md"})
+CURATED_KIND_ORDER = {"decisions": 0, "constraints": 1}
+CURATED_YAML_KEYS = {"decisionsDirectory": "decisions", "constraintsDirectory": "constraints"}
+CURATED_RULE_HEADINGS = ("Rule", "Decision", "Decisions")
+CURATED_SPIRIT_HEADINGS = ("Spirit", "Rationale")
+# Curated-only keyword screen. Same tokens as the Step 5 jq regex in commands/expert-plan.md.
+SECURITY_KEYWORDS = (
+    "security", "auth", "credential", "secret", "token", "injection",
+    "permission", "crypt", "vulnerab", "CRITICAL",
+)
+CURATED_STRATEGIC_RE = re.compile(r"^strategicDocuments\s*:\s*(?:#.*)?$")
+CURATED_KEY_LINE_RE = re.compile(r"^(decisionsDirectory|constraintsDirectory)\s*:(.*)$")
+CURATED_COMMENT_RE = re.compile(r"(?:^|\s)#")
+CURATED_RULE_RE = re.compile(r"^\s*(?:\*\*)?(?:Rule|Decision)(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.*?)\s*$")
+CURATED_SPIRIT_RE = re.compile(r"^\s*(?:\*\*)?(?:Spirit|Rationale)(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.*?)\s*$")
+CURATED_TABLE_SEP_RE = re.compile(r"^\|?[\s:|-]*-{3}[\s:|-]*\|?$")
 
 
 class _Usage(Exception):
@@ -1020,10 +1082,302 @@ def collect(pair: Tuple[str, str], home: str) -> Dict[str, Any]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Curated layer (#297): decision and constraint files named by the local yaml
+# ---------------------------------------------------------------------------
+
+def _curated_root(arg: str) -> Optional[str]:
+    """The realpath of the repo root, or None when arg is not an on-disk directory."""
+    if not os.path.isdir(arg):
+        return None
+    return os.path.realpath(arg)
+
+
+def _yaml_scalar(rest: str) -> Optional[str]:
+    """The scalar after 'key:' in the block-style subset, or None when unsupported."""
+    text = rest.strip()
+    if not text:
+        return None
+    if text[0] in "\"'":
+        end = text.find(text[0], 1)
+        if end == -1:
+            return None
+        return text[1:end].strip() or None
+    text = CURATED_COMMENT_RE.split(text, maxsplit=1)[0].strip()
+    if not text or text[0] in "{[&*|>!%@`":
+        return None
+    return text
+
+
+def _read_curated_dirs(root: str) -> Tuple[List[Tuple[str, str]], str]:
+    """(kind, value) pairs for the two curated keys, and the yaml status.
+
+    Status is one of ok, missing, unreadable, no_keys. Never raises: a missing or
+    malformed file yields zero directories.
+    """
+    path = os.path.join(root, CURATED_YAML)
+    if not os.path.lexists(path):
+        return [], "missing"
+    try:
+        if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > CURATED_YAML_MAX:
+            return [], "unreadable"
+        text = _read_text(path)
+    except (OSError, UnicodeDecodeError):
+        return [], "unreadable"
+    if text.startswith("﻿"):
+        text = text[1:]
+    found: Dict[str, str] = {}
+    in_block = False
+    child_indent: Optional[int] = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        if indent == 0:
+            in_block = CURATED_STRATEGIC_RE.match(line) is not None
+            child_indent = None
+            continue
+        if not in_block:
+            continue
+        if child_indent is None:
+            child_indent = indent
+        if indent != child_indent:
+            continue
+        match = CURATED_KEY_LINE_RE.match(stripped)
+        if match is None:
+            continue
+        value = _yaml_scalar(match.group(2))
+        if value is not None and match.group(1) not in found:
+            found[match.group(1)] = value
+    pairs = [(kind, found[name]) for name, kind in CURATED_YAML_KEYS.items() if name in found]
+    if not pairs:
+        return [], "no_keys"
+    return pairs, "ok"
+
+
+def _curated_dir(real_root: str, value: str) -> Optional[str]:
+    """The realpath of a curated directory inside real_root, or None when rejected."""
+    if not value or os.path.isabs(value):
+        return None
+    if ".." in value.replace("\\", "/").split("/"):
+        return None
+    real = os.path.realpath(os.path.join(real_root, value))
+    if not os.path.isdir(real) or os.path.commonpath([real_root, real]) != real_root:
+        return None
+    return real
+
+
+def _dir_entries(path: str) -> Optional[List[os.DirEntry]]:
+    try:
+        with os.scandir(path) as it:
+            return list(it)
+    except OSError:
+        return None
+
+
+def _h2_sections(lines: List[str], titles: Tuple[str, ...]) -> List[List[str]]:
+    """Body lines of every level-2 section whose title is in titles, in file order."""
+    bodies: List[List[str]] = []
+    for index, line in enumerate(lines):
+        head = _heading_of(line)
+        if head is None or head[0] != 2 or head[1] not in titles:
+            continue
+        body: List[str] = []
+        for later in lines[index + 1:]:
+            sub = _heading_of(later)
+            if sub is not None and sub[0] <= 2:
+                break
+            body.append(later)
+        bodies.append(body)
+    return bodies
+
+
+def _labeled(lines: List[str], pattern: Any) -> Optional[str]:
+    """The first non-empty value of a Label: line, or None."""
+    for line in lines:
+        match = pattern.match(line)
+        if match and match.group(1):
+            return match.group(1)
+    return None
+
+
+def _first_prose(body: List[str]) -> Optional[str]:
+    for line in body:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            return None
+        return _strip_bullet(stripped) or None
+    return None
+
+
+def _table_answer(body: List[str]) -> Optional[str]:
+    """The first data row of a markdown table, cells joined with an em dash."""
+    rows: List[str] = []
+    for line in body:
+        stripped = line.strip()
+        if not rows and not stripped:
+            continue
+        if not stripped.startswith("|"):
+            break
+        rows.append(stripped)
+    if len(rows) < 3 or CURATED_TABLE_SEP_RE.match(rows[1]) is None:
+        return None
+    cells = [cell.strip() for cell in rows[2].strip("|").split("|")]
+    return " — ".join(cell for cell in cells if cell) or None
+
+
+def _body_answer(body: List[str]) -> Optional[str]:
+    first = next((line.strip() for line in body if line.strip()), "")
+    if first.startswith("|"):
+        return _table_answer(body)
+    return _first_prose(body)
+
+
+def _parse_curated(text: str) -> Optional[Dict[str, Optional[str]]]:
+    """Title, rule and spirit of one curated file, or None when it has no H1 or no rule."""
+    if text.startswith("﻿"):
+        text = text[1:]
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    title: Optional[str] = None
+    for line in lines:
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    if not title:
+        return None
+    answer = _labeled(lines, CURATED_RULE_RE)
+    if answer is None:
+        for body in _h2_sections(lines, CURATED_RULE_HEADINGS):
+            answer = _body_answer(body)
+            if answer:
+                break
+    if not answer:
+        return None
+    reason = _labeled(lines, CURATED_SPIRIT_RE)
+    if reason is None:
+        for body in _h2_sections(lines, CURATED_SPIRIT_HEADINGS):
+            reason = _first_prose(body)
+            if reason:
+                break
+    return {"title": title, "answer": answer, "reason": reason}
+
+
+def _curated_screened(parts: Sequence[str]) -> bool:
+    folded = " ".join(parts).lower()
+    return any(keyword.lower() in folded for keyword in SECURITY_KEYWORDS)
+
+
+def _scan_curated(root: str, repo_key: str, counts: Dict[str, int]) -> List[Tuple[int, str, Dict[str, Any]]]:
+    """(kind rank, realpath, entry) for every qualifying curated file, before the cap."""
+    real_root = os.path.realpath(root)
+    pairs, _status = _read_curated_dirs(real_root)
+    found: List[Tuple[int, str, Dict[str, Any]]] = []
+    seen_dirs: Set[str] = set()
+    seen_files: Set[str] = set()
+    for kind, value in pairs:
+        real_dir = _curated_dir(real_root, value)
+        if real_dir is None:
+            counts["rejected"] += 1
+            continue
+        if real_dir in seen_dirs:
+            continue
+        seen_dirs.add(real_dir)
+        rank = CURATED_KIND_ORDER[kind]
+        listing = _dir_entries(real_dir)
+        if listing is None:
+            counts["rejected"] += 1
+            continue
+        for entry in sorted(listing, key=lambda item: item.name):
+            name = entry.name
+            if name.lower() in CURATED_EXCLUDED:
+                continue
+            if not name.lower().endswith(".md") or entry.is_symlink() or not entry.is_file():
+                counts["rejected"] += 1
+                continue
+            if entry.stat(follow_symlinks=False).st_size > CURATED_FILE_MAX:
+                counts["rejected"] += 1
+                continue
+            real_file = os.path.realpath(entry.path)
+            if os.path.commonpath([real_root, real_file]) != real_root:
+                counts["rejected"] += 1
+                continue
+            if real_file in seen_files:
+                continue
+            seen_files.add(real_file)
+            try:
+                text = _read_text(real_file)
+            except (OSError, UnicodeDecodeError):
+                counts["rejected"] += 1
+                continue
+            parsed = _parse_curated(text)
+            if parsed is None:
+                counts["no_rule"] += 1
+                continue
+            title = str(parsed["title"])
+            answer = str(parsed["answer"])
+            reason = parsed["reason"]
+            if _curated_screened([title, title, answer, reason or ""]):
+                counts["screened"] += 1
+                continue
+            rec: Dict[str, Any] = {
+                "question": title,
+                "header": title,
+                "options": [],
+                "recommended": None,
+                "answer": answer,
+                "reason": reason,
+            }
+            date = _date_for(name, real_file)
+            found.append((rank, real_file, _make_entry(CURATED_SOURCE, repo_key, real_file, date, None, rec)))
+    return found
+
+
+def collect_curated(
+    root: str,
+    repo_key: str,
+    skipped: Dict[str, Dict[str, int]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Curated entries for one repo root, capped at CURATED_CAP. Never raises.
+
+    Counts go into skipped["curated"]; the returned dict repeats the four curated
+    counters for the caller's status file. Any exception counts once as
+    curated_rejected and yields zero curated entries, so raw entries are unaffected.
+    """
+    counts = {"rejected": 0, "no_rule": 0, "screened": 0}
+    try:
+        found = _scan_curated(root, repo_key, counts)
+    except Exception:
+        found = []
+        counts = {"rejected": 1, "no_rule": 0, "screened": 0}
+    found.sort(key=lambda item: (item[0], item[1]))
+    kept = found[:CURATED_CAP]
+    capped = len(found) - len(kept)
+    bucket = skipped[CURATED_SOURCE]
+    bucket["curated_rejected"] += counts["rejected"]
+    bucket["curated_no_rule"] += counts["no_rule"]
+    bucket["curated_screened"] += counts["screened"]
+    bucket["curated_capped"] += capped
+    entries = [entry for _rank, _path, entry in kept]
+    return entries, {
+        "curated_capped": capped,
+        "curated_rejected": counts["rejected"],
+        "curated_no_rule": counts["no_rule"],
+        "curated_screened": counts["screened"],
+    }
+
+
 def order(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Total order: date desc, path asc, header asc, id asc."""
-    ascending = sorted(entries, key=lambda e: (e["path"], e["header"], e["id"]))
-    return sorted(ascending, key=lambda e: e["date"], reverse=True)
+    """Curated entries first, in collector order; raw entries in the total order.
+
+    Raw total order: date desc, path asc, header asc, id asc.
+    """
+    curated = [e for e in entries if e["source"] == CURATED_SOURCE]
+    raw = [e for e in entries if e["source"] != CURATED_SOURCE]
+    ascending = sorted(raw, key=lambda e: (e["path"], e["header"], e["id"]))
+    return curated + sorted(ascending, key=lambda e: e["date"], reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1084,7 +1438,12 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
     max field weight (header 3, question 2, option 1) multiplied by log(1 + N/df),
     where N is the total number of entries and df is the number of entries
     containing the token. Ties keep the base order. The score is never emitted.
+
+    Curated entries are never scored. They are taken out first and always returned,
+    ahead of the top raw entries, so --top bounds only the raw entries.
     """
+    curated = [e for e in entries if e["source"] == CURATED_SOURCE]
+    entries = [e for e in entries if e["source"] != CURATED_SOURCE]
     pending: Set[str] = set()
     for question in questions:
         pending.update(_tokens(question["header"]))
@@ -1092,7 +1451,7 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
         for label in question["options"]:
             pending.update(_tokens(label))
     if not pending:
-        return []
+        return curated
     # Compute document frequency for each token in pending.
     df: Dict[str, int] = {}
     for entry in entries:
@@ -1118,7 +1477,7 @@ def match_entries(entries: List[Dict[str, Any]], questions: List[Dict[str, Any]]
         if score > 0:
             scored.append((-score, index, entry))
     scored.sort(key=lambda item: (item[0], item[1]))
-    return [entry for _score, _index, entry in scored[:top]]
+    return curated + [entry for _score, _index, entry in scored[:top]]
 
 
 def _count_sources(entries: List[Dict[str, Any]], sources: Sequence[str] = SOURCES) -> Dict[str, int]:
@@ -1534,12 +1893,30 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stats", action="store_true", help="emit the stats object instead of entries")
     parser.add_argument("--out", metavar="FILE", default=None,
                         help="write atomically to FILE (created with mode 0o600)")
+    parser.add_argument("--status-out", metavar="FILE", default=None,
+                        help="write a JSON status object (curated root, yaml, overflow counts) to FILE")
     return parser
 
 
-def _summary(repo: str, counts: Dict[str, int], skipped_total: int, linked_skipped: int, kept: int, total: int, reason: str) -> str:
-    line = "precedent-digest: repo=%s plan-session=%d flow=%d review=%d skipped=%d linked_skipped=%d kept=%d of %d" % (
-        repo, counts["plan-session"], counts["flow"], counts["review"], skipped_total, linked_skipped, kept, total,
+def _summary(
+    repo: str,
+    counts: Dict[str, int],
+    skipped_total: int,
+    linked_skipped: int,
+    kept: int,
+    total: int,
+    reason: str,
+    curated_counts: Dict[str, int],
+) -> str:
+    line = (
+        "precedent-digest: repo=%s plan-session=%d flow=%d review=%d curated=%d "
+        "skipped=%d linked_skipped=%d curated_rejected=%d curated_no_rule=%d "
+        "curated_screened=%d curated_capped=%d kept=%d of %d"
+    ) % (
+        repo, counts["plan-session"], counts["flow"], counts["review"], counts[CURATED_SOURCE],
+        skipped_total, linked_skipped, curated_counts["curated_rejected"],
+        curated_counts["curated_no_rule"], curated_counts["curated_screened"],
+        curated_counts["curated_capped"], kept, total,
     )
     if reason:
         line += " (%s)" % reason
@@ -1564,12 +1941,24 @@ def _run(argv: Optional[Sequence[str]]) -> int:
         reason = ""
     repo = collected["repo_key"]
 
+    curated_root = _curated_root(args.repo) if key is not None else None
+    yaml_status = "missing"
+    curated_counts: Dict[str, int] = {
+        "curated_capped": 0, "curated_rejected": 0, "curated_no_rule": 0, "curated_screened": 0,
+    }
+    if curated_root is not None:
+        _pairs, yaml_status = _read_curated_dirs(curated_root)
+        curated_entries, curated_counts = collect_curated(curated_root, repo, collected["skipped"])
+        collected["entries"].extend(curated_entries)
+
     entries = order(collected["entries"])
     total = len(entries)
     if questions is not None:
         output = match_entries(entries, questions, args.top)
     else:
-        output = entries[:CAP]
+        curated = [e for e in entries if e["source"] == CURATED_SOURCE]
+        raw = [e for e in entries if e["source"] != CURATED_SOURCE]
+        output = curated + raw[:CAP]
     if total == 0 and not reason and not collected["matched"]:
         reason = "no source dirs for %s" % repo
 
@@ -1595,7 +1984,26 @@ def _run(argv: Optional[Sequence[str]]) -> int:
         sys.stdout.flush()
 
     skipped_total, linked_skipped = _skip_totals(collected["skipped"])
-    _stderr(_summary(repo, _count_sources(entries), skipped_total, linked_skipped, len(output), total, reason))
+    if args.status_out:
+        status = {
+            "repo_resolved": key is not None,
+            "curated_root": "ok" if curated_root is not None else "none",
+            "yaml": yaml_status,
+            "curated": _count_sources(entries)[CURATED_SOURCE],
+            "curated_capped": curated_counts["curated_capped"],
+            "curated_rejected": curated_counts["curated_rejected"],
+            "curated_no_rule": curated_counts["curated_no_rule"],
+            "curated_screened": curated_counts["curated_screened"],
+            "reason": reason or (
+                "" if curated_root is not None
+                else "repo key has no local checkout: curated docs not read"
+            ),
+        }
+        _write_atomic(args.status_out, json.dumps(status, ensure_ascii=False) + "\n")
+    _stderr(_summary(
+        repo, _count_sources(entries), skipped_total, linked_skipped, len(output), total, reason,
+        curated_counts,
+    ))
     return 0
 
 
