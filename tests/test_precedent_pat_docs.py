@@ -709,4 +709,45 @@ if __name__ == "__main__":
 
     print()
 
+    # ============================================================================
+    # SECTION 9: predictions.jsonl never-read sentence in precedent-pat.md
+    # ============================================================================
+    print("[Section 9] predictions.jsonl never-read sentence in precedent-pat.md")
+
+    # Extend precedent_pat_content (already loaded in Section 1)
+    has_predictions_rule = "predictions.jsonl" in precedent_pat_content
+    test_result(
+        "precedent-pat.md mentions predictions.jsonl in Hard rules",
+        has_predictions_rule,
+        "Found no mention of predictions.jsonl in precedent-pat.md"
+    )
+
+    if has_predictions_rule:
+        # Verify it's in the Hard rules section
+        hard_rules_section = re.search(
+            r"## Hard rules[^#]*?(?=^##|\Z)",
+            precedent_pat_content,
+            re.MULTILINE | re.DOTALL
+        )
+        if hard_rules_section:
+            hard_rules_text = hard_rules_section.group(0)
+            log_in_hard_rules = "predictions.jsonl" in hard_rules_text
+            test_result(
+                "precedent-pat.md: predictions.jsonl mentioned in Hard rules section",
+                log_in_hard_rules,
+                "predictions.jsonl found but not in Hard rules section"
+            )
+
+            # Check for never-read/never-opens statement
+            never_read_stmt = ("never read" in hard_rules_text.lower() or
+                              "never reads" in hard_rules_text.lower() or
+                              "never opens" in hard_rules_text.lower())
+            test_result(
+                "precedent-pat.md: Hard rules state Pat never reads predictions.jsonl",
+                never_read_stmt,
+                "Never-read/never-opens statement not found for predictions.jsonl"
+            )
+
+    print()
+
     h.summarize_and_exit()
