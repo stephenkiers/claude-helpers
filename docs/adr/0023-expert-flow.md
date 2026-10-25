@@ -487,8 +487,8 @@ Hand-finished is now keyed to a `taken-over` event, not to a `failed` line. A `f
 spawned attempt's failure (receipt validation, reduced-run rejection), so it cannot tell a human finish from an
 agent shortcut. Take over is the only action that can record a human's choice, so it writes the event.
 
-On `--resume`, the newest of the step's lifecycle lines (`begin`, `retry`, `ok`, `failed`, `taken-over`) in `log.md`
-decides how a receipt reading `OK` reaches its step gate:
+On `--resume`, the newest of the step's lifecycle lines matching `^[^ ]+ <STEP> (begin|retry|ok|taken-over|failed( \(.*\))?)$` in `log.md`
+decides how a receipt reading `OK` reaches its step gate (where `failed` may optionally carry a sanitised reason in parentheses):
 
 - **`taken-over`** → **hand-finished**. A human chose Take over and finished the step by hand. Receipt validation
   (rules 1–8, including the `ATTEMPT:` check) and the Fidelity audit are skipped. The orchestrator logs a
@@ -742,3 +742,44 @@ The plan checkpoint report can span multiple conversation rounds, where later ro
 **Also in this amendment:**
 - Step 2 of plan_checkpoint_schema.py adds a distinct reason when a report answers file uses the legacy `answers` key instead of `items`.
 - Step 3 adds per-file same-SEQ cause lookup in the verifier, running before the fold to catch shape errors early.
+
+## Amendment (2026-10-21): Closing lotl#1809 retro gaps (#320)
+
+This amendment closes four gaps discovered in lotl#1809 dogfooding and tracked across #320. Together they ensure a flow can no longer ship with a plan step silently unbuilt, re-ask a gate for a failed step, lose the failure reason, or land unmentioned outstanding work.
+
+**Decision.**
+
+- **Fix 3: inline failure reasons in `log.md`** (per Q1, option A).
+  - Every `log.md` event's only allowed suffix is on `failed`: `failed (<reason>)`, where the reason is a single-line, sanitised string. Newlines, CR, and tabs become spaces; other control characters are stripped; the text is capped at 300 characters. The reason is written through a quoted heredoc variable, like the audit `REASON`, to prevent the shell from expanding it.
+  - The "step names and timestamps only, never receipt text" sentence in the log-format spec (§3) is amended to say: the only exception is the sanitised failure reason.
+  - Every site that logs `failed` uses a single, centralized sanitise-and-log snippet, defined once in `commands/expert-flow.md` and referenced. The snippet is tested against a reason containing unescaped newlines and a line resembling a lifecycle event.
+  - All existing lifecycle greps in `commands/expert-flow.md` and this ADR are updated to accept the ` (…)` suffix on `failed`. The pattern is `^[^ ]+ <STEP> (begin|retry|ok|taken-over|failed( \(.*\))?)$`.
+  - Ariadne's protest (recorded 2026-10-21): a separate `failure-reason` event was preferred to preserve future separation of message text and metadata. Overridden by Q1's decision.
+
+- **Fix 2: bind the audit file to its attempt; narrow resume rule 2** (per D1, option B with panel adjustments).
+  - At attempt start, overwrite `steps/<NN>-<STEP>.audit.md` with `STUB: superseded before attempt` for `plan`, `implement`, `review`, and `fix`, guaranteeing an audit file always belongs to the current attempt.
+  - On `--resume`, rule 2 reads the existing `steps/<NN>-<STEP>.audit.md` for audited steps. It never re-runs a completed audit. For a receipt reading `OK`:
+    - If newest lifecycle line is `taken-over`: hand-finished, no audit or validation, unchanged (per the second 2026-10-16 amendment).
+    - If newest is `ok`: for audited steps (`plan`, `implement`, `review`, `fix`), the file must read `FIDELITY: ok` with `<!-- audit-end -->` sentinel; otherwise log `failed (resume: ok without audit evidence)` and Hard stop without incrementing `failures[STEP]`.
+    - If newest is `failed` (with or without a reason): re-validate rules 1–8 only; on pass, log `ok` and go to the gate; on fail, log `failed (<reason>)` and Hard stop. Do not re-audit.
+    - For `verify`, which is not audited, go to the gate.
+  - Any audit run from rule 2 appends `audits.jsonl` with `resume: true` (telemetry).
+  - Exemptions: `taken-over`, `verify` (not audited), skipped steps (no receipt), and epic child flows (their own `FLOW_DIR`).
+  - No legacy exemption: a resumed legacy flow lands in Hard stop with Take over available.
+
+- **Fix 1: plan coverage split between verifier and auditor** (per W1, option A).
+  - The verifier enumerates covered units: from `### Step N` headings in the plan (for `implement`) or `D<n>` directives in `claude-action-plan.md` (for `fix`). For each unit, it classifies it as `covered` (a named file is in the diff), `declared` (named in the `OUTSTANDING:` line), or `uncovered` (neither).
+  - The Haiku auditor judges only the uncovered list. A silent miss (uncovered and undeclared) yields `FIDELITY: reduced plan coverage: <ids>`. Declared misses are relayed by Fix 4, not retried.
+  - Retry on coverage failure passes `--partial-base <bases[STEP]>` and the uncovered unit ids via `--only-units "<comma-separated ids>"` to scope the `/implement-with-haiku` re-run to the named units.
+
+- **Fix 4: required `OUTSTANDING:` receipt line; ship-step relay** (per D2, option A, and Q2, option A).
+  - Implement and fix `Decision: OK` receipts carry `OUTSTANDING:` listing units the step left undone, each with a reason and a provenance label (`[self-report]` or `[both]`). `OUTSTANDING: none` is allowed. Units flagged by the diff heuristic alone (not self-reported) are never written; they stay a silent miss for the verifier.
+  - The ship step reads both `OUTSTANDING:` lines (from implement and fix receipts) and the persisted coverage tables (`steps/<NN>-<STEP>.coverage.txt`), unioning declared and uncovered units. It asks one batched question per relay-set item: **Open an issue** or **Drop**. The question is skipped if the relay set is empty or the idempotence marker (`steps/<NN>-ship.outstanding.md` with `<!-- outstanding-end -->`) exists.
+  - The done line appends `   outstanding: <ids>` listing items with no recorded disposition or issues opened.
+  - This prepares #288 (post-merge verification) to read the same `OUTSTANDING:` line and relay set.
+
+**Consequences.** A plan step that leaves work unbuilt and undeclared now fails the audit and surfaces every uncovered unit to the human at ship. A failed step resumed without its audit evidence hard-stops. A failure reason is always logged, enabling post-merge triage. Outstanding items are relayed once at ship and listed on the done line, with a choice between deferral or dropping each item.
+
+**Related.** This amendment depends on and amends the 2026-10-16 second amendment's `taken-over` handling, and builds on the 2026-10-19 amendment's verifier ownership. When #288 lands, it will read the `OUTSTANDING:` line and the relay set persisted by this amendment.
+
+**In-flight consequence: required `OUTSTANDING:` line.** Flows created before this amendment's merge will fail the required-line check when resumed after upgrade. Recovery: retrying the step or taking over re-runs the step without the required line, passing verification. The in-flight PRs #346, #335, #341, #322 (which land before this amendment ships) will not encounter this issue; flows created after their merge but before this amendment will encounter it on any post-upgrade resume. The merge order will be decided in review.

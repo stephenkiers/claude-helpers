@@ -159,6 +159,7 @@ def main():
                 "DISCARDED_ADDED_FILES:",
                 "  - test.py",
                 "  - doc.md",
+                "OUTSTANDING: none",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -201,6 +202,7 @@ def main():
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "single.py",
+                "OUTSTANDING: none",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -244,6 +246,7 @@ def main():
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - /absolute/path.py",
+                "OUTSTANDING: none",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -282,6 +285,7 @@ def main():
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - ../escape.py",
+                "OUTSTANDING: none",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
@@ -325,6 +329,7 @@ def main():
                 "Implement summary",
                 "FLOW_DIR: " + str(fx.flow),
                 "Decision: WRONG",
+                "OUTSTANDING: none",
                 "Decision: OK",  # Last one should win
                 "<!-- step-end -->",
             ]
@@ -363,6 +368,7 @@ def main():
             [
                 "Implement summary",
                 "FLOW_DIR: " + str(fx.flow),
+                "OUTSTANDING: none",
                 "Decision: OK",
                 "<!-- step-end -->",
                 "Decision: AFTER_END",  # This should not count

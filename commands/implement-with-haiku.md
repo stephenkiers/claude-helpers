@@ -47,13 +47,16 @@ These are wired into the shell commands throughout this doc at each terminal pat
 through to the end in one pass, interrupting only when it genuinely needs the human (failed units,
 unassigned-file conflicts, gate non-convergence). `--implementer-model <haiku|sonnet|opus>` sets
 the model for the implementing agent (unset defaults to the frontmatter model). `--partial-base <SHA>`
-carries a prior partial-work base for an escalated attempt.
+carries a prior partial-work base for an escalated attempt; note that `--partial-base` alone only
+replaces `START_SHA` and does not scope the run to specific units. `--only-units "<comma-separated unit ids>"`
+(e.g., `"Step 8,Step 10"`) scopes the run to only those plan units; other units are treated as already built.
 
 ```bash
 RESUMED_FROM=""
 PAUSE=""
 IMPLEMENTER_MODEL=""
 PARTIAL_BASE=""
+ONLY_UNITS=""
 for arg in "$@"; do
   if [[ "$prev_arg" == "--resumed-from" ]]; then
     RESUMED_FROM="$arg"
@@ -63,6 +66,9 @@ for arg in "$@"; do
   fi
   if [[ "$prev_arg" == "--partial-base" ]]; then
     PARTIAL_BASE="$arg"
+  fi
+  if [[ "$prev_arg" == "--only-units" ]]; then
+    ONLY_UNITS="$arg"
   fi
   if [[ "$arg" == "--pause" ]]; then
     PAUSE="yes"
@@ -564,6 +570,61 @@ Analyze the plan and emit **1..N work units**. Each unit must have:
 - When a work unit's sub-task text includes a `[decided: ruling recorded]` or `[accepted: doing-it]`
   directive, the split must carry that tag through verbatim into the sub-task text — never strip it.
 - Always emit **≥ 1** unit. If the plan is too coupled to split safely, emit 1 unit.
+
+**Unit filtering (--only-units):** After analyzing and emitting all units, if `ONLY_UNITS` is
+non-empty, filter to include **only** units whose `id` is in the comma-separated list. All ownership
+and forbidden-file rules remain unchanged for the filtered set. If any `id` in `ONLY_UNITS` matches
+no analyzed unit, **fail loudly with an error message listing which requested ids were not found**
+and exit 1. (In `/expert-flow` retry spawns, this flag is automatically passed to scope the implement
+step to previously incomplete units.)
+
+Implement this by building a set of requested ids and filtering the emitted units:
+
+```bash
+FILTERED_UNITS=()
+
+# Parse ONLY_UNITS into an array
+if [[ -n "$ONLY_UNITS" ]]; then
+  IFS=',' read -ra REQUESTED_IDS <<< "$ONLY_UNITS"
+  FOUND_IDS=()
+
+  for unit in "${ALL_UNITS[@]}"; do
+    # Extract unit id from unit object (assumes structured format like jq output or similar)
+    unit_id=$(echo "$unit" | jq -r '.id' 2>/dev/null || echo "")
+    if [[ -z "$unit_id" ]]; then
+      continue
+    fi
+
+    # Check if this unit id is in the requested list
+    for requested_id in "${REQUESTED_IDS[@]}"; do
+      if [[ "$unit_id" == "$requested_id" ]]; then
+        FILTERED_UNITS+=("$unit")
+        FOUND_IDS+=("$requested_id")
+        break
+      fi
+    done
+  done
+
+  # Verify all requested ids were found
+  MISSING_IDS=()
+  for requested_id in "${REQUESTED_IDS[@]}"; do
+    if [[ ! " ${FOUND_IDS[@]} " =~ " ${requested_id} " ]]; then
+      MISSING_IDS+=("$requested_id")
+    fi
+  done
+
+  if [[ ${#MISSING_IDS[@]} -gt 0 ]]; then
+    printf '%s\n' "Error: --only-units requested these ids but they were not found in the plan: ${MISSING_IDS[*]}" >&2
+    exit 1
+  fi
+
+  # Use filtered units for the rest of the run
+  ALL_UNITS=("${FILTERED_UNITS[@]}")
+else
+  # No filtering requested; use all units as-is
+  FILTERED_UNITS=("${ALL_UNITS[@]}")
+fi
+```
 
 **Single-unit fallback:** If you emit exactly 1 unit, skip Steps 4a–4d entirely. Run `plan-implementer`
 directly in the main working directory (background, `run_in_background: true`) with `model: <IMPLEMENTER_MODEL>`
@@ -1923,12 +1984,24 @@ from `~/.claude/prompts/flow-reference.md`: write `RECEIPT_PATH` with the `Write
 summary exactly as emitted above — the orchestrator parses its `ROUND 1` … `ROUND 4` lines and, for
 an action-plan source, its `ACTION PLAN SOURCE:` line, so don't reformat, reorder, or drop them —
 followed by
+
+For OK receipts, compute the `OUTSTANDING:` line as follows: run the "Incomplete steps (diff heuristic)"
+union (the union of the agent's self-report `INCOMPLETE_STEPS:` block with the diff-detected list,
+labeled `[self-report|heuristic|both]`). Extract only the `[self-report]` and `[both]` entries. For each,
+emit one line `OUTSTANDING: <step id> (<reason>) [self-report|both]`. When no entries remain, emit
+`OUTSTANDING: none`. Drop heuristic-only entries (a silent miss stays silent for the verifier to classify
+as `uncovered`). Then write:
+
 ```
 ATTEMPT: <k>
 Decision: OK
 Reason: completed
+OUTSTANDING: <line>
 <!-- step-end -->
 ```
+
+Where `OUTSTANDING: <line>` is either `none` or the lines computed above.
+
 If an earlier Ask already created the receipt, rewrite the whole file and **keep** every `<!-- awaiting-answers: … -->` and `<!-- reused-answers: … -->` line it holds — `flow-verify-receipt.py` uses them to find reused and unanswered question files, and counts asked questions from this attempt's files on disk. `<k>` is the step prompt's `ATTEMPT=<k>` (use `1` when it gives none). Skip this entirely when `FLOW_DIR` is empty.
 
 
