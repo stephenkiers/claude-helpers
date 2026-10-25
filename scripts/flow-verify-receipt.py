@@ -802,6 +802,8 @@ def check_report_checkpoint(
                 # F2: Fail closed on non-dict question file
                 return f"plan checkpoint incomplete (unreadable question file: {answer_file.name})"
 
+            # Gate: these checks run only when a same-SEQ question file exists (else `continue`
+            # above); a missing question file is caught by the coverage checks below.
             # If the question file is a report for this attempt,
             # the answers file must also be a report for this attempt
             if qdata.get("kind") == "report" and qdata.get("attempt") == attempt:
@@ -815,7 +817,7 @@ def check_report_checkpoint(
                     # Already handled by _fold_report_answers
                     return f"plan checkpoint incomplete (unreadable answers file: {answer_file.name})"
 
-                # Step 3: Check for required keys (kind first, then attempt)
+                # Step 3: Check required keys (kind first, then attempt), then their values
                 if adata.get("kind") is None:
                     # No kind key - might be legacy {"answers": {...}} shape
                     # Validate as report shape to get the specific error
@@ -823,8 +825,19 @@ def check_report_checkpoint(
                     if shape_err:
                         return f"plan checkpoint incomplete ({shape_err}: {answer_file.name})"
 
+                # Wrong values fail closed too: _fold_report_answers silently skips a
+                # file with the wrong kind or attempt, which would certify the answer
+                # the human replaced.
+                file_kind = adata.get("kind")
+                if file_kind != "report":
+                    return f"plan checkpoint incomplete (report answers file has kind {file_kind!r}, expected 'report': {answer_file.name})"
+
                 if adata.get("attempt") is None:
                     return f"plan checkpoint incomplete (report answers file missing 'attempt' key: {answer_file.name})"
+
+                file_attempt = adata.get("attempt")
+                if isinstance(file_attempt, bool) or not isinstance(file_attempt, int) or file_attempt != attempt:
+                    return f"plan checkpoint incomplete (report answers file attempt {file_attempt!r} does not match receipt attempt {attempt}: {answer_file.name})"
 
     # Step 4: Fold pre-pass and coverage checks (F10: parse once, no dead parameters)
     fold, fold_err = _fold_report_answers(adir, attempt)

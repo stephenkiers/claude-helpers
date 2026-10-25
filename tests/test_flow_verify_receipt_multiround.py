@@ -64,6 +64,52 @@ def create_base_fixture(tmp_path: Path):
     return session_dir, flow_dir
 
 
+def _two_round_checkpoint(tmp, r1_handles, r1_answers, r2_handles, r2_answers):
+    """Build an attempt-1 two-round report checkpoint (Q1 question, D1 decided).
+
+    Returns (session_dir, flow_dir, decisions_text). Round 1/2 answers are the
+    raw dicts written to answers/plan-01.json and answers/plan-02.json; reply
+    files exist for both rounds.
+    """
+    session_dir, flow_dir = create_base_fixture(Path(tmp))
+    create_base_reactions(session_dir)
+    tiers = {"Q1": "question", "D1": "decided"}
+    ledger = {
+        "seated": ["alice", "bob", "contrarian-carl"],
+        "expected_reactions": [
+            {"slug": s, "mode": m, "round": 1, "path": f"reactions/{s}-{m}-r1.json"}
+            for m in ("pre-show", "reply") for s in ["alice", "bob", "contrarian-carl"]
+        ],
+        "briefs": {"B1": {"brief_type": "question", "raiser": "alice"}, "B2": {"brief_type": "question", "raiser": "alice"}},
+    }
+    for handle in r1_handles:
+        ledger[handle] = {"tier": tiers[handle], "brief_id": "B1" if handle == "Q1" else "B2",
+                          "brief_type": "question", "evidence": []}
+    decisions_text = f"# Decisions\n## Checkpoint ledger\n```json\n{json.dumps(ledger)}\n```\n"
+
+    def item(handle):
+        must = tiers[handle] == "question"
+        return {"handle": handle, "tier": tiers[handle], "brief_type": "question", "title": handle,
+                "decision_or_recommendation": "Choose", "why": "Unclear", "backed_by": ["alice"],
+                "must_answer": must, "reason_must_answer": "question" if must else None, "evidence": {},
+                "options": [{"label": "A"}, {"label": "B"}] if must else None,
+                "business_case": None, "pushback": None}
+
+    for seq, rnd, handles, answers in ((1, 1, r1_handles, r1_answers), (2, 2, r2_handles, r2_answers)):
+        (flow_dir / "questions" / f"plan-0{seq}.json").write_text(json.dumps({
+            "kind": "report", "attempt": 1, "round": rnd, "step": "plan", "command": "expert-plan",
+            "items": [item(x) for x in handles],
+            "questions": [{"id": "reply", "brief": None, "question": "Reply", "header": None, "options": [{"label": "Answer"}]}],
+        }), encoding="utf-8")
+        (flow_dir / "answers" / f"plan-0{seq}.json").write_text(json.dumps(answers), encoding="utf-8")
+        (flow_dir / "answers" / f"plan-0{seq}.reply-{rnd}.md").write_text("A\nB\n", encoding="utf-8")
+    return session_dir, flow_dir, decisions_text
+
+
+def _ans(value):
+    return {"disposition": "answered", "value": value, "reply_excerpt": value, "source": "prose"}
+
+
 def main():
     h = Harness("FLOW-VERIFY-RECEIPT MULTI-ROUND TESTS")
 
@@ -1348,6 +1394,71 @@ def main():
         h.test_result("[Test 25] Malformed items (non-dict) fails closed",
                       error is not None,
                       f"error={error}")
+
+    # Test 26: wrong kind on a round 2 file must not be silently dropped (#363)
+    print("[Test 26] Round 2 answers file with kind 'answers' overriding an earlier answer fails closed")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = _two_round_checkpoint(
+            tmp, ["Q1"],
+            {"kind": "report", "round": 1, "attempt": 1, "items": {"Q1": _ans("A")},
+             "reading_echoed": False, "loop_end": "all-answered"},
+            ["Q1"],
+            {"kind": "answers", "round": 2, "attempt": 1, "items": {"Q1": _ans("B")},
+             "reading_echoed": False, "loop_end": "all-answered"})
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 26] Wrong kind names plan-02.json and the bad value",
+                      error is not None and "plan-02.json" in error and "kind 'answers', expected 'report'" in error,
+                      f"error={error}")
+
+    # Test 27: attempt mismatch on a round 2 file must not be silently dropped (#363)
+    print("[Test 27] Round 2 answers file with attempt 2 in an attempt-1 checkpoint fails closed")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = _two_round_checkpoint(
+            tmp, ["Q1"],
+            {"kind": "report", "round": 1, "attempt": 1, "items": {"Q1": _ans("A")},
+             "reading_echoed": False, "loop_end": "all-answered"},
+            ["Q1"],
+            {"kind": "report", "round": 2, "attempt": 2, "items": {"Q1": _ans("B")},
+             "reading_echoed": False, "loop_end": "all-answered"})
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 27] Attempt mismatch names plan-02.json, attempt 2 and receipt attempt 1",
+                      error is not None and "plan-02.json" in error and "attempt 2" in error
+                      and "receipt attempt 1" in error,
+                      f"error={error}")
+
+    # Test 28: no-false-positive guard for the #363 ticket shape (valid kind/attempt on round 2 must
+    # still verify); it does not exercise the new rejection branches - Tests 26, 27, 29, 30 do.
+    print("[Test 28] Round 1 D1 accepted + Q1 unresolved, round 2 only Q1 answered: verifies")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir, flow_dir, decisions_text = _two_round_checkpoint(
+            tmp, ["D1", "Q1"],
+            {"kind": "report", "round": 1, "attempt": 1,
+             "items": {"D1": {"disposition": "accepted", "value": None, "reply_excerpt": None, "source": None},
+                       "Q1": {"disposition": "unresolved", "value": None, "reply_excerpt": None, "source": None}},
+             "reading_echoed": False, "loop_end": None},
+            ["Q1"],
+            {"kind": "report", "round": 2, "attempt": 1, "items": {"Q1": _ans("B")},
+             "reading_echoed": False, "loop_end": "all-answered"})
+        error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+        h.test_result("[Test 28] Strict-subset round 2 supersedes round-1 unresolved",
+                      error is None,
+                      f"error={error}")
+
+    # Tests 29-30: bool and string attempt values on a round 2 file fail closed (#363)
+    for n, bad in (("29", True), ("30", "1")):
+        print(f"[Test {n}] Round 2 answers file with attempt {bad!r} fails closed")
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir, flow_dir, decisions_text = _two_round_checkpoint(
+                tmp, ["Q1"],
+                {"kind": "report", "round": 1, "attempt": 1, "items": {"Q1": _ans("A")},
+                 "reading_echoed": False, "loop_end": "all-answered"},
+                ["Q1"],
+                {"kind": "report", "round": 2, "attempt": bad, "items": {"Q1": _ans("B")},
+                 "reading_echoed": False, "loop_end": "all-answered"})
+            error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+            h.test_result(f"[Test {n}] Attempt {bad!r} names plan-02.json and the bad value",
+                          error is not None and "plan-02.json" in error and repr(bad) in error,
+                          f"error={error}")
 
     h.summarize_and_exit()
 
