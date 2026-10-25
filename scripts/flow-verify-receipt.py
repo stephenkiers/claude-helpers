@@ -136,6 +136,16 @@ NEEDS_YOU_ITEM_RE = re.compile(r"^###\s+\d+\.", re.MULTILINE)
 NEEDS_YOU_HEADING_RE = re.compile(r"^##\s+Needs you\b.*$", re.MULTILINE)
 # OUTSTANDING: line format: <unit id> (<reason>) [provenance]
 OUTSTANDING_ITEM_RE = re.compile(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$")
+# ROUND 1 section header in an implement/fix receipt (#341, item 5; producer contract in
+# commands/implement-with-haiku.md). Tolerant of the real header shapes: `ROUND 1 — Implementer
+# (parallel)`, `ROUND 1 - ...`, `ROUND 1: units ...`, `ROUND 1+2 complete ...`, a bare `ROUND 1`, and
+# markdown-marked `**Round 1** — ...` / `## ROUND 1: ...`. The line must START with the header (optional
+# indent and markdown markers), and `1` must be followed by a separator (`—` `–` `:` `+` `-`) or end of
+# line. So prose that merely contains "round 1", and status-table lines such as `Round 1 join: ...` or
+# `Round 1 (implement): ...`, do not match. A line that matches is a section header only; whether round 1
+# actually ran is receipt rule 7's job.
+ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>*-]+[ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|$)"
+ROUND1_HEADER_RE = re.compile(ROUND1_HEADER_PATTERN)
 # Markdown table separator row (allow :?-+:? per cell)
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")
 
@@ -642,6 +652,48 @@ def _relay_anomaly_suffix(relay_count: RelayCount) -> str:
     return out
 
 
+def _relay_shortfall_suffix(
+    relay_count: RelayCount, flow_dir: Optional[Path], step: str, attempt: int, has_items: bool
+) -> str:
+    """Reason suffix for a relay shortfall, after the `asked: N` count and before the closing paren.
+
+    `has_items` is whether the checkpoint expects at least one relayed item (briefs for plan,
+    needs-you items for review). The flow-dir-unresolved note only applies when there are items.
+    """
+    suffix = ""
+    if flow_dir is None and has_items:
+        suffix += SUFFIX_FLOW_DIR_UNRESOLVED
+    elif len(relay_count.files) == 0:
+        suffix += SUFFIX_NO_ANSWERED_FMT.format(step=step, attempt=attempt)
+    if relay_count.unanswered:
+        suffix += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
+    suffix += _relay_anomaly_suffix(relay_count)
+    return suffix
+
+
+def _last_header_value(receipt: str, header: str) -> Optional[str]:
+    """Value of the last `<header>:` line in the receipt, stripped; None when no such line."""
+    value = None
+    for line in receipt.split("\n"):
+        if line.startswith(f"{header}:"):
+            value = line.split(":", 1)[1].strip()
+    return value or None
+
+
+def _is_under_root(path: Path, root: Path) -> bool:
+    """True when the resolved path sits under the resolved root."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _sorted_plan_answer_files(adir: Path) -> List[Path]:
+    """plan-*.json files in an answers dir, in SEQ order."""
+    return sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+
+
 def check_report_checkpoint(
     session_dir: Path, flow_dir: Path, decisions_text: str, attempt: int = 1, relay_count: Optional[RelayCount] = None
 ) -> Optional[str]:
@@ -709,7 +761,7 @@ def check_report_checkpoint(
     if relay_count:
         # Also need to check answered files
         if adir.exists():
-            answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+            answer_files = _sorted_plan_answer_files(adir)
             for answer_file in answer_files:
                 # Check if this file has an attempt matching our attempt
                 try:
@@ -784,7 +836,7 @@ def check_report_checkpoint(
     # Step 3: Per-file same-SEQ cause lookup for wrong-shape answers files
     # Run before the fold to catch shape errors early
     if adir.exists():
-        answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+        answer_files = _sorted_plan_answer_files(adir)
         for answer_file in answer_files:
             # Find same-SEQ question file
             qfile = qdir / answer_file.name
@@ -852,7 +904,7 @@ def check_report_checkpoint(
     # Rule 3, replaced: Union coverage and per-round must-answer coverage
     # First, check that the first report file (round-1) contains every ledger handle
     if report_files and adir.exists():
-        answer_files = sorted(adir.glob("plan-*.json"), key=lambda f: schema.answer_file_sort_key(f.name))
+        answer_files = _sorted_plan_answer_files(adir)
         for answer_file in answer_files:
             try:
                 adata = json.loads(answer_file.read_text(encoding="utf-8"))
@@ -1146,10 +1198,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     receipt = read_file(receipt_file)
 
     # Get FINAL_PLAN_PATH from last matching line
-    plan_path_str = None
-    for line in receipt.split("\n"):
-        if line.startswith("FINAL_PLAN_PATH:"):
-            plan_path_str = line.split(":", 1)[1].strip()
+    plan_path_str = _last_header_value(receipt, "FINAL_PLAN_PATH")
 
     if not plan_path_str:
         return "plan artifacts missing (FINAL_PLAN_PATH not under plans/ or no invocation id)"
@@ -1158,9 +1207,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     plans_dir = (home / ".claude" / "plans").resolve()
 
     # Check path is under plans/
-    try:
-        plan_path.relative_to(plans_dir)
-    except ValueError:
+    if not _is_under_root(plan_path, plans_dir):
         return "plan artifacts missing (FINAL_PLAN_PATH not under plans/ or no invocation id)"
 
     # Check that FINAL_PLAN_PATH file exists
@@ -1326,14 +1373,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
     briefs = count_briefs(decisions_text)
     if relay_count.asked < briefs or relay_count.unanswered or _relay_anomaly_suffix(relay_count):
         reason = f"{REASON_PLAN_INCOMPLETE} (briefs: {briefs}, asked: {relay_count.asked}"
-        # Choose suffix based on flow_dir resolution
-        if flow_dir is None and briefs > 0:
-            reason += SUFFIX_FLOW_DIR_UNRESOLVED
-        elif len(relay_count.files) == 0:
-            reason += SUFFIX_NO_ANSWERED_FMT.format(step="plan", attempt=attempt)
-        if relay_count.unanswered:
-            reason += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
-        reason += _relay_anomaly_suffix(relay_count)
+        reason += _relay_shortfall_suffix(relay_count, flow_dir, "plan", attempt, briefs > 0)
         reason += ")"
         return reason
 
@@ -1345,10 +1385,7 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
     receipt = read_file(receipt_file)
 
     # Get REVIEW_DIR from last matching line
-    review_dir_str = None
-    for line in receipt.split("\n"):
-        if line.startswith("REVIEW_DIR:"):
-            review_dir_str = line.split(":", 1)[1].strip()
+    review_dir_str = _last_header_value(receipt, "REVIEW_DIR")
 
     if not review_dir_str:
         return "review artifacts missing (REVIEW_DIR not under reviews/)"
@@ -1357,9 +1394,7 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
     reviews_root = (home / ".claude" / "reviews").resolve()
 
     # Check path is under reviews/
-    try:
-        review_dir.relative_to(reviews_root)
-    except ValueError:
+    if not _is_under_root(review_dir, reviews_root):
         return "review artifacts missing (REVIEW_DIR not under reviews/)"
 
     # Check required files
@@ -1395,14 +1430,7 @@ def check_review(receipt_file: Path, since: float, home: Path, flow_dir: Optiona
     relay_count = count_relayed_questions(flow_dir, "review", receipt, attempt)
     if relay_count.asked < needs_you or relay_count.unanswered or _relay_anomaly_suffix(relay_count):
         reason = f"{REASON_REVIEW_INCOMPLETE} (needs-you: {needs_you}, asked: {relay_count.asked}"
-        # Choose suffix based on flow_dir resolution
-        if flow_dir is None and needs_you > 0:
-            reason += SUFFIX_FLOW_DIR_UNRESOLVED
-        elif len(relay_count.files) == 0:
-            reason += SUFFIX_NO_ANSWERED_FMT.format(step="review", attempt=attempt)
-        if relay_count.unanswered:
-            reason += f"{SUFFIX_UNANSWERED}{', '.join(relay_count.unanswered)}"
-        reason += _relay_anomaly_suffix(relay_count)
+        reason += _relay_shortfall_suffix(relay_count, flow_dir, "review", attempt, needs_you > 0)
         reason += ")"
         return reason
 
@@ -1665,9 +1693,7 @@ def check_fix(
         reviews_root = (home / ".claude" / "reviews").resolve()
 
         # Check path is under reviews/
-        try:
-            action_plan_path.relative_to(reviews_root)
-        except ValueError:
+        if not _is_under_root(action_plan_path, reviews_root):
             return f"fix artifacts missing (no new commits on {branch} since step began)"
 
         if not action_plan_path.exists():
@@ -2497,6 +2523,10 @@ def main() -> None:
         except ValueError:
             # iter_outstanding_lines raises on malformed blocks
             print("Reason: receipt missing OUTSTANDING (malformed)")
+            sys.exit(1)
+        # ROUND 1 section header (#341, item 5). Only OK receipts: a FAILED receipt keeps its real stop reason.
+        if not ROUND1_HEADER_RE.search(receipt):
+            print(f"Reason: receipt missing ROUND 1 section header (no line matches {ROUND1_HEADER_PATTERN})")
             sys.exit(1)
 
     # Home directory for artifact roots
