@@ -1026,6 +1026,278 @@ def case_match_never_opens_predictions(h):
                       f"opened={opened_s}")
 
 
+def run_digest_raw(home, args):
+    """Run precedent-digest.py with the given argv and the temp HOME. Returns (rc, stdout, stderr)."""
+    assert_temp_home(home)
+    proc = subprocess.run([sys.executable, str(DIGEST), *args], capture_output=True, text=True,
+                          env=_env(home), cwd=str(home))
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _stats_row(run, qid, predicted, actual, hit, recommended="A. Option A", command="expert-plan"):
+    """A minimal prediction-log row with every field the digest stats read."""
+    return json.dumps({
+        "ts": "2026-10-01T00:00:00+00:00", "repo_key": "owner-name", "command": command,
+        "run": run, "question_id": qid, "header": "H", "recommended": recommended,
+        "predicted": predicted, "confidence": "high", "actual": actual, "hit": hit,
+        "citations": [1], "actual_source": "option", "anchored": True,
+    })
+
+
+def case_non_utf8_log_is_log_unwritable(h):
+    """Finding 1: a log that is not valid UTF-8 exits 0 with log-unwritable, no traceback, bytes untouched."""
+    with Fixture() as fx:
+        validated_file = fx.put_json("validated.json", make_validated([("Q1", "A. Option A", "high", [1])]))
+        questions_file = fx.put_json("questions.json", make_questions([("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A")]))
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. Option A"}))
+
+        log_dir = fx.log_root / "owner-name"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "predictions.jsonl"
+        original = b"\xff\xfe not utf-8\n"
+        log_file.write_bytes(original)
+
+        rc, _, stderr = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
+             "--run", "1-nonutf8-p"],
+            "shown")
+        h.test_result("non-UTF-8 log: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("non-UTF-8 log: reason is log-unwritable (not valid UTF-8)",
+                      "nothing logged (log-unwritable" in stderr and "not valid UTF-8" in stderr, f"stderr={stderr}")
+        h.test_result("non-UTF-8 log: no Traceback on stderr",
+                      "Traceback" not in stderr, f"stderr={stderr}")
+        h.test_result("non-UTF-8 log: log bytes unchanged",
+                      log_file.read_bytes() == original, "log was modified")
+
+
+def case_flow_empty_value_keeps_earlier_answer(h):
+    """Finding 2: a later round with no usable value keeps the earlier answer; a blank normalized answer is unanswered."""
+    with Fixture() as fx:
+        validated_file = fx.put_json("validated.json", make_validated([
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "A. Option A", "high", [2]),
+        ]))
+        questions_file = fx.put_json("questions.json", make_questions([
+            ("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A"),
+            ("Q2", "Second", ["A. Option A", "B. Option B"], "A. Option A"),
+        ]))
+        round_1 = fx.put_json("flow_answers_1.json", make_flow_answers({
+            "Q1": {"value": "B. Option B", "disposition": "answered"},
+            "Q2": {"value": "A. Option A", "disposition": "answered"},
+        }))
+        round_2 = fx.put_json("flow_answers_2.json", make_flow_answers({
+            "Q1": {"disposition": "answered"},
+            "Q2": {"value": "   ", "disposition": "answered"},
+        }))
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--flow-answers", str(round_1), "--flow-answers", str(round_2),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-emptyval-p"],
+            "shown")
+        rows = fx.read_log_file("owner-name")
+        q1_row = _row_for(rows, "Q1")
+        q2_row = _row_for(rows, "Q2")
+        h.test_result("empty flow value: exits 0 with two rows", rc == 0 and len(rows) == 2, f"rc={rc} n={len(rows)}")
+        h.test_result("empty flow value: Q1 keeps round-1 answer ('B. Option B')",
+                      q1_row.get("actual") == "B. Option B", f"actual={q1_row.get('actual')!r}")
+        h.test_result("empty flow value: Q1 is an option answer with hit False",
+                      q1_row.get("actual_source") == "option" and q1_row.get("hit") is False,
+                      f"source={q1_row.get('actual_source')} hit={q1_row.get('hit')}")
+        h.test_result("empty flow value: whitespace-only Q2 keeps round-1 answer ('A. Option A', hit True)",
+                      q2_row.get("actual") == "A. Option A" and q2_row.get("hit") is True,
+                      f"actual={q2_row.get('actual')!r} hit={q2_row.get('hit')}")
+
+        blank_file = fx.put_json("answers_blank.json", make_answers({"Q1": "   "}))
+        rc_blank, _, stderr_blank = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(blank_file), "--repo-key", "owner-blank", "--command", "expert-plan",
+             "--run", "1-blank-p"],
+            "shown")
+        h.test_result("blank normalized answer: exits 0 with answers-invalid",
+                      rc_blank == 0 and "nothing logged (answers-invalid" in stderr_blank,
+                      f"rc={rc_blank} stderr={stderr_blank}")
+
+
+def case_repo_key_allowlist_widened(h):
+    """Finding F2: owner-name may contain _ and . (ASCII); '..' and a leading '.' are rejected."""
+    with Fixture() as fx:
+        validated_file = fx.put_json("validated.json", make_validated([("Q1", "A. Option A", "high", [1])]))
+        questions_file = fx.put_json("questions.json", make_questions([("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A")]))
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. Option A"}))
+
+        def log_key(key):
+            return run_helper(
+                fx.home, fx.log_root,
+                ["--validated", str(validated_file), "--questions", str(questions_file),
+                 "--answers", str(answers_file), "--repo-key", key, "--command", "expert-plan",
+                 "--run", "1-allow-p"],
+                "shown")
+
+        rc_u, _, err_u = log_key("owner-my_repo")
+        h.test_result("repo key allowlist: owner-my_repo is logged",
+                      rc_u == 0 and "logged 1" in err_u, f"stderr={err_u}")
+        rc_d, _, err_d = log_key("owner-my.repo")
+        h.test_result("repo key allowlist: owner-my.repo is logged",
+                      rc_d == 0 and "logged 1" in err_d, f"stderr={err_d}")
+        rc_dd, _, err_dd = log_key("owner-a..b")
+        h.test_result("repo key allowlist: owner-a..b is rejected (bad-repo-key)",
+                      rc_dd == 0 and "bad-repo-key" in err_dd, f"stderr={err_dd}")
+        rc_lead, _, err_lead = log_key(".owner-name")
+        h.test_result("repo key allowlist: leading-dot key is rejected (bad-repo-key)",
+                      rc_lead == 0 and "bad-repo-key" in err_lead, f"stderr={err_lead}")
+
+        # The digest reads the same underscore spelling (same allowlist on its side)
+        install_log_in_home(fx.home, fx.log_root)
+        rc_stats, out_stats, err_stats = run_digest_raw(fx.home, ["owner/my_repo", "--stats"])
+        stats_pred = _predictions(json.loads(out_stats)) if rc_stats == 0 and out_stats.strip() else {}
+        h.test_result("repo key allowlist: digest owner/my_repo --stats reads the logged row",
+                      rc_stats == 0 and stats_pred.get("logged") == 1 and stats_pred.get("read_error") is None,
+                      f"rc={rc_stats} predictions={stats_pred} stderr={err_stats}")
+
+
+def case_stats_nonstring_fields_malformed(h):
+    """Finding 3: non-string run/question_id/command or non-bool hit is counted malformed, not an internal error."""
+    with Fixture() as fx:
+        content = "\n".join([
+            _stats_row("r1", "Q1", "A. Option A", "A. Option A", True),
+            _stats_row(["x"], "Q2", "A. Option A", "A. Option A", True),
+            _stats_row("r2", "Q3", "A. Option A", "A. Option A", "yes"),
+            _stats_row("r3", ["Q4"], "A. Option A", "A. Option A", True),
+        ]) + "\n"
+        fx.write_log_file("owner-name", content)
+
+        rc, stats, stderr = run_digest_stats(fx.home, fx.log_root, "owner/name")
+        pred = _predictions(stats)
+        h.test_result("non-string fields: exits 0, no internal error",
+                      rc == 0 and "internal error" not in stderr, f"rc={rc} stderr={stderr}")
+        h.test_result("non-string fields: one valid row logged",
+                      pred.get("logged") == 1, f"predictions={pred}")
+        h.test_result("non-string fields: three rows counted malformed",
+                      pred.get("malformed_lines") == 3, f"malformed={pred.get('malformed_lines')}")
+        h.test_result("non-string fields: read_error stays null",
+                      pred.get("read_error") is None, f"read_error={pred.get('read_error')}")
+
+
+def case_symlinked_log_cannot_escape_root(h):
+    """Finding 4: a dangling or directory symlink that points outside log_root is refused; no file is created outside."""
+    with Fixture() as fx:
+        validated_file = fx.put_json("validated.json", make_validated([("Q1", "A. Option A", "high", [1])]))
+        questions_file = fx.put_json("questions.json", make_questions([("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A")]))
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. Option A"}))
+
+        # Writer: predictions.jsonl is a dangling link to a file outside the root
+        dangling_dir = fx.log_root / "owner-dangle"
+        dangling_dir.mkdir(parents=True)
+        outside_file = fx.home / "outside-target.jsonl"
+        (dangling_dir / "predictions.jsonl").symlink_to(outside_file)
+        rc1, _, err1 = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-dangle", "--command", "expert-plan",
+             "--run", "1-dangle-p"],
+            "shown")
+        h.test_result("dangling log link: exits 0 with nothing logged",
+                      rc1 == 0 and "nothing logged (" in err1, f"rc={rc1} stderr={err1}")
+        h.test_result("dangling log link: no file created outside the log root",
+                      not outside_file.exists(), "target was created outside log_root")
+
+        # Writer: the owner-name directory is a symlink to a directory outside the root
+        elsewhere = fx.home / "elsewhere"
+        (fx.log_root / "owner-subdir").symlink_to(elsewhere, target_is_directory=True)
+        rc2, _, err2 = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-subdir", "--command", "expert-plan",
+             "--run", "1-subdir-p"],
+            "shown")
+        h.test_result("subdir link outside root: exits 0 with nothing logged",
+                      rc2 == 0 and "nothing logged (" in err2, f"rc={rc2} stderr={err2}")
+        h.test_result("subdir link outside root: no file created outside the log root",
+                      not (elsewhere / "predictions.jsonl").exists(), "file created outside log_root")
+
+        # Digest: a dangling predictions.jsonl link is reported as read_error, not an empty log
+        digest_dir = fx.home / ".claude" / "precedent" / "owner-dangle"
+        digest_dir.mkdir(parents=True)
+        (digest_dir / "predictions.jsonl").symlink_to(fx.home / "missing-target.jsonl")
+        rc_d, out_d, _ = run_digest_raw(fx.home, ["owner/dangle", "--stats"])
+        pred_d = _predictions(json.loads(out_d)) if rc_d == 0 and out_d.strip() else {}
+        h.test_result("digest dangling link: read_error is set, logged 0",
+                      pred_d.get("read_error") is not None and pred_d.get("logged") == 0,
+                      f"rc={rc_d} predictions={pred_d}")
+
+
+def case_digest_unresolved_repo_arg_not_read(h):
+    """Finding 5: an unresolved repo argument is never joined into a log path; the log is not read."""
+    with Fixture() as fx:
+        decoy = fx.home / "x"
+        decoy.mkdir(parents=True)
+        (decoy / "predictions.jsonl").write_text(_stats_row("r1", "Q1", "A", "A", True) + "\n", encoding="utf-8")
+        (fx.home / ".claude" / "precedent").mkdir(parents=True)
+
+        rc, out, _ = run_digest_raw(fx.home, ["../../x", "--stats"])
+        pred = _predictions(json.loads(out)) if rc == 0 and out.strip() else {}
+        h.test_result("unresolved repo arg: decoy log is not counted",
+                      pred.get("logged") == 0, f"rc={rc} predictions={pred}")
+        h.test_result("unresolved repo arg: read_error explains the refusal",
+                      pred.get("read_error") is not None and "not a valid owner-name" in pred.get("read_error", ""),
+                      f"read_error={pred.get('read_error')}")
+
+
+def case_md_hit_rate_subset_figure(h):
+    """Finding 6: the markdown hit-rate line shows Pat on the baseline subset next to the baseline figure."""
+    with Fixture() as fx:
+        content = "\n".join([
+            _stats_row("r1", "Q1", "A. Option A", "A. Option A", True, recommended="A. Option A"),
+            _stats_row("r1", "Q2", "B. Option B", "A. Option A", False, recommended="A. Option A"),
+            _stats_row("r1", "Q3", "B. Option B", "B. Option B", True, recommended=None),
+        ]) + "\n"
+        fx.write_log_file("owner-name", content)
+        install_log_in_home(fx.home, fx.log_root)
+
+        rc, out, _ = run_digest_raw(fx.home, ["owner/name", "--stats", "--format", "md"])
+        h.test_result("md hit rates: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("md hit rates: overall Pat rate labelled with its own n",
+                      "pat overall=(0.6667, n=3)" in out, f"line not found in: {out[:400]}")
+        h.test_result("md hit rates: Pat on the baseline subset shown beside the baseline figure",
+                      "pat=(0.5000)" in out and "baseline-recommended=(1.0000, n=2)" in out,
+                      f"line not found in: {out[:400]}")
+
+
+def case_recommended_type_and_options_guard(h):
+    """Finding 7: a non-string recommended, or one not among the question's options, is written as null."""
+    with Fixture() as fx:
+        validated_file = fx.put_json("validated.json", make_validated([
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "A. Option A", "high", [2]),
+        ]))
+        questions_file = fx.put_json("questions.json", make_questions([
+            ("Q1", "First", ["A. Option A", "B. Option B"], 2),
+            ("Q2", "Second", ["A. Option A", "B. Option B"], "Z. Not an option"),
+        ]))
+        answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. Option A", "Q2": "B. Option B"}))
+
+        rc, _, stderr = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
+             "--run", "1-recommended-p"],
+            "shown")
+        rows = fx.read_log_file("owner-name")
+        h.test_result("recommended guard: rows still logged (exit 0)", rc == 0 and len(rows) == 2,
+                      f"rc={rc} n={len(rows)} stderr={stderr}")
+        h.test_result("recommended guard: integer recommended becomes null",
+                      _row_for(rows, "Q1").get("recommended", "missing") is None,
+                      f"recommended={_row_for(rows, 'Q1').get('recommended', 'missing')!r}")
+        h.test_result("recommended guard: recommended outside the options becomes null",
+                      _row_for(rows, "Q2").get("recommended", "missing") is None,
+                      f"recommended={_row_for(rows, 'Q2').get('recommended', 'missing')!r}")
+
+
 if __name__ == "__main__":
     h = Harness("PRECEDENT-LOG TEST SUITE")
 
@@ -1047,5 +1319,13 @@ if __name__ == "__main__":
     case_round_trip_real_validator(h)
     case_make_validated_matches_real_validator(h)
     case_match_never_opens_predictions(h)
+    case_non_utf8_log_is_log_unwritable(h)
+    case_flow_empty_value_keeps_earlier_answer(h)
+    case_repo_key_allowlist_widened(h)
+    case_stats_nonstring_fields_malformed(h)
+    case_symlinked_log_cannot_escape_root(h)
+    case_digest_unresolved_repo_arg_not_read(h)
+    case_md_hit_rate_subset_figure(h)
+    case_recommended_type_and_options_guard(h)
 
     h.summarize_and_exit()

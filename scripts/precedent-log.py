@@ -16,7 +16,8 @@ Inputs:
   --flow-answers PATH        Flow-mode answers file in round order. Repeatable.
                              Merges across files, latest round wins per handle.
                              Reads top-level 'answers' or 'items' key.
-  --repo-key OWNER-NAME      Repository key (lowercased, hyphen-separated). Bad keys (no hyphen) log nothing, exit 0.
+  --repo-key OWNER-NAME      Repository key (hyphen-separated, [A-Za-z0-9_.-] only). Bad keys (no hyphen, "..",
+                             leading ".", other characters, or a path outside log_root) log nothing, exit 0.
   --command {expert-plan,expert-review}  The originating command.
   --run NAME                 Run identifier (e.g., directory basename).
   --trace-file PATH          Path to precedent-trace.txt. Read first line to check if it starts with "shown".
@@ -34,7 +35,9 @@ Exit and stderr contract:
   - An unreadable --flow-answers round file is reported on stderr and skipped; the other
     rounds still count.
   - OSError on read/write of the log: "precedent-log: nothing logged (log-unwritable: <path>: <errno text>)",
-    exit 0. An unreadable log is never treated as empty (that would silently disable dedup).
+    exit 0. A log that is not valid UTF-8 is reported the same way ("not valid UTF-8" as the
+    reason text), exit 0. An unreadable log is never treated as empty (that would silently
+    disable dedup).
   - Never use bare except; OSError surfaces, no silent failures.
 
 Row schema (PredictionRow TypedDict, PINNED_KEYS order):
@@ -42,12 +45,13 @@ Row schema (PredictionRow TypedDict, PINNED_KEYS order):
   actual, hit, citations, actual_source, anchored
 
 Never-read rule: Pat, triage, reviewers, the digest --match path, and the Amalgamator
-never read the prediction log. The log is measurement only. Its sole sanctioned reader
-is scripts/precedent-digest.py --stats (project-scoped only).
+never read the prediction log. The log is measurement only. Its sole reader other than
+the writer's own dedup read is scripts/precedent-digest.py --stats (project-scoped only).
 """
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Final, List, Literal, NoReturn, Optional, Tuple, TypedDict
@@ -141,23 +145,25 @@ def _log_path(log_root: str, repo_key: str) -> str:
 def _validate_repo_key(repo_key: str, log_root: str) -> bool:
     """Validate repo_key format and ensure resolved path is under log_root.
 
-    repo_key should be hyphen-separated lowercase alphanumerics.
+    repo_key should be hyphen-separated owner-name spelling: ASCII letters, digits, "_",
+    "." and "-", with at least one hyphen, no "..", and not starting with ".".
     Returns True if valid, False otherwise.
     """
-    # Check format: alphanumeric and hyphens only, must contain hyphen
-    if not repo_key or "-" not in repo_key:
+    # Check format: must contain a hyphen, must not contain "..", must not start with "."
+    if not repo_key or "-" not in repo_key or ".." in repo_key or repo_key.startswith("."):
         return False
-    # Allowlist: lowercase alphanumeric, hyphen
-    if not all(c.isalnum() or c == "-" for c in repo_key):
+    # Allowlist: ASCII letters, digits, underscore, dot, hyphen
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", repo_key):
         return False
 
     # Check path safety: resolved path must be under log_root
     try:
         log_path = _log_path(log_root, repo_key)
 
-        # Resolve both paths
+        # Resolve both paths. realpath follows symlinks even when the target is missing,
+        # so a dangling link that points outside log_root is caught here.
         resolved_log_root = os.path.realpath(log_root)
-        resolved_log_path = os.path.realpath(log_path) if os.path.exists(log_path) else os.path.normpath(log_path)
+        resolved_log_path = os.path.realpath(log_path)
 
         # Check that log_path is under log_root
         if not resolved_log_path.startswith(resolved_log_root + os.sep) and resolved_log_path != resolved_log_root:
@@ -220,10 +226,11 @@ def _load_normalized_answers(path: str) -> Optional[Dict[str, Tuple[str, AnswerS
     answers_raw = data.get("answers", {})
     if not isinstance(answers_raw, dict):
         return None
-    # All normalized answers are sourced from "answered"
+    # All normalized answers are sourced from "answered". An empty or whitespace-only
+    # string is not an answer.
     result: Dict[str, Tuple[str, AnswerSource]] = {}
     for k, v in answers_raw.items():
-        if isinstance(k, str) and isinstance(v, str):
+        if isinstance(k, str) and isinstance(v, str) and v.strip():
             result[k] = (v, "answered")
     return result if result else None
 
@@ -237,6 +244,12 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, Answer
     An unreadable or malformed round file is reported on stderr and skipped; the other
     rounds still contribute. Returns dict: {question_id: (value, source)} where source is
     the disposition, or None when no usable answers remain.
+
+    A round that gives no usable value for a handle (an answered or overridden disposition
+    with a missing, empty or whitespace-only value) does not replace an earlier round's
+    answer for that handle. A later round that is silent, unresolved or accepted gives no
+    row and does not retract an earlier answer: the earlier answer stands (latest usable
+    answer wins per handle).
     """
     merged: Dict[str, Tuple[str, AnswerSource]] = {}
 
@@ -263,13 +276,14 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, Answer
             # Handle both direct string values and item objects with disposition
             if isinstance(item, str):
                 # Direct value (old shape); source is "answered"
-                merged[handle] = (item, "answered")
+                if item.strip():
+                    merged[handle] = (item, "answered")
             elif isinstance(item, dict):
                 disposition = item.get("disposition")
                 # Only include answered, overridden, or accepted-on-continue
                 if disposition in ("answered", "overridden", "accepted-on-continue"):
                     value = item.get("value", "")
-                    if isinstance(value, str):
+                    if isinstance(value, str) and value.strip():
                         merged[handle] = (value, disposition)
             # unresolved, accepted (D/W silence) give no row
 
@@ -283,11 +297,6 @@ def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "fr
       - actual: canonical label for option, or normalized text for free_text
       - actual_source: "option" or "free_text"
     """
-    if not isinstance(value, str):
-        # Treat non-string values as free_text, normalized to string
-        normalized = " ".join(str(value).split())[:500]
-        return (normalized, "free_text")
-
     # Strip trailing " (Recommended)" marker
     stripped = value.rstrip()
     if stripped.endswith("(Recommended)"):
@@ -342,7 +351,10 @@ def _build_row(
         header_val = question_meta.get("header")
         if isinstance(header_val, str):
             header = header_val
-        recommended = question_meta.get("recommended")
+        # recommended must be one of the question's option labels; anything else is null
+        recommended_val = question_meta.get("recommended")
+        if isinstance(recommended_val, str) and recommended_val in _options_of(question_meta):
+            recommended = recommended_val
 
     predicted_val = question_block.get("prediction")
     if not isinstance(predicted_val, str):
@@ -651,6 +663,8 @@ def main() -> None:
         logged_count, skipped_count = _append_rows(args.log_root, args.repo_key, rows)
     except OSError as exc:
         _skip("log-unwritable: %s: %s" % (_log_path(args.log_root, args.repo_key), _exc_text(exc)))
+    except UnicodeDecodeError:
+        _skip("log-unwritable: %s: not valid UTF-8" % _log_path(args.log_root, args.repo_key))
 
     _stderr("precedent-log: logged %d, skipped-duplicate %d, unanswered %d" % (logged_count, skipped_count, unanswered))
     sys.exit(0)

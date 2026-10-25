@@ -1128,6 +1128,20 @@ def _count_sources(entries: List[Dict[str, Any]], sources: Sequence[str] = SOURC
     return counts
 
 
+PRED_KEY_RE = re.compile(r"[A-Za-z0-9_.-]+")  # same allowlist as precedent-log.py
+
+
+def _valid_pred_key(repo_key: str) -> bool:
+    """owner-name spelling accepted for the prediction log: ASCII [A-Za-z0-9_.-], at least
+    one hyphen, no "..", not starting with "."."""
+    return (
+        PRED_KEY_RE.fullmatch(repo_key) is not None
+        and "-" in repo_key
+        and ".." not in repo_key
+        and not repo_key.startswith(".")
+    )
+
+
 def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], int, int]:
     """Load prediction log for project scope (project-scoped only).
 
@@ -1144,10 +1158,15 @@ def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], i
     duplicates = 0
     seen_keys: Set[Tuple[str, str, str]] = set()
 
-    if not os.path.exists(log_path):
+    try:
+        f = open(log_path)
+    except FileNotFoundError:
+        # A dangling symlink is an unreadable log, not an absent one: re-raise it
+        if os.path.islink(log_path):
+            raise
         return rows, malformed, duplicates
 
-    with open(log_path) as f:
+    with f:
         for line in f:
             line = line.rstrip("\n")
             if not line:
@@ -1157,14 +1176,20 @@ def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], i
                 if not isinstance(row, dict):
                     malformed += 1
                     continue
-                # First-wins dedup on (run, question_id, command) - ensure string values
-                run_val = row.get("run", "")
-                qid_val = row.get("question_id", "")
-                cmd_val = row.get("command", "")
-                # Convert to strings to ensure hashability
-                key = (str(run_val) if run_val is not None else "",
-                       str(qid_val) if qid_val is not None else "",
-                       str(cmd_val) if cmd_val is not None else "")
+                # Rows are counted as malformed unless the fields the stats use have their
+                # expected types: run, question_id and command are strings, hit is bool or null.
+                run_val = row.get("run")
+                qid_val = row.get("question_id")
+                cmd_val = row.get("command")
+                if not all(isinstance(v, str) for v in (run_val, qid_val, cmd_val)):
+                    malformed += 1
+                    continue
+                hit_val = row.get("hit")
+                if hit_val is not None and not isinstance(hit_val, bool):
+                    malformed += 1
+                    continue
+                # First-wins dedup on (run, question_id, command)
+                key = (str(run_val), str(qid_val), str(cmd_val))
                 if key in seen_keys:
                     duplicates += 1
                     continue
@@ -1185,13 +1210,21 @@ def _prediction_section(repo_key: str, home: str) -> PredictionStats:
     """The --stats predictions section for the project-scoped log.
 
     An unreadable log yields zero counts and a read_error string, never a silent empty.
+    A repo key outside the writer's allowlist is never joined into a path: the log is not
+    read and the section reports the reason as read_error.
     """
     read_error: Optional[str] = None
-    try:
-        rows, malformed, duplicates = _load_predictions(repo_key, home)
-    except (OSError, UnicodeDecodeError) as exc:
-        rows, malformed, duplicates = [], 0, 0
-        read_error = _exc_text(exc)
+    rows: List[Dict[str, Any]] = []
+    malformed = 0
+    duplicates = 0
+    if not _valid_pred_key(repo_key):
+        read_error = "repo key %r is not a valid owner-name; the log was not read" % repo_key
+    else:
+        try:
+            rows, malformed, duplicates = _load_predictions(repo_key, home)
+        except (OSError, UnicodeDecodeError) as exc:
+            rows, malformed, duplicates = [], 0, 0
+            read_error = _exc_text(exc)
     stats = build_prediction_stats(rows)
     stats["malformed_lines"] = malformed
     stats["duplicate_keys"] = duplicates
@@ -1402,7 +1435,7 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
                 read_error = value.get("read_error")
                 if read_error:
                     pred_md += (
-                        "**Read error**: the log exists but cannot be read (%s); the counts above "
+                        "**Read error**: the log could not be read (%s); the counts above "
                         "are zero because nothing was read, not because nothing was logged.\n\n"
                     ) % read_error
                 # Add anchoring caveat (D-C: all rows are anchored, so hit rate is upper bound)
@@ -1412,8 +1445,13 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
                 hit_rate_str = _fmt_rate(hit_rate)
                 baseline_rate = value.get("baseline_recommended_hit_rate")
                 baseline_rate_str = _fmt_rate(baseline_rate)
-                pred_md += "**Hit rates**: pat=(%s), baseline-recommended=(%s, n=%d)\n\n" % (
-                    hit_rate_str, baseline_rate_str, value.get("baseline_n", 0)
+                pat_baseline_str = _fmt_rate(value.get("pat_baseline_hit_rate"))
+                pred_md += (
+                    "**Hit rates**: pat overall=(%s, n=%d); on the baseline subset (the rows "
+                    "baseline-recommended scores): pat=(%s), baseline-recommended=(%s, n=%d)\n\n"
+                ) % (
+                    hit_rate_str, value.get("scored", 0), pat_baseline_str,
+                    baseline_rate_str, value.get("baseline_n", 0),
                 )
                 for confidence in ("high", "medium"):
                     conf = value.get("by_confidence", {}).get(confidence, {})

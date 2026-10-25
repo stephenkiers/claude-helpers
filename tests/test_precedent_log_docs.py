@@ -148,6 +148,31 @@ if __name__ == "__main__":
                   "REPO_KEY reference not found in loop")
 
     # ========================================================================
+    # SECTION B3: Helper output stays in SESSION_DIR, never a shared /tmp file,
+    # and the recorded line is appended in the same command without a doubled prefix
+    # ========================================================================
+    print("\n[Section B3] Helper output capture and decisions.md append")
+
+    h.test_result("B3a: non-flow helper output not written to shared /tmp",
+                  bool(nonflow) and "/tmp/" not in nonflow,
+                  "non-flow branch still uses a /tmp path")
+    h.test_result("B3b: flow helper output not written to shared /tmp",
+                  "/tmp/" not in loop_text,
+                  "'The loop ends' paragraph still uses a /tmp path")
+    h.test_result("B3c: non-flow output file is SESSION_DIR and appended to decisions.md",
+                  bool(nonflow) and '"${SESSION_DIR}/precedent-log-output.txt"' in nonflow
+                  and 'tail -1 "${SESSION_DIR}/precedent-log-output.txt" >> "${SESSION_DIR}/decisions.md"' in nonflow,
+                  "non-flow output capture or decisions.md append missing")
+    h.test_result("B3d: flow output file is SESSION_DIR and appended to decisions.md",
+                  '"${SESSION_DIR}/precedent-log-output.txt"' in loop_text
+                  and 'tail -1 "${SESSION_DIR}/precedent-log-output.txt" >> "${SESSION_DIR}/decisions.md"' in loop_text,
+                  "flow output capture or decisions.md append missing")
+    h.test_result("B3e: no doubled 'precedent-log: precedent-log:' prefix or $LOG_OUTPUT variable",
+                  "precedent-log: precedent-log:" not in nonflow and "$LOG_OUTPUT" not in nonflow
+                  and "precedent-log: $" not in loop_text,
+                  "doubled prefix or shell-variable record still present")
+
+    # ========================================================================
     # SECTION C: Not in orchestrator
     # ========================================================================
     print("\n[Section C] Helper not in orchestrator docs")
