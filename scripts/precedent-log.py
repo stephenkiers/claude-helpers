@@ -133,24 +133,30 @@ def _load_questions(path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _load_normalized_answers(path: str) -> Optional[Dict[str, str]]:
-    """Load answers from normalized JSON file: {"answers": {"Q1": "...", ...}}"""
+def _load_normalized_answers(path: str) -> Optional[Dict[str, Tuple[str, str]]]:
+    """Load answers from normalized JSON file: {"answers": {"Q1": "...", ...}}
+
+    Returns dict: {question_id: (value, source)} where source is "answered" for normalized answers.
+    """
     try:
         with open(path) as f:
             data = json.load(f)
-        return data.get("answers", {})
+        answers_raw = data.get("answers", {})
+        # All normalized answers are sourced from "answered"
+        return {k: (v, "answered") for k, v in answers_raw.items()}
     except (IOError, json.JSONDecodeError):
         return None
 
 
-def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, str]]:
+def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, str]]]:
     """Load and merge flow-mode answers from multiple files.
 
     Reads each file's top-level 'answers' or 'items' key.
     Merges with latest file winning per handle.
     Only includes handles with disposition 'answered', 'overridden', or 'accepted-on-continue'.
+    Returns dict: {question_id: (value, source)} where source is the disposition.
     """
-    merged: Dict[str, str] = {}
+    merged: Dict[str, Tuple[str, str]] = {}
 
     for path in paths:
         try:
@@ -165,28 +171,25 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, str]]:
         for handle, item in answers_section.items():
             # Handle both direct string values and item objects with disposition
             if isinstance(item, str):
-                # Direct value (old shape)
-                merged[handle] = item
+                # Direct value (old shape); source is "answered"
+                merged[handle] = (item, "answered")
             elif isinstance(item, dict):
                 disposition = item.get("disposition")
                 # Only include answered, overridden, or accepted-on-continue
                 if disposition in ("answered", "overridden", "accepted-on-continue"):
-                    merged[handle] = item.get("value", "")
+                    merged[handle] = (item.get("value", ""), disposition)
             # unresolved, accepted (D/W silence) give no row
 
     return merged if merged else None
 
 
-def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "free_text", "accepted-on-continue"]]:
+def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "free_text"]]:
     """Classify an answer value as option or free_text.
 
     Returns (actual, actual_source) where:
       - actual: canonical label for option, or normalized text for free_text
-      - actual_source: "option" or "free_text" or "accepted-on-continue"
+      - actual_source: "option" or "free_text"
     """
-    if value is None:
-        return ("", "accepted-on-continue")
-
     # Strip trailing " (Recommended)" marker
     stripped = value.rstrip()
     if stripped.endswith("(Recommended)"):
@@ -423,7 +426,7 @@ def main() -> None:
         sys.exit(0)
 
     # Load answers (either normalized or flow-based)
-    answers_dict: Optional[Dict[str, str]] = None
+    answers_dict: Optional[Dict[str, Tuple[str, str]]] = None
     if has_answers:
         answers_dict = _load_normalized_answers(args.answers)
     else:
@@ -433,8 +436,8 @@ def main() -> None:
         _stderr("precedent-log: nothing logged (answers-invalid)")
         sys.exit(0)
 
-    # Check if trace file indicates anchoring
-    anchored = precedent_trace.startswith("shown")
+    # At this point, trace_file starts with "shown", so anchored is True
+    anchored = True
 
     # Build rows for all spoken-on questions that have answers
     rows: List[PredictionRow] = []
@@ -445,15 +448,18 @@ def main() -> None:
         if question_id not in answers_dict:
             continue
 
-        answer_value = answers_dict[question_id]
-        options = question_block.get("options", [])
+        answer_value, answer_source = answers_dict[question_id]
+        # Get options from questions dict (not validated block)
+        question_meta = questions.get(question_id)
+        options = question_meta.get("options", []) if question_meta else []
 
-        # Classify the answer
-        actual, actual_source = classify(answer_value, options)
-
-        # Handle accepted-on-continue specially
-        if actual_source == "accepted-on-continue":
+        # If source is accepted-on-continue, use value and source directly
+        if answer_source == "accepted-on-continue":
             actual = answer_value
+            actual_source = "accepted-on-continue"
+        else:
+            # Otherwise, classify the answer
+            actual, actual_source = classify(answer_value, options)
 
         # Build the row
         ts = datetime.utcnow().isoformat()

@@ -20,7 +20,6 @@ Run with: python3 tests/test_precedent_log.py
 """
 
 import importlib.util
-import io
 import json
 import os
 import shutil
@@ -28,7 +27,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import REPO_ROOT, Harness
@@ -251,7 +249,6 @@ def case_malformed_input_exits_0(h):
         questions = make_questions([("Q1", "A question", ["A. A", "B. B"], "A. A")])
         questions_file = fx.put_json("questions.json", questions)
         answers_file = fx.put_json("answers.json", make_answers({"Q1": "A. A"}))
-        validated_file = fx.put_json("validated.json", {"status": "ok", "blocks": []})
 
         # Missing validated file
         rc, _, stderr = run_helper(
@@ -352,9 +349,9 @@ def case_row_contract(h):
 
             # Check that hit and actual_source are present (don't test specific values as they depend on classifier impl)
             h.test_result("row contract: hit field present", "hit" in row,
-                         f"hit not in row keys")
+                         "hit not in row keys")
             h.test_result("row contract: actual_source field present", "actual_source" in row,
-                         f"actual_source not in row keys")
+                         "actual_source not in row keys")
 
             # Check the invariant: hit is None iff actual_source != "option"
             hit_val = row.get("hit")
@@ -624,6 +621,194 @@ def case_flow_answers_latest_wins(h):
             h.test_result("flow answers: Q2 from round 2", q2_row.get("actual") == "A. Option A",
                          f"actual={q2_row.get('actual')}")
 
+            # [WEAK_ASSERTION] Q1 should have actual_source="option" (exact match)
+            h.test_result("flow answers: Q1 has actual_source='option'", q1_row.get("actual_source") == "option",
+                         f"actual_source={q1_row.get('actual_source')}")
+
+            # [WEAK_ASSERTION] Q2 should have actual_source="option" (exact match)
+            h.test_result("flow answers: Q2 has actual_source='option'", q2_row.get("actual_source") == "option",
+                         f"actual_source={q2_row.get('actual_source')}")
+
+
+def case_flow_accepted_on_continue(h):
+    """Test: flow answers with accepted-on-continue disposition yields actual_source='accepted-on-continue'."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "Should we accept?", "Yes", "high", [{"ref": 1}]),
+        ])
+        questions = make_questions([
+            ("Q1", "Should we accept?", ["A. Yes", "B. No"], "A. Yes"),
+        ])
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+
+        # Flow answer with accepted-on-continue disposition
+        flow_answers = make_flow_answers({
+            "Q1": {"value": "User accepted the recommendation", "disposition": "accepted-on-continue"},
+        }, shape="items")
+        flow_file = fx.put_json("flow_answers.json", flow_answers)
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--flow-answers", str(flow_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            trace_content="shown"
+        )
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("accepted-on-continue: got 1 row", len(rows) == 1, f"n={len(rows)}")
+
+        if rows:
+            row = rows[0]
+            # [WEAK_ASSERTION] actual_source must be "accepted-on-continue"
+            h.test_result("accepted-on-continue: actual_source='accepted-on-continue'",
+                         row.get("actual_source") == "accepted-on-continue",
+                         f"actual_source={row.get('actual_source')}")
+
+            # [WEAK_ASSERTION] hit must be null
+            h.test_result("accepted-on-continue: hit is null", row.get("hit") is None,
+                         f"hit={row.get('hit')}")
+
+            # [WEAK_ASSERTION] actual must be the value
+            h.test_result("accepted-on-continue: actual is the value",
+                         row.get("actual") == "User accepted the recommendation",
+                         f"actual={row.get('actual')}")
+
+
+def case_flow_unresolved_accepted_no_row(h):
+    """Test: flow answers with unresolved/accepted dispositions give no row."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "Question 1", "A. Option A", "high", [{"ref": 1}]),
+            ("Q2", "Question 2", "B. Option B", "high", [{"ref": 2}]),
+        ])
+        questions = make_questions([
+            ("Q1", "Question 1", ["A. Option A", "B. Option B"], "A. Option A"),
+            ("Q2", "Question 2", ["A. Option A", "B. Option B"], "B. Option B"),
+        ])
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+
+        # Flow answers with unresolved and accepted dispositions (should be filtered out)
+        flow_answers = make_flow_answers({
+            "Q1": {"value": "ignored", "disposition": "unresolved"},
+            "Q2": {"value": "ignored", "disposition": "accepted"},
+        }, shape="items")
+        flow_file = fx.put_json("flow_answers.json", flow_answers)
+
+        rc, _, stderr = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--flow-answers", str(flow_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            trace_content="shown"
+        )
+
+        rows = fx.read_log_file("owner-name")
+        # [WEAK_ASSERTION] unresolved/accepted dispositions should not produce rows
+        h.test_result("unresolved/accepted: no rows logged", len(rows) == 0,
+                     f"n={len(rows)}, stderr={stderr}")
+
+
+def case_letter_to_label_mapping(h):
+    """Test: bare letter classification maps correctly to label and hit is computed correctly."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "Question with B", "B. Option B", "high", [{"ref": 1}]),
+            ("Q2", "Question with A", "A. Option A", "high", [{"ref": 2}]),
+        ])
+        questions = make_questions([
+            ("Q1", "Question with B", ["A. Option A", "B. Option B"], "B. Option B"),
+            ("Q2", "Question with A", ["A. Option A", "B. Option B"], "A. Option A"),
+        ])
+        answers = make_answers({
+            "Q1": "B",  # Bare letter should match "B. Option B"
+            "Q2": "A",  # Bare letter should match "A. Option A"
+        })
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", answers)
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            trace_content="shown"
+        )
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("letter mapping: got 2 rows", len(rows) == 2, f"n={len(rows)}")
+
+        if len(rows) >= 2:
+            q1_row = [r for r in rows if r.get("question_id") == "Q1"][0]
+            q2_row = [r for r in rows if r.get("question_id") == "Q2"][0]
+
+            # [WEAK_ASSERTION] Q1: bare "B" should map to "B. Option B"
+            h.test_result("letter mapping: Q1 'B' maps to 'B. Option B'",
+                         q1_row.get("actual") == "B. Option B",
+                         f"actual={q1_row.get('actual')}")
+
+            # [WEAK_ASSERTION] Q1: predicted=="B. Option B" and actual=="B. Option B", so hit should be True
+            h.test_result("letter mapping: Q1 hit is True",
+                         q1_row.get("hit") is True,
+                         f"hit={q1_row.get('hit')}")
+
+            # [WEAK_ASSERTION] Q2: bare "A" should map to "A. Option A"
+            h.test_result("letter mapping: Q2 'A' maps to 'A. Option A'",
+                         q2_row.get("actual") == "A. Option A",
+                         f"actual={q2_row.get('actual')}")
+
+            # [WEAK_ASSERTION] Q2: predicted=="A. Option A" and actual=="A. Option A", so hit should be True
+            h.test_result("letter mapping: Q2 hit is True",
+                         q2_row.get("hit") is True,
+                         f"hit={q2_row.get('hit')}")
+
+
+def case_ambiguous_letter_free_text(h):
+    """Test: ambiguous/unknown letters are classified as free_text."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "Question", "A. Option A", "high", [{"ref": 1}]),
+        ])
+        questions = make_questions([
+            ("Q1", "Question", ["A. Option A", "B. Option B"], "A. Option A"),
+        ])
+        answers = make_answers({
+            "Q1": "C",  # Unknown letter
+        })
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", answers)
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            trace_content="shown"
+        )
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("ambiguous letter: got 1 row", len(rows) == 1, f"n={len(rows)}")
+
+        if rows:
+            row = rows[0]
+            # [WEAK_ASSERTION] unknown letter should be free_text
+            h.test_result("ambiguous letter: actual_source is 'free_text'",
+                         row.get("actual_source") == "free_text",
+                         f"actual_source={row.get('actual_source')}")
+
+            # [WEAK_ASSERTION] actual should be the normalized text
+            h.test_result("ambiguous letter: actual is normalized text",
+                         row.get("actual") == "C",
+                         f"actual={row.get('actual')}")
+
 
 if __name__ == "__main__":
     h = Harness("PRECEDENT-LOG TEST SUITE")
@@ -635,5 +820,9 @@ if __name__ == "__main__":
     case_argv_errors_exit_2(h)
     case_empty_or_absent_log(h)
     case_flow_answers_latest_wins(h)
+    case_flow_accepted_on_continue(h)
+    case_flow_unresolved_accepted_no_row(h)
+    case_letter_to_label_mapping(h)
+    case_ambiguous_letter_free_text(h)
 
     h.summarize_and_exit()

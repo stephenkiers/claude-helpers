@@ -14,7 +14,6 @@ Run with: python3 tests/test_precedent_log_docs.py
 """
 
 import re
-from pathlib import Path
 
 from _test_harness import REPO_ROOT, Harness
 
