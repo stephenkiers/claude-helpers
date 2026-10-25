@@ -783,3 +783,31 @@ This amendment closes four gaps discovered in lotl#1809 dogfooding and tracked a
 **Related.** This amendment depends on and amends the 2026-10-16 second amendment's `taken-over` handling, and builds on the 2026-10-19 amendment's verifier ownership. When #288 lands, it will read the `OUTSTANDING:` line and the relay set persisted by this amendment.
 
 **In-flight consequence: required `OUTSTANDING:` line.** Flows created before this amendment's merge will fail the required-line check when resumed after upgrade. Recovery: retrying the step or taking over re-runs the step without the required line, passing verification. The in-flight PRs #346, #335, #341, #322 (which land before this amendment ships) will not encounter this issue; flows created after their merge but before this amendment will encounter it on any post-upgrade resume. The merge order will be decided in review.
+
+## Amendment (2026-10-25): maxTurns look-back (#341) and the turns-exhaustion probe status
+
+This amendment records what #341 found about the automatic escalation path and the `maxTurns: 120` cap. It adds to the 2026-10-16 fourth amendment and does not rewrite it. The seven escalation conditions, the cap of two attempts, Sonnet-only, and the escalation and outcome telemetry are unchanged.
+
+**Item 1: the turns-exhaustion probe was not run, so the automatic path stays dormant.** #341 planned a one-off probe. A throwaway agent would run with `maxTurns: 3` and stop on the cap, and the probe would check whether the parent receives a complete plan-implementer trailer. A complete trailer on a cap-stopped agent would refute trailer-based derivation, and the fallback would leave the path inert. This environment cannot launch an agent with a custom `maxTurns`, so the probe has no result, and nothing in this amendment claims one. The "dormant automatic path" and "turns-exhaustion exclusion" subsections above keep their status: no reliable turns source exists, and the receipt's `TURNS_EXHAUSTED` source is not established. The "Probe result" subsection above is the Agent `model`-override probe, not a turns probe, and this amendment does not change it.
+
+This PR ships no turns-exhaustion script, no `allowed-tools` grant, no attempt-telemetry writer, and no change to `implement-with-haiku` turns accounting. The inert note in `commands/expert-flow.md` (escalation telemetry) cites this amendment. #325 stays open.
+
+**The `event: "attempt"` line described above is an unbacked description.** The Telemetry subsection above says that every failed attempt writes an `event: "attempt"` line to `escalations.jsonl`. No command or script in this repository writes that event. The writers that exist are `event: "escalation"` and `event: "outcome"` in `commands/expert-flow.md`. That sentence describes a stream that does not exist yet. It is recorded here as unbacked, not rewritten in place.
+
+**Item 2: `maxTurns` look-back: insufficient data, so `maxTurns` stays 120.** Measured on 2026-10-25 under `~/.claude/flows/*/*/steps/`:
+
+- Implement and fix receipts (`03-implement.md` and `05-fix.md`; `*.audit.md` companions excluded): 119 (69 implement, 50 fix), across 106 flow directories.
+- Receipts with a `TURNS_USED:` or `TURNS_EXHAUSTED:` key line: 2. Both are fix receipts, and both read `unknown`. One implement receipt mentions a `TURNS_` token in prose only.
+- Receipts with `TURNS_EXHAUSTED: yes` or `no`: 0.
+- `escalations.jsonl` files under `~/.claude`: 0. `event: "attempt"` lines: 0.
+
+With zero observed `yes` or `no` values, the turns-exhaustion rate cannot be estimated. The conclusion is insufficient data, and `maxTurns` stays at 120. The "Raising or overriding `maxTurns`" line in "Still out of scope" above still stands.
+
+**Re-check trigger.** Re-check when a turns source lands. That ticket must also write an `event: "attempt"` line to `$FLOWS_ROOT/escalations.jsonl` (`~/.claude/flows/escalations.jsonl`) on every failed implement or fix attempt, with `units`, `turns_used`, and `turns_exhausted`. The look-back fires when either of these holds, whichever comes first:
+
+- (i) 10 attempt lines have `turns_exhausted` of `yes` or `no`, or
+- (ii) the first attempt line with `units: 1` and `turns_exhausted: "yes"` appears.
+
+That stream does not exist yet (0 lines), so neither condition can fire today.
+
+**Pointers.** `docs/adr/0004-model-cost-routing.md` (the escalate-once amendment) and the `CLAUDE.md` `/expert-flow` bullet now point to this amendment. Both keep the "dormant" status and the `Retry with sonnet` option.
