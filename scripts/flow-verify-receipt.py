@@ -802,6 +802,8 @@ def check_report_checkpoint(
                 # F2: Fail closed on non-dict question file
                 return f"plan checkpoint incomplete (unreadable question file: {answer_file.name})"
 
+            # Gate: these checks run only when a same-SEQ question file exists (else `continue`
+            # above); a missing question file is caught by the coverage checks below.
             # If the question file is a report for this attempt,
             # the answers file must also be a report for this attempt
             if qdata.get("kind") == "report" and qdata.get("attempt") == attempt:

@@ -1426,7 +1426,8 @@ def main():
                       and "receipt attempt 1" in error,
                       f"error={error}")
 
-    # Test 28: the #363 ticket shape - strict-subset round 2 supersedes a round-1 unresolved
+    # Test 28: no-false-positive guard for the #363 ticket shape (valid kind/attempt on round 2 must
+    # still verify); it does not exercise the new rejection branches - Tests 26, 27, 29, 30 do.
     print("[Test 28] Round 1 D1 accepted + Q1 unresolved, round 2 only Q1 answered: verifies")
     with tempfile.TemporaryDirectory() as tmp:
         session_dir, flow_dir, decisions_text = _two_round_checkpoint(
@@ -1442,6 +1443,22 @@ def main():
         h.test_result("[Test 28] Strict-subset round 2 supersedes round-1 unresolved",
                       error is None,
                       f"error={error}")
+
+    # Tests 29-30: bool and string attempt values on a round 2 file fail closed (#363)
+    for n, bad in (("29", True), ("30", "1")):
+        print(f"[Test {n}] Round 2 answers file with attempt {bad!r} fails closed")
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir, flow_dir, decisions_text = _two_round_checkpoint(
+                tmp, ["Q1"],
+                {"kind": "report", "round": 1, "attempt": 1, "items": {"Q1": _ans("A")},
+                 "reading_echoed": False, "loop_end": "all-answered"},
+                ["Q1"],
+                {"kind": "report", "round": 2, "attempt": bad, "items": {"Q1": _ans("B")},
+                 "reading_echoed": False, "loop_end": "all-answered"})
+            error = check_report_checkpoint(session_dir, flow_dir, decisions_text)
+            h.test_result(f"[Test {n}] Attempt {bad!r} names plan-02.json and the bad value",
+                          error is not None and "plan-02.json" in error and repr(bad) in error,
+                          f"error={error}")
 
     h.summarize_and_exit()
 
