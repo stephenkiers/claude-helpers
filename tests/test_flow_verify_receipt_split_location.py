@@ -472,7 +472,32 @@ Decision: OK
         rc, out = run_verifier("review", str(receipt_path), str(flow_dir), tmp_home)
         h.test_result(
             "RV1d: 1 Needs-you, answered review-01 on disk, no markers → exit 0, ARTIFACTS: ok",
-            rc == 0 and "ARTIFACTS: ok" in out,
+            rc == 0 and "ARTIFACTS: ok" in out and "Traceback" not in out,
+            f"rc={rc}\nout={out[-500:]}"
+        )
+
+    print("Test RV1e: Review Needs-you with question on disk but no answer and no marker → rulings incomplete")
+
+    with tempfile.TemporaryDirectory() as tmp_home:
+        create_reviewer_index(tmp_home)
+        review_dir = create_review_dir(tmp_home, action_plan=NEEDS_YOU_PLAN_ONE)
+        flow_dir = Path(tmp_home) / "flow"
+        flow_dir.mkdir()
+
+        # One Needs-you item, asked by a review-* question file in FLOW_DIR, but NO answer file.
+        write_question_file(flow_dir / "questions", "review", 1, 1)
+
+        # The receipt marks no question at all; the unanswered question on disk must block the run.
+        receipt_path = Path(tmp_home) / "receipt.md"
+        receipt_path.write_text(f"""REVIEW_DIR: {review_dir}
+ATTEMPT: 1
+Decision: OK
+<!-- step-end -->""")
+
+        rc, out = run_verifier("review", str(receipt_path), str(flow_dir), tmp_home)
+        h.test_result(
+            "RV1e: 1 Needs-you, question on disk with no answer, no markers → exit 1, exact reason (needs-you: 1, asked: 0, unanswered: review-01.json)",
+            rc == 1 and "review rulings incomplete (needs-you: 1, asked: 0, unanswered: review-01.json)" in out and "Traceback" not in out,
             f"rc={rc}\nout={out[-500:]}"
         )
 
