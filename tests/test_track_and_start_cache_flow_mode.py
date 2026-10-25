@@ -59,6 +59,13 @@ def main():
       pivot.find("Reuse case only") >= 0
       and pivot.find("Reuse case only") < pivot.find('WT_CACHE="${REUSE_WORKTREE_PATH}'))
 
+    t("project issue cache read uses [ -s ] guard for non-zero files",
+      '[ -s "$CACHE_FILE" ]' in pivot)
+    t("worktree github-cache.json read uses [ -s ] guard for non-zero files",
+      '[ -s "$WT_CACHE" ]' in pivot)
+    t("temp file write is guarded with [ -s ] before both mv operations",
+      pivot.count('[ -s "$TMP" ]') >= 2)
+
     t("no truncating redirect onto a cache path in the pivot section",
       re.search(r">\s*\"?\$\{?(CACHE_FILE|WT_CACHE)", pivot) is None)
     t("no bare positional token in the pivot section",

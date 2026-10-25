@@ -1241,11 +1241,14 @@ worktree's issue):
 Step 2 above, the project issue cache (`$CACHE_FILE` is keyed by issue number, as the `.issues[$num]` read in `track.md` shows):
 
 ```bash
-if [ -f "$CACHE_FILE" ]; then
+NEW_PLAN=$(cat "$PLAN_FILE")
+[ -n "$NEW_PLAN" ] || { echo "ERROR: plan file is empty" >&2; exit 1; }
+
+if [ -s "$CACHE_FILE" ]; then
   TMP=$(mktemp "${CACHE_FILE}.XXXXXX")
   jq --arg num "$EXISTING_ISSUE_NUM" --arg body "$NEW_PLAN" \
     'if .issues[$num] then .issues[$num].body = $body else . end' "$CACHE_FILE" > "$TMP" \
-    && mv "$TMP" "$CACHE_FILE" || { rm -f "$TMP"; echo "ERROR: failed to update $CACHE_FILE" >&2; exit 1; }
+    && [ -s "$TMP" ] && mv "$TMP" "$CACHE_FILE" || { rm -f "$TMP"; echo "ERROR: failed to update $CACHE_FILE" >&2; exit 1; }
 fi
 ```
 
@@ -1257,7 +1260,7 @@ ISSUE_URL=$(printf '%s' "$ISSUE_JSON" | jq -r '.url')
 ISSUE_TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title')
 WT_CACHE="${REUSE_WORKTREE_PATH}/.claude/github-cache.json"
 mkdir -p "${REUSE_WORKTREE_PATH}/.claude"
-EXISTING=$(cat "$WT_CACHE" 2>/dev/null || echo '{}')
+EXISTING=$([ -s "$WT_CACHE" ] && cat "$WT_CACHE" || echo '{}')
 TMP=$(mktemp "${REUSE_WORKTREE_PATH}/.claude/github-cache.json.XXXXXX")
 printf '%s' "$EXISTING" | jq --arg branch "$REUSE_BRANCH" \
   --argjson number "$EXISTING_ISSUE_NUM" \
@@ -1265,7 +1268,7 @@ printf '%s' "$EXISTING" | jq --arg branch "$REUSE_BRANCH" \
   --arg title "$ISSUE_TITLE" \
   --arg body "$NEW_PLAN" \
   '. + {branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' \
-  > "$TMP" && mv "$TMP" "$WT_CACHE" || { rm -f "$TMP"; echo "ERROR: failed to write $WT_CACHE" >&2; exit 1; }
+  > "$TMP" && [ -s "$TMP" ] && mv "$TMP" "$WT_CACHE" || { rm -f "$TMP"; echo "ERROR: failed to write $WT_CACHE" >&2; exit 1; }
 ```
 
 ## Branch Naming
