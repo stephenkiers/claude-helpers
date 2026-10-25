@@ -1066,6 +1066,352 @@ def case_internal_error_monkeypatch(h):
                       not target.exists(), f"file exists={target.exists()}")
 
 
+# ---------------------------------------------------------------- curated layer (#297)
+
+CURATED_YAML = "strategicDocuments:\n  decisionsDirectory: docs/decisions/\n  constraintsDirectory: docs/constraints/\n"
+CURATED_URL = "https://github.com/owner/name.git"
+RULE_MD = "# Reads go through the cache layer\n\nRule: reads go through the cache layer\nSpirit: keeps latency predictable\n"
+OUTSIDE_MARKER = "ZEBRA"
+
+
+def curated_repo(fx, name, yaml_text=CURATED_YAML, files=None):
+    """A git repo (remote owner/name) with an optional north-star yaml and curated files."""
+    repo = fx.home / "repos" / name
+    make_git_repo(repo, CURATED_URL)
+    if yaml_text is not None:
+        (repo / ".claude" / "reviewers").mkdir(parents=True, exist_ok=True)
+        (repo / ".claude" / "reviewers" / "north-star-nick-local.yaml").write_text(yaml_text, encoding="utf-8")
+    for rel, data in (files or {}).items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, bytes):
+            path.write_bytes(data)
+        else:
+            path.write_text(data, encoding="utf-8")
+    return repo
+
+
+def run_curated(fx, target, extra=()):
+    """Run the digest with --status-out. Returns (rc, entries, stderr, status-or-None, stdout)."""
+    status = fx.home / f"status-{os.urandom(4).hex()}.json"
+    rc, out, err = run_digest(fx.home, [str(target), "--status-out", str(status), *extra])
+    st = json.loads(status.read_text(encoding="utf-8")) if status.exists() else None
+    ents = parse_entries(out) if out.strip() else []
+    return rc, ents, err, st, out
+
+
+def curated_of(ents):
+    return [e for e in ents if e["source"] == "curated"]
+
+
+def case_curated_sorts_first(h):
+    with Fixture() as fx:
+        fx.plan("owner-name", PLAN_RUN, plan_md([BRIEF1], ["Q1 = A (kept)"]))
+        repo = curated_repo(fx, "sorts", files={
+            "docs/decisions/0001-cache.md": RULE_MD,
+            "docs/constraints/0002-queue.md": "# Queue order is fixed\n\nRule: queue order is fixed\n",
+        })
+        for rel in ("docs/decisions/0001-cache.md", "docs/constraints/0002-queue.md"):
+            os.utime(repo / rel, (978307200, 978307200))  # back-dated to 2001: raw 2026 entries are newer
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        srcs = [e["source"] for e in ents]
+        h.test_result("curated sorts first: two curated entries lead the output",
+                      rc == 0 and srcs[:2] == ["curated", "curated"] and "plan-session" in srcs[2:],
+                      f"rc={rc} sources={srcs}")
+        h.test_result("curated sorts first: decisions before constraints",
+                      len(ents) >= 2 and ents[0]["path"].endswith("0001-cache.md")
+                      and ents[1]["path"].endswith("0002-queue.md"),
+                      f"paths={[e.get('path') for e in ents[:2]]}")
+        pending = fx.pending({"questions": [{"id": "q1", "header": "Alpha topic",
+                                             "question": "Which lantern?",
+                                             "options": [{"label": "Amber lantern"}, {"label": "Basalt river"}],
+                                             "multiSelect": False}]})
+        rc, ents_m, err, _, _ = run_curated(fx, repo, ["--match", str(pending), "--top", "1"])
+        srcs_m = [e["source"] for e in ents_m]
+        h.test_result("curated sorts first: with --match --top 1 keeps both curated plus one raw",
+                      rc == 0 and srcs_m[:2] == ["curated", "curated"] and len(ents_m) == 3,
+                      f"rc={rc} sources={srcs_m}")
+
+
+def case_curated_entry_shape(h):
+    with Fixture() as fx:
+        repo = curated_repo(fx, "shape", files={"docs/decisions/0001-cache.md": RULE_MD})
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        cur = curated_of(ents)
+        h.test_result("curated shape: one curated entry emitted", rc == 0 and len(cur) == 1,
+                      f"rc={rc} n={len(cur)} err={err}")
+        if not cur:
+            return
+        e = cur[0]
+        h.test_result("curated shape: keys in pinned order", list(e.keys()) == KEYS,
+                      f"keys={list(e.keys())}")
+        h.test_result("curated shape: options empty, ref/deviated/recommended null",
+                      e["options"] == [] and e["ref"] is None and e["deviated"] is None
+                      and e["recommended"] is None,
+                      f"options={e['options']} ref={e['ref']} deviated={e['deviated']} rec={e['recommended']}")
+        h.test_result("curated shape: question and header are the H1, answer is the rule",
+                      e["header"] == "Reads go through the cache layer" and e["question"] == e["header"]
+                      and e["answer"] == "reads go through the cache layer",
+                      f"header={e['header']!r} answer={e['answer']!r}")
+        h.test_result("curated shape: reason is the Spirit line; path is absolute",
+                      e["reason"] == "keeps latency predictable" and os.path.isabs(e["path"]),
+                      f"reason={e['reason']!r} path={e['path']!r}")
+        h.test_result("curated shape: repo_key from remote and date matches timestamp format",
+                      e["repo_key"] == "owner-name" and bool(DATE_RE.match(e["date"] or "")),
+                      f"repo_key={e['repo_key']!r} date={e['date']!r}")
+
+
+def case_curated_grammar(h):
+    files = {
+        "docs/decisions/bold.md": "# Bold rule\n\n**Rule:** reads go through cache\n",
+        "docs/decisions/table.md": ("# Table decision\n\n## Decisions\n\n| Decision | Owner |\n|---|---|\n"
+                                    "| Use the queue | platform team |\n| Drop legacy path | other team |\n"),
+        "docs/decisions/nospirit.md": "# No spirit\n\nRule: no spirit here\n",
+        "docs/decisions/dup.md": "# Duplicate\n\nRule: first wins\nRule: second loses\n",
+        "docs/decisions/crlf.md": "﻿# Crlf title\r\n\r\nRule: crlf rule\r\nSpirit: crlf spirit\r\n",
+        "docs/decisions/orphan.md": "Rule: orphan rule without a heading\n",
+        "docs/decisions/noRule.md": "# Has heading only\n\nSome prose and nothing else.\n",
+        "docs/decisions/README.md": "# Readme\n\nRule: readme must not count\n",
+        "docs/decisions/index.MD": "# Index\n\nRule: index must not count\n",
+    }
+    with Fixture() as fx:
+        repo = curated_repo(fx, "grammar", files=files)
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        by = {e["header"]: e for e in curated_of(ents)}
+        h.test_result("grammar: bold Rule label stripped",
+                      "Bold rule" in by and by["Bold rule"]["answer"] == "reads go through cache"
+                      and "**" not in by.get("Bold rule", {}).get("answer", "x"),
+                      f"answer={by.get('Bold rule', {}).get('answer')!r}")
+        h.test_result("grammar: table fallback joins first data row with em dash",
+                      "Table decision" in by and by["Table decision"]["answer"] == "Use the queue — platform team",
+                      f"answer={by.get('Table decision', {}).get('answer')!r}")
+        h.test_result("grammar: no Spirit gives null reason",
+                      "No spirit" in by and by["No spirit"]["reason"] is None,
+                      f"reason={by.get('No spirit', {}).get('reason')!r}")
+        h.test_result("grammar: duplicate Rule lines, first match wins",
+                      "Duplicate" in by and by["Duplicate"]["answer"] == "first wins",
+                      f"answer={by.get('Duplicate', {}).get('answer')!r}")
+        h.test_result("grammar: BOM and CRLF stripped and parsed",
+                      "Crlf title" in by and by["Crlf title"]["answer"] == "crlf rule"
+                      and by["Crlf title"]["reason"] == "crlf spirit",
+                      f"entry={by.get('Crlf title')}")
+        h.test_result("grammar: README and index files excluded silently",
+                      not any("Readme" in k or "Index" in k for k in by), f"headers={sorted(by)}")
+        h.test_result("grammar: no-H1 and no-rule files counted as curated_no_rule (2)",
+                      st is not None and st.get("curated_no_rule") == 2,
+                      f"status={st}")
+        h.test_result("grammar: five curated entries emitted",
+                      len(curated_of(ents)) == 5, f"n={len(curated_of(ents))} err={err}")
+
+
+def case_curated_commented_and_unsupported(h):
+    with Fixture() as fx:
+        commented = curated_repo(fx, "commented", yaml_text=(
+            "# strategicDocuments:\n#   decisionsDirectory: docs/decisions/\n"),
+            files={"docs/decisions/0001-cache.md": RULE_MD})
+        rc, ents, err, st, _ = run_curated(fx, commented)
+        h.test_result("commented keys: yaml status no_keys and zero curated",
+                      rc == 0 and st is not None and st.get("yaml") == "no_keys" and st.get("curated") == 0
+                      and not curated_of(ents), f"status={st}")
+        for label, yaml_text in [
+            ("flow style", "strategicDocuments: {decisionsDirectory: docs/decisions/}\n"),
+            ("nested map", "strategicDocuments:\n  vision:\n    decisionsDirectory: docs/decisions/\n"),
+        ]:
+            repo = curated_repo(fx, "unsup-" + label.replace(" ", "-"), yaml_text=yaml_text,
+                                files={"docs/decisions/0001-cache.md": RULE_MD})
+            rc, ents, err, st, _ = run_curated(fx, repo)
+            h.test_result(f"unsupported shape ({label}): exit 0, zero curated, no traceback",
+                          rc == 0 and not curated_of(ents) and "Traceback" not in err,
+                          f"rc={rc} status={st}")
+
+
+def case_curated_yaml_variants(h):
+    variants = {
+        "indented four spaces": "strategicDocuments:\n    decisionsDirectory: docs/decisions/\n",
+        "single quoted": "strategicDocuments:\n  decisionsDirectory: 'docs/decisions/'\n",
+        "double quoted": "strategicDocuments:\n  decisionsDirectory: \"docs/decisions/\"\n",
+        "trailing comment": "strategicDocuments:\n  decisionsDirectory: docs/decisions/  # the decisions\n",
+    }
+    with Fixture() as fx:
+        for label, yaml_text in variants.items():
+            repo = curated_repo(fx, "variant-" + label.replace(" ", "-"), yaml_text=yaml_text,
+                                files={"docs/decisions/0001-cache.md": RULE_MD})
+            rc, ents, err, st, _ = run_curated(fx, repo)
+            h.test_result(f"yaml variant ({label}): directory read, one curated entry",
+                          rc == 0 and len(curated_of(ents)) == 1 and st is not None and st.get("yaml") == "ok",
+                          f"rc={rc} n={len(curated_of(ents))} status={st}")
+
+
+def case_curated_path_safety(h):
+    with Fixture() as fx:
+        outside = fx.home / "repos" / "outside"
+        outside.mkdir(parents=True)
+        (outside / "outside-decision.md").write_text(
+            f"# Outside {OUTSIDE_MARKER} heading\n\nRule: {OUTSIDE_MARKER.lower()} rule\n", encoding="utf-8")
+        variants = []
+        variants.append(("parent traversal", "strategicDocuments:\n  decisionsDirectory: ../outside\n", {}, None))
+        variants.append(("absolute path", f"strategicDocuments:\n  decisionsDirectory: {outside}\n", {}, None))
+        variants.append(("directory symlink", CURATED_YAML, {}, ("dir", outside)))
+        variants.append(("symlinked markdown", CURATED_YAML, {}, ("file", outside / "outside-decision.md")))
+        big = ("# Big file\n\nRule: big rule\n" + "x" * (70 * 1024)).encode("utf-8")
+        variants.append(("file over 64 KiB", CURATED_YAML, {"docs/decisions/big.md": big}, None))
+        for label, yaml_text, files, link in variants:
+            repo = curated_repo(fx, "safety-" + label.replace(" ", "-"), yaml_text=yaml_text, files=files)
+            if link is not None:
+                (repo / "docs").mkdir(parents=True, exist_ok=True)
+                if link[0] == "dir":
+                    os.symlink(link[1], repo / "docs" / "decisions")
+                else:
+                    (repo / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+                    os.symlink(link[1], repo / "docs" / "decisions" / "link.md")
+            rc, ents, err, st, out = run_curated(fx, repo)
+            leaked = OUTSIDE_MARKER in out or OUTSIDE_MARKER in err or any(
+                OUTSIDE_MARKER in json.dumps(e) for e in ents)
+            h.test_result(f"path safety ({label}): counted as curated_rejected",
+                          rc == 0 and st is not None and st.get("curated_rejected", 0) >= 1,
+                          f"rc={rc} status={st}")
+            h.test_result(f"path safety ({label}): no outside content in output",
+                          not leaked, "outside marker reached stdout/stderr")
+        sub = curated_repo(fx, "safety-subdir", files={"docs/decisions/sub/nested.md": RULE_MD})
+        rc, ents, err, st, _ = run_curated(fx, sub)
+        h.test_result("path safety (subdirectory .md): not scanned, zero curated (non-recursive)",
+                      rc == 0 and not curated_of(ents), f"status={st}")
+
+
+def case_curated_same_dir_once(h):
+    yaml_text = ("strategicDocuments:\n  decisionsDirectory: docs/rules/\n"
+                 "  constraintsDirectory: docs/rules/\n")
+    with Fixture() as fx:
+        repo = curated_repo(fx, "samedir", yaml_text=yaml_text, files={
+            "docs/rules/a.md": "# Rule alpha\n\nRule: alpha applies\n",
+            "docs/rules/b.md": "# Rule beta\n\nRule: beta applies\n",
+        })
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("same directory under both keys: each file scanned once",
+                      rc == 0 and len(curated_of(ents)) == 2, f"n={len(curated_of(ents))} status={st}")
+
+
+def case_curated_security_screen(h):
+    with Fixture() as fx:
+        repo = curated_repo(fx, "screen", files={
+            "docs/decisions/token.md": "# Token policy\n\nRule: rotate the API token weekly\n",
+        })
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("security screen: keyword rule dropped and counted as curated_screened",
+                      rc == 0 and not curated_of(ents) and st is not None and st.get("curated_screened") == 1,
+                      f"n={len(curated_of(ents))} status={st}")
+
+
+def case_curated_security_keywords_match_step5(h):
+    """SECURITY_KEYWORDS must equal the token set of the Step 5 jq denylist (read from the command doc in-test)."""
+    text = (REPO_ROOT / "commands" / "expert-plan.md").read_text(encoding="utf-8")
+    bodies = [m.group(1) for m in re.finditer(r'test\(\s*"((?:[^"\\]|\\.)+)"', text)]
+    cands = [b for b in bodies if "|" in b and "token" in b.lower()]
+    if not cands:
+        h.test_result("security keywords: jq denylist regex found in expert-plan.md Step 5", False,
+                      f"no test(\"...\") alternation containing 'token' among {len(bodies)} matches")
+        return
+    body = max(cands, key=len)
+    body = re.sub(r"\(\?i[:)]", "", body).replace("\\b", "")
+    jq_tokens = {t.strip().strip("()").lower() for t in body.split("|") if t.strip().strip("()")}
+    has_const = hasattr(pdig, "SECURITY_KEYWORDS")
+    h.test_result("security keywords: SECURITY_KEYWORDS module constant exists", has_const,
+                  "pdig.SECURITY_KEYWORDS missing")
+    if has_const:
+        pdig_tokens = {t.lower() for t in pdig.SECURITY_KEYWORDS}
+        h.test_result("security keywords: SECURITY_KEYWORDS equals Step 5 jq denylist tokens",
+                      pdig_tokens == jq_tokens, f"digest-only={sorted(pdig_tokens - jq_tokens)} "
+                                                f"jq-only={sorted(jq_tokens - pdig_tokens)}")
+
+
+def case_curated_cap(h):
+    files = {f"docs/decisions/rule-{i:02d}.md": f"# Rule {i:02d}\n\nRule: rule {i:02d} applies\n" for i in range(25)}
+    with Fixture() as fx:
+        repo = curated_repo(fx, "cap", files=files)
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("curated cap: exactly 20 curated entries", rc == 0 and len(curated_of(ents)) == 20,
+                      f"n={len(curated_of(ents))}")
+        h.test_result("curated cap: five counted as curated_capped",
+                      st is not None and st.get("curated_capped") == 5 and st.get("curated") == 20,
+                      f"status={st}")
+        h.test_result("curated cap: stderr reports curated count", "curated=20" in err, err)
+
+
+def case_curated_root_resolution(h):
+    with Fixture() as fx:
+        fx.plan("owner-name", PLAN_RUN, plan_md([BRIEF1], ["Q1 = A (kept)"]))
+        rc, ents, err, st, _ = run_curated(fx, "owner/name")
+        h.test_result("curated root: literal owner/name gives curated_root none and zero curated",
+                      rc == 0 and st is not None and st.get("curated_root") == "none"
+                      and st.get("curated") == 0 and st.get("repo_resolved") is True,
+                      f"status={st}")
+        h.test_result("curated root: status keys are exactly the pinned set", st is not None and set(st) == {
+            "repo_resolved", "curated_root", "yaml", "curated", "curated_capped", "curated_rejected",
+            "curated_no_rule", "curated_screened", "reason"}, f"keys={sorted(st) if st else None}")
+        rc, ents, err, st, _ = run_curated(fx, "owner-name")
+        h.test_result("curated root: hyphen key argument gives repo_resolved false, exit 0",
+                      rc == 0 and st is not None and st.get("repo_resolved") is False,
+                      f"rc={rc} status={st}")
+        plain = fx.home / "plain-dir"
+        plain.mkdir()
+        rc, ents, err, st, _ = run_curated(fx, plain)
+        h.test_result("curated root: unresolvable non-git dir still writes status, exit 0",
+                      rc == 0 and st is not None and st.get("repo_resolved") is False,
+                      f"rc={rc} status={st}")
+        repo = curated_repo(fx, "noyaml", yaml_text=None)
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("curated root: resolvable root without yaml gives yaml missing",
+                      rc == 0 and st is not None and st.get("yaml") == "missing"
+                      and st.get("curated_root") == "ok" and st.get("curated") == 0,
+                      f"status={st}")
+
+
+def case_curated_fail_closed(h):
+    with Fixture() as fx:
+        fx.plan("owner-name", PLAN_RUN, plan_md([BRIEF1], ["Q1 = A (kept)"]))
+        repo = curated_repo(fx, "failclosed", files={"docs/decisions/0001-cache.md": RULE_MD})
+        yaml_file = repo / ".claude" / "reviewers" / "north-star-nick-local.yaml"
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            h.test_result("fail closed: unreadable yaml (mode 000) skipped",
+                          True, "skipped: running as root, mode 000 does not deny reads")
+        else:
+            yaml_file.chmod(0)
+            try:
+                rc, ents, err, st, _ = run_curated(fx, repo)
+                h.test_result("fail closed: unreadable yaml gives yaml unreadable, zero curated, exit 0",
+                              rc == 0 and st is not None and st.get("yaml") == "unreadable"
+                              and st.get("curated") == 0, f"rc={rc} status={st}")
+            finally:
+                yaml_file.chmod(0o644)
+        # Forced exception inside the curated reader: raw output must match a no-curated baseline.
+        driver = fx.home / "driver.py"
+        driver.write_text(
+            "import importlib.util, sys\n"
+            "from unittest import mock\n"
+            "spec = importlib.util.spec_from_file_location('pdig', sys.argv[1])\n"
+            "m = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(m)\n"
+            "with mock.patch.object(m, '_read_curated_dirs', side_effect=RuntimeError('forced')):\n"
+            "    sys.exit(m.main(sys.argv[2:]))\n", encoding="utf-8")
+        status = fx.home / "forced-status.json"
+        env = {**os.environ, "HOME": str(fx.home), "TZ": "UTC"}
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+        proc = subprocess.run([sys.executable, str(driver), str(SCRIPT), str(repo),
+                               "--status-out", str(status)],
+                              capture_output=True, text=True, env=env, cwd=str(fx.home))
+        forced_ents = parse_entries(proc.stdout) if proc.stdout.strip() else []
+        st = json.loads(status.read_text(encoding="utf-8")) if status.exists() else None
+        _, base_out, _ = run_digest(fx.home, [str(repo)])
+        base_raw = [e for e in parse_entries(base_out) if e["source"] != "curated"]
+        forced_raw = [e for e in forced_ents if e["source"] != "curated"]
+        h.test_result("fail closed: forced reader exception exits 0 with zero curated",
+                      proc.returncode == 0 and not curated_of(forced_ents) and st is not None
+                      and st.get("curated") == 0 and st.get("curated_rejected", 0) >= 1,
+                      f"rc={proc.returncode} stderr={proc.stderr[-300:]} status={st}")
+        h.test_result("fail closed: raw output equals the no-curated baseline",
+                      forced_raw == base_raw, f"forced={len(forced_raw)} baseline={len(base_raw)}")
+
+
 def main():
     h = Harness("precedent-digest")
     cases = [case_one_spelling, case_case_insensitive, case_legacy_and_flat, case_key_derivation,
@@ -1076,7 +1422,12 @@ def main():
              case_brief_answer_comma_semicolon, case_entry_id_uniqueness, case_top_without_match_error,
              case_unreadable_root, case_fenced_code_block_heading, case_recommendation_prose,
              case_stats_exact_golden, case_internal_error_handling, case_out_file_mode,
-             case_out_stale_file_replaced, case_internal_error_monkeypatch]
+             case_out_stale_file_replaced, case_internal_error_monkeypatch,
+             case_curated_sorts_first, case_curated_entry_shape, case_curated_grammar,
+             case_curated_commented_and_unsupported, case_curated_yaml_variants,
+             case_curated_path_safety, case_curated_same_dir_once, case_curated_security_screen,
+             case_curated_security_keywords_match_step5, case_curated_cap,
+             case_curated_root_resolution, case_curated_fail_closed]
     for case in cases:
         try:
             case(h)
