@@ -8,6 +8,10 @@ project: claude-helpers
 strategicDocuments:
   adrIndex: docs/adr/README.md
   adrDirectory: docs/adr/
+  # Optional curated precedent directories (ADR-0024 2026-10-25 amendment). Uncomment to activate;
+  # paths are repo-relative, block-style only, and this repo has no such directories yet.
+  # decisionsDirectory: docs/decisions/
+  # constraintsDirectory: docs/constraints/
   # No separate issues index / product plan — this is a personal config repo, not a product.
   # The direction is organic: ADRs + root docs + open issues/epics/PRs. Three Haiku scouts
   # (prompts/north-star-scout.md) sweep those per run; scripts/in-flight-snapshot.py feeds them.

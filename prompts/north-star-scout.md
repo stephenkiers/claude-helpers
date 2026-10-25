@@ -26,7 +26,7 @@ Your prompt gives you:
 
 Find the project's decision records. Look for `docs/adr/` (start with its `README.md` or index if
 one exists), then `docs/decisions/`, `adr/`, or whatever `.claude/reviewers/north-star-nick-local.yaml`
-names under `strategicDocuments`. Read the index in full, then open every record whose subject
+names under `strategicDocuments`. This includes `decisionsDirectory` and `constraintsDirectory` when the local yaml names them; read those records the same way. Read the index in full, then open every record whose subject
 touches the Subject. Report each related record: what it decided, in its own words, and where the
 Subject meets it. Include amendments — a later amendment often reverses the headline decision.
 
