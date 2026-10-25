@@ -47,7 +47,11 @@ def git_rev_parse(rev):
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+# Try to get HEAD~1, fall back to empty-tree hash if not available
 BASE = git_rev_parse("HEAD~1")
+if not BASE:
+    # Empty-tree hash (used when history is shallow or unavailable)
+    BASE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def verify(receipt_text, step="implement"):
@@ -63,7 +67,21 @@ def verify(receipt_text, step="implement"):
     return r.returncode, r.stdout + r.stderr
 
 
-def first_line(text):
+def verify_expect_model(receipt_text, step="implement"):
+    """Run the verifier CLI with --expect-model. Returns (returncode, combined output)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        receipt = Path(tmp) / "receipt.md"
+        receipt.write_text(receipt_text)
+        argv = [sys.executable, str(VERIFIER), "--step", step, "--receipt", str(receipt),
+                "--expect-model", "haiku", "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", BASE]
+        if step == "fix":
+            argv += ["--review-dir", tmp]
+        r = subprocess.run(argv, capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+def last_line(text):
+    """Return the last non-empty line of text (the Reason: line)."""
     lines = [ln for ln in text.splitlines() if ln.strip()]
     return lines[-1] if lines else ""
 
@@ -104,7 +122,7 @@ POSITIVE_HEADERS = {
 for name, header in POSITIVE_HEADERS.items():
     rc, out = verify(header + "\n" + TAIL_OK)
     t(f"accepts header: {name}", rc == 0,
-      f"rc={rc}, last line: {first_line(out)}" if rc != 0 else "")
+      f"rc={rc}, last line: {last_line(out)}" if rc != 0 else "")
 
 # Realistic receipt: header plus a status table is accepted.
 realistic_ok = (
@@ -115,7 +133,7 @@ realistic_ok = (
 )
 rc, out = verify(realistic_ok)
 t("accepts a real-shaped receipt with header and status table", rc == 0,
-  f"rc={rc}, last line: {first_line(out)}" if rc != 0 else "")
+  f"rc={rc}, last line: {last_line(out)}" if rc != 0 else "")
 
 # ---------------------------------------------------------------------------
 print()
@@ -136,7 +154,7 @@ NEGATIVE_BODIES = {
 for name, body in NEGATIVE_BODIES.items():
     rc, out = verify(body + TAIL_OK)
     t(f"rejects: {name}", rc != 0 and ROUND1_MISS in out,
-      f"rc={rc}, last line: {first_line(out)}")
+      f"rc={rc}, last line: {last_line(out)}")
 
 # The exact status-table receipt with the round-1 header removed (no header anywhere).
 status_only = (
@@ -147,7 +165,7 @@ status_only = (
 )
 rc, out = verify(status_only)
 t("rejects a status-table-only receipt (header removed)", rc != 0 and ROUND1_MISS in out,
-  f"rc={rc}, last line: {first_line(out)}")
+  f"rc={rc}, last line: {last_line(out)}")
 
 # Header is present in one line but a prose-only mention would be the only other ROUND 1 token.
 prose_plus_status = (
@@ -157,7 +175,7 @@ prose_plus_status = (
 )
 rc, out = verify(prose_plus_status)
 t("rejects prose plus status line with no section header", rc != 0 and ROUND1_MISS in out,
-  f"rc={rc}, last line: {first_line(out)}")
+  f"rc={rc}, last line: {last_line(out)}")
 
 # ---------------------------------------------------------------------------
 print()
@@ -166,11 +184,11 @@ print("=" * 70)
 
 rc, out = verify("ROUND 1 — Fixer\n" + TAIL_OK, step="fix")
 t("fix receipt with ROUND 1 header is accepted", rc == 0,
-  f"rc={rc}, last line: {first_line(out)}" if rc != 0 else "")
+  f"rc={rc}, last line: {last_line(out)}" if rc != 0 else "")
 
 rc, out = verify("Summary: fixed the thing.\n" + TAIL_OK, step="fix")
 t("fix receipt without ROUND 1 header is rejected naming ROUND 1",
-  rc != 0 and ROUND1_MISS in out, f"rc={rc}, last line: {first_line(out)}")
+  rc != 0 and ROUND1_MISS in out, f"rc={rc}, last line: {last_line(out)}")
 
 # ---------------------------------------------------------------------------
 print()
@@ -180,8 +198,8 @@ print("=" * 70)
 failed_no_header = "OUTSTANDING: none\nDecision: FAILED\nREASON: boom\n<!-- step-end -->\n"
 rc, out = verify(failed_no_header)
 t("FAILED receipt without ROUND 1 header does not get the ROUND 1 miss reason",
-  "section header" not in out and "missing ROUND 1" not in out,
-  f"rc={rc}, last line: {first_line(out)}")
+  rc == 1 and "boom" in out and "section header" not in out and "missing ROUND 1" not in out,
+  f"rc={rc}, last line: {last_line(out)}")
 
 failed_status = (
     "  Round 1 (implement):        unknown\n"
@@ -189,8 +207,8 @@ failed_status = (
 )
 rc, out = verify(failed_status)
 t("FAILED receipt with only status lines does not get the ROUND 1 miss reason",
-  "missing ROUND 1" not in out,
-  f"rc={rc}, last line: {first_line(out)}")
+  rc == 1 and "boom" in out and "missing ROUND 1" not in out,
+  f"rc={rc}, last line: {last_line(out)}")
 
 # ---------------------------------------------------------------------------
 print()
@@ -200,8 +218,45 @@ print("=" * 70)
 missing_outstanding = "ROUND 1 — Implementer (parallel)\nDecision: OK\n<!-- step-end -->\n"
 rc, out = verify(missing_outstanding)
 t("OK receipt with header but no OUTSTANDING still fails on OUTSTANDING",
-  rc != 0 and "OUTSTANDING" in out and "ROUND 1" not in first_line(out),
-  f"rc={rc}, last line: {first_line(out)}")
+  rc != 0 and "OUTSTANDING" in out and "ROUND 1" not in last_line(out),
+  f"rc={rc}, last line: {last_line(out)}")
+
+# ---------------------------------------------------------------------------
+print()
+print("[CRLF line endings (D6)]")
+print("=" * 70)
+
+crlf_header_receipt = "ROUND 1 — Implementer (parallel)\r\nOUTSTANDING: none\r\nDecision: OK\r\n<!-- step-end -->\r\n"
+rc, out = verify(crlf_header_receipt)
+t("ROUND 1 header with CRLF line endings is accepted (D6)",
+  rc == 0, f"rc={rc}, last line: {last_line(out)}")
+
+# ---------------------------------------------------------------------------
+print()
+print("[Expect-model mode still checks OUTSTANDING and ROUND 1 (NY1)]")
+print("=" * 70)
+
+header_ok_receipt = (
+    "IMPLEMENTER_MODEL: haiku\n"
+    "ROUND 1 — Implementer (parallel)\n"
+    "OUTSTANDING: none\n"
+    "Decision: OK\n"
+    "<!-- step-end -->\n"
+)
+rc, out = verify_expect_model(header_ok_receipt)
+t("expect-model on OK receipt with header passes",
+  rc == 0, f"rc={rc}, last line: {last_line(out)}")
+
+no_header_receipt = (
+    "IMPLEMENTER_MODEL: haiku\n"
+    "OUTSTANDING: none\n"
+    "Decision: OK\n"
+    "<!-- step-end -->\n"
+)
+rc, out = verify_expect_model(no_header_receipt)
+t("expect-model on OK receipt without ROUND 1 header now fails (NY1)",
+  rc == 1 and ROUND1_MISS in out,
+  f"rc={rc}, last line: {last_line(out)}")
 
 # ---------------------------------------------------------------------------
 print()

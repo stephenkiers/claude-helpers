@@ -144,8 +144,8 @@ OUTSTANDING_ITEM_RE = re.compile(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$")
 # line (`(` also counts when a digit follows, as in `ROUND 1 (3 units: ...)`). The marker group is
 # `[#>*-][ \t]*` repeated, not `[#>*-]+`, so a long marker run cannot backtrack exponentially. So prose that merely contains "round 1", and status-table lines such as `Round 1 join: ...` or
 # `Round 1 (implement): ...`, do not match. A line that matches is a section header only; whether round 1
-# actually ran is receipt rule 7's job.
-ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|\((?=\d)|$)"
+# actually ran is receipt rule 7's job. CRLF line endings are handled by the anchor.
+ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
 ROUND1_HEADER_RE = re.compile(ROUND1_HEADER_PATTERN)
 # Markdown table separator row (allow :?-+:? per cell)
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")
@@ -2467,6 +2467,27 @@ def main() -> None:
                     print(discarded_error)
                     sys.exit(1)
 
+        # For expect-model mode: fall through to OUTSTANDING and ROUND 1 checks (NY1)
+        # These checks are run after expect-model validation, same as standard verification
+        decision = parse_receipt_field(receipt, "Decision")
+        if decision == "OK" and args.step in ["implement", "fix"]:
+            # Check for OUTSTANDING: line using shared helper (F2)
+            try:
+                valid_items, has_none, has_items = iter_outstanding_lines(receipt)
+                if not (has_none or has_items):
+                    # No OUTSTANDING: line found at all
+                    print("Reason: receipt missing OUTSTANDING")
+                    sys.exit(1)
+            except ValueError:
+                # iter_outstanding_lines raises on malformed blocks
+                print("Reason: receipt missing OUTSTANDING (malformed)")
+                sys.exit(1)
+            # ROUND 1 section header (#341, item 5). Only OK receipts: a FAILED receipt keeps its real stop reason.
+            if not ROUND1_HEADER_RE.search(receipt):
+                print("Reason: receipt missing ROUND 1 section header")
+                sys.exit(1)
+
+        print("ARTIFACTS: ok")
         sys.exit(0)
 
     # Standard artifact verification mode
@@ -2511,8 +2532,18 @@ def main() -> None:
         print("Reason: receipt admits deviation")
         sys.exit(1)
 
-    # Validate OUTSTANDING: line for implement/fix OK receipts
+    # Check for FAILED decision and return its reason
     decision = parse_receipt_field(receipt, "Decision")
+    if decision == "FAILED":
+        # Try "REASON:" (uppercase) first, then "Reason:" (title case)
+        reason = parse_receipt_field(receipt, "REASON") or parse_receipt_field(receipt, "Reason")
+        if reason:
+            print(f"Reason: {reason}")
+        else:
+            print("Reason: receipt is FAILED but has no reason")
+        sys.exit(1)
+
+    # Validate OUTSTANDING: line and ROUND 1 header for implement/fix OK receipts
     if decision == "OK" and args.step in ["implement", "fix"]:
         # Check for OUTSTANDING: line using shared helper (F2)
         try:
@@ -2527,7 +2558,7 @@ def main() -> None:
             sys.exit(1)
         # ROUND 1 section header (#341, item 5). Only OK receipts: a FAILED receipt keeps its real stop reason.
         if not ROUND1_HEADER_RE.search(receipt):
-            print(f"Reason: receipt missing ROUND 1 section header (no line matches {ROUND1_HEADER_PATTERN})")
+            print("Reason: receipt missing ROUND 1 section header")
             sys.exit(1)
 
     # Home directory for artifact roots

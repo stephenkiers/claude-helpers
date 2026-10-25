@@ -42,6 +42,9 @@ ANSWERS_JQ = (
     'and (.loop_end=="continue" or ([.items[]|select(.disposition=="accepted-on-continue")]|length==0))'
 )
 
+# D12: Verify the jq expression matches what's in the producer doc
+PRODUCER_DOC = Path(__file__).parent.parent / "commands" / "expert-flow.md"
+
 SEATED = ["alice", "bob", "contrarian-carl"]
 
 LEDGER = {
@@ -147,6 +150,21 @@ def answers_jq_accepts(answers_file: Path) -> bool:
 
 def main() -> None:
     h = Harness("PLAN CHECKPOINT REGRESSION (#335 re-check against main)")
+
+    # D12: Verify the jq copy matches the producer doc
+    if PRODUCER_DOC.exists():
+        doc_text = PRODUCER_DOC.read_text(encoding="utf-8")
+        # The jq must appear somewhere in the doc (the part after "jq -e ")
+        jq_fragment = (
+            '.kind=="report" and (.attempt|type=="number") and (.round|type=="number") '
+            'and (.items|type=="object") and ([.items[]|select(.disposition=="unresolved")]|length==0) '
+            'and (.loop_end=="continue" or ([.items[]|select(.disposition=="accepted-on-continue")]|length==0))'
+        )
+        h.test_result("ANSWERS_JQ matches the expression in commands/expert-flow.md",
+                      jq_fragment in doc_text,
+                      f"jq fragment not found in {PRODUCER_DOC}")
+    else:
+        h.test_result("ANSWERS_JQ: producer doc exists", False, "commands/expert-flow.md not found")
 
     if shutil.which("jq") is None:
         h.test_result("jq is available for the answers-file verify expression", False, "jq not on PATH")

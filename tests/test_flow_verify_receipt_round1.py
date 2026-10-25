@@ -39,8 +39,8 @@ NEGATIVE_DIR = FIXTURE_DIR / "negative"
 
 # The #341 Step 6(b) spec pattern, extended with one branch: "(" is a separator only
 # when a digit follows, so real "ROUND 1 (3 units: ...)" lines match but
-# "Round 1 (implement):" status lines do not.
-SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|\((?=\d)|$)"
+# "Round 1 (implement):" status lines do not. Includes \r for CRLF handling (D6).
+SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
 
 # Revert mutants. Each is one edit away from ROUND1_HEADER_PATTERN.
 STRICT_PATTERN = r"(?m)^ROUND 1\b"  # pre-#341 check
@@ -81,6 +81,9 @@ def passing_negatives(pattern: re.Pattern) -> list:
 def main() -> None:
     h = Harness("ROUND 1 SECTION-HEADER CONTRACT (#341 item 5)")
 
+    # D14: Intentional change-detector: this test pins the pattern to the spec and fails if the pattern
+    # drifts from its specification. It is not a contract test (the contract is the fixtures), but a
+    # regression guard on the implementation.
     h.test_result("Module pattern is the spec pattern (with the digit-guarded paren branch)",
                   ROUND1_HEADER_PATTERN == SPEC_PATTERN,
                   f"pattern={ROUND1_HEADER_PATTERN!r}")
@@ -125,6 +128,23 @@ def main() -> None:
             if "/Users/" in text or "/home/" in text or "~/" in text:
                 leaks.append(path.name)
     h.test_result("Fixtures carry no absolute paths", leaks == [], f"leaks={leaks}")
+
+    # D7: Test deriving the accepted header from the producer template in commands/implement-with-haiku.md
+    producer_doc = Path(__file__).parent.parent / "commands" / "implement-with-haiku.md"
+    if producer_doc.exists():
+        doc_text = producer_doc.read_text(encoding="utf-8")
+        # Extract the producer header template: "ROUND 1 — Implementer (parallel)"
+        producer_header = "ROUND 1 — Implementer (parallel)"
+        if producer_header in doc_text:
+            h.test_result("Producer template header matches ROUND 1 header pattern",
+                          bool(ROUND1_HEADER_RE.search(producer_header)),
+                          f"header={producer_header!r}")
+        else:
+            h.test_result("Producer template header exists in commands/implement-with-haiku.md",
+                          False, f"header {producer_header!r} not found in doc")
+    else:
+        h.test_result("Producer doc commands/implement-with-haiku.md exists", False,
+                      f"doc not found at {producer_doc}")
 
     h.summarize_and_exit()
 
