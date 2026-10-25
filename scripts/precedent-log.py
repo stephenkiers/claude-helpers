@@ -43,7 +43,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 
 
@@ -106,6 +106,38 @@ def _fold(repo_key: str) -> str:
     return repo_key.lower()
 
 
+def _validate_repo_key(repo_key: str, log_root: str) -> bool:
+    """Validate repo_key format and ensure resolved path is under log_root.
+
+    repo_key should be hyphen-separated lowercase alphanumerics.
+    Returns True if valid, False otherwise.
+    """
+    # Check format: alphanumeric and hyphens only, must contain hyphen
+    if not repo_key or "-" not in repo_key:
+        return False
+    # Allowlist: lowercase alphanumeric, hyphen
+    if not all(c.isalnum() or c == "-" for c in repo_key):
+        return False
+
+    # Check path safety: resolved path must be under log_root
+    try:
+        normalized_key = _fold(repo_key)
+        log_dir = os.path.join(log_root, normalized_key)
+        log_path = os.path.join(log_dir, "predictions.jsonl")
+
+        # Resolve both paths
+        resolved_log_root = os.path.realpath(log_root)
+        resolved_log_path = os.path.realpath(log_path) if os.path.exists(log_path) else os.path.normpath(log_path)
+
+        # Check that log_path is under log_root
+        if not resolved_log_path.startswith(resolved_log_root + os.sep) and resolved_log_path != resolved_log_root:
+            return False
+    except (OSError, ValueError):
+        return False
+
+    return True
+
+
 def _load_validated(path: str) -> Optional[Dict[str, Any]]:
     """Load and validate the precedent-validated.json file."""
     try:
@@ -125,11 +157,20 @@ def _load_questions(path: str) -> Optional[Dict[str, Any]]:
     try:
         with open(path) as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            return None
         questions_list = data.get("questions", [])
+        if not isinstance(questions_list, list):
+            return None
         # Build a dict keyed by id for quick lookup
-        questions = {q.get("id"): q for q in questions_list}
-        return questions
-    except (IOError, json.JSONDecodeError):
+        questions = {}
+        for q in questions_list:
+            if isinstance(q, dict):
+                qid = q.get("id")
+                if isinstance(qid, str):
+                    questions[qid] = q
+        return questions if questions else None
+    except (IOError, json.JSONDecodeError, ValueError):
         return None
 
 
@@ -141,10 +182,18 @@ def _load_normalized_answers(path: str) -> Optional[Dict[str, Tuple[str, str]]]:
     try:
         with open(path) as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            return None
         answers_raw = data.get("answers", {})
+        if not isinstance(answers_raw, dict):
+            return None
         # All normalized answers are sourced from "answered"
-        return {k: (v, "answered") for k, v in answers_raw.items()}
-    except (IOError, json.JSONDecodeError):
+        result = {}
+        for k, v in answers_raw.items():
+            if isinstance(k, str) and isinstance(v, str):
+                result[k] = (v, "answered")
+        return result if result else None
+    except (IOError, json.JSONDecodeError, ValueError):
         return None
 
 
@@ -162,13 +211,20 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, str]]]
         try:
             with open(path) as f:
                 data = json.load(f)
-        except (IOError, json.JSONDecodeError):
+        except (IOError, json.JSONDecodeError, ValueError):
+            return None
+
+        if not isinstance(data, dict):
             return None
 
         # Try 'answers' key first (normal shape), then 'items' (documented fallback)
-        answers_section = data.get("answers") or data.get("items") or {}
+        answers_section = data.get("answers") or data.get("items")
+        if not isinstance(answers_section, dict):
+            answers_section = {}
 
         for handle, item in answers_section.items():
+            if not isinstance(handle, str):
+                continue
             # Handle both direct string values and item objects with disposition
             if isinstance(item, str):
                 # Direct value (old shape); source is "answered"
@@ -177,7 +233,9 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, str]]]
                 disposition = item.get("disposition")
                 # Only include answered, overridden, or accepted-on-continue
                 if disposition in ("answered", "overridden", "accepted-on-continue"):
-                    merged[handle] = (item.get("value", ""), disposition)
+                    value = item.get("value", "")
+                    if isinstance(value, str):
+                        merged[handle] = (value, disposition)
             # unresolved, accepted (D/W silence) give no row
 
     return merged if merged else None
@@ -190,6 +248,11 @@ def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "fr
       - actual: canonical label for option, or normalized text for free_text
       - actual_source: "option" or "free_text"
     """
+    if not isinstance(value, str):
+        # Treat non-string values as free_text, normalized to string
+        normalized = " ".join(str(value).split())[:500]
+        return (normalized, "free_text")
+
     # Strip trailing " (Recommended)" marker
     stripped = value.rstrip()
     if stripped.endswith("(Recommended)"):
@@ -206,7 +269,7 @@ def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "fr
         letter = letter_part.upper()
         matching_options = [
             opt for opt in options
-            if opt and (opt[0].upper() == letter) and len(opt) > 1 and opt[1] in (".", " ")
+            if isinstance(opt, str) and opt and (opt[0].upper() == letter) and len(opt) > 1 and opt[1] in (".", " ")
         ]
         if len(matching_options) == 1:
             return (matching_options[0], "option")
@@ -222,7 +285,9 @@ def _build_row(
     repo_key: str,
     command: str,
     run: str,
+    question_id: str,
     question_block: Dict[str, Any],
+    question_meta: Optional[Dict[str, Any]],
     actual: str,
     actual_source: str,
     anchored: bool,
@@ -232,13 +297,18 @@ def _build_row(
     Returns None if any required field is invalid.
     Validates: hit ⇔ actual_source invariant, confidence in {high, medium}.
     """
-    question_id_val: Any = question_block.get("id")
-    if not isinstance(question_id_val, str):
+    # question_id comes from the blocks key
+    if not isinstance(question_id, str):
         return None
-    question_id: str = question_id_val
 
-    header = question_block.get("header", "")
-    recommended = question_block.get("recommended")
+    # header and recommended come from questions metadata
+    header = ""
+    recommended = None
+    if question_meta:
+        header_val = question_meta.get("header")
+        if isinstance(header_val, str):
+            header = header_val
+        recommended = question_meta.get("recommended")
 
     predicted_val: Any = question_block.get("prediction")
     if not isinstance(predicted_val, str):
@@ -296,7 +366,10 @@ def _build_row(
 
 
 def _read_existing_keys(log_path: str) -> set:
-    """Read existing (run, question_id) keys from the log."""
+    """Read existing (run, question_id, command) keys from the log.
+
+    Dedup as the guarantee: all logged rows are unique per this key.
+    """
     keys: set = set()
     if not os.path.exists(log_path):
         return keys
@@ -308,9 +381,17 @@ def _read_existing_keys(log_path: str) -> set:
                     continue
                 try:
                     row = json.loads(line)
-                    key = (row.get("run"), row.get("question_id"))
-                    keys.add(key)
-                except json.JSONDecodeError:
+                    if not isinstance(row, dict):
+                        # Skip non-object lines
+                        continue
+                    run_val = row.get("run")
+                    qid_val = row.get("question_id")
+                    cmd_val = row.get("command")
+                    # Only add hashable (string) keys
+                    if isinstance(run_val, str) and isinstance(qid_val, str) and isinstance(cmd_val, str):
+                        key = (run_val, qid_val, cmd_val)
+                        keys.add(key)
+                except (json.JSONDecodeError, TypeError):
                     # Skip malformed lines
                     pass
     except IOError:
@@ -336,7 +417,7 @@ def _append_rows(log_dir: str, repo_key: str, rows: List[PredictionRow]) -> Tupl
     new_rows = []
     skipped_count = 0
     for row in rows:
-        key = (row.get("run"), row.get("question_id"))
+        key = (row.get("run"), row.get("question_id"), row.get("command"))
         if key in existing_keys:
             skipped_count += 1
         else:
@@ -354,11 +435,25 @@ def _append_rows(log_dir: str, repo_key: str, rows: List[PredictionRow]) -> Tupl
         row_dict: Dict[str, Any] = dict(row)  # type: ignore[arg-type]
         ordered = {k: row_dict[k] for k in PINNED_KEYS}
         lines.append(json.dumps(ordered))
+
+    # Prefix newline if file lacks one (F13: torn trailing line)
     batch_text = "\n".join(lines) + "\n"
+    if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+        with open(log_path, "rb") as f:
+            f.seek(-1, 2)  # Seek to last byte
+            last_byte = f.read(1)
+            if last_byte and last_byte != b"\n":
+                batch_text = "\n" + batch_text
 
     fd = os.open(log_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
     try:
-        os.write(fd, batch_text.encode("utf-8"))
+        encoded = batch_text.encode("utf-8")
+        written = 0
+        while written < len(encoded):
+            n = os.write(fd, encoded[written:])
+            if n == 0:
+                raise OSError("os.write returned 0")
+            written += n
     finally:
         os.close(fd)
 
@@ -408,8 +503,8 @@ def main() -> None:
         _stderr("precedent-log: nothing logged (trace-not-shown)")
         sys.exit(0)
 
-    # Validate repo_key (must have hyphen: owner-name)
-    if "-" not in args.repo_key:
+    # Validate repo_key (must be hyphen-separated lowercase alphanumeric)
+    if not _validate_repo_key(args.repo_key, args.log_root):
         _stderr("precedent-log: nothing logged (bad-repo-key)")
         sys.exit(0)
 
@@ -443,6 +538,9 @@ def main() -> None:
     rows: List[PredictionRow] = []
     blocks = validated.get("blocks", {})
 
+    # Generate timestamp once before the loop (F15)
+    ts = datetime.now(timezone.utc).isoformat()
+
     for question_id, question_block in blocks.items():
         # Only process questions that have answers
         if question_id not in answers_dict:
@@ -451,7 +549,11 @@ def main() -> None:
         answer_value, answer_source = answers_dict[question_id]
         # Get options from questions dict (not validated block)
         question_meta = questions.get(question_id)
-        options = question_meta.get("options", []) if question_meta else []
+        options = []
+        if question_meta and isinstance(question_meta, dict):
+            opts = question_meta.get("options", [])
+            if isinstance(opts, list):
+                options = [o for o in opts if isinstance(o, str)]
 
         # If source is accepted-on-continue, use value and source directly
         if answer_source == "accepted-on-continue":
@@ -462,20 +564,21 @@ def main() -> None:
             actual, actual_source = classify(answer_value, options)
 
         # Build the row
-        ts = datetime.utcnow().isoformat()
         row = _build_row(
             ts=ts,
             repo_key=args.repo_key,
             command=args.command,
             run=args.run,
+            question_id=question_id,
             question_block=question_block,
+            question_meta=question_meta,
             actual=actual,
             actual_source=actual_source,
             anchored=anchored,
         )
 
         if row is None:
-            _stderr("precedent-log: nothing logged (row-build-failed)")
+            _stderr("precedent-log: nothing logged (row-build-failed: question %s)" % question_id)
             sys.exit(0)
 
         rows.append(row)

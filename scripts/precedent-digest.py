@@ -1108,14 +1108,23 @@ def _load_predictions(repo_key: str, home: str) -> Tuple[List[Dict[str, Any]], i
                     continue
                 try:
                     row = json.loads(line)
-                    # First-wins dedup on (run, question_id)
-                    key = (row.get("run", ""), row.get("question_id", ""))
+                    if not isinstance(row, dict):
+                        malformed += 1
+                        continue
+                    # First-wins dedup on (run, question_id, command) - ensure string values
+                    run_val = row.get("run", "")
+                    qid_val = row.get("question_id", "")
+                    cmd_val = row.get("command", "")
+                    # Convert to strings to ensure hashability
+                    key = (str(run_val) if run_val is not None else "",
+                           str(qid_val) if qid_val is not None else "",
+                           str(cmd_val) if cmd_val is not None else "")
                     if key in seen_keys:
                         duplicates += 1
                         continue
                     seen_keys.add(key)
                     rows.append(row)
-                except (json.JSONDecodeError, ValueError):
+                except (json.JSONDecodeError, ValueError, TypeError):
                     malformed += 1
     except (IOError, OSError):
         pass
@@ -1157,6 +1166,9 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     baseline_n = len(baseline_rows)
     baseline_hits = sum(1 for r in baseline_rows if r.get("actual") == r.get("recommended"))
     baseline_recommended_hit_rate = round(baseline_hits / float(baseline_n), 4) if baseline_n > 0 else None
+    # Pat rate on baseline subset (F6: same denominators)
+    pat_baseline_hits = sum(1 for r in baseline_rows if r.get("hit") is True)
+    pat_baseline_hit_rate = round(pat_baseline_hits / float(baseline_n), 4) if baseline_n > 0 else None
 
     # By confidence
     by_confidence: Dict[str, Any] = {}
@@ -1208,6 +1220,7 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "duplicate_keys": 0,   # Set by caller
         "hit_rate": hit_rate,
         "baseline_recommended_hit_rate": baseline_recommended_hit_rate,
+        "pat_baseline_hit_rate": pat_baseline_hit_rate,
         "baseline_n": baseline_n,
         "by_confidence": by_confidence,
         "deviation": {
@@ -1284,6 +1297,11 @@ def _render_md_entry(entry: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_rate(rate: Optional[float]) -> str:
+    """Format a rate value as string, showing 'null' if None."""
+    return "%.4f" % rate if rate is not None else "null"
+
+
 def render(entries: List[Dict[str, Any]], fmt: str) -> str:
     """jsonl: one entry per line in pinned key order. md: one block per entry."""
     if fmt == "md":
@@ -1311,10 +1329,13 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
                     value.get("malformed_lines", 0),
                     value.get("duplicate_keys", 0),
                 )
+                # Add anchoring caveat (D-C: all rows are anchored, so hit rate is upper bound)
+                pred_md += "**Note**: All rows are anchored; hit rate is an upper bound.\n\n"
+
                 hit_rate = value.get("hit_rate")
-                hit_rate_str = "%.4f" % hit_rate if hit_rate is not None else "null"
+                hit_rate_str = _fmt_rate(hit_rate)
                 baseline_rate = value.get("baseline_recommended_hit_rate")
-                baseline_rate_str = "%.4f" % baseline_rate if baseline_rate is not None else "null"
+                baseline_rate_str = _fmt_rate(baseline_rate)
                 pred_md += "**Hit rates**: pat=(%s), baseline-recommended=(%s, n=%d)\n\n" % (
                     hit_rate_str, baseline_rate_str, value.get("baseline_n", 0)
                 )
@@ -1322,14 +1343,15 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
                     conf = value.get("by_confidence", {}).get(confidence, {})
                     conf_hit_rate = conf.get("hit_rate")
                     conf_baseline_rate = conf.get("baseline_hit_rate")
-                    pred_md += "**%s**: logged=%d, scored=%d, hits=%d, pat=(%.4f), baseline-recommended=(%.4f, n=%d)\n\n" % (
+                    conf_n = conf.get("baseline_n", 0)
+                    pred_md += "**%s**: logged=%d, scored=%d, hits=%d, pat=(%s), baseline-recommended=(%s, n=%d)\n\n" % (
                         confidence.capitalize(),
                         conf.get("logged", 0),
                         conf.get("scored", 0),
                         conf.get("hits", 0),
-                        conf_hit_rate if conf_hit_rate is not None else 0,
-                        conf_baseline_rate if conf_baseline_rate is not None else 0,
-                        conf.get("baseline_n", 0),
+                        _fmt_rate(conf_hit_rate),
+                        _fmt_rate(conf_baseline_rate),
+                        conf_n,
                     )
                 dev = value.get("deviation", {})
                 pred_md += "**Deviation** (pat vs. panel): n=%d, excluded_null=%d, pat_right=%d, panel_right=%d, neither=%d" % (

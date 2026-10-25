@@ -371,8 +371,8 @@ def case_row_contract(h):
             h.test_result("row contract: anchored is True for shown trace", row.get("anchored") is True,
                          f"anchored={row.get('anchored')}")
 
-        # Test with trace not starting "shown"
-        rc2, _, _ = run_helper(
+        # Test with trace not starting "shown" (should log nothing)
+        rc2, _, stderr2 = run_helper(
             fx.home, fx.log_root,
             ["--validated", str(validated_file), "--questions", str(questions_file),
              "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan",
@@ -380,11 +380,13 @@ def case_row_contract(h):
             trace_content="other content"
         )
 
-        rows2 = fx.read_log_file("owner-name")
-        if len(rows2) > 1:  # Should have 2 rows now
-            row2 = [r for r in rows2 if r["run"] == "2-test-p"][0]
-            h.test_result("row contract: anchored is False for non-shown trace", row2.get("anchored") is False,
-                         f"anchored={row2.get('anchored')}")
+        # Should exit 0 and log nothing (trace-not-shown)
+        h.test_result("row contract: non-shown trace exits 0", rc2 == 0, f"rc={rc2}")
+        h.test_result("row contract: non-shown trace logs nothing", "trace-not-shown" in stderr2,
+                     f"stderr={stderr2}")
+        rows2_all = fx.read_log_file("owner-name")
+        h.test_result("row contract: only first row in log", len(rows2_all) == 1,
+                     f"n={len(rows2_all)}")
 
 
 def case_stats_hit_rate(h):
@@ -431,7 +433,7 @@ def case_stats_hit_rate(h):
             {
                 "ts": "2026-10-25T12:05:00", "repo_key": "owner-name", "command": "expert-plan",
                 "run": "run6", "question_id": "Q6", "header": "Q6. Sixth", "recommended": "A",
-                "predicted": "B", "confidence": "high", "actual": "B", "hit": False,
+                "predicted": "B", "confidence": "high", "actual": "B", "hit": True,
                 "citations": [], "actual_source": "option", "anchored": True
             },
             # Row 7: deviation panel_right (actual=recommended, predicted!=recommended)
