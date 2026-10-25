@@ -141,11 +141,14 @@ OUTSTANDING_ITEM_RE = re.compile(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$")
 # (parallel)`, `ROUND 1 - ...`, `ROUND 1: units ...`, `ROUND 1+2 complete ...`, a bare `ROUND 1`, and
 # markdown-marked `**Round 1** — ...` / `## ROUND 1: ...`. The line must START with the header (optional
 # indent and markdown markers), and `1` must be followed by a separator (`—` `–` `:` `+` `-`) or end of
-# line (`(` also counts when a digit follows, as in `ROUND 1 (3 units: ...)`). The marker group is
-# `[#>*-][ \t]*` repeated, not `[#>*-]+`, so a long marker run cannot backtrack exponentially. So prose that merely contains "round 1", and status-table lines such as `Round 1 join: ...` or
+# line (`(` also counts when a digit follows, as in `ROUND 1 (3 units: ...)`). The marker group
+# `(?:[#>-][ \t]*|\*[ \t]+)*` avoids ambiguous asterisk distribution: a `*` marker must be followed by
+# whitespace, so bare `*` characters are unambiguously part of the following `\**`, preventing quadratic
+# backtracking. So prose that merely contains "round 1", and status-table lines such as `Round 1 join: ...` or
 # `Round 1 (implement): ...`, do not match. A line that matches is a section header only; whether round 1
-# actually ran is receipt rule 7's job. CRLF line endings are handled by the anchor.
-ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
+# actually ran is receipt rule 7's job. CRLF line endings are handled by the explicit `\r` in the trailing
+# character class `[ \t\r]*`.
+ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
 ROUND1_HEADER_RE = re.compile(ROUND1_HEADER_PATTERN)
 # Markdown table separator row (allow :?-+:? per cell)
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")

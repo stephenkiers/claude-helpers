@@ -40,11 +40,12 @@ NEGATIVE_DIR = FIXTURE_DIR / "negative"
 # The #341 Step 6(b) spec pattern, extended with one branch: "(" is a separator only
 # when a digit follows, so real "ROUND 1 (3 units: ...)" lines match but
 # "Round 1 (implement):" status lines do not. Includes \r for CRLF handling (D6).
-SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
+# Marker group uses (?:[#>-][ \t]*|\*[ \t]+)* to avoid quadratic backtracking (D5).
+SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
 
 # Revert mutants. Each is one edit away from ROUND1_HEADER_PATTERN.
 STRICT_PATTERN = r"(?m)^ROUND 1\b"  # pre-#341 check
-NO_SEPARATOR_PATTERN = r"(?im)^[ \t]*(?:[#>*-]+[ \t]*)*\**ROUND[ \t]*1\**[ \t]*"
+NO_SEPARATOR_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t]*"
 NO_ANCHOR_PATTERN = r"(?im)ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|$)"
 
 POSITIVE_REAL = [
@@ -145,6 +146,21 @@ def main() -> None:
     else:
         h.test_result("Producer doc commands/implement-with-haiku.md exists", False,
                       f"doc not found at {producer_doc}")
+
+    # D5: Pathological test for quadratic regex. A line with many asterisks followed by non-matching
+    # text must be rejected quickly (under 2 seconds) without timeout/hang. This guards against
+    # quadratic backtracking caused by ambiguous asterisk distribution between marker group and \**.
+    import time
+    pathological_line = "*" * 20000 + "x"
+    start = time.time()
+    try:
+        result = bool(ROUND1_HEADER_RE.search(pathological_line))
+    except Exception:
+        result = False
+    elapsed = time.time() - start
+    h.test_result("Pathological input (20000 asterisks + x) is rejected in under 2 seconds",
+                  elapsed < 2.0 and result is False,
+                  f"elapsed={elapsed:.2f}s, matched={result}")
 
     h.summarize_and_exit()
 

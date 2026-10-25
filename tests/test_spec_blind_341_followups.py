@@ -23,7 +23,6 @@ Run with: python3 tests/test_spec_blind_341_followups.py
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -106,9 +105,9 @@ no_header = (
     "<!-- step-end -->\n"
 )
 rc, out = verify(no_header, step="implement", expect_model="haiku")
-t("expect-model on OK receipt without ROUND 1 header fails", rc != 0,
-  f"rc={rc}, expected failure but got: {last_line(out)}" if rc == 0 else "")
-t("expect-model failure reason names ROUND 1 when header missing", rc != 0 and "ROUND 1" in out,
+t("expect-model on OK receipt without ROUND 1 header fails", rc == 1,
+  f"rc={rc}, expected rc=1 but got: {last_line(out)}" if rc == 0 else "")
+t("expect-model failure reason names ROUND 1 when header missing", rc == 1 and "ROUND 1" in out,
   f"rc={rc}, missing ROUND 1 in reason: {last_line(out)}")
 
 # Edge case 2: Missing OUTSTANDING with --expect-model
@@ -119,9 +118,9 @@ no_outstanding = (
     "<!-- step-end -->\n"
 )
 rc, out = verify(no_outstanding, step="implement", expect_model="haiku")
-t("expect-model on OK receipt without OUTSTANDING fails", rc != 0,
-  f"rc={rc}, expected failure but got: {last_line(out)}" if rc == 0 else "")
-t("expect-model failure reason names OUTSTANDING when missing", rc != 0 and "OUTSTANDING" in out,
+t("expect-model on OK receipt without OUTSTANDING fails", rc == 1,
+  f"rc={rc}, expected rc=1 but got: {last_line(out)}" if rc == 0 else "")
+t("expect-model failure reason names OUTSTANDING when missing", rc == 1 and "OUTSTANDING" in out,
   f"rc={rc}, missing OUTSTANDING in reason: {last_line(out)}")
 
 # ============================================================================
@@ -187,14 +186,14 @@ no_header_missing = (
     "<!-- step-end -->\n"
 )
 rc, out = verify(no_header_missing, step="implement")
-t("missing ROUND 1 header causes failure", rc != 0,
-  f"rc={rc}, expected failure" if rc == 0 else "")
+t("missing ROUND 1 header causes failure", rc == 1,
+  f"rc={rc}, expected rc=1" if rc == 0 else "")
 # Check the reason is plain text (not containing regex syntax like ^, $, *, |, etc.)
 reason_line = last_line(out)
 has_regex_syntax = any(char in reason_line for char in ["^", "$", "*", "|", "(?", "+{"])
-t("failure reason is plain English text (no regex syntax)", rc != 0 and not has_regex_syntax,
+t("failure reason is plain English text (no regex syntax)", rc == 1 and not has_regex_syntax,
   f"rc={rc}, reason contains regex: {reason_line}" if has_regex_syntax else "")
-t("failure reason is readable and describes the issue", rc != 0 and "ROUND 1" in out,
+t("failure reason is readable and describes the issue", rc == 1 and "ROUND 1" in out,
   f"rc={rc}, reason unclear: {reason_line}")
 
 # ============================================================================
@@ -217,28 +216,23 @@ t("ADR amendment mentions Refs #325 (not Closes #325)",
   "ADR does not mention 'Refs #325'")
 
 # Check: rule 5 in expert-flow.md is a pointer to ROUND1_HEADER_PATTERN
-rule5_has_pointer = ("ROUND1_HEADER_PATTERN" in expert_flow_text and
-                     "pattern owned by" in expert_flow_text)
 t("rule 5 points to ROUND1_HEADER_PATTERN in script (not prose pattern)",
-  rule5_has_pointer,
+  "ROUND1_HEADER_PATTERN" in expert_flow_text and "pattern owned by" in expert_flow_text,
   "rule 5 does not point to script or pattern is not referenced")
 
 # Check: rule 5 mentions that any matching line suffices for ROUND 1
-rule5_any_line = "for `ROUND 1`, any matching line suffices" in expert_flow_text
 t("rule 5 clarifies that any ROUND 1 line suffices",
-  rule5_any_line,
+  "for `ROUND 1`, any matching line suffices" in expert_flow_text,
   "rule 5 does not clarify 'any matching line suffices'")
 
 # Check: track-and-start uses [ -s ] guards for cache reads
-has_cache_read_guard = "[ -s" in track_start_text and "CACHE" in track_start_text
 t("track-and-start uses [ -s ] guards for cache file reads",
-  has_cache_read_guard,
+  "[ -s" in track_start_text and "CACHE" in track_start_text,
   "track-and-start does not use [ -s ] guards")
 
 # Check: track-and-start uses [ -s ] guards before mv operations
-has_mv_guard = ('[ -s "$TMP" ]' in track_start_text or 'mv' in track_start_text)
 t("track-and-start protects mv operations (cache write flow is guarded)",
-  '[ -s "$TMP" ]' in track_start_text or 'mv "$TMP"' in track_start_text,
+  '[ -s "$TMP" ]' in track_start_text and 'mv "$TMP"' in track_start_text,
   "track-and-start cache write does not use proper guards")
 
 # ============================================================================
