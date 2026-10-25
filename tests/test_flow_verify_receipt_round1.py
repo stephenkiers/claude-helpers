@@ -40,7 +40,7 @@ NEGATIVE_DIR = FIXTURE_DIR / "negative"
 # The #341 Step 6(b) spec pattern, extended with one branch: "(" is a separator only
 # when a digit follows, so real "ROUND 1 (3 units: ...)" lines match but
 # "Round 1 (implement):" status lines do not.
-SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>*-]+[ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|\((?=\d)|$)"
+SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>*-][ \t]*)*\**ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|\((?=\d)|$)"
 
 # Revert mutants. Each is one edit away from ROUND1_HEADER_PATTERN.
 STRICT_PATTERN = r"(?m)^ROUND 1\b"  # pre-#341 check

@@ -955,7 +955,7 @@ reply, and any failure below is `FAILED` with the stated reason:
 4. `Reason:` — the last `^Reason:` line must exist. Missing → `FAILED` `malformed receipt`.
 5. Required lines — for the step's row in the table, each required key's last occurrence must match
    its pattern. The full pattern list: `FINAL_PLAN_PATH: <path>` (plan), `WORKTREE: <path>` and
-   `BRANCH: <name>` (worktree, track), a `ROUND 1` section-header line (implement, fix; the exact pattern is owned by `scripts/flow-verify-receipt.py`: a case-insensitive match anchored to the start of a line, after optional markdown markers such as `#`, `*`, `-` or `>`, that is `ROUND`, optional spaces, `1`, and then a separator (`—`, `–`, `-`, `:` or `+`) or end of line, so prose such as "all of round 1 passed" and status lines such as `Round 1 join:` do not match), `CONFIRMED: critical=N high=N medium=N low=N`
+   `BRANCH: <name>` (worktree, track), a `ROUND 1` section-header line (implement, fix; the exact pattern is owned by `scripts/flow-verify-receipt.py`: a case-insensitive match anchored to the start of a line, after optional markdown markers such as `#`, `*`, `-` or `>`, that is `ROUND`, optional spaces, `1`, and then a separator (`—`, `–`, `-`, `:` or `+`), a `(` immediately followed by a digit (as in `ROUND 1 (3 units: ...)`), or end of line, checked only on `Decision: OK` receipts (a FAILED receipt keeps its real stop reason), so prose such as "all of round 1 passed" and status lines such as `Round 1 join:` do not match), `CONFIRMED: critical=N high=N medium=N low=N`
    with four integers (review), `CHECK: <command>` and `CHECK_EXIT: <n>` (verify), `PR_URL: <url>` (ship),
    `MERGED: yes` (merge). `ACTION PLAN SOURCE:` is required for the `fix` step **only** — `/implement-with-haiku`
    prints it only when its plan source is a `claude-action-plan`, so demanding it of `implement` fails every
@@ -1566,7 +1566,7 @@ Fields: `flow`, `issue`, `step`, `attempt` (the re-run's attempt number), `event
 
 Note: these events use at-least-once semantics. Write `state.json` (via `WRITE-STATE`) before appending the telemetry events, so a crash mid-telemetry never leaves `state.json` in doubt.
 
-The automatic path stays dormant: no reliable turns source exists yet. The trailer-based turns-exhaustion probe has not been run (it cannot be executed in this environment), so the implement-with-haiku receipt's `TURNS_EXHAUSTED` source is not established, and the manual `Retry with sonnet` option is the live path today. See ADR-0023's 2026-10-25 amendment (#341) for the probe status and the `maxTurns` look-back, and https://github.com/stephenkiers/claude-helpers/issues/325 for the automatic path unblocking (#325 stays open).
+The automatic path stays dormant: no reliable turns source exists yet. The trailer-based turns-exhaustion probe was not attempted (no throwaway-agent probe was run in this ticket; #325 stays open), so the implement-with-haiku receipt's `TURNS_EXHAUSTED` source is not established, and the manual `Retry with sonnet` option is the live path today. See ADR-0023's 2026-10-25 amendment (#341) for the probe status and the `maxTurns` look-back, and https://github.com/stephenkiers/claude-helpers/issues/325 for the automatic path unblocking (#325 stays open).
 
 ### Stop lines
 
