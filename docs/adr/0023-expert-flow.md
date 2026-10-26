@@ -164,6 +164,7 @@ Recorded here so the dogfooding phase (#252) argues with a decision, not a blank
    is deferred until "Hold" is observed in practice (proposal §9 lists what it needs). Merges within
    an epic should be sequenced to avoid conflicts and ensure each ticket's work is stable before the
    next begins (see #320, #322 for overlap analysis).
+   *(2026-10-26: parallel epic execution is a separate layer, `/expert-fleet`; see ADR-0025. `--epic` itself stays sequential.)*
 4. **Verify is the project's `commands.check` only.** Coverage, performance, and E2E remain
    `/expert-is-it-done`'s job after merge, where there is a merged diff to judge.
 
