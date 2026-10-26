@@ -40,7 +40,6 @@ def init_git_repo(repo_path: str) -> str:
     )
 
     # Create initial commit
-    Path(repo_path) / "initial.txt"
     Path(repo_path, "initial.txt").write_text("initial content")
     subprocess.run(
         ["git", "add", "initial.txt"],
@@ -373,8 +372,8 @@ def main():
         )
     print()
 
-    # Test 8: HEAD moved -> INFO head-changed
-    print("[Test 8] HEAD moved in primary -> INFO head-changed, exit 0")
+    # Test 8: HEAD moved -> FAIL head-moved, exit 1 (per ruling)
+    print("[Test 8] HEAD moved in primary -> FAIL head-moved, exit 1")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -420,8 +419,8 @@ def main():
             "--planned", str(planned_path),
         )
         h.test_result(
-            "HEAD moved -> INFO head-changed, exit 0",
-            exit_code == 0 and "INFO head-changed" in stdout,
+            "HEAD moved -> FAIL head-moved, exit 1",
+            exit_code == 1 and "FAIL" in stdout and "head-moved" in stdout,
             f"exit={exit_code}, stdout={stdout[:300]}",
         )
     print()
@@ -490,8 +489,8 @@ def main():
         )
     print()
 
-    # Test 11: Missing baseline file -> exit 2
-    print("[Test 11] Missing baseline file -> exit 2 with baseline-unavailable REASON")
+    # Test 11: Missing baseline file -> exit 2 with baseline-unavailable on stdout
+    print("[Test 11] Missing baseline file -> exit 2 with baseline-unavailable on stdout")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -512,13 +511,13 @@ def main():
         )
         h.test_result(
             "missing baseline -> exit 2",
-            exit_code == 2 and "baseline-unavailable" in stderr,
-            f"exit={exit_code}, stderr={stderr[:300]}",
+            exit_code == 2 and "baseline-unavailable" in (stdout + stderr),
+            f"exit={exit_code}, stdout={stdout[:300]}, stderr={stderr[:300]}",
         )
     print()
 
-    # Test 12: Corrupt baseline JSON -> exit 2
-    print("[Test 12] Corrupt baseline JSON -> exit 2 with baseline-unavailable")
+    # Test 12: Corrupt baseline JSON -> exit 2 with baseline-unavailable on stdout
+    print("[Test 12] Corrupt baseline JSON -> exit 2 with baseline-unavailable on stdout")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -541,8 +540,8 @@ def main():
         )
         h.test_result(
             "corrupt baseline -> exit 2",
-            exit_code == 2 and "baseline-unavailable" in stderr,
-            f"exit={exit_code}, stderr={stderr[:300]}",
+            exit_code == 2 and "baseline-unavailable" in (stdout + stderr),
+            f"exit={exit_code}, stdout={stdout[:300]}, stderr={stderr[:300]}",
         )
     print()
 

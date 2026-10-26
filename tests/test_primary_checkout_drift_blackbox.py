@@ -565,7 +565,7 @@ def main():
 
     print()
 
-    print("Test 2g: HEAD moved by commit in primary -> INFO head-changed, not FAIL")
+    print("Test 2g: HEAD moved by commit in primary -> FAIL head-moved, exit 1")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -609,26 +609,20 @@ def main():
         )
 
         h.test_result(
-            "compare exits 0 even when HEAD moves",
-            exit_code == 0,
+            "compare exits 1 when HEAD moves",
+            exit_code == 1,
             f"exit_code={exit_code}",
         )
 
         h.test_result(
-            "compare reports HEAD change with INFO",
-            "INFO head-changed" in stdout,
-            f"stdout={stdout}",
-        )
-
-        h.test_result(
-            "HEAD move does not cause FAIL",
-            "FAIL" not in stdout,
+            "compare reports HEAD change with FAIL",
+            "FAIL" in stdout and "head-moved" in stdout,
             f"stdout={stdout}",
         )
 
     print()
 
-    print("Test 2h: missing baseline file -> exit 2")
+    print("Test 2h: missing baseline file -> exit 2 with ERROR reason")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -654,9 +648,15 @@ def main():
             f"exit_code={exit_code}",
         )
 
+        h.test_result(
+            "compare includes baseline-unavailable in output",
+            "baseline-unavailable" in (stdout + stderr),
+            f"Missing baseline-unavailable in stdout+stderr: {(stdout + stderr)[:200]}",
+        )
+
     print()
 
-    print("Test 2i: corrupt baseline JSON -> exit 2")
+    print("Test 2i: corrupt baseline JSON -> exit 2 with ERROR reason")
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = Path(tmpdir) / "primary"
         ticket_path = Path(tmpdir) / "ticket"
@@ -683,6 +683,12 @@ def main():
             "compare exits 2 with corrupt baseline JSON",
             exit_code == 2,
             f"exit_code={exit_code}",
+        )
+
+        h.test_result(
+            "compare includes baseline-unavailable in output",
+            "baseline-unavailable" in (stdout + stderr),
+            f"Missing baseline-unavailable in stdout+stderr: {(stdout + stderr)[:200]}",
         )
 
     print()
