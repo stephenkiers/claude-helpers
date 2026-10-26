@@ -669,7 +669,7 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    ```
    Fields: `id` = brief handle (e.g., `Q1`, `Q2`); `header` = brief title line; `question` = the question text and Why-it-matters prose joined and normalised; `options` = exact option label strings (no `(Recommended)` marker); `recommended` = the panel's recommended option label.
 
-3. **Digest.** Dispatch to `precedent-digest.py` with project scope. Pass the project root (`"$PROJECT_ROOT"`), not `REPO_KEY`. The digest uses that root only to read curated decision and constraint docs from this working tree. It derives its own repo key from the origin remote, which can differ from `REPO_KEY` (set from `gh repo view`). Step 5 does not compare the two keys; the curated read is anchored to `PROJECT_ROOT` alone. Its diagnostics go to a status file that this step reads, because stderr is discarded.
+3. **Digest.** Dispatch to `precedent-digest.py` with project scope. Pass the project root (`"$PROJECT_ROOT"`), not `REPO_KEY`. The digest uses that root to derive its own repo key from the origin remote (which selects the raw history sources) and to read curated decision and constraint docs from this working tree. The origin-derived key can differ from `REPO_KEY` (set from `gh repo view`). Step 5 does not compare the two keys; the curated read is anchored to `PROJECT_ROOT`, and only when the digest resolves its repo key from origin. Its diagnostics go to a status file that this step reads, because stderr is discarded.
    ```bash
    DIGEST_RC=0
    python3 "$HOME/.claude/scripts/precedent-digest.py" "$PROJECT_ROOT" --match "${SESSION_DIR}/precedent-questions.json" --top 60 --out "${SESSION_DIR}/precedent-digest.raw.jsonl" --status-out "${SESSION_DIR}/precedent-digest.status.json" 2>/dev/null || DIGEST_RC=$?
@@ -690,17 +690,18 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    DG_NO_RULE=$(jq -r '.curated_no_rule // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_NO_RULE=0
    DG_SCREENED=$(jq -r '.curated_screened // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_SCREENED=0
    DG_REASON=$(jq -r '.reason // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REASON=""
+   DG_ERROR=$(jq -r '.curated_error // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ERROR=""
    if [ "$DG_RESOLVED" = "false" ]; then
      echo "digest-failed" > "${SESSION_DIR}/precedent-trace.txt"
      # Skip to step 10 (trace line)
    fi
    DIGEST_LINE=""
-   if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ]; then
-     DIGEST_LINE="precedent-digest: curated_root=${DG_ROOT} yaml=${DG_YAML} curated=${DG_CURATED} capped=${DG_CAPPED} rejected=${DG_REJECTED} no_rule=${DG_NO_RULE} screened=${DG_SCREENED}${DG_REASON:+ reason=${DG_REASON}}"
+   if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ] || [ -n "${DG_ERROR}" ]; then
+     DIGEST_LINE="precedent-digest: curated_root=${DG_ROOT} yaml=${DG_YAML} curated=${DG_CURATED} capped=${DG_CAPPED} rejected=${DG_REJECTED} no_rule=${DG_NO_RULE} screened=${DG_SCREENED}${DG_REASON:+ reason=${DG_REASON}}${DG_ERROR:+ error=${DG_ERROR}}"
    fi
    if [ -n "${DIGEST_LINE}" ]; then printf '%s\n' "${DIGEST_LINE}" > "${SESSION_DIR}/precedent-digest-line.txt"; fi
    ```
-   If `repo_resolved` is `false`, or the digest exited non-zero, the trace is `digest-failed` and steps 4–9 are skipped (go to step 10). Otherwise continue to step 4. The file `precedent-digest-line.txt` holds one `precedent-digest:` line (newline-terminated) when the curated layer is empty, capped, or rejected, and does not exist otherwise. The decisions.md steps below append it.
+   If `repo_resolved` is `false`, or the digest exited non-zero, the trace is `digest-failed` and steps 4–9 are skipped (go to step 10). Otherwise continue to step 4. The file `precedent-digest-line.txt` holds one `precedent-digest:` line (newline-terminated) when the root is `none`, the yaml is `missing` or `unreadable`, a curated entry was capped or rejected, or the curated layer failed (`curated_error`, shown as `error=`), and does not exist otherwise. The decisions.md steps below append it.
 
 4. **Self-exclusion and security filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt, and drop entries with security-related `question` or `reason` text. Use one `jq -c` filter with five variables to drop entries whose `path` matches self-exclusion patterns or whose `question`/`reason` contain security keywords:
    ```bash

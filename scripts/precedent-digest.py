@@ -79,8 +79,9 @@ Curated entries are partitioned out before scoring. They sort first, in collecto
 (decisions before constraints, then path), and sit outside --top and the 300 raw cap.
 CURATED_CAP = 20 bounds them. Once 20 entries are held, later candidate files are not
 opened; each one that passes the path-safety checks is counted in curated_capped as unread.
-So curated_capped is the number of curated entries not emitted, whether or not they were
-read. Raw entries keep their full budget.
+So curated_capped counts the entries cut by the cap plus those unread candidate files, which
+were not opened and may include files that would not have qualified. Raw entries keep their
+full budget.
 
 The curated_* skip buckets (curated_rejected, curated_no_rule, curated_screened,
 curated_capped) are counted only for source "curated". In --stats they appear under every

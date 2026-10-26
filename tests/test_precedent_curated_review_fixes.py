@@ -274,6 +274,9 @@ def case_outside_directory_setting_rejected(h):
         h.test_result("F1: absolute decisionsDirectory outside the repo yields no curated entry",
                       "Outside Rule" not in headers and proc.returncode == 0,
                       f"rc={proc.returncode} headers={headers}")
+        h.test_result("F1: absolute decisionsDirectory is counted as exactly one curated rejection",
+                      status is not None and status.get("curated_rejected") == 1,
+                      f"status={status}")
 
     # '..' segment in the yaml.
     with tempfile.TemporaryDirectory(prefix="curated-dotdot-") as d:
@@ -292,6 +295,9 @@ def case_outside_directory_setting_rejected(h):
         h.test_result("F1: '..' segment in decisionsDirectory yields no curated entry",
                       "Up Rule" not in headers and proc.returncode == 0,
                       f"rc={proc.returncode} headers={headers}")
+        h.test_result("F1: '..' decisionsDirectory is counted as exactly one curated rejection",
+                      status is not None and status.get("curated_rejected") == 1,
+                      f"status={status}")
 
 
 # ============================================================================
@@ -361,8 +367,6 @@ def case_cap_counts_overflow(h):
 
         proc, status = run_digest_with_status(root, home, tmp)
         entries = curated_entries(proc.stdout)
-        all_in_dir = all(Path(e.get("path", "")).parent == decisions
-                         or str(decisions) in str(e.get("path", "")) for e in entries)
 
         h.test_result("F10: 25 curated rules keep exactly 20 entries",
                       proc.returncode == 0 and len(entries) == 20,
@@ -371,9 +375,52 @@ def case_cap_counts_overflow(h):
                       status is not None and status.get("curated") == 20
                       and status.get("curated_capped") == 5,
                       f"status={status}")
-        h.test_result("F10: surviving entries all come from the decisions directory",
-                      all_in_dir and len({e.get("path") for e in entries}) == 20,
-                      f"paths={[e.get('path') for e in entries]}")
+        h.test_result("F10: the first 20 rules by name survive, rule-20..24 are dropped",
+                      sorted(e.get("header") for e in entries)
+                      == [f"Rule {i:02d}" for i in range(20)],
+                      f"headers={sorted(e.get('header') for e in entries)}")
+
+
+def case_cap_exact_boundary(h):
+    # Exactly CURATED_CAP valid rules: all kept, nothing capped.
+    with tempfile.TemporaryDirectory(prefix="curated-cap-exact-") as d:
+        tmp = Path(d)
+        home = tmp / "home"
+        home.mkdir()
+        root = make_repo(tmp)
+        decisions = root / "docs" / "decisions"
+        for i in range(20):
+            put(decisions / f"rule-{i:02d}.md",
+                f"# Rule {i:02d}\n\nRule: Rule text {i:02d}.\n")
+
+        proc, status = run_digest_with_status(root, home, tmp)
+        h.test_result("F10 boundary: exactly 20 curated rules are all kept, none capped",
+                      proc.returncode == 0 and len(curated_entries(proc.stdout)) == 20
+                      and status is not None and status.get("curated") == 20
+                      and status.get("curated_capped") == 0,
+                      f"rc={proc.returncode} status={status}")
+
+    # 20 valid rules plus one overflow file that has no answer. The overflow file sorts
+    # last and is not opened, so it is counted as capped (not as no_rule). Reading it
+    # past the cap would change the status counters, which pins the boundary exactly.
+    with tempfile.TemporaryDirectory(prefix="curated-cap-plus-one-") as d:
+        tmp = Path(d)
+        home = tmp / "home"
+        home.mkdir()
+        root = make_repo(tmp)
+        decisions = root / "docs" / "decisions"
+        for i in range(20):
+            put(decisions / f"rule-{i:02d}.md",
+                f"# Rule {i:02d}\n\nRule: Rule text {i:02d}.\n")
+        put(decisions / "rule-99.md", "# No Answer Here\n\nJust prose, no rule line.\n")
+
+        proc, status = run_digest_with_status(root, home, tmp)
+        h.test_result("F10 boundary: 21st candidate past the cap is counted capped, not read",
+                      proc.returncode == 0 and len(curated_entries(proc.stdout)) == 20
+                      and status is not None and status.get("curated") == 20
+                      and status.get("curated_capped") == 1
+                      and status.get("curated_no_rule") == 0,
+                      f"rc={proc.returncode} status={status}")
 
 
 # ============================================================================
@@ -546,6 +593,7 @@ CASES = [
     ("F8 dangling symlink keeps layer", case_dangling_symlink_keeps_layer),
     ("F4 unreadable file keeps layer", case_unreadable_file_keeps_layer),
     ("F10 cap counts overflow", case_cap_counts_overflow),
+    ("F10 cap exact boundary", case_cap_exact_boundary),
     ("F11 BOM markdown and yaml", case_bom_markdown_and_yaml),
     ("F20 oversize yaml", case_oversize_yaml),
     ("F9 unwritable --status-out named", case_unwritable_status_out_named),
