@@ -274,8 +274,8 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Missing expected reaction file -> exit non-zero",
-                     exit_code != 0,
-                     f"exit={exit_code}")
+                     exit_code != 0 and "missing" in stderr.lower(),  # [WEAK_ASSERTION] strengthened: also check error message
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 7: Reaction file without 'complete' sentinel -> non-zero exit
     print("[Test 7] Reaction file without 'complete' sentinel -> exit non-zero")
@@ -301,8 +301,8 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Reaction file without 'complete' sentinel -> exit non-zero",
-                     exit_code != 0,
-                     f"exit={exit_code}")
+                     exit_code != 0 and "complete" in stderr.lower(),  # [WEAK_ASSERTION] strengthened: also check error message
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 8: Missing brief_type in ledger when brief has reactions -> non-zero exit
     print("[Test 8] Missing brief_type in ledger -> exit non-zero")
@@ -333,15 +333,17 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         nonexistent_file = str(Path(tmp) / "missing.md")
         exit_code, stdout, stderr = run_tier_script(nonexistent_file)
-        h.test_result("Missing decisions.md -> exit non-zero", exit_code != 0, f"exit={exit_code}")
+        h.test_result("Missing decisions.md -> exit non-zero",
+                     exit_code != 0 and ("not found" in stderr.lower() or "error" in stderr.lower()),  # [WEAK_ASSERTION] strengthened: also check error message
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 10: No --decisions argument -> exit non-zero
     print("[Test 10] No --decisions argument -> exit non-zero")
     cmd = [sys.executable, str(TIER_SCRIPT)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     h.test_result("No --decisions argument -> exit non-zero",
-                 result.returncode != 0,
-                 f"exit={result.returncode}")
+                 result.returncode != 0 and ("required" in result.stderr.lower() or "error" in result.stderr.lower()),  # [WEAK_ASSERTION] strengthened: also check error message
+                 f"exit={result.returncode}, stderr={result.stderr[:200]}")
 
     # Test 11: Edge case - empty seated list (should still work if expected_reactions is also empty)
     print("[Test 11] Empty seated list -> exit 0")
@@ -603,7 +605,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 0 on correct ledger",
-                     exit_code == 0,
+                     exit_code == 0 and not stderr,  # [WEAK_ASSERTION] strengthened: also verify no error output
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 18: --check-ledger exits 1 on flat entry shape
@@ -640,7 +642,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 1 on flat entry",
-                     exit_code != 0,
+                     exit_code != 0 and "object" in stderr.lower(),  # [WEAK_ASSERTION] strengthened: also check error message
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 19: --check-ledger exits 1 on nested handles
@@ -677,7 +679,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 1 on nested handles",
-                     exit_code != 0,
+                     exit_code != 0 and "handles" in stderr.lower(),  # [WEAK_ASSERTION] strengthened: also check error message
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 20: --check-ledger is a pure read (does not modify file)
@@ -723,6 +725,73 @@ def main():
         h.test_result("--check-ledger does not modify the file",
                      before_content == after_content,
                      f"exit={exit_code}, changed={before_content != after_content}")
+
+    # Test 21: --check-ledger exits 1 when brief with reactions has no brief_type [FROM_FINDING_1]
+    print("[Test 21] --check-ledger exits 1 when brief with reactions has no brief_type")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {}  # Missing brief_type for B1
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create reaction files that reference B1
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"B1": {"resolved": True}})
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+        # Add a handle entry to the ledger (even though brief_type is missing in briefs)
+        decisions_content = decisions_file.read_text()
+        decisions_content = decisions_content.replace(
+            '"briefs": {}',
+            '"briefs": {}, "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}'
+        )
+        decisions_file.write_text(decisions_content)
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 1 when brief with reactions has no brief_type",
+                     exit_code != 0 and "brief_type" in stderr.lower(),
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 22: --check-ledger exits 1 when expected reaction file is missing [FROM_FINDING_3]
+    print("[Test 22] --check-ledger exits 1 when expected reaction file is missing")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create only alice's file, not bob's (which will cause bob's file to be missing)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True}
+        })
+
+        # Add a handle entry to the ledger
+        decisions_content = decisions_file.read_text()
+        decisions_content = decisions_content.replace(
+            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
+            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}'
+        )
+        decisions_file.write_text(decisions_content)
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 1 when expected reaction file is missing",
+                     exit_code != 0 and "missing" in stderr.lower(),
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     h.summarize_and_exit()
 

@@ -186,6 +186,7 @@ def main() -> int:
                 if raiser:
                     raiser_map[brief_id] = raiser
 
+        # Finding 3: Validate all expected reaction files exist and are readable (before reading)
         for reaction_spec in ledger.get("expected_reactions", []):
             reaction_path_str = reaction_spec.get("path")
             if not reaction_path_str:
@@ -195,7 +196,24 @@ def main() -> int:
             else:
                 reaction_path = decisions_dir / reaction_path_str
             if not reaction_path.exists():
+                print(f"Error: expected reaction file missing: {reaction_path_str}", file=sys.stderr)
+                return 1
+            try:
+                # Validate readable
+                reaction_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                print(f"Error reading reaction file {reaction_path_str}: {e}", file=sys.stderr)
+                return 2
+
+        # Now read reaction files and build evidence
+        for reaction_spec in ledger.get("expected_reactions", []):
+            reaction_path_str = reaction_spec.get("path")
+            if not reaction_path_str:
                 continue
+            if Path(reaction_path_str).is_absolute():
+                reaction_path = Path(reaction_path_str)
+            else:
+                reaction_path = decisions_dir / reaction_path_str
             try:
                 reactions = json.loads(reaction_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -217,6 +235,24 @@ def main() -> int:
                 if brief_id not in raw_reactions:
                     raw_reactions[brief_id] = {}
                 raw_reactions[brief_id][slug] = reaction
+
+        # Finding 1: Validate that briefs with reactions have brief_type in ledger
+        for brief_id in evidence:
+            if brief_id in briefs_map and isinstance(briefs_map[brief_id], dict):
+                brief_type = briefs_map[brief_id].get("brief_type")
+                if not brief_type:
+                    print(
+                        f"Error: brief {brief_id} has reactions but no brief_type in ledger briefs",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                # Brief has reactions but no entry in briefs map or no brief_type
+                print(
+                    f"Error: brief {brief_id} has reactions but no brief_type in ledger briefs",
+                    file=sys.stderr,
+                )
+                return 1
 
         # Assign tiers
         tiers = {}
