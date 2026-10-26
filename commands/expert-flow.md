@@ -164,7 +164,7 @@ rewrite `fleet-ask.json` with `"status": "answered"` and an `"answered": "<ISO-8
 
 - `relay` — the message carries the answers as a JSON object keyed by question **id**
   (`{"answers": {"<id>": "<label or free text>"}}`). Write it to `answers/<STEP>-<SEQ>.json` as form-kind relay
-  step 4a says (you remain the only writer of answer files), then continue at relay step 5 and 6. An `id` the
+  step 4 says (you remain the only writer of answer files), then continue at relay step 4a (the human-ledger append of free-text answers), then 5 and 6. An `id` the
   message does not answer is a re-park of that question alone, never a default.
 - `report` — the message is the prose reply. Continue at relay step 4 (the prose interpreter). Step
   5's echo is printed but never waited on ("Reply 'ok'" is dropped): if nothing is unresolved, carry on. If
