@@ -610,7 +610,7 @@ Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-t
 - **D:** no Q condition applies, at least one expert `resolved`, at least one expert OTHER THAN the one(s) who resolved `agreed` (self-agreement does not count), and no `could-go-other-way` flag. `no-view` does NOT demote D to W.
 - **W:** every other item.
 
-Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- **D<n>. …**`), `## Worth a look` (`- **W<n>. …**`), and `## Questions for you` (`#### Q<n>.` briefs). Each Q carries its recommendation, backing experts, why, and business case. Extend the ledger with handle → tier, `brief_type`, and evidence paths.
+Write the rest of `decisions.md`: the ticket line and sections `## Decided` (`- **D<n>. …**`), `## Worth a look` (`- **W<n>. …**`), and `## Questions for you` (`#### Q<n>.` briefs). Each Q carries its recommendation, backing experts, why, and business case. Extend the ledger with handle → tier, `brief_type`, and evidence paths: add each handle (`"D1"`, `"W1"`, `"Q1"`, …) as a TOP-LEVEL key of the ledger object, a sibling of `seated`, `briefs` and `expected_reactions`, never nested under a `handles` key (`flow-verify-receipt.py` reads only top-level handle keys).
 
 If more than five Qs survive, set `headline` to "This ticket looks under-specified — N questions survived the panel; let's talk it through." Five follows Danielle's observation that people drop items past about five. Keep this as a named constant. There is no halt and no cap.
 
