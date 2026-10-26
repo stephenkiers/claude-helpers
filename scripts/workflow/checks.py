@@ -27,6 +27,19 @@ CHECK_ORDER = ("format", "check", "lint", "typecheck", "vet", "test", "build")
 NON_CHECK_COMMANDS = frozenset({"install"})
 SUPERSEDED_BY_CHECK = ("lint", "typecheck")
 TIMEOUT_ERROR_PREFIX = "timed out after"
+DEFAULT_CHECK_TIMEOUT_SECS = 300
+
+# Shown when no source yields a check command and no checkOptOut is set. Callers and tests
+# compare against this constant; the sources-tried list is appended after it.
+NO_CHECK_CONFIGURED_MESSAGE = (
+    "no check command configured — add commands.check to .claude/project.yaml "
+    "(or run /shipit once to seed .claude/repo-cache.json); to opt out of the "
+    "implement/fix check gate only, set checkOptOut: \"<reason>\" in .claude/project.yaml "
+    "(an /expert-flow run will still stop at verify and ship, which require a check)"
+)
+OPT_OUT_MESSAGE_TEMPLATE = (
+    "check opted out: {reason} (implement/fix gate only; verify and /shipit still require a check)"
+)
 
 
 @dataclass
@@ -279,11 +292,74 @@ def _read_project_yaml_check(path: Path) -> Tuple[Optional[str], Optional[str]]:
         return None, f"read error: {e}"
 
 
-def resolve_check_command(
-    worktree: Path, main_worktree: Optional[Path] = None
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _read_project_yaml_mapping(path: Path) -> Optional[Dict[str, Any]]:
+    """Load a project.yaml as a dict, or None if it is absent, unreadable, or not a mapping."""
+    if yaml is None:
+        return None
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+    except (yaml.YAMLError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_project_yaml_opt_out(path: Path) -> Optional[str]:
+    """Return the stripped top-level checkOptOut reason, or None if unset/empty/non-string."""
+    data = _read_project_yaml_mapping(path)
+    if data is None:
+        return None
+    value = data.get("checkOptOut")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _valid_timeout(value: Any) -> Optional[int]:
+    """Positive integers only; bool is an int subclass and is rejected explicitly."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _read_timeout_from_file(path: Path) -> Optional[int]:
+    """Read checkTimeoutSecs from a project.yaml or repo-cache.json; None if absent or invalid."""
+    if path.name == "project.yaml":
+        data = _read_project_yaml_mapping(path)
+        if data is None:
+            return None
+        return _valid_timeout(data.get("checkTimeoutSecs"))
+    cache_data, read_err = read_repo_cache(path)
+    if read_err or cache_data is None:
+        return None
+    return _valid_timeout(cache_data.check_timeout_secs)
+
+
+def _file_label(path: Path, worktree: Path) -> str:
+    """Human label for a config file: 'worktree <name>' or 'main <name>'."""
+    where = "worktree" if path.parent.parent == worktree else "main"
+    return f"{where} {path.name}"
+
+
+@dataclass
+class CheckResolution:
     """
-    Resolve the check command with fallback logic.
+    Detailed outcome of check resolution.
+
+    source_file is the config file that supplied the command (None for the justfile
+    recipe or when nothing resolved). opt_out_reason is set only when the check was
+    explicitly opted out via checkOptOut and no command resolved.
+    """
+    command: Optional[str]
+    source: Optional[str]
+    source_file: Optional[Path]
+    failure_reason: Optional[str]
+    opt_out_reason: Optional[str] = None
+
+
+def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -> CheckResolution:
+    """
+    Resolve the check command with fallback logic, reporting the supplying file.
 
     Resolution order:
     1. Worktree repo-cache.json commands.check
@@ -291,6 +367,10 @@ def resolve_check_command(
     3. Worktree project.yaml commands.check
     4. Main worktree project.yaml commands.check (if main_worktree provided)
     5. Worktree justfile check recipe
+
+    If all five fail, an explicit opt-out is consulted: a non-empty top-level
+    checkOptOut in worktree project.yaml, then main project.yaml. A resolved command
+    always wins over checkOptOut.
 
     Files are seeded from main at worktree creation, so the main fallback
     applies only when the worktree file has no check command (not just when
@@ -300,17 +380,6 @@ def resolve_check_command(
     Trust model: project.yaml is local, per-machine state (gitignored per
     CLAUDE.md) and is trusted the same as repo-cache.json. Both are
     repository-committer-controlled at their source.
-
-    Args:
-        worktree: Path to the worktree to check
-        main_worktree: Optional path to main worktree (for fallback); if
-                      provided, falls back to main when worktree has no check
-
-    Returns:
-        (command, source, failure_reason) tuple:
-        - command: resolved check command string, or None
-        - source: source ("repo-cache", "project.yaml", "justfile"), or None
-        - failure_reason: descriptive reason if resolution failed, or None
     """
     sources_tried = []
 
@@ -322,7 +391,7 @@ def resolve_check_command(
         if not read_err and cache_data:
             check_cmd = cache_data.commands.get("check")
             if isinstance(check_cmd, str) and check_cmd.strip():
-                return check_cmd.strip(), "repo-cache", None
+                return CheckResolution(check_cmd.strip(), "repo-cache", cache_file, None)
             else:
                 sources_tried[-1] += " (no check key)"
         else:
@@ -339,7 +408,7 @@ def resolve_check_command(
             if not read_err and cache_data:
                 check_cmd = cache_data.commands.get("check")
                 if isinstance(check_cmd, str) and check_cmd.strip():
-                    return check_cmd.strip(), "repo-cache", None
+                    return CheckResolution(check_cmd.strip(), "repo-cache", main_cache_file, None)
                 else:
                     sources_tried[-1] += " (no check key)"
             else:
@@ -352,7 +421,7 @@ def resolve_check_command(
     if project_yaml.exists():
         check_cmd, note = _read_project_yaml_check(project_yaml)
         if check_cmd:
-            return check_cmd, "project.yaml", None
+            return CheckResolution(check_cmd, "project.yaml", project_yaml, None)
         sources_tried.append(f"worktree project.yaml ({note})")
     else:
         sources_tried.append("worktree project.yaml (not found)")
@@ -363,7 +432,7 @@ def resolve_check_command(
         if main_project_yaml.exists():
             check_cmd, note = _read_project_yaml_check(main_project_yaml)
             if check_cmd:
-                return check_cmd, "project.yaml", None
+                return CheckResolution(check_cmd, "project.yaml", main_project_yaml, None)
             sources_tried.append(f"main project.yaml ({note})")
         else:
             sources_tried.append("main project.yaml (not found)")
@@ -378,7 +447,7 @@ def resolve_check_command(
                 cwd=str(worktree), capture_output=True, text=True, timeout=5
             )
             if summary.returncode == 0 and "check" in summary.stdout.split():
-                return "just check", "justfile", None
+                return CheckResolution("just check", "justfile", None, None)
             sources_tried[-1] += " (check recipe not found)"
         except subprocess.TimeoutExpired:
             sources_tried[-1] += " (timed out)"
@@ -389,10 +458,76 @@ def resolve_check_command(
     else:
         sources_tried.append("justfile (not found)")
 
+    # No command resolved: explicit opt-out (worktree first, then main) before failing closed.
+    opt_out_reason = _read_project_yaml_opt_out(project_yaml)
+    if opt_out_reason is None and main_worktree:
+        opt_out_reason = _read_project_yaml_opt_out(main_worktree / ".claude" / "project.yaml")
+    if opt_out_reason is not None:
+        return CheckResolution(
+            None,
+            "opt-out",
+            None,
+            OPT_OUT_MESSAGE_TEMPLATE.format(reason=opt_out_reason),
+            opt_out_reason,
+        )
+
     # Resolution exhausted
     sources_str = "; tried " + ", ".join(sources_tried)
-    failure_msg = (
-        "no check command configured — run /shipit once or add commands.check to "
-        ".claude/project.yaml (commands.check only per ADR-0023 Decision 4)" + sources_str
-    )
-    return None, None, failure_msg
+    return CheckResolution(None, None, None, NO_CHECK_CONFIGURED_MESSAGE + sources_str)
+
+
+def resolve_check_command(
+    worktree: Path, main_worktree: Optional[Path] = None
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Resolve the check command. Thin 3-tuple view of resolve_check_detail().
+
+    Returns:
+        (command, source, failure_reason) tuple:
+        - command: resolved check command string, or None
+        - source: "repo-cache", "project.yaml", "justfile", "opt-out", or None
+        - failure_reason: descriptive reason if resolution failed (including opt-out), or None
+
+    Note: a non-None failure_reason is returned for both opt-out and not-configured.
+    Callers that must tell them apart read source ("opt-out") rather than inferring from failure.
+    """
+    resolution = resolve_check_detail(worktree, main_worktree)
+    return resolution.command, resolution.source, resolution.failure_reason
+
+
+def resolve_check_timeout(
+    worktree: Path, main_worktree: Optional[Path], command_source_file: Optional[Path]
+) -> Tuple[int, str]:
+    """
+    Resolve the per-check timeout in seconds, following the command's source.
+
+    Order:
+    1. SHIPIT_CHECK_TIMEOUT_SECS env var, if set (same override checks run honours)
+    2. checkTimeoutSecs in the file the command was resolved from (project.yaml or repo-cache)
+    3. checkTimeoutSecs in worktree repo-cache.json
+    4. checkTimeoutSecs in main repo-cache.json
+    5. 300
+
+    Returns:
+        (seconds, timeout_source) where timeout_source names where the value came from.
+    """
+    env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
+    if env_timeout:
+        return int(env_timeout), "env:SHIPIT_CHECK_TIMEOUT_SECS"
+
+    candidates: List[Path] = []
+    if command_source_file is not None:
+        candidates.append(command_source_file)
+    candidates.append(worktree / ".claude" / "repo-cache.json")
+    if main_worktree is not None:
+        candidates.append(main_worktree / ".claude" / "repo-cache.json")
+
+    seen = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        value = _read_timeout_from_file(path)
+        if value is not None:
+            return value, _file_label(path, worktree)
+    return DEFAULT_CHECK_TIMEOUT_SECS, "default"
