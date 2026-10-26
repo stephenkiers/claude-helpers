@@ -62,24 +62,39 @@ index.md, becomes one entry with source "curated":
 
 Path safety. A directory value must be relative, contain no ".." segment, and resolve
 inside the root. Files must be regular, non-symlink, at most 64 KiB, and resolve inside
-the root. Each rejection is counted in curated_rejected. A file with no H1 or no rule is
-counted in curated_no_rule. A curated entry whose header, question, answer or reason
-contains one of SECURITY_KEYWORDS (case-insensitive) is dropped and counted in
-curated_screened.
+the root. Each real path-safety failure is counted in curated_rejected: a rejected
+directory value, an unlistable directory, a symlink, a non-regular .md entry, an oversize
+or out-of-root file, an unreadable or non-UTF-8 file, or an OSError on one file (for
+example a failed stat). Entries that are not *.md, and subdirectories, are skipped
+silently and are not counted. A file with no H1 or no rule is counted in curated_no_rule.
+A curated entry whose header, question, answer or reason contains one of SECURITY_KEYWORDS
+is dropped and counted in curated_screened. The keyword match is a case-insensitive
+substring match and over-matches on purpose: dropping a rule is safer than keeping one
+that touches a security topic.
 
 Curated text is read from the working tree, not from the default branch. A branch can
 therefore add a rule that the digest reports (ADR-0024 amendment, accepted risk).
 
 Curated entries are partitioned out before scoring. They sort first, in collector order
 (decisions before constraints, then path), and sit outside --top and the 300 raw cap.
-CURATED_CAP = 20 bounds them; survivors beyond it are counted in curated_capped. Raw
-entries keep their full budget.
+CURATED_CAP = 20 bounds them. Once 20 entries are held, later candidate files are not
+opened; each one that passes the path-safety checks is counted in curated_capped as unread.
+So curated_capped is the number of curated entries not emitted, whether or not they were
+read. Raw entries keep their full budget.
+
+The curated_* skip buckets (curated_rejected, curated_no_rule, curated_screened,
+curated_capped) are counted only for source "curated". In --stats they appear under every
+source for a uniform shape, but for plan-session, flow and review they are always zero.
 
 Status file. --status-out FILE writes one JSON object on every exit-0 path: repo_resolved,
 curated_root ("ok" or "none"), yaml ("ok", "missing", "unreadable", "no_keys" or
-"not_applicable" when there is no curated root), curated,
-curated_capped, curated_rejected, curated_no_rule, curated_screened, and reason. Step 5 of
-/expert-plan reads it so that no-root and overflow outcomes are visible.
+"not_applicable" when there is no curated root or the yaml read did not complete),
+curated, curated_capped, curated_rejected, curated_no_rule, curated_screened,
+curated_error, and reason. curated_error is null, or the exception class name when the
+whole curated layer failed. That case fails closed: zero curated entries and one
+curated_rejected. It is separate from yaml, so a layer failure never reports yaml as
+"unreadable". Step 5 of /expert-plan reads this file so that no-root, overflow and
+layer-failure outcomes are visible.
 
 Provenance. This reader is proposed under epic #291 as the first cross-run reader of
 claude-action-plan.md. It relies on ADR-0007's chore/29 escape hatch, and that hatch
@@ -96,7 +111,9 @@ Exit and stderr contract:
   - Exit 1, with one stderr line and no traceback, for internal errors: bugs,
     uncaught exceptions. The --out file is left unwritten or incomplete on exit 1.
   - Exit 2, with one stderr line and no traceback, for invocation errors: bad
-    arguments, --top < 1, a missing or malformed --match file, an unwritable --out.
+    arguments, --top < 1, a missing or malformed --match file, an unwritable --out or
+    --status-out. --out is written before --status-out. If --status-out then fails, --out
+    keeps its content (partial output) and the exit is 2. The stderr line names the flag.
   - --stats: a prediction log that exists but cannot be read is not reported as empty.
     The predictions section carries read_error (JSON key, null when fine) and a
     "Read error" line (md). Counts are zero in that case.
@@ -227,12 +244,14 @@ CURATED_CAP = 20
 CURATED_YAML = os.path.join(".claude", "reviewers", "north-star-nick-local.yaml")
 CURATED_YAML_MAX = 64 * 1024
 CURATED_FILE_MAX = 64 * 1024
+UTF8_BOM = "\ufeff"  # escaped so the source carries no invisible character
 CURATED_EXCLUDED = frozenset({"readme.md", "index.md"})
 CURATED_KIND_ORDER = {"decisions": 0, "constraints": 1}
 CURATED_YAML_KEYS = {"decisionsDirectory": "decisions", "constraintsDirectory": "constraints"}
 CURATED_RULE_HEADINGS = ("Rule", "Decision", "Decisions")
 CURATED_SPIRIT_HEADINGS = ("Spirit", "Rationale")
 # Curated-only keyword screen. Same tokens as the Step 5 jq regex in commands/expert-plan.md.
+# Matched as case-insensitive substrings on purpose: "auth" also drops "author", by design.
 SECURITY_KEYWORDS = (
     "security", "auth", "credential", "secret", "token", "injection",
     "permission", "crypt", "vulnerab", "CRITICAL",
@@ -1125,7 +1144,7 @@ def _read_curated_dirs(root: str) -> Tuple[List[Tuple[str, str]], str]:
         text = _read_text(path)
     except (OSError, UnicodeDecodeError):
         return [], "unreadable"
-    if text.startswith("﻿"):
+    if text.startswith(UTF8_BOM):
         text = text[1:]
     found: Dict[str, str] = {}
     in_block = False
@@ -1241,7 +1260,7 @@ def _body_answer(body: List[str]) -> Optional[str]:
 
 def _parse_curated(text: str) -> Optional[Dict[str, Optional[str]]]:
     """Title, rule and spirit of one curated file, or None when it has no H1 or no rule."""
-    if text.startswith("﻿"):
+    if text.startswith(UTF8_BOM):
         text = text[1:]
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     title: Optional[str] = None
@@ -1279,7 +1298,14 @@ def _scan_curated(
     pairs: List[Tuple[str, str]],
     counts: Dict[str, int],
 ) -> List[Tuple[int, str, Dict[str, Any]]]:
-    """(kind rank, realpath, entry) for every qualifying curated file, before the cap."""
+    """(kind rank, realpath, entry) for every qualifying curated file, before the cap.
+
+    counts is filled with the curated status counters under short names (the caller maps
+    them to curated_<name>): rejected, no_rule, screened, and unread. unread counts
+    candidates that passed the path-safety checks after CURATED_CAP entries were already
+    held; they are never opened. A failure on one file (OSError) counts as rejected for
+    that file only; the rest of the layer still reads.
+    """
     real_root = os.path.realpath(root)
     found: List[Tuple[int, str, Dict[str, Any]]] = []
     seen_dirs: Set[str] = set()
@@ -1301,43 +1327,51 @@ def _scan_curated(
             name = entry.name
             if name.lower() in CURATED_EXCLUDED:
                 continue
-            if not name.lower().endswith(".md") or entry.is_symlink() or not entry.is_file():
-                counts["rejected"] += 1
-                continue
-            if entry.stat(follow_symlinks=False).st_size > CURATED_FILE_MAX:
-                counts["rejected"] += 1
-                continue
-            real_file = os.path.realpath(entry.path)
-            if os.path.commonpath([real_root, real_file]) != real_root:
-                counts["rejected"] += 1
-                continue
-            if real_file in seen_files:
-                continue
-            seen_files.add(real_file)
             try:
+                if entry.is_symlink():
+                    counts["rejected"] += 1
+                    continue
+                if not name.lower().endswith(".md") or entry.is_dir():
+                    continue
+                if not entry.is_file():
+                    counts["rejected"] += 1
+                    continue
+                if entry.stat(follow_symlinks=False).st_size > CURATED_FILE_MAX:
+                    counts["rejected"] += 1
+                    continue
+                real_file = os.path.realpath(entry.path)
+                if os.path.commonpath([real_root, real_file]) != real_root:
+                    counts["rejected"] += 1
+                    continue
+                if real_file in seen_files:
+                    continue
+                seen_files.add(real_file)
+                if len(found) >= CURATED_CAP:
+                    counts["unread"] += 1
+                    continue
                 text = _read_text(real_file)
+                parsed = _parse_curated(text)
+                if parsed is None:
+                    counts["no_rule"] += 1
+                    continue
+                title = str(parsed["title"])
+                answer = str(parsed["answer"])
+                reason = parsed["reason"]
+                if _curated_screened([title, title, answer, reason or ""]):
+                    counts["screened"] += 1
+                    continue
+                rec: Dict[str, Any] = {
+                    "question": title,
+                    "header": title,
+                    "options": [],
+                    "recommended": None,
+                    "answer": answer,
+                    "reason": reason,
+                }
+                date = _date_for(name, real_file)
             except (OSError, UnicodeDecodeError):
                 counts["rejected"] += 1
                 continue
-            parsed = _parse_curated(text)
-            if parsed is None:
-                counts["no_rule"] += 1
-                continue
-            title = str(parsed["title"])
-            answer = str(parsed["answer"])
-            reason = parsed["reason"]
-            if _curated_screened([title, title, answer, reason or ""]):
-                counts["screened"] += 1
-                continue
-            rec: Dict[str, Any] = {
-                "question": title,
-                "header": title,
-                "options": [],
-                "recommended": None,
-                "answer": answer,
-                "reason": reason,
-            }
-            date = _date_for(name, real_file)
             found.append((rank, real_file, _make_entry(CURATED_SOURCE, repo_key, real_file, date, None, rec)))
     return found
 
@@ -1347,23 +1381,28 @@ def collect_curated(
     repo_key: str,
     skipped: Dict[str, Dict[str, int]],
     pairs: List[Tuple[str, str]],
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Curated entries for one repo root, capped at CURATED_CAP. Never raises.
 
     pairs is the (kind, value) list from _read_curated_dirs, read once by the caller.
-    Counts go into skipped["curated"]; the returned dict repeats the four curated
-    counters for the caller's status file. Any exception counts once as
-    curated_rejected and yields zero curated entries, so raw entries are unaffected.
+    Counts go into skipped["curated"] under the curated_<name> bucket names. The returned
+    dict repeats the curated counters for the caller's status file, plus curated_error:
+    None, or the exception class name when the whole layer failed. A layer failure
+    (any non-OSError exception) yields zero curated entries and counts once as
+    curated_rejected; raw entries are unaffected. curated_capped also includes the
+    candidates counted unread past the cap.
     """
-    counts = {"rejected": 0, "no_rule": 0, "screened": 0}
+    counts = {"rejected": 0, "no_rule": 0, "screened": 0, "unread": 0}
+    error: Optional[str] = None
     try:
         found = _scan_curated(root, repo_key, pairs, counts)
-    except Exception:
+    except Exception as exc:
         found = []
-        counts = {"rejected": 1, "no_rule": 0, "screened": 0}
+        counts = {"rejected": 1, "no_rule": 0, "screened": 0, "unread": 0}
+        error = type(exc).__name__
     found.sort(key=lambda item: (item[0], item[1]))
     kept = found[:CURATED_CAP]
-    capped = len(found) - len(kept)
+    capped = len(found) - len(kept) + counts["unread"]
     bucket = skipped[CURATED_SOURCE]
     bucket["curated_rejected"] += counts["rejected"]
     bucket["curated_no_rule"] += counts["no_rule"]
@@ -1372,6 +1411,7 @@ def collect_curated(
     entries = [entry for _rank, _path, entry in kept]
     return entries, {
         "curated_capped": capped,
+        "curated_error": error,
         "curated_rejected": counts["rejected"],
         "curated_no_rule": counts["no_rule"],
         "curated_screened": counts["screened"],
@@ -1850,9 +1890,10 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
     return json.dumps(stats, ensure_ascii=False) + "\n"
 
 
-def _write_atomic(path: str, text: str) -> None:
+def _write_atomic(path: str, text: str, label: str = "--out") -> None:
     """Write text to path via a temp file in the same dir, then os.replace.
 
+    label names the flag in the usage error ("--out" or "--status-out").
     The output file is created with mode 0o600 (read/write for owner only).
     On any error (including internal errors), the temp file is cleaned up and
     the output file is left unwritten or incomplete.
@@ -1864,7 +1905,7 @@ def _write_atomic(path: str, text: str) -> None:
             prefix=".precedent-digest-", suffix=".tmp", delete=False,
         )
     except OSError as exc:
-        raise _Usage("cannot write --out %s: %s" % (path, exc.strerror or exc))
+        raise _Usage("cannot write %s %s: %s" % (label, path, exc.strerror or exc))
     temp_name = handle.name
     try:
         with handle:
@@ -1875,7 +1916,7 @@ def _write_atomic(path: str, text: str) -> None:
             os.unlink(temp_name)
         except BaseException:
             pass
-        raise _Usage("cannot write --out %s: %s" % (path, exc.strerror or exc))
+        raise _Usage("cannot write %s %s: %s" % (label, path, exc.strerror or exc))
     except BaseException:
         try:
             os.unlink(temp_name)
@@ -1915,7 +1956,7 @@ def _summary(
     kept: int,
     total: int,
     reason: str,
-    curated_counts: Dict[str, int],
+    curated_counts: Dict[str, Any],
 ) -> str:
     line = (
         "precedent-digest: repo=%s plan-session=%d flow=%d review=%d curated=%d "
@@ -1952,21 +1993,24 @@ def _run(argv: Optional[Sequence[str]]) -> int:
 
     curated_root = _curated_root(args.repo) if key is not None else None
     yaml_status = "not_applicable"
-    curated_counts: Dict[str, int] = {
-        "curated_capped": 0, "curated_rejected": 0, "curated_no_rule": 0, "curated_screened": 0,
+    curated_counts: Dict[str, Any] = {
+        "curated_capped": 0, "curated_error": None, "curated_rejected": 0,
+        "curated_no_rule": 0, "curated_screened": 0,
     }
     if curated_root is not None:
         curated_entries: List[Dict[str, Any]] = []
         try:
             pairs, yaml_status = _read_curated_dirs(curated_root)
             curated_entries, curated_counts = collect_curated(curated_root, repo, collected["skipped"], pairs)
-        except Exception:
+        except Exception as exc:
             # Fail closed: any curated-path failure yields zero curated entries and one counted
-            # rejection. Raw entries are untouched and the status file is still written.
-            yaml_status = "unreadable"
+            # rejection, reported as curated_error. yaml_status is left as it was (it stays
+            # not_applicable if the yaml read itself raised). Raw entries are untouched and the
+            # status file is still written.
             curated_entries = []
             curated_counts = {
-                "curated_capped": 0, "curated_rejected": 1, "curated_no_rule": 0, "curated_screened": 0,
+                "curated_capped": 0, "curated_error": type(exc).__name__, "curated_rejected": 1,
+                "curated_no_rule": 0, "curated_screened": 0,
             }
             collected["skipped"][CURATED_SOURCE]["curated_rejected"] += 1
         collected["entries"].extend(curated_entries)
@@ -2014,12 +2058,13 @@ def _run(argv: Optional[Sequence[str]]) -> int:
             "curated_rejected": curated_counts["curated_rejected"],
             "curated_no_rule": curated_counts["curated_no_rule"],
             "curated_screened": curated_counts["curated_screened"],
+            "curated_error": curated_counts["curated_error"],
             "reason": reason or (
                 "" if curated_root is not None
                 else "repo key has no local checkout: curated docs not read"
             ),
         }
-        _write_atomic(args.status_out, json.dumps(status, ensure_ascii=False) + "\n")
+        _write_atomic(args.status_out, json.dumps(status, ensure_ascii=False) + "\n", "--status-out")
     _stderr(_summary(
         repo, _count_sources(entries), skipped_total, linked_skipped, len(output), total, reason,
         curated_counts,

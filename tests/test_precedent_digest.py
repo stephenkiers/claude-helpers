@@ -1168,7 +1168,7 @@ def case_curated_grammar(h):
                                     "| Use the queue | platform team |\n| Drop legacy path | other team |\n"),
         "docs/decisions/nospirit.md": "# No spirit\n\nRule: no spirit here\n",
         "docs/decisions/dup.md": "# Duplicate\n\nRule: first wins\nRule: second loses\n",
-        "docs/decisions/crlf.md": "﻿# Crlf title\r\n\r\nRule: crlf rule\r\nSpirit: crlf spirit\r\n",
+        "docs/decisions/crlf.md": "\ufeff# Crlf title\r\n\r\nRule: crlf rule\r\nSpirit: crlf spirit\r\n",
         "docs/decisions/orphan.md": "Rule: orphan rule without a heading\n",
         "docs/decisions/noRule.md": "# Has heading only\n\nSome prose and nothing else.\n",
         "docs/decisions/README.md": "# Readme\n\nRule: readme must not count\n",
@@ -1257,8 +1257,10 @@ def case_curated_path_safety(h):
         variants.append(("file over 64 KiB", CURATED_YAML, {"docs/decisions/big.md": big}, None))
         for label, yaml_text, files, link in variants:
             repo = curated_repo(fx, "safety-" + label.replace(" ", "-"), yaml_text=yaml_text, files=files)
+            # An empty constraints dir, so the only rejection in each variant is the one under test
+            # (a missing dir is itself a rejection and would mask a broken check).
+            (repo / "docs" / "constraints").mkdir(parents=True, exist_ok=True)
             if link is not None:
-                (repo / "docs").mkdir(parents=True, exist_ok=True)
                 if link[0] == "dir":
                     os.symlink(link[1], repo / "docs" / "decisions")
                 else:
@@ -1267,9 +1269,11 @@ def case_curated_path_safety(h):
             rc, ents, err, st, out = run_curated(fx, repo)
             leaked = OUTSIDE_MARKER in out or OUTSIDE_MARKER in err or any(
                 OUTSIDE_MARKER in json.dumps(e) for e in ents)
-            h.test_result(f"path safety ({label}): counted as curated_rejected",
-                          rc == 0 and st is not None and st.get("curated_rejected", 0) >= 1,
+            h.test_result(f"path safety ({label}): exactly one curated_rejected",
+                          rc == 0 and st is not None and st.get("curated_rejected") == 1,
                           f"rc={rc} status={st}")
+            h.test_result(f"path safety ({label}): no curated entry emitted for the rejected file",
+                          not curated_of(ents), f"n={len(curated_of(ents))}")
             h.test_result(f"path safety ({label}): no outside content in output",
                           not leaked, "outside marker reached stdout/stderr")
         sub = curated_repo(fx, "safety-subdir", files={"docs/decisions/sub/nested.md": RULE_MD})
@@ -1298,6 +1302,16 @@ def case_curated_security_screen(h):
         })
         rc, ents, err, st, _ = run_curated(fx, repo)
         h.test_result("security screen: keyword rule dropped and counted as curated_screened",
+                      rc == 0 and not curated_of(ents) and st is not None and st.get("curated_screened") == 1,
+                      f"n={len(curated_of(ents))} status={st}")
+    # The screen is a case-insensitive substring match, on purpose: "auth" also matches "author".
+    # This pins that over-match, so a switch to whole-word matching is a visible decision.
+    with Fixture() as fx:
+        repo = curated_repo(fx, "screen-author", files={
+            "docs/decisions/author.md": "# Author guide\n\nRule: the author template is canonical\n",
+        })
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("security screen: substring over-match is intentional ('author' contains 'auth')",
                       rc == 0 and not curated_of(ents) and st is not None and st.get("curated_screened") == 1,
                       f"n={len(curated_of(ents))} status={st}")
 
@@ -1335,6 +1349,9 @@ def case_curated_cap(h):
                       st is not None and st.get("curated_capped") == 5 and st.get("curated") == 20,
                       f"status={st}")
         h.test_result("curated cap: stderr reports curated count", "curated=20" in err, err)
+        names = [os.path.basename(e["path"]) for e in curated_of(ents)]
+        h.test_result("curated cap: survivors are the first 20 files in path order",
+                      names == [f"rule-{i:02d}.md" for i in range(20)], f"names={names}")
 
 
 def case_curated_root_resolution(h):
@@ -1347,7 +1364,10 @@ def case_curated_root_resolution(h):
                       f"status={st}")
         h.test_result("curated root: status keys are exactly the pinned set", st is not None and set(st) == {
             "repo_resolved", "curated_root", "yaml", "curated", "curated_capped", "curated_rejected",
-            "curated_no_rule", "curated_screened", "reason"}, f"keys={sorted(st) if st else None}")
+            "curated_no_rule", "curated_screened", "curated_error", "reason"},
+            f"keys={sorted(st) if st else None}")
+        h.test_result("curated root: curated_error is null on a normal run", st is not None
+                      and st.get("curated_error") is None, f"status={st}")
         rc, ents, err, st, _ = run_curated(fx, "owner-name")
         h.test_result("curated root: hyphen key argument gives repo_resolved false, exit 0",
                       rc == 0 and st is not None and st.get("repo_resolved") is False,
@@ -1384,23 +1404,7 @@ def case_curated_fail_closed(h):
             finally:
                 yaml_file.chmod(0o644)
         # Forced exception inside the curated reader: raw output must match a no-curated baseline.
-        driver = fx.home / "driver.py"
-        driver.write_text(
-            "import importlib.util, sys\n"
-            "from unittest import mock\n"
-            "spec = importlib.util.spec_from_file_location('pdig', sys.argv[1])\n"
-            "m = importlib.util.module_from_spec(spec)\n"
-            "spec.loader.exec_module(m)\n"
-            "with mock.patch.object(m, '_read_curated_dirs', side_effect=RuntimeError('forced')):\n"
-            "    sys.exit(m.main(sys.argv[2:]))\n", encoding="utf-8")
-        status = fx.home / "forced-status.json"
-        env = {**os.environ, "HOME": str(fx.home), "TZ": "UTC"}
-        env.pop("CLAUDE_CODE_SESSION_ID", None)
-        proc = subprocess.run([sys.executable, str(driver), str(SCRIPT), str(repo),
-                               "--status-out", str(status)],
-                              capture_output=True, text=True, env=env, cwd=str(fx.home))
-        forced_ents = parse_entries(proc.stdout) if proc.stdout.strip() else []
-        st = json.loads(status.read_text(encoding="utf-8")) if status.exists() else None
+        proc, forced_ents, st = run_driver(fx, "forced", FORCED_READ_BODY, repo)
         _, base_out, _ = run_digest(fx.home, [str(repo)])
         base_raw = [e for e in parse_entries(base_out) if e["source"] != "curated"]
         forced_raw = [e for e in forced_ents if e["source"] != "curated"]
@@ -1408,8 +1412,152 @@ def case_curated_fail_closed(h):
                       proc.returncode == 0 and not curated_of(forced_ents) and st is not None
                       and st.get("curated") == 0 and st.get("curated_rejected", 0) >= 1,
                       f"rc={proc.returncode} stderr={proc.stderr[-300:]} status={st}")
+        h.test_result("fail closed: layer failure reported as curated_error, not as yaml unreadable",
+                      st is not None and st.get("curated_error") == "RuntimeError"
+                      and st.get("yaml") != "unreadable", f"status={st}")
         h.test_result("fail closed: raw output equals the no-curated baseline",
                       forced_raw == base_raw, f"forced={len(forced_raw)} baseline={len(base_raw)}")
+
+
+# Driver bodies: each patches one curated reader in the loaded script, then runs main().
+DRIVER_HEADER = (
+    "import importlib.util, sys\n"
+    "from unittest import mock\n"
+    "spec = importlib.util.spec_from_file_location('pdig', sys.argv[1])\n"
+    "m = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(m)\n"
+)
+FORCED_READ_BODY = (
+    "with mock.patch.object(m, '_read_curated_dirs', side_effect=RuntimeError('forced')):\n"
+    "    sys.exit(m.main(sys.argv[2:]))\n"
+)
+FORCED_SCAN_BODY = (
+    "with mock.patch.object(m, '_scan_curated', side_effect=RuntimeError('forced')):\n"
+    "    sys.exit(m.main(sys.argv[2:]))\n"
+)
+# Every directory entry whose name is 0002-bad.md raises OSError from stat(), as a race would.
+FLAKY_STAT_BODY = (
+    "real_entries = m._dir_entries\n"
+    "class Flaky:\n"
+    "    def __init__(self, entry):\n"
+    "        self._entry = entry\n"
+    "        self.name = entry.name\n"
+    "        self.path = entry.path\n"
+    "    def is_symlink(self):\n"
+    "        return self._entry.is_symlink()\n"
+    "    def is_dir(self):\n"
+    "        return self._entry.is_dir()\n"
+    "    def is_file(self):\n"
+    "        return self._entry.is_file()\n"
+    "    def stat(self, follow_symlinks=True):\n"
+    "        if self.name == '0002-bad.md':\n"
+    "            raise OSError('forced stat failure')\n"
+    "        return self._entry.stat(follow_symlinks=follow_symlinks)\n"
+    "def flaky_entries(path):\n"
+    "    listing = real_entries(path)\n"
+    "    return None if listing is None else [Flaky(e) for e in listing]\n"
+    "with mock.patch.object(m, '_dir_entries', flaky_entries):\n"
+    "    sys.exit(m.main(sys.argv[2:]))\n"
+)
+
+
+def run_driver(fx, name, body, repo, extra=()):
+    """Run the digest through a driver that patches one reader. Returns (proc, entries, status-or-None)."""
+    driver = fx.home / f"driver-{name}.py"
+    driver.write_text(DRIVER_HEADER + body, encoding="utf-8")
+    status = fx.home / f"{name}-status.json"
+    env = {**os.environ, "HOME": str(fx.home), "TZ": "UTC"}
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
+    proc = subprocess.run([sys.executable, str(driver), str(SCRIPT), str(repo),
+                           "--status-out", str(status), *extra],
+                          capture_output=True, text=True, env=env, cwd=str(fx.home))
+    ents = parse_entries(proc.stdout) if proc.stdout.strip() else []
+    st = json.loads(status.read_text(encoding="utf-8")) if status.exists() else None
+    return proc, ents, st
+
+
+def case_curated_scan_layer_failure(h):
+    """A failure inside the scan (not the yaml read) is caught by collect_curated, not the caller."""
+    with Fixture() as fx:
+        repo = curated_repo(fx, "scanfail", files={"docs/decisions/0001-cache.md": RULE_MD})
+        proc, ents, st = run_driver(fx, "scan", FORCED_SCAN_BODY, repo)
+        h.test_result("scan layer failure: exit 0, zero curated, one curated_rejected",
+                      proc.returncode == 0 and not curated_of(ents) and st is not None
+                      and st.get("curated_rejected") == 1 and st.get("curated") == 0,
+                      f"rc={proc.returncode} stderr={proc.stderr[-300:]} status={st}")
+        h.test_result("scan layer failure: curated_error names the exception, yaml stays ok",
+                      st is not None and st.get("curated_error") == "RuntimeError" and st.get("yaml") == "ok",
+                      f"status={st}")
+
+
+def case_curated_per_file_oserror(h):
+    """One file whose stat() raises OSError is counted as one rejection; the rest of the layer reads."""
+    with Fixture() as fx:
+        repo = curated_repo(fx, "perfile", files={
+            "docs/decisions/0001-cache.md": RULE_MD,
+            "docs/decisions/0002-bad.md": "# Bad stat\n\nRule: bad stat rule\n",
+        })
+        (repo / "docs" / "constraints").mkdir(parents=True, exist_ok=True)  # empty, so only the stat failure counts
+        proc, ents, st = run_driver(fx, "flaky", FLAKY_STAT_BODY, repo)
+        headers = [e["header"] for e in curated_of(ents)]
+        h.test_result("per-file OSError: exit 0 and the other curated file still emitted",
+                      proc.returncode == 0 and headers == ["Reads go through the cache layer"],
+                      f"rc={proc.returncode} stderr={proc.stderr[-300:]} headers={headers}")
+        h.test_result("per-file OSError: exactly one curated_rejected, curated_error null, yaml ok",
+                      st is not None and st.get("curated_rejected") == 1 and st.get("curated_error") is None
+                      and st.get("yaml") == "ok", f"status={st}")
+
+
+def case_curated_non_md_silent(h):
+    """Non-.md entries and subdirectories are skipped silently; a non-.md symlink is a rejection."""
+    with Fixture() as fx:
+        repo = curated_repo(fx, "nonmd", files={
+            "docs/decisions/0001-cache.md": RULE_MD,
+            "docs/decisions/notes.txt": "Rule: not a curated file\n",
+            "docs/decisions/data.json": "{}\n",
+            "docs/decisions/subdir/inner.md": RULE_MD,
+        })
+        (repo / "docs" / "constraints").mkdir(parents=True, exist_ok=True)  # empty, so only .md rules count
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("non-md entries: skipped silently, not counted as rejected",
+                      rc == 0 and st is not None and st.get("curated_rejected") == 0
+                      and st.get("curated_no_rule") == 0 and len(curated_of(ents)) == 1,
+                      f"status={st} n={len(curated_of(ents))}")
+        os.symlink(repo / "docs" / "decisions" / "0001-cache.md", repo / "docs" / "decisions" / "linked.txt")
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("non-md symlink: counted as curated_rejected",
+                      rc == 0 and st is not None and st.get("curated_rejected") == 1
+                      and len(curated_of(ents)) == 1, f"status={st} n={len(curated_of(ents))}")
+
+
+def case_curated_oversize_yaml(h):
+    with Fixture() as fx:
+        padded = CURATED_YAML + "# " + ("x" * (64 * 1024)) + "\n"
+        repo = curated_repo(fx, "bigyaml", yaml_text=padded, files={"docs/decisions/0001-cache.md": RULE_MD})
+        rc, ents, err, st, _ = run_curated(fx, repo)
+        h.test_result("oversize yaml (>64 KiB): exit 0, zero curated, no traceback",
+                      rc == 0 and not curated_of(ents) and "Traceback" not in err,
+                      f"rc={rc} err={err[-200:]!r}")
+        h.test_result("oversize yaml: status yaml is unreadable, curated 0, no curated_error",
+                      st is not None and st.get("yaml") == "unreadable" and st.get("curated") == 0
+                      and st.get("curated_error") is None, f"status={st}")
+
+
+def case_status_out_label(h):
+    """An unwritable output names its own flag; --out is written before --status-out fails."""
+    with Fixture() as fx:
+        repo = curated_repo(fx, "statusout", files={"docs/decisions/0001-cache.md": RULE_MD})
+        missing = fx.home / "no-such-dir"
+        rc, _, err = run_digest(fx.home, [str(repo), "--status-out", str(missing / "status.json")])
+        h.test_result("status-out label: unwritable --status-out exits 2 and names --status-out",
+                      rc == 2 and "--status-out" in err and "cannot write --out" not in err, f"rc={rc} err={err!r}")
+        rc, _, err = run_digest(fx.home, [str(repo), "--out", str(missing / "digest.jsonl")])
+        h.test_result("status-out label: unwritable --out still names --out",
+                      rc == 2 and "cannot write --out" in err, f"rc={rc} err={err!r}")
+        out_path = fx.home / "digest.jsonl"
+        rc, _, err = run_digest(fx.home, [str(repo), "--out", str(out_path), "--status-out", str(missing / "s.json")])
+        h.test_result("status-out label: --out written, then --status-out failure exits 2 (documented partial output)",
+                      rc == 2 and out_path.exists() and "--status-out" in err, f"rc={rc} err={err!r}")
 
 
 def main():
@@ -1427,7 +1575,9 @@ def main():
              case_curated_commented_and_unsupported, case_curated_yaml_variants,
              case_curated_path_safety, case_curated_same_dir_once, case_curated_security_screen,
              case_curated_security_keywords_match_step5, case_curated_cap,
-             case_curated_root_resolution, case_curated_fail_closed]
+             case_curated_root_resolution, case_curated_fail_closed,
+             case_curated_scan_layer_failure, case_curated_per_file_oserror, case_curated_non_md_silent,
+             case_curated_oversize_yaml, case_status_out_label]
     for case in cases:
         try:
             case(h)
