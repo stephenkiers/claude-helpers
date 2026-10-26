@@ -52,7 +52,7 @@ NEGATIVE_DIR = FIXTURE_DIR / "negative"
 # Marker group uses (?:[#>-][ \t]*|\*[ \t]+)* to avoid quadratic backtracking (D5).
 SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
 
-# Revert mutants. Each is one edit away from ROUND1_HEADER_PATTERN.
+# Revert mutants: STRICT is the pre-#341 baseline; NO_SEPARATOR and NO_ANCHOR are single-edit mutations.
 STRICT_PATTERN = r"(?m)^ROUND 1\b"  # pre-#341 check
 NO_SEPARATOR_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t]*"
 NO_ANCHOR_PATTERN = r"(?im)ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|$)"
@@ -98,10 +98,11 @@ def passing_negatives(pattern: re.Pattern) -> list:
 
 
 def check_round1_header(receipt: str) -> Optional[str]:
-    """Mirror the verifier's OK-receipt sequence for implement/fix (OUTSTANDING, then ROUND 1).
+    """Mirror the verifier's OUTSTANDING + ROUND 1 check sequence.
 
-    Returns None when the receipt passes, else the verifier's Reason text. Mirrors
-    scripts/flow-verify-receipt.py main(), the --expect-model path.
+    Mirrors only the OUTSTANDING + ROUND 1 check sequence within scripts/flow-verify-receipt.py main()
+    (the --expect-model path), not the entire main() function. Returns None when the receipt passes,
+    else the verifier's Reason text. Assumes receipt.Decision == "OK"; precondition is not validated.
     """
     try:
         _items, has_none, has_items = flow_verify_module.iter_outstanding_lines(receipt)
