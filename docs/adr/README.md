@@ -21,12 +21,14 @@ to North Star Nick).
 - [ADR-0005: Context cascade](0005-three-layer-context-cascade.md) — amended by ADR-0007 (a fourth
   layer; the heading dropped "Three-layer" but the filename is kept for inbound links); amended again
   with `preferences.yaml` as a global user-preference lens; amended again with local-state gitignore
-  guidance for `.claude/project.yaml` and `reviewers/*-local.yaml` (issue #165)
+  guidance for `.claude/project.yaml` and `reviewers/*-local.yaml` (issue #165); its pointer to the
+  ADR-0024 curated carve-out (working-tree reads, display-only) is recorded in its 2026-10-25 amendment
 - [ADR-0006: Reviewer output-format carve-outs](0006-reviewer-output-format-carve-outs.md) — amended
   by ADR-0007 (additive fields are not carve-outs)
 - [ADR-0007: Triage and decision memory](0007-triage-and-decision-memory.md) — amends ADR-0004
   (Triage Chief tier), ADR-0005 (fourth context layer), and ADR-0006 (additive fields); carries its
-  own Amendment recording the dogfooded rulings
+  own Amendment recording the dogfooded rulings; its escape-hatch amendment points to the ADR-0024
+  curated carve-out (working-tree reads, display-only)
 - [ADR-0008: Machine-enforced agent guardrails](0008-machine-enforced-agent-guardrails.md) —
   destructive prose constraints on autonomous agents get a PreToolUse hook, not just a sentence
 - [ADR-0009: Peer review and shared panel](0009-peer-review-and-shared-panel.md) — the blind-first

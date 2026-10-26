@@ -769,20 +769,16 @@ if __name__ == "__main__":
         "Missing 'the project's standing rule'"
     )
 
-    # 'predates' appears only inside a prohibition; every sentence that uses it must be negated.
-    predates_sentences = [s for s in re.split(r"(?<=[.!?])\s+|\n", prompt_text) if "predates" in s]
-    negated = [s for s in predates_sentences
-               if re.search(r"\b(never|not|don't|do not|must not|no)\b", s, re.IGNORECASE)]
     test_result(
-        "10.3 prompt: 'predates' only in a negated prohibition",
-        len(predates_sentences) == len(negated),
-        f"un-negated 'predates' sentences: {[s for s in predates_sentences if s not in negated]}"
+        "10.3 prompt: forbids framing the raw answer as having come before the curated rule",
+        "Do not frame the raw answer as having come before the rule" in prompt_text,
+        "Missing the 'Do not frame the raw answer as having come before the rule' prohibition"
     )
 
     test_result(
         "10.4 prompt: conflicting raw answer is also cited and named",
-        "also cite" in prompt_text and "conflict" in prompt_text.lower(),
-        "Missing 'also cite' raw prior + conflict wording"
+        "also cite that raw prior" in prompt_text and "name the conflict in Why and Distinguish" in prompt_text,
+        "Missing 'also cite that raw prior' + 'name the conflict in Why and Distinguish' wording"
     )
 
     test_result(
@@ -799,20 +795,20 @@ if __name__ == "__main__":
 
     test_result(
         "10.7 prompt: option mapping uses verbatim label and stays silent when no option clearly follows",
-        "verbatim" in prompt_text and "silent" in prompt_text,
-        "Missing verbatim-label / stay-silent option mapping rule"
+        "using that option's verbatim label; stay silent if no option clearly follows from the rule" in prompt_text,
+        "Missing curated verbatim-label / stay-silent option mapping rule"
     )
 
     test_result(
         "10.8 prompt: citation order - curated cited first, before external",
-        "cited first" in prompt_text and "user priors before external" in prompt_text,
+        "Curated entries are cited first even though they are not user priors" in prompt_text,
         "Missing citation-order carve-out wording"
     )
 
     test_result(
         "10.9 prompt: one curated rule is one citation slot",
-        "one citation slot" in prompt_text,
-        "Missing 'one citation slot' two-citation rule"
+        "or on one curated rule (one citation slot)" in prompt_text,
+        "Missing 'or on one curated rule (one citation slot)' rule"
     )
 
     adr_0024_text = (DOCS_ADR_DIR / "0024-precedent-pat.md").read_text() if (DOCS_ADR_DIR / "0024-precedent-pat.md").exists() else ""
@@ -842,9 +838,9 @@ if __name__ == "__main__":
 
     claude_md_text = (REPO_ROOT / "CLAUDE.md").read_text() if (REPO_ROOT / "CLAUDE.md").exists() else ""
     test_result(
-        "10.14 CLAUDE.md: Precedent Pat section names the curated source file and strategicDocuments",
+        "10.14 CLAUDE.md: Precedent Pat section names the curated source file, strategicDocuments and both curated keys",
         "north-star-nick-local.yaml" in claude_md_text and "strategicDocuments" in claude_md_text
-        and "curated" in claude_md_text,
+        and "decisionsDirectory" in claude_md_text and "constraintsDirectory" in claude_md_text,
         "CLAUDE.md missing curated layer description"
     )
 
@@ -859,7 +855,7 @@ if __name__ == "__main__":
     test_result(
         "10.16 reviewers/README.md documents both curated keys and the block-style subset",
         "decisionsDirectory" in reviewers_readme and "constraintsDirectory" in reviewers_readme
-        and "block" in reviewers_readme.lower(),
+        and "block-style yaml subset" in reviewers_readme,
         "reviewers/README.md missing curated key documentation"
     )
 
@@ -875,7 +871,7 @@ if __name__ == "__main__":
     expert_plan_text = (REPO_ROOT / "commands" / "expert-plan.md").read_text() if (REPO_ROOT / "commands" / "expert-plan.md").exists() else ""
     test_result(
         "10.18 expert-plan.md: status file, precedent-digest decisions line, and digest-failed reason present",
-        "precedent-digest.status.json" in expert_plan_text and "precedent-digest:" in expert_plan_text
+        "precedent-digest.status.json" in expert_plan_text and "precedent-digest: curated_root=" in expert_plan_text
         and "digest-failed" in expert_plan_text,
         "expert-plan.md missing status-file / precedent-digest line / digest-failed reason"
     )

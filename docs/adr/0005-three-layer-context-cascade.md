@@ -62,6 +62,8 @@ override.
 cascade reverts to three layers. See [ADR-0007](0007-triage-and-decision-memory.md)'s second
 amendment for rationale.
 
+**Pointer (ADR-0024 curated layer, 2026-10-25):** [ADR-0024](0024-precedent-pat.md)'s curated amendment is a narrow carve-out from the rule above that decided truth stays out of tracked files. Its project-authored decision and constraint files are read from the working tree. The curated layer is display-only: it suppresses nothing. See ADR-0024's 2026-10-25 curated amendment, including its accepted working-tree risk.
+
 ## Amendment — user preferences as a global lens layer
 
 Preferences.yaml adds a fourth layer at global-user scope, sitting **above** the three-layer

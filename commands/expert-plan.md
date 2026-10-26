@@ -669,7 +669,7 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    ```
    Fields: `id` = brief handle (e.g., `Q1`, `Q2`); `header` = brief title line; `question` = the question text and Why-it-matters prose joined and normalised; `options` = exact option label strings (no `(Recommended)` marker); `recommended` = the panel's recommended option label.
 
-3. **Digest.** Dispatch to `precedent-digest.py` with project scope. Pass the project root (`"$PROJECT_ROOT"`), not the repo key: the digest derives the repo key from the origin remote and reads curated decision and constraint docs from this working tree. Its diagnostics go to a status file that this step reads, because stderr is discarded.
+3. **Digest.** Dispatch to `precedent-digest.py` with project scope. Pass the project root (`"$PROJECT_ROOT"`), not `REPO_KEY`. The digest uses that root only to read curated decision and constraint docs from this working tree. It derives its own repo key from the origin remote, which can differ from `REPO_KEY` (set from `gh repo view`). Step 5 does not compare the two keys; the curated read is anchored to `PROJECT_ROOT` alone. Its diagnostics go to a status file that this step reads, because stderr is discarded.
    ```bash
    DIGEST_RC=0
    python3 "$HOME/.claude/scripts/precedent-digest.py" "$PROJECT_ROOT" --match "${SESSION_DIR}/precedent-questions.json" --top 60 --out "${SESSION_DIR}/precedent-digest.raw.jsonl" --status-out "${SESSION_DIR}/precedent-digest.status.json" 2>/dev/null || DIGEST_RC=$?
