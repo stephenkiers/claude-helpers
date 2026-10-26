@@ -2,12 +2,13 @@
 """
 Wording contract for the implement/fix check gate (#338).
 
-Two shipped surfaces must tell a user how to opt out of the implement/fix gate and what the
-not-configured failure means:
+Three shipped surfaces must tell a user or a step agent how the gate behaves:
 - prompts/project.yaml.template documents checkOptOut and its scope (implement/fix only;
   verify and ship still need a check).
 - commands/expert-flow.md quotes the exact not-configured message the resolver emits, taken at
   runtime from scripts/workflow/checks.py so the doc cannot drift from the code.
+- commands/implement-with-haiku.md's Final check names exactly one wait primitive for the
+  check run (run_in_background under the join-barrier rule) and never tells the agent to poll.
 
 Run with: python3 tests/test_check_gate_doc_wording.py
 """
@@ -23,6 +24,10 @@ from workflow.checks import NO_CHECK_CONFIGURED_MESSAGE
 
 TEMPLATE = REPO_ROOT / "prompts" / "project.yaml.template"
 EXPERT_FLOW = REPO_ROOT / "commands" / "expert-flow.md"
+IMPLEMENT_WITH_HAIKU = REPO_ROOT / "commands" / "implement-with-haiku.md"
+
+FINAL_CHECK_HEADING = "## Final check ("
+FINAL_CHECK_END = "## Report-file handoff check"
 
 
 def read(path):
@@ -31,6 +36,17 @@ def read(path):
         return path.read_text()
     except OSError:
         return ""
+
+
+def final_check_section(text):
+    """Return the Final check section of implement-with-haiku.md, or '' if not found."""
+    start = text.find(FINAL_CHECK_HEADING)
+    if start == -1:
+        return ""
+    end = text.find(FINAL_CHECK_END, start)
+    if end == -1:
+        return text[start:]
+    return text[start:end]
 
 
 if __name__ == "__main__":
@@ -45,7 +61,7 @@ if __name__ == "__main__":
         template != "",
         f"path={TEMPLATE}",
     )
-    for token in ("checkOptOut", "implement/fix", "verify", "ship", "opted-out"):
+    for token in ("checkOptOut", "implement/fix", "verify and ship", "opted-out"):
         test_result(
             f"project.yaml.template mentions {token!r}",
             token in template,
@@ -66,6 +82,43 @@ if __name__ == "__main__":
         NO_CHECK_CONFIGURED_MESSAGE in expert_flow,
         f"constant={NO_CHECK_CONFIGURED_MESSAGE[:120]!r}",
     )
+
+    print()
+    print("[Section 3] commands/implement-with-haiku.md Final check names one wait primitive (#338)")
+
+    implement = read(IMPLEMENT_WITH_HAIKU)
+    test_result(
+        "implement-with-haiku.md exists and is readable",
+        implement != "",
+        f"path={IMPLEMENT_WITH_HAIKU}",
+    )
+    final_check = final_check_section(implement)
+    test_result(
+        "implement-with-haiku.md has a Final check section",
+        final_check != "",
+        f"heading={FINAL_CHECK_HEADING!r}",
+    )
+    test_result(
+        "Final check launches the check run with run_in_background",
+        "run_in_background" in final_check,
+        "missing 'run_in_background' in Final check section",
+    )
+    test_result(
+        "Final check cites the join-barrier wait rule",
+        "join-barrier-pattern.md" in final_check,
+        "missing 'join-barrier-pattern.md' in Final check section",
+    )
+    test_result(
+        "Final check states the never-poll rule",
+        "never poll" in final_check,
+        "missing 'never poll' in Final check section",
+    )
+    for stale in ("Poll the background task", "never polled", "is polled"):
+        test_result(
+            f"Final check no longer tells the agent to poll ({stale!r} absent)",
+            stale not in final_check,
+            f"found stale poll wording {stale!r} in Final check section",
+        )
 
     print()
     h.summarize_and_exit()

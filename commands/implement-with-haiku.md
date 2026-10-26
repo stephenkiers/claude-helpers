@@ -32,7 +32,7 @@ each one marks:
 - `resume_cancelled`, `ancestry_invalid_after_drift` — Step 0 HEAD-drift handling
 - `all_units_failed` — Step 4d, all units failed
 - `gate_not_converged` — Integration gate step 4.6, failed after K=3 iterations, or the Final check fix loop failed after K=3 iterations
-- `check_not_run` — Final check, the resolved check could not run (timed out, not executable, runner or resolver unavailable, or never polled to completion)
+- `check_not_run` — Final check, the resolved check could not run (timed out, not executable, runner or resolver unavailable, or whose wait never completes)
 - `check_not_configured` — Final check, no check command resolved and no opt-out recorded
 - `implementer_shortfall` — Step 7, a single-unit implementer fell short, and the failure was escalated to Sonnet
 
@@ -172,6 +172,7 @@ When `FLOW_DIR` is set:
   (Optional blocks `INCOMPLETE_STEPS:`, `PARTIAL_WORK:`, and `DISCARDED_ADDED_FILES:` are omitted when empty.
   On escalated attempts, when `PARTIAL_WORK:` or `DISCARDED_ADDED_FILES:` are present they are included;
   when absent, they are omitted.)
+  **FAILURE_CLASS spelling.** Telemetry `--failure-class` values are snake_case (the list at the top of this doc). Receipt `FAILURE_CLASS:` values use the same snake_case spelling, with one exception: the receipt value is `implementer-shortfall` (hyphen), where the telemetry value is `implementer_shortfall`. Reasons on the `Reason:` line are hyphenated prose (`check-not-run: <detail>`, `gate-not-converged`) and are never `FAILURE_CLASS` values.
   The Final check's hard stops use the Reasons `check-not-run: <detail>` and `check-not-configured` (with
   `FAILURE_CLASS: check_not_run` or `check_not_configured`). A FAILED receipt written at or after the
   Final check also carries the `CHECK:`, `CHECK_EXIT:`, `CHECK_SOURCE:`, and `CHECK_SHA:` key lines
@@ -1104,7 +1105,7 @@ pnpm run typecheck
 
 Record: **build pass | fail** and any error output.
 
-Never wrap any gate or check command in `timeout` or `gtimeout`. Any command that can exceed the 600s foreground Bash ceiling runs with `run_in_background` and is polled.
+Never wrap any gate or check command in `timeout` or `gtimeout`. Any command that can exceed the 600s foreground Bash ceiling runs with `run_in_background` and is waited on under the join-barrier rule (end your turn; never poll).
 
 ### Gate step 2: Anti-tamper scan
 
@@ -1781,8 +1782,8 @@ existing Python runner, on the tree the step hands on.
 
 **When it runs.** Exactly once per step, after the step's last commit. It is never skippable.
 - When Round 4 runs: after 4.6's `git commit` and the `round4` ledger row.
-- When round sizing skips Round 4 (`mechanical`), or the step otherwise reaches the Final summary with
-  commits made: immediately before the Final summary.
+- When round sizing skips Round 4 (`mechanical`), or the step otherwise reaches the Final summary: immediately before the Final summary, whether or not the step made commits.
+- A step that made zero commits (for example, the zero-commit carve-out for a fix with no *Doing it* items) still runs the Final check. It checks HEAD as it stands, writes the same CHECK key lines, and records the same outcome. One rule covers every OK receipt, and a no-op step on an unchanged HEAD still gets a real pass or fail.
 
 **Placeholders.** `<WORKTREE>` is the absolute path of the worktree this run applies and commits in (the
 tree the integration gate ran on). `<MAIN_WORKTREE>` is the absolute path of the repo's main worktree.
@@ -1790,6 +1791,8 @@ tree the integration gate ran on). `<MAIN_WORKTREE>` is the absolute path of the
 survive between Bash calls, so each block below re-reads what it needs from the scratch files. The
 `CHECK_SHA` the receipt carries is read from `<SCRATCH_PATH>/check-sha.txt` when the receipt is written
 (for an opt-out, the current HEAD).
+
+**Landing order.** #338 lands first. #336, #351, and #352 touch this same check gate and rebase onto it; they do not land ahead of it.
 
 **1. Resolve the check.** Write the resolver's JSON to a scratch file:
 ```bash
@@ -1822,16 +1825,22 @@ printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
 CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --argjson t "$TIMEOUT" '{commands: {check: $cmd}, checkTimeoutSecs: $t}')
 cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - > <SCRATCH_PATH>/full-check.json
 ```
-Never wrap this in `timeout` or `gtimeout` (see Gate step 1). Poll the background task until it exits. A
-run that is never polled to completion is `check-not-run`. The background task's exit status is the
-runner's exit status.
+Never wrap this in `timeout` or `gtimeout` (see Gate step 1). Before launching the run, require a clean tree:
+`cd <WORKTREE> && git status --porcelain` must print nothing. Any output is the not-run outcome
+`check-not-run: worktree not clean` (see the table). `CHECK_SHA` attests a commit, not a tree, so the
+clean-tree checks before and after the run are what tie the check to the tree the step hands on.
 
-**3. Check that HEAD did not move.** After the run exits, re-read the tree:
+Launch the run with `run_in_background` and wait for it with the join-barrier wait.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while the background task is outstanding; never poll. A run whose wait never completes is `check-not-run`. The background task's exit status is the runner's exit status.
+
+**3. Check that HEAD and the tree did not move.** After the run exits, re-read the tree:
 ```bash
 cd <WORKTREE> && git rev-parse HEAD
 ```
 If it differs from the SHA in `<SCRATCH_PATH>/check-sha.txt`, something committed during the run. That
-counts as **not run**, with Reason `check-not-run: HEAD moved during check`.
+counts as **not run**, with Reason `check-not-run: HEAD moved during check`. Then run
+`cd <WORKTREE> && git status --porcelain` again. Any output means the tree changed during the run, which is
+**not run** with Reason `check-not-run: worktree not clean`.
 
 **4. Outcome mapping.** Branch on the resolver result first, then on the runner result in
 `full-check.json` and the background task's exit status:
@@ -1843,7 +1852,8 @@ counts as **not run**, with Reason `check-not-run: HEAD moved during check`.
 | exit `1`, a failed step's `returncode` is `126`/`127` | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>`; no fix loop |
 | exit `1` otherwise | real failure | Final check fix loop (below) |
 | exit `1` with no `results` key in `full-check.json` (the runner rejected its input before any check ran) | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>`; no fix loop |
-| exit `2`, any other exit, missing or unparseable `full-check.json`, or a run never polled to completion | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>` |
+| exit `2`, any other exit, missing or unparseable `full-check.json`, or a run whose wait never completes | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>` |
+| `git status --porcelain` printed anything before the run or after it | **not run** | hard stop, FAILED, Reason `check-not-run: worktree not clean`; no fix loop |
 | resolver `source: "opt-out"` | no run | record `CHECK: opted-out`, `CHECK_EXIT: none`, `CHECK_SOURCE: opt-out`, `CHECK_SHA: <HEAD>`; proceed |
 | resolver crashed (`resolve-check.json` has `timeout_source: null`, or `source` and `command` both null alongside a `failure_reason` that is not the no-check message) | **not run** | hard stop, FAILED, Reason `check-not-run: resolver failed: <failure_reason>`; no fix loop |
 | resolver failure with no opt-out | not configured | hard stop, FAILED, Reason `check-not-configured`; body carries the resolver's `failure_reason` verbatim (names `.claude/project.yaml`, `commands.check`, and the opt-out's implement/fix-only scope) |
@@ -1861,7 +1871,7 @@ Use only the line that matches the outcome. A not-run hard stop appends no `full
 render shows the step as `NOT RUN`.
 
 **Final check fix loop (real failure only).** The `exit 1 otherwise` row. This loop has its own bound of
-K=3 iterations, because the integration gate's budget closed before the fan-out. Each iteration:
+K=3 iterations, because the integration gate's budget closed before the fan-out. #380 overlaps this loop, so change its bound or shape only together with #380. Each iteration:
 1. Emit `FINAL CHECK attempt <i>/<K>: dispatching fix-Haiku`. Hand the failing output to a fix-Haiku using
    the Gate step 4 procedure (same prompt shape, same anti-tamper scan on its diff). Read the failing
    output with `grep` or `tail`, not the whole log.
@@ -1883,9 +1893,11 @@ last run.
   ```bash
   printf '%s DONE full-check %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/full-check.json" >> "<LEDGER_PATH>"
   ```
-  For an opt-out, write a one-line scratch file and point the row at it:
+  For an opt-out, write a one-line scratch file and point the row at it. Read the reason with `jq` and
+  write it with `printf '%s\n'`; the reason never goes into the shell script text:
   ```bash
-  printf '%s\n' "CHECK: opted-out (<reason from source: opt-out>)" > "<SCRATCH_PATH>/full-check.txt"
+  OPT_OUT_REASON=$(jq -r '.opt_out_reason // empty' "<SCRATCH_PATH>/resolve-check.json")
+  printf '%s\n' "CHECK: opted-out (${OPT_OUT_REASON})" > "<SCRATCH_PATH>/full-check.txt"
   printf '%s DONE full-check %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/full-check.txt" >> "<LEDGER_PATH>"
   ```
 - **Key lines.** Use the outcome-table values. On a pass, `CHECK:` is the resolved command verbatim,
