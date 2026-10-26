@@ -251,7 +251,7 @@ case "$PLAN_FILE_FLAG" in *[!A-Za-z0-9._/~+:=@,-]*) flag_bad "--plan-file path m
 [ -n "$FROM_STEP" ] && [ "$EPIC" = yes ] && flag_bad "--from cannot be combined with --epic"
 [ -n "$REDO_REF" ] && [ -z "$RESUME_REF" ] && flag_bad "--redo requires --resume"
 case "$REDO_REF" in ""|plan|review) ;; *) flag_bad "--redo must be plan or review" ;; esac
-[ "$FLEET" = yes ] && { [ -n "$ABANDON_REF$RETRO_REF$FROM_STEP" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--fleet combines only with an issue, --resume, --plan-effort, and --review-effort"
+[ "$FLEET" = yes ] && { [ "$GATES" = yes ] || [ -n "$ABANDON_REF$RETRO_REF$FROM_STEP$REDO_REF" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--fleet combines only with an issue, --resume, --plan-effort, and --review-effort"
 [ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
 [ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
 [ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"

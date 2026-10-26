@@ -8,6 +8,7 @@ These tests assert two hard constraints:
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,14 +33,19 @@ def main():
     expert_flow_text = EXPERT_FLOW_CMD.read_text()
 
     # Find the argument parsing block
-    import re
     match = re.search(
         r"### Argument parsing\n\n```bash\n(.*?)\n```",
         expert_flow_text,
         re.DOTALL
     )
 
-    if match:
+    if not match:
+        h.test_result(
+            "Argument parsing bash block found",
+            False,
+            "### Argument parsing bash block not found in expert-flow.md"
+        )
+    else:
         bash_block = match.group(1)
         # Run the extracted block with test arguments
         # The bash block is parameterized: it reads arguments from $@ and populates variables
@@ -58,57 +64,31 @@ def main():
             f"BAD={bad_output}"
         )
 
-        # Test with 12 --fleet (should pass, but pre-merge --fleet isn't recognized yet)
+        # Test with 12 --fleet (BAD must be exactly empty)
         result = subprocess.run(
             ["bash", "-c", cmd, "_", "12", "--fleet"],
             capture_output=True,
             text=True,
         )
         bad_output_pass = result.stdout
-        # Accept either: unknown flag (pre-merge) or empty BAD (post-merge)
-        fleet_recognized = len(bad_output_pass) == 0
-        fleet_unknown = "unknown flag: --fleet" in bad_output_pass
         h.test_result(
-            "Parser: 12 --fleet (pre/post-merge)",
-            fleet_recognized or fleet_unknown,
+            "Parser: 12 --fleet accepts (empty BAD)",
+            bad_output_pass == "",
             f"BAD={bad_output_pass}"
         )
 
-        # Test with --resume 12 --fleet (should pass, but pre-merge --fleet isn't recognized yet)
+        # Test with --resume 12 --fleet (BAD must be exactly empty)
         result = subprocess.run(
             ["bash", "-c", cmd, "_", "--resume", "12", "--fleet"],
             capture_output=True,
             text=True,
         )
         bad_output_resume = result.stdout
-        # Accept either: unknown flag (pre-merge) or empty BAD (post-merge)
-        fleet_recognized_resume = len(bad_output_resume) == 0
-        fleet_unknown_resume = "unknown flag: --fleet" in bad_output_resume
         h.test_result(
-            "Parser: --resume 12 --fleet (pre/post-merge)",
-            fleet_recognized_resume or fleet_unknown_resume,
+            "Parser: --resume 12 --fleet accepts (empty BAD)",
+            bad_output_resume == "",
             f"BAD={bad_output_resume}"
         )
-    else:
-        # The fleet argument hasn't been ported to main's expert-flow.md yet.
-        # Fall back to asserting the exact rejection-line text structure.
-        # Check that the rejection line exists and contains [ "$GATES" = yes ] inside a FLEET guard.
-        if "--fleet" in expert_flow_text:
-            # Fleet mode is present; check for the rejection pattern
-            has_fleet_guard = "[ \"$FLEET\" = yes ]" in expert_flow_text
-            has_auto_merge_check = "AUTO_MERGE" in expert_flow_text
-            h.test_result(
-                "Expert-flow.md contains --fleet parser support",
-                has_fleet_guard and has_auto_merge_check,
-                "Missing --fleet or AUTO_MERGE check in parser"
-            )
-        else:
-            # Fleet mode not ported yet; this is expected
-            h.test_result(
-                "Parser case 1: Fleet mode not yet ported to main",
-                True,
-                "commands/expert-flow.md does not contain --fleet yet; port is in a sibling worktree"
-            )
 
     # Case 2: Default permission_mode is not bypassPermissions
     with tempfile.TemporaryDirectory() as tmp:
