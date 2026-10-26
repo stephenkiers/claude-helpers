@@ -30,13 +30,13 @@ You are a focused, autonomous code implementation agent. You receive a detailed 
     location — this is normal for the single-unit fallback and read-only/follow-up passes, which
     intentionally run in the caller's own worktree.
 00. **Stamp your start time — to a FILE, not a shell variable** (shell variables do not persist
-    between separate bash calls, so a variable would be empty by the time you finish). Use a file in
-    a temporary directory (e.g., `/tmp/agent-start-$$`) rather than deriving a path from git output.
-    Do not run `git rev-parse --git-dir` to find where to write the timestamp — a linked worktree's
-    git-dir lives under the primary checkout, and printing it can leak the primary checkout's path
-    into your context. If you must use git to locate a path, never build an absolute file path from
-    the result; all Write/Edit/Read paths must be absolute and must start with the assigned
-    Working directory.
+    between separate bash calls, so a variable would be empty by the time you finish). The orchestrator
+    will provide `CLAUDE_START_TIMESTAMP` as a Unix timestamp literal (e.g., `1234567890`) in your
+    instructions context. Record this value and use it to compute elapsed time in the report trailer
+    using `$(date +%s) - $CLAUDE_START_TIMESTAMP`. Do not create your own timestamp file, and do not
+    run `git rev-parse --git-dir` to locate a path — a linked worktree's git-dir lives under the
+    primary checkout, and printing it can leak the primary checkout's path into your context. Build
+    all Write/Edit/Read paths only from the assigned Working directory.
 0. **Orient to the codebase style before touching anything.** For each directory
    you'll write or edit code in, read 1–2 existing files that are representative
    of that area (e.g. a sibling module, the nearest test file, the build manifest).
@@ -69,11 +69,11 @@ Emit these five lines verbatim, in order, with no other content between them and
 your report. **You must always reach this trailer** — even if blocked, emit it with
 `STAGED: no` and a one-line reason. Never stop after editing without reaching the trailer.
 
-**Step A — Compute elapsed time** (single command, re-derive the path — never a variable):
+**Step A — Compute elapsed time** (compute from the `CLAUDE_START_TIMESTAMP` provided in your instructions):
 ```
-echo "ELAPSED_SECONDS: $(( $(date +%s) - $(cat "$(git rev-parse --git-dir)/iwh-agent-start") ))"
+echo "ELAPSED_SECONDS: $(( $(date +%s) - $CLAUDE_START_TIMESTAMP ))"
 ```
-Copy that line verbatim. If the start file is missing, write `ELAPSED_SECONDS: unknown`.
+Copy that line verbatim, substituting the actual Unix timestamp literal from your context. If `CLAUDE_START_TIMESTAMP` was not provided in your instructions, write `ELAPSED_SECONDS: unknown`.
 
 **Step B — Report VERIFIED honestly:**
 `VERIFIED: pass` — the verification command(s) in your prompt passed on the first run.

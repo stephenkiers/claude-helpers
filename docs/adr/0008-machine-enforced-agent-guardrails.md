@@ -173,7 +173,7 @@ amendment corrects that statement and records the actual prevention contract.
 
 **Cause investigation (#293, 2026-10-19, docs unit transcript analysis):**
 The drifted #293 unit's first Bash call was `date +%s > "$(git rev-parse --git-dir)/iwh-agent-start"`.
-The output printed `/Users/stephenkiers/Repositories/claude-helpers/worktrees/main/.git/worktrees/293-...-haiku-docs`.
+The output printed `~/.../worktrees/main/.git/worktrees/293-...-haiku-docs` (the primary checkout path).
 This was the FIRST appearance of the primary checkout path in the agent's context. The unit then Read
 and Edited absolute paths under the primary checkout (worktrees/main), despite the assigned Working
 directory being the ticket worktree.
@@ -210,7 +210,8 @@ is:
    decides what to do by hand (no auto-salvage).
 
 Spelling convention: receipt `FAILURE_CLASS:` value is hyphenated `cwd-drift`; telemetry failure
-class is underscored `cwd_drift`.
+class is underscored `cwd_drift`. This is a hard stop (see ADR-0023 for cwd-drift as a never-auto-remediated
+incident class in the lifecycle).
 
 **Earlier amendment corrections:**
 - The sentence near line ~115 saying the measures "together close the incident class" was
@@ -233,5 +234,10 @@ class is underscored `cwd_drift`.
 **Known gaps:**
 - Sibling worktrees under the repo root are not inspected. W1 deferred this — it multiplies false
   positives from concurrent flows. The helper accepts a list of paths.
-- Re-edits of already-dirty planned files are invisible to a status comparison. Mitigation: a `WARN
-  pre-dirty-planned` line makes the gap visible on each run.
+- Re-edits of already-dirty planned files may only appear as WARN (not FAIL) if the same-XY file
+  edits do not create measurably-new drift outside the baseline status. Mitigation: a `WARN
+  pre-dirty-planned` line makes the gap visible on each run. This is rare and only occurs when a file
+  was dirty before the agent started, the agent edits it, and the result is not detectably different
+  from the pre-agent state.
+- The detector baseline (#336) and barrier checks are required to prevent drift class incidents (#338
+  implements a `just check` timeout addressing a consequence; both are independent fixes).
