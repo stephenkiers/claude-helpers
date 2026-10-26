@@ -24,6 +24,7 @@ from typing import Any, Callable, List, NamedTuple, Optional, TypeVar
 # Add scripts/ to path so we can import telemetry_schema
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telemetry_schema
+import flow_agent_buckets
 
 # Defense-in-depth constants
 MAX_STDIN_BYTES = 1_048_576  # 1 MiB — hook payloads are small metadata blobs, never larger
@@ -1105,6 +1106,13 @@ def cmd_diagnose(args):
 
     unknown_pct = 0.0 if total_token_fields == 0 else unknown_token_fields / total_token_fields
 
+    # Bucket flow step agents (with pre-cutover general-purpose agents in flow sessions)
+    flow_bucket = flow_agent_buckets.bucket_flow_agent_rows(
+        filtered_events,
+        flow_agent_buckets.FLOW_AGENT_CUTOVER_DATE,
+        flow_agent_buckets.PROBE_SESSION_IDS,
+    )
+
     # Report
     print(f"Match rate: {match_rate:.1%} ({total_matched}/{total_begins} begin/end pairs matched)")
     print(f"Unknown token fields: {unknown_pct:.1%}")
@@ -1113,6 +1121,13 @@ def cmd_diagnose(args):
         # Separate line so the count line above keeps its format; lists which ids were dropped
         # so the drop is auditable (it does not detect a real row reusing a fixture id).
         print(f"Excluded fixture session_ids: {', '.join(excluded_fixture_ids)}")
+
+    # Flow step agents bucket (with probe sessions excluded)
+    flow_agent_total = flow_bucket["flow_step_agent_count"] + flow_bucket["pre_cutover_general_purpose_in_flow_count"]
+    if flow_agent_total > 0:
+        print(f"Flow step agents (cutover date {flow_bucket['cutover_date']}): {flow_bucket['flow_step_agent_count']} flow-implement/flow-review + {flow_bucket['pre_cutover_general_purpose_in_flow_count']} pre-cutover general-purpose in flow sessions = {flow_agent_total}")
+    if flow_bucket["excluded_probe_sessions"] > 0:
+        print(f"Excluded probe sessions: {flow_bucket['excluded_probe_sessions']} (Step 2 hermetic probes)")
 
     # Per-stage match rate breakdown
     stage_name_totals = {}  # stage_name -> [begins, matched]
