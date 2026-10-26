@@ -7,6 +7,13 @@ The fixtures in tests/fixtures/round1/ are trimmed, scrubbed copies of real rece
 shapes (positive/synth-*.md, negative/synth-*.md). This test reads only those fixtures, never
 ~/.claude.
 
+Four observed real-receipt shapes are pinned with fixtures: (a) #315 prose-line Round 1 pass
+(flow 315); (b) TAKEOVER implement receipt (flow 1650); (c) fix receipt with only ROUND SIZING
+(flow 1777); (d) empty-round fix receipt (flow 363). Each fixture asserts its intended verdict
+(stop or pass): (a) pass; (b)–(d) stop. This test found no live paraphrase failure: 125 of 128
+OK receipts pass the current header regex, and the 3 misses are shapes (b), (c), (d). Verdicts
+are rule-5 (header) verdict only; rule 7 and other rules are not reflected here.
+
 Each test runs the verifier's module-level pattern (ROUND1_HEADER_RE) against the fixtures, and
 each revert test runs a mutant pattern to show the fixtures would catch that revert:
 
@@ -56,9 +63,17 @@ POSITIVE_REAL = [
     "real-plus-join.md",
     "real-not-run.md",
     "real-colon-units.md",
+    "real-315-prose-round1-colon.md",
 ]
 POSITIVE_SYNTH = ["synth-bold.md", "synth-h2.md", "synth-indented.md"]
-NEGATIVE_FILES = ["real-status-lines-no-header.md", "synth-prose-only.md", "synth-no-round.md"]
+NEGATIVE_FILES = [
+    "real-status-lines-no-header.md",
+    "synth-prose-only.md",
+    "synth-no-round.md",
+    "real-takeover-implement.md",
+    "real-round-sizing-only-fix.md",
+    "real-empty-round-fix.md",
+]
 
 
 def read_fixture(directory: Path, name: str) -> str:
@@ -77,6 +92,29 @@ def failing_positives(pattern: re.Pattern) -> list:
 def passing_negatives(pattern: re.Pattern) -> list:
     """Negative fixtures the given pattern wrongly matches."""
     return [name for name in NEGATIVE_FILES if pattern.search(read_fixture(NEGATIVE_DIR, name))]
+
+
+# OBSERVED_SHAPES: Per-shape verdict assertions (#322 Step 3).
+# Each entry maps a fixture name to (intended verdict, one-line rationale).
+# Verdict: True = pass (header found), False = stop (no header).
+OBSERVED_SHAPES = {
+    "real-315-prose-round1-colon.md": (
+        True,
+        "receipt has line-start 'Round 1:' header; header alone suffices"
+    ),
+    "real-takeover-implement.md": (
+        False,
+        "TAKEOVER receipt says 'not a /implement-with-haiku run: no integration gate'; human takeover skips receipt validation"
+    ),
+    "real-round-sizing-only-fix.md": (
+        False,
+        "no-op attempt 2; no ROUND 1 header shows round 1 ran in this attempt; fail-closed"
+    ),
+    "real-empty-round-fix.md": (
+        False,
+        "empty round; pipeline did not run, receipt missing ROUND lines"
+    ),
+}
 
 
 def main() -> None:
@@ -129,6 +167,25 @@ def main() -> None:
             if "/Users/" in text or "/home/" in text or "~/" in text:
                 leaks.append(path.name)
     h.test_result("Fixtures carry no absolute paths", leaks == [], f"leaks={leaks}")
+
+    # Observed shapes: each fixture asserts its intended rule-5 verdict (#322 Step 3).
+    for fixture_name, (expected_verdict, rationale) in OBSERVED_SHAPES.items():
+        fixture_text = read_fixture(NEGATIVE_DIR if not expected_verdict else POSITIVE_DIR, fixture_name)
+        has_header = bool(ROUND1_HEADER_RE.search(fixture_text))
+        verdict = has_header  # True = pass, False = stop
+        h.test_result(
+            f"Shape {fixture_name}: {rationale}",
+            verdict == expected_verdict,
+            f"expected={'pass' if expected_verdict else 'stop'}, got={'pass' if verdict else 'stop'}"
+        )
+
+    # Strict mutant: real-315-prose-round1-colon.md (mixed-case Round 1) must be rejected by ^ROUND 1\b.
+    strict_real = failing_positives(re.compile(STRICT_PATTERN))
+    h.test_result(
+        "Shape (a) real-315-prose-round1-colon.md is in strict mutant rejects",
+        "real-315-prose-round1-colon.md" in strict_real,
+        f"strict_misses={strict_real}"
+    )
 
     # D7: Test deriving the accepted header from the producer template in commands/implement-with-haiku.md
     producer_doc = Path(__file__).parent.parent / "commands" / "implement-with-haiku.md"
