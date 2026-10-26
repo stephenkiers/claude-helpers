@@ -122,8 +122,8 @@ def test_mypy_ini_files_setting():
         return False, "mypy.ini does not have files setting"
 
     files = config.get("mypy", "files")
-    if files != "scripts/workflow,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py":
-        return False, f"files is {files}, expected scripts/workflow,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py"
+    if files != "scripts/workflow,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py":
+        return False, f"files is {files}, expected scripts/workflow,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py"
 
     return True, ""
 
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     test_result("mypy.ini has check_untyped_defs = True", passed, msg)
 
     passed, msg = test_mypy_ini_files_setting()
-    test_result("mypy.ini has files = scripts/workflow,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py", passed, msg)
+    test_result("mypy.ini has files = scripts/workflow,scripts/spike-effort.py,scripts/precedent-log.py,scripts/precedent-digest.py,scripts/flow-ledger.py,scripts/primary-checkout-drift.py", passed, msg)
 
     passed, msg = test_mypy_ini_cache_dir()
     test_result("mypy.ini has cache_dir = .mypy_cache", passed, msg)
