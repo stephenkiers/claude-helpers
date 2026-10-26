@@ -722,6 +722,7 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
+# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
 if [[ $COMPARE_EXIT -eq 1 ]]; then
   printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found" >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
@@ -1036,6 +1037,35 @@ the fix for the nested-worktree hook-resolution failures seen historically.
     not a relayed question: write the FAILED receipt with Reason
     `shared-file-conflict: <file> (unit <unit-id>, worktree left at <WT_PATH>)` and stop.
 
+### Drift barrier failure block
+
+When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), emit telemetry and write a FAILED receipt (if in a flow). The telemetry call and receipt template are shared across all compare barriers (single-unit fallback, Round 2 apply, Round 3 follow-up apply, and end-of-run).
+
+**Telemetry line (identical at all sites):**
+```bash
+python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
+```
+
+**Receipt template (when `FLOW_DIR` is set; substitute the `Reason:` value per barrier):**
+```
+ATTEMPT: <k>
+Decision: FAILED
+Reason: <barrier-specific reason>
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+```
+
+Each compare barrier substitutes its own `Reason:` value:
+- **Exit 1 (drift found):** `Reason: primary-checkout-drift: <comma-separated FAIL paths>` or similar detail
+- **Exit 2 (baseline unavailable):** `Reason: primary-checkout-drift: baseline-unavailable`
+
+At each barrier, capture the exit code, conditionally emit the telemetry line and receipt template with the appropriate `Reason:` value, then `exit 1` or `exit 2` accordingly (the same exit code as the detector returned).
+
 ## Step 4d: Join barrier
 
 **Do not advance to the Integration Gate until every unit is in a terminal state** (`merged`,
@@ -1070,6 +1100,7 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
+# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
 if [[ $COMPARE_EXIT -eq 1 ]]; then
   printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found" >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
@@ -1600,6 +1631,7 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
+# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
 if [[ $COMPARE_EXIT -eq 1 ]]; then
   printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found in Round 2" >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
@@ -1860,6 +1892,7 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
+# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
 if [[ $COMPARE_EXIT -eq 1 ]]; then
   printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found in Round 3 follow-up" >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
@@ -2290,6 +2323,7 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
+# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
 if [[ $COMPARE_EXIT -eq 1 ]]; then
   printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found (end-of-run)" >&2
   python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true

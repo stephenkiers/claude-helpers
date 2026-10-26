@@ -1119,4 +1119,72 @@ else:
 
 print()
 
+# ============================================================================
+# STEP F5: No "salvage" wording in cwd-drift recovery contexts
+# ============================================================================
+print("[Step F5] No 'salvage' wording in cwd-drift recovery contexts")
+
+# Search for cwd-drift sections and check for stale "salvage" terminology
+drift_check_match = re.search(
+    r"##+ .*[Dd]rift.*?\n(.*?)(?=\n## |\n### |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.I | re.S
+)
+if drift_check_match:
+    drift_text = drift_check_match.group(1)
+    # Check that "salvage" does not appear in cwd-drift recovery context
+    # (legitimate non-cwd uses like "salvage procedure" should use different phrasing)
+    has_stale_salvage = re.search(r"salvage.*cwd|cwd.*salvage|salvage.*drift|drift.*salvage", drift_text, re.I)
+    t("Cwd-drift sections do not use stale 'salvage' terminology",
+      not has_stale_salvage,
+      "Should use 'failure procedure' or 'recovery' instead of 'salvage' in cwd-drift contexts")
+else:
+    t("Cwd-drift sections do not use stale 'salvage' terminology",
+      True,
+      "")
+
+# Also check the Failure procedure section explicitly
+failure_proc_match = re.search(
+    r"### Failure procedure.*?\n(.*?)(?=\n## |\n### |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.I | re.S
+)
+if failure_proc_match:
+    proc_text = failure_proc_match.group(1)
+    has_salvage_in_proc = "salvage" in proc_text.lower()
+    t("Failure procedure section does not contain 'salvage' wording",
+      not has_salvage_in_proc,
+      "Failure procedure should not mention 'salvage'; use 'failure procedure' or 'recovery' instead")
+
+print()
+
+# ============================================================================
+# STEP F5/F8: Reason prefix pinning — single "primary-checkout-drift:" prefix
+# ============================================================================
+print("[Step F5/F8] Reason prefix consistency: only 'primary-checkout-drift:' allowed")
+
+# Find all Reason: lines in cwd-drift receipts
+reason_lines = re.findall(
+    r"Reason:\s*([^\n]+)",
+    IMPLEMENT_WITH_HAIKU
+)
+
+# Check that all drift-related reasons use "primary-checkout-drift:" prefix
+bad_prefixes = []
+for reason_line in reason_lines:
+    if "drift" in reason_line.lower() or "cwd" in reason_line.lower():
+        # This looks like a drift-related reason
+        if not reason_line.startswith("primary-checkout-drift:"):
+            bad_prefixes.append(reason_line)
+
+t("All drift-related Reason: lines use 'primary-checkout-drift:' prefix",
+  not bad_prefixes,
+  f"Found non-compliant reasons: {bad_prefixes[:2]}" if bad_prefixes else "")
+
+# Also check that there are no remaining "cwd-drift:" or "cwd-drift-overlap:" prefixes
+has_old_cwd_drift = "cwd-drift:" in IMPLEMENT_WITH_HAIKU or "cwd-drift-overlap:" in IMPLEMENT_WITH_HAIKU
+t("No old 'cwd-drift:' or 'cwd-drift-overlap:' prefixes remain in doc",
+  not has_old_cwd_drift,
+  "Found old cwd-drift prefixes; should be 'primary-checkout-drift:'")
+
+print()
+
 h.summarize_and_exit()

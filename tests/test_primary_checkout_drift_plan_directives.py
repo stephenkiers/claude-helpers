@@ -17,7 +17,6 @@ Tests cover:
 Run with: python3 tests/test_primary_checkout_drift_plan_directives.py
 """
 
-import json
 import subprocess
 import sys
 import tempfile
@@ -25,9 +24,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import Harness, REPO_ROOT
-
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
-import telemetry_schema
 
 DRIFT_SCRIPT = REPO_ROOT / "scripts" / "primary-checkout-drift.py"
 
@@ -388,7 +384,7 @@ def main():
         h.test_result(
             "No .git/index.lock left after compare with drift",
             not lock_path.exists(),
-            f".git/index.lock exists after compare",
+            ".git/index.lock exists after compare",
         )
 
     print()
