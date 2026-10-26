@@ -735,7 +735,7 @@ def check_report_checkpoint(
     if "contrarian-carl" not in seated:
         return "plan checkpoint incomplete (missing contrarian-carl from seated list)"
 
-    # Early checks: nested handle map and entry field validation (Q1=B, Q3=A)
+    # Fail with a named cause before the handle/report comparison below
     nested_reason = schema.nested_handle_map_reason(ledger)
     if nested_reason:
         return f"plan checkpoint incomplete ({nested_reason})"
@@ -1067,7 +1067,8 @@ def check_report_checkpoint(
                 return f"plan checkpoint incomplete (accepted handle not in checkpoint ledger: {handle})"
             tier = handle_entry.get("tier")
             if tier is None:
-                # Entry exists but has no tier (defense in depth behind Step 2's early check)
+                # Defense-in-depth secondary check (distinct from schema's early validation);
+                # catches tier field missing on accepted items even if early checks missed it.
                 return f"plan checkpoint incomplete (checkpoint ledger entry {handle} has no tier)"
             if tier not in schema.ACCEPTABLE_TIERS:
                 # Tier exists but is not D or W
@@ -1389,7 +1390,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
                 f"{detail}; handles: {handles_txt})"
             )
         else:
-            # No top-level handles: check for nested handles (Q1=B, legacy path)
+            # No top-level handles: legacy path defense in depth check for nested handles
             nested_reason = schema.nested_handle_map_reason(ledger)
             if nested_reason:
                 return f"plan checkpoint incomplete ({nested_reason})"

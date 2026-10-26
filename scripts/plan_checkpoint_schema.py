@@ -3,11 +3,11 @@
 
 Implements: ledger extraction (F6), reaction classification (F2), tier rule including
 needs-human (F22), path confinement (F25), shape validation (F17), handle entry
-validation (Q3), and nested handle map detection (W1).
+validation, and nested handle map detection.
 
 Both scripts/plan-checkpoint-tiers.py and scripts/flow-verify-receipt.py import from
 this module to ensure they agree on all checkpoint structures and rules. The tier
-script's --fragment mode prints handle-keyed checkpoint entries (Q4=B2) with all four
+script's --fragment mode prints handle-keyed checkpoint entries with all four
 fields; numbering rule documented in prompts/flow-reference.md and enforced by
 --check-ledger self-check.
 """
@@ -281,7 +281,8 @@ def nested_handle_map_reason(ledger: Dict) -> Optional[str]:
     (e.g., "briefs" which has B\d+ keys that don't match LEDGER_HANDLE_RE). If that
     dict has one or more keys matching LEDGER_HANDLE_RE, returns a named reason.
     Returns None for a pre-tier ledger (no handles anywhere) or a correctly shaped
-    top-level ledger.
+    top-level ledger. Note: returns only the first nested key found (in dict order)
+    and does not look deeper than one level.
 
     Args:
         ledger: The parsed ledger dict
@@ -308,7 +309,9 @@ def validate_handle_entries(ledger: Dict) -> Optional[str]:
     For each top-level key matching LEDGER_HANDLE_RE (in sorted order): if its value
     is not a dict, returns an error; otherwise checks for required fields `tier`,
     `brief_id`, and `brief_type` in order and returns the first missing field error.
-    Missing means the key is absent, None, or empty string.
+    Missing means the key is absent, None, or empty string. Note: checks presence only —
+    it does not check that `tier` is a known tier, that `brief_id` exists in `briefs`,
+    or `brief_type`'s value, nor the `evidence` field.
 
     Returns None when there are no handles (pre-tier ledger).
 
@@ -324,6 +327,7 @@ def validate_handle_entries(ledger: Dict) -> Optional[str]:
         if not isinstance(value, dict):
             return f"checkpoint ledger entry {handle} is not an object"
         # Check required fields in order: tier, brief_id, brief_type
+        # Primary early check: fail closed if any required field is missing before proceeding to tier-specific logic
         for field in ["tier", "brief_id", "brief_type"]:
             field_value = value.get(field)
             if field_value is None or field_value == "":
