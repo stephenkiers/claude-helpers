@@ -952,6 +952,122 @@ OUTSTANDING: none
         )
 
     print()
+    print("[Test 29] ESCALATE: none cwd-drift — FAILED implement with cwd-drift class")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "cwd-drift: not escalation-eligible",
+            exit_code == 0 and "ESCALATE: none cwd-drift" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 30] ESCALATE: none cwd-drift — FAILED fix with cwd-drift class")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "fix",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "cwd-drift (fix): not escalation-eligible",
+            exit_code == 0 and "ESCALATE: none cwd-drift" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 31] Control: implementer-shortfall still escalation-eligible")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: implementer-shortfall
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "implementer-shortfall: still eligible for auto escalation",
+            exit_code == 0 and "ESCALATE: auto sonnet" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
+    print("[Test 32] Control: other class still yields manual escalation")
+    with tempfile.TemporaryDirectory() as tmp_home:
+        receipt_path = f"{tmp_home}/receipt.md"
+        receipt = """ATTEMPT: 1
+FAILURE_CLASS: other
+IMPLEMENTER_MODEL: haiku
+UNITS: 1
+TURNS_USED: 45
+MAX_TURNS: 120
+TURNS_EXHAUSTED: no
+Decision: FAILED
+<!-- step-end -->"""
+        create_receipt(receipt_path, receipt)
+
+        exit_code, stdout, stderr = run_verifier(
+            "implement",
+            receipt_path,
+            stop_source="receipt",
+            escalations=0,
+            failures=1,
+            implementer_model_state="unset"
+        )
+        h.test_result(
+            "other class: still yields manual escalation",
+            exit_code == 0 and "ESCALATE: manual sonnet class-other" in stdout,
+            f"exit={exit_code}, stdout={stdout}"
+        )
+
+    print()
     h.summarize_and_exit()
 
 

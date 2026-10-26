@@ -898,4 +898,145 @@ t("(#338) mapping row for resolver failure with no opt-out is a check-not-config
 
 print()
 
+# ============================================================================
+# STEP 5-8, 10, 12: Primary-checkout drift detection (new for #336)
+# ============================================================================
+print("[Step 5-8] Primary-checkout drift detection")
+
+# Step 5: Rename MAIN_WT* -> PRIMARY_CHECKOUT/TICKET_WT_PATH
+t("No MAIN_WT= or MAIN_WT_PATH references remain (except in this test)",
+  "MAIN_WT=" not in IMPLEMENT_WITH_HAIKU and "<MAIN_WT_PATH>" not in IMPLEMENT_WITH_HAIKU,
+  "Found MAIN_WT= or <MAIN_WT_PATH> in doc")
+
+# Step 5: Block A should say "ticket worktree" not "main worktree"
+block_a_mentions = IMPLEMENT_WITH_HAIKU.count("the ticket worktree") + \
+                  IMPLEMENT_WITH_HAIKU.count("<TICKET_WT_PATH>")
+has_block_a_updates = block_a_mentions > 0
+t("Block A updated with ticket worktree references",
+  has_block_a_updates,
+  "Block A should reference 'the ticket worktree' and <TICKET_WT_PATH>")
+
+# Step 6: Snapshot command should exist
+has_snapshot = "primary-checkout-drift.py" in IMPLEMENT_WITH_HAIKU and "snapshot" in IMPLEMENT_WITH_HAIKU
+t("Snapshot command added at Step 2",
+  has_snapshot,
+  "Should call primary-checkout-drift.py snapshot in Step 2")
+
+# Step 6-7: Compare commands should exist (at least once for Round 1 barrier)
+has_compare = "compare" in IMPLEMENT_WITH_HAIKU and \
+              "primary-checkout-drift.py" in IMPLEMENT_WITH_HAIKU and \
+              "--baseline" in IMPLEMENT_WITH_HAIKU
+t("Compare command added at Round 1 barrier (Step 4d)",
+  has_compare,
+  "Should call primary-checkout-drift.py compare in Step 4d")
+
+# Step 6: planned-paths.txt should be written in Step 3
+has_planned_paths = "planned-paths.txt" in IMPLEMENT_WITH_HAIKU
+t("planned-paths.txt written in Step 3",
+  has_planned_paths,
+  "Should write planned-paths.txt file after decomposition")
+
+# Step 7: Check that compare appears before RESUME-AFTER-CLEAR in Step 4d
+step_4d_match = re.search(r"## Step 4d:.*?(?=\n## |\Z)", IMPLEMENT_WITH_HAIKU, re.S)
+if step_4d_match:
+    step_4d_text = step_4d_match.group(0)
+    compare_pos = step_4d_text.find("primary-checkout-drift.py")
+    resume_pos = step_4d_text.find("RESUME-AFTER-CLEAR:")
+    has_correct_order = compare_pos > 0 and resume_pos > 0 and compare_pos < resume_pos
+    t("Round 1 compare appears before RESUME-AFTER-CLEAR in Step 4d",
+      has_correct_order,
+      f"Compare should come before resume line (compare@{compare_pos}, resume@{resume_pos})")
+else:
+    t("Round 1 compare appears before RESUME-AFTER-CLEAR in Step 4d",
+      False,
+      "Could not find ## Step 4d: section")
+
+# Step 8: Check that drift block uses git -C
+drift_check_match = re.search(
+    r"\*\*Drift check.*?\*\*Failure procedure|### Failure procedure.*?(?=\n## |\n### |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.I | re.S
+)
+if drift_check_match:
+    drift_text = drift_check_match.group(0)
+    git_c_count = drift_text.count("git -C")
+    has_explicit_c = git_c_count >= 2  # At least status and rev-parse
+    t("Drift block uses explicit git -C paths",
+      has_explicit_c,
+      f"Drift block should use 'git -C <path>' for all git commands (found {git_c_count})")
+
+# Step 8: Check that salvage procedure doesn't commit
+has_no_commit_in_salvage = "merged (salvaged-from-main)" not in IMPLEMENT_WITH_HAIKU
+t("No 'merged (salvaged-from-main)' label in doc",
+  has_no_commit_in_salvage,
+  "Salvage label should be removed")
+
+# Step 8: Check for diff --binary HEAD usage (non-mutating patch creation)
+has_diff_binary_head = "diff --binary HEAD" in IMPLEMENT_WITH_HAIKU
+t("Drift block uses 'diff --binary HEAD' for patch creation",
+  has_diff_binary_head,
+  "Should use 'git diff --binary HEAD' not 'git add -A' to capture drift")
+
+# Step 8: Check for untracked file listing
+has_untracked_listing = "ls-files --others --exclude-standard" in IMPLEMENT_WITH_HAIKU
+t("Drift block lists untracked owned files separately",
+  has_untracked_listing,
+  "Should use 'git ls-files --others --exclude-standard' for untracked files")
+
+# Step D: Failure classification mentions cwd-drift as exception
+classification_match = re.search(
+    r"\*\*Failure classification\.\*\*(.*?)(?=\n\n## |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+if classification_match:
+    classification_text = classification_match.group(1)
+    mentions_exception = "cwd-drift" in classification_text and "exception" in classification_text.lower()
+    t("Failure classification names cwd-drift as exception to multi-unit rule",
+      mentions_exception,
+      "Classification paragraph should mention cwd-drift as exception to 'Multi-unit failures are always other'")
+
+# Step D: Telemetry vocabulary includes cwd_drift
+has_cwd_drift_telemetry = "cwd_drift" in IMPLEMENT_WITH_HAIKU
+t("Telemetry vocabulary includes cwd_drift class",
+  has_cwd_drift_telemetry,
+  "Should list 'cwd_drift' in Telemetry vocabulary section")
+
+# Step D: Reason strings for drift
+has_baseline_unavailable = "primary-checkout-drift: baseline-unavailable" in IMPLEMENT_WITH_HAIKU
+has_cwd_drift_reason = "cwd-drift:" in IMPLEMENT_WITH_HAIKU or "primary-checkout-drift:" in IMPLEMENT_WITH_HAIKU
+t("FAILED receipt includes 'primary-checkout-drift: baseline-unavailable' reason",
+  has_baseline_unavailable,
+  "Should mention baseline-unavailable reason")
+t("FAILED receipt includes cwd-drift reason string",
+  has_cwd_drift_reason,
+  "Should mention cwd-drift or primary-checkout-drift in FAILED receipt reasons")
+
+# Step 6: Block B (Working directory) should appear in single-unit prompt
+single_unit_section = re.search(
+    r"\*\*Single-unit fallback:\*\*(.*?)(?=\n## |\n### |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+if single_unit_section:
+    su_text = single_unit_section.group(1)
+    has_wd_mentioned = "Working directory:" in su_text
+    t("Single-unit fallback prompt mentions Working directory block",
+      has_wd_mentioned,
+      "Single-unit section should reference Working directory block")
+
+# Check Round 2 and Round 3 sections have Working directory references
+# Extract Round 2 and Round 3 pass 1 sections
+round2_match = re.search(r"### Round 2:.*?(?=\n### |\n## |\Z)", IMPLEMENT_WITH_HAIKU, re.S)
+round3_match = re.search(r"### Round 3 pass 1:.*?(?=\n### |\n## |\Z)", IMPLEMENT_WITH_HAIKU, re.S)
+
+has_round2_wd = round2_match and "Working directory:" in round2_match.group(0)
+has_round3_wd = round3_match and "Working directory:" in round3_match.group(0)
+
+t("Round 2 section references Working directory",
+  has_round2_wd,
+  "Round 2 section should mention Working directory block")
+t("Round 3 pass 1 section references Working directory",
+  has_round3_wd,
+  "Round 3 pass 1 section should mention Working directory block")
+
+print()
+
 h.summarize_and_exit()
