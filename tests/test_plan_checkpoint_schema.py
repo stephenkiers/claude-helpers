@@ -826,7 +826,7 @@ No fence here
     reason = schema.validate_handle_entries(ledger)
     h.test_result(
         "Multiple handles with one missing field",
-        reason is not None,
+        reason == "checkpoint ledger entry Q1 has no brief_id",
         f"reason={reason}"
     )
 

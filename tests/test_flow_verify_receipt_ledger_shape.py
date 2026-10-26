@@ -202,7 +202,7 @@ def main():
         rc, out = run_verifier(fx)
         # This should fail because D1 is in ledger but not in the report (mismatch)
         h.test_result("Legacy path: top-level handle with no report",
-                      rc == 1 and "Traceback" not in out,
+                      rc == 1 and "missing D1" in out and "Traceback" not in out,
                       f"rc={rc} out_snippet={out.strip()[-300:]}")
 
     # --- Flat entry shape (string instead of dict) -----------------------------------------------
