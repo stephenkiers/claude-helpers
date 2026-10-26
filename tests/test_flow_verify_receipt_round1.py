@@ -7,12 +7,13 @@ The fixtures in tests/fixtures/round1/ are trimmed, scrubbed copies of real rece
 shapes (positive/synth-*.md, negative/synth-*.md). This test reads only those fixtures, never
 ~/.claude.
 
-Four observed real-receipt shapes are pinned with fixtures: (a) #315 prose-line Round 1 pass
-(flow 315); (b) TAKEOVER implement receipt (flow 1650); (c) fix receipt with only ROUND SIZING
+Four observed real-receipt shapes are pinned with fixtures: (a) line-start `Round 1:` header
+pass (flow 315); (b) TAKEOVER implement receipt (flow 1650); (c) fix receipt with only ROUND SIZING
 (flow 1777); (d) empty-round fix receipt (flow 363). Each fixture asserts its intended verdict
-(stop or pass): (a) pass; (b)–(d) stop. This test found no live paraphrase failure: 125 of 128
-OK receipts pass the current header regex, and the 3 misses are shapes (b), (c), (d). Verdicts
-are rule-5 (header) verdict only; rule 7 and other rules are not reflected here.
+(stop or pass): (a) pass; (b)–(d) stop (deliberate). Corpus statistic observed 2026-10-26 in the
+local flow corpus: 125 of 128 OK receipts pass the current header regex, and the 3 misses are
+shapes (b), (c), (d). Verdicts are rule-5 (header) verdict only; rule 7 and other rules are not
+reflected here.
 
 Each test runs the verifier's module-level pattern (ROUND1_HEADER_RE) against the fixtures, and
 each revert test runs a mutant pattern to show the fixtures would catch that revert:
@@ -28,6 +29,7 @@ import importlib.util
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -66,6 +68,7 @@ POSITIVE_REAL = [
     "real-315-prose-round1-colon.md",
 ]
 POSITIVE_SYNTH = ["synth-bold.md", "synth-h2.md", "synth-indented.md"]
+# The three observed-shape negatives pin the rule-5 verdict; they are not guards against a specific regex mutant.
 NEGATIVE_FILES = [
     "real-status-lines-no-header.md",
     "synth-prose-only.md",
@@ -94,25 +97,46 @@ def passing_negatives(pattern: re.Pattern) -> list:
     return [name for name in NEGATIVE_FILES if pattern.search(read_fixture(NEGATIVE_DIR, name))]
 
 
+def check_round1_header(receipt: str) -> Optional[str]:
+    """Mirror the verifier's OK-receipt sequence for implement/fix (OUTSTANDING, then ROUND 1).
+
+    Returns None when the receipt passes, else the verifier's Reason text. Mirrors
+    scripts/flow-verify-receipt.py main(), the --expect-model path.
+    """
+    try:
+        _items, has_none, has_items = flow_verify_module.iter_outstanding_lines(receipt)
+    except ValueError:
+        return "receipt missing OUTSTANDING (malformed)"
+    if not (has_none or has_items):
+        return "receipt missing OUTSTANDING"
+    if not ROUND1_HEADER_RE.search(receipt):
+        return "receipt missing ROUND 1 section header"
+    return None
+
+
 # OBSERVED_SHAPES: Per-shape verdict assertions (#322 Step 3).
-# Each entry maps a fixture name to (intended verdict, one-line rationale).
+# Each entry maps a fixture name to (directory, intended verdict, one-line rationale).
 # Verdict: True = pass (header found), False = stop (no header).
 OBSERVED_SHAPES = {
     "real-315-prose-round1-colon.md": (
+        POSITIVE_DIR,
         True,
-        "receipt has line-start 'Round 1:' header; header alone suffices"
+        "line-start `Round 1:` header present"
     ),
     "real-takeover-implement.md": (
+        NEGATIVE_DIR,
         False,
-        "TAKEOVER receipt says 'not a /implement-with-haiku run: no integration gate'; human takeover skips receipt validation"
+        "no line-start ROUND 1 header present"
     ),
     "real-round-sizing-only-fix.md": (
+        NEGATIVE_DIR,
         False,
-        "no-op attempt 2; no ROUND 1 header shows round 1 ran in this attempt; fail-closed"
+        "no line-start ROUND 1 header present"
     ),
     "real-empty-round-fix.md": (
+        NEGATIVE_DIR,
         False,
-        "empty round; pipeline did not run, receipt missing ROUND lines"
+        "no line-start ROUND 1 header present"
     ),
 }
 
@@ -169,22 +193,29 @@ def main() -> None:
     h.test_result("Fixtures carry no absolute paths", leaks == [], f"leaks={leaks}")
 
     # Observed shapes: each fixture asserts its intended rule-5 verdict (#322 Step 3).
-    for fixture_name, (expected_verdict, rationale) in OBSERVED_SHAPES.items():
-        fixture_text = read_fixture(NEGATIVE_DIR if not expected_verdict else POSITIVE_DIR, fixture_name)
-        has_header = bool(ROUND1_HEADER_RE.search(fixture_text))
-        verdict = has_header  # True = pass, False = stop
+    for fixture_name, (directory, expected_verdict, rationale) in OBSERVED_SHAPES.items():
+        fixture_text = read_fixture(directory, fixture_name)
+        verdict = check_round1_header(fixture_text) is None  # True = pass, False = stop
         h.test_result(
             f"Shape {fixture_name}: {rationale}",
             verdict == expected_verdict,
             f"expected={'pass' if expected_verdict else 'stop'}, got={'pass' if verdict else 'stop'}"
         )
 
+        # For negative shapes (b)-(d), also assert the verifier's reason string
+        if not expected_verdict:
+            reason = check_round1_header(fixture_text)
+            h.test_result(
+                f"Shape {fixture_name}: verifier reason",
+                reason == "receipt missing ROUND 1 section header",
+                f"reason={reason!r}"
+            )
+
     # Strict mutant: real-315-prose-round1-colon.md (mixed-case Round 1) must be rejected by ^ROUND 1\b.
-    strict_real = failing_positives(re.compile(STRICT_PATTERN))
     h.test_result(
         "Shape (a) real-315-prose-round1-colon.md is in strict mutant rejects",
-        "real-315-prose-round1-colon.md" in strict_real,
-        f"strict_misses={strict_real}"
+        "real-315-prose-round1-colon.md" in strict_misses,
+        f"strict_misses={strict_misses}"
     )
 
     # D7: Test deriving the accepted header from the producer template in commands/implement-with-haiku.md

@@ -5,4 +5,5 @@ Round 1: 4 Haiku units (scripts, implement-with-haiku doc, expert-flow, docs/ADR
 ATTEMPT: 1
 Decision: OK
 Reason: completed
+OUTSTANDING: none
 <!-- step-end -->
