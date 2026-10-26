@@ -71,7 +71,8 @@ def sed_path_env():
     """Return (env, notice). PATH puts /usr/bin and /bin first when /usr/bin/sed exists."""
     env = dict(os.environ)
     if USR_BIN_SED.exists():
-        env["PATH"] = "/usr/bin:/bin:" + os.environ.get("PATH", "")
+        path_parts = ["/usr/bin", "/bin", os.environ.get("PATH", "")]
+        env["PATH"] = ":".join(part for part in path_parts if part)
         return env, None
     return env, (
         "NOTICE: /usr/bin/sed not found; testing this host's native sed "

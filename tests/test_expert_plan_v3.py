@@ -1027,7 +1027,7 @@ def run_flag_loop(flag_block, args, home):
         'EPIC_MODE="false"\n'
         'ALLOW_DEGRADED=""\n'
     )
-    script = preamble + flag_block + '\nprintf "MODELS=%s\\n" "$MODELS"\n'
+    script = "set -euo pipefail\n" + preamble + flag_block + '\nprintf "MODELS=%s\\n" "$MODELS"\n'
     env = dict(os.environ)
     env["HOME"] = home
     result = subprocess.run(

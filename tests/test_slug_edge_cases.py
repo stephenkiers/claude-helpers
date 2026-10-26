@@ -98,7 +98,8 @@ def run_slug(site_line, title):
     script = site_line + "\n" + FALLBACK_LINE + '\nprintf "%s" "$SLUG"\n'
     env = dict(os.environ)
     if NATIVE_SED:
-        env["PATH"] = "/usr/bin:/bin:" + env.get("PATH", "")
+        path_parts = ["/usr/bin", "/bin", env.get("PATH", "")]
+        env["PATH"] = ":".join(part for part in path_parts if part)
     env["TICKET_TITLE"] = title
     result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
     return result.returncode, result.stdout, result.stderr
