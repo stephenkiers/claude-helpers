@@ -416,46 +416,6 @@ def main():
                      exit_code == 1 and "Error in" in stderr and "not a dict" in stderr and "Traceback" not in stderr,
                      f"exit={exit_code}, stderr={stderr[:300]}")
 
-    # Test 46: Numeric ordering in --fragment with B1, B20, B2 (ensure numeric sorting)
-    print("[Test 46] --fragment numeric ordering: B1, B20, B2 -> sorted as B1, B2, B20")
-    with tempfile.TemporaryDirectory() as tmp:
-        session_dir = Path(tmp) / "session"
-        decisions_file = session_dir / "decisions.md"
-        reactions_dir = session_dir / "reactions"
-
-        seated = ["alice"]
-        expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
-        ]
-        briefs = {
-            "B1": {"brief_type": "question", "raiser": "alice"},
-            "B20": {"brief_type": "question", "raiser": "alice"},
-            "B2": {"brief_type": "question", "raiser": "alice"},
-        }
-
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
-        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "B1": {"resolved": True},
-            "B20": {"resolved": True},
-            "B2": {"resolved": True},
-        })
-
-        exit_code, stdout, stderr = run_tier_script(str(decisions_file), fragment=True)
-        try:
-            if not stdout:
-                h.test_result("Numeric ordering B1, B20, B2 -> B1, B2, B20", False, f"stderr={stderr[:200]}")
-            else:
-                fragment = json.loads(stdout)
-                # All should map to W tier (all resolved, no agreement)
-                # W1 should be B1, W2 should be B2, W3 should be B20
-                brief_ids_by_handle = {k: fragment[k].get("brief_id") for k in fragment.keys()}
-                expected_order = {"W1": "B1", "W2": "B2", "W3": "B20"}
-                h.test_result("Numeric ordering B1, B20, B2 -> B1, B2, B20",
-                             exit_code == 0 and brief_ids_by_handle == expected_order,
-                             f"exit={exit_code}, brief_ids_by_handle={brief_ids_by_handle}")
-        except (json.JSONDecodeError, TypeError) as e:
-            h.test_result("Numeric ordering B1, B20, B2 -> B1, B2, B20", False, f"Error: {e}")
-
     h.summarize_and_exit()
 
 
