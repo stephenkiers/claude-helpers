@@ -1679,7 +1679,10 @@ This prints a JSON object with keys `command`, `source`, and `failure_reason`. R
 4. main worktree project.yaml
 5. worktree justfile check recipe
 
-If none exist, `failure_reason` is set to `no check command configured — add commands.check to .claude/project.yaml (or run /shipit once to seed .claude/repo-cache.json); to opt out of the implement/fix check gate only, set checkOptOut: "<reason>" in .claude/project.yaml (an /expert-flow run will still stop at verify and ship, which require a check)` followed by the sources tried and why each failed. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; never wrap the command in `timeout`; if it can exceed the 600s foreground ceiling, run it with `run_in_background` and poll; reply with the exit code and the last 40 lines of output" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
+If none exist, `failure_reason` is set to `no check command configured — add commands.check to .claude/project.yaml
+(or run /shipit once to seed .claude/repo-cache.json).
+To opt out of the implement/fix check gate only, set checkOptOut: "<reason>" in .claude/project.yaml.
+An /expert-flow run will still stop at verify and ship, which require a check.` followed by the sources tried and why each failed. The repo-cache.json and project.yaml are seeded from main at worktree creation (snapshot semantics); seeded files shadow later changes to main. The step prompt is the generic template with "Run `<check command>` in cwd `<WORKTREE>`; change nothing; never wrap the command in `timeout`; if it can exceed the 600s foreground ceiling, run it with `run_in_background` and poll; reply with the exit code and the last 40 lines of output" in place of the slash command. The receipt is **orchestrator-written** (see "Orchestrator-written receipts"):
 `CHECK: <command>`, `CHECK_EXIT: <n>`, optional `CHECK_SOURCE: <path>` (the resolver's `source`; not
 required by validation), `Decision: OK` when the exit is 0, else `FAILED`. On a non-zero exit the
 orchestrator greps the agent's reported output (case-insensitive) for `behind origin/`, `Branch is
