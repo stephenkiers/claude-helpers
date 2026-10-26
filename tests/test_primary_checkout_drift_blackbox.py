@@ -246,7 +246,7 @@ def main():
 
         h.test_result(
             "snapshot detects primary==orchestrator via symlink and prints SKIP:",
-            "SKIP:" in stdout or exit_code == 0,
+            "SKIP:" in stdout and exit_code == 0,
             f"exit_code={exit_code}, stdout={stdout}",
         )
 
@@ -372,7 +372,7 @@ def main():
 
         h.test_result(
             "compare reports ticket-absent status",
-            "ticket-absent" in stdout or "FAIL" in stdout,
+            "FAIL" in stdout and "ticket-absent" in stdout,
             f"stdout={stdout}",
         )
 
@@ -559,7 +559,7 @@ def main():
 
         h.test_result(
             "compare warns with pre-dirty-planned for unchanged pre-existing file",
-            "pre-dirty-planned" in stdout or "WARN" in stdout,
+            "WARN pre-dirty-planned" in stdout,
             f"stdout={stdout}",
         )
 
@@ -616,7 +616,7 @@ def main():
 
         h.test_result(
             "compare reports HEAD change with INFO",
-            "INFO" in stdout or "head-changed" in stdout,
+            "INFO head-changed" in stdout,
             f"stdout={stdout}",
         )
 

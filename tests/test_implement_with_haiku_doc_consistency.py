@@ -1039,4 +1039,84 @@ t("Round 3 pass 1 section references Working directory",
 
 print()
 
+# ============================================================================
+# STEP 7: Primary-checkout drift compare calls at all serial barriers
+# ============================================================================
+print("[Step 7] Primary-checkout drift compare calls at serial barriers")
+
+# Find each location where compare should appear:
+# 1. Single-unit fallback (after ledger row for round1)
+single_unit_fallback = re.search(
+    r"\*\*Single-unit fallback:\*\*(.*?)(?=\n## |\n### |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+if single_unit_fallback:
+    su_text = single_unit_fallback.group(1)
+    has_compare_in_su = "primary-checkout-drift.py" in su_text and "compare" in su_text
+    t("Single-unit fallback includes compare call after ledger row",
+      has_compare_in_su,
+      "Single-unit fallback should call primary-checkout-drift.py compare after agent completes")
+else:
+    t("Single-unit fallback includes compare call after ledger row",
+      False,
+      "Could not find single-unit fallback section")
+
+# 2. Round 2 apply (after the ledger row, before Part C)
+round2_apply_match = re.search(
+    r"### Apply Round 2's diff(.*?)(?=\n### Machine-check|\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+if round2_apply_match:
+    r2_apply_text = round2_apply_match.group(1)
+    has_compare_after_r2 = "primary-checkout-drift.py" in r2_apply_text and "compare" in r2_apply_text
+    t("Round 2 apply includes compare call after ledger row",
+      has_compare_after_r2,
+      "Round 2 apply should call primary-checkout-drift.py compare before Part C")
+else:
+    t("Round 2 apply includes compare call after ledger row",
+      False,
+      "Could not find '### Apply Round 2's diff' section")
+
+# 3. Round 3 follow-up apply (after ledger row, before Round 4)
+round3_followup_match = re.search(
+    r"\*\*Applying and verifying Round 3's fixes:\*\*(.*?)(?=\n## Round 4|\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+if round3_followup_match:
+    r3_followup_text = round3_followup_match.group(1)
+    has_compare_after_r3_followup = "primary-checkout-drift.py" in r3_followup_text and "compare" in r3_followup_text
+    t("Round 3 follow-up apply includes compare call after ledger row",
+      has_compare_after_r3_followup,
+      "Round 3 follow-up apply should call primary-checkout-drift.py compare before Round 4")
+else:
+    t("Round 3 follow-up apply includes compare call after ledger row",
+      False,
+      "Could not find 'Applying and verifying Round 3's fixes' section")
+
+# 4. End-of-run compare (before final summary heading)
+final_summary_match = re.search(
+    r"## Final summary(.*?)(?=\n## |\Z)",
+    IMPLEMENT_WITH_HAIKU, re.S
+)
+if final_summary_match:
+    final_text = final_summary_match.group(1)
+    # The end-of-run compare should be BEFORE the "Collect each round's" line
+    collect_pos = final_text.find("Collect each round's")
+    if collect_pos > 0:
+        before_collect = final_text[:collect_pos]
+        has_compare_before_final = "primary-checkout-drift.py" in before_collect and "compare" in before_collect
+        t("End-of-run compare appears before 'Collect each round's' in Final summary",
+          has_compare_before_final,
+          "Should call primary-checkout-drift.py compare as backstop before final summary begins")
+    else:
+        t("End-of-run compare appears before 'Collect each round's' in Final summary",
+          False,
+          "Could not find 'Collect each round's' line in final summary")
+else:
+    t("End-of-run compare appears before 'Collect each round's' in Final summary",
+      False,
+      "Could not find ## Final summary section")
+
+print()
+
 h.summarize_and_exit()

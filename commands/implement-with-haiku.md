@@ -713,6 +713,62 @@ Step 4b prompt). If the report is missing or empty, no `round1` row is written:
 printf '%s DONE round1 %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round1-<unit-id>-report.md" >> "<LEDGER_PATH>"
 ```
 
+**Compare (single-unit fallback only):** after the single-unit agent completes and the `round1` row is appended,
+check for drift before proceeding to the Integration Gate:
+
+```bash
+python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
+  --baseline "<SCRATCH_PATH>/primary-baseline.json" \
+  --ticket-wt "$(pwd)" \
+  --start-sha "$START_SHA" \
+  --planned "<SCRATCH_PATH>/planned-paths.txt"
+COMPARE_EXIT=$?
+if [[ $COMPARE_EXIT -eq 1 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: <comma-separated FAIL paths>
+FAILURE_CLASS: cwd-drift
+FAIL_PATHS: <comma-separated FAIL paths>
+WARN_PATHS: <comma-separated WARN paths or empty>
+TICKET_MATCH_STATUS:
+  <path>: <ticket-match | ticket-differs | ticket-absent>
+  (one line per FAIL path)
+OWNED_FILE_OVERLAP:
+  <unit-id>: <comma-separated owned paths that match FAIL paths>
+  (one line per unit with overlapping owned files)
+NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+elif [[ $COMPARE_EXIT -eq 2 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: baseline-unavailable
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+fi
+```
+
 ## Step 4a: Create one worktree per unit (multi-unit only)
 
 **Mark the start of the round1-join stage** right before beginning the fanout dispatch:
@@ -1533,6 +1589,61 @@ printf '%s\n' "round2-apply: committed <N> test file(s)" > "<SCRATCH_PATH>/round
 printf '%s DONE round2-apply %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round2-apply.txt" >> "<LEDGER_PATH>"
 ```
 
+**Compare (Round 2 apply):** after the Round 2 apply has committed the tests, check for drift before proceeding:
+
+```bash
+python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
+  --baseline "<SCRATCH_PATH>/primary-baseline.json" \
+  --ticket-wt "$(pwd)" \
+  --start-sha "$START_SHA" \
+  --planned "<SCRATCH_PATH>/planned-paths.txt"
+COMPARE_EXIT=$?
+if [[ $COMPARE_EXIT -eq 1 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found in Round 2" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: <comma-separated FAIL paths>
+FAILURE_CLASS: cwd-drift
+FAIL_PATHS: <comma-separated FAIL paths>
+WARN_PATHS: <comma-separated WARN paths or empty>
+TICKET_MATCH_STATUS:
+  <path>: <ticket-match | ticket-differs | ticket-absent>
+  (one line per FAIL path)
+OWNED_FILE_OVERLAP:
+  <unit-id>: <comma-separated owned paths that match FAIL paths>
+  (one line per unit with overlapping owned files)
+NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+elif [[ $COMPARE_EXIT -eq 2 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: baseline-unavailable
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+fi
+```
+
 **Drift check — before deciding the worktree is empty, verify the primary checkout is clean.**
 A drifted Round 2 agent's test files may have landed in the primary checkout instead. If the
 R2 worktree is empty but `git -C "$PRIMARY_CHECKOUT" status --porcelain` shows test files, this is cwd drift.
@@ -1734,6 +1845,61 @@ Once the Round 3 follow-up has reported and its report file passes the Report-fi
 its row, citing the report file it wrote:
 ```bash
 printf '%s DONE round3-followup %s\n' "<RUN_KEY>" "<SCRATCH_PATH>/round3-followup-report.md" >> "<LEDGER_PATH>"
+```
+
+**Compare (Round 3 follow-up apply):** after the Round 3 follow-up apply has committed the fixes, check for drift before proceeding to Round 4:
+
+```bash
+python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
+  --baseline "<SCRATCH_PATH>/primary-baseline.json" \
+  --ticket-wt "$(pwd)" \
+  --start-sha "$START_SHA" \
+  --planned "<SCRATCH_PATH>/planned-paths.txt"
+COMPARE_EXIT=$?
+if [[ $COMPARE_EXIT -eq 1 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found in Round 3 follow-up" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: <comma-separated FAIL paths>
+FAILURE_CLASS: cwd-drift
+FAIL_PATHS: <comma-separated FAIL paths>
+WARN_PATHS: <comma-separated WARN paths or empty>
+TICKET_MATCH_STATUS:
+  <path>: <ticket-match | ticket-differs | ticket-absent>
+  (one line per FAIL path)
+OWNED_FILE_OVERLAP:
+  <unit-id>: <comma-separated owned paths that match FAIL paths>
+  (one line per unit with overlapping owned files)
+NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+elif [[ $COMPARE_EXIT -eq 2 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: baseline-unavailable
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+fi
 ```
 
 Tell the user: "Round 2 complete — [N tests added, M failing]. Round 3 complete — [K issues,
@@ -2107,6 +2273,65 @@ orchestrator's own verification — never trust round self-reports.
 ---
 
 ## Final summary
+
+**End-of-run compare (final backstop):** the final drift check before emitting the summary. Run after all
+agent passes are complete and before the usage-check-final row:
+
+```bash
+python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
+  --baseline "<SCRATCH_PATH>/primary-baseline.json" \
+  --ticket-wt "$(pwd)" \
+  --start-sha "$START_SHA" \
+  --planned "<SCRATCH_PATH>/planned-paths.txt"
+COMPARE_EXIT=$?
+if [[ $COMPARE_EXIT -eq 1 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found (end-of-run)" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: <comma-separated FAIL paths>
+FAILURE_CLASS: cwd-drift
+FAIL_PATHS: <comma-separated FAIL paths>
+WARN_PATHS: <comma-separated WARN paths or empty>
+TICKET_MATCH_STATUS:
+  <path>: <ticket-match | ticket-differs | ticket-absent>
+  (one line per FAIL path)
+OWNED_FILE_OVERLAP:
+  <unit-id>: <comma-separated owned paths that match FAIL paths>
+  (one line per unit with overlapping owned files)
+NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+elif [[ $COMPARE_EXIT -eq 2 ]]; then
+  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
+  if [[ -n "$FLOW_DIR" ]]; then
+    cat > "<RECEIPT_PATH>" << 'EOF'
+ATTEMPT: <k>
+Decision: FAILED
+Reason: primary-checkout-drift: baseline-unavailable
+FAILURE_CLASS: cwd-drift
+IMPLEMENTER_MODEL: <haiku|sonnet>
+UNITS: <n>
+TURNS_USED: unknown
+MAX_TURNS: <n>
+TURNS_EXHAUSTED: unknown
+<!-- step-end -->
+EOF
+  fi
+  exit 1
+fi
+```
+
+Include the result in the final summary as `PRIMARY_CHECKOUT_DRIFT: clean` (if exit 0) or list any
+`WARN` lines as `PRIMARY_CHECKOUT_WARNINGS:` in the summary.
 
 Collect each round's `ELAPSED_SECONDS` (self-measured) plus your own orchestrator-measured
 wall-clock per phase. Format all as `mm:ss`. Sum of `ELAPSED_SECONDS` = total agent compute.
