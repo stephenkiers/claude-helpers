@@ -560,7 +560,6 @@ def main():
             else:
                 fragment = json.loads(stdout)
                 # B2 should map to W1, B10 to W2 (since they're both worth-a-look)
-                expected = {"W1": {"brief_id": "B2"}, "W2": {"brief_id": "B10"}}
                 actual_brief_ids = {k: fragment[k].get("brief_id") for k in fragment.keys()}
                 h.test_result("Numeric ordering B2 before B10",
                              exit_code == 0 and actual_brief_ids.get("W1") == "B2" and actual_brief_ids.get("W2") == "B10",
