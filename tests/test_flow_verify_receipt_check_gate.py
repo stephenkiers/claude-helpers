@@ -8,7 +8,13 @@ CHECK lines is rejected; so is a substituted command, a failing exit, a stale or
 CHECK_SHA, and an opt-out the resolver does not confirm.
 
 Each rule is exercised with a passing fixture and a failing fixture so that the rule's
-positive and negative behaviour are both pinned.
+positive and negative behaviour are both pinned. Negative cases assert the rejection reason,
+not only the exit code, so a rejection for the wrong reason fails the test.
+
+Rule letters follow the verifier's comments in scripts/flow-verify-receipt.py `_check_gate_reason`:
+(a) CHECK lines present, (b) command matches the resolver, (c) the check passed, (d) an opt-out is
+resolver-confirmed, (e) an OK receipt with no command and no opt-out is rejected, (f) CHECK_SHA is
+the final HEAD.
 
 Run with: python3 tests/test_flow_verify_receipt_check_gate.py
 """
@@ -140,7 +146,7 @@ if __name__ == "__main__":
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
             "rule (b) negative: a substituted command (ruff for 'just check') is rejected",
-            exit_code == 1 and "check substituted" in stdout,
+            exit_code == 1 and "check substituted: receipt ran 'ruff check .', resolved 'just check'" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
@@ -166,7 +172,7 @@ if __name__ == "__main__":
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
             "rule (c) negative: CHECK_EXIT: 1 is rejected with 'check did not pass'",
-            exit_code == 1 and "check did not pass" in stdout,
+            exit_code == 1 and "check did not pass: CHECK_EXIT '1'" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
@@ -182,7 +188,7 @@ if __name__ == "__main__":
         )
 
     print()
-    print("[Section 4] Rule (d): CHECK_SHA must name the final HEAD")
+    print("[Section 4] Rule (f): CHECK_SHA must name the final HEAD")
 
     with tempfile.TemporaryDirectory() as home:
         repo, base_sha, head_sha = make_repo(home)
@@ -191,8 +197,8 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(passing_lines(base_sha)))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (d) negative: CHECK_SHA naming the parent (not HEAD) is rejected",
-            exit_code == 1,
+            "rule (f) negative: CHECK_SHA naming the parent (not HEAD) is rejected with 'check ran on'",
+            exit_code == 1 and f"check ran on {base_sha}, step ends at {head_sha}" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
@@ -203,8 +209,8 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(no_sha))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (d) negative: a CHECK block with no CHECK_SHA is rejected",
-            exit_code == 1,
+            "rule (f) negative: a CHECK block with no CHECK_SHA is rejected with 'check ran on none'",
+            exit_code == 1 and "check ran on none" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
@@ -214,13 +220,13 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(passing_lines(head_sha)))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (d) positive: CHECK_SHA equal to the final HEAD passes",
+            "rule (f) positive: CHECK_SHA equal to the final HEAD passes",
             exit_code == 0,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
     print()
-    print("[Section 5] Rule (e): an opt-out is accepted only when the resolver confirms it")
+    print("[Section 5] Rule (d): an opt-out is accepted only when the resolver confirms it")
 
     with tempfile.TemporaryDirectory() as home:
         repo, base_sha, head_sha = make_repo(home)
@@ -229,7 +235,7 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(opted_out))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (e) positive: CHECK: opted-out is accepted when project.yaml checkOptOut is set",
+            "rule (d) positive: CHECK: opted-out is accepted when project.yaml checkOptOut is set",
             exit_code == 0,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
@@ -241,13 +247,27 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(opted_out))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (e) negative: CHECK: opted-out with no resolver opt-out is rejected",
-            exit_code == 1,
+            "rule (d) negative: CHECK: opted-out with no resolver opt-out is rejected with 'did not report an opt-out'",
+            exit_code == 1 and "did not report an opt-out" in stdout,
+            f"rc={exit_code} stdout={stdout[:300]!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        # A command is configured, so the resolver reports a command, not an opt-out: the opt-out
+        # claim contradicts the resolver and is rejected.
+        write_cache(repo, "just check")
+        opted_out = "CHECK: opted-out\nCHECK_SOURCE: opt-out\nCHECK_SHA: " + head_sha + "\n"
+        receipt = write_receipt(home, receipt_text(opted_out))
+        exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
+        test_result(
+            "rule (d) negative: CHECK: opted-out with a configured command is rejected (resolver source 'repo-cache')",
+            exit_code == 1 and "did not report an opt-out (resolver source 'repo-cache')" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
     print()
-    print("[Section 6] Rule (f): an OK receipt with no command and no opt-out is rejected")
+    print("[Section 6] Rule (e): an OK receipt with no command and no opt-out is rejected")
 
     with tempfile.TemporaryDirectory() as home:
         repo, base_sha, head_sha = make_repo(home)
@@ -255,8 +275,8 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(passing_lines(head_sha)))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (f) negative: a passing CHECK block with no configured command is rejected",
-            exit_code == 1,
+            "rule (e) negative: a passing CHECK block with no configured command is rejected with 'check not configured'",
+            exit_code == 1 and "check not configured" in stdout and "tried" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
 
@@ -266,7 +286,7 @@ if __name__ == "__main__":
         receipt = write_receipt(home, receipt_text(passing_lines(head_sha)))
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
-            "rule (f) positive: a configured command with a passing CHECK block passes",
+            "rule (e) positive: a configured command with a passing CHECK block passes",
             exit_code == 0,
             f"rc={exit_code} stdout={stdout[:300]!r}",
         )
@@ -318,16 +338,18 @@ if __name__ == "__main__":
         wrong_source = passing_lines(head_sha, source="justfile")
         receipt = write_receipt(home, receipt_text(wrong_source))
         rc, out = run_with(receipt, repo, base_sha, home, [])
-        test_result("CHECK_SOURCE: a source differing from the resolver's is rejected",
-                    rc == 1 and "source" in out, f"rc={rc} out={out[:200]!r}")
+        test_result("CHECK_SOURCE: a source differing from the resolver's is rejected with 'check source mismatch'",
+                    rc == 1 and "check source mismatch: receipt CHECK_SOURCE 'justfile'" in out,
+                    f"rc={rc} out={out[:200]!r}")
         # An opt-out receipt must name the opt-out source.
         write_opt_out(repo, "docs-only repo")
         (Path(repo) / ".claude" / "repo-cache.json").unlink()
         bad_opt = "CHECK: opted-out\nCHECK_SOURCE: repo-cache\nCHECK_SHA: " + head_sha + "\n"
         receipt = write_receipt(home, receipt_text(bad_opt))
         rc, out = run_with(receipt, repo, base_sha, home, [])
-        test_result("CHECK_SOURCE: an opt-out receipt with a non-opt-out source is rejected",
-                    rc == 1 and "source" in out, f"rc={rc} out={out[:200]!r}")
+        test_result("CHECK_SOURCE: an opt-out receipt with a non-opt-out source is rejected with 'check source mismatch'",
+                    rc == 1 and "check source mismatch: opt-out receipt names CHECK_SOURCE 'repo-cache'" in out,
+                    f"rc={rc} out={out[:200]!r}")
 
     with tempfile.TemporaryDirectory() as home:
         repo, base_sha, head_sha = make_repo(home)
@@ -342,6 +364,28 @@ if __name__ == "__main__":
         rc, out = run_with(receipt, repo, base_sha, home, ["--expect-model", "haiku"])
         test_result("--expect-model: an OK receipt with valid CHECK lines passes",
                     rc == 0, f"rc={rc} out={out[:200]!r}")
+
+    print()
+    print("[Section 9] Zero-commit OK fix receipt: the gate applies to every OK receipt (#338, decision A)")
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_cache(repo)
+        review_dir = Path(home) / ".claude" / "reviews" / "rv"
+        review_dir.mkdir(parents=True)
+        # No "Doing it" items, so the zero-commit carve-out accepts the step.
+        (review_dir / "claude-action-plan.md").write_text("# Action plan\n\nNo items to do.\n")
+        receipt = write_receipt(home, receipt_text(passing_lines(head_sha)))
+        # --base equal to HEAD: the fix step made no commits, yet the check ran on HEAD.
+        cmd = [sys.executable, str(VERIFIER), "--step", "fix", "--receipt", receipt,
+               "--since", SINCE, "--repo", repo, "--branch", "HEAD", "--base", head_sha,
+               "--review-dir", str(review_dir)]
+        env = os.environ.copy()
+        env["HOME"] = home
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        test_result("zero-commit fix: an OK receipt with valid CHECK lines on HEAD passes the gate",
+                    r.returncode == 0 and "ARTIFACTS: ok" in r.stdout,
+                    f"rc={r.returncode} stdout={r.stdout.strip()[:300]!r} stderr={r.stderr.strip()[:200]!r}")
 
     print()
     h.summarize_and_exit()

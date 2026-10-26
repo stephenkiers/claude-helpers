@@ -23,7 +23,8 @@ def with_check_lines(receipt_text: str, repo_root: Path, tmp: Path) -> Tuple[str
     if "Decision: OK" not in receipt_text:
         return receipt_text, extra
     head = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
     ).stdout.strip()
     lines = (
         f"CHECK: {CHECK_COMMAND}\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\nCHECK_SHA: {head}\n"

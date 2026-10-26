@@ -25,6 +25,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple
 
@@ -47,10 +48,9 @@ except ImportError:
 MTIME_SKEW_SECS = 5
 GIT_TIMEOUT_SECS = 5
 
-# Implement/fix check outcome (#338): the receipt's CHECK value for an explicit opt-out, and the
-# resolver source that must back it (scripts/workflow/checks.py resolve_check_command).
+# Implement/fix check outcome (#338): the receipt's CHECK value for an explicit opt-out. The resolver
+# source that must back it is OPT_OUT_SOURCE, imported from scripts/workflow/checks.py in the gate.
 CHECK_OPTED_OUT = "opted-out"
-CHECK_OPT_OUT_SOURCE = "opt-out"
 
 # Contribution failure reasons
 CONTRIB_ABSENT = "absent"
@@ -1701,6 +1701,26 @@ def _git_head(repo: str, branch: Optional[str]) -> str:
         error(f"Git operation failed: {e}")
 
 
+@dataclass(frozen=True)
+class CheckOutcome:
+    """The CHECK lines of an OK implement/fix receipt (#338), parsed once. An absent line is None."""
+
+    check: Optional[str]
+    exit_code: Optional[str]
+    source: Optional[str]
+    sha: Optional[str]
+
+
+def _parse_check_outcome(receipt: str) -> CheckOutcome:
+    """Read the four CHECK lines from a receipt header."""
+    return CheckOutcome(
+        check=parse_receipt_field(receipt, "CHECK"),
+        exit_code=parse_receipt_field(receipt, "CHECK_EXIT"),
+        source=parse_receipt_field(receipt, "CHECK_SOURCE"),
+        sha=parse_receipt_field(receipt, "CHECK_SHA"),
+    )
+
+
 def _check_gate_reason(
     receipt: str,
     repo: str,
@@ -1712,6 +1732,14 @@ def _check_gate_reason(
 
     The resolver is `checks.resolve_check_command` run in-process, so the receipt cannot vouch for
     its own command or an opt-out. Return the named rejection reason, or None when the lines hold.
+
+    Trust scope (documented, not enforced): the resolver reads repo-cache.json and project.yaml from
+    the step's own worktree first, and that worktree is agent-writable. An agent that edits its own
+    worktree config can make the resolver report a command or an opt-out it chose, and this gate
+    would then agree with it. The gate catches honest mistakes (a stale, substituted or unrun check,
+    or an opt-out the config does not carry); it does not defend against a deliberately falsified
+    worktree config. Preferring the main worktree's config would close that gap but changes the
+    resolution order in scripts/workflow/checks.py, so it is out of scope here.
     """
     # scripts/workflow is a package under the repo root, the parent of this script's directory.
     # Imported lazily so the plan, review and other modes never depend on it.
@@ -1720,53 +1748,63 @@ def _check_gate_reason(
         sys.path.insert(0, repo_root)
     from scripts.workflow import checks
 
-    check = parse_receipt_field(receipt, "CHECK")
-    if not check:
+    try:
+        from scripts.workflow.checks import OPT_OUT_SOURCE
+    except ImportError:  # checks.py does not export the constant yet; use the resolver's literal
+        OPT_OUT_SOURCE = "opt-out"
+
+    outcome = _parse_check_outcome(receipt)
+    if not outcome.check:
         return "check outcome missing from receipt"
-    check_exit = parse_receipt_field(receipt, "CHECK_EXIT") or "none"
-    check_sha = parse_receipt_field(receipt, "CHECK_SHA")
-    check_source = parse_receipt_field(receipt, "CHECK_SOURCE")
+    check_exit = outcome.exit_code or "none"
 
     main_path = Path(main_worktree) if main_worktree else None
     # Resolve against the step's own worktree (where the Final check resolved and ran); fall back to --repo.
     resolve_root = Path(check_worktree) if check_worktree else Path(repo)
     try:
-        command, source, _failure_reason = checks.resolve_check_command(resolve_root, main_path)
+        command, source, failure_reason = checks.resolve_check_command(resolve_root, main_path)
     except Exception as exc:  # a resolver crash means the check could not run, not that none is configured
-        return f"check-not-run: resolver unavailable ({exc})"
+        return f"check-not-run: resolver unavailable ({type(exc).__name__}: {exc})"
 
-    if check == CHECK_OPTED_OUT:
-        # Rule (d): an opt-out is accepted only when the resolver itself reported one.
-        if source != CHECK_OPT_OUT_SOURCE:
+    # Contradictory resolver output (a command and an opt-out at once) is never a valid basis for a pass.
+    if command is not None and source == OPT_OUT_SOURCE:
+        return f"resolver reported both a command ('{command}') and an opt-out (contradictory)"
+
+    if outcome.check == CHECK_OPTED_OUT:
+        # Rule (d): an opt-out is accepted only when the resolver itself reported one, with no command.
+        if command is not None or source != OPT_OUT_SOURCE:
             return (
                 "check opted out in receipt, but the resolver did not report an opt-out "
                 f"(resolver source '{source or 'none'}')"
             )
-        if check_source != CHECK_OPT_OUT_SOURCE:
-            return f"check source mismatch: opt-out receipt names CHECK_SOURCE '{check_source or 'none'}'"
+        if outcome.source != OPT_OUT_SOURCE:
+            return f"check source mismatch: opt-out receipt names CHECK_SOURCE '{outcome.source or 'none'}'"
     elif command is None:
         # Rule (e): nothing resolves and there is no opt-out, so an OK receipt cannot vouch for a check.
-        if source == CHECK_OPT_OUT_SOURCE:
-            return f"check substituted: receipt ran '{check}', resolved '{CHECK_OPTED_OUT}'"
-        return f"check not configured: receipt says OK with '{check}' but no check command resolves"
+        if source == OPT_OUT_SOURCE:
+            return f"check substituted: receipt ran '{outcome.check}', resolved '{CHECK_OPTED_OUT}'"
+        return (
+            f"check not configured: receipt says OK with '{outcome.check}' but no check command resolves "
+            f"({failure_reason or 'no reason reported by the resolver'})"
+        )
     else:
         # Rule (b): the receipt must name the resolved command verbatim.
-        if check != command:
-            return f"check substituted: receipt ran '{check}', resolved '{command}'"
+        if outcome.check != command:
+            return f"check substituted: receipt ran '{outcome.check}', resolved '{command}'"
         # Rule (c): a resolved check must have passed; CHECK_EXIT none or missing is not a pass.
         if check_exit != "0":
             return f"check did not pass: CHECK_EXIT '{check_exit}'"
         # The receipt's CHECK_SOURCE must match where the resolver found the command.
-        if check_source != source:
+        if outcome.source != source:
             return (
-                f"check source mismatch: receipt CHECK_SOURCE '{check_source or 'none'}', "
+                f"check source mismatch: receipt CHECK_SOURCE '{outcome.source or 'none'}', "
                 f"resolver source '{source or 'none'}'"
             )
 
     # Rule (f): the check must have run on the step's final HEAD, not on an earlier tree.
     head = _git_head(repo, branch)
-    if check_sha != head:
-        return f"check ran on {check_sha or 'none'}, step ends at {head}"
+    if outcome.sha != head:
+        return f"check ran on {outcome.sha or 'none'}, step ends at {head}"
 
     return None
 
@@ -2642,14 +2680,16 @@ def main() -> None:
             if not ROUND1_HEADER_RE.search(receipt):
                 print("Reason: receipt missing ROUND 1 section header")
                 sys.exit(1)
-            # The check gate (#338) applies to escalated re-runs too.
-            if args.repo and args.branch:
-                gate_reason = _check_gate_reason(
-                    receipt, args.repo, args.branch, args.main_worktree, args.check_worktree
-                )
-                if gate_reason:
-                    print(f"Reason: {gate_reason}")
-                    sys.exit(1)
+            # The check gate (#338) applies to escalated re-runs too. It cannot run without the repo and
+            # branch it resolves and compares against, so a missing pair is a usage error, not a skip.
+            if not (args.repo and args.branch):
+                error("escalated re-run check gate requires --repo and --branch")
+            gate_reason = _check_gate_reason(
+                receipt, args.repo, args.branch, args.main_worktree, args.check_worktree
+            )
+            if gate_reason:
+                print(f"Reason: {gate_reason}")
+                sys.exit(1)
 
         print("ARTIFACTS: ok")
         sys.exit(0)
