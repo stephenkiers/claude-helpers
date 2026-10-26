@@ -814,6 +814,88 @@ t("(f) the python3 grant is narrow (no bare Bash(python3:*))",
   "Bash(python3:*)" not in allowed_tools and "Bash(python3 *)" not in allowed_tools,
   f"allowed-tools: {allowed_tools[:200]}")
 
+# (#338) the Final check: resolve, run in the worktree, record outcome, and never trust a bare pass
+DOC = IMPLEMENT_WITH_HAIKU
+t("(#338) frontmatter allowed-tools grants scripts.workflow.cli checks",
+  "scripts.workflow.cli checks" in allowed_tools,
+  f"allowed-tools: {allowed_tools[:200]}")
+
+
+def table_row(marker):
+    """The first markdown table row containing marker, or '' when absent."""
+    for line in DOC.splitlines():
+        if line.startswith("|") and marker in line:
+            return line
+    return ""
+
+
+for tok in ("checks resolve-check", "checks run -", "run_in_background", "cd <WORKTREE>", "rev-parse HEAD",
+            "timeout_secs"):
+    t(f"(#338) doc names {tok!r}", tok in DOC)
+
+t("(#338) doc says a wrapped `timeout` is never used for a gate or check",
+  "Never wrap" in DOC and "`timeout`" in DOC)
+
+for tok in ("CHECK:", "CHECK_EXIT:", "CHECK_SOURCE:", "CHECK_SHA:", "opted-out",
+            "check-not-run", "check-not-configured"):
+    t(f"(#338) the check receipt vocabulary names {tok!r}", tok in DOC)
+
+t("(#338) doc states \"not run\" is never a pass",
+  '"not run" is never a pass' in DOC)
+
+t("(#338) doc says the exit status is not branched on (use source/command from resolver JSON)",
+  "do not branch on the exit status" in DOC and "`source`" in DOC and "`command`" in DOC)
+
+t("(#338) no `resolve-check ... ||` shell fallback (the exit code is never the gate)",
+  not any("resolve-check" in line and "||" in line for line in DOC.splitlines()))
+
+# Heading order: 4.6 Verify green, then commit -> ## Final check -> ## Final summary
+pos_46 = DOC.find("### 4.6 Verify green, then commit")
+pos_final = DOC.find("## Final check")
+pos_summary = DOC.find("## Final summary")
+t("(#338) the Final check section sits after 4.6 Verify green, then commit",
+  pos_46 != -1 and pos_final != -1 and pos_46 < pos_final,
+  f"4.6={pos_46} final={pos_final}")
+t("(#338) the Final check section sits before ## Final summary",
+  pos_final != -1 and pos_summary != -1 and pos_final < pos_summary,
+  f"final={pos_final} summary={pos_summary}")
+
+t("(#338) the Round-4 skip sentence says neither the gate nor the Final check is skippable",
+  "neither is the Final check" in DOC)
+
+mech_lines = [line for line in DOC.splitlines() if "Mechanical" in line and "Final check" in line]
+t("(#338) a mechanical run routes to the Final check",
+  len(mech_lines) > 0, f"mechanical lines naming Final check: {len(mech_lines)}")
+
+# One assertion per mapping-table row: the row holds both the outcome and the next action
+row_exit0 = table_row("exit `0`")
+t("(#338) mapping row exit 0 holds the pass outcome and the OK receipt next action",
+  "pass" in row_exit0 and "OK receipt" in row_exit0, row_exit0[:160])
+
+row_timeout = table_row("timeout prefix")
+t("(#338) mapping row for a timed-out step holds 'not run' and a hard stop",
+  "not run" in row_timeout and "hard stop" in row_timeout, row_timeout[:160])
+
+row_127 = table_row("126`/`127")
+t("(#338) mapping row for exit 126/127 holds 'not run' and a hard stop",
+  "not run" in row_127 and "hard stop" in row_127, row_127[:160])
+
+row_real = table_row("exit `1` otherwise")
+t("(#338) mapping row for a real failure holds 'real failure' and the Final check fix loop",
+  "real failure" in row_real and "Final check fix loop" in row_real, row_real[:160])
+
+row_other = table_row("exit `2`")
+t("(#338) mapping row for exit 2 and any other exit holds 'not run'",
+  "not run" in row_other, row_other[:160])
+
+row_optout = table_row('source: "opt-out"')
+t("(#338) mapping row for resolver opt-out records CHECK: opted-out with no run",
+  "opted-out" in row_optout and "no run" in row_optout, row_optout[:160])
+
+row_noconf = table_row("no opt-out")
+t("(#338) mapping row for resolver failure with no opt-out is a check-not-configured hard stop",
+  "check-not-configured" in row_noconf and "hard stop" in row_noconf, row_noconf[:160])
+
 print()
 
 h.summarize_and_exit()

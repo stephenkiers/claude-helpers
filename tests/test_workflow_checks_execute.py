@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from workflow.checks import run_checks, CheckResult, CheckResults
+from workflow.checks import run_checks, execute_check, CheckResult, CheckResults
 from workflow.safety import Unknown
 from _test_harness import Harness
 
@@ -436,6 +436,23 @@ if __name__ == "__main__":
                 "run_checks: passes timeout to execute_check",
                 mock_exec.called and mock_exec.call_args[1]["timeout"] == 60
             )
+
+    print()
+    print("[Section 11] execute_check runs without a timeout binary on PATH (#338)")
+
+    result = execute_check("exit 0", cwd=None, env={"PATH": "/nonexistent"})
+    test_result(
+        "execute_check: a shell command succeeds with PATH=/nonexistent (no timeout binary needed)",
+        result.success and result.returncode == 0,
+        f"success={result.success} rc={result.returncode} error={result.error!r} stderr={result.stderr!r}",
+    )
+
+    result = execute_check("/bin/sleep 5", cwd=None, timeout=1, env={"PATH": "/nonexistent"})
+    test_result(
+        "execute_check: a slow command times out (returns, does not hang) with PATH=/nonexistent",
+        not result.success and result.error is not None and "timed out" in str(result.error).lower(),
+        f"success={result.success} error={result.error!r}",
+    )
 
     print()
     h.summarize_and_exit()
