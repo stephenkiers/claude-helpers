@@ -605,7 +605,7 @@ Then exit cleanly.
 
 **Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while any launched id is outstanding; never poll; at most one 1800s status-only `ScheduleWakeup` per phase.
 
-Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --fragment`, which reads the ledger's expected reaction files and the briefs' types and prints the handle-keyed checkpoint ledger fragment (handles numbered per tier in brief_id order) with `tier`, `brief_id`, `brief_type`, and `evidence` fields. Without `--fragment` it prints brief_id → tier JSON instead. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
+Assign tiers mechanically with `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --fragment`, which reads the ledger's expected reaction files and the briefs' types and prints the handle-keyed checkpoint ledger fragment (handles numbered per tier in numeric brief_id order (B2 before B10)) with `tier`, `brief_id`, `brief_type`, and `evidence` fields. Without `--fragment` it prints brief_id → tier JSON instead. The rule (documented in flow-reference.md "Checkpoint ledger and reaction schema"):
 - **Q:** the brief's `Type` is `disagreement`, or any expert `protested` entry exists, or any expert marked `needs-human`.
 - **D:** no Q condition applies, at least one expert `resolved`, at least one expert OTHER THAN the one(s) who resolved `agreed` (self-agreement does not count), and no `could-go-other-way` flag. `no-view` does NOT demote D to W.
 - **W:** every other item.
