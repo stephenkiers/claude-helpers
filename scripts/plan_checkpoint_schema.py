@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """Shared schema, validators, and classifiers for checkpoint ledger and reactions.
 
-Implements: ledger extraction (F6), reaction classification (F2), brief_id->handle
-mapping (F5), tier rule including needs-human (F22), path confinement (F25), and
-shape validation (F17).
+Implements: ledger extraction (F6), reaction classification (F2), tier rule including
+needs-human (F22), path confinement (F25), shape validation (F17), handle entry
+validation, and nested handle map detection.
 
 Both scripts/plan-checkpoint-tiers.py and scripts/flow-verify-receipt.py import from
-this module to ensure they agree on all checkpoint structures and rules.
+this module to ensure they agree on all checkpoint structures and rules. The tier
+script's --fragment mode prints handle-keyed checkpoint entries with all four
+fields; numbering rule documented in prompts/flow-reference.md and enforced by
+--check-ledger self-check.
 """
 
 import json
+import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, FrozenSet, List, Optional
+
+# Post-tier handle set vocabulary and pattern
+HANDLE_TIERS = ("decided", "worth-a-look", "question")
+ACCEPTABLE_TIERS = ("decided", "worth-a-look")
+LEDGER_HANDLE_RE = re.compile(r"[DWQ]\d+")
+NON_HANDLE_MAP_KEYS: FrozenSet[str] = frozenset({"briefs"})
 
 
 def extract_ledger_json(text: str) -> Optional[Dict]:
@@ -262,6 +272,67 @@ def answer_file_sort_key(filename: str) -> tuple:
         return (seq_num, filename)
     # Fallback for unexpected format
     return (float('inf'), filename)
+
+
+def nested_handle_map_reason(ledger: Dict) -> Optional[str]:
+    r"""Detect if handle keys are nested under a top-level dict and return the reason.
+
+    Checks each top-level key whose value is a dict, skipping NON_HANDLE_MAP_KEYS
+    (e.g., "briefs" which has B\d+ keys that don't match LEDGER_HANDLE_RE). If that
+    dict has one or more keys matching LEDGER_HANDLE_RE, returns a named reason.
+    Returns None for a pre-tier ledger (no handles anywhere) or a correctly shaped
+    top-level ledger. Note: returns only the first nested key found (in dict order)
+    and does not look deeper than one level.
+
+    Args:
+        ledger: The parsed ledger dict
+
+    Returns:
+        Reason string if handles are nested, None otherwise.
+    """
+    for key, value in ledger.items():
+        if not isinstance(value, dict):
+            continue
+        if key in NON_HANDLE_MAP_KEYS:
+            continue
+        # Check if this dict contains handle-shaped keys
+        handles_in_value = [k for k in value.keys() if isinstance(k, str) and LEDGER_HANDLE_RE.fullmatch(k)]
+        if handles_in_value:
+            sorted_handles = sorted(handles_in_value)
+            return f"checkpoint ledger nests handle keys under '{key}' ({', '.join(sorted_handles)}); handle keys must be top-level ledger keys"
+    return None
+
+
+def validate_handle_entries(ledger: Dict) -> Optional[str]:
+    """Validate that each top-level handle entry is a dict with required fields.
+
+    For each top-level key matching LEDGER_HANDLE_RE (in sorted order): if its value
+    is not a dict, returns an error; otherwise checks for required fields `tier`,
+    `brief_id`, and `brief_type` in order and returns the first missing field error.
+    Missing means the key is absent, None, or empty string. Note: checks presence only —
+    it does not check that `tier` is a known tier, that `brief_id` exists in `briefs`,
+    or `brief_type`'s value, nor the `evidence` field.
+
+    Returns None when there are no handles (pre-tier ledger).
+
+    Args:
+        ledger: The parsed ledger dict
+
+    Returns:
+        Reason string if entries are invalid, None otherwise.
+    """
+    handles = sorted([k for k in ledger.keys() if isinstance(k, str) and LEDGER_HANDLE_RE.fullmatch(k)])
+    for handle in handles:
+        value = ledger[handle]
+        if not isinstance(value, dict):
+            return f"checkpoint ledger entry {handle} is not an object"
+        # Check required fields in order: tier, brief_id, brief_type
+        # Primary early check: fail closed if any required field is missing before proceeding to tier-specific logic
+        for field in ["tier", "brief_id", "brief_type"]:
+            field_value = value.get(field)
+            if field_value is None or field_value == "":
+                return f"checkpoint ledger entry {handle} has no {field}"
+    return None
 
 
 def tier_item(

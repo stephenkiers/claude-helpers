@@ -813,3 +813,21 @@ With zero observed `yes` or `no` values, the turns-exhaustion rate cannot be est
 That stream does not exist yet (0 lines), so neither condition can fire today.
 
 **Pointers.** `docs/adr/0004-model-cost-routing.md` (the escalate-once amendment) and the `CLAUDE.md` `/expert-flow` bullet now point to this amendment. Both keep the "dormant" status and the `Retry with sonnet` option.
+
+## Amendment (2026-10-25): Unambiguous post-tier checkpoint ledger (#344)
+
+This amendment hardens the checkpoint ledger shape and names all error causes, so a plan run does not hard-stop after every round is answered when handles are nested or entries lack required fields.
+
+**Decision.**
+
+- **Reject nested handle maps.** Handle keys under a `"handles"` or other key, rather than at the top level, are rejected. A content-based detector in `scripts/plan_checkpoint_schema.py` names the nested key and the handles found under it. The verifier calls it before Rule 2 and on the legacy path; on a nested map, returns `plan checkpoint incomplete (checkpoint ledger nests handle keys under '<key>' (<handles>); handle keys must be top-level ledger keys)`. No normalizing; fail closed.
+- **One shared detector.** The nested-map detector is called in two places (report and legacy path), so the reason is consistent.
+- **Presence validation on handle entries.** Each top-level handle entry must be a dict with required fields `tier`, `brief_id`, `brief_type` (checking in that order). Missing means the key is absent, `null`, or empty string. Returns `checkpoint ledger entry <handle> has no <field>`.
+- **Three Rule 6 reasons.** Rule 6 names three causes rather than one collapsed check: handle not in ledger, entry has no tier, or tier not in ACCEPTABLE_TIERS. Names the specific cause for every accepted item that fails.
+- **Step 5 self-check.** Before the round-1 report, Step 5 runs `--check-ledger` pure-read mode, which compares the ledger's handle set and each handle's `tier` and `brief_id` against a freshly computed fragment (does not compare `brief_type` or `evidence`). It applies the same reaction-file checks as the default path (path confinement, shape, `complete` sentinel) because all modes share one tiering function. On mismatch, names the cause (missing/unexpected handle, mismatched tier/brief_id, etc.). Returns exit 1 with a named reason on stderr, exit 0 on pass.
+- **Fragment mode.** The tier script's `--fragment` prints handle-keyed entries with all four fields, numbered per tier in numeric brief_id order (B2 before B10). Script-owned numbering is binding on the report. A test round-trips the fragment into a ledger and asserts the verifier passes Rule 2.
+- **Legacy path**: when no report checkpoint is found but the ledger carries nested handles, the nested-map reason is named instead of silently passing.
+
+**Consequences.** A shape error is named by cause, not by symptom (e.g., `entry D1 has no tier` instead of `accepted non-D/W`). Nested ledgers fail with a specific reason listing the nested key and handles. The Step 5 self-check catches renumbering, dropped or added handles before the report is shown, so the human is not re-asked after fixing numbering. The verifier remains the backstop for mechanical facts (see "fidelity audit owns judgment only, verifier owns counts" above).
+
+**Verifier ownership (unchanged).** The verifier stays sole owner of mechanical checkpoint facts. The schema module provides shared constants and validators; the verifier makes the final fail-closed/pass decision. The handle pattern `[DWQ]\d+` is currently declared in both `scripts/flow-verify-receipt.py` and `scripts/plan_checkpoint_schema.py`; consolidating the verifier onto the schema module's constant is tracked in #339.

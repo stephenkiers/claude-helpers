@@ -24,13 +24,23 @@ from _test_harness import Harness, REPO_ROOT
 TIER_SCRIPT = REPO_ROOT / "scripts" / "plan-checkpoint-tiers.py"
 
 
-def run_tier_script(decisions_path: str) -> tuple:
-    """Run the tier script and return (exit_code, stdout, stderr)."""
+def run_tier_script(decisions_path: str, fragment=False, check_ledger=False) -> tuple:
+    """Run the tier script and return (exit_code, stdout, stderr).
+
+    Args:
+        decisions_path: path to decisions.md file
+        fragment: if True, use --fragment flag instead of default output
+        check_ledger: if True, use --check-ledger flag instead of default output
+    """
     cmd = [
         sys.executable,
         str(TIER_SCRIPT),
         "--decisions", decisions_path,
     ]
+    if fragment:
+        cmd.append("--fragment")
+    if check_ledger:
+        cmd.append("--check-ledger")
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
@@ -42,15 +52,22 @@ def create_reaction_file(path: str, reactions: dict) -> None:
     Path(path).write_text(json.dumps(payload))
 
 
-def create_decisions_file(path: str, seated: list, expected_reactions: list, briefs: dict = None) -> None:
-    """Create a decisions.md with a Checkpoint ledger block."""
+def create_decisions_file(path: str, seated: list, expected_reactions: list, briefs: dict = None,
+                          handles: dict = None) -> None:
+    """Create a decisions.md with a Checkpoint ledger block.
+
+    `handles` entries are merged in as top-level ledger keys, the shape the tier
+    script's --fragment output is pasted into.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     ledger = {
         "seated": seated,
         "expected_reactions": expected_reactions,
     }
-    if briefs:
+    if briefs is not None:
         ledger["briefs"] = briefs
+    if handles:
+        ledger.update(handles)
     # Build the decisions file with the fenced JSON block
     # The fence parser in the script expects ``` on its own line
     lines = ["# Decisions", "", "## Checkpoint ledger", "```", json.dumps(ledger), "```", "",
@@ -264,8 +281,8 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Missing expected reaction file -> exit non-zero",
-                     exit_code != 0,
-                     f"exit={exit_code}")
+                     exit_code == 1 and "Error: expected reaction file missing: reactions/" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 7: Reaction file without 'complete' sentinel -> non-zero exit
     print("[Test 7] Reaction file without 'complete' sentinel -> exit non-zero")
@@ -291,8 +308,8 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Reaction file without 'complete' sentinel -> exit non-zero",
-                     exit_code != 0,
-                     f"exit={exit_code}")
+                     exit_code == 1 and "missing 'complete': true sentinel" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 8: Missing brief_type in ledger when brief has reactions -> non-zero exit
     print("[Test 8] Missing brief_type in ledger -> exit non-zero")
@@ -315,7 +332,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Missing brief_type in ledger -> exit non-zero",
-                     exit_code != 0 and "brief_type" in stderr.lower(),
+                     exit_code == 1 and "brief B1 has reactions but no brief_type in ledger briefs" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 9: Missing decisions.md -> non-zero exit
@@ -323,15 +340,17 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         nonexistent_file = str(Path(tmp) / "missing.md")
         exit_code, stdout, stderr = run_tier_script(nonexistent_file)
-        h.test_result("Missing decisions.md -> exit non-zero", exit_code != 0, f"exit={exit_code}")
+        h.test_result("Missing decisions.md -> exit non-zero",
+                     exit_code == 1 and "not found" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 10: No --decisions argument -> exit non-zero
     print("[Test 10] No --decisions argument -> exit non-zero")
     cmd = [sys.executable, str(TIER_SCRIPT)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     h.test_result("No --decisions argument -> exit non-zero",
-                 result.returncode != 0,
-                 f"exit={result.returncode}")
+                 result.returncode != 0 and ("required" in result.stderr.lower()),
+                 f"exit={result.returncode}, stderr={result.stderr[:200]}")
 
     # Test 11: Edge case - empty seated list (should still work if expected_reactions is also empty)
     print("[Test 11] Empty seated list -> exit 0")
@@ -424,6 +443,639 @@ def main():
                 h.test_result("Mixed protest and resolve -> Q", False, f"exit={exit_code}, stderr={stderr[:100]}")
         except json.JSONDecodeError as e:
             h.test_result("Mixed protest and resolve -> Q", False, f"JSON error: {e}")
+
+    # ========== --fragment tests ==========
+
+    # Test 14: --fragment outputs handle-keyed JSON with all four fields
+    print("[Test 14] --fragment outputs handle-keyed JSON with all four fields")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B4": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B4": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B4": {"agreed": True}
+        })
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), fragment=True)
+        try:
+            if not stdout:
+                h.test_result("--fragment outputs with all fields", False, f"stderr={stderr[:200]}")
+            else:
+                fragment = json.loads(stdout)
+                # Should be keyed by handle (D1 for a decided brief)
+                has_handle_key = any(k[0] in "DWQ" and k[1:].isdigit() for k in fragment.keys())
+                has_all_fields = all(
+                    all(f in v for f in ["tier", "brief_id", "brief_type", "evidence"])
+                    for v in (fragment.values() if has_handle_key else [])
+                )
+                h.test_result("--fragment outputs with all fields",
+                             exit_code == 0 and has_handle_key and has_all_fields,
+                             f"exit={exit_code}, fragment={stdout[:200]}")
+        except json.JSONDecodeError as e:
+            h.test_result("--fragment outputs with all fields", False, f"JSON error: {e}")
+
+    # Test 15: --fragment numbering follows tier order (D, W, Q) with brief_id ordering within tier
+    print("[Test 15] --fragment numbering follows tier and brief_id order")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        # Create briefs: B4 decided, B1 worth-a-look, B2/B3 questions
+        briefs = {
+            "B4": {"brief_type": "question", "raiser": "alice"},
+            "B1": {"brief_type": "question", "raiser": "alice"},
+            "B2": {"brief_type": "question", "raiser": "alice"},
+            "B3": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # B4 -> decided (D1), B1 -> worth-a-look (W1), B2/B3 -> questions (Q1/Q2)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B4": {"resolved": True, "agreed": True},
+            "B1": {"resolved": True},
+            "B2": {"protested": True},
+            "B3": {"protested": True},
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B4": {"agreed": True},
+            "B1": {"no-view": True},
+            "B2": {"no-view": True},
+            "B3": {"no-view": True},
+        })
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), fragment=True)
+        try:
+            if not stdout:
+                h.test_result("--fragment numbering order", False, f"stderr={stderr[:200]}")
+            else:
+                fragment = json.loads(stdout)
+                # Expected: D1->B4, W1->B1, Q1->B2, Q2->B3
+                expected_handles = {"D1", "W1", "Q1", "Q2"}
+                actual_handles = set(fragment.keys())
+                h.test_result("--fragment numbering order",
+                             exit_code == 0 and actual_handles == expected_handles,
+                             f"exit={exit_code}, expected={expected_handles}, actual={actual_handles}")
+        except json.JSONDecodeError as e:
+            h.test_result("--fragment numbering order", False, f"JSON error: {e}")
+
+    # Test 16: --fragment with B10 sorts after B2 (numeric ordering)
+    print("[Test 16] --fragment numeric ordering (B2 before B10)")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B2": {"brief_type": "question", "raiser": "alice"},
+            "B10": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B2": {"resolved": True},
+            "B10": {"resolved": True},
+        })
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), fragment=True)
+        try:
+            if not stdout:
+                h.test_result("Numeric ordering B2 before B10", False, f"stderr={stderr[:200]}")
+            else:
+                fragment = json.loads(stdout)
+                # B2 should map to W1, B10 to W2 (since they're both worth-a-look)
+                actual_brief_ids = {k: fragment[k].get("brief_id") for k in fragment.keys()}
+                h.test_result("Numeric ordering B2 before B10",
+                             exit_code == 0 and actual_brief_ids.get("W1") == "B2" and actual_brief_ids.get("W2") == "B10",
+                             f"exit={exit_code}, fragment={actual_brief_ids}")
+        except (json.JSONDecodeError, TypeError) as e:
+            h.test_result("Numeric ordering B2 before B10", False, f"Error: {e}")
+
+    # ========== --check-ledger tests ==========
+
+    # Test 17: --check-ledger exits 0 on correct ledger
+    print("[Test 17] --check-ledger exits 0 on correct ledger")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 0 on correct ledger",
+                     exit_code == 0,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 18: --check-ledger exits 1 on flat entry shape
+    print("[Test 18] --check-ledger exits 1 on flat entry shape")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": "decided"})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 1 on flat entry",
+                     exit_code == 1 and "checkpoint ledger entry D1 is not an object" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 19: --check-ledger exits 1 on nested handles
+    print("[Test 19] --check-ledger exits 1 on nested handles")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"handles": {"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}}})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 1 on nested handles",
+                     exit_code == 1 and "nests handle keys under" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 20: --check-ledger is a pure read (does not modify file)
+    print("[Test 20] --check-ledger does not modify the decisions file")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": "decided"})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+
+        # Capture the file content before running --check-ledger
+        before_content = decisions_file.read_bytes()
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+
+        # Capture the file content after running --check-ledger
+        after_content = decisions_file.read_bytes()
+
+        h.test_result("--check-ledger does not modify the file",
+                     before_content == after_content,
+                     f"exit={exit_code}, changed={before_content != after_content}")
+
+    # Test 21: --check-ledger exits 1 when brief with reactions has no brief_type [FROM_FINDING_1]
+    print("[Test 21] --check-ledger exits 1 when brief with reactions has no brief_type")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {}  # Missing brief_type for B1
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}})
+        # Create reaction files that reference B1
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"B1": {"resolved": True}})
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 1 when brief with reactions has no brief_type",
+                     exit_code == 1 and "brief B1 has reactions but no brief_type in ledger briefs" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 22: --check-ledger exits 1 when expected reaction file is missing [FROM_FINDING_3]
+    print("[Test 22] --check-ledger exits 1 when expected reaction file is missing")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}})
+        # Create only alice's file, not bob's (which will cause bob's file to be missing)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True}
+        })
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("--check-ledger exits 1 when expected reaction file is missing",
+                     exit_code == 1 and "Error: expected reaction file missing: reactions/bob-pre-show-r1.json" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # ========== F3: Unreadable/incomplete reactions tests ==========
+
+    # Test 23: Reaction file without 'complete': true -> exit 1, specific error message
+    print("[Test 23] --check-ledger: reaction file missing 'complete': true sentinel -> exit 1")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create a reaction file WITHOUT the complete sentinel
+        Path(reactions_dir).mkdir(parents=True, exist_ok=True)
+        Path(reactions_dir / "alice-pre-show-r1.json").write_text(
+            json.dumps({"B1": {"resolved": True}}), encoding="utf-8")
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Reaction file missing 'complete': true sentinel -> exit 1",
+                     exit_code == 1 and "missing 'complete': true sentinel" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # Test 24: Reaction file with invalid JSON (list instead of dict) -> exit 1, no Traceback
+    print("[Test 24] --check-ledger: reaction file is list (not dict) -> exit 1, no Traceback")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create alice's file as a JSON list
+        Path(reactions_dir).mkdir(parents=True, exist_ok=True)
+        Path(reactions_dir / "alice-pre-show-r1.json").write_text(
+            json.dumps([]), encoding="utf-8")
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Reaction file is list -> exit 1, no Traceback",
+                     exit_code == 1 and "Error in" in stderr and "not a dict" in stderr and "Traceback" not in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 25: Reaction file with malformed JSON -> exit 1
+    print("[Test 25] --check-ledger: reaction file with invalid JSON -> exit 1")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create alice's file with malformed JSON
+        Path(reactions_dir).mkdir(parents=True, exist_ok=True)
+        Path(reactions_dir / "alice-pre-show-r1.json").write_text(
+            "{not valid json}", encoding="utf-8")
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Reaction file with invalid JSON -> exit 1",
+                     exit_code == 1 and "not valid JSON" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:200]}")
+
+    # ========== F4: Named-cause branch tests for --check-ledger ==========
+
+    # Tests 26-27b share one two-brief session (B1, B2 both decided -> D1, D2) and
+    # mutate only the ledger's handle keys, so each exercises one named cause.
+    def handle_set_case(tmp: str, handles: dict) -> tuple:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+            "B2": {"brief_type": "question", "raiser": "alice"},
+        }
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles=handles)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True}, "B2": {"resolved": True},
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}, "B2": {"agreed": True},
+        })
+        return run_tier_script(str(decisions_file), check_ledger=True)
+
+    d1 = {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}
+    d2 = {"tier": "decided", "brief_id": "B2", "brief_type": "question", "evidence": []}
+    w9 = {"tier": "worth-a-look", "brief_id": "B2", "brief_type": "question", "evidence": []}
+
+    # Test 26: Missing handle -> 'checkpoint ledger is missing handles: <h>'
+    print("[Test 26] --check-ledger: missing handle -> specific error message")
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline_exit, _, baseline_err = handle_set_case(tmp, {"D1": d1, "D2": d2})
+    h.test_result("Two-brief baseline ledger passes --check-ledger",
+                  baseline_exit == 0,
+                  f"exit={baseline_exit}, stderr={baseline_err[:300]}")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {"D1": d1})
+    h.test_result("Missing handle -> 'checkpoint ledger is missing handles: D2'",
+                  exit_code == 1 and "checkpoint ledger is missing handles: D2" in stderr
+                  and "unexpected handles" not in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 27: Extra unexpected handle
+    print("[Test 27] --check-ledger: unexpected handle -> specific error message")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {"D1": d1, "D2": d2, "W9": w9})
+    h.test_result("Unexpected handle -> 'checkpoint ledger has unexpected handles: W9'",
+                  exit_code == 1 and "checkpoint ledger has unexpected handles: W9" in stderr
+                  and "missing handles" not in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 27a: Missing and unexpected together -> both lines reported
+    print("[Test 27a] --check-ledger: missing and unexpected handles -> both reported")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {"D1": d1, "W9": w9})
+    h.test_result("Missing + unexpected -> both lines on stderr",
+                  exit_code == 1 and "checkpoint ledger is missing handles: D2" in stderr
+                  and "checkpoint ledger has unexpected handles: W9" in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 27b: Briefs present but no handle keys at all
+    print("[Test 27b] --check-ledger: briefs but no handle keys -> named reason")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {})
+    h.test_result("No handle keys -> 'has briefs but no top-level D/W/Q handle keys'",
+                  exit_code == 1
+                  and "checkpoint ledger has briefs but no top-level D/W/Q handle keys" in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 28: Handle with wrong tier
+    print("[Test 28] --check-ledger: wrong tier -> 'expected tier' message")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "worth-a-look", "brief_id": "B1", "brief_type": "question", "evidence": []}})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Wrong tier -> 'expected tier' message",
+                     exit_code == 1 and "expected tier" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 29: Handle with wrong brief_id
+    print("[Test 29] --check-ledger: wrong brief_id -> 'expected brief_id' message")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B2", "brief_type": "question", "evidence": []}})
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "B1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "B1": {"agreed": True}
+        })
+
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Wrong brief_id -> 'expected brief_id' message",
+                     exit_code == 1 and "expected brief_id" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 30: Brief id not matching B<digits> pattern
+    print("[Test 30] Brief id not matching B<digits> -> 'is not of the form B<digits>' message")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice", "bob"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
+        ]
+        briefs = {
+            "X1": {"brief_type": "question", "raiser": "alice"},  # Invalid brief id
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "X1": {"resolved": True, "agreed": True}
+        })
+        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
+            "X1": {"agreed": True}
+        })
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Brief id not matching B<digits> -> error message",
+                     exit_code == 1 and "is not of the form B<digits>" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 31: Reaction path outside decisions dir -> 'is outside' message
+    print("[Test 31] --check-ledger: reaction path outside dir -> 'is outside' message")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        session_dir = tmp_path / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "../outside.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create the outside file
+        (tmp_path / "outside.json").write_text(json.dumps({"B1": {"agreed": True}, "complete": True}))
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
+        h.test_result("Reaction path outside dir -> 'is outside' message",
+                     exit_code == 1 and "is outside" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 32: Default mode also checks path confinement
+    print("[Test 32] Default mode: reaction path outside dir -> 'is outside' message")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        session_dir = tmp_path / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "../outside.json"},
+        ]
+        briefs = {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        # Create the outside file
+        (tmp_path / "outside.json").write_text(json.dumps({"B1": {"agreed": True}, "complete": True}))
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file))
+        h.test_result("Default mode: reaction path outside dir -> 'is outside' message",
+                     exit_code == 1 and "is outside" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
+
+    # Test 33: Default mode also checks B<digits> format
+    print("[Test 33] Default mode: brief id not matching B<digits> -> error message")
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "session"
+        decisions_file = session_dir / "decisions.md"
+        reactions_dir = session_dir / "reactions"
+
+        seated = ["alice"]
+        expected_reactions = [
+            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
+        ]
+        briefs = {
+            "X1": {"brief_type": "question", "raiser": "alice"},  # Invalid brief id
+        }
+
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
+            "X1": {"agreed": True}
+        })
+
+        exit_code, stdout, stderr = run_tier_script(str(decisions_file))
+        h.test_result("Default mode: brief id not matching B<digits> -> error message",
+                     exit_code == 1 and "is not of the form B<digits>" in stderr,
+                     f"exit={exit_code}, stderr={stderr[:300]}")
 
     h.summarize_and_exit()
 
