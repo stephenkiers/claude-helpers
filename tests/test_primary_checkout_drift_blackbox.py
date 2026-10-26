@@ -703,8 +703,9 @@ def main():
         create_worktree(str(primary_path), str(ticket_path))
 
         # Get initial index mtime
-        index_mtime_before = get_index_mtime(str(primary_path))
+        # Plain `git status` may refresh the index itself, so read the mtime after it.
         status_before = get_git_status_output(str(primary_path))
+        index_mtime_before = get_index_mtime(str(primary_path))
 
         # Run snapshot
         run_script(
