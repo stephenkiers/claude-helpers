@@ -18,13 +18,17 @@ Covers:
 11. Prompt file existence: plan-synthesize-and-check.md, plan-audit.md, others
 12. No literal $0 in command doc shell snippets
 13. No echo "$VAR" | pattern in command doc shell snippets
+14. Flag loop: --model / --model=* get a did-you-mean error before the generic --*) arm,
+    and --models / unknown flags still parse as before (#377)
 
 Run with: python3 tests/test_expert_plan_v3.py
 """
 
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -954,8 +958,85 @@ def main():
                 "file does not exist",
             )
 
+    # Test 14: flag loop --model did-you-mean arm (#377)
+    flag_block = extract_flag_loop(command_content) if command_exists else None
+    h.test_result(
+        "Flag loop: parser block found (while [ $# -gt 0 ]; do ... done)",
+        flag_block is not None,
+        "" if flag_block is not None else "could not locate the flag loop in commands/expert-plan.md",
+    )
+    if flag_block is not None:
+        model_arm = flag_block.find("--model|--model=*)")
+        generic_arm = flag_block.find("\n    --*)")
+        h.test_result(
+            "Flag loop: --model|--model=*) arm exists before the generic --*) arm",
+            model_arm != -1 and generic_arm != -1 and model_arm < generic_arm,
+            f"model arm at {model_arm}, generic arm at {generic_arm}",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_home:
+            cases = [
+                ("--model opus exits 1 with did-you-mean", ["--model", "opus"], 1, "did you mean --models", None),
+                ("--model=opus exits 1 with did-you-mean", ["--model=opus"], 1, "did you mean --models", None),
+                ("--models opus exits 0 and sets MODELS=opus", ["--models", "opus"], 0, None, "MODELS=opus"),
+                ("--bogus exits 1 with supported flags list", ["--bogus"], 1, "supported flags are", None),
+            ]
+            for name, args, want_rc, want_stderr, want_stdout in cases:
+                rc, stdout, stderr = run_flag_loop(flag_block, args, tmp_home)
+                ok = rc == want_rc
+                detail = f"exit {rc}, expected {want_rc}"
+                if ok and want_stderr is not None:
+                    ok = want_stderr in stderr
+                    detail = f"stderr missing {want_stderr!r}: {stderr.strip()}"
+                if ok and want_stdout is not None:
+                    ok = want_stdout in stdout
+                    detail = f"stdout missing {want_stdout!r}: {stdout.strip()}"
+                h.test_result(f"Flag loop: {name}", ok, "" if ok else detail)
+    else:
+        for name in [
+            "Flag loop: --model|--model=*) arm exists before the generic --*) arm",
+            "Flag loop: --model opus exits 1 with did-you-mean",
+            "Flag loop: --model=opus exits 1 with did-you-mean",
+            "Flag loop: --models opus exits 0 and sets MODELS=opus",
+            "Flag loop: --bogus exits 1 with supported flags list",
+        ]:
+            h.test_result(name, False, "flag loop not found")
+
     print()
     h.summarize_and_exit()
+
+
+def extract_flag_loop(command_content):
+    """Return the parser block from 'while [ $# -gt 0 ]; do' through its matching 'done'."""
+    lines = command_content.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip() == "while [ $# -gt 0 ]; do"), None)
+    if start is None:
+        return None
+    for end in range(start + 1, len(lines)):
+        if lines[end] == "done":
+            return "\n".join(lines[start:end + 1])
+    return None
+
+
+def run_flag_loop(flag_block, args, home):
+    """Run the extracted loop under bash with args as positional parameters and HOME in a temp dir."""
+    preamble = (
+        'EFFORT=""\n'
+        'MODELS="balanced"\n'
+        'FLOW_FLAG_DIR=""\n'
+        'EPIC_MODE="false"\n'
+        'ALLOW_DEGRADED=""\n'
+    )
+    script = preamble + flag_block + '\nprintf "MODELS=%s\\n" "$MODELS"\n'
+    env = dict(os.environ)
+    env["HOME"] = home
+    result = subprocess.run(
+        ["bash", "-c", script, "_", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout, result.stderr
 
 
 if __name__ == "__main__":

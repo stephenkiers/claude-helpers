@@ -44,7 +44,7 @@ Contributors (Step 3) and Carl (Step 4) are dispatched according to `--models`:
 
 - `--allow-degraded`: proceed even when North Star Nick's inputs are missing or unusable (snapshot script or scout prompt not installed, empty or fully unavailable in-flight snapshot). A missing, failed or timed-out `gh auth` is a hard stop too (`gh-auth`, `files` phase); the snapshot phase gates the fetch outcome. It suppresses only the hard stop, never the notice: the run carries a `NORTH STAR BLIND:` line at the Step 5 checkpoint and in the delivered plan. `/expert-flow` does not forward this flag; a flow step that fails the preflight is a deterministic, non-retryable FAILED (receipt Reason `north-star-preflight: <tokens>`), so the human takes over or re-runs with `--allow-degraded` rather than Retrying.
 
-Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels.
+Reject `--effort 1`, `--effort 4`, `--effort 5`, and any unknown flags with a one-line error naming the two supported levels (`--model` gets a did-you-mean hint pointing at `--models`).
 
 A GitHub issue URL can be passed as a positional argument (same as v2); the command resolves the ticket and proceeds.
 
@@ -133,7 +133,7 @@ INVOCATION_ID="$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)"
 
 # Derive slug from ticket title (or default) — will be updated in Step 1 after fetching ticket
 TICKET_TITLE="${TICKET_TITLE:-plan}"
-SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-\|-$//' | cut -c1-50)
+SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-50 | sed -e 's/^-*//' -e 's/-*$//')
 [ -n "$SLUG" ] || SLUG="plan"
 
 # North Star preflight (#273): pre-scan for --allow-degraded (full flag parsing happens below,
@@ -240,6 +240,11 @@ while [ $# -gt 0 ]; do
     --epic)
       EPIC_MODE="true"
       shift
+      ;;
+    --model|--model=*)
+      echo "ERROR: unknown flag '${1}' — did you mean --models balanced|opus? (/expert-plan takes --models; --model belongs to /expert-review and /expert-plan-deprecated-v2)" >&2
+      python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-plan --outcome interrupted 2>/dev/null || true
+      exit 1
       ;;
     --*)
       echo "ERROR: unknown flag '${1}' — supported flags are --effort 2|3, --models balanced|opus, --flow <dir>, --epic and --allow-degraded" >&2
@@ -379,7 +384,7 @@ Announce the chosen effort and reason to the user; they can re-run with `--effor
 
 ```bash
 TICKET_TITLE="[the title you resolved]"
-SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-\|-$//' | cut -c1-50)
+SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-50 | sed -e 's/^-*//' -e 's/-*$//')
 [ -n "$SLUG" ] || SLUG="plan"
 FINAL_PLAN_PATH="$HOME/.claude/plans/${SLUG}-${INVOCATION_ID}.md"
 echo "Plan will be written to: $FINAL_PLAN_PATH"
