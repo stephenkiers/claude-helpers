@@ -49,7 +49,7 @@ def _resolve_reaction_path(path_str: str, decisions_dir: Path) -> Tuple[Path, Op
 
     Returns:
         (resolved_path, error_message) where error_message is None on success,
-        or the confine_path_to_dir message (printed with an "Error: " prefix) on failure.
+        or the confine_path_to_dir message on failure (the caller prefixes this with "Error: ").
         Possible errors: path outside decisions_dir (from confine_path_to_dir).
     """
     # Resolve path: relative to decisions_dir or absolute
