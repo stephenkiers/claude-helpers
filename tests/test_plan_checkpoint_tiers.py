@@ -52,15 +52,22 @@ def create_reaction_file(path: str, reactions: dict) -> None:
     Path(path).write_text(json.dumps(payload))
 
 
-def create_decisions_file(path: str, seated: list, expected_reactions: list, briefs: dict = None) -> None:
-    """Create a decisions.md with a Checkpoint ledger block."""
+def create_decisions_file(path: str, seated: list, expected_reactions: list, briefs: dict = None,
+                          handles: dict = None) -> None:
+    """Create a decisions.md with a Checkpoint ledger block.
+
+    `handles` entries are merged in as top-level ledger keys, the shape the tier
+    script's --fragment output is pasted into.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     ledger = {
         "seated": seated,
         "expected_reactions": expected_reactions,
     }
-    if briefs:
+    if briefs is not None:
         ledger["briefs"] = briefs
+    if handles:
+        ledger.update(handles)
     # Build the decisions file with the fenced JSON block
     # The fence parser in the script expects ``` on its own line
     lines = ["# Decisions", "", "## Checkpoint ledger", "```", json.dumps(ledger), "```", "",
@@ -274,7 +281,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Missing expected reaction file -> exit non-zero",
-                     exit_code != 0 and "expected reaction file missing" in stderr,
+                     exit_code == 1 and "Error: expected reaction file missing: reactions/" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 7: Reaction file without 'complete' sentinel -> non-zero exit
@@ -301,7 +308,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Reaction file without 'complete' sentinel -> exit non-zero",
-                     exit_code != 0 and "missing 'complete': true sentinel" in stderr,
+                     exit_code == 1 and "missing 'complete': true sentinel" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 8: Missing brief_type in ledger when brief has reactions -> non-zero exit
@@ -325,7 +332,7 @@ def main():
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file))
         h.test_result("Missing brief_type in ledger -> exit non-zero",
-                     exit_code != 0 and "brief_type" in stderr.lower(),
+                     exit_code == 1 and "brief B1 has reactions but no brief_type in ledger briefs" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 9: Missing decisions.md -> non-zero exit
@@ -334,7 +341,7 @@ def main():
         nonexistent_file = str(Path(tmp) / "missing.md")
         exit_code, stdout, stderr = run_tier_script(nonexistent_file)
         h.test_result("Missing decisions.md -> exit non-zero",
-                     exit_code != 0 and "Error" in stderr,
+                     exit_code == 1 and "not found" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 10: No --decisions argument -> exit non-zero
@@ -585,7 +592,7 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}})
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True, "agreed": True}
         })
@@ -593,14 +600,6 @@ def main():
             "B1": {"agreed": True}
         })
 
-        # Add the correct handle entry to the decisions file
-        decisions_content = decisions_file.read_text()
-        # Insert D1 entry into the ledger
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 0 on correct ledger",
@@ -623,7 +622,7 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": "decided"})
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True, "agreed": True}
         })
@@ -631,17 +630,10 @@ def main():
             "B1": {"agreed": True}
         })
 
-        # Add a flat entry (string instead of dict)
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": "decided"'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 1 on flat entry",
-                     exit_code == 1 and ("not an object" in stderr or "not a dict" in stderr),
+                     exit_code == 1 and "checkpoint ledger entry D1 is not an object" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 19: --check-ledger exits 1 on nested handles
@@ -660,7 +652,7 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"handles": {"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}}})
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True, "agreed": True}
         })
@@ -668,13 +660,6 @@ def main():
             "B1": {"agreed": True}
         })
 
-        # Add nested handles
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "handles": {"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}}'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 1 on nested handles",
@@ -697,7 +682,7 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": "decided"})
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True, "agreed": True}
         })
@@ -705,13 +690,6 @@ def main():
             "B1": {"agreed": True}
         })
 
-        # Add a flat entry (which will fail the check)
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": "decided"'
-        )
-        decisions_file.write_text(decisions_content)
 
         # Capture the file content before running --check-ledger
         before_content = decisions_file.read_bytes()
@@ -739,22 +717,15 @@ def main():
         ]
         briefs = {}  # Missing brief_type for B1
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}})
         # Create reaction files that reference B1
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {"B1": {"resolved": True}})
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {"B1": {"agreed": True}})
 
-        # Add a handle entry to the ledger (even though brief_type is missing in briefs)
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {}',
-            '"briefs": {}, "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 1 when brief with reactions has no brief_type",
-                     exit_code != 0 and "brief_type" in stderr.lower(),
+                     exit_code == 1 and "brief B1 has reactions but no brief_type in ledger briefs" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # Test 22: --check-ledger exits 1 when expected reaction file is missing [FROM_FINDING_3]
@@ -773,23 +744,16 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}})
         # Create only alice's file, not bob's (which will cause bob's file to be missing)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True}
         })
 
-        # Add a handle entry to the ledger
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("--check-ledger exits 1 when expected reaction file is missing",
-                     exit_code != 0 and "missing" in stderr.lower(),
+                     exit_code == 1 and "Error: expected reaction file missing: reactions/bob-pre-show-r1.json" in stderr,
                      f"exit={exit_code}, stderr={stderr[:200]}")
 
     # ========== F3: Unreadable/incomplete reactions tests ==========
@@ -880,13 +844,12 @@ def main():
 
     # ========== F4: Named-cause branch tests for --check-ledger ==========
 
-    # Test 26: Missing handle -> 'checkpoint ledger is missing handles: <h>'
-    print("[Test 26] --check-ledger: missing handle -> specific error message")
-    with tempfile.TemporaryDirectory() as tmp:
+    # Tests 26-27b share one two-brief session (B1, B2 both decided -> D1, D2) and
+    # mutate only the ledger's handle keys, so each exercises one named cause.
+    def handle_set_case(tmp: str, handles: dict) -> tuple:
         session_dir = Path(tmp) / "session"
         decisions_file = session_dir / "decisions.md"
         reactions_dir = session_dir / "reactions"
-
         seated = ["alice", "bob"]
         expected_reactions = [
             {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
@@ -894,92 +857,61 @@ def main():
         ]
         briefs = {
             "B1": {"brief_type": "question", "raiser": "alice"},
+            "B2": {"brief_type": "question", "raiser": "alice"},
         }
-
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles=handles)
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "B1": {"resolved": True, "agreed": True}
+            "B1": {"resolved": True}, "B2": {"resolved": True},
         })
         create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "B1": {"agreed": True}
+            "B1": {"agreed": True}, "B2": {"agreed": True},
         })
+        return run_tier_script(str(decisions_file), check_ledger=True)
 
-        # Build a ledger dict and merge it as top-level keys
-        exit_code_frag, stdout_frag, _ = run_tier_script(str(decisions_file), fragment=True)
-        fragment = json.loads(stdout_frag) if stdout_frag else {}
+    d1 = {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []}
+    d2 = {"tier": "decided", "brief_id": "B2", "brief_type": "question", "evidence": []}
+    w9 = {"tier": "worth-a-look", "brief_id": "B2", "brief_type": "question", "evidence": []}
 
-        # Create ledger with the handle entry, then remove it to test missing
-        ledger = {
-            "seated": seated,
-            "expected_reactions": expected_reactions,
-            "briefs": briefs,
-        }
-        # Don't add any handles - it should be missing D1
-
-        decisions_content = decisions_file.read_text()
-        # Replace the ledger section with our constructed one
-        lines = decisions_content.split('\n')
-        in_fence = False
-        new_lines = []
-        for i, line in enumerate(lines):
-            if line.startswith('```'):
-                if not in_fence:
-                    in_fence = True
-                    new_lines.append('```')
-                    new_lines.append(json.dumps(ledger))
-                else:
-                    in_fence = False
-                    new_lines.append('```')
-            elif not in_fence or i <= lines.index('```') or i >= len(lines) - 1:
-                if not in_fence or line.startswith('{') or line.startswith('}'):
-                    if line.startswith('{') or line.startswith('}'):
-                        # Skip the old JSON content
-                        continue
-                new_lines.append(line)
-
-        decisions_file.write_text('\n'.join(new_lines))
-
-        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
-        h.test_result("Missing handle -> 'checkpoint ledger is missing handles: <h>'",
-                     exit_code == 1 and "checkpoint ledger is missing handles:" in stderr,
-                     f"exit={exit_code}, stderr={stderr[:300]}")
+    # Test 26: Missing handle -> 'checkpoint ledger is missing handles: <h>'
+    print("[Test 26] --check-ledger: missing handle -> specific error message")
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline_exit, _, baseline_err = handle_set_case(tmp, {"D1": d1, "D2": d2})
+    h.test_result("Two-brief baseline ledger passes --check-ledger",
+                  baseline_exit == 0,
+                  f"exit={baseline_exit}, stderr={baseline_err[:300]}")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {"D1": d1})
+    h.test_result("Missing handle -> 'checkpoint ledger is missing handles: D2'",
+                  exit_code == 1 and "checkpoint ledger is missing handles: D2" in stderr
+                  and "unexpected handles" not in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
 
     # Test 27: Extra unexpected handle
     print("[Test 27] --check-ledger: unexpected handle -> specific error message")
     with tempfile.TemporaryDirectory() as tmp:
-        session_dir = Path(tmp) / "session"
-        decisions_file = session_dir / "decisions.md"
-        reactions_dir = session_dir / "reactions"
+        exit_code, stdout, stderr = handle_set_case(tmp, {"D1": d1, "D2": d2, "W9": w9})
+    h.test_result("Unexpected handle -> 'checkpoint ledger has unexpected handles: W9'",
+                  exit_code == 1 and "checkpoint ledger has unexpected handles: W9" in stderr
+                  and "missing handles" not in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
 
-        seated = ["alice", "bob"]
-        expected_reactions = [
-            {"slug": "alice", "mode": "pre-show", "round": 1, "path": "reactions/alice-pre-show-r1.json"},
-            {"slug": "bob", "mode": "pre-show", "round": 1, "path": "reactions/bob-pre-show-r1.json"},
-        ]
-        briefs = {
-            "B1": {"brief_type": "question", "raiser": "alice"},
-        }
+    # Test 27a: Missing and unexpected together -> both lines reported
+    print("[Test 27a] --check-ledger: missing and unexpected handles -> both reported")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {"D1": d1, "W9": w9})
+    h.test_result("Missing + unexpected -> both lines on stderr",
+                  exit_code == 1 and "checkpoint ledger is missing handles: D2" in stderr
+                  and "checkpoint ledger has unexpected handles: W9" in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
-        create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
-            "B1": {"resolved": True, "agreed": True}
-        })
-        create_reaction_file(str(reactions_dir / "bob-pre-show-r1.json"), {
-            "B1": {"agreed": True}
-        })
-
-        # Add an extra unexpected handle (W9)
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "W9": {"tier": "worth-a-look", "brief_id": "B2", "brief_type": "question", "evidence": []}'
-        )
-        decisions_file.write_text(decisions_content)
-
-        exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
-        h.test_result("Unexpected handle -> 'checkpoint ledger has unexpected handles: <h>'",
-                     exit_code == 1 and "checkpoint ledger has unexpected handles:" in stderr and "W9" in stderr,
-                     f"exit={exit_code}, stderr={stderr[:300]}")
+    # Test 27b: Briefs present but no handle keys at all
+    print("[Test 27b] --check-ledger: briefs but no handle keys -> named reason")
+    with tempfile.TemporaryDirectory() as tmp:
+        exit_code, stdout, stderr = handle_set_case(tmp, {})
+    h.test_result("No handle keys -> 'has briefs but no top-level D/W/Q handle keys'",
+                  exit_code == 1
+                  and "checkpoint ledger has briefs but no top-level D/W/Q handle keys" in stderr,
+                  f"exit={exit_code}, stderr={stderr[:300]}")
 
     # Test 28: Handle with wrong tier
     print("[Test 28] --check-ledger: wrong tier -> 'expected tier' message")
@@ -997,7 +929,7 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "worth-a-look", "brief_id": "B1", "brief_type": "question", "evidence": []}})
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True, "agreed": True}
         })
@@ -1005,13 +937,6 @@ def main():
             "B1": {"agreed": True}
         })
 
-        # Add handle with wrong tier
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": {"tier": "worth-a-look", "brief_id": "B1", "brief_type": "question", "evidence": []}'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("Wrong tier -> 'expected tier' message",
@@ -1034,7 +959,7 @@ def main():
             "B1": {"brief_type": "question", "raiser": "alice"},
         }
 
-        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs)
+        create_decisions_file(str(decisions_file), seated, expected_reactions, briefs, handles={"D1": {"tier": "decided", "brief_id": "B2", "brief_type": "question", "evidence": []}})
         create_reaction_file(str(reactions_dir / "alice-pre-show-r1.json"), {
             "B1": {"resolved": True, "agreed": True}
         })
@@ -1042,13 +967,6 @@ def main():
             "B1": {"agreed": True}
         })
 
-        # Add handle with wrong brief_id
-        decisions_content = decisions_file.read_text()
-        decisions_content = decisions_content.replace(
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}',
-            '"briefs": {"B1": {"brief_type": "question", "raiser": "alice"}}, "D1": {"tier": "decided", "brief_id": "B2", "brief_type": "question", "evidence": []}'
-        )
-        decisions_file.write_text(decisions_content)
 
         exit_code, stdout, stderr = run_tier_script(str(decisions_file), check_ledger=True)
         h.test_result("Wrong brief_id -> 'expected brief_id' message",
