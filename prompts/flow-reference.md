@@ -292,7 +292,7 @@ This section defines the shared checkpoint ledger and reaction file formats used
 - `seated`: array of expert slugs (contributors plus `contrarian-carl`)
 - `briefs`: map of `brief_id` → `{brief_type, raiser}`, where `brief_id` is "B1", "B2", … in the order briefs appear in the decision briefs section. Written before the tier script runs; tier script fails closed if a brief with reactions has no `brief_type`.
 - `expected_reactions`: array of expected reaction files, each `{slug, mode, round, path}`, derived from `seated` and the reaction dispatch (see Pre-show and Reply modes below)
-- After tiering, extended with handle keys ("D1", "W1", "Q1", …) mapping to `{tier, brief_id, brief_type, evidence: [paths]}`, where paths resolve under `SESSION_DIR` only
+- After tiering, extended with handle keys ("D1", "W1", "Q1", …) mapping to `{tier, brief_id, brief_type, evidence: [paths]}`, where paths resolve under `SESSION_DIR` only. Handle keys are top-level siblings of `seated`, `briefs` and `expected_reactions`, never nested under a `handles` key (`flow-verify-receipt.py` reads only top-level handle keys)
 
 Extraction: one line-based parser reads the ledger from the file by finding the line starting with "## Checkpoint ledger" and the first line after it starting with ` ``` ` (opening fence; returned only when `json` parses to a dict and the closing fence is found):
 
