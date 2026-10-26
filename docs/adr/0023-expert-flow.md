@@ -43,10 +43,7 @@ The orchestrator does no engineering work. Its `allowed-tools` grant read-only `
 `AskUserQuestion`. No `Edit`, no write-capable git (one human-gated exception, the Rebase option in
 the gated Rebase amendment below), no `gh` mutation. Its `Write` grant is not
 path-scoped; the intended scope is files under the flow directory and the one marker file (a
-prompt-level rule, see Consequences). Step agents are `general-purpose` Task subagents and run with
-full capability: they are not panel agents and carry none of the `tools:` restriction that
-`CLAUDE.md` describes for them. ADR-0008 (machine-enforced guardrails) was considered for
-expert-flow and deferred. A step that fails produces a
+prompt-level rule, see Consequences). **Implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`; see ADR-0008 2026-10-26 amendment): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions (no `Edit` on implement), Bash/Skill guards, and step-contract enforcement. **Other steps** (worktree, plan, track, verify, ship, merge) spawn `general-purpose` Task subagents and run with full capability (pending #359/#360). A step that fails produces a
 hard stop with three options — Retry (capped at two attempts per step), Take over, Abort — and
 nothing else, except that base-stale verify failures also offer a fourth, human-gated option, Rebase
 (see the gated Rebase amendment below), and single-unit implement/fix shortfalls offer a bounded automatic Sonnet escalation followed by the same menu (see the 2026-10-16 amendment). `/expert-rebase` is suggested in the stop message when a step's receipt suggests it,
@@ -855,3 +852,15 @@ This amendment closes the gap where an implement or fix step could report a pass
 **Primary-checkout drift is a hard stop, never auto-remediated.** When any agent's execution causes a write outside its assigned ticket worktree (drift into the primary checkout), the orchestrator detects it via `primary-checkout-drift.py compare` at serial barriers and logs a `FAILED` receipt with Reason `primary-checkout-drift: <cause>` and failure class `cwd-drift` (receipt convention; telemetry uses `cwd_drift`). The hard stop offers Retry / Take over / Abort and nothing else; there is no auto-salvage. The failure is caused by an agent logic error (deriving absolute paths from git output) and is prevented by the agent instructions in `agents/plan-implementer.md`. The baseline snapshot and barrier detects (`#336`) work in concert with the timeout fix (`#338`, a separate independent fix to `just check`) to make drift visible and addressable.
 
 **Reference.** See ADR-0008 amendment 2026-10-26 for the full detection and prevention contract, cause class (d), and known gaps.
+
+## Amendment (2026-10-26): Restricted step agents for implement, fix, and review (#358)
+
+This amendment replaces the 2026-10-13 standing exception. The section 1 of this ADR is amended so that **implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions, Bash/Skill guards, and step-contract enforcement. **Worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase worker remain general-purpose**, pending #359/#360.
+
+### Panel-tier note on the review step
+
+The review step's agent pin (`flow-review.md`, `model: sonnet`) restores the documented `/expert-review` panel default (`commands/expert-review.md`: "inherit this command's model (`sonnet`)"). Inside a flow, the review runs on Sonnet unless the flow omits `--review-effort`, in which case Step 5.5 may ask for an Opus escalation. This is consistent with the documented behavior: when `--effort` is passed to the flow, the flow's own Step 5.5 is skipped (the effort is determined at flow start, not per step), so Opus escalation is not available through the normal panel route.
+
+### Implement step coordinator model
+
+The `flow-implement` agent pin (model `sonnet`) governs the step coordinator only. The Haiku units continue to run under `plan-implementer`'s own model and `--implementer-model` flag (unchanged). The #315 Sonnet escalation also remains: a single-unit shortfall on Haiku offers a manual `Retry with sonnet` option (see the 2026-10-16 fourth amendment).

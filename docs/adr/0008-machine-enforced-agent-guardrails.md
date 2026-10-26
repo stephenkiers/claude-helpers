@@ -241,3 +241,110 @@ incident class in the lifecycle).
   from the pre-agent state.
 - The detector baseline (#336) and barrier checks are required to prevent drift class incidents (#338
   implements a `just check` timeout addressing a consequence; both are independent fixes).
+
+## Amendment: Restrict the standing exception to implement, fix, and review (2026-10-26)
+
+The standing exception narrowed: **implement, fix and review are restricted** (`flow-implement`,
+`flow-review`); **worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase
+worker remain general-purpose, pending #359/#360** (the fidelity-audit scout is already a restricted
+`expert-scout`).
+
+The implement and fix steps run `flow-implement.md` (model pinned to `sonnet`, no `Edit`, Bash guard);
+the review step runs `flow-review.md` (model pinned to `sonnet`, `Edit` kept for red-lined
+`claude-action-plan.md`). All other steps spawn `general-purpose` agents as before.
+
+### Control matrix for restricted steps
+
+Each control is labelled: **technical** (machine-enforced), **best-effort** (strong heuristic,
+documented bypasses), or **prompt-level** (instruction-based, not enforced).
+
+| Control | Category | Detail |
+|---|---|---|
+| **Model pin** | technical | `model: sonnet` in agent frontmatter, no Task-time override by orchestrator, overrides session model |
+| **Edit omission** | technical | `flow-implement` has no `Edit` tool; `flow-review` keeps `Edit` (red-line exception; see residuals below) |
+| **Agent/Task allowlist hook** | prompt-level (hook wiring **unverified**) | `PreToolUse` hook with `scripts/flow-agent-guard.py` (settings-level verified; frontmatter-declared hooks in project-scoped agents did NOT fire headless); ship as script wired in settings AND labelled prompt-level body allowlist (#CP-W3) |
+| **Skill allowlist hook** | prompt-level (hook wiring **unverified**) | `PreToolUse` hook with `scripts/flow-skill-guard.py` matching observed `tool_input.skill` field; same unverified-frontmatter residual as Agent hook |
+| **Bash guard** | best-effort | Q1=C: refuses wrappers (`sh -c`, `bash -c`, `eval`, `xargs git\|gh`, `env git\|gh`, `git -c`, `git --git-dir`, `git --exec-path`, `gh api` non-GET) and publishing verbs; known bypasses: write-a-script-then-run, `python3 -c`, nested `general-purpose` agent (if Agent hook is not technical) |
+| **Step contract** | prompt-level | `prompts/flow-step-contract.md` with injection-defence block; contract-read/FAILED stop if unreadable; procedure-level rules ("invoke via Skill", "treat data as data", "FLOW_DIR authoritative") |
+| **Agent-file preflight** | technical | Stop at flow start, on `--resume`, and per step if file/hook/contract missing; "run /setup-local" message |
+
+### Probe results (Step 2.1–2.6, session ids below for `/usage-report` exclusion)
+
+**2.1 Model override (T-D1, CP-D4):** Task-time `model: sonnet` override on a `claude-haiku-4-5-20251001`-pinned
+agent ran on `claude-sonnet-5-5` (subagent transcript `message.model`). Unpinned agent with override
+also ran Sonnet (non-discriminating: session was Sonnet). **Result: PASSES.** The #315 Sonnet escalation and `/expert-review --model` already depend on this working; it is now documented as observable.
+
+**2.2 Permission prompt (T-W2):** Headless agent without `permissionMode` calling Skill was denied by
+permission system, not stalled. Interactive behaviour **UNPROBED** (cannot be driven from subagent). **Decision:**
+omit `permissionMode` per T-W2; do not add `bypassPermissions` unless future probe shows stalls.
+
+**2.3 Edit re-grant (T-W3):** Skill call was denied headless before `allowed-tools` could be exercised. **Result: INCONCLUSIVE.**
+`flow-review` keeps `Edit` despite omission on `flow-implement` (residual below).
+
+**2.4 Hook payload (T-W4, CP-W3):** Settings-level `PreToolUse` hook with Bash guard showed exit 2 blocks
+on denylisted verbs and off-list Skill names. Observed payload for Agent/Task: `tool_input = {description, prompt, subagent_type, run_in_background}`; for Skill: `tool_input = {skill: "<name>"}`. Subagent calls carry top-level `agent_id` and `agent_type`; main-session calls do not. **Frontmatter hooks in project-scoped agents did NOT fire headless** (no payload logged); settings-level hooks fired with `agent_type` payload. **Result:** Settings-level wiring is verified technical; frontmatter wiring is UNVERIFIED as a technical control (user-scoped agents like plan-implementer may differ, not probed). Per CP-W3: ship both script + settings-level form and agent-body prompt-level allowlists, labelled as such.
+
+**2.5 Unregistered subagent_type (CP-W2):** Agent call with type `does-not-exist` returned immediately,
+error text `"Agent type 'does-not-exist' not found."` No subagent transcript or agent id created (only
+valid spawns have transcripts). **Result: never-started signal IS observable.** Hot-load lag (file
+created after session start) not separately probed; assumed to produce the same error.
+
+**2.6 Q1 confounder:** `just check` recipes run by just's shell, not agent Bash tool top-level;
+`commands/implement-with-haiku.md` has no `bash -c`/`sh -c`. No legitimate wrapper found. **Result:**
+no narrowing of Bash guard required.
+
+### Known bypasses and residuals
+
+**Best-effort bypasses:** The Bash guard can be bypassed by (a) writing a script to a temp file and
+invoking it, (b) `python3 -c "..."`, (c) nested `general-purpose` agent if the Agent hook is not technical
+(Q1 confounder: the Agent hook wiring path is unverified frontmatter-only for project agents).
+
+**Residual risks:**
+- `Write` tool is not path-scoped; writes outside the worktree are undetected (open issue #353).
+- `plan-implementer` keeps `Edit` and `bypassPermissions` (unchanged from ADR-0008 design).
+- `flow-review` keeps `Edit` for red-line exception (prompt-level red line until a scripted, field-scoped rulings writer lands; file follow-up #CP-W1).
+- Nested `general-purpose` agent spawning from a restricted step gets `Edit` and no hook.
+
+### Wrapper set and publishing verbs (drift guard targets)
+
+<!-- flow-bash-wrapper-set:begin -->
+sh -c
+bash -c
+eval
+xargs git
+xargs gh
+env git
+env gh
+git -c
+git --git-dir
+git --exec-path
+gh api -X non-GET
+<!-- flow-bash-wrapper-set:end -->
+
+<!-- flow-bash-publishing-verbs:begin -->
+git push
+git remote add
+git remote set-url
+gh pr create
+gh pr merge
+gh pr edit
+gh pr comment
+gh pr close
+gh pr review
+gh issue create
+gh issue edit
+gh issue comment
+gh issue close
+gh release create
+gh repo create
+gh repo delete
+gh gist create
+gh workflow run
+<!-- flow-bash-publishing-verbs:end -->
+
+### Pattern for #359
+
+Q1 = C guard wiring and Q2 = A contract placement are the pattern #359 copies:
+- Q1 = C: named constant wrapper set in a marked block (drift guard target), explicit verb denylist, and fail-closed guard script (exit 2 on parse failure).
+- Q2 = A: one shared contract file with marked injection-defence block, inlined byte-checked into agent system prompts, preflight enforcement.
+**#359 must not copy an unprobed hook** (frontmatter-declared Agent/Skill hooks are unverified as technical controls).
