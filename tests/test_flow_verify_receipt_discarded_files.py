@@ -155,6 +155,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - test.py",
@@ -199,6 +200,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "single.py",
@@ -243,6 +245,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - /absolute/path.py",
@@ -252,10 +255,12 @@ def main():
             ]
         )
         rc, out, err = run_verifier(fx, branch=branch, base=base)
+        # The verifier's own rejection reason, printed as "Reason: ..." on stdout with exit 1.
         h.test_result(
             "F16a: Absolute paths are rejected",
-            rc != 0,
-            f"exit {rc} (should fail), stderr: {err[:100]}",
+            rc == 1
+            and "discarded files check: absolute path not allowed (/absolute/path.py)" in out,
+            f"exit {rc} (should be 1 with the rejection reason), stdout: {out[:200]}, stderr: {err[:200]}",
         )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -282,6 +287,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "DISCARDED_ADDED_FILES:",
                 "  - ../escape.py",
@@ -293,8 +299,8 @@ def main():
         rc, out, err = run_verifier(fx, branch=branch, base=base)
         h.test_result(
             "F16b: Paths with .. are rejected",
-            rc != 0,
-            f"exit {rc} (should fail), stderr: {err[:100]}",
+            rc == 1 and "discarded files check: .. component not allowed (../escape.py)" in out,
+            f"exit {rc} (should be 1 with the rejection reason), stdout: {out[:200]}, stderr: {err[:200]}",
         )
 
     # ========================
@@ -327,6 +333,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "Decision: WRONG",
                 "OUTSTANDING: none",
@@ -367,6 +374,7 @@ def main():
         fx.write_receipt(
             [
                 "Implement summary",
+                "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
                 "OUTSTANDING: none",
                 "Decision: OK",

@@ -1236,6 +1236,41 @@ worktree's issue):
 2. **Update `$CACHE_FILE`** with the new issue body so future duplicate detection runs against the current plan
 3. **Continue with worktree creation** and handoff as normal, using the existing issue's URL and number — **unless** Step 4-pre's "Existing worktree reuse" found exactly one existing worktree for the issue, in which case skip creation and hand off that worktree and its git-reported branch
 
+**Cache writes for this flow.** Run these as concrete commands, not as prose. The writes use explicit paths, because the current directory is not necessarily the ticket worktree: `/expert-flow` runs its track step in `MAIN_WORKTREE`, and Step 4d step 4's relative `.claude/github-cache.json` (`:1110-1120`) would land there. This flow skips 4d steps 4–7, so before this section the ticket worktree's `github-cache.json` was never refreshed on the reuse path. `NEW_PLAN` is the plan content that step 3 of Step 4d wrote to the issue body (in plan-file mode, `$(cat "$PLAN_FILE")`). `repo-cache.json` is not written here: it is seeded from main when the worktree is created (`track seed-cache`, `:551-556`, `:883`, `:1421`) and carries no issue data, so the reuse path has nothing to refresh in it.
+
+Step 2 above, the project issue cache (`$CACHE_FILE` is keyed by issue number, as the `.issues[$num]` read in `track.md` shows):
+
+```bash
+NEW_PLAN=$(cat "$PLAN_FILE")
+[ -n "$NEW_PLAN" ] || { echo "ERROR: plan file is empty" >&2; exit 1; }
+
+if [ -s "$CACHE_FILE" ]; then
+  TMP=$(mktemp "${CACHE_FILE}.XXXXXX")
+  jq --arg num "$EXISTING_ISSUE_NUM" --arg body "$NEW_PLAN" \
+    'if .issues[$num] then .issues[$num].body = $body else . end' "$CACHE_FILE" > "$TMP" \
+    && [ -s "$TMP" ] && mv "$TMP" "$CACHE_FILE" || { rm -f "$TMP"; echo "ERROR: failed to update $CACHE_FILE" >&2; exit 1; }
+fi
+```
+
+Reuse case only (Step 4-pre found exactly one existing worktree): refresh the ticket worktree's `.claude/github-cache.json`, so the worktree handed off carries the new plan. It reads the issue's URL and title, then merges into the existing cache with the read-modify-write shape of `track.md`'s Worktree GitHub Cache section, preserving any `pr` section:
+
+```bash
+ISSUE_JSON=$(gh issue view "$EXISTING_ISSUE_NUM" --repo "$REPO" --json url,title)
+ISSUE_URL=$(printf '%s' "$ISSUE_JSON" | jq -r '.url')
+ISSUE_TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title')
+WT_CACHE="${REUSE_WORKTREE_PATH}/.claude/github-cache.json"
+mkdir -p "${REUSE_WORKTREE_PATH}/.claude"
+EXISTING=$([ -s "$WT_CACHE" ] && cat "$WT_CACHE" || echo '{}')
+TMP=$(mktemp "${REUSE_WORKTREE_PATH}/.claude/github-cache.json.XXXXXX")
+printf '%s' "$EXISTING" | jq --arg branch "$REUSE_BRANCH" \
+  --argjson number "$EXISTING_ISSUE_NUM" \
+  --arg url "$ISSUE_URL" \
+  --arg title "$ISSUE_TITLE" \
+  --arg body "$NEW_PLAN" \
+  '. + {branch: $branch, issue: {number: $number, url: $url, title: $title, body: $body, state: "open"}}' \
+  > "$TMP" && [ -s "$TMP" ] && mv "$TMP" "$WT_CACHE" || { rm -f "$TMP"; echo "ERROR: failed to write $WT_CACHE" >&2; exit 1; }
+```
+
 ## Branch Naming
 
 Format: `{type}/{issue#}-{slug}`

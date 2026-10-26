@@ -118,7 +118,8 @@ def create_log_with_failure(log_path: str, reason: str = "validation: receipt in
 def create_implement_receipt_with_outstanding(receipt_path: str, outstanding: str = "Step 10 (GitHub housekeeping) [self-report]") -> None:
     """Create an implement receipt with OUTSTANDING line."""
     Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
-    content = f"""Decision: OK
+    content = f"""ROUND 1 — Implementer (parallel)
+Decision: OK
 OUTSTANDING: {outstanding}
 <!-- step-end -->
 """
@@ -280,7 +281,7 @@ echo "$REASON"
         receipt_path = f"{tmpdir}/receipt.md"
         # Create receipt with OUTSTANDING: none
         Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(receipt_path).write_text("Decision: OK\nOUTSTANDING: none\n<!-- step-end -->")
+        Path(receipt_path).write_text("ROUND 1 — Implementer (parallel)\nDecision: OK\nOUTSTANDING: none\n<!-- step-end -->")
 
         # Use relative --since: a few seconds ago
         since_time = (datetime.utcnow() - timedelta(seconds=5)).isoformat() + "Z"
@@ -306,7 +307,8 @@ echo "$REASON"
         receipt_path = f"{tmpdir}/receipt.md"
         # Create receipt with multiple OUTSTANDING items
         Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
-        content = """Decision: OK
+        content = """ROUND 1 — Implementer (parallel)
+Decision: OK
 OUTSTANDING: Step 8 (not built) [self-report]
 OUTSTANDING: Step 10 (GitHub housekeeping) [both]
 <!-- step-end -->

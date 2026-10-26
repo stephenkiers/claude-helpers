@@ -104,11 +104,12 @@ def main():
         rc, out, err = run_verifier(
             fx, escalation_mode=True, failures=0
         )
-        # Should fail (exit 1) when required args are missing
+        # Missing required arg is a verifier error (exit 2 with its own message).
+        # On a tree without --escalation, argparse also exits 2, so the message is what pins #334.
         h.test_result(
             "F20a: --escalation without --stop-source fails",
-            rc != 0,
-            f"exit code {rc}, expected non-zero. stderr: {err[:100]}",
+            rc == 2 and "--escalation requires --stop-source" in err,
+            f"exit code {rc}, expected 2 with the verifier message. stderr: {err[:200]}",
         )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -128,8 +129,8 @@ def main():
         )
         h.test_result(
             "F20b: --escalation without --escalations fails",
-            rc != 0,
-            f"exit code {rc}",
+            rc == 2 and "--escalation requires --escalations" in err,
+            f"exit code {rc}, stderr: {err[:200]}",
         )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -166,10 +167,11 @@ def main():
         rc, out, err = run_verifier(
             fx, escalation_mode=True, stop_source="invalid", escalations=0, failures=0
         )
+        # argparse choices rejects the value; the message names the invalid choice.
         h.test_result(
             "F20d: --stop-source with invalid value fails",
-            rc != 0,
-            f"exit code {rc}",
+            rc == 2 and "invalid choice: 'invalid'" in err,
+            f"exit code {rc}, stderr: {err[:200]}",
         )
 
     # ========================
@@ -182,22 +184,19 @@ def main():
             [
                 "Implement summary",
                 "FLOW_DIR: " + str(fx.flow),
+                "IMPLEMENTER_MODEL: haiku",
                 "Decision: OK",
                 "<!-- step-end -->",
             ]
         )
-        # When an escalated receipt comes in without --expect-model, it should fail
-        # (This is the unwired behaviour: --expect-model is accepted but not enforced)
-        # Once F4 is fixed, this test should verify enforcement
-        rc, out, err = run_verifier(
-            fx, escalation_mode=True, stop_source="receipt", escalations=0
-        )
-        # For now, verifier should still succeed (--expect-model is not yet wired in)
-        # But the test documents that the flag exists and can be passed
+        # --expect-model is parsed and enforced in expect-model mode (not escalation mode).
+        # A haiku receipt against an expected sonnet must hit the verifier's mismatch message;
+        # on a tree without the flag, argparse rejects it before any of this runs.
+        rc, out, err = run_verifier(fx, expect_model="sonnet")
         h.test_result(
             "F4a: --expect-model flag is accepted",
-            True,  # Flag acceptance is the current state; enforcement is F4
-            "flag parsing",
+            rc == 1 and "implementer model mismatch (expected sonnet, receipt haiku)" in out,
+            f"exit code {rc}, stdout: {out[:200]}, stderr: {err[:200]}",
         )
 
     with tempfile.TemporaryDirectory() as tmp:

@@ -29,6 +29,18 @@ def read_file(path):
     return full_path.read_text(encoding="utf-8")
 
 
+def section_between(text, start_marker, end_marker):
+    """Return text from start_marker up to (not including) end_marker.
+
+    Returns "" when start_marker is absent; runs to end of text when end_marker is absent.
+    """
+    start = text.find(start_marker)
+    if start == -1:
+        return ""
+    end = text.find(end_marker, start + 1)
+    return text[start:end] if end != -1 else text[start:]
+
+
 def main():
     h = Harness("Escalation docs facts (#315 F2, F6, F7)")
 
@@ -73,48 +85,35 @@ def main():
 
     adr_0023 = read_file("docs/adr/0023-expert-flow.md")
     if adr_0023:
-        # Should mention post-escalation menu with exactly "Take over" and "Abort"
-        has_takeoverbot = "Take over" in adr_0023 and "Abort" in adr_0023
-        # More specific: should have a section about post-escalation menu
+        # The post-escalation menu sentence added by #334 says the menu after a
+        # failed escalated attempt is "Take over / Abort" with no Retry. Pre-#334
+        # text also contains "Take over" and "Abort" (the first-hard-stop menu), so
+        # the anchor is the "no Retry" qualifier on the same line.
         has_post_esc_menu = bool(
-            re.search(r"post.escalation.*menu|escalat.*Take over|Take over.*Abort", adr_0023, re.IGNORECASE)
+            re.search(r"Take over / Abort[^\n]*no Retry", adr_0023)
         )
         h.test_result(
             'F7a: ADR-0023 mentions post-escalation menu "Take over / Abort"',
-            has_takeoverbot and has_post_esc_menu,
-            "menu options not clearly mentioned",
+            has_post_esc_menu,
+            'no line pairs "Take over / Abort" with "no Retry"',
         )
     else:
         h.test_result("F7: docs/adr/0023-expert-flow.md exists", False, "file not found")
 
     # ========================
-    # F7: Opus not in model enum
+    # F7: Opus excluded from implementer escalation
     # ========================
 
     if adr_0023:
-        # Should NOT mention "opus" as a valid implementer model
-        # Look for places where models are listed
-        # Pattern: looking for Haiku/Sonnet being accepted but not Opus
-        has_opus_as_model = bool(re.search(r"(opus|OPUS)", adr_0023))
-        # If opus appears, it should be in context of rejection/not-allowed
-        if has_opus_as_model:
-            # Check if it's explicitly rejected
-            context_before = adr_0023[max(0, adr_0023.find("opus") - 100) : adr_0023.find("opus")]
-            context_after = adr_0023[adr_0023.find("opus") : min(len(adr_0023), adr_0023.find("opus") + 100)]
-            combined = context_before + context_after
-            # Should contain rejection language if mentioned
-            is_rejected = "not" in combined.lower() or "never" in combined.lower()
-            h.test_result(
-                "F7b: Opus not listed as valid implementer model (rejection or absence)",
-                is_rejected or not has_opus_as_model,
-                "opus mentioned without clear rejection context",
-            )
-        else:
-            h.test_result(
-                "F7b: Opus not mentioned as implementer model (correct)",
-                True,
-                "opus not in doc",
-            )
+        # #334's amendment states implementer escalation is Sonnet only and
+        # never Opus. Pre-#334 ADR-0023 mentions Opus nowhere, so a bare absence
+        # check was vacuous; assert the explicit exclusion instead.
+        has_opus_exclusion = bool(re.search(r"Sonnet only,?\s+never Opus", adr_0023))
+        h.test_result(
+            "F7b: ADR-0023 excludes Opus from implementer escalation (Sonnet only)",
+            has_opus_exclusion,
+            'no "Sonnet only, never Opus" statement in ADR-0023',
+        )
     else:
         h.test_result(
             "F7b: Check docs for opus mention", False, "adr-0023 not readable"
@@ -160,12 +159,20 @@ def main():
     # ========================
 
     if claude_md:
-        # Should mention manual escalation option
-        has_manual = "manual" in claude_md.lower() and "escalat" in claude_md.lower()
+        # #334 added the manual Retry with sonnet option to the /expert-flow command
+        # bullet. Pre-#334 CLAUDE.md has "manual" only in an unrelated bullet
+        # (style guide), so check that the /expert-flow bullet itself carries both.
+        expert_flow_bullet = section_between(
+            claude_md, "- `/expert-flow` —", "- `/merge-and-cleanup` —"
+        )
+        has_manual = (
+            "Retry with sonnet" in expert_flow_bullet
+            and re.search(r"manual", expert_flow_bullet, re.IGNORECASE) is not None
+        )
         h.test_result(
             "CLAUDE.md: Manual escalation documented",
             has_manual,
-            "manual escalation not mentioned",
+            "/expert-flow bullet does not document manual Retry with sonnet escalation",
         )
     else:
         h.test_result(
