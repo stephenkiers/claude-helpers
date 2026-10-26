@@ -79,6 +79,10 @@ def create_fixture_git_repo(repo_path: str) -> tuple:
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
         Path(file_path).write_text(f"Step {step} content")
 
+    # #338: the repo resolves a check, so an OK implement receipt can carry its CHECK lines.
+    Path(f"{repo_path}/.claude").mkdir(parents=True, exist_ok=True)
+    Path(f"{repo_path}/.claude/repo-cache.json").write_text('{"commands": {"check": "just check"}}')
+
     subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, capture_output=True, text=True, check=True)
     base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
@@ -90,6 +94,11 @@ def create_fixture_git_repo(repo_path: str) -> tuple:
     branch_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True).stdout.strip()
 
     return base_sha, branch_sha
+
+
+def check_lines(branch_sha: str) -> str:
+    """CHECK key lines for a passing full check on the branch HEAD (#338)."""
+    return f"CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\nCHECK_SHA: {branch_sha}\n"
 
 
 def create_plan_with_steps(plan_path: str, num_steps: int = 10) -> None:
@@ -281,7 +290,7 @@ echo "$REASON"
         receipt_path = f"{tmpdir}/receipt.md"
         # Create receipt with OUTSTANDING: none
         Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(receipt_path).write_text("ROUND 1 — Implementer (parallel)\nDecision: OK\nOUTSTANDING: none\n<!-- step-end -->")
+        Path(receipt_path).write_text("ROUND 1 — Implementer (parallel)\n" + check_lines(branch_sha) + "Decision: OK\nOUTSTANDING: none\n<!-- step-end -->")
 
         # Use relative --since: a few seconds ago
         since_time = (datetime.utcnow() - timedelta(seconds=5)).isoformat() + "Z"
@@ -308,7 +317,7 @@ echo "$REASON"
         # Create receipt with multiple OUTSTANDING items
         Path(receipt_path).parent.mkdir(parents=True, exist_ok=True)
         content = """ROUND 1 — Implementer (parallel)
-Decision: OK
+""" + check_lines(branch_sha) + """Decision: OK
 OUTSTANDING: Step 8 (not built) [self-report]
 OUTSTANDING: Step 10 (GitHub housekeeping) [both]
 <!-- step-end -->

@@ -513,7 +513,12 @@ def resolve_check_timeout(
     """
     env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
     if env_timeout:
-        return int(env_timeout), "env:SHIPIT_CHECK_TIMEOUT_SECS"
+        try:
+            parsed_env: Optional[int] = _valid_timeout(int(env_timeout))
+        except ValueError:
+            parsed_env = None
+        if parsed_env is not None:
+            return parsed_env, "env:SHIPIT_CHECK_TIMEOUT_SECS"
 
     candidates: List[Path] = []
     if command_source_file is not None:

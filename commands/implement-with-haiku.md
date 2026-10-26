@@ -213,6 +213,10 @@ hold:
 - The incomplete list is non-empty **and the agent self-reported it** (not heuristic-only).
 
 Otherwise write `FAILURE_CLASS: other`. Multi-unit failures are always `other` and go to the human.
+The Final check's failures are never `other` and never `implementer-shortfall`: they write
+`FAILURE_CLASS: check_not_run`, `check_not_configured`, or `gate_not_converged` (the Final check fix loop
+exhausted), as the Final check section sets out. Final-check failures must NOT trigger the Sonnet
+escalation, so none of them is classified `implementer-shortfall`, even on a single-unit run.
 
 ## Step 0: Resume check
 
@@ -1149,7 +1153,7 @@ that were built but never connected to anything).
   ```
   Emit: `GATE: pass — build clean, no tamper flags`
 
-  Passing the integration gate is not passing the check. The step cannot report OK until the Final check below has passed or recorded an opt-out, and 'not run' is never a pass.
+  Passing the integration gate is not passing the check. The step cannot report OK until the Final check below has passed or recorded an opt-out, and "not run" is never a pass.
 
 - **Any failure** → Gate **fails**. Emit a summary of failures. Dispatch a fix-Haiku (next section).
 
@@ -1783,8 +1787,9 @@ existing Python runner, on the tree the step hands on.
 **Placeholders.** `<WORKTREE>` is the absolute path of the worktree this run applies and commits in (the
 tree the integration gate ran on). `<MAIN_WORKTREE>` is the absolute path of the repo's main worktree.
 `<SCRATCH_PATH>`, `<RUN_KEY>`, and `<LEDGER_PATH>` are the values from Step 2. Shell variables do not
-survive between Bash calls, so each block below re-reads what it needs from the scratch files. Carry
-`CHECK_SHA` forward as a literal, as the doc does with `RUN_KEY`.
+survive between Bash calls, so each block below re-reads what it needs from the scratch files. The
+`CHECK_SHA` the receipt carries is read from `<SCRATCH_PATH>/check-sha.txt` when the receipt is written
+(for an opt-out, the current HEAD).
 
 **1. Resolve the check.** Write the resolver's JSON to a scratch file:
 ```bash
@@ -1792,7 +1797,7 @@ source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' 
 PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks resolve-check --worktree <WORKTREE> --main-worktree <MAIN_WORKTREE> > <SCRATCH_PATH>/resolve-check.json
 ```
 Ignore `resolve-check`'s exit code. It exits `1` for both an opt-out and a missing check, so do not branch
-on the exit status (no `|| stop`). Branch only on the JSON `source` and `command` fields. If
+on the exit status (no `|| stop`); do not branch on the exit status at all. Branch only on the JSON `source` and `command` fields. If
 `resolve-check.json` is missing or unparseable, the outcome is `check-not-run` (resolver unavailable).
 
 Read the fields you branch on:
@@ -1812,7 +1817,7 @@ cache's full lint/test/build set; that is deliberate.
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
 CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
 TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
-CHECK_SHA=$(git -C <WORKTREE> rev-parse HEAD)
+CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
 printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
 CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --argjson t "$TIMEOUT" '{commands: {check: $cmd}, checkTimeoutSecs: $t}')
 cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - > <SCRATCH_PATH>/full-check.json
@@ -1823,7 +1828,7 @@ runner's exit status.
 
 **3. Check that HEAD did not move.** After the run exits, re-read the tree:
 ```bash
-git -C <WORKTREE> rev-parse HEAD
+cd <WORKTREE> && git rev-parse HEAD
 ```
 If it differs from the SHA in `<SCRATCH_PATH>/check-sha.txt`, something committed during the run. That
 counts as **not run**, with Reason `check-not-run: HEAD moved during check`.
@@ -1837,8 +1842,10 @@ counts as **not run**, with Reason `check-not-run: HEAD moved during check`.
 | exit `1`, a failed step's `error` starts with the timeout prefix (`timed out`) | **not run** | hard stop, FAILED, Reason `check-not-run: timed out after <n>s (timeout_source: <src>)`; no fix loop |
 | exit `1`, a failed step's `returncode` is `126`/`127` | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>`; no fix loop |
 | exit `1` otherwise | real failure | Final check fix loop (below) |
+| exit `1` with no `results` key in `full-check.json` (the runner rejected its input before any check ran) | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>`; no fix loop |
 | exit `2`, any other exit, missing or unparseable `full-check.json`, or a run never polled to completion | **not run** | hard stop, FAILED, Reason `check-not-run: <detail>` |
 | resolver `source: "opt-out"` | no run | record `CHECK: opted-out`, `CHECK_EXIT: none`, `CHECK_SOURCE: opt-out`, `CHECK_SHA: <HEAD>`; proceed |
+| resolver crashed (`resolve-check.json` has `timeout_source: null`, or `source` and `command` both null alongside a `failure_reason` that is not the no-check message) | **not run** | hard stop, FAILED, Reason `check-not-run: resolver failed: <failure_reason>`; no fix loop |
 | resolver failure with no opt-out | not configured | hard stop, FAILED, Reason `check-not-configured`; body carries the resolver's `failure_reason` verbatim (names `.claude/project.yaml`, `commands.check`, and the opt-out's implement/fix-only scope) |
 
 A fix-Haiku cannot fix the environment, so the not-run rows never enter the fix loop.

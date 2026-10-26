@@ -338,5 +338,38 @@ if __name__ == "__main__":
             f"seconds={seconds!r} source={timeout_source!r}",
         )
 
+    # (#338 mutation-b) zero and non-integer timeouts are invalid everywhere: fall through to the default
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS", "0"):
+            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+        test_result(
+            "(8) SHIPIT_CHECK_TIMEOUT_SECS=0 falls through to the 300 default",
+            seconds == 300 and timeout_source == "default",
+            f"seconds={seconds!r} source={timeout_source!r}",
+        )
+        with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS", "abc"):
+            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+        test_result(
+            "(8) non-integer SHIPIT_CHECK_TIMEOUT_SECS falls through to the 300 default",
+            seconds == 300 and timeout_source == "default",
+            f"seconds={seconds!r} source={timeout_source!r}",
+        )
+        _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 0}))
+        with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+        test_result(
+            "(8) checkTimeoutSecs 0 in the cache falls through to the 300 default",
+            seconds == 300 and timeout_source == "default",
+            f"seconds={seconds!r} source={timeout_source!r}",
+        )
+        _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 1}))
+        with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+            seconds, _src = resolve_check_timeout(wt, main, None)
+        test_result("(8) checkTimeoutSecs 1 is the smallest accepted value", seconds == 1, f"seconds={seconds!r}")
+
     print()
     h.summarize_and_exit()

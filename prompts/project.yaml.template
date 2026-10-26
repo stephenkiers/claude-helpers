@@ -49,7 +49,7 @@ commands:
 # Applies only when no check resolves (commands.check, repo-cache, or justfile check recipe).
 # Recorded as `opted-out` in the implement/fix receipt, never as a pass.
 # Covers only the implement/fix check gate: an /expert-flow run will still stop at verify and ship,
-# which require a check, and /shipit needs --allow-no-checks.
+# which require a check, and `checks run` refuses to pass with no check configured.
 # checkOptOut: "docs-only repo"
 
 # ─── Documentation Style ──────────────────────────────────────────────────────

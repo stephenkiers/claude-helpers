@@ -1706,6 +1706,7 @@ def _check_gate_reason(
     repo: str,
     branch: Optional[str],
     main_worktree: Optional[str],
+    check_worktree: Optional[str] = None,
 ) -> Optional[str]:
     """Validate an OK receipt's check lines against the resolver and the step's final HEAD (#338).
 
@@ -1724,9 +1725,15 @@ def _check_gate_reason(
         return "check outcome missing from receipt"
     check_exit = parse_receipt_field(receipt, "CHECK_EXIT") or "none"
     check_sha = parse_receipt_field(receipt, "CHECK_SHA")
+    check_source = parse_receipt_field(receipt, "CHECK_SOURCE")
 
     main_path = Path(main_worktree) if main_worktree else None
-    command, source, _failure_reason = checks.resolve_check_command(Path(repo), main_path)
+    # Resolve against the step's own worktree (where the Final check resolved and ran); fall back to --repo.
+    resolve_root = Path(check_worktree) if check_worktree else Path(repo)
+    try:
+        command, source, _failure_reason = checks.resolve_check_command(resolve_root, main_path)
+    except Exception as exc:  # a resolver crash means the check could not run, not that none is configured
+        return f"check-not-run: resolver unavailable ({exc})"
 
     if check == CHECK_OPTED_OUT:
         # Rule (d): an opt-out is accepted only when the resolver itself reported one.
@@ -1735,6 +1742,8 @@ def _check_gate_reason(
                 "check opted out in receipt, but the resolver did not report an opt-out "
                 f"(resolver source '{source or 'none'}')"
             )
+        if check_source != CHECK_OPT_OUT_SOURCE:
+            return f"check source mismatch: opt-out receipt names CHECK_SOURCE '{check_source or 'none'}'"
     elif command is None:
         # Rule (e): nothing resolves and there is no opt-out, so an OK receipt cannot vouch for a check.
         if source == CHECK_OPT_OUT_SOURCE:
@@ -1747,6 +1756,12 @@ def _check_gate_reason(
         # Rule (c): a resolved check must have passed; CHECK_EXIT none or missing is not a pass.
         if check_exit != "0":
             return f"check did not pass: CHECK_EXIT '{check_exit}'"
+        # The receipt's CHECK_SOURCE must match where the resolver found the command.
+        if check_source != source:
+            return (
+                f"check source mismatch: receipt CHECK_SOURCE '{check_source or 'none'}', "
+                f"resolver source '{source or 'none'}'"
+            )
 
     # Rule (f): the check must have run on the step's final HEAD, not on an earlier tree.
     head = _git_head(repo, branch)
@@ -1762,6 +1777,7 @@ def check_implement(
     branch: str,
     base: str,
     main_worktree: Optional[str] = None,
+    check_worktree: Optional[str] = None,
 ) -> Optional[str]:
     """Check implement artifacts. Return error reason or None."""
     count = _count_commits(repo, base, branch)
@@ -1778,7 +1794,7 @@ def check_implement(
 
     # An OK receipt must carry a check outcome that matches the resolver and the final HEAD.
     if parse_receipt_field(receipt, "Decision") == "OK":
-        return _check_gate_reason(receipt, repo, branch, main_worktree)
+        return _check_gate_reason(receipt, repo, branch, main_worktree, check_worktree)
 
     return None
 
@@ -1791,6 +1807,7 @@ def check_fix(
     review_dir: str,
     home: Path,
     main_worktree: Optional[str] = None,
+    check_worktree: Optional[str] = None,
 ) -> Optional[str]:
     """Check fix artifacts (zero-commit carve-out), then the OK receipt's check lines (#338)."""
     artifact_reason = _check_fix_artifacts(repo, branch, base, review_dir, home)
@@ -1799,7 +1816,7 @@ def check_fix(
 
     receipt = read_file(receipt_file)
     if parse_receipt_field(receipt, "Decision") == "OK":
-        return _check_gate_reason(receipt, repo, branch, main_worktree)
+        return _check_gate_reason(receipt, repo, branch, main_worktree, check_worktree)
 
     return None
 
@@ -2412,6 +2429,10 @@ def main() -> None:
         help="Main worktree (for implement/fix): the check resolver falls back to it; absent = worktree only",
     )
     parser.add_argument(
+        "--check-worktree",
+        help="Step worktree (for implement/fix): the check resolves against it; absent = --repo",
+    )
+    parser.add_argument(
         "--flow-dir",
         help="Flow directory holding questions/ (plan/review); default: the receipt's grandparent when it sits in steps/",
     )
@@ -2621,6 +2642,14 @@ def main() -> None:
             if not ROUND1_HEADER_RE.search(receipt):
                 print("Reason: receipt missing ROUND 1 section header")
                 sys.exit(1)
+            # The check gate (#338) applies to escalated re-runs too.
+            if args.repo and args.branch:
+                gate_reason = _check_gate_reason(
+                    receipt, args.repo, args.branch, args.main_worktree, args.check_worktree
+                )
+                if gate_reason:
+                    print(f"Reason: {gate_reason}")
+                    sys.exit(1)
 
         print("ARTIFACTS: ok")
         sys.exit(0)
@@ -2715,7 +2744,8 @@ def main() -> None:
         if not re.match(r"^[0-9a-f]{7,40}$", args.base):
             error(f"Invalid base SHA: {args.base}")
         error_reason = check_implement(
-            receipt_file, args.repo, args.branch, args.base, args.main_worktree
+            receipt_file, args.repo, args.branch, args.base, args.main_worktree,
+            args.check_worktree,
         )
     elif args.step == "fix":
         if not all([args.repo, args.branch, args.base, args.review_dir]):
@@ -2725,7 +2755,7 @@ def main() -> None:
             error(f"Invalid base SHA: {args.base}")
         error_reason = check_fix(
             receipt_file, args.repo, args.branch, args.base, args.review_dir, home,
-            args.main_worktree,
+            args.main_worktree, args.check_worktree,
         )
     elif args.step in ["track", "verify", "ship", "merge"]:
         # No artifact checks

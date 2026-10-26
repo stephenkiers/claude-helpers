@@ -288,4 +288,60 @@ if __name__ == "__main__":
         )
 
     print()
+    print("[Section 8] --check-worktree, CHECK_SOURCE and the --expect-model branch")
+
+    def run_with(receipt_path, repo, base_sha, home, extra):
+        cmd = [sys.executable, str(VERIFIER), "--step", "implement", "--receipt", receipt_path,
+               "--since", SINCE, "--repo", repo, "--branch", "HEAD", "--base", base_sha] + extra
+        env = os.environ.copy()
+        env["HOME"] = home
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        return r.returncode, r.stdout.strip()
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        step_wt = f"{home}/step-wt"
+        Path(step_wt).mkdir()
+        write_opt_out(step_wt, "docs-only repo")  # only the step's own worktree opts out
+        opted_out = "CHECK: opted-out\nCHECK_SOURCE: opt-out\nCHECK_SHA: " + head_sha + "\n"
+        receipt = write_receipt(home, receipt_text(opted_out))
+        rc, out = run_with(receipt, repo, base_sha, home, [])
+        test_result("--check-worktree: without it an opt-out only in the step worktree is rejected",
+                    rc == 1, f"rc={rc} out={out[:200]!r}")
+        rc, out = run_with(receipt, repo, base_sha, home, ["--check-worktree", step_wt])
+        test_result("--check-worktree: the step worktree's opt-out is honoured",
+                    rc == 0, f"rc={rc} out={out[:200]!r}")
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_cache(repo)
+        wrong_source = passing_lines(head_sha, source="justfile")
+        receipt = write_receipt(home, receipt_text(wrong_source))
+        rc, out = run_with(receipt, repo, base_sha, home, [])
+        test_result("CHECK_SOURCE: a source differing from the resolver's is rejected",
+                    rc == 1 and "source" in out, f"rc={rc} out={out[:200]!r}")
+        # An opt-out receipt must name the opt-out source.
+        write_opt_out(repo, "docs-only repo")
+        (Path(repo) / ".claude" / "repo-cache.json").unlink()
+        bad_opt = "CHECK: opted-out\nCHECK_SOURCE: repo-cache\nCHECK_SHA: " + head_sha + "\n"
+        receipt = write_receipt(home, receipt_text(bad_opt))
+        rc, out = run_with(receipt, repo, base_sha, home, [])
+        test_result("CHECK_SOURCE: an opt-out receipt with a non-opt-out source is rejected",
+                    rc == 1 and "source" in out, f"rc={rc} out={out[:200]!r}")
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_cache(repo)
+        no_check = "IMPLEMENTER_MODEL: haiku\nROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->"
+        receipt = write_receipt(home, no_check)
+        rc, out = run_with(receipt, repo, base_sha, home, ["--expect-model", "haiku"])
+        test_result("--expect-model: an OK receipt with no CHECK lines is rejected",
+                    rc == 1 and "check outcome missing" in out, f"rc={rc} out={out[:200]!r}")
+        with_check = "IMPLEMENTER_MODEL: haiku\n" + receipt_text(passing_lines(head_sha))
+        receipt = write_receipt(home, with_check)
+        rc, out = run_with(receipt, repo, base_sha, home, ["--expect-model", "haiku"])
+        test_result("--expect-model: an OK receipt with valid CHECK lines passes",
+                    rc == 0, f"rc={rc} out={out[:200]!r}")
+
+    print()
     h.summarize_and_exit()
