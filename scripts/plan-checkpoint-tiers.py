@@ -4,10 +4,11 @@ r"""Assign tiers (D/W/Q) to checkpoint items based on reaction-pass evidence.
 Three modes:
 1. Default (no flag): outputs brief_id -> tier JSON (legacy default).
 2. --fragment: outputs handle-keyed checkpoint ledger fragment with tier, brief_id,
-   brief_type, and evidence fields. Handles are numbered per tier in brief_id sort
-   order: D1, D2... for decided; W1, W2... for worth-a-look; Q1, Q2... for question.
-3. --check-ledger: pure-read mode; validates checkpoint ledger shape and compares it
-   against a freshly computed fragment. Exits 1 with a named reason on any mismatch.
+   brief_type, and evidence fields. Handles are numbered per tier in numeric brief_id
+   order (B2 before B10): D1, D2... for decided; W1, W2... for worth-a-look; Q1, Q2... for question.
+3. --check-ledger: pure-read mode; validates checkpoint ledger shape and compares its
+   handle set, and each handle's tier and brief_id, against a freshly computed fragment
+   (brief_type and evidence are not compared). Exits 1 with a named reason on any mismatch.
    Never writes a file.
 
 All three modes route reaction files through a shared reading and validation pipeline.
@@ -31,7 +32,7 @@ import plan_checkpoint_schema as schema
 
 
 class TierError(Exception):
-    """Carrier for tiering errors with exit code and stderr message."""
+    """Carrier for tiering errors: the complete stderr line and the exit code."""
 
     def __init__(self, message: str, exit_code: int = 1):
         self.message = message
@@ -48,7 +49,7 @@ def _resolve_reaction_path(path_str: str, decisions_dir: Path) -> Tuple[Path, Op
 
     Returns:
         (resolved_path, error_message) where error_message is None on success,
-        or an error message (ready to print with "Error: " prefix) on failure.
+        or the confine_path_to_dir message (printed with an "Error: " prefix) on failure.
         Possible errors: path outside decisions_dir (from confine_path_to_dir).
     """
     # Resolve path: relative to decisions_dir or absolute
@@ -80,13 +81,14 @@ def _read_reaction_file(
         - File missing: error with exit_code=1
         - Unreadable (OSError/UnicodeDecodeError): error with exit_code=2
         - Invalid JSON: error with exit_code=1
-        - Not a dict or validate_reaction_file_shape fails: error with exit_code=1
+        - Not a dict: error with exit_code=1
         - Missing 'complete': true sentinel: error with exit_code=1
+        - validate_reaction_file_shape fails: error with exit_code=1
     """
     # Check existence
     if not reaction_path.exists():
         return None, TierError(
-            f"expected reaction file missing: {path_str}",
+            f"Error: expected reaction file missing: {path_str}",
             exit_code=1,
         )
 
@@ -94,34 +96,34 @@ def _read_reaction_file(
     try:
         content = reaction_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        return None, TierError(f"reading reaction file {path_str}: {e}", exit_code=2)
+        return None, TierError(f"Error reading reaction file {path_str}: {e}", exit_code=2)
 
     # Try to parse JSON
     try:
         reactions = json.loads(content)
     except json.JSONDecodeError as e:
         return None, TierError(
-            f"reaction file is not valid JSON: {path_str}: {e}",
+            f"Error: reaction file is not valid JSON: {path_str}: {e}",
             exit_code=1,
         )
 
     # Validate shape (rejects non-dict)
     if not isinstance(reactions, dict):
         return None, TierError(
-            f"in {path_str}: reaction file is not a dict",
+            f"Error in {path_str}: reaction file is not a dict",
+            exit_code=1,
+        )
+
+    # Sentinel before shape, so a file without "complete" gets the sentinel message
+    if reactions.get("complete") is not True:
+        return None, TierError(
+            f"Error: reaction file missing 'complete': true sentinel: {path_str}",
             exit_code=1,
         )
 
     reaction_error = schema.validate_reaction_file_shape(reactions)
     if reaction_error:
-        return None, TierError(f"in {path_str}: {reaction_error}", exit_code=1)
-
-    # Check complete sentinel
-    if not reactions.get("complete"):
-        return None, TierError(
-            f"reaction file missing 'complete': true sentinel: {path_str}",
-            exit_code=1,
-        )
+        return None, TierError(f"Error in {path_str}: {reaction_error}", exit_code=1)
 
     return reactions, None
 
@@ -136,7 +138,7 @@ def _validate_brief_id(brief_id: str) -> Optional[TierError]:
         None if valid, TierError with exit_code=1 if invalid.
     """
     if not re.match(r"^B\d+$", brief_id):
-        return TierError(f"brief id {brief_id} is not of the form B<digits>", exit_code=1)
+        return TierError(f"Error: brief id {brief_id} is not of the form B<digits>", exit_code=1)
     return None
 
 
@@ -159,6 +161,10 @@ def _compute_tiers(
         - error: None on success, TierError on failure
     """
     briefs_map = ledger.get("briefs", {})
+    for brief_id in briefs_map:
+        brief_id_error = _validate_brief_id(brief_id)
+        if brief_id_error:
+            return None, None, brief_id_error
 
     # Build raiser map
     raiser_map: Dict[str, str] = {}
@@ -186,7 +192,7 @@ def _compute_tiers(
             reaction_path_str, decisions_dir
         )
         if confinement_error:
-            return None, None, TierError(f"path {reaction_path} is outside {decisions_dir}", exit_code=1)
+            return None, None, TierError(f"Error: {confinement_error}", exit_code=1)
 
         # Read and validate reaction file
         reactions, read_error = _read_reaction_file(reaction_path, reaction_path_str)
@@ -227,27 +233,16 @@ def _compute_tiers(
     tiers: Dict[str, str] = {}
 
     for brief_id in evidence:
-        # Validate brief_id format (also check here in case it appears only in evidence)
-        brief_id_error = _validate_brief_id(brief_id)
-        if brief_id_error:
-            return None, None, brief_id_error
-
-        # Check that brief has brief_type in ledger
-        if brief_id in briefs_map and isinstance(briefs_map[brief_id], dict):
-            brief_type = briefs_map[brief_id].get("brief_type")
-            if not brief_type:
-                return None, None, TierError(
-                    f"brief {brief_id} has reactions but no brief_type in ledger briefs",
-                    exit_code=1,
-                )
-        else:
+        # Every brief with reactions needs a brief_type in ledger briefs
+        brief_data = briefs_map.get(brief_id)
+        brief_type = brief_data.get("brief_type") if isinstance(brief_data, dict) else None
+        if not brief_type:
             return None, None, TierError(
-                f"brief {brief_id} has reactions but no brief_type in ledger briefs",
+                f"Error: brief {brief_id} has reactions but no brief_type in ledger briefs",
                 exit_code=1,
             )
 
         reactions_by_slug = evidence[brief_id]
-        brief_type = briefs_map.get(brief_id, {}).get("brief_type", "")
         raiser_slug = raiser_map.get(brief_id)
         raw_brief_reactions = raw_reactions.get(brief_id, {})
 
@@ -265,7 +260,7 @@ def _compute_tiers(
 
         # Apply tier rule
         tier = schema.tier_item(
-            brief_type or "",
+            brief_type,
             protested_by,
             needs_human_by,
             resolved_by,
@@ -277,7 +272,7 @@ def _compute_tiers(
         # Validate tier is known
         if tier not in schema.HANDLE_TIERS:
             return None, None, TierError(
-                f"unknown tier {tier} for brief {brief_id}",
+                f"Error: unknown tier {tier} for brief {brief_id}",
                 exit_code=2,
             )
 
@@ -306,12 +301,8 @@ def _build_fragment(
     Returns:
         {handle: {tier, brief_id, brief_type, evidence}}
     """
-    # Build tier_to_letter and counters dynamically from HANDLE_TIERS
-    tier_to_letter = {}
-    tier_letters = ["D", "W", "Q"]
-    for i, tier_name in enumerate(schema.HANDLE_TIERS):
-        if i < len(tier_letters):
-            tier_to_letter[tier_name] = tier_letters[i]
+    # Handle letter is each tier's initial: decided -> D, worth-a-look -> W, question -> Q
+    tier_to_letter = {tier_name: tier_name[0].upper() for tier_name in schema.HANDLE_TIERS}
 
     # Group briefs by tier and sort within each tier by brief_id
     tier_groups: Dict[str, list] = {}
@@ -330,7 +321,7 @@ def _build_fragment(
     for tier in schema.HANDLE_TIERS:
         if tier not in tier_groups:
             continue
-        letter = tier_to_letter.get(tier, "?")
+        letter = tier_to_letter[tier]
         for brief_id in tier_groups[tier]:
             handle = f"{letter}{counters[tier]}"
             counters[tier] += 1
@@ -423,7 +414,7 @@ def main() -> int:
     # Compute tiers using shared pipeline
     tiers, parsed_reactions, compute_error = _compute_tiers(ledger, decisions_dir)
     if compute_error:
-        print(f"Error: {compute_error.message}", file=sys.stderr)
+        print(compute_error.message, file=sys.stderr)
         return compute_error.exit_code
 
     # Handle --check-ledger mode (pure-read validation)
@@ -468,10 +459,9 @@ def main() -> int:
                 )
             return 1
 
-        # Check that tier and brief_id match for each handle (contract item 12)
-        # Only compare tier and brief_id, not brief_type or evidence
-        for handle in ledger_handles:
-            expected_entry = expected_fragment.get(handle, {})
+        # Compare only tier and brief_id per handle, not brief_type or evidence.
+        # The handle sets are equal here, so walk the fragment in its handle order.
+        for handle, expected_entry in expected_fragment.items():
             actual_entry = ledger.get(handle, {})
 
             expected_tier = expected_entry.get("tier")
