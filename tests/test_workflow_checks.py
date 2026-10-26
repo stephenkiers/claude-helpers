@@ -363,13 +363,94 @@ if __name__ == "__main__":
             seconds, timeout_source = resolve_check_timeout(wt, main, None)
         test_result(
             "(8) checkTimeoutSecs 0 in the cache falls through to the 300 default",
-            seconds == 300 and timeout_source == "default",
+            seconds == 300 and timeout_source.startswith("default"),
             f"seconds={seconds!r} source={timeout_source!r}",
+        )
+        test_result(
+            "(8) the ignored cache 0 is named in timeout_source (#338 directive 1)",
+            "ignored invalid checkTimeoutSecs in worktree repo-cache.json" in timeout_source,
+            f"source={timeout_source!r}",
         )
         _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 1}))
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
             seconds, _src = resolve_check_timeout(wt, main, None)
         test_result("(8) checkTimeoutSecs 1 is the smallest accepted value", seconds == 1, f"seconds={seconds!r}")
+
+    print()
+    print("[Section 9] project.yaml checkTimeoutSecs and invalid checkOptOut (#338 directives 1-3)")
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+
+        # (9a) a valid project.yaml checkTimeoutSecs is honored for the command it resolved
+        _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: 900\n")
+        command, source, failure = resolve_check_command(wt, main)
+        project_yaml = wt / ".claude" / "project.yaml"
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        test_result(
+            "(9) valid project.yaml checkTimeoutSecs 900 is honored when project.yaml supplied the command",
+            command == "just check" and source == "project.yaml" and seconds == 900 and "worktree project.yaml" in timeout_source,
+            f"command={command!r} source={source!r} seconds={seconds!r} timeout_source={timeout_source!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+
+        # (9b) a boolean true is not a timeout: falls back to the 300 default and names the ignored file
+        _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: true\n")
+        command, source, failure = resolve_check_command(wt, main)
+        project_yaml = wt / ".claude" / "project.yaml"
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        test_result(
+            "(9) project.yaml checkTimeoutSecs: true is ignored; falls back to the 300 default",
+            seconds == 300 and timeout_source.startswith("default"),
+            f"seconds={seconds!r} timeout_source={timeout_source!r}",
+        )
+        test_result(
+            "(9) the ignored boolean project.yaml value is named in timeout_source",
+            "ignored invalid checkTimeoutSecs in worktree project.yaml" in timeout_source,
+            f"timeout_source={timeout_source!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+
+        # (9c) a string "900" is not a timeout: falls back to the 300 default and names the ignored file
+        _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: \"900\"\n")
+        command, source, failure = resolve_check_command(wt, main)
+        project_yaml = wt / ".claude" / "project.yaml"
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        test_result(
+            "(9) project.yaml checkTimeoutSecs: \"900\" (a string) is ignored; falls back to the 300 default",
+            seconds == 300 and timeout_source.startswith("default"),
+            f"seconds={seconds!r} timeout_source={timeout_source!r}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+
+        # (9d) an invalid checkOptOut (not a non-empty string) is ignored and the failure says so
+        _write(wt / ".claude" / "project.yaml", "checkOptOut: true\n")
+        command, source, failure = resolve_check_command(wt, main)
+        test_result(
+            "(9) invalid checkOptOut: no opt-out, source None, failure names 'checkOptOut must be a non-empty string'",
+            command is None and source is None and failure is not None
+            and "checkOptOut must be a non-empty string" in failure
+            and "no check command configured" in failure,
+            f"command={command!r} source={source!r} failure={failure!r}",
+        )
 
     print()
     h.summarize_and_exit()

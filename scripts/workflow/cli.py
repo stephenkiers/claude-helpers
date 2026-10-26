@@ -27,7 +27,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Callable, Any, Tuple
+from typing import Callable, Any, Optional, Tuple
 
 from . import cleanup, merge, shipit, checks, track, verify_queue
 from .models import RepoCacheData
@@ -578,11 +578,16 @@ def main() -> None:
                 repo_cache = RepoCacheData.from_dict(cache_data)
                 timeout = args.timeout
                 if timeout is None:
+                    # Same precedence and ignore rule as checks.resolve_check_timeout: an invalid
+                    # env value falls through to the cache value, then the default.
                     env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
+                    env_value: Optional[int] = None
                     if env_timeout:
-                        timeout = int(env_timeout)
-                    else:
-                        timeout = repo_cache.check_timeout_secs or 300
+                        try:
+                            env_value = checks.valid_timeout_secs(int(env_timeout))
+                        except ValueError:
+                            env_value = None
+                    timeout = env_value or repo_cache.check_timeout_secs or checks.DEFAULT_CHECK_TIMEOUT_SECS
                 result, err = checks.run_checks(
                     commands=repo_cache.commands,
                     repo_root=Path.cwd(),
@@ -609,8 +614,9 @@ def main() -> None:
                 worktree_path = Path(args.worktree)
                 main_worktree_path = Path(args.main_worktree) if args.main_worktree else None
                 resolution = checks.resolve_check_detail(worktree_path, main_worktree_path)
+                source_kind: checks.ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
                 timeout_secs, timeout_source = checks.resolve_check_timeout(
-                    worktree_path, main_worktree_path, resolution.source_file
+                    worktree_path, main_worktree_path, resolution.source_file, source_kind
                 )
                 output = {
                     "command": resolution.command,

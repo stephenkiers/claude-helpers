@@ -163,16 +163,18 @@ class RepoCacheData:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RepoCacheData":
         """Construct from parsed JSON dict."""
+        # Imported here, not at module level: checks -> cache -> models would otherwise be a cycle.
+        from .checks import valid_timeout_secs
+
         # /shipit's real cache (commands/shipit.md) writes a top-level "version" int, never
         # "schema_version" — accept whichever key is present rather than losing the field.
         version = data.get("schema_version", data.get("version", REPO_CACHE_SCHEMA_VERSION))
         parallelizable = data.get("parallelizable", [])
         if not isinstance(parallelizable, list):
             parallelizable = []
-        check_timeout_secs = data.get("checkTimeoutSecs")
-        # bool is an int subclass; reject it along with non-positive / non-integer values.
-        if isinstance(check_timeout_secs, bool) or not isinstance(check_timeout_secs, int) or check_timeout_secs <= 0:
-            check_timeout_secs = None
+        # Invalid values (bool, string, float, zero, negative) become None, the same ignore rule
+        # resolve_check_timeout applies to every checkTimeoutSecs source.
+        check_timeout_secs = valid_timeout_secs(data.get("checkTimeoutSecs"))
         return cls(
             schema_version=str(version),
             repo_path=data.get("repo_path", ""),
