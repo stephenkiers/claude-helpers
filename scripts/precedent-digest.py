@@ -88,7 +88,7 @@ curated_capped) are counted only for source "curated". In --stats they appear un
 source for a uniform shape, but for plan-session, flow and review they are always zero.
 
 Status file. --status-out FILE writes one JSON object on every exit-0 path: repo_resolved,
-curated_root ("ok" or "none"), yaml ("ok", "missing", "unreadable", "no_keys" or
+repo_key (the origin-derived "owner-name" key, empty when unresolved), curated_root ("ok" or "none"), yaml ("ok", "missing", "unreadable", "no_keys" or
 "not_applicable" when there is no curated root or the yaml read did not complete),
 curated, curated_capped, curated_rejected, curated_no_rule, curated_screened,
 curated_error, and reason. curated_error is null, or the exception class name when the
@@ -2052,6 +2052,7 @@ def _run(argv: Optional[Sequence[str]]) -> int:
     if args.status_out:
         status = {
             "repo_resolved": key is not None,
+            "repo_key": repo if key is not None else "",
             "curated_root": "ok" if curated_root is not None else "none",
             "yaml": yaml_status,
             "curated": _count_sources(entries)[CURATED_SOURCE],

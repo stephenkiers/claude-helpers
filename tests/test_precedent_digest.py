@@ -1363,9 +1363,11 @@ def case_curated_root_resolution(h):
                       and st.get("curated") == 0 and st.get("repo_resolved") is True,
                       f"status={st}")
         h.test_result("curated root: status keys are exactly the pinned set", st is not None and set(st) == {
-            "repo_resolved", "curated_root", "yaml", "curated", "curated_capped", "curated_rejected",
+            "repo_resolved", "repo_key", "curated_root", "yaml", "curated", "curated_capped", "curated_rejected",
             "curated_no_rule", "curated_screened", "curated_error", "reason"},
             f"keys={sorted(st) if st else None}")
+        h.test_result("curated root: repo_key is the origin-derived owner-name key",
+                      st is not None and st.get("repo_key") == "owner-name", f"status={st}")
         h.test_result("curated root: curated_error is null on a normal run", st is not None
                       and st.get("curated_error") is None, f"status={st}")
         rc, ents, err, st, _ = run_curated(fx, "owner-name")
@@ -1541,6 +1543,15 @@ def case_curated_oversize_yaml(h):
         h.test_result("oversize yaml: status yaml is unreadable, curated 0, no curated_error",
                       st is not None and st.get("yaml") == "unreadable" and st.get("curated") == 0
                       and st.get("curated_error") is None, f"status={st}")
+        # Control at exactly the limit: same yaml, one byte under the oversize case, still parses.
+        # Proves size alone (not content) is what made the oversize file unreadable.
+        exact = CURATED_YAML + "# "
+        exact += "x" * (64 * 1024 - len(exact.encode("utf-8")) - 1) + "\n"
+        repo2 = curated_repo(fx, "exactyaml", yaml_text=exact, files={"docs/decisions/0001-cache.md": RULE_MD})
+        rc2, ents2, err2, st2, _ = run_curated(fx, repo2)
+        h.test_result("oversize yaml boundary: a yaml of exactly 64 KiB still reads (yaml ok, curated 1)",
+                      len(exact.encode("utf-8")) == 64 * 1024 and st2 is not None
+                      and st2.get("yaml") == "ok" and st2.get("curated") == 1, f"status={st2}")
 
 
 def case_status_out_label(h):
