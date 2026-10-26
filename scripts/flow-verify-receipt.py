@@ -1747,11 +1747,7 @@ def _check_gate_reason(
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     from scripts.workflow import checks
-
-    try:
-        from scripts.workflow.checks import OPT_OUT_SOURCE
-    except ImportError:  # checks.py does not export the constant yet; use the resolver's literal
-        OPT_OUT_SOURCE = "opt-out"
+    from scripts.workflow.checks import OPT_OUT_SOURCE
 
     outcome = _parse_check_outcome(receipt)
     if not outcome.check:
@@ -1782,7 +1778,7 @@ def _check_gate_reason(
     elif command is None:
         # Rule (e): nothing resolves and there is no opt-out, so an OK receipt cannot vouch for a check.
         if source == OPT_OUT_SOURCE:
-            return f"check substituted: receipt ran '{outcome.check}', resolved '{CHECK_OPTED_OUT}'"
+            return f"check substituted: receipt ran '{outcome.check}', resolved '{source}'"
         return (
             f"check not configured: receipt says OK with '{outcome.check}' but no check command resolves "
             f"({failure_reason or 'no reason reported by the resolver'})"

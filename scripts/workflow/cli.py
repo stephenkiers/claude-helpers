@@ -616,7 +616,8 @@ def main() -> None:
                 resolution = checks.resolve_check_detail(worktree_path, main_worktree_path)
                 source_kind: checks.ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
                 timeout_secs, timeout_source = checks.resolve_check_timeout(
-                    worktree_path, main_worktree_path, resolution.source_file, source_kind
+                    worktree_path, main_worktree_path, resolution.source_file, source_kind,
+                    resolution.source_scope,
                 )
                 output = {
                     "command": resolution.command,

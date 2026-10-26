@@ -1818,6 +1818,7 @@ directory, so a run started anywhere else checks the wrong tree. Only the resolv
 cache's full lint/test/build set; that is deliberate.
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
+if [ -n "$(cd <WORKTREE> && git status --porcelain)" ]; then printf '%s\n' "check-not-run: worktree not clean" >&2; exit 2; fi
 CHECK_CMD=$(jq -r '.command // empty' <SCRATCH_PATH>/resolve-check.json)
 TIMEOUT=$(jq -r '.timeout_secs // empty' <SCRATCH_PATH>/resolve-check.json)
 CHECK_SHA=$(cd <WORKTREE> && git rev-parse HEAD)
@@ -1825,9 +1826,10 @@ printf '%s\n' "$CHECK_SHA" > <SCRATCH_PATH>/check-sha.txt
 CACHE_JSON=$(jq -n --arg cmd "$CHECK_CMD" --argjson t "$TIMEOUT" '{commands: {check: $cmd}, checkTimeoutSecs: $t}')
 cd <WORKTREE> && printf '%s' "$CACHE_JSON" | PYTHONPATH="$CLAUDE_HELPERS_DIR" python3 -m scripts.workflow.cli checks run - > <SCRATCH_PATH>/full-check.json
 ```
-Never wrap this in `timeout` or `gtimeout` (see Gate step 1). Before launching the run, require a clean tree:
-`cd <WORKTREE> && git status --porcelain` must print nothing. Any output is the not-run outcome
-`check-not-run: worktree not clean` (see the table). `CHECK_SHA` attests a commit, not a tree, so the
+Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first check, before anything is
+written or launched, requires a clean tree: the porcelain status of `<WORKTREE>` must print nothing. Any
+output exits `2` without starting the run, which is the not-run outcome `check-not-run: worktree not clean`
+(see the table). `CHECK_SHA` attests a commit, not a tree, so the
 clean-tree checks before and after the run are what tie the check to the tree the step hands on.
 
 Launch the run with `run_in_background` and wait for it with the join-barrier wait.

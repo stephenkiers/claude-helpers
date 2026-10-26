@@ -38,6 +38,8 @@ OPT_OUT_SOURCE: Final = "opt-out"
 # parser is chosen by kind, not by inspecting the file name.
 ConfigKind = Literal["project.yaml", "repo-cache"]
 _CONFIG_FILENAME: Dict[str, str] = {"project.yaml": "project.yaml", "repo-cache": "repo-cache.json"}
+# Whether a config file came from the step's own worktree or from the main worktree fallback.
+ConfigScope = Literal["worktree", "main"]
 
 # Shown when no source yields a check command and no checkOptOut is set. Callers and tests
 # compare against this constant; the "sources tried" line is appended after it on its own line.
@@ -337,15 +339,37 @@ def _opt_out_from_mapping(data: Dict[str, Any]) -> Tuple[Optional[str], bool]:
     """
     Read the top-level checkOptOut from a parsed project.yaml.
 
-    Returns (reason, invalid). reason is the stripped non-empty string, or None. invalid is True
-    when checkOptOut is set (not null) but is not a non-empty string; that value is ignored.
+    Returns (reason, invalid). reason is the non-empty string with internal whitespace and newlines
+    collapsed to single spaces, so it stays on one line; or None. invalid is True when checkOptOut is
+    set (not null) but is not a non-empty string; that value is ignored.
     """
     if data.get("checkOptOut") is None:
         return None, False
     value = data["checkOptOut"]
     if isinstance(value, str) and value.strip():
-        return value.strip(), False
+        return " ".join(value.split()), False
     return None, True
+
+
+def _resolve_opt_out(
+    worktree_yaml: Optional[Dict[str, Any]], main_yaml: Optional[Dict[str, Any]]
+) -> Tuple[Optional[str], bool]:
+    """
+    Return (reason, invalid) for an explicit checkOptOut, worktree project.yaml first, then main.
+
+    reason is the first valid reason found, or None. invalid is True when any consulted mapping set
+    checkOptOut to a value that is not a non-empty string.
+    """
+    reason: Optional[str] = None
+    invalid = False
+    for mapping in (worktree_yaml, main_yaml):
+        if mapping is None:
+            continue
+        mapping_reason, mapping_invalid = _opt_out_from_mapping(mapping)
+        invalid = invalid or mapping_invalid
+        if reason is None:
+            reason = mapping_reason
+    return reason, invalid
 
 
 def _load_repo_cache_mapping(path: Path) -> Optional[Dict[str, Any]]:
@@ -400,6 +424,8 @@ class CheckResolution:
     source_file: Optional[Path]
     failure_reason: Optional[str]
     opt_out_reason: Optional[str] = None
+    # "worktree" or "main" when source_file is set; None otherwise (justfile, opt-out, not configured).
+    source_scope: Optional[ConfigScope] = None
 
     def __post_init__(self) -> None:
         if self.source == OPT_OUT_SOURCE:
@@ -449,7 +475,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
         if not read_err and cache_data:
             check_cmd = cache_data.commands.get("check")
             if isinstance(check_cmd, str) and check_cmd.strip():
-                return CheckResolution(check_cmd.strip(), "repo-cache", cache_file, None)
+                return CheckResolution(check_cmd.strip(), "repo-cache", cache_file, None, source_scope="worktree")
             else:
                 sources_tried[-1] += " (no check key)"
         else:
@@ -466,7 +492,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
             if not read_err and cache_data:
                 check_cmd = cache_data.commands.get("check")
                 if isinstance(check_cmd, str) and check_cmd.strip():
-                    return CheckResolution(check_cmd.strip(), "repo-cache", main_cache_file, None)
+                    return CheckResolution(check_cmd.strip(), "repo-cache", main_cache_file, None, source_scope="main")
                 else:
                     sources_tried[-1] += " (no check key)"
             else:
@@ -481,7 +507,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
         worktree_yaml, load_note = _load_project_yaml(project_yaml)
         check_cmd = _check_command_from_mapping(worktree_yaml)
         if check_cmd:
-            return CheckResolution(check_cmd, "project.yaml", project_yaml, None)
+            return CheckResolution(check_cmd, "project.yaml", project_yaml, None, source_scope="worktree")
         sources_tried.append(f"worktree project.yaml ({load_note or NO_CHECK_KEY_NOTE})")
     else:
         sources_tried.append("worktree project.yaml (not found)")
@@ -494,7 +520,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
             main_yaml, load_note = _load_project_yaml(main_project_yaml)
             check_cmd = _check_command_from_mapping(main_yaml)
             if check_cmd:
-                return CheckResolution(check_cmd, "project.yaml", main_project_yaml, None)
+                return CheckResolution(check_cmd, "project.yaml", main_project_yaml, None, source_scope="main")
             sources_tried.append(f"main project.yaml ({load_note or NO_CHECK_KEY_NOTE})")
         else:
             sources_tried.append("main project.yaml (not found)")
@@ -521,15 +547,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
         sources_tried.append("justfile (not found)")
 
     # No command resolved: explicit opt-out (worktree first, then main) before failing closed.
-    opt_out_reason: Optional[str] = None
-    opt_out_invalid = False
-    for mapping in (worktree_yaml, main_yaml):
-        if mapping is None:
-            continue
-        reason, invalid = _opt_out_from_mapping(mapping)
-        opt_out_invalid = opt_out_invalid or invalid
-        if opt_out_reason is None:
-            opt_out_reason = reason
+    opt_out_reason, opt_out_invalid = _resolve_opt_out(worktree_yaml, main_yaml)
     if opt_out_reason is not None:
         return CheckResolution(
             None,
@@ -584,7 +602,8 @@ def resolve_check_timeout(
     worktree: Path,
     main_worktree: Optional[Path],
     command_source_file: Optional[Path],
-    command_source_kind: ConfigKind = "repo-cache",
+    command_source_kind: ConfigKind,
+    command_source_scope: Optional[ConfigScope],
 ) -> Tuple[int, str]:
     """
     Resolve the per-check timeout in seconds, following the command's source.
@@ -605,7 +624,9 @@ def resolve_check_timeout(
         main_worktree: Main worktree whose repo-cache.json is the last fallback (optional).
         command_source_file: The file the command was resolved from, or None.
         command_source_kind: The kind of command_source_file ("project.yaml" or "repo-cache").
-            Defaults to "repo-cache" for callers that pass no kind.
+            Required: the parser is chosen by kind, never by the file name.
+        command_source_scope: "worktree" or "main", the scope the command's source file came from
+            (CheckResolution.source_scope). Required when command_source_file is set; None otherwise.
 
     Returns:
         (seconds, timeout_source) where timeout_source names where the value came from. When a
@@ -623,9 +644,12 @@ def resolve_check_timeout(
 
     candidates: List[Tuple[Path, str, ConfigKind]] = []
     if command_source_file is not None:
+        if command_source_scope is None:
+            raise ValueError("command_source_scope is required when command_source_file is set")
         command_filename = _CONFIG_FILENAME[command_source_kind]
-        where = "worktree" if command_source_file == worktree / ".claude" / command_filename else "main"
-        candidates.append((command_source_file, f"{where} {command_filename}", command_source_kind))
+        candidates.append(
+            (command_source_file, f"{command_source_scope} {command_filename}", command_source_kind)
+        )
     candidates.append((worktree / ".claude" / "repo-cache.json", "worktree repo-cache.json", "repo-cache"))
     if main_worktree is not None:
         candidates.append((main_worktree / ".claude" / "repo-cache.json", "main repo-cache.json", "repo-cache"))

@@ -29,10 +29,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from workflow.checks import OPT_OUT_SOURCE, resolve_check_command, resolve_check_timeout
+from workflow.checks import (
+    NO_CHECK_CONFIGURED_MESSAGE, OPT_OUT_SOURCE, resolve_check_command, resolve_check_timeout,
+)
 from _test_harness import Harness, REPO_ROOT
 from test_flow_verify_receipt_check_gate import (
-    make_repo, passing_lines, receipt_text, run_verify, write_cache, write_opt_out, write_receipt,
+    make_repo, passing_lines, receipt_text, run_verify, write_opt_out, write_receipt,
 )
 
 
@@ -101,7 +103,8 @@ if __name__ == "__main__":
         command, source, failure = resolve_check_command(wt, main)
         test_result(
             "empty-string checkOptOut is ignored: no opt-out source, no command",
-            command is None and source is None and failure is not None,
+            command is None and source is None and failure is not None
+            and "no check command configured" in failure,
             f"command={command!r} source={source!r} failure={failure!r}",
         )
         test_result(
@@ -135,10 +138,11 @@ if __name__ == "__main__":
         _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: -5\n")
         command, source, failure = resolve_check_command(wt, main)
         project_yaml = wt / ".claude" / "project.yaml"
-        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
         test_result(
             "negative project.yaml checkTimeoutSecs (-5) is ignored; falls back to the 300 default",
-            seconds == 300 and timeout_source.startswith("default"),
+            seconds == 300
+            and timeout_source == "default (ignored invalid checkTimeoutSecs in worktree project.yaml)",
             f"seconds={seconds!r} timeout_source={timeout_source!r}",
         )
         test_result(
@@ -155,7 +159,7 @@ if __name__ == "__main__":
         _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: \"900\"\n")
         command, source, failure = resolve_check_command(wt, main)
         project_yaml = wt / ".claude" / "project.yaml"
-        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
         test_result(
             "string project.yaml checkTimeoutSecs (\"900\") is named in timeout_source as ignored",
             "ignored invalid checkTimeoutSecs in worktree project.yaml" in timeout_source and seconds == 300,
@@ -174,7 +178,7 @@ if __name__ == "__main__":
     )
     test_result(
         "timed-out check failure output names checkTimeoutSecs",
-        "checkTimeoutSecs" in combined,
+        "(checkTimeoutSecs or SHIPIT_CHECK_TIMEOUT_SECS sets the limit)" in combined,
         f"out={combined[:300]!r}",
     )
 
@@ -189,8 +193,8 @@ if __name__ == "__main__":
         command, source, failure = resolve_check_command(wt, main)
         lines = (failure or "").splitlines()
         test_result(
-            "nothing configured: failure is multi-line (message split into sentences)",
-            len(lines) >= 2,
+            "nothing configured: failure is the message's lines plus one 'sources tried' line",
+            len(lines) == len(NO_CHECK_CONFIGURED_MESSAGE.splitlines()) + 1,
             f"failure={failure!r}",
         )
         test_result(
@@ -218,7 +222,8 @@ if __name__ == "__main__":
         exit_code, stdout, stderr = run_verify(receipt, repo, base_sha, home)
         test_result(
             "contradiction: opt-out source together with a command is rejected (exit 1, not ARTIFACTS: ok)",
-            exit_code == 1 and "ARTIFACTS: ok" not in stdout and "opt-out" in stdout,
+            exit_code == 1 and "ARTIFACTS: ok" not in stdout
+            and "check substituted: receipt ran 'just check', resolved 'opt-out'" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r} stderr={stderr[:200]!r}",
         )
 
@@ -232,6 +237,35 @@ if __name__ == "__main__":
             "re-resolution failure: the underlying 'checkOptOut must be a non-empty string' reason is reported",
             exit_code == 1 and "checkOptOut must be a non-empty string" in stdout,
             f"rc={exit_code} stdout={stdout[:300]!r} stderr={stderr[:200]!r}",
+        )
+
+    print()
+    print("[Section 7] checkTimeoutSecs boundary: 0 is ignored, 1 is accepted (valid_timeout_secs pin)")
+
+    with tempfile.TemporaryDirectory() as tmp, _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
+        root = Path(tmp)
+        wt, main = root / "wt", root / "main"
+        wt.mkdir()
+        main.mkdir()
+        project_yaml = wt / ".claude" / "project.yaml"
+        _write(project_yaml, "commands:\n  check: just check\ncheckTimeoutSecs: 0\n")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
+        test_result(
+            "checkTimeoutSecs 0 in project.yaml is ignored: falls back to the 300 default",
+            seconds == 300,
+            f"seconds={seconds!r} timeout_source={timeout_source!r}",
+        )
+        test_result(
+            "checkTimeoutSecs 0 is named in timeout_source as ignored",
+            timeout_source == "default (ignored invalid checkTimeoutSecs in worktree project.yaml)",
+            f"timeout_source={timeout_source!r}",
+        )
+        _write(project_yaml, "commands:\n  check: just check\ncheckTimeoutSecs: 1\n")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
+        test_result(
+            "checkTimeoutSecs 1 in project.yaml is accepted: seconds 1, sourced from worktree project.yaml",
+            seconds == 1 and timeout_source == "worktree project.yaml",
+            f"seconds={seconds!r} timeout_source={timeout_source!r}",
         )
 
     print()

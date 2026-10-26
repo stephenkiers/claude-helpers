@@ -284,7 +284,7 @@ if __name__ == "__main__":
         _write(wt / "justfile", "check:\n\techo ok\n")
         _write(main / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 900}))
         command, source, failure = resolve_check_command(wt, main)
-        seconds, timeout_source = resolve_check_timeout(wt, main, None)
+        seconds, timeout_source = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result(
             "(6) justfile check with no worktree cache resolves 'just check' from the justfile",
             command == "just check" and source == "justfile",
@@ -306,7 +306,7 @@ if __name__ == "__main__":
         _write(main / ".claude" / "repo-cache.json", json.dumps({"commands": {"check": "just check"}, "checkTimeoutSecs": 900}))
         _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 60}))
         command, source, failure = resolve_check_command(wt, main)
-        seconds, timeout_source = resolve_check_timeout(wt, main, main / ".claude" / "repo-cache.json")
+        seconds, timeout_source = resolve_check_timeout(wt, main, main / ".claude" / "repo-cache.json", "repo-cache", "main")
         test_result(
             "(7) command from the main repo-cache: main timeout (900) wins over the worktree cache (60)",
             command == "just check" and seconds == 900,
@@ -321,7 +321,7 @@ if __name__ == "__main__":
 
         # (8a) nothing sets a timeout: 300, and the override is absent
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
-            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+            seconds, timeout_source = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result(
             "(8) nothing sets checkTimeoutSecs: 300 default",
             seconds == 300,
@@ -331,7 +331,7 @@ if __name__ == "__main__":
         # (8b) SHIPIT_CHECK_TIMEOUT_SECS overrides every file, including a worktree cache value
         _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 900}))
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS", "42"):
-            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+            seconds, timeout_source = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result(
             "(8) SHIPIT_CHECK_TIMEOUT_SECS=42 overrides the cache's 900",
             seconds == 42,
@@ -345,14 +345,14 @@ if __name__ == "__main__":
         wt.mkdir()
         main.mkdir()
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS", "0"):
-            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+            seconds, timeout_source = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result(
             "(8) SHIPIT_CHECK_TIMEOUT_SECS=0 falls through to the 300 default",
             seconds == 300 and timeout_source == "default",
             f"seconds={seconds!r} source={timeout_source!r}",
         )
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS", "abc"):
-            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+            seconds, timeout_source = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result(
             "(8) non-integer SHIPIT_CHECK_TIMEOUT_SECS falls through to the 300 default",
             seconds == 300 and timeout_source == "default",
@@ -360,7 +360,7 @@ if __name__ == "__main__":
         )
         _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 0}))
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
-            seconds, timeout_source = resolve_check_timeout(wt, main, None)
+            seconds, timeout_source = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result(
             "(8) checkTimeoutSecs 0 in the cache falls through to the 300 default",
             seconds == 300 and timeout_source.startswith("default"),
@@ -373,7 +373,7 @@ if __name__ == "__main__":
         )
         _write(wt / ".claude" / "repo-cache.json", json.dumps({"checkTimeoutSecs": 1}))
         with _env_unset("SHIPIT_CHECK_TIMEOUT_SECS"):
-            seconds, _src = resolve_check_timeout(wt, main, None)
+            seconds, _src = resolve_check_timeout(wt, main, None, "repo-cache", None)
         test_result("(8) checkTimeoutSecs 1 is the smallest accepted value", seconds == 1, f"seconds={seconds!r}")
 
     print()
@@ -389,7 +389,7 @@ if __name__ == "__main__":
         _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: 900\n")
         command, source, failure = resolve_check_command(wt, main)
         project_yaml = wt / ".claude" / "project.yaml"
-        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
         test_result(
             "(9) valid project.yaml checkTimeoutSecs 900 is honored when project.yaml supplied the command",
             command == "just check" and source == "project.yaml" and seconds == 900 and "worktree project.yaml" in timeout_source,
@@ -406,7 +406,7 @@ if __name__ == "__main__":
         _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: true\n")
         command, source, failure = resolve_check_command(wt, main)
         project_yaml = wt / ".claude" / "project.yaml"
-        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
         test_result(
             "(9) project.yaml checkTimeoutSecs: true is ignored; falls back to the 300 default",
             seconds == 300 and timeout_source.startswith("default"),
@@ -428,7 +428,7 @@ if __name__ == "__main__":
         _write(wt / ".claude" / "project.yaml", "commands:\n  check: just check\ncheckTimeoutSecs: \"900\"\n")
         command, source, failure = resolve_check_command(wt, main)
         project_yaml = wt / ".claude" / "project.yaml"
-        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml")
+        seconds, timeout_source = resolve_check_timeout(wt, main, project_yaml, "project.yaml", "worktree")
         test_result(
             "(9) project.yaml checkTimeoutSecs: \"900\" (a string) is ignored; falls back to the 300 default",
             seconds == 300 and timeout_source.startswith("default"),
