@@ -12,6 +12,7 @@ Tests the schema module's public API:
 Run with: python3 tests/test_plan_checkpoint_schema.py
 """
 
+import importlib.util
 import sys
 import tempfile
 from pathlib import Path
@@ -563,6 +564,312 @@ No fence here
         "Fence parsing with whitespace variations",
         result is not None and result.get("seated") == ["alice"],
         f"result={result}"
+    )
+
+    # ========== nested_handle_map_reason tests ==========
+
+    # Test 36: Nested handles under 'handles' key returns reason naming the key and handles
+    print("[Test 36] Nested handles under 'handles' key returns appropriate reason")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "handles": {
+            "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+            "Q1": {"tier": "question", "brief_id": "B2", "brief_type": "question", "evidence": []}
+        }
+    }
+    reason = schema.nested_handle_map_reason(ledger)
+    h.test_result(
+        "Nested handles under 'handles' key",
+        reason is not None and "handles" in reason and "D1" in reason and "Q1" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 37: Nested handles under 'decisions' key returns reason naming 'decisions'
+    print("[Test 37] Nested handles under 'decisions' key returns appropriate reason")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "decisions": {
+            "W1": {"tier": "worth-a-look", "brief_id": "B3", "brief_type": "question", "evidence": []}
+        }
+    }
+    reason = schema.nested_handle_map_reason(ledger)
+    h.test_result(
+        "Nested handles under 'decisions' key",
+        reason is not None and "decisions" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 38: Pre-tier ledger (no handles anywhere) returns None
+    print("[Test 38] Pre-tier ledger returns None")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {
+            "B1": {"brief_type": "question", "raiser": "alice"}
+        }
+    }
+    reason = schema.nested_handle_map_reason(ledger)
+    h.test_result(
+        "Pre-tier ledger returns None",
+        reason is None,
+        f"reason={reason}"
+    )
+
+    # Test 39: Correct top-level handles return None
+    print("[Test 39] Correct top-level handles return None")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        "Q1": {"tier": "question", "brief_id": "B2", "brief_type": "question", "evidence": []}
+    }
+    reason = schema.nested_handle_map_reason(ledger)
+    h.test_result(
+        "Correct top-level handles return None",
+        reason is None,
+        f"reason={reason}"
+    )
+
+    # Test 40: 'briefs' key is excluded (not treated as nested handles)
+    print("[Test 40] 'briefs' key is excluded from nested handle detection")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {
+            "B1": {"brief_type": "question", "raiser": "alice"}
+        }
+    }
+    reason = schema.nested_handle_map_reason(ledger)
+    h.test_result(
+        "'briefs' key excluded",
+        reason is None,
+        f"reason={reason}"
+    )
+
+    # Test 41: Ledger with only 'briefs' (no handles anywhere) returns None
+    print("[Test 41] Ledger with only briefs returns None")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {
+            "B1": {"brief_type": "question", "raiser": "alice"},
+            "B2": {"brief_type": "question", "raiser": "bob"}
+        }
+    }
+    reason = schema.nested_handle_map_reason(ledger)
+    h.test_result(
+        "Ledger with only briefs returns None",
+        reason is None,
+        f"reason={reason}"
+    )
+
+    # ========== LEDGER_HANDLE_RE pattern equality test ==========
+
+    # Test 42: Schema's LEDGER_HANDLE_RE pattern equals verifier's _LEDGER_HANDLE_RE pattern
+    print("[Test 42] Schema and verifier regex patterns are equal")
+    try:
+        import importlib.util
+        verify_script = Path(__file__).parent.parent / "scripts" / "flow-verify-receipt.py"
+        spec = importlib.util.spec_from_file_location("flow_verify_receipt", verify_script)
+        flow_verify_receipt = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(flow_verify_receipt)
+
+        schema_pattern = schema.LEDGER_HANDLE_RE.pattern
+        verifier_pattern = flow_verify_receipt._LEDGER_HANDLE_RE.pattern
+        h.test_result(
+            "Schema and verifier regex patterns equal",
+            schema_pattern == verifier_pattern,
+            f"schema={schema_pattern}, verifier={verifier_pattern}"
+        )
+    except Exception as e:
+        h.test_result(
+            "Schema and verifier regex patterns equal",
+            False,
+            f"Error: {e}"
+        )
+
+    # ========== validate_handle_entries tests ==========
+
+    # Test 43: Flat entry (string value instead of dict) returns 'not an object'
+    print("[Test 43] Flat entry (string value) returns 'not an object'")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": "decided"  # Flat shape, not a dict
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Flat entry returns 'not an object'",
+        reason is not None and "not an object" in reason and "D1" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 44: Entry missing 'tier' field returns appropriate reason
+    print("[Test 44] Entry missing 'tier' field")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"brief_id": "B1", "brief_type": "question", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Entry missing 'tier' field",
+        reason is not None and "tier" in reason and "D1" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 45: Entry missing 'brief_id' field returns appropriate reason
+    print("[Test 45] Entry missing 'brief_id' field")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "decided", "brief_type": "question", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Entry missing 'brief_id' field",
+        reason is not None and "brief_id" in reason and "D1" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 46: Entry missing 'brief_type' field returns appropriate reason
+    print("[Test 46] Entry missing 'brief_type' field")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "decided", "brief_id": "B1", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Entry missing 'brief_type' field",
+        reason is not None and "brief_type" in reason and "D1" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 47: Pre-tier ledger (no handles) returns None
+    print("[Test 47] Pre-tier ledger returns None")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Pre-tier ledger returns None",
+        reason is None,
+        f"reason={reason}"
+    )
+
+    # Test 48: Complete entry with all fields returns None
+    print("[Test 48] Complete entry with all fields returns None")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        "Q1": {"tier": "question", "brief_id": "B2", "brief_type": "question", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Complete entries return None",
+        reason is None,
+        f"reason={reason}"
+    )
+
+    # Test 49: Entry with empty string for 'tier' is missing (empty string counts as missing)
+    print("[Test 49] Entry with empty string for 'tier' is treated as missing")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "", "brief_id": "B1", "brief_type": "question", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Empty string 'tier' is treated as missing",
+        reason is not None and "tier" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 50: Entry with None for 'brief_id' is missing
+    print("[Test 50] Entry with None for 'brief_id' is treated as missing")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "decided", "brief_id": None, "brief_type": "question", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "None 'brief_id' is treated as missing",
+        reason is not None and "brief_id" in reason,
+        f"reason={reason}"
+    )
+
+    # Test 51: Multiple handles, returns reason for first missing field in first handle
+    print("[Test 51] Multiple handles, returns error for first missing field in first handle")
+    ledger = {
+        "seated": ["alice"],
+        "expected_reactions": [],
+        "briefs": {},
+        "D1": {"tier": "decided", "brief_id": "B1", "brief_type": "question", "evidence": []},
+        "Q1": {"tier": "question", "brief_id": None, "brief_type": "question", "evidence": []}
+    }
+    reason = schema.validate_handle_entries(ledger)
+    h.test_result(
+        "Multiple handles with one missing field",
+        reason is not None,
+        f"reason={reason}"
+    )
+
+    # ========== tier_item outputs test ==========
+
+    # Test 52: tier_item outputs are a subset of HANDLE_TIERS
+    print("[Test 52] tier_item outputs are subset of HANDLE_TIERS")
+    test_cases = [
+        ("disagreement", [], [], [], [], "alice", False),
+        ("question", ["alice"], [], ["bob"], [], "alice", False),
+        ("question", [], ["alice"], ["bob"], [], "alice", False),
+        ("question", [], [], ["alice"], ["bob"], "alice", False),
+        ("question", [], [], ["alice"], ["bob"], "alice", True),
+        ("question", [], [], ["alice"], ["alice"], "alice", False),
+    ]
+    all_valid = True
+    for brief_type, protested, needs_human, resolved, agreed, raiser, could_go_other_way in test_cases:
+        tier = schema.tier_item(
+            brief_type=brief_type,
+            protested_by=protested,
+            needs_human_by=needs_human,
+            resolved_by=resolved,
+            agreed_by=agreed,
+            raiser_slug=raiser,
+            could_go_other_way=could_go_other_way
+        )
+        if tier not in schema.HANDLE_TIERS:
+            all_valid = False
+            break
+    h.test_result(
+        "tier_item outputs are subset of HANDLE_TIERS",
+        all_valid,
+        f"all outputs in {schema.HANDLE_TIERS}"
+    )
+
+    # Test 53: ACCEPTABLE_TIERS is subset of HANDLE_TIERS
+    print("[Test 53] ACCEPTABLE_TIERS is subset of HANDLE_TIERS")
+    acceptable_valid = all(tier in schema.HANDLE_TIERS for tier in schema.ACCEPTABLE_TIERS)
+    h.test_result(
+        "ACCEPTABLE_TIERS is subset of HANDLE_TIERS",
+        acceptable_valid,
+        f"acceptable={schema.ACCEPTABLE_TIERS}, all={schema.HANDLE_TIERS}"
     )
 
     h.summarize_and_exit()
