@@ -310,6 +310,7 @@ invoking it, (b) `python3 -c "..."`, (c) nested `general-purpose` agent if the A
 <!-- flow-bash-wrapper-set:begin -->
 sh -c
 bash -c
+zsh -c
 eval
 xargs git
 xargs gh
