@@ -7,6 +7,14 @@ The fixtures in tests/fixtures/round1/ are trimmed, scrubbed copies of real rece
 shapes (positive/synth-*.md, negative/synth-*.md). This test reads only those fixtures, never
 ~/.claude.
 
+Four observed real-receipt shapes are pinned with fixtures: (a) line-start `Round 1:` header
+pass (flow 315); (b) TAKEOVER implement receipt (flow 1650); (c) fix receipt with only ROUND SIZING
+(flow 1777); (d) empty-round fix receipt (flow 363). Each fixture asserts its intended verdict
+(stop or pass): (a) pass; (b)–(d) stop (deliberate). Corpus statistic observed 2026-10-26 in the
+local flow corpus: 125 of 128 OK receipts pass the current header regex, and the 3 misses are
+shapes (b), (c), (d). Verdicts are rule-5 (header) verdict only; rule 7 and other rules are not
+reflected here.
+
 Each test runs the verifier's module-level pattern (ROUND1_HEADER_RE) against the fixtures, and
 each revert test runs a mutant pattern to show the fixtures would catch that revert:
 
@@ -21,6 +29,7 @@ import importlib.util
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -43,7 +52,7 @@ NEGATIVE_DIR = FIXTURE_DIR / "negative"
 # Marker group uses (?:[#>-][ \t]*|\*[ \t]+)* to avoid quadratic backtracking (D5).
 SPEC_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t\r]*(?:[—–:+-]|\((?=\d)|$)"
 
-# Revert mutants. Each is one edit away from ROUND1_HEADER_PATTERN.
+# Revert mutants: STRICT is the pre-#341 baseline; NO_SEPARATOR and NO_ANCHOR are single-edit mutations.
 STRICT_PATTERN = r"(?m)^ROUND 1\b"  # pre-#341 check
 NO_SEPARATOR_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\**[ \t]*"
 NO_ANCHOR_PATTERN = r"(?im)ROUND[ \t]*1\**[ \t]*(?:[—–:+-]|$)"
@@ -56,9 +65,18 @@ POSITIVE_REAL = [
     "real-plus-join.md",
     "real-not-run.md",
     "real-colon-units.md",
+    "real-315-prose-round1-colon.md",
 ]
 POSITIVE_SYNTH = ["synth-bold.md", "synth-h2.md", "synth-indented.md"]
-NEGATIVE_FILES = ["real-status-lines-no-header.md", "synth-prose-only.md", "synth-no-round.md"]
+# The three observed-shape negatives pin the rule-5 verdict; they are not guards against a specific regex mutant.
+NEGATIVE_FILES = [
+    "real-status-lines-no-header.md",
+    "synth-prose-only.md",
+    "synth-no-round.md",
+    "real-takeover-implement.md",
+    "real-round-sizing-only-fix.md",
+    "real-empty-round-fix.md",
+]
 
 
 def read_fixture(directory: Path, name: str) -> str:
@@ -77,6 +95,51 @@ def failing_positives(pattern: re.Pattern) -> list:
 def passing_negatives(pattern: re.Pattern) -> list:
     """Negative fixtures the given pattern wrongly matches."""
     return [name for name in NEGATIVE_FILES if pattern.search(read_fixture(NEGATIVE_DIR, name))]
+
+
+def check_round1_header(receipt: str) -> Optional[str]:
+    """Mirror the verifier's OUTSTANDING + ROUND 1 check sequence.
+
+    Mirrors only the OUTSTANDING + ROUND 1 check sequence within scripts/flow-verify-receipt.py main()
+    (the --expect-model path), not the entire main() function. Returns None when the receipt passes,
+    else the verifier's Reason text. Assumes receipt.Decision == "OK"; precondition is not validated.
+    """
+    try:
+        _items, has_none, has_items = flow_verify_module.iter_outstanding_lines(receipt)
+    except ValueError:
+        return "receipt missing OUTSTANDING (malformed)"
+    if not (has_none or has_items):
+        return "receipt missing OUTSTANDING"
+    if not ROUND1_HEADER_RE.search(receipt):
+        return "receipt missing ROUND 1 section header"
+    return None
+
+
+# OBSERVED_SHAPES: Per-shape verdict assertions (#322 Step 3).
+# Each entry maps a fixture name to (directory, intended verdict, one-line rationale).
+# Verdict: True = pass (header found), False = stop (no header).
+OBSERVED_SHAPES = {
+    "real-315-prose-round1-colon.md": (
+        POSITIVE_DIR,
+        True,
+        "line-start `Round 1:` header present"
+    ),
+    "real-takeover-implement.md": (
+        NEGATIVE_DIR,
+        False,
+        "no line-start ROUND 1 header present"
+    ),
+    "real-round-sizing-only-fix.md": (
+        NEGATIVE_DIR,
+        False,
+        "no line-start ROUND 1 header present"
+    ),
+    "real-empty-round-fix.md": (
+        NEGATIVE_DIR,
+        False,
+        "no line-start ROUND 1 header present"
+    ),
+}
 
 
 def main() -> None:
@@ -130,6 +193,32 @@ def main() -> None:
                 leaks.append(path.name)
     h.test_result("Fixtures carry no absolute paths", leaks == [], f"leaks={leaks}")
 
+    # Observed shapes: each fixture asserts its intended rule-5 verdict (#322 Step 3).
+    for fixture_name, (directory, expected_verdict, rationale) in OBSERVED_SHAPES.items():
+        fixture_text = read_fixture(directory, fixture_name)
+        verdict = check_round1_header(fixture_text) is None  # True = pass, False = stop
+        h.test_result(
+            f"Shape {fixture_name}: {rationale}",
+            verdict == expected_verdict,
+            f"expected={'pass' if expected_verdict else 'stop'}, got={'pass' if verdict else 'stop'}"
+        )
+
+        # For negative shapes (b)-(d), also assert the verifier's reason string
+        if not expected_verdict:
+            reason = check_round1_header(fixture_text)
+            h.test_result(
+                f"Shape {fixture_name}: verifier reason",
+                reason == "receipt missing ROUND 1 section header",
+                f"reason={reason!r}"
+            )
+
+    # Strict mutant: real-315-prose-round1-colon.md (mixed-case Round 1) must be rejected by ^ROUND 1\b.
+    h.test_result(
+        "Shape (a) real-315-prose-round1-colon.md is in strict mutant rejects",
+        "real-315-prose-round1-colon.md" in strict_misses,
+        f"strict_misses={strict_misses}"
+    )
+
     # D7: Test deriving the accepted header from the producer template in commands/implement-with-haiku.md
     producer_doc = Path(__file__).parent.parent / "commands" / "implement-with-haiku.md"
     if producer_doc.exists():
@@ -161,6 +250,20 @@ def main() -> None:
     h.test_result("Pathological input (20000 asterisks + x) is rejected in under 2 seconds",
                   elapsed < 2.0 and result is False,
                   f"elapsed={elapsed:.2f}s, matched={result}")
+
+    # #322 side finding: a blank line above OUTSTANDING: must not read as "missing OUTSTANDING".
+    # Blank lines inside the block remain an error.
+    _items, has_none, _has_items = flow_verify_module.iter_outstanding_lines(
+        "Decision: OK\n\nOUTSTANDING: none\n<!-- step-end -->\n")
+    h.test_result("Blank line before OUTSTANDING: is skipped, not terminal", has_none is True,
+                  f"has_none={has_none}")
+    try:
+        flow_verify_module.iter_outstanding_lines(
+            "OUTSTANDING: u1 (reason) [self-report]\n\nOUTSTANDING: u2 (reason) [both]\n")
+        inside_rejected = False
+    except ValueError:
+        inside_rejected = True
+    h.test_result("Blank line inside the OUTSTANDING block is still rejected", inside_rejected)
 
     h.summarize_and_exit()
 
