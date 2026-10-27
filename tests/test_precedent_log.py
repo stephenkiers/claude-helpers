@@ -913,6 +913,92 @@ def case_answer_normalization(h):
                       f"hit={q2_row.get('hit')}")
 
 
+def case_lowercase_recommended_marker(h):
+    """Test: lowercase (recommended) marker is stripped case-insensitively (D1 casing fix)."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "B. Option B", "high", [2]),
+        ])
+        questions = make_questions([
+            ("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A"),
+            ("Q2", "Second", ["A. Option A", "B. Option B"], "B. Option B"),
+        ])
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", make_answers({
+            "Q1": "A. Option A (recommended)",  # lowercase (recommended)
+            "Q2": "B. Option B (RECOMMENDED)",  # uppercase (RECOMMENDED)
+        }))
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            "shown")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("lowercase recommended: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("lowercase recommended: got 2 rows", len(rows) == 2, f"n={len(rows)}")
+
+        q1_row = _row_for(rows, "Q1")
+        q2_row = _row_for(rows, "Q2")
+        h.test_result("lowercase recommended: '(recommended)' stripped to exact label",
+                      q1_row.get("actual") == "A. Option A" and q1_row.get("actual_source") == "option",
+                      f"actual={q1_row.get('actual')}, source={q1_row.get('actual_source')}")
+        h.test_result("lowercase recommended: lowercase predicted correctly (hit True)",
+                      q1_row.get("hit") is True, f"hit={q1_row.get('hit')}")
+        h.test_result("lowercase recommended: '(RECOMMENDED)' uppercase also stripped",
+                      q2_row.get("actual") == "B. Option B" and q2_row.get("actual_source") == "option",
+                      f"actual={q2_row.get('actual')}, source={q2_row.get('actual_source')}")
+        h.test_result("lowercase recommended: uppercase predicted correctly (hit True)",
+                      q2_row.get("hit") is True, f"hit={q2_row.get('hit')}")
+
+
+def case_real_ask_label_with_recommended(h):
+    """Test: end-to-end append with real Ask label shape 'A - Not a divergence (recommended)' logs correctly (D1 end-to-end)."""
+    with Fixture() as fx:
+        # Real Ask label format: "A - Option text (recommended)"
+        validated = make_validated([
+            ("N1", "A - Not a divergence", "high", [100]),
+        ])
+        questions = make_questions([
+            ("N1", "Is this a divergence from past scope?",
+             ["A - Not a divergence", "B - Yes, new scope", "C - Partial divergence"],
+             "A - Not a divergence"),
+        ])
+        answers = make_answers({"N1": "A - Not a divergence (recommended)"})
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", answers)
+
+        rc, _, stderr = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-review", "--run", "1-review-p"],
+            "shown")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("ask label with recommended: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("ask label with recommended: logs 1 row", len(rows) == 1, f"n={len(rows)}")
+
+        row = _only(rows)
+        h.test_result("ask label with recommended: actual_source is 'option' not 'free_text'",
+                      row.get("actual_source") == "option",
+                      f"actual_source={row.get('actual_source')}")
+        h.test_result("ask label with recommended: actual matches the option label (without marker)",
+                      row.get("actual") == "A - Not a divergence",
+                      f"actual={row.get('actual')}")
+        h.test_result("ask label with recommended: prediction matched correctly (hit True)",
+                      row.get("hit") is True, f"hit={row.get('hit')}")
+        h.test_result("ask label with recommended: stderr reports logged 1",
+                      "logged 1, skipped-duplicate 0" in stderr, f"stderr={stderr}")
+
+
 def case_round_trip_real_validator(h):
     """Real producer end to end: precedent-render.py validate -> precedent-log.py append -> digest --stats."""
     with Fixture() as fx:
@@ -1316,6 +1402,8 @@ if __name__ == "__main__":
     case_letter_to_label_mapping(h)
     case_ambiguous_letter_free_text(h)
     case_answer_normalization(h)
+    case_lowercase_recommended_marker(h)
+    case_real_ask_label_with_recommended(h)
     case_round_trip_real_validator(h)
     case_make_validated_matches_real_validator(h)
     case_match_never_opens_predictions(h)
