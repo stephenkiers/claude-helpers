@@ -123,7 +123,7 @@ if __name__ == "__main__":
     print()
     print("[Section 4] Other docs that tell an agent to wait for a background check (#338)")
 
-    expert_flow = read(EXPERT_FLOW) if "EXPERT_FLOW" in globals() else ""
+    expert_flow = read(EXPERT_FLOW)
     test_result(
         "expert-flow.md generic check step points at the barrier wait, not polling",
         "join-barrier-pattern.md" in expert_flow and "run_in_background` and poll" not in expert_flow,
