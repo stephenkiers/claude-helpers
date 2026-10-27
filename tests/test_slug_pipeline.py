@@ -18,27 +18,24 @@ What this proves, and where:
 Run with: python3 tests/test_slug_pipeline.py
 """
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness, REPO_ROOT
-
-EXPERT_PLAN = REPO_ROOT / "commands" / "expert-plan.md"
-EXPERT_PLAN_V2 = REPO_ROOT / "commands" / "expert-plan-deprecated-v2.md"
-
-EXPECTED_SITES = {EXPERT_PLAN: 2, EXPERT_PLAN_V2: 1}
-SLUG_PREFIX = "SLUG=$(printf"
-FALLBACK_LINE = '[ -n "$SLUG" ] || SLUG="plan"'
+from _test_harness import (
+    Harness,
+    REPO_ROOT,
+    EXPECTED_SITES,
+    FALLBACK_LINE,
+    extract_slug_sites,
+    sed_path_env,
+    run_pipeline,
+)
 
 # The old GNU-only expression, assembled as a constant. Scanned for under commands/ and prompts/.
 OLD_GNU_SED_NEEDLE = r"s/^-\|-$//"
 SCAN_DIRS = [REPO_ROOT / "commands", REPO_ROOT / "prompts"]
-
-USR_BIN_SED = Path("/usr/bin/sed")
 
 # (title, expected slug, is_guard)
 CASES = [
@@ -56,51 +53,13 @@ CASES = [
 ]
 
 
-def extract_sites(path):
-    """Return (line_number, slug_line, fallback_line) for each SLUG=$(printf line in path."""
-    lines = path.read_text().splitlines()
-    sites = []
-    for index, line in enumerate(lines):
-        if line.startswith(SLUG_PREFIX):
-            following = lines[index + 1] if index + 1 < len(lines) else ""
-            sites.append((index + 1, line, following))
-    return sites
-
-
-def sed_path_env():
-    """Return (env, notice). PATH puts /usr/bin and /bin first when /usr/bin/sed exists."""
-    env = dict(os.environ)
-    if USR_BIN_SED.exists():
-        path_parts = ["/usr/bin", "/bin", os.environ.get("PATH", "")]
-        env["PATH"] = ":".join(part for part in path_parts if part)
-        return env, None
-    return env, (
-        "NOTICE: /usr/bin/sed not found; testing this host's native sed "
-        "(not the BSD-first PATH the test normally enforces)"
-    )
-
-
-def run_pipeline(slug_line, fallback_line, title, env):
-    """Run the extracted two lines with the title passed only via env, never interpolated."""
-    script = f"{slug_line}\n{fallback_line}\nprintf '%s' \"$SLUG\""
-    run_env = dict(env)
-    run_env["TICKET_TITLE"] = title
-    result = subprocess.run(
-        ["bash", "-c", script],
-        env=run_env,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
-
-
 def main():
     h = Harness("EXPERT-PLAN SLUG PIPELINE TEST SUITE")
 
     # Test 1: extraction and fallback-line assertion at every site.
     all_sites = {}
     for path in EXPECTED_SITES:
-        sites = extract_sites(path)
+        sites = extract_slug_sites(path)
         all_sites[path] = sites
         for line_no, _slug_line, following in sites:
             h.test_result(

@@ -22,29 +22,30 @@ unknown-flag arm, not the `--model` did-you-mean arm.
 Run with: python3 tests/test_slug_edge_cases.py
 """
 
-import os
 import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness, REPO_ROOT
+from _test_harness import (
+    Harness,
+    REPO_ROOT,
+    SLUG_PREFIX,
+    FALLBACK_LINE,
+    EXPERT_PLAN,
+    EXPERT_PLAN_V2,
+    sed_path_env,
+    run_slug,
+    extract_flag_loop,
+    run_flag_loop,
+)
 
-SLUG_DOCS = [
-    REPO_ROOT / "commands" / "expert-plan.md",
-    REPO_ROOT / "commands" / "expert-plan-deprecated-v2.md",
-]
-SLUG_PREFIX = "SLUG=$(printf"
-FALLBACK_LINE = '[ -n "$SLUG" ] || SLUG="plan"'
-FLAG_LOOP_HEAD = "while [ $# -gt 0 ]; do"
+SLUG_DOCS = [EXPERT_PLAN, EXPERT_PLAN_V2]
 
 # Backslash escapes that BSD sed (basic regex) does not share with GNU sed.
 BSD_UNSAFE = re.compile(r"\\[+|?<>bBwWsS]")
-
-NATIVE_SED = Path("/usr/bin/sed").exists()
 
 # (case name, TICKET_TITLE, expected slug). Expected values are hand-derived, see module docstring.
 SLUG_CASES = [
@@ -76,7 +77,7 @@ SLUG_CASES = [
 ]
 
 
-def extract_slug_sites():
+def extract_slug_sites_edge_cases():
     """Return [(doc relative path, SLUG line)] for every SLUG line followed by the fallback line."""
     sites = []
     for doc in SLUG_DOCS:
@@ -93,43 +94,18 @@ def extract_slug_sites():
     return sites
 
 
-def run_slug(site_line, title):
-    """Run the extracted SLUG line plus fallback under bash. Returns (returncode, stdout, stderr)."""
-    script = site_line + "\n" + FALLBACK_LINE + '\nprintf "%s" "$SLUG"\n'
-    env = dict(os.environ)
-    if NATIVE_SED:
-        path_parts = ["/usr/bin", "/bin", env.get("PATH", "")]
-        env["PATH"] = ":".join(part for part in path_parts if part)
-    env["TICKET_TITLE"] = title
-    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
-    return result.returncode, result.stdout, result.stderr
-
-
-def extract_flag_loop(text):
-    """The `while [ $# -gt 0 ]; do` ... matching `done` block, or None if not exactly one."""
-    lines = text.splitlines()
-    blocks = []
-    for i, line in enumerate(lines):
-        if line.strip() == FLAG_LOOP_HEAD:
-            indent = line[: len(line) - len(line.lstrip())]
-            for j in range(i + 1, len(lines)):
-                if lines[j] == indent + "done":
-                    blocks.append("\n".join(lines[i : j + 1]))
-                    break
-    return blocks[0] if len(blocks) == 1 else None
-
-
 def main():
     h = Harness("SLUG EDGE CASES AND --model FLAG BOUNDARY (#377)")
 
-    if NATIVE_SED:
-        print("sed under test: /usr/bin/sed (first on PATH)")
+    env, notice = sed_path_env()
+    if notice:
+        print(notice)
     else:
-        print("sed under test: host native sed (/usr/bin/sed not present; no BSD check on this host)")
+        print("sed under test: /usr/bin/sed (first on PATH)")
     print()
 
     print("[Section 1] Extracted slug lines exist and avoid BSD-unsafe sed constructs")
-    sites = extract_slug_sites()
+    sites = extract_slug_sites_edge_cases()
     for doc in SLUG_DOCS:
         rel = doc.relative_to(REPO_ROOT)
         doc_sites = [line for path, line in sites if path == rel and line is not None]
@@ -152,7 +128,7 @@ def main():
     live_sites = [(path, line) for path, line in sites if line is not None]
     for name, title, expected in SLUG_CASES:
         for path, line in live_sites:
-            rc, out, err = run_slug(line, title)
+            rc, out, err = run_slug(line, title, env)
             passed = rc == 0 and out == expected
             detail = ""
             if not passed:
@@ -161,7 +137,7 @@ def main():
 
     print()
     print("[Section 3] Flag loop boundary: --model-foo is not the --model did-you-mean arm")
-    doc_text = (REPO_ROOT / "commands" / "expert-plan.md").read_text()
+    doc_text = EXPERT_PLAN.read_text()
     loop = extract_flag_loop(doc_text)
     h.test_result(
         "exactly one flag loop block extractable from commands/expert-plan.md",
@@ -169,29 +145,22 @@ def main():
         "could not extract a single `while [ $# -gt 0 ]; do` ... `done` block",
     )
     if loop is not None:
-        preamble = "EFFORT=''\nMODELS=''\nFLOW_FLAG_DIR=''\nEPIC_MODE=''\nALLOW_DEGRADED=''\nset -- \"$@\"\n"
         with tempfile.TemporaryDirectory() as tmp_home:
-            env = {**os.environ, "HOME": tmp_home}
-            result = subprocess.run(
-                ["bash", "-c", preamble + loop, "_", "--model-foo"],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
+            rc, stdout, stderr = run_flag_loop(loop, ["--model-foo"], tmp_home)
         h.test_result(
             "--model-foo exits 1",
-            result.returncode == 1,
-            f"exit {result.returncode}",
+            rc == 1,
+            f"exit {rc}",
         )
         h.test_result(
             "--model-foo reaches the generic unknown-flag message",
-            "supported flags are" in result.stderr,
-            f"stderr: {result.stderr.strip()!r}",
+            "supported flags are" in stderr,
+            f"stderr: {stderr.strip()!r}",
         )
         h.test_result(
             "--model-foo does not get the --model did-you-mean hint",
-            "did you mean" not in result.stderr,
-            f"stderr: {result.stderr.strip()!r}",
+            "did you mean" not in stderr,
+            f"stderr: {stderr.strip()!r}",
         )
 
     print()

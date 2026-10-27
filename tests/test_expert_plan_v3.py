@@ -24,7 +24,6 @@ Covers:
 Run with: python3 tests/test_expert_plan_v3.py
 """
 
-import os
 import re
 import subprocess
 import sys
@@ -33,7 +32,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness, REPO_ROOT
+from _test_harness import (
+    Harness,
+    REPO_ROOT,
+    extract_flag_loop,
+    run_flag_loop,
+)
 
 SCRIPT_CHECK_STAGE = REPO_ROOT / "scripts" / "check_stage_pairing.py"
 
@@ -1004,39 +1008,6 @@ def main():
 
     print()
     h.summarize_and_exit()
-
-
-def extract_flag_loop(command_content):
-    """Return the parser block from 'while [ $# -gt 0 ]; do' through its matching 'done'."""
-    lines = command_content.splitlines()
-    start = next((i for i, line in enumerate(lines) if line.strip() == "while [ $# -gt 0 ]; do"), None)
-    if start is None:
-        return None
-    for end in range(start + 1, len(lines)):
-        if lines[end] == "done":
-            return "\n".join(lines[start:end + 1])
-    return None
-
-
-def run_flag_loop(flag_block, args, home):
-    """Run the extracted loop under bash with args as positional parameters and HOME in a temp dir."""
-    preamble = (
-        'EFFORT=""\n'
-        'MODELS="balanced"\n'
-        'FLOW_FLAG_DIR=""\n'
-        'EPIC_MODE="false"\n'
-        'ALLOW_DEGRADED=""\n'
-    )
-    script = "set -euo pipefail\n" + preamble + flag_block + '\nprintf "MODELS=%s\\n" "$MODELS"\n'
-    env = dict(os.environ)
-    env["HOME"] = home
-    result = subprocess.run(
-        ["bash", "-c", script, "_", *args],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
 
 
 if __name__ == "__main__":
