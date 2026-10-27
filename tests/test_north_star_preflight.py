@@ -499,12 +499,29 @@ def tree(home):
                   for p in home.rglob("*"))
 
 
+def seed_flow_hooks(home):
+    """Pre-seed settings.json with the flow guard hooks so install.sh --check has no hook drift."""
+    import json
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    entries = [
+        ("Agent|Task", "flow-agent-guard.py"),
+        ("Skill", "flow-skill-guard.py"),
+        ("Bash", "flow-bash-guard.py"),
+    ]
+    settings.write_text(json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": m, "hooks": [{"type": "command",
+                                  "command": "%s/.claude/scripts/%s --agent auto" % (home, g)}]}
+        for m, g in entries]}}))
+
+
 def section_install(h, t):
     print("\n[Section 6] install.sh --check")
     with tempfile.TemporaryDirectory() as tmp:
         repo, home, env = make_repo(tmp)
         sh = str(repo / "install.sh")
         run(["bash", sh], env=env)
+        seed_flow_hooks(home)
         rc, out, _ = run(["bash", sh, "--check"], env=env)
         t("--check: exit 0 after a clean install", rc == 0, out)
         link = home / ".claude" / "commands" / "a.md"
