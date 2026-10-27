@@ -709,77 +709,76 @@ def test_flow_step_agent_files_detected_by_check():
 
     Tests the new files added in #358: agents/flow-implement.md, agents/flow-review.md,
     prompts/flow-step-contract.md, and the guard scripts.
+
+    Uses a single temp repo: first checks for unlinked files before install, then installs,
+    then verifies no drift and all files are symlinked.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         test_home = tmpdir_path / "home"
         test_home.mkdir()
 
-        # Create a repo WITHOUT the new files
-        source_repo = tmpdir_path / "repo_incomplete"
+        # Create a single repo with the new files added but not yet installed
+        source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
 
-        # Create minimal structure without the new files
+        # Create directory structure
         for dirname in ["commands", "reviewers", "prompts", "agents", "scripts"]:
             (source_repo / dirname).mkdir()
             (source_repo / dirname / "keep.md").write_text("placeholder\n")
 
-        # Create a complete repo WITH the new files for comparison
-        source_repo_complete = tmpdir_path / "repo_complete"
-        source_repo_complete.mkdir()
+        # Add preferences.yaml.template (required by install.sh)
+        (source_repo / "prompts" / "preferences.yaml.template").write_text("# Preferences template\n")
 
-        for dirname in ["commands", "reviewers", "prompts", "agents", "scripts"]:
-            (source_repo_complete / dirname).mkdir()
-            (source_repo_complete / dirname / "keep.md").write_text("placeholder\n")
+        # Add the six new files to the repo
+        (source_repo / "agents" / "flow-implement.md").write_text("---\nname: flow-implement\n---\n")
+        (source_repo / "agents" / "flow-review.md").write_text("---\nname: flow-review\n---\n")
+        (source_repo / "prompts" / "flow-step-contract.md").write_text("# Step contract\n")
+        (source_repo / "scripts" / "flow-agent-guard.py").write_text("#!/usr/bin/env python3\n")
+        (source_repo / "scripts" / "flow-skill-guard.py").write_text("#!/usr/bin/env python3\n")
+        (source_repo / "scripts" / "flow-bash-guard.py").write_text("#!/usr/bin/env python3\n")
 
-        # Add the new files
-        (source_repo_complete / "agents" / "flow-implement.md").write_text("---\nname: flow-implement\n---\n")
-        (source_repo_complete / "agents" / "flow-review.md").write_text("---\nname: flow-review\n---\n")
-        (source_repo_complete / "prompts" / "flow-step-contract.md").write_text("# Step contract\n")
-        (source_repo_complete / "scripts" / "flow-agent-guard.py").write_text("#!/usr/bin/env python3\n")
-        (source_repo_complete / "scripts" / "flow-skill-guard.py").write_text("#!/usr/bin/env python3\n")
-        (source_repo_complete / "scripts" / "flow-bash-guard.py").write_text("#!/usr/bin/env python3\n")
-
-        # Set up install.sh for both repos
-        setup_test_repo_with_install_sh(tmpdir_path, source_repo_incomplete)
-        setup_test_repo_with_install_sh(tmpdir_path, source_repo_complete)
+        # Copy install.sh into the repo so REPO_DIR resolves correctly
+        setup_test_repo_with_install_sh(tmpdir_path, source_repo)
 
         env = os.environ.copy()
         env["HOME"] = str(test_home)
 
-        # Test 1: --check on incomplete repo should report drift (missing files)
+        # Phase 1: Run --check before installing (should report unlinked files)
         code, stdout, stderr = run_bash_script(
-            [str(source_repo_incomplete / "install.sh"), "--check"],
+            [str(source_repo / "install.sh"), "--check"],
             env=env
         )
 
-        # The check should report unlinked files
+        # The check should report unlinked files and exit nonzero
         drift_reported = (
             "unlinked:" in stdout or "unlinked:" in stderr or
-            "flow-implement.md" in stdout or "flow-implement.md" in stderr or
-            code != 0
+            "flow-implement.md" in stdout or "flow-implement.md" in stderr
         )
 
         if not drift_reported:
-            return False, f"--check should report missing flow-*.md files, got stdout: {stdout}, stderr: {stderr}"
+            return False, f"--check should report unlinked flow-*.md files, got code={code} stdout: {stdout}, stderr: {stderr}"
 
-        # Install from the complete repo
-        code, _, _ = run_bash_script(
-            [str(source_repo_complete / "install.sh"), "--from-worktree"],
+        if code == 0:
+            return False, f"--check should exit nonzero when drift is detected, got code {code}"
+
+        # Phase 2: Run install.sh to install the files
+        code, stdout, stderr = run_bash_script(
+            [str(source_repo / "install.sh")],
             env=env
         )
 
         if code != 0:
-            return False, f"install.sh from complete repo failed with code {code}"
+            return False, f"install.sh should succeed, got code={code} stderr={stderr}"
 
-        # Test 2: --check on complete repo should find no drift
+        # Phase 3: Run --check again (should report no drift)
         code, stdout, stderr = run_bash_script(
-            [str(source_repo_complete / "install.sh"), "--check"],
+            [str(source_repo / "install.sh"), "--check"],
             env=env
         )
 
         if code != 0 or "No drift" not in stdout:
-            return False, f"--check should find no drift after installation, got code={code} stdout: {stdout}"
+            return False, f"--check should report no drift after installation, got code={code} stdout: {stdout}"
 
         # Verify the new files were actually symlinked
         new_files_to_check = [
