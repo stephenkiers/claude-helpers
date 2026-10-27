@@ -82,6 +82,7 @@ def main():
 
             # If agent_type is missing or not a flow agent, allow
             if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+                print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 
             # Use the agent_type from payload

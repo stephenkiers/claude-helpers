@@ -521,6 +521,37 @@ def main():
         )
 
     print()
+    print("[Test 11.5] Bash guard: extended global options (finding 3)\n")
+
+    # Test newly-supported git global options that should not hide publishing verbs
+    global_option_tests = [
+        ("git --config-env=GIT_AUTHOR_NAME=Bob push", "git --config-env push", 2),
+        ("git --no-pager push", "git --no-pager push (unknown flag must not swallow verb)", 2),
+        ("git -p push", "git -p push", 2),
+        ("git --bare push", "git --bare push", 2),
+        ("git --paginate push", "git --paginate push", 2),
+        ("git --work-tree x push", "git --work-tree <dir> push", 2),
+        ("git --no-pager status", "git --no-pager status allowed", 0),
+        ("git --config-env=KEY=VAL status", "git --config-env status", 0),
+        ("git --git-common-dir=/tmp/.git status", "git --git-common-dir status", 0),
+        ("git --namespace=ns push", "git --namespace push", 2),
+        ("git --work-tree=/path add file", "git --work-tree add", 0),
+        ("git -C /tmp --config-env=X=Y push", "git -C with --config-env push", 2),
+        ("git -C /tmp status", "git -C status", 0),
+    ]
+
+    for command, desc, expected in global_option_tests:
+        code, _ = run_guard_script(flow_bash_guard, "flow-implement", {
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        h.test_result(
+            f"Bash guard: '{desc}' -> {expected}",
+            code == expected,
+            f"Expected {expected}, got {code}"
+        )
+
+    print()
     print("[Test 12] Bash guard drift guard: wrapper set consistency (F20)\n")
 
     # Extract WRAPPER_FORMS from flow-bash-guard.py

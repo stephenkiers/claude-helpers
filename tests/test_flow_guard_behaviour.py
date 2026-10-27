@@ -21,7 +21,6 @@ Run with: python3 tests/test_flow_guard_behaviour.py
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -44,6 +43,7 @@ def run_guard(guard_path, stdin_text, agent_type_arg=None):
         input=stdin_text,
         capture_output=True,
         text=True,
+        timeout=5,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -258,6 +258,164 @@ def main():
     h.test_result(
         "flow-agent-guard.py --agent flow-review accepts explicit type",
         True,  # Just verify it runs without usage error
+    )
+
+    # ============================================================================
+    # SECTION 6: Bash guard blocking forbidden commands
+    # ============================================================================
+    print()
+    print("[Section 6] Bash guard blocking forbidden commands")
+
+    # Test 6.1: flow-implement blocked on git push
+    payload_push = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git push"}})
+    rc, _, stderr = run_guard(BASH_GUARD, payload_push, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py blocks 'git push' (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # Test 6.2: flow-implement blocked on gh pr create
+    payload_pr_create = json.dumps({"tool_name": "Bash", "tool_input": {"command": "gh pr create"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_pr_create, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py blocks 'gh pr create' (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # Test 6.3: flow-implement blocked on sh -c
+    payload_sh_c = json.dumps({"tool_name": "Bash", "tool_input": {"command": "sh -c 'git push'"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_sh_c, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py blocks 'sh -c' wrapper (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # Test 6.4: flow-implement blocked on bash -c
+    payload_bash_c = json.dumps({"tool_name": "Bash", "tool_input": {"command": "bash -c 'some command'"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_bash_c, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py blocks 'bash -c' wrapper (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # Test 6.5: flow-implement blocked on git --config-env push (global option with publishing verb)
+    payload_config_env_push = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git --config-env=GIT_AUTHOR_NAME=Bob push"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_config_env_push, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py blocks 'git --config-env=... push' (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2; global option must not hide publishing verb)"
+    )
+
+    # Test 6.6: flow-implement allows safe git commands
+    payload_safe_git = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_safe_git, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py allows 'git status' (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # Test 6.7: flow-implement allows safe echo command
+    payload_echo = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo 'hello world'"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_echo, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py allows 'echo' (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # Test 6.8: flow-implement allows git clone
+    payload_clone = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git clone https://example.com/repo.git"}})
+    rc, _, _ = run_guard(BASH_GUARD, payload_clone, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-bash-guard.py allows 'git clone' (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # ============================================================================
+    # SECTION 7: Agent guard blocking forbidden subagents
+    # ============================================================================
+    print()
+    print("[Section 7] Agent guard blocking forbidden subagents")
+
+    # Test 7.1: flow-implement blocked on expert-reviewer
+    payload_expert_reviewer = json.dumps({"tool_name": "Agent", "tool_input": {"subagent_type": "expert-reviewer"}})
+    rc, _, _ = run_guard(AGENT_GUARD, payload_expert_reviewer, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-agent-guard.py blocks 'expert-reviewer' for flow-implement (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # Test 7.2: flow-implement allows plan-implementer
+    payload_plan_impl = json.dumps({"tool_name": "Agent", "tool_input": {"subagent_type": "plan-implementer"}})
+    rc, _, _ = run_guard(AGENT_GUARD, payload_plan_impl, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-agent-guard.py allows 'plan-implementer' for flow-implement (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # Test 7.3: flow-review allows expert-reviewer
+    rc, _, _ = run_guard(AGENT_GUARD, payload_expert_reviewer, agent_type_arg="flow-review")
+    h.test_result(
+        "flow-agent-guard.py allows 'expert-reviewer' for flow-review (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # Test 7.4: flow-review blocks plan-implementer
+    rc, _, _ = run_guard(AGENT_GUARD, payload_plan_impl, agent_type_arg="flow-review")
+    h.test_result(
+        "flow-agent-guard.py blocks 'plan-implementer' for flow-review (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # ============================================================================
+    # SECTION 8: Skill guard blocking forbidden skills
+    # ============================================================================
+    print()
+    print("[Section 8] Skill guard blocking forbidden skills")
+
+    # Test 8.1: flow-implement blocked on expert-review skill
+    payload_expert_review_skill = json.dumps({"tool_name": "Skill", "tool_input": {"skill": "expert-review"}})
+    rc, _, _ = run_guard(SKILL_GUARD, payload_expert_review_skill, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-skill-guard.py blocks 'expert-review' for flow-implement (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
+    )
+
+    # Test 8.2: flow-implement allows implement-with-haiku skill
+    payload_implement_skill = json.dumps({"tool_name": "Skill", "tool_input": {"skill": "implement-with-haiku"}})
+    rc, _, _ = run_guard(SKILL_GUARD, payload_implement_skill, agent_type_arg="flow-implement")
+    h.test_result(
+        "flow-skill-guard.py allows 'implement-with-haiku' for flow-implement (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # Test 8.3: flow-review allows expert-review skill
+    rc, _, _ = run_guard(SKILL_GUARD, payload_expert_review_skill, agent_type_arg="flow-review")
+    h.test_result(
+        "flow-skill-guard.py allows 'expert-review' for flow-review (exit 0)",
+        rc == 0,
+        f"rc={rc} (should be 0)"
+    )
+
+    # Test 8.4: flow-review blocks implement-with-haiku skill
+    rc, _, _ = run_guard(SKILL_GUARD, payload_implement_skill, agent_type_arg="flow-review")
+    h.test_result(
+        "flow-skill-guard.py blocks 'implement-with-haiku' for flow-review (exit 2)",
+        rc == 2,
+        f"rc={rc} (should be 2)"
     )
 
     print()

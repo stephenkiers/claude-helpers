@@ -132,8 +132,13 @@ def tokenize_segment(segment):
 def skip_global_options(tokens, start=0):
     """Skip git/gh global options and return the index of the first non-option token.
 
+    Handles known git/gh global options. For unknown global options, uses fail-closed
+    approach: scans remaining tokens to find the verb regardless, or blocks if too much
+    ambiguity.
+
     Handles:
-      - git: -C <dir>, -c <key=value>, --git-dir=<path>, --exec-path=<path>, -c <key=value>
+      - git: -C <dir>, --git-dir=, --exec-path=, --config-env=, --git-common-dir=,
+             --namespace=, --work-tree=, and other -X= or -X value forms
       - gh: -R <repo>, --repo <repo>
 
     For git, skips -C and its argument but does NOT skip -c (which is in the deny list).
@@ -147,8 +152,10 @@ def skip_global_options(tokens, start=0):
             i += 2
             continue
 
-        # git global options with = form (--git-dir=, --exec-path=)
-        if tok.startswith("--git-dir=") or tok.startswith("--exec-path="):
+        # git global options with = form (--git-dir=, --exec-path=, --config-env=, etc.)
+        if tok.startswith("--git-dir=") or tok.startswith("--exec-path=") or \
+           tok.startswith("--config-env=") or tok.startswith("--git-common-dir=") or \
+           tok.startswith("--namespace=") or tok.startswith("--work-tree="):
             i += 1
             continue
 
@@ -157,7 +164,19 @@ def skip_global_options(tokens, start=0):
             i += 2
             continue
 
-        # Not a global option; stop here
+        # git global options that take a separate value token
+        if tok in ("--git-dir", "--work-tree", "--namespace", "--exec-path",
+                   "--config-env", "--super-prefix", "--git-common-dir") and i + 1 < len(tokens):
+            i += 2
+            continue
+
+        # Any other option (e.g. --no-pager, -p, --bare, --paginate): consume ONLY this
+        # token. Never swallow the next token, which may be the verb (fail-closed).
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        # Not an option; stop here
         break
 
     return i
@@ -395,6 +414,7 @@ def main():
 
             # If agent_type is missing or not a flow agent, allow
             if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+                print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 
             # Use the agent_type from payload

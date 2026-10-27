@@ -16,10 +16,8 @@ Run with: python3 tests/test_flow_install_hooks_behaviour.py
 """
 
 import json
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -270,8 +268,6 @@ def main():
 
     # Test that guards can be invoked without errors on invalid input
     # (they should fail gracefully, not crash)
-    import subprocess
-
     for guard_path, guard_name in [
         (BASH_GUARD, "flow-bash-guard"),
         (AGENT_GUARD, "flow-agent-guard"),
