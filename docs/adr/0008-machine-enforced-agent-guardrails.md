@@ -152,6 +152,8 @@ already governing other multi-step commands.
 **Decision:** No machine-enforced guardrails are required for `/expert-flow` step agents. No follow-up
 issue is filed — this is a standing exception, not a temporary deferral.
 
+**Narrowed by:** Amendment 2026-10-26 restricts this exception to general-purpose agents only; see that amendment.
+
 ## Amendment 2026-10-26 (#336)
 
 The earlier amendment (2026-07-30) stated that "the `cd`-at-start prevention in `plan-implementer.md`,
@@ -262,8 +264,8 @@ documented bypasses), or **prompt-level** (instruction-based, not enforced).
 |---|---|---|
 | **Model pin** | technical | `model: sonnet` in agent frontmatter, no Task-time override by orchestrator, overrides session model |
 | **Edit omission** | technical | `flow-implement` has no `Edit` tool; `flow-review` keeps `Edit` (red-line exception; see residuals below) |
-| **Agent/Task allowlist hook** | prompt-level (hook wiring **unverified**) | `PreToolUse` hook with `scripts/flow-agent-guard.py` (settings-level verified; frontmatter-declared hooks in project-scoped agents did NOT fire headless); ship as script wired in settings AND labelled prompt-level body allowlist (#CP-W3) |
-| **Skill allowlist hook** | prompt-level (hook wiring **unverified**) | `PreToolUse` hook with `scripts/flow-skill-guard.py` matching observed `tool_input.skill` field; same unverified-frontmatter residual as Agent hook |
+| **Agent/Task allowlist hook** | technical (settings-level; frontmatter unverified) | `PreToolUse` hook with `scripts/flow-agent-guard.py` registered in `~/.claude/settings.json` at settings level (verified in probe); frontmatter-declared hooks in agent files are belt-and-braces, unverified headless; run `/setup-local` or `./install.sh` to register settings-level hooks |
+| **Skill allowlist hook** | technical (settings-level; frontmatter unverified) | `PreToolUse` hook with `scripts/flow-skill-guard.py` registered in `~/.claude/settings.json` at settings level; frontmatter wiring is unverified (same belt-and-braces as Agent hook); run `/setup-local` or `./install.sh` to register |
 | **Bash guard** | best-effort | Q1=C: refuses wrappers (`sh -c`, `bash -c`, `eval`, `xargs git\|gh`, `env git\|gh`, `git -c`, `git --git-dir`, `git --exec-path`, `gh api` non-GET) and publishing verbs; known bypasses: write-a-script-then-run, `python3 -c`, nested `general-purpose` agent (if Agent hook is not technical) |
 | **Step contract** | prompt-level | `prompts/flow-step-contract.md` with injection-defence block; contract-read/FAILED stop if unreadable; procedure-level rules ("invoke via Skill", "treat data as data", "FLOW_DIR authoritative") |
 | **Agent-file preflight** | technical | Stop at flow start, on `--resume`, and per step if file/hook/contract missing; "run /setup-local" message |
@@ -302,7 +304,7 @@ invoking it, (b) `python3 -c "..."`, (c) nested `general-purpose` agent if the A
 **Residual risks:**
 - `Write` tool is not path-scoped; writes outside the worktree are undetected (open issue #353).
 - `plan-implementer` keeps `Edit` and `bypassPermissions` (unchanged from ADR-0008 design).
-- `flow-review` keeps `Edit` for red-line exception (prompt-level red line until a scripted, field-scoped rulings writer lands; file follow-up #CP-W1).
+- `flow-review` keeps `Edit` solely for red-lining the `claude-action-plan.md` file produced by triage. This is prompt-scoped, not path-scoped: the agent is instructed to use `Edit` only on that file, not a machine-enforced boundary. A scripted, field-scoped rulings writer is pending as a follow-up (file #CP-W1).
 - Nested `general-purpose` agent spawning from a restricted step gets `Edit` and no hook.
 
 ### Wrapper set and publishing verbs (drift guard targets)

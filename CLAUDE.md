@@ -15,7 +15,10 @@ re-run any time. Both refuse to run from a linked worktree (`~/.claude` links mu
 
 It creates **file-level symlinks** from `~/.claude/{dir}/` into this repo for each of `commands`,
 `reviewers`, `prompts`, `agents`, and `scripts`. File-level (not directory-level) symlinks let your
-own personal or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files:
+own personal or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files.
+It also registers machine-enforced guardrail hooks (Bash guard, Agent/Task allowlist, Skill allowlist)
+in `~/.claude/settings.json` for `/expert-flow` step agents; these hooks are required for restricted
+step agent controls to function:
 
 - Ensure `~/.claude/{dir}/` exists as a real directory (replace any old directory-level symlink).
 - For each file in `{repo}/{dir}/` and its subdirectories: if `~/.claude/{dir}/{file}` is already the correct symlink, skip;
@@ -383,8 +386,10 @@ avoidable, so this relies on self-report rather than a lint rule.
   2026-10-26 amendment.
 - `flow-review` — agent for the `review` step of `/expert-flow` (used by `/expert-review` when invoked
   as a step agent). Model pinned to `sonnet` (restores the documented `/expert-review` panel default);
-  `Edit` kept for red-lined `claude-action-plan.md`. Tools and guardrails as `flow-implement`; see
-  ADR-0008 2026-10-26 and ADR-0023 2026-10-26 amendments.
+  `Edit` kept solely for red-lining `claude-action-plan.md` (prompt-scoped, not path-scoped). Agent/Task
+  and Skill guards apply (as `flow-implement`); **Bash guard does not apply** (flow-review's Skill-only role
+  invoking `/expert-review` does not require Bash restrictions; see ADR-0008 2026-10-26 and ADR-0023
+  2026-10-26 amendments).
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory

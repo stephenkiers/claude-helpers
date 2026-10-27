@@ -855,7 +855,7 @@ This amendment closes the gap where an implement or fix step could report a pass
 
 ## Amendment (2026-10-26): Restricted step agents for implement, fix, and review (#358)
 
-This amendment replaces the 2026-10-13 standing exception. The section 1 of this ADR is amended so that **implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions, Bash/Skill guards, and step-contract enforcement. **Worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase worker remain general-purpose**, pending #359/#360.
+This amendment replaces the 2026-10-13 standing exception. The section 1 of this ADR is amended so that **implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`): they carry `tools:` restrictions and machine-enforced controls including model pins, tool omissions, Bash/Skill guards, and step-contract enforcement. **Worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase worker remain general-purpose**, pending #359/#360. Machine-enforced controls are registered at settings level in `~/.claude/settings.json` via `/setup-local` or `./install.sh`; frontmatter hooks in agent files are belt-and-braces and unverified headless (see ADR-0008 2026-10-26 amendment for the control matrix and probe results).
 
 ### Panel-tier note on the review step
 
