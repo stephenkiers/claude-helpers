@@ -9,11 +9,16 @@ general-purpose agent bypass it. See docs/adr/0008.
 This script refuses:
   - Top-level shell wrappers (sh -c, bash -c, eval, xargs git/gh, env ... git/gh, etc.)
   - Publishing verbs (git push, gh pr create, gh pr merge, etc.)
+
+Exit codes:
+  - 0: allow (command is safe)
+  - 2: block (command violates a rule or is unparseable)
 """
 
 import json
 import os
 import re
+import shlex
 import sys
 
 # The wrapper forms refused by this guard. Mirrored in ADR-0008 amendment (drift guard).
@@ -34,205 +39,369 @@ WRAPPER_FORMS = (
 
 # Publishing verbs that should not be invoked by the agent.
 PUBLISHING_VERBS = (
-    "git push",
-    "git remote add",
-    "git remote set-url",
-    "gh pr create",
-    "gh pr merge",
-    "gh pr edit",
-    "gh pr comment",
-    "gh pr close",
-    "gh pr review",
-    "gh issue create",
-    "gh issue edit",
-    "gh issue comment",
-    "gh issue close",
-    "gh release create",
-    "gh repo create",
-    "gh repo delete",
-    "gh gist create",
-    "gh workflow run",
+    ("git", "push"),
+    ("git", "remote", "add"),
+    ("git", "remote", "set-url"),
+    ("gh", "pr", "create"),
+    ("gh", "pr", "merge"),
+    ("gh", "pr", "edit"),
+    ("gh", "pr", "comment"),
+    ("gh", "pr", "close"),
+    ("gh", "pr", "review"),
+    ("gh", "issue", "create"),
+    ("gh", "issue", "edit"),
+    ("gh", "issue", "comment"),
+    ("gh", "issue", "close"),
+    ("gh", "release", "create"),
+    ("gh", "repo", "create"),
+    ("gh", "repo", "delete"),
+    ("gh", "gist", "create"),
+    ("gh", "workflow", "run"),
 )
 
-# Split on shell metacharacters
-_METACHAR_RE = re.compile(r"([;&|`\n])")
+# Split on shell metacharacters and subshell/group syntax
+_SEGMENT_RE = re.compile(r'(;|&&|\|\||&|\||`|$\(|[({]|\n)')
 
 
-def tokenize(command):
-    """Split command into tokens by whitespace and shell metacharacters."""
-    # Split on metacharacters, keeping them as separate tokens
-    parts = _METACHAR_RE.split(command)
-    tokens = []
-    for part in parts:
-        if part in ("", ";", "&", "|", "`", "\n"):
-            # Skip empty and pure metachar tokens; we'll process them as separators
-            if part and part not in (";", "&", "|", "`", "\n"):
-                tokens.append(part)
-        else:
-            # Split on whitespace and strip VAR=val assignments from the front
-            words = part.split()
-            for word in words:
-                # Skip VAR=val assignments
-                if "=" in word and not any(c in word.split("=")[0] for c in " \t;&|`\n"):
-                    continue
-                if word:
-                    tokens.append(word)
-    return tokens
+def split_segments(command):
+    """Split command into segments on metacharacters, subshells, and grouping.
 
-
-def check_wrapper_forms(command):
-    """Check if command contains forbidden wrapper forms."""
-    tokens = tokenize(command)
-
-    # Check for wrapper patterns in sequence
-    for i in range(len(tokens)):
-        token = tokens[i]
-
-        # Handle quoted and path-qualified forms
-        token_basename = os.path.basename(token.strip('\'"')).lower()
-
-        # sh -c, bash -c, zsh -c
-        if token_basename in ("sh", "bash", "zsh"):
-            if i + 1 < len(tokens) and tokens[i + 1] == "-c":
-                return True
-
-        # eval
-        if token_basename == "eval":
-            return True
-
-        # xargs git or xargs gh
-        if token_basename == "xargs":
-            for j in range(i + 1, len(tokens)):
-                if tokens[j] in ("git", "gh"):
-                    return True
-
-        # env ... git or env ... gh (any env call followed eventually by git/gh)
-        if token_basename == "env":
-            for j in range(i + 1, len(tokens)):
-                j_basename = os.path.basename(tokens[j].strip('\'"')).lower()
-                if j_basename in ("git", "gh"):
-                    return True
-
-        # git -c, git --git-dir, git --exec-path
-        if token_basename == "git":
-            j = i + 1
-            while j < len(tokens):
-                tok = tokens[j]
-                if tok == "-C" or tok == "-c":
-                    j += 2
-                    continue
-                if tok.startswith("-C"):
-                    j += 1
-                    continue
-                if tok.startswith("-c") and len(tok) > 2:
-                    j += 1
-                    continue
-                # Now tok is the git subcommand
-                if tok in ("-c", "--git-dir", "--exec-path") or tok.startswith("--git-dir") or tok.startswith("--exec-path"):
-                    return True
-                break
-
-        # gh api with non-GET method
-        if token_basename == "gh":
-            j = i + 1
-            # Look for 'api' subcommand
-            if j < len(tokens) and tokens[j] == "api":
-                j += 1
-                # Check for -X or --method flags
-                while j < len(tokens):
-                    tok = tokens[j]
-                    if tok == "-X":
-                        if j + 1 < len(tokens):
-                            method = tokens[j + 1].upper()
-                            if method != "GET":
-                                return True
-                        break
-                    elif tok.startswith("-X"):
-                        method = tok[2:].upper()
-                        if method != "GET":
-                            return True
-                        break
-                    elif tok == "--method":
-                        if j + 1 < len(tokens):
-                            method = tokens[j + 1].upper()
-                            if method != "GET":
-                                return True
-                        break
-                    elif tok.startswith("--method="):
-                        method = tok.split("=", 1)[1].upper()
-                        if method != "GET":
-                            return True
-                        break
-                    elif tok.startswith("-"):
-                        j += 1
-                    else:
-                        break
-
-    return False
-
-
-def check_publishing_verbs(command):
-    """Check if command contains forbidden publishing verbs."""
-    tokens = tokenize(command)
-
-    # Rebuild the command string for verb matching, being careful about -C
+    Returns list of command segments, each separated by shell metacharacters.
+    """
+    # Use a simple heuristic: split on ; && || | & newline and subshell/group starts
+    segments = []
+    current = []
     i = 0
+    while i < len(command):
+        if i + 1 < len(command) and command[i:i+2] in ("&&", "||"):
+            if current:
+                segments.append("".join(current).strip())
+                current = []
+            i += 2
+        elif command[i] in (";", "&", "|", "`", "\n", "(", "{"):
+            if current:
+                segments.append("".join(current).strip())
+                current = []
+            if command[i] in ("(", "{"):
+                # Skip grouping; include until matching close
+                depth = 1
+                i += 1
+                while i < len(command) and depth > 0:
+                    if command[i] == "(" or command[i] == "{":
+                        depth += 1
+                    elif command[i] == ")" or command[i] == "}":
+                        depth -= 1
+                    i += 1
+            else:
+                i += 1
+        elif i + 1 < len(command) and command[i:i+2] == "$(":
+            # Skip $(...) subshell
+            if current:
+                segments.append("".join(current).strip())
+                current = []
+            depth = 1
+            i += 2
+            while i < len(command) and depth > 0:
+                if command[i] == "(":
+                    depth += 1
+                elif command[i] == ")":
+                    depth -= 1
+                i += 1
+        else:
+            current.append(command[i])
+            i += 1
+
+    if current:
+        segments.append("".join(current).strip())
+
+    return [s for s in segments if s]
+
+
+def tokenize_segment(segment):
+    """Tokenize a single shell command segment using shlex.
+
+    Fails closed on ValueError (unparseable). Returns None on parse failure.
+    """
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        # Unparseable (e.g., unbalanced quotes) -> block
+        return None
+
+
+def skip_global_options(tokens, start=0):
+    """Skip git/gh global options and return the index of the first non-option token.
+
+    Handles:
+      - git: -C <dir>, -c <key=value>, --git-dir=<path>, --exec-path=<path>, -c <key=value>
+      - gh: -R <repo>, --repo <repo>
+
+    For git, skips -C and its argument but does NOT skip -c (which is in the deny list).
+    """
+    i = start
     while i < len(tokens):
-        token = tokens[i]
-        token_basename = os.path.basename(token.strip('\'"')).lower()
+        tok = tokens[i]
 
-        if token_basename == "git":
-            j = i + 1
-            # Skip git -C <path> if present
-            if j < len(tokens) and tokens[j] == "-C":
-                j += 2
-            elif j < len(tokens) and tokens[j].startswith("-C"):
-                j += 1
+        # git -C <dir>
+        if tok == "-C" and i + 1 < len(tokens):
+            i += 2
+            continue
 
-            # Now j should point to the verb
-            if j < len(tokens):
-                verb_segment = tokens[j].lower()
-                for verb in PUBLISHING_VERBS:
-                    if verb.startswith("git "):
-                        expected_verb = verb.split(" ", 1)[1]
-                        if verb_segment == expected_verb or verb_segment.startswith(expected_verb):
+        # git global options with = form (--git-dir=, --exec-path=)
+        if tok.startswith("--git-dir=") or tok.startswith("--exec-path="):
+            i += 1
+            continue
+
+        # gh -R <repo> or gh --repo <repo>
+        if (tok == "-R" or tok == "--repo") and i + 1 < len(tokens):
+            i += 2
+            continue
+
+        # Not a global option; stop here
+        break
+
+    return i
+
+
+def is_wrapper_form(tokens):
+    """Check if tokens match a forbidden wrapper form.
+
+    Returns True if any WRAPPER_FORMS pattern is detected.
+    """
+    if not tokens:
+        return False
+
+    # Check each wrapper form
+    for wrapper in WRAPPER_FORMS:
+        parts = wrapper.split()
+
+        # Special handling for wrappers that have variable intermediate args
+        if wrapper == "env git":
+            # Match: env <any args> git <any args>
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "env":
+                    for j in range(i + 1, len(tokens)):
+                        if tokens[j].lower() == "git":
                             return True
+            continue
 
-        elif token_basename == "gh":
-            # Reconstruct "gh <subcommand> <verb>" sequence
-            if i + 2 < len(tokens):
-                subcommand = tokens[i + 1].lower()
-                verb = tokens[i + 2].lower()
-                for pub_verb in PUBLISHING_VERBS:
-                    if pub_verb.startswith("gh "):
-                        parts = pub_verb.split()
-                        if len(parts) >= 3 and parts[0] == "gh" and parts[1] == subcommand and parts[2] == verb:
+        if wrapper == "env gh":
+            # Match: env <any args> gh <any args>
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "env":
+                    for j in range(i + 1, len(tokens)):
+                        if tokens[j].lower() == "gh":
                             return True
+            continue
 
-        i += 1
+        if wrapper == "gh api -X non-GET":
+            # Match: gh api with -X or --method set to anything other than GET
+            for i in range(len(tokens)):
+                if tokens[i].lower() == "gh" and i + 1 < len(tokens) and tokens[i + 1].lower() == "api":
+                    # Look for -X or --method flags after "gh api"
+                    j = i + 2
+                    while j < len(tokens):
+                        tok = tokens[j]
+                        if tok == "-X":
+                            if j + 1 < len(tokens):
+                                method = tokens[j + 1].upper()
+                                if method != "GET":
+                                    return True
+                            break
+                        elif tok.startswith("-X"):
+                            method = tok[2:].upper()
+                            if method != "GET":
+                                return True
+                            break
+                        elif tok == "--method":
+                            if j + 1 < len(tokens):
+                                method = tokens[j + 1].upper()
+                                if method != "GET":
+                                    return True
+                            break
+                        elif tok.startswith("--method="):
+                            method = tok.split("=", 1)[1].upper()
+                            if method != "GET":
+                                return True
+                            break
+                        elif tok.startswith("-"):
+                            j += 1
+                        else:
+                            break
+                        j += 1
+            continue
+
+        # Standard exact-sequence matching for other wrappers
+        for i in range(len(tokens)):
+            if tokens[i].lower() == parts[0]:
+                # Try to match the rest of the wrapper
+                match = True
+                for j, part in enumerate(parts[1:], 1):
+                    if i + j >= len(tokens):
+                        match = False
+                        break
+                    # For "git -c" we need special handling to match --git-dir= etc
+                    if parts[0] == "git" and part in ("-c", "--git-dir", "--exec-path"):
+                        # These can appear as combined forms (--git-dir=value)
+                        # but only match the exact option, not -C (which is a global option)
+                        tok = tokens[i + j]  # Don't lowercase this one
+                        if part == "-c" and tok == "-c":
+                            # Exact match for -c (case-sensitive to exclude -C)
+                            match = True
+                            break
+                        elif part == "--git-dir" and tok.startswith("--git-dir"):
+                            # Match --git-dir= forms
+                            match = True
+                            break
+                        elif part == "--exec-path" and tok.startswith("--exec-path"):
+                            # Match --exec-path= forms
+                            match = True
+                            break
+                        else:
+                            match = False
+                            break
+                    if tokens[i + j].lower() != part:
+                        match = False
+                        break
+
+                if match:
+                    return True
 
     return False
+
+
+def is_publishing_verb(tokens):
+    """Check if tokens match a forbidden publishing verb (multi-word tuple).
+
+    Skips global options before checking. Returns True if forbidden verb is detected.
+    """
+    if not tokens:
+        return False
+
+    # Get the first token (likely git or gh)
+    cmd_basename = os.path.basename(tokens[0].strip('\'"')).lower()
+
+    if cmd_basename == "git":
+        # Skip git's global options
+        verb_start = skip_global_options(tokens, 1)
+
+        # Now check if remaining tokens match any git verb tuple
+        if verb_start < len(tokens):
+            verb_tokens = tokens[verb_start:]
+
+            for pub_verb in PUBLISHING_VERBS:
+                if pub_verb[0] != "git":
+                    continue
+
+                # Match the verb tuple (git, subcommand, ...)
+                verb_parts = pub_verb[1:]  # Skip "git"
+
+                if len(verb_tokens) >= len(verb_parts):
+                    match = True
+                    for j, part in enumerate(verb_parts):
+                        if verb_tokens[j].lower() != part:
+                            match = False
+                            break
+
+                    if match:
+                        return True
+
+    elif cmd_basename == "gh":
+        # Skip gh's global options
+        verb_start = skip_global_options(tokens, 1)
+
+        # Now check if remaining tokens match any gh verb tuple
+        if verb_start < len(tokens):
+            verb_tokens = tokens[verb_start:]
+
+            for pub_verb in PUBLISHING_VERBS:
+                if pub_verb[0] != "gh":
+                    continue
+
+                # Match the verb tuple (gh, subcommand, verb, ...)
+                verb_parts = pub_verb[1:]  # Skip "gh"
+
+                if len(verb_tokens) >= len(verb_parts):
+                    match = True
+                    for j, part in enumerate(verb_parts):
+                        if verb_tokens[j].lower() != part:
+                            match = False
+                            break
+
+                    if match:
+                        return True
+
+    return False
+
+
+def check_command(command):
+    """Check if a command violates wrapper or verb rules.
+
+    Returns: (is_blocked: bool, reason: str)
+    - (True, reason): command is blocked
+    - (False, ""): command is allowed
+    """
+    if not command or not isinstance(command, str):
+        return True, "Empty or invalid command"
+
+    segments = split_segments(command)
+
+    for segment in segments:
+        if not segment:
+            continue
+
+        tokens = tokenize_segment(segment)
+        if tokens is None:
+            # Parse error (e.g., unbalanced quotes) -> block
+            return True, f"Unparseable command: {segment}"
+
+        if is_wrapper_form(tokens):
+            return True, "shell wrappers (sh -c, bash -c, eval, etc.) are not allowed"
+
+        if is_publishing_verb(tokens):
+            return True, "publishing commands (git push, gh pr create, etc.) are not allowed"
+
+    return False, ""
 
 
 def main():
+    """
+    Main entry point. Exit codes:
+      - 0: allow the tool call
+      - 2: block the tool call
+    """
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-bash-guard.py --agent flow-implement", file=sys.stderr)
+            print("Usage: flow-bash-guard.py --agent <flow-implement|flow-review|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
 
-        # Only guard flow-implement; pass through other agents
-        if agent != "flow-implement":
-            sys.exit(0)
-
         # Parse JSON payload from stdin
+        if not isinstance(sys.stdin, object):
+            sys.exit(2)
+
         payload = json.load(sys.stdin)
 
-        # Scoping: if the payload has agent_type and it doesn't match flow-implement, allow it
-        agent_type = payload.get("agent_type")
-        if agent_type and isinstance(agent_type, str) and agent_type != "flow-implement":
+        # Validate payload structure
+        if not isinstance(payload, dict):
+            print("Invalid payload: not a dict", file=sys.stderr)
+            sys.exit(2)
+
+        # Auto mode: check agent_type in payload
+        if agent == "auto":
+            agent_type = payload.get("agent_type")
+
+            # If agent_type is missing or not a flow agent, allow
+            if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+                sys.exit(0)
+
+            # Use the agent_type from payload
+            agent = agent_type
+
+        # Only guard flow-implement; pass through other agents
+        if agent != "flow-implement":
             sys.exit(0)
 
         tool_name = payload.get("tool_name")
@@ -244,20 +413,18 @@ def main():
 
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
+            print("Invalid tool_input: not a dict", file=sys.stderr)
             sys.exit(2)
 
         command = tool_input.get("command")
         if not isinstance(command, str) or not command:
+            print("Invalid command: not a non-empty string", file=sys.stderr)
             sys.exit(2)
 
-        # Check for wrapper forms
-        if check_wrapper_forms(command):
-            print("BLOCKED: shell wrappers (sh -c, bash -c, eval, etc.) are not allowed", file=sys.stderr)
-            sys.exit(2)
-
-        # Check for publishing verbs
-        if check_publishing_verbs(command):
-            print("BLOCKED: publishing commands (git push, gh pr create, etc.) are not allowed", file=sys.stderr)
+        # Check for wrapper forms and publishing verbs
+        is_blocked, reason = check_command(command)
+        if is_blocked:
+            print(f"BLOCKED: {reason}", file=sys.stderr)
             sys.exit(2)
 
         sys.exit(0)

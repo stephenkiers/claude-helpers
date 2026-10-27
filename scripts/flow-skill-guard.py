@@ -46,30 +46,53 @@ def decide(payload, agent):
     # Strip leading "/" if present
     skill = skill.lstrip("/")
 
+    # Handle namespaced names (e.g., "plugin:implement-with-haiku" -> use the base name)
+    # For now, we check the full namespaced name first, then the base name
+    base_skill = skill.split(":", 1)[-1] if ":" in skill else skill
+
     # Check allowlist
     allowed = ALLOWED_SKILLS.get(agent, set())
-    if skill not in allowed:
+    if skill not in allowed and base_skill not in allowed:
         return 2, f"Skill '{skill}' not allowed for {agent}"
 
     return 0, ""
 
 
 def main():
+    """
+    Main entry point. Exit codes:
+      - 0: allow the tool call
+      - 2: block the tool call
+    """
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-skill-guard.py --agent <flow-implement|flow-review>", file=sys.stderr)
+            print("Usage: flow-skill-guard.py --agent <flow-implement|flow-review|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
 
         # Parse JSON payload from stdin
+        if not isinstance(sys.stdin, object):
+            sys.exit(2)
+
         payload = json.load(sys.stdin)
 
-        # Scoping: if the payload has agent_type and it doesn't match our agent, allow it
-        agent_type = payload.get("agent_type")
-        if agent_type and isinstance(agent_type, str) and agent_type != agent:
-            sys.exit(0)
+        # Validate payload structure
+        if not isinstance(payload, dict):
+            print("Invalid payload: not a dict", file=sys.stderr)
+            sys.exit(2)
+
+        # Auto mode: check agent_type in payload
+        if agent == "auto":
+            agent_type = payload.get("agent_type")
+
+            # If agent_type is missing or not a flow agent, allow
+            if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+                sys.exit(0)
+
+            # Use the agent_type from payload
+            agent = agent_type
 
         # Validate and decide
         code, message = decide(payload, agent)
