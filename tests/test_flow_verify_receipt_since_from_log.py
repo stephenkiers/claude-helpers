@@ -123,6 +123,8 @@ def test_valid_begin_line_bounds_verifier(h, tmp):
     home.mkdir()
     flow, receipt = make_flow(home)
     (flow / "log.md").write_text("2026-10-20T10:00:00Z implement begin\n")
+    # A readable Decision is required before the artifacts check (a receipt without one is rejected).
+    receipt.write_text("ROUND 1\nATTEMPT: 1\nDecision: OK\nOUTSTANDING: none\n<!-- step-end -->\n")
     head = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
                           capture_output=True, text=True).stdout.strip()
     args = ["--step", "implement", "--receipt", str(receipt), "--since-from-log",
