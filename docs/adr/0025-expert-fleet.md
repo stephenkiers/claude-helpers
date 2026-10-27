@@ -4,9 +4,7 @@
 
 ## Context
 
-ADR-0023's §4 item 3 chose sequential epic execution: each ticket runs in a flow after the previous one merges. The proof-of-concept `/expert-fleet` dispatcher ran epic #122 (Todoed, decomposed into 9 tickets) from 2026-10-16 to 2026-10-25 with **parallel ticket execution** — up to 3 headless `/expert-flow` processes running at once, their questions batched and asked together, and dependants unblocking as soon as their dependencies merged.
-
-The POC was exercised via fresh launches against base 8e97cbf only through 2026-10-23. After that date, `~/.claude/commands/expert-flow.md` and `prompts/flow-reference.md` pointed at main, so later runs were answer-resumes of POC-era flows running against main's current text. This ADR documents the landed implementation and the gaps known at landing.
+ADR-0023's §4 item 3 chose sequential epic execution: each ticket runs in a flow after the previous one merges. The proof-of-concept `/expert-fleet` dispatcher ran epic #122 (Todoed) from 2026-10-16 to 2026-10-25 with **parallel ticket execution** — up to 3 headless `/expert-flow` processes running at once, their questions batched and asked together, and dependants unblocking as soon as their dependencies merged. Per the author's POC notes, the dispatcher was exercised via fresh launches only through 2026-10-23. This ADR documents the landed implementation and the gaps known at landing.
 
 ## Decision
 
@@ -51,54 +49,54 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 |-----|-------|-----------|
 | Accept-and-continue at hard-stop gates | #365 | "Not exercised end to end" if untested |
 | Ledger enforcement | #288 | hard-stop and merge-gate answers via prose |
-| Non-code plan obligations | #366 | `depends-on` linking, external merges |
-| Review/triage not reading human answers; commits after review unreviewed; test bloat | #367 | plan/review answers reaching code decisions |
+| Non-code plan obligations | #366 | `depends-on` linking (ordering obligations as dependency edges) |
+| Post-review commits and test budget | #367 | #367 covers post-review commits, test budget, and fails-at-base proof. Answer replay testing and answer-path audit are untracked gaps in #381 (comment). |
 | Shared test DB / cross-ticket safety / sibling cross-checks; external merges and dynamic dependency edges | #368 | cross-ticket consistency; #368 covers both |
-| Plan/review accuracy (wrong line refs, line-number refs rotting, report renderer dropping D items) | #369 | cited in ADR-0025; see "Symbols over line numbers" in Consequences |
+| Plan/review accuracy (wrong line refs, line-number refs rotting) | #369 | cited in ADR-0025; see "Symbols over line numbers" in Consequences |
 | Mandatory Validate phase and fact-check scout | #370 | answer verification before proceeding |
 | `bypassPermissions` on unattended agents | #382 | prose-enforced merge gate; default is `auto` |
 | Run-sequence race; unbounded growth of `fleet.json` `runs` and `runs/*.json`/`.err`; `pid_alive` pid recycling; no `schema_version` on `fleet.json`; answer delivery not exactly-once; Pat's write-prefix conflict; `fleet.py --from`/`--plan-file`; CLAUDE.md "Agents" text does not mention fleet's headless processes; global `~/.claude` symlinks as shared mutable state (2026-10-23 `/setup-local` swap); `runs/*.json`/`.err` files written with default umask and may hold model output | #381 | all unticketed items; each a separate concern |
 | **Fleet mode on main: not exercised end to end** | none | Validation counts only when at least one fleet child is launched **fresh** on main and reaches its first park. Unknown include whether `flow-verify-receipt.py --flow-dir` accepts a plan report shown through `fleet-report-<SEQ>.md`, and how the main-only ask sites from the Fleet mode section behave (specifically: resume rule 3b and hard-stop item 4 (Keep previous attempt), both reachable via `--resume --fleet` on a flow with prior redo history and covered only by the general Park rule; resume rule 0 and the redo-note follow-up are unreachable under `--fleet` because the argument parser rejects `--redo`). |
 | Headless step agents are `general-purpose` with full capability (ADR-0008 standing exception) | none | Noted. In-flight #358 may narrow this. |
-| Merge-gate Hold in a fleet strands the ticket and its dependants: the flow is `paused at merge` (reported `held`, not `LAUNCHABLE`), no ask is open, dependants stay `blocked`. Decision: manual hand-off. The human runs `/expert-flow --resume <N>`; the fleet does not re-ask. | #371 (automatic re-ask deferred) | Decided. Recovery is manual and was undocumented until this landing. |
-| A failed launch is relaunched and `run()` exits 0 | #381 (fix: #371) | Not fixed here; `run()` reports success although a launch failed. |
-| Answered-but-undelivered asks are re-listed by `inbox`: there is no delivery record | #381 (fix: #371) | A crash between delivery and closing the ask re-lists it. Same family as the exactly-once gap above. |
-| `main.lock` covers fresh launches only; a dependency merge is not checked against MAIN before a worktree is cut | #371 | Guarantee is fresh-vs-fresh only (see §2). |
-| Report reply (the body of a `FLEET-REPLY #N` block) is passed as a bare positional argv to `claude -p`; the `--` end-of-options terminator is unverified | #381 (fix: #371) | `claude --help` does not document `--`, and a report body that starts with `-` could be read as an option. Relay and gate messages are not affected: they start with a fixed `Fleet answer for` header. Verify on a live `claude` before relying on `--`, or prefix report messages with a fixed line. |
+| Merge-gate Hold in a fleet strands the ticket and its dependants: the flow is `paused at merge` (reported `held`, not `LAUNCHABLE`), no ask is open, dependants stay `blocked`. Decision: manual hand-off. The human runs `/expert-flow --resume <N>`; the fleet does not re-ask. | #381 (comment) | Decided. Recovery is manual and was undocumented until this landing. The automatic re-ask part is tracked in #381 (comment). |
+| A failed launch is relaunched and `run()` exits 0 | #381 (comment) | Not fixed here; `run()` reports success although a launch failed. |
+| Answered-but-undelivered asks are re-listed by `inbox`: there is no delivery record | #381 (comment) | A crash between delivery and closing the ask re-lists it. Same family as the exactly-once gap above. |
+| `main.lock` covers fresh launches only; a dependency merge is not checked against MAIN before a worktree is cut | none | Guarantee is fresh-vs-fresh only (see §2). Tracked by this table. |
+| Report reply (the body of a `FLEET-REPLY #N` block) is passed as a bare positional argv to `claude -p`; the `--` end-of-options terminator is unverified | #381 (comment) | `claude --help` does not document `--`, and a report body that starts with `-` could be read as an option. Relay and gate messages are not affected: they start with a fixed `Fleet answer for` header. Verify on a live `claude` before relying on `--`, or prefix report messages with a fixed line. |
 | `gh_issue_closed` maps any lookup failure (auth, network, timeout) to not-closed, so a dependant stays blocked | none | Fail-safe: a dependant is never launched early on an unknown state. Documented; no follow-up scheduled. |
-| `run()` re-asks a held ticket if it is launched without a guard: the expert-flow resume rule re-parks the merge gate | #371 | Same family as the Hold row above. Launched without a guard, `run()` resumes a held ticket and the resume rule re-parks the merge gate. |
-| Concurrent `--fleet` telemetry correlation is unchecked | ADR-0023 §4 item 3 | Recorded from ADR-0023 §4 item 3; not checked at landing. |
-| `init` can raise `FileExistsError` when two fleets are initialised in the same second | #371 | Narrow window; verbatim POC code. |
-| `question_file` / `report_file` are joined to the flow directory without a containment check | #381 (fix: #371) | Names come from `fleet-ask.json`, which the flow orchestrator writes from model-influenced content. |
-| `wait` takes its baseline when called, so a receipt that settled before the call never reads as `settled`; each call can burn the full timeout | #371 (`--since` baseline) | Severity pending a live measurement: LOW if `wait` returns promptly after a step finishes, MEDIUM if it blocks for the full 540s. |
-| Flocks are not inherited by the `claude` child | #381 (fix: #371) | LOW. Verbatim POC code. |
-| No wall-clock bound on `claude -p` or the wait loop | #371 | Needs new timeout and park-gate behaviour. |
-| `--max` is not validated | #371 | One-line fix, deferred to keep `fleet.py` byte-identical. |
-| `init` validation raises tracebacks | #371 | Verbatim POC code. |
-| An unreadable `state.json` is treated as "no flow" | #371 | Narrow window, limited by the flock and pid. |
-| A stale `session` is kept after an unparsed run | #371 | Verbatim POC code. |
-| `find_flow` counts older flows as progress | #371 | Low confidence; the code fix breaks the byte-identical claim. |
-| `fleet.py` is outside the mypy gate; state is untyped | #371 | Adding it to the gate conflicts with the byte-identical claim. Follow-up ticket. |
-| `run()` mixes responsibilities; `range(3)` is unexplained | #371 | Readability refactor of verbatim code. |
-| The lock handle is never closed and is undocumented | #371 | Matters only to in-process callers. |
-| `wait` and `run` exit codes are undocumented | #371 | The exit-code contract is written with the follow-up. |
-| Error and crash paths are untested | #371 | Verbatim POC tests; tests to be written under #371. |
-| `SETTLED` constant is unused in `fleet.py` | #371 | Not removed here (byte-identical). Remove or use when the Hold fix lands. |
+| `run()` re-asks a held ticket if it is launched without a guard: the expert-flow resume rule re-parks the merge gate | #381 (comment) | Same family as the Hold row above. Launched without a guard, `run()` resumes a held ticket and the resume rule re-parks the merge gate. |
+| Concurrent `--fleet` telemetry correlation is unchecked | ADR-0023, "Consequences" | Recorded from ADR-0023 "Consequences", "Telemetry correlation (expected, to be confirmed in #252 dogfooding)"; not checked at landing. |
+| `init` can raise `FileExistsError` when two fleets are initialised in the same second | none | Narrow window; verbatim POC code. Tracked by this table. |
+| `question_file` / `report_file` are joined to the flow directory without a containment check | #381 (comment) | Names come from `fleet-ask.json`, which the flow orchestrator writes from model-influenced content. |
+| `wait` takes its baseline when called, so a receipt that settled before the call never reads as `settled`; each call can burn the full timeout | none | (`--since` baseline) Severity pending a live measurement: LOW if `wait` returns promptly after a step finishes, MEDIUM if it blocks for the full 540s. Tracked by this table. |
+| Flocks are not inherited by the `claude` child | #381 (comment) | LOW. Verbatim POC code. |
+| No wall-clock bound on `claude -p` or the wait loop | none | Needs new timeout and park-gate behaviour. Tracked by this table. |
+| `--max` is not validated | none | One-line fix, deferred to keep `fleet.py` byte-identical. Tracked by this table. |
+| `init` validation raises tracebacks | none | Verbatim POC code. Tracked by this table. |
+| An unreadable `state.json` is treated as "no flow" | none | Narrow window, limited by the flock and pid. Tracked by this table. |
+| A stale `session` is kept after an unparsed run | none | Verbatim POC code. Tracked by this table. |
+| `find_flow` counts older flows as progress | none | Low confidence; the code fix breaks the byte-identical claim. Tracked by this table. |
+| `fleet.py` is outside the mypy gate; state is untyped | none | Adding it to the gate conflicts with the byte-identical claim. Follow-up ticket. Tracked by this table. |
+| `run()` mixes responsibilities; `range(3)` is unexplained | none | Readability refactor of verbatim code. Tracked by this table. |
+| The lock handle is never closed and is undocumented | none | Matters only to in-process callers. Tracked by this table. |
+| `wait` and `run` exit codes are undocumented | none | The exit-code contract is written with the follow-up. Tracked by this table. |
+| Error and crash paths are untested | none | Verbatim POC tests; tests not yet written. Tracked by this table. |
+| `SETTLED` constant is unused in `fleet.py` | none | Not removed here (byte-identical). Remove or use when the Hold fix lands. Tracked by this table. |
 
 ## Consequences
 
 - Each `/expert-flow` invocation holds zero knowledge of the others. Ticket order, dependencies, and the inbox are fleet-level orchestration, not baked into any step.
-- Prose rules (never answer for the human, merge gate from human reply) are enforced by review, not by code. #367 owns the testing of answer replay and the audit of how answers reach decision points.
+- Prose rules (never answer for the human, merge gate from human reply) are enforced by review, not by code. Answer replay testing and the audit of how answers reach decision points are untracked gaps in #381 (comment).
 - Headless step agents are `general-purpose` Task subagents (per ADR-0023 §1) and run with full capability, including `Write` and full-capability `Bash`. This inherits ADR-0008's residual risk: a subagent could write outside the flow directory despite prompt-level scoping. The risk is stated as a prerequisite for understanding that `/expert-fleet` cannot sandbox step work more strictly than `/expert-flow` does.
-- Symbol names, not line numbers, are cited in the known-gaps table and in the ADR itself (e.g. `claude_cmd`, `ready()`, "resume rule 9") so later edits to those symbols do not rot the references. #369 tracks this as a cross-ADR concern.
+- Symbol names, not line numbers, are cited in the known-gaps table and in the ADR itself (e.g. `claude_cmd`, `ready()`, "resume rule 9") so later edits to those symbols do not rot the references. This pattern prevents the kind of line-number rot that #369 addresses (wrong line refs, line-number refs rotting).
 
 ## Amendment (2026-10-26) — landing preparation
 
 This ADR documents the implementation landing on main at a known state:
 
-- New files: `commands/expert-fleet.md`, `scripts/fleet.py`, `tests/test_fleet.py`, taken verbatim from the POC base 8e97cbf except for review-round edits. `scripts/fleet.py` stays byte-identical to POC commit 67d40ca. The test suite adds `tests/test_fleet_invariants.py` (new file) to pin parser and default-mode invariants, and `tests/test_fleet_docs_contract.py` (new file) to pin the ADR and command-doc contract.
+- New files: `commands/expert-fleet.md`, `scripts/fleet.py`, `tests/test_fleet.py`. `scripts/fleet.py` is byte-identical to the POC base 8e97cbf (equals commit 982a75e, this branch's verbatim POC commit). `commands/expert-fleet.md` and `tests/test_fleet.py` are the POC plus review-round edits (not byte-identical). The test suite adds `tests/test_fleet_invariants.py` (new file) to pin parser and default-mode invariants, and `tests/test_fleet_docs_contract.py` (new file) to pin the ADR and command-doc contract.
 - Fleet mode ported onto `commands/expert-flow.md` with every cross-reference re-pointed to main's step and rule numbers. All changes are conditional on `FLEET` / `flags.fleet`.
-- `tests/test_expert_flow.py` is not changed by this landing. Its `fleet.py wait` entry in `READ_ONLY_BASH` and the POC regression comment predate it (commit eb2985b and the POC base). No `NO_GATES` count changes.
+- `tests/test_expert_flow.py` is changed by this landing: commit eb2985b (on this branch, after the verbatim POC commit 982a75e) added the `fleet.py wait` entry to `READ_ONLY_BASH` and a regression `test_result` assertion (about +9 lines versus fa642e2). No `NO_GATES` count changes.
 - ADR-0023 pointer at §4 item 3 (sequential epic execution is a separate layer; `/expert-fleet` is parallel; `--epic` itself stays sequential).
 - ADR-0019 pointer after the "no headless invocation" amendment (a headless caller now exists; questions park to `fleet-ask.json`).
 - Two follow-up issues: #381 (catch-all for unticketed gaps) and #382 (`bypassPermissions` risk).

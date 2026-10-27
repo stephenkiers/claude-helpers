@@ -9,7 +9,7 @@ Covers the documentation requirements from the expert-review action plan for the
     "one answer away from merging" sentence is gone from commands/expert-flow.md.
   - The main.lock guarantee is described as fresh-vs-fresh only, in both the ADR and the command doc.
   - Free-text answers are framed with a fixed header, and the `--` argv question is recorded.
-  - scripts/fleet.py stays byte-identical to the POC commit 67d40ca.
+  - scripts/fleet.py is byte-identical to the POC base 8e97cbf (commit 982a75e on this branch).
 
 Bare `$1`-`$9` tokens in commands/*.md are enforced by tests/test_command_doc_shell_conventions.py
 and are deliberately not repeated here.
@@ -32,7 +32,7 @@ FLEET_CMD_PATH = REPO_ROOT / "commands" / "expert-fleet.md"
 FLOW_CMD_PATH = REPO_ROOT / "commands" / "expert-flow.md"
 FLEET_PY_PATH = REPO_ROOT / "scripts" / "fleet.py"
 
-POC_SHA = "67d40ca"
+POC_SHA = "982a75e"
 
 # Gaps the ADR-0025 gaps table must name (deferred findings, plus the "Doing it" findings recorded for
 # follow-up). Each entry is (description, distinctive prose term). The term must appear in a markdown

@@ -27,7 +27,7 @@ dependency checks, the inbox) is `scripts/fleet.py`; this document says when to 
 ## Arguments
 
 - `<epic-url|number>` — the epic issue. A bare number is in the current repo.
-- `--max K` — parallel ticket processes (default 3, 1–6).
+- `--max K` — parallel ticket processes (default 3; the 1–6 range is advisory, not enforced).
 - `--only N,N,...` — run just these sub-issues (their deps still gate them).
 - `--prepass` — run the big-stones pre-pass before launching anything.
 - `--resume [fleet-dir|epic#]` — re-enter the dispatch loop for an existing fleet (after this session

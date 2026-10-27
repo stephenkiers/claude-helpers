@@ -99,7 +99,7 @@ in their own interactive terminal session — there is no headless/automated inv
 this repo today. A human is present at every current call site to reply "continue". If a genuinely
 unattended/headless caller is ever added, it will hang at the first checkpoint; that caller would
 need its own mechanism (e.g. a flag to skip checkpoints) at the time it's introduced, not before.
-*(2026-10-26: a headless caller now exists, `/expert-fleet` running `/expert-flow --fleet` under `claude -p`; questions park to `fleet-ask.json` instead of hanging; see ADR-0025.)*
+*(2026-10-26: a headless caller now exists, `/expert-fleet` running `/expert-flow --fleet` under `claude -p`; flow-relayed questions park to `fleet-ask.json` instead of hanging (see ADR-0025 "Fleet mode" and commands/expert-flow.md "Fleet mode").*)
 
 **Status:** the `all`/named-checkpoint table, the three-option UI, and the "declined" language above
 are historical — read them as describing the pre-2026-09-11 design.
