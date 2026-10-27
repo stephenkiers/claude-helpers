@@ -101,30 +101,30 @@ def main():
             missing_keys = expected_keys - set(result.keys())
             h.test_result(
                 "bucket_flow_agent_rows result has required keys",
-                not missing_keys,
+                missing_keys == set(),  # [WEAK_ASSERTION] Pin empty set explicitly
                 f"Missing keys: {missing_keys}"
             )
 
             # Verify values are numeric/string
             if not missing_keys:
                 h.test_result(
-                    "flow_step_agent_count is numeric",
-                    isinstance(result['flow_step_agent_count'], int),
+                    "flow_step_agent_count is non-negative int",
+                    isinstance(result['flow_step_agent_count'], int) and result['flow_step_agent_count'] >= 0,  # [WEAK_ASSERTION] Pin >= 0
                 )
 
                 h.test_result(
-                    "pre_cutover_general_purpose_in_flow_count is numeric",
-                    isinstance(result['pre_cutover_general_purpose_in_flow_count'], int),
+                    "pre_cutover_general_purpose_in_flow_count is non-negative int",
+                    isinstance(result['pre_cutover_general_purpose_in_flow_count'], int) and result['pre_cutover_general_purpose_in_flow_count'] >= 0,  # [WEAK_ASSERTION] Pin >= 0
                 )
 
                 h.test_result(
-                    "cutover_date is string",
-                    isinstance(result['cutover_date'], str),
+                    "cutover_date is non-empty string",
+                    isinstance(result['cutover_date'], str) and len(result['cutover_date']) > 0,  # [WEAK_ASSERTION] Pin non-empty
                 )
 
                 h.test_result(
-                    "excluded_probe_sessions is numeric",
-                    isinstance(result['excluded_probe_sessions'], int),
+                    "excluded_probe_sessions is non-negative int",
+                    isinstance(result['excluded_probe_sessions'], int) and result['excluded_probe_sessions'] >= 0,  # [WEAK_ASSERTION] Pin >= 0
                 )
 
     print()

@@ -262,6 +262,28 @@ def main():
         )
 
     print()
+    print("[Test 8.5] Bash guard boundary: git option at end of token list (line 119)\n")
+
+    # Test case: git -C at the end of token list (boundary condition for while j < len(tokens))
+    # This tests line 119 in flow-bash-guard.py: "while j < len(tokens):"
+    # If mutated to "while j <= len(tokens):", would cause IndexError on tokens[len(tokens)]
+    boundary_tests = [
+        ("git -C /tmp", "git with trailing option"),
+        ("git -c user.name=test", "git -c at end"),
+    ]
+
+    for command, desc in boundary_tests:
+        code, _ = run_guard_script(flow_bash_guard, "flow-implement", {
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        h.test_result(
+            f"Bash guard allows '{desc}' (boundary: option at end of token list)",
+            code == 0,
+            f"Expected 0, got {code}; command parsing may have boundary error"
+        )
+
+    print()
     print("[Test 9] Bash guard drift guard: wrapper set consistency (Q1)\n")
 
     # Extract WRAPPER_FORMS from flow-bash-guard.py

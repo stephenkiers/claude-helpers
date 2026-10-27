@@ -94,23 +94,23 @@ def main():
 
     if contract_defence and impl_defence:
         h.test_result(
-            "flow-implement.md defence block == flow-step-contract.md",
-            impl_defence == contract_defence,
-            f"Mismatch:\nContract:\n{contract_defence}\n\nImpl:\n{impl_defence}"
+            "flow-implement.md defence block == flow-step-contract.md (byte-equal)",
+            impl_defence == contract_defence and len(impl_defence) == len(contract_defence),  # [WEAK_ASSERTION] Pin length too
+            f"Mismatch:\nContract len={len(contract_defence)}: {contract_defence[:100]}\n\nImpl len={len(impl_defence)}: {impl_defence[:100]}"
         )
 
     if contract_defence and review_defence:
         h.test_result(
-            "flow-review.md defence block == flow-step-contract.md",
-            review_defence == contract_defence,
-            f"Mismatch:\nContract:\n{contract_defence}\n\nReview:\n{review_defence}"
+            "flow-review.md defence block == flow-step-contract.md (byte-equal)",
+            review_defence == contract_defence and len(review_defence) == len(contract_defence),  # [WEAK_ASSERTION] Pin length too
+            f"Mismatch:\nContract len={len(contract_defence)}: {contract_defence[:100]}\n\nReview len={len(review_defence)}: {review_defence[:100]}"
         )
 
     if contract_defence and flow_defence:
         h.test_result(
-            "expert-flow.md defence block == flow-step-contract.md",
-            flow_defence == contract_defence,
-            f"Mismatch:\nContract:\n{contract_defence}\n\nFlow:\n{flow_defence}"
+            "expert-flow.md defence block == flow-step-contract.md (byte-equal)",
+            flow_defence == contract_defence and len(flow_defence) == len(contract_defence),  # [WEAK_ASSERTION] Pin length too
+            f"Mismatch:\nContract len={len(contract_defence)}: {contract_defence[:100]}\n\nFlow len={len(flow_defence)}: {flow_defence[:100]}"
         )
 
     print()

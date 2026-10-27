@@ -238,7 +238,7 @@ def main():
             missing = required_tools - flow_review_tools
             h.test_result(
                 "flow-review tools contain expert-review tools + Agent + Skill",
-                not missing,
+                missing == set(),  # [WEAK_ASSERTION] Pin empty set explicitly instead of truthiness
                 f"Missing tools: {missing}"
             )
 
@@ -261,7 +261,7 @@ def main():
             missing = required_tools - flow_impl_tools
             h.test_result(
                 "flow-implement tools contain implement-with-haiku tools + Agent + Skill",
-                not missing,
+                missing == set(),  # [WEAK_ASSERTION] Pin empty set explicitly instead of truthiness
                 f"Missing tools: {missing}"
             )
 
