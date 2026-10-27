@@ -155,7 +155,7 @@ require_var() {
 
 # Derive slug from ticket title (or default)
 TICKET_TITLE="${TICKET_TITLE:-plan}"
-SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-\|-$//' | cut -c1-50)
+SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-50 | sed -e 's/^-*//' -e 's/-*$//')
 [ -n "$SLUG" ] || SLUG="plan"
 
 # REPO_KEY identifies the repository (same pattern as /expert-review)
