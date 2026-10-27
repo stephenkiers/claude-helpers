@@ -205,14 +205,14 @@ OUTSTANDING_ITEM_RE = re.compile(r"^(.+?)\s+\((.+?)\)\s+\[([^\]]+)\]$")
 # Assessment item line format: <id> | status=<value> | kind=<value> | ...
 # Parses the pipe-delimited format
 ASSESSMENT_ITEM_RE = re.compile(
-    r"^(.+?)\s+\|\s+status=(\w+)\s+\|\s+kind=(\w+)\s+\|\s+scope=(\w+)\s+\|"
-    r"\s+leave_as_is_safe=(\w+)\s+\|\s+cause=(.+?)\s+\|\s+evidence=(.+?)\s+\|"
+    r"^(.+?)\s+\|\s+status=([\w-]+)\s+\|\s+kind=([\w-]+)\s+\|\s+scope=([\w-]+)\s+\|"
+    r"\s+leave_as_is_safe=([\w-]+)\s+\|\s+cause=(.*?)\s+\|\s+evidence=(.*?)\s+\|"
     r"\s+finish_plan=(.*?)\s+\|\s+verification_proof=(.*?)\s+\|\s+options=(.*)$"
 )
 # Disposition item line format: <id> | disposition=<value> | by=<value> | ...
 DISPOSITION_ITEM_RE = re.compile(
-    r"^(.+?)\s+\|\s+disposition=(\w+)\s+\|\s+by=(\w+)\s+\|\s+answer_ref=(.+?)\s+\|"
-    r"\s+option=(.+?)\s+\|\s+route=(\w+)\s+\|\s+url=(.+?)\s+\|\s+reason=(.*)$"
+    r"^(.+?)\s+\|\s+disposition=([\w-]+)\s+\|\s+by=([\w-]+)\s+\|\s+answer_ref=(.+?)\s+\|"
+    r"\s+option=(.+?)\s+\|\s+route=([\w-]+)\s+\|\s+url=(.+?)\s+\|\s+reason=(.*)$"
 )
 # ROUND 1 section header in an implement/fix receipt (#341, item 5; producer contract in
 # commands/implement-with-haiku.md). Tolerant of the real header shapes: `ROUND 1 — Implementer
@@ -2414,354 +2414,584 @@ def _git_diff_names(repo: str, base: str, branch: str) -> Optional[Set[str]]:
         return None
 
 
+_STEP_LIFECYCLE_EVENTS = frozenset({"begin", "retry", "ok", "failed", "taken-over", "hand-finished", "skipped"})
+_STEP_TERMINAL_EVENTS = frozenset({"ok", "failed", "taken-over", "hand-finished", "skipped"})
+
+
+def _newest_step_status(log_text: str, step: str) -> Optional[str]:
+    """Newest terminal lifecycle event for `step` in log.md, or None.
+
+    Only ok|failed|taken-over|hand-finished|skipped count; begin/retry and mid-step events such as
+    `gate`/`paused` are skipped, so a trailing `gate` line never hides a step's items. `hand-finished`
+    is reported as `taken-over` (the same family: a human finished the step).
+    """
+    for line in reversed(log_text.split("\n")):
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == step and parts[2] in _STEP_TERMINAL_EVENTS:
+            return "taken-over" if parts[2] == "hand-finished" else parts[2]
+    return None
+
+
+def _has_assess_log_line(log_text: str) -> bool:
+    """True when log.md carries any `assess` stage line (`assess begin`, `assessed ...`, etc.)."""
+    for line in log_text.split("\n"):
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] in ("assess", "assessed"):
+            return True
+    return False
+
+
+def _newest_assess_event(log_text: str) -> Optional[str]:
+    """Newest `assess` lifecycle event (begin|ok|failed|taken-over|skipped|paused), or None."""
+    for line in reversed(log_text.split("\n")):
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == "assess":
+            return parts[2]
+    return None
+
+
+def _read_state(flow_dir: Path) -> Dict:
+    """state.json as a dict; {} when absent or unreadable (only used for the legacy-marker rule)."""
+    state_file = flow_dir / "state.json"
+    if not state_file.exists():
+        return {}
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# A coverage file is `UNITS: <n>` then `<id> | <status> | <evidence>` rows (coverage_mode's output),
+# optionally with `unknown-declared: <unit>` lines. `STUB:` marks a superseded attempt.
+_COVERAGE_STATUSES = frozenset({"covered", "declared", "uncovered", "unknown"})
+
+
+def _parse_coverage_file(text: str) -> Tuple[Optional[str], List[Tuple[str, str, str]], Optional[str]]:
+    """Parse a persisted coverage file.
+
+    Returns (kind, rows, error): kind is "stub" or "table"; rows is [(unit, status, evidence)].
+    error is set (kind None) when the text is neither a valid table nor a STUB line.
+    """
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return (None, [], "empty coverage file")
+    if lines[0].startswith("STUB:"):
+        return ("stub", [], None)
+    if not re.match(r"^UNITS:\s*\d+", lines[0]):
+        return (None, [], f"not a coverage table (first line {lines[0][:60]!r})")
+    rows: List[Tuple[str, str, str]] = []
+    for ln in lines[1:]:
+        if ln.startswith("unknown-declared:"):
+            continue
+        parts = ln.split(" | ", 2)
+        if len(parts) < 2 or parts[1].strip() not in _COVERAGE_STATUSES:
+            return (None, [], f"unparseable coverage row {ln[:60]!r}")
+        rows.append((parts[0].strip(), parts[1].strip(), parts[2].strip() if len(parts) > 2 else ""))
+    return ("table", rows, None)
+
+
 def derive_outstanding_set(flow_dir: Path) -> Tuple[List[Tuple[str, str, str, str]], Optional[str]]:
     """Derive the outstanding set from flow_dir's step files and coverage tables.
 
     Returns (items, error_reason) where items is a list of (id, provenance, coverage, reason).
     Each id is <source-step>:<unit-id> (e.g., 'implement:Step 3', 'fix:D2', 'implement:coverage-unavailable').
-    Provenance is one of {self-report, both, verifier}.
-    Coverage is one of {declared, uncovered, unknown, none}.
-    Reason is a text explanation (provenance for self-report, coverage classification for verifier).
+    Provenance is one of {self-report, both, verifier}; coverage one of {declared, uncovered, unknown, none}.
 
+    Each step's contribution is decided from log.md (never from file absence alone):
+    - newest terminal event `skipped` (or no terminal event, or `failed`): contributes nothing;
+    - `ok`: the receipt and a valid coverage table (or STUB) are required, else a hard error; a STUB or a
+      missing coverage file yields one synthetic `<step>:coverage-unavailable` item (coverage unknown);
+    - `taken-over`/`hand-finished`: best effort from whatever receipt and coverage exist, and
+      `<step>:coverage-unavailable` when no valid coverage table can be read.
     On hard error, returns ([], error_reason) with exit-2 semantics.
     """
-    items: List[Tuple[str, str, str, str]] = []
-
-    # Read log.md to determine which steps ran and how
     log_file = flow_dir / "log.md"
     if not log_file.exists():
         return ([], f"outstanding set: log.md not found in {flow_dir}")
-
     try:
         log_text = log_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         return ([], f"outstanding set: cannot read log.md: {e}")
 
-    # Read state.json (for future use checking outstanding_format key)
-    state_file = flow_dir / "state.json"
-    if state_file.exists():
-        try:
-            json.loads(state_file.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, ValueError):
-            pass
-
-    # Helper to get newest line matching a pattern for a step
-    def get_newest_lifecycle_line(step: str) -> Optional[str]:
-        """Get the newest lifecycle line for a step (the last matching line in log.md)."""
-        lines = log_text.split("\n")
-        for line in reversed(lines):
-            # Match lines like "2026-10-27T12:00:00Z implement ok" or similar
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] == step:
-                # Return the status part (ok, skipped, failed, taken-over, etc.)
-                return parts[2] if len(parts) > 2 else None
-        return None
-
-    # Process implement step
-    implement_status = get_newest_lifecycle_line("implement")
-    if implement_status == "skipped":
-        # Skipped step contributes nothing
-        pass
-    elif implement_status in [None, "ok", "taken-over"]:
-        # Try to read OUTSTANDING: lines from steps/03-implement.md
-        implement_file = flow_dir / "steps" / "03-implement.md"
-        if implement_file.exists():
-            try:
-                implement_text = implement_file.read_text(encoding="utf-8")
-                outstanding_items, _, _ = iter_outstanding_lines(implement_text)
-                for item in outstanding_items:
-                    item_id = f"implement:{item.unit_id}"
-                    items.append((item_id, item.provenance, "declared", item.reason))
-            except (OSError, UnicodeDecodeError, ValueError):
-                pass
-        else:
-            if implement_status == "ok":
-                # Missing receipt for a step that is ok is an error
-                return ([], "outstanding set: missing steps/03-implement.md for ok step")
-
-    # Process fix step
-    fix_status = get_newest_lifecycle_line("fix")
-    if fix_status == "skipped":
-        # Skipped step contributes nothing
-        pass
-    elif fix_status in [None, "ok", "taken-over"]:
-        # Try to read OUTSTANDING: lines from steps/05-fix.md
-        fix_file = flow_dir / "steps" / "05-fix.md"
-        if fix_file.exists():
-            try:
-                fix_text = fix_file.read_text(encoding="utf-8")
-                outstanding_items, _, _ = iter_outstanding_lines(fix_text)
-                for item in outstanding_items:
-                    item_id = f"fix:{item.unit_id}"
-                    items.append((item_id, item.provenance, "declared", item.reason))
-            except (OSError, UnicodeDecodeError, ValueError):
-                pass
-        else:
-            if fix_status == "ok":
-                # Missing receipt for a step that is ok is an error
-                return ([], "outstanding set: missing steps/05-fix.md for ok step")
-
-    # Build set of items from OUTSTANDING for deduplication
-    outstanding_item_ids = {item[0] for item in items}
-
-    # Process coverage tables from implement and fix steps
-    for step_name, step_num in [("implement", "03"), ("fix", "05")]:
-        coverage_file = flow_dir / "steps" / f"{step_num}-{step_name}.coverage.txt"
-
-        # Skip if step was skipped
-        step_status = get_newest_lifecycle_line(step_name)
-        if step_status == "skipped":
+    items: List[Tuple[str, str, str, str]] = []
+    for step_name, step_num in (("implement", "03"), ("fix", "05")):
+        status = _newest_step_status(log_text, step_name)
+        if status not in ("ok", "taken-over"):
             continue
+        receipt_file = flow_dir / "steps" / f"{step_num}-{step_name}.md"
+        coverage_file = flow_dir / "steps" / f"{step_num}-{step_name}.coverage.txt"
+        strict = status == "ok"
 
+        declared: List[OutstandingItem] = []
+        if receipt_file.exists():
+            try:
+                declared, _, _ = iter_outstanding_lines(receipt_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError) as e:
+                if strict:
+                    return ([], f"outstanding set: unparseable steps/{receipt_file.name}: {e}")
+                declared = []
+        elif strict:
+            return ([], f"outstanding set: missing steps/{receipt_file.name} for ok step")
+
+        kind: Optional[str] = None
+        rows: List[Tuple[str, str, str]] = []
+        coverage_problem = ""
         if coverage_file.exists():
             try:
-                coverage_text = coverage_file.read_text(encoding="utf-8")
+                kind, rows, parse_err = _parse_coverage_file(coverage_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError) as e:
+                kind, parse_err = None, str(e)
+            if kind is None and strict:
+                return ([], f"outstanding set: steps/{coverage_file.name} is neither a coverage table nor a STUB: {parse_err}")
+            if kind == "stub":
+                coverage_problem = "STUB coverage file"
+            elif kind is None:
+                coverage_problem = f"unreadable coverage file ({parse_err})"
+        else:
+            coverage_problem = "no coverage file"
 
-                # Check if file is a STUB: line
-                first_line = coverage_text.split("\n")[0].strip()
-                if first_line.startswith("STUB:"):
-                    # STUB coverage file on an ok step yields coverage-unavailable
-                    if step_status == "ok":
-                        item_id = f"{step_name}:coverage-unavailable"
-                        if item_id not in outstanding_item_ids:
-                            items.append((item_id, "verifier", "unknown", "STUB coverage file"))
-                    continue
-
-                # Parse coverage table (pipe-delimited): <id> | <status> | <evidence>
-                for line in coverage_text.split("\n"):
-                    line = line.strip()
-                    if not line or line.startswith("|"):
-                        # Skip separator rows and empty lines
-                        continue
-                    if "|" not in line:
-                        # Skip non-table lines
-                        continue
-
-                    parts = [p.strip() for p in line.split("|")]
-                    if len(parts) < 2:
-                        continue
-
-                    unit_id = parts[0]
-                    coverage_status = parts[1] if len(parts) > 1 else "unknown"
-
-                    # Only process rows with coverage status in {uncovered, declared, unknown}
-                    # Skip "covered" status as those are already done
-                    if coverage_status not in ["declared", "uncovered", "unknown", "none"]:
-                        continue
-
-                    item_id = f"{step_name}:{unit_id}"
-                    # Only add if not already in the set (from OUTSTANDING)
-                    if item_id not in outstanding_item_ids:
-                        evidence = parts[2] if len(parts) > 2 else ""
-                        items.append((item_id, "verifier", coverage_status, evidence))
-                        outstanding_item_ids.add(item_id)
-
-            except (OSError, UnicodeDecodeError):
-                if step_status == "ok":
-                    # Missing or unparseable coverage file for an ok step is an error
-                    return ([], f"outstanding set: cannot read {coverage_file}")
+        row_status = {unit: st for unit, st, _ in rows}
+        seen = set()
+        for it in declared:
+            item_id = f"{step_name}:{it.unit_id}"
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            # Coverage comes from the table row when present (unknown stays sticky, D2).
+            cov = row_status.get(it.unit_id)
+            coverage = cov if cov in ("declared", "uncovered", "unknown") else "declared"
+            items.append((item_id, it.provenance, coverage, it.reason))
+        for unit, st, evidence in rows:
+            item_id = f"{step_name}:{unit}"
+            if st in ("declared", "uncovered", "unknown") and item_id not in seen:
+                seen.add(item_id)
+                items.append((item_id, "verifier", st, evidence))
+        if coverage_problem:
+            items.append((f"{step_name}:coverage-unavailable", "verifier", "unknown", coverage_problem))
 
     return (items, None)
 
 
+_ANSWER_REF_RE = re.compile(r"answers/assess-(\d+)\.json")
+
+
 def load_assess_answers(flow_dir: Path, answer_ref: str) -> Tuple[Optional[Dict[str, Tuple[str, str]]], Optional[str]]:
-    """Load assessment answers from questions/assess-<SEQ>.json and answers/assess-<SEQ>.json.
+    """Load questions/assess-<SEQ>.json and answers/assess-<SEQ>.json for an `answer_ref`.
 
-    Returns (answer_map, error_reason) where answer_map maps item id to (label, free_text).
-    On error, returns (None, error_reason).
+    Returns (answer_map, error_reason): answer_map maps item id -> (label, free_text), where free_text is
+    the typed Drop reason (annotations.<qid>.notes, else the second element of a list answer, else "").
+    Fails closed on a ref that is not `answers/assess-<SEQ>.json`, a path that resolves outside
+    flow_dir, unreadable JSON, a question without an `item`, or an answer for an unknown question.
     """
-    # Parse answer_ref like "answers/assess-01.json"
-    if not answer_ref.startswith("answers/assess-") or not answer_ref.endswith(".json"):
-        return (None, f"outstanding gate: invalid answer_ref format: {answer_ref}")
-
-    # Extract sequence number
-    match = re.match(r"answers/assess-(\d{2})\.json", answer_ref)
-    if not match:
-        return (None, f"outstanding gate: invalid answer_ref format: {answer_ref}")
-
-    seq = match.group(1)
-    questions_file = flow_dir / f"questions/assess-{seq}.json"
-    answers_file = flow_dir / f"answers/assess-{seq}.json"
-
-    # Check that files are under flow_dir
-    try:
-        questions_resolved = questions_file.resolve()
-        answers_resolved = answers_file.resolve()
-        flow_resolved = flow_dir.resolve()
-
-        if not str(questions_resolved).startswith(str(flow_resolved)):
-            return (None, "outstanding gate: answer file outside flow_dir")
-        if not str(answers_resolved).startswith(str(flow_resolved)):
-            return (None, "outstanding gate: answer file outside flow_dir")
-    except Exception:
-        return (None, "outstanding gate: answer file path validation failed")
-
-    # Read questions file
-    if not questions_file.exists():
-        return (None, f"outstanding gate: questions file not found: {questions_file}")
-
+    m = _ANSWER_REF_RE.fullmatch(answer_ref)
+    if not m:
+        return (None, f"outstanding gate: invalid answer_ref: {answer_ref}")
+    seq = m.group(1)
+    questions_file = flow_dir / "questions" / f"assess-{seq}.json"
+    answers_file = flow_dir / "answers" / f"assess-{seq}.json"
+    flow_resolved = flow_dir.resolve()
+    for path in (questions_file, answers_file):
+        if not _is_under_root(path.resolve(), flow_resolved):
+            return (None, f"outstanding gate: answer file outside FLOW_DIR: {answer_ref}")
+    for path in (questions_file, answers_file):
+        if not path.is_file():
+            return (None, f"outstanding gate: answer file not found: {answer_ref}")
     try:
         questions_data = json.loads(questions_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as e:
-        return (None, f"outstanding gate: cannot read questions file: {e}")
-
-    if not isinstance(questions_data, dict) or "questions" not in questions_data:
-        return (None, "outstanding gate: questions file malformed")
-
-    questions_by_id: Dict[str, Dict] = {}
-    for q in questions_data.get("questions", []):
-        if isinstance(q, dict) and "id" in q and "item" in q:
-            questions_by_id[q["id"]] = q
-
-    # Read answers file
-    if not answers_file.exists():
-        return (None, f"outstanding gate: answers file not found: {answers_file}")
-
-    try:
         answers_data = json.loads(answers_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as e:
-        return (None, f"outstanding gate: cannot read answers file: {e}")
+        return (None, f"outstanding gate: cannot read answers for {answer_ref}: {e}")
+    if not isinstance(questions_data, dict) or not isinstance(questions_data.get("questions"), list):
+        return (None, f"outstanding gate: questions file malformed for {answer_ref}")
+    if not isinstance(answers_data, dict) or not isinstance(answers_data.get("answers"), dict):
+        return (None, f"outstanding gate: answers file malformed for {answer_ref}")
 
-    if not isinstance(answers_data, dict) or "answers" not in answers_data:
-        return (None, "outstanding gate: answers file malformed")
+    item_by_qid: Dict[str, str] = {}
+    for q in questions_data["questions"]:
+        if not isinstance(q, dict) or not isinstance(q.get("id"), str):
+            return (None, f"outstanding gate: questions file malformed for {answer_ref}")
+        item = q.get("item")
+        if not isinstance(item, str) or not item:
+            return (None, f"outstanding gate: question {q['id']} has no item field ({answer_ref})")
+        item_by_qid[q["id"]] = item
 
-    # Build answer_map from answers
+    annotations = answers_data.get("annotations")
+    if not isinstance(annotations, dict):
+        annotations = {}
     answer_map: Dict[str, Tuple[str, str]] = {}
-    for q_id, answer_entry in answers_data.get("answers", {}).items():
-        if isinstance(answer_entry, dict):
-            # Get the label (the chosen option)
-            label = answer_entry.get("label") or answer_entry.get("choice", "")
-
-            # Get the free text (reason or notes)
-            free_text = answer_entry.get("annotations", {}).get("notes", "")
-            if not free_text:
-                free_text = answer_entry.get("text", "")
-
-            # Look up the question to get the item id
-            if q_id in questions_by_id:
-                item_id = questions_by_id[q_id].get("item", "")
-                if item_id:
-                    answer_map[item_id] = (label, free_text)
-
+    for qid, value in answers_data["answers"].items():
+        if qid not in item_by_qid:
+            return (None, f"outstanding gate: answer {qid} matches no question ({answer_ref})")
+        free_text = ""
+        if isinstance(value, list):
+            label = str(value[0]) if value else ""
+            free_text = str(value[1]) if len(value) > 1 else ""
+        else:
+            label = str(value)
+        ann = annotations.get(qid)
+        if isinstance(ann, dict) and isinstance(ann.get("notes"), str) and ann["notes"].strip():
+            free_text = ann["notes"]
+        answer_map[item_by_qid[qid]] = (label, free_text)
     return (answer_map, None)
 
 
-def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
-    """Check an assess receipt against derived outstanding set and rules.
+FIXED_CHOICE_LABELS = ("Open an issue", "Leave as-is", "Pause to finish by hand", "Drop", "Confirm already done")
+DROP_REASON_MIN_LEN = 15
+DROP_REASON_DENYLIST = frozenset({"n/a", "none", "not needed", "drop", "skip", "wontfix"})
+ISSUE_URL_RE = re.compile(r"https://github\.com/.+/issues/[0-9]+")
+_ASSESS_STATUSES = ("unfinished", "already-done")
+_ASSESS_KINDS = ("mechanical", "decision")
+_ASSESS_SCOPES = ("in-scope", "separate-ticket")
+_DISPOSITIONS = ("finished", "asked-and-answered", "filed-as-issue", "dropped")
+_DISPOSITION_BYS = ("human", "assessor-verified")
+_DISPOSITION_ROUTES = ("leave", "pause", "issue", "none")
 
-    Returns error reason if check fails, None if check passes.
+
+def parse_options(text: str) -> Tuple[Tuple[AssessorOption, ...], Optional[str]]:
+    """Parse `<label> => pause|issue ;; <label> => pause|issue` (empty text is zero options)."""
+    if not text.strip():
+        return ((), None)
+    opts: List[AssessorOption] = []
+    for chunk in text.split(" ;; "):
+        label, sep, route = chunk.rpartition(" => ")
+        label, route = label.strip(), route.strip()
+        if not sep or not label:
+            return ((), f"option {chunk!r} is not '<label> => pause|issue'")
+        if route not in ("pause", "issue"):
+            return ((), f"option {label!r} has route {route!r}, expected pause or issue")
+        if label.casefold() in {f.casefold() for f in FIXED_CHOICE_LABELS}:
+            return ((), f"option label {label!r} equals a fixed choice label")
+        if label.casefold() in {o.label.casefold() for o in opts}:
+            return ((), f"duplicate option label {label!r}")
+        opts.append(AssessorOption(label, route))  # type: ignore[arg-type]
+    if len(opts) > 2:
+        return ((), f"{len(opts)} options, at most 2 allowed")
+    return (tuple(opts), None)
+
+
+def parse_assessment_line(line: str) -> Tuple[Optional[Assessment], Optional[str]]:
+    """Parse one assessment record. Returns (record, None) or (None, reason naming the id)."""
+    hint = line.split(" | ")[0].strip()
+    m = ASSESSMENT_ITEM_RE.match(line)
+    if not m:
+        return (None, f"assess receipt: malformed line for {hint}")
+    item_id, status, kind, scope, leave, cause, evidence, plan, proof, options_text = (g.strip() for g in m.groups())
+    for name, value, allowed in (
+        ("status", status, _ASSESS_STATUSES), ("kind", kind, _ASSESS_KINDS), ("scope", scope, _ASSESS_SCOPES),
+        ("leave_as_is_safe", leave, ("yes", "no")),
+    ):
+        if value not in allowed:
+            return (None, f"assess receipt: invalid {name} value in {item_id}: {value}")
+    options, opt_err = parse_options(options_text)
+    if opt_err:
+        return (None, f"assess receipt: {item_id}: {opt_err}")
+    rec = Assessment(item_id, status, kind, scope, leave, cause, evidence, plan, proof, options)  # type: ignore[arg-type]
+    return (rec, None)
+
+
+def load_assessments(receipt_text: str) -> Tuple[Optional[List[Assessment]], Optional[str]]:
+    """Parse every record before `<!-- assessment-end -->`; any stray non-record line fails closed."""
+    if "<!-- assessment-end -->" not in receipt_text:
+        return (None, "assess receipt missing <!-- assessment-end --> block")
+    records: List[Assessment] = []
+    seen = set()
+    for line in receipt_text.split("\n"):
+        if line.strip() == "<!-- assessment-end -->":
+            break
+        if not line.strip() or line.startswith("ASSESSED:"):
+            continue
+        rec, err = parse_assessment_line(line)
+        if rec is None:
+            return (None, err)
+        if rec.id in seen:
+            return (None, f"assess receipt: duplicate assessment for {rec.id}")
+        seen.add(rec.id)
+        records.append(rec)
+    return (records, None)
+
+
+def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
+    """Check an assess receipt against the derived outstanding set and the plan's rules 1-6.
+
+    Returns an error reason, or None when the receipt passes.
     """
-    # Read receipt
     try:
         receipt = receipt_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         return f"cannot read assess receipt: {e}"
 
-    # Check for <!-- assessment-end --> block
-    if "<!-- assessment-end -->" not in receipt:
-        return "assess receipt missing <!-- assessment-end --> block"
+    records, err = load_assessments(receipt)  # rule 1 (end block) and record grammar
+    if records is None:
+        return err
+    derived_items, derive_err = derive_outstanding_set(flow_dir)
+    if derive_err:
+        return derive_err
+    coverage_by_id = {item[0]: item[2] for item in derived_items}
 
-    # Derive the outstanding set
-    derived_items, error = derive_outstanding_set(flow_dir)
-    if error:
-        return error
+    # Rule 2: id-set equality, missing and extra named separately.
+    receipt_ids = {r.id for r in records}
+    missing = [i for i in coverage_by_id if i not in receipt_ids]
+    extra = sorted(receipt_ids - set(coverage_by_id))
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append("missing " + ", ".join(missing))
+        if extra:
+            parts.append("extra " + ", ".join(extra))
+        return "assessment ids: " + "; ".join(parts)
 
-    derived_ids = {item[0] for item in derived_items}
-
-    # Parse assessment lines from receipt
-    for line in receipt.split("\n"):
-        if line.startswith("<!-- assessment-end -->"):
-            break
-        if not line.strip() or "|" not in line:
-            continue
-
-        # Try to parse assessment line
-        # Format: <id> | status=<value> | kind=<value> | ... | options=<value>
-        parts = [p.strip() for p in line.split(" | ")]
-        if len(parts) < 10:
-            continue
-
-        item_id = parts[0]
-        # Parse field=value pairs
-        fields: Dict[str, str] = {}
-        for i in range(1, len(parts)):
-            if "=" in parts[i]:
-                key, val = parts[i].split("=", 1)
-                fields[key] = val
-
-        # Validate required fields and their values
-        if not all(k in fields for k in ["status", "kind", "scope", "leave_as_is_safe", "cause", "evidence"]):
-            return f"assess receipt: missing required field in {item_id}"
-
-        status = fields.get("status")
-        if status not in ["unfinished", "already-done"]:
-            return f"assess receipt: invalid status value in {item_id}: {status}"
-
-        kind = fields.get("kind")
-        if kind not in ["mechanical", "decision"]:
-            return f"assess receipt: invalid kind value in {item_id}: {kind}"
-
-        scope = fields.get("scope")
-        if scope not in ["in-scope", "separate-ticket"]:
-            return f"assess receipt: invalid scope value in {item_id}: {scope}"
-
-        leave_as_is_safe = fields.get("leave_as_is_safe")
-        if leave_as_is_safe not in ["yes", "no"]:
-            return f"assess receipt: invalid leave_as_is_safe value in {item_id}: {leave_as_is_safe}"
-
-        # Rule 3: evidence is non-empty
-        if not fields.get("evidence"):
-            return f"assess receipt: evidence is empty for {item_id}"
-
-        # Rule 4: mechanical items need finish_plan and verification_proof
-        if kind == "mechanical" and status == "unfinished":
-            if not fields.get("finish_plan"):
-                return f"assess receipt: mechanical item {item_id} missing finish_plan"
-            if not fields.get("verification_proof"):
-                return f"assess receipt: mechanical item {item_id} missing verification_proof"
-
-        # Rule 5: unknown-coverage items must be unfinished + decision
-        for derived_item in derived_items:
-            if derived_item[0] == item_id and derived_item[2] == "unknown":
-                if status != "unfinished" or kind != "decision":
-                    return f"assess receipt: unknown-coverage item {item_id} must be unfinished+decision"
-
-        # Rule 6: decision items have options
-        options_str = fields.get("options", "")
-        if kind == "decision":
-            if not options_str:
-                return f"assess receipt: decision item {item_id} has no options"
-
-        # Store assessment (simplified for now, full parsing would extract all fields)
-        # We mainly need this for id-set checking
-
-    # Rule 2: Id-set equality
-    # Get assessment ids from receipt
-    receipt_ids = set()
-    for line in receipt.split("\n"):
-        if line.startswith("<!-- assessment-end -->"):
-            break
-        if " | " in line and not line.startswith("<!--"):
-            item_id = line.split(" | ")[0]
-            if item_id and not item_id.startswith("ASSESSED:"):
-                receipt_ids.add(item_id)
-
-    missing_ids = derived_ids - receipt_ids
-    extra_ids = receipt_ids - derived_ids
-
-    if missing_ids or extra_ids:
-        missing_str = ", ".join(sorted(missing_ids))
-        extra_str = ", ".join(sorted(extra_ids))
-        reason = "assessment ids: "
-        if missing_ids:
-            reason += f"missing {missing_str}"
-        if extra_ids:
-            if missing_ids:
-                reason += "; "
-            reason += f"extra {extra_str}"
-        return reason
-
+    for r in records:
+        if not r.evidence:  # rule 3
+            return f"assess receipt: evidence is empty for {r.id}"
+        if r.kind == "mechanical" and r.status == "unfinished":  # rule 4
+            if not r.finish_plan:
+                return f"assess receipt: mechanical item {r.id} missing finish_plan"
+            if not r.verification_proof:
+                return f"assess receipt: mechanical item {r.id} missing verification_proof"
+        if coverage_by_id[r.id] == "unknown" and (r.status != "unfinished" or r.kind != "decision"):  # rule 5
+            return f"assess receipt: unknown-coverage item {r.id} must be unfinished+decision"
+        if r.status == "unfinished" and r.kind == "decision" and not (1 <= len(r.options) <= 2):  # rule 6
+            return f"assess receipt: decision item {r.id} needs 1-2 options"
     return None
+
+
+def _gate_fail_undisposed(ids: List[str], reason: str) -> NoReturn:
+    """Print the UNDISPOSITIONED: line (comma-separated, only when non-empty) then exit 2 with `reason`."""
+    if ids:
+        print(f"UNDISPOSITIONED: {','.join(ids)}")
+    error(reason)
+
+
+def _parse_marker(text: str) -> Tuple[str, Optional[str], List[Disposition], bool]:
+    """Parse a marker. Returns (kind, assessment_mode, dispositions, has_sentinel); kind is "v2" or "legacy".
+
+    Calls error() on a malformed v2 marker (names the offending line).
+    """
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    has_sentinel = any(ln.strip() == "<!-- outstanding-end -->" for ln in lines)
+    nonblank = [ln for ln in lines if ln.strip()]
+    if not nonblank or not nonblank[0].startswith("format:"):
+        return ("legacy", None, [], has_sentinel)
+    if nonblank[0].strip() != "format: 2":
+        error(f"outstanding gate: unsupported marker format line: {nonblank[0]}")
+    if len(nonblank) < 3 or not nonblank[1].startswith("assessment: ") \
+            or nonblank[1][len("assessment: "):].strip() not in ("assessor", "taken-over") \
+            or nonblank[2].strip() != "<!-- outstanding-pending -->":
+        error("outstanding gate: malformed marker header (expected 'format: 2', 'assessment: assessor|taken-over', "
+              "'<!-- outstanding-pending -->')")
+    mode = nonblank[1][len("assessment: "):].strip()
+    dispositions: List[Disposition] = []
+    ended = False
+    for ln in nonblank[3:]:
+        if ln.strip() == "<!-- outstanding-end -->":
+            ended = True
+            continue
+        if ended:
+            error(f"outstanding gate: content after the sentinel: {ln[:80]}")
+        m = DISPOSITION_ITEM_RE.match(ln)
+        if not m:
+            error(f"outstanding gate: malformed disposition line: {ln[:100]}")
+        item_id, disp_v, by, answer_ref, option, route, url, reason = (g.strip() for g in m.groups())
+        if disp_v not in _DISPOSITIONS:
+            error(f"outstanding gate: invalid disposition value for {item_id}: {disp_v}")
+        if by not in _DISPOSITION_BYS:
+            error(f"outstanding gate: invalid by value for {item_id}: {by}")
+        if route not in _DISPOSITION_ROUTES:
+            error(f"outstanding gate: invalid route value for {item_id}: {route}")
+        dispositions.append(Disposition(item_id, disp_v, by, answer_ref, option, route, url, reason))  # type: ignore[arg-type]
+    return ("v2", mode, dispositions, has_sentinel)
+
+
+def _legacy_gate(flow_dir: Path, marker_text: str, derived_ids: List[str], has_sentinel: bool) -> None:
+    """Bounded legacy-marker rule (ADR-0023 2026-10-27 amendment, item 7). Exits via error() or sys.exit(0)."""
+    log_file = flow_dir / "log.md"
+    try:
+        log_text = log_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        log_text = ""
+    if "outstanding_format" in _read_state(flow_dir) or (flow_dir / "steps" / "07-assess.md").exists() \
+            or _has_assess_log_line(log_text):
+        _gate_fail_undisposed(derived_ids, "outstanding gate: legacy marker not allowed for this flow")
+    if not has_sentinel:
+        _gate_fail_undisposed(derived_ids, "outstanding gate: marker incomplete")
+    legacy_lines = [ln for ln in marker_text.split("\n") if ln.strip() and not ln.strip().startswith("<!--")]
+    uncovered: List[str] = []
+    ambiguous: List[str] = []
+    for item_id in derived_ids:
+        unit = item_id.split(":", 1)[1]
+        pattern = re.compile(r"(?<!\w)" + re.escape(unit) + r"(?!\w)")
+        hits = sum(1 for ln in legacy_lines if pattern.search(ln))
+        if hits == 0:
+            uncovered.append(item_id)
+        elif hits > 1:
+            ambiguous.append(item_id)
+    if uncovered:
+        _gate_fail_undisposed(uncovered, f"outstanding gate: legacy marker does not cover {', '.join(uncovered)}")
+    if ambiguous:
+        error(f"outstanding gate: legacy marker has more than one line for {', '.join(ambiguous)}")
+    print("OUTSTANDING_GATE: legacy")
+    sys.exit(0)
+
+
+def _paused_unfinished(dispositions: List[Disposition], assessments: Dict[str, Assessment], mode: str) -> List[str]:
+    """Ids whose disposition is a pause that is not yet terminal (current record is not already-done)."""
+    out = []
+    for d in dispositions:
+        if d.disposition == "asked-and-answered" and d.route == "pause":
+            rec = assessments.get(d.id)
+            if mode == "taken-over" or rec is None or rec.status != "already-done":
+                out.append(d.id)
+    return out
+
+
+def outstanding_gate(flow_dir: Path, marker_file: Path) -> None:
+    """The typed disposition gate (W2). Exits 0 when every derived id has a terminal, attributed disposition;
+    otherwise prints `UNDISPOSITIONED: <ids>` (when applicable) and exits 2 with an `outstanding gate:` reason."""
+    items, derive_err = derive_outstanding_set(flow_dir)
+    if derive_err:
+        error(derive_err)
+    coverage_by_id = {i[0]: i[2] for i in items}
+    derived_ids = [i[0] for i in items]
+    if not derived_ids:
+        sys.exit(0)
+    if not marker_file.exists():
+        _gate_fail_undisposed(derived_ids, "outstanding gate: no disposition marker")
+    try:
+        marker_text = marker_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        error(f"outstanding gate: cannot read disposition marker: {e}")
+
+    kind, mode, dispositions, has_sentinel = _parse_marker(marker_text)
+    if kind == "legacy":
+        _legacy_gate(flow_dir, marker_text, derived_ids, has_sentinel)
+    assert mode is not None
+
+    by_id: Dict[str, Disposition] = {}
+    for d in dispositions:
+        if d.id in by_id:
+            error(f"outstanding gate: duplicate disposition for {d.id}")
+        by_id[d.id] = d
+    missing = [i for i in derived_ids if i not in by_id]
+
+    # Lenient view of the assessment, only to report paused ids on an incomplete marker.
+    assessments: Dict[str, Assessment] = {}
+    assess_file = flow_dir / "steps" / "07-assess.md"
+    if mode == "assessor" and assess_file.exists():
+        try:
+            recs, _ = load_assessments(assess_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            recs = None
+        assessments = {r.id: r for r in recs or []}
+
+    if not has_sentinel:
+        _gate_fail_undisposed(missing + _paused_unfinished(dispositions, assessments, mode),
+                              "outstanding gate: marker incomplete")
+    if missing:
+        _gate_fail_undisposed(missing, f"outstanding gate: undispositioned: {', '.join(missing)}")
+    extra = [i for i in by_id if i not in coverage_by_id]
+    if extra:
+        error(f"outstanding gate: extra dispositions: {', '.join(extra)}")
+
+    # The assessment must back the marker (assessor) or the log must show the take-over (taken-over).
+    if mode == "assessor":
+        if not assess_file.exists():
+            error("outstanding gate: steps/07-assess.md missing for an assessor marker")
+        assess_err = check_assess(assess_file, flow_dir)
+        if assess_err:
+            error(f"outstanding gate: assessment invalid: {assess_err}")
+        recs, _ = load_assessments(assess_file.read_text(encoding="utf-8"))
+        assessments = {r.id: r for r in recs or []}
+    else:
+        try:
+            log_text = (flow_dir / "log.md").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            log_text = ""
+        if _newest_assess_event(log_text) != "taken-over":
+            error("outstanding gate: assessment: taken-over needs the newest assess log line to be 'taken-over'")
+
+    answer_cache: Dict[str, Dict[str, Tuple[str, str]]] = {}
+
+    def answer_for(d: Disposition) -> Tuple[str, str]:
+        if d.answer_ref == "none":
+            error(f"outstanding gate: human disposition without an answer: {d.id}")
+        if d.answer_ref not in answer_cache:
+            amap, aerr = load_assess_answers(flow_dir, d.answer_ref)
+            if amap is None:
+                error(aerr or "outstanding gate: answers unreadable")
+            answer_cache[d.answer_ref] = amap
+        entry = answer_cache[d.answer_ref].get(d.id)
+        if entry is None:
+            error(f"outstanding gate: answer does not cover {d.id} ({d.answer_ref})")
+        return entry
+
+    def mismatch(d: Disposition, label: str) -> NoReturn:
+        error(f'outstanding gate: answer mismatch for {d.id}: answered "{label}", marker says {d.disposition}')
+
+    paused: List[str] = []
+    for d in dispositions:
+        cov = coverage_by_id[d.id]
+        rec = assessments.get(d.id)
+        if d.disposition == "finished":
+            if mode == "taken-over":
+                error(f"outstanding gate: finished not allowed under taken-over: {d.id}")
+            if cov == "unknown":
+                error(f"outstanding gate: finished not allowed for unknown coverage: {d.id}")
+            if rec is None or rec.status != "already-done":
+                error(f"outstanding gate: finished needs an already-done assessment: {d.id}")
+            if d.by == "assessor-verified":
+                if cov not in ("declared", "none"):
+                    error(f"outstanding gate: finished on {cov} coverage needs a human confirmation: {d.id}")
+            else:
+                if cov != "uncovered":
+                    error(f"outstanding gate: human finished only applies to uncovered rows: {d.id}")
+                label, _ = answer_for(d)
+                if label != "Confirm already done":
+                    mismatch(d, label)
+            continue
+        if d.by != "human":
+            kind_word = "drop" if d.disposition == "dropped" else d.disposition
+            error(f"outstanding gate: {kind_word} without human answer: {d.id}")
+        label, free_text = answer_for(d)
+        if d.disposition == "filed-as-issue":
+            if label != "Open an issue":
+                mismatch(d, label)
+            if not ISSUE_URL_RE.fullmatch(d.url):
+                error(f"outstanding gate: filed-as-issue needs an issue URL: {d.id}")
+        elif d.disposition == "dropped":
+            if label != "Drop":
+                mismatch(d, label)
+            reason = d.reason.strip()
+            if reason != free_text.strip():
+                error(f"outstanding gate: drop reason differs from answer: {d.id}")
+            if len(reason) < DROP_REASON_MIN_LEN or reason.casefold() in DROP_REASON_DENYLIST:
+                error(f"outstanding gate: drop reason too thin for {d.id}")
+        else:  # asked-and-answered
+            if d.option != label:
+                mismatch(d, label)
+            options = {o.label: o.route for o in rec.options} if rec is not None else {}
+            if d.route == "leave":
+                if mode == "taken-over":
+                    error(f"outstanding gate: leave-as-is not allowed under taken-over: {d.id}")
+                if label != "Leave as-is" or rec is None or rec.leave_as_is_safe != "yes":
+                    error(f"outstanding gate: leave-as-is not allowed for {d.id}")
+            elif d.route == "issue":
+                if options.get(label) != "issue":
+                    error(f"outstanding gate: option {label!r} is not an issue-routed assessor option for {d.id}")
+                if not ISSUE_URL_RE.fullmatch(d.url):
+                    error(f"outstanding gate: issue-routed option needs an issue URL: {d.id}")
+            elif d.route == "pause":
+                if label != "Pause to finish by hand" and options.get(label) != "pause":
+                    error(f"outstanding gate: option {label!r} is not a pause option for {d.id}")
+                if mode == "taken-over" and label != "Pause to finish by hand":
+                    error(f"outstanding gate: only 'Pause to finish by hand' is allowed under taken-over: {d.id}")
+                if mode == "taken-over" or rec is None or rec.status != "already-done":
+                    paused.append(d.id)
+            else:
+                error(f"outstanding gate: asked-and-answered needs route leave|issue|pause: {d.id}")
+    if paused:
+        _gate_fail_undisposed(paused, f"outstanding gate: paused, not yet finished: {', '.join(paused)}")
+    sys.exit(0)
 
 
 def coverage_mode(
@@ -3003,62 +3233,7 @@ def main() -> None:
         if not flow_dir.is_dir():
             error(f"Flow directory not found: {args.flow_dir}")
 
-        receipt_file = Path(args.receipt)
-        # For this mode, the receipt may not exist yet (pending disposition)
-        # So we check if it exists; if not, we treat the set as undispositioned
-
-        # Derive the outstanding set first
-        items, error_reason = derive_outstanding_set(flow_dir)
-        if error_reason:
-            print(error_reason, file=sys.stderr)
-            sys.exit(2)
-
-        derived_ids = {item[0] for item in items}
-
-        # If derived set is empty, gate passes
-        if not derived_ids:
-            sys.exit(0)
-
-        # If marker doesn't exist, all items are undispositioned
-        if not receipt_file.exists():
-            print(f"UNDISPOSITIONED: {','.join(sorted(derived_ids))}")
-            error("outstanding gate: no disposition marker")
-
-        # Read receipt
-        try:
-            receipt = receipt_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            error(f"Cannot read disposition marker: {e}")
-
-        # Check format and marker structure
-        if "format: 2" not in receipt and "<!-- outstanding-end -->" not in receipt:
-            # Legacy marker (pre-amendment)
-            # For now, we'll fail closed on legacy
-            error("outstanding gate: legacy marker not supported in this pass")
-
-        # Parse disposition lines and check completeness
-        dispositions_by_id: Dict[str, str] = {}
-        for line in receipt.split("\n"):
-            if line.startswith("<!-- outstanding-end -->"):
-                break
-            if " | " in line and not line.startswith("<!--") and not line.startswith("format:") and not line.startswith("assessment:"):
-                parts = [p.strip() for p in line.split(" | ")]
-                if len(parts) >= 1:
-                    item_id = parts[0]
-                    dispositions_by_id[item_id] = line
-
-        # Check completeness
-        undispositioned = sorted(derived_ids - set(dispositions_by_id.keys()))
-        if undispositioned:
-            print(f"UNDISPOSITIONED: {','.join(undispositioned)}")
-            error("outstanding gate: marker incomplete")
-
-        # Check for sentinel
-        if "<!-- outstanding-end -->" not in receipt:
-            print(f"UNDISPOSITIONED: {','.join(sorted(derived_ids))}")
-            error("outstanding gate: marker incomplete")
-
-        # All checks pass
+        outstanding_gate(flow_dir, Path(args.receipt))
         sys.exit(0)
 
     # Read receipt file for standard modes
@@ -3250,6 +3425,18 @@ def main() -> None:
         print("ARTIFACTS: ok")
         sys.exit(0)
 
+    # Assess receipts are checked against the derived set, not a --since window.
+    if args.step == "assess":
+        assess_flow_dir = resolve_flow_dir(args.flow_dir, receipt_file)
+        if assess_flow_dir is None:
+            error("--step assess requires --flow-dir (or a receipt under FLOW_DIR/steps/)")
+        assess_reason = check_assess(receipt_file, assess_flow_dir)
+        if assess_reason:
+            print(f"Reason: {assess_reason}")
+            sys.exit(1)
+        print("ARTIFACTS: ok")
+        sys.exit(0)
+
     # Standard artifact verification mode
     if args.since is None and not args.since_from_log:
         error("--since or --since-from-log required for standard verification")
@@ -3360,8 +3547,6 @@ def main() -> None:
             receipt_file, args.repo, args.branch, args.base, args.review_dir, home,
             args.main_worktree, args.check_worktree,
         )
-    elif args.step == "assess":
-        error_reason = check_assess(receipt_file, resolve_flow_dir(args.flow_dir, receipt_file))
     elif args.step in ["track", "verify", "ship", "merge"]:
         # No artifact checks
         error_reason = None

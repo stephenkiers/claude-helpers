@@ -48,9 +48,11 @@ def main():
 
     print("[commands/expert-flow.md: assess stage]")
 
-    assess_sec = section(ef, "assess.", "ship.")
-    ship_sec = section(ef, "ship.", "merge gate")
-    merge_sec = section(ef, "merge gate", "\n## ")
+    # Section boundaries are the bold stage headings: the bare strings "assess." / "ship." / "merge gate"
+    # also occur in prose and in file names such as 07-ship.outstanding.md, which cut sections short.
+    assess_sec = section(ef, "**assess.**", "**ship.**")
+    ship_sec = section(ef, "**ship.**", "**merge gate.**")
+    merge_sec = section(ef, "**merge gate.**", "\n## ")
 
     h.test_result("expert-flow.md has an assess. section before ship.", len(assess_sec) > 0)
     h.test_result("ship. section contains --outstanding-gate", "--outstanding-gate" in ship_sec,

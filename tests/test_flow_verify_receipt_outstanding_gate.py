@@ -17,11 +17,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _test_harness import Harness  # noqa: E402
 from _assess_fixtures import (  # noqa: E402
-    BASE_IMPL, DROP_REASON, ISSUE_URL, S3, S4, S5, TS,
+    BASE_IMPL, DECISION_OPTIONS, DROP_REASON, ISSUE_URL, S3, S4, S5, TS,
     assess_check, assess_line, disp, gate, make_flow, make_home, write_answers, write_assess, write_marker,
 )
 
-OPTS = "Open an issue => issue ;; Pause to finish by hand => pause"
+# Assessor option labels must not equal the fixed choice labels (rule 6), so the shared fixture labels are used.
+OPTS = DECISION_OPTIONS
 
 
 def combined(out, err):
@@ -92,7 +93,8 @@ def main():
         h.test_result("pending marker without sentinel fails 'marker incomplete'",
                       rc != 0 and "marker incomplete" in combined(out, err), f"rc={rc} out:\n{out}\nerr:\n{err}")
         h.test_result("pending marker prints UNDISPOSITIONED: implement:Step 4 on stdout",
-                      "UNDISPOSITIONED:" in out and S4 in out, f"out:\n{out}")
+                      [ln for ln in out.splitlines() if ln.startswith("UNDISPOSITIONED:")]
+                      == [f"UNDISPOSITIONED: {S4}"], f"out:\n{out}")
 
     print()
     print("[Gate: assessor and human dispositions]")
@@ -101,7 +103,7 @@ def main():
         home, flow = base(td)
         write_answers(flow, 1, [("q1", S3, "Drop", DROP_REASON), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "dropped", by="assessor", answer_ref="none", option="Drop", reason=DROP_REASON),
+            disp(S3, "dropped", by="assessor-verified", answer_ref="none", option="Drop", reason=DROP_REASON),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
@@ -203,11 +205,23 @@ def main():
         home, flow = base(td)
         write_answers(flow, 1, [("q1", S3, "Improvise", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "filed-as-issue", option="Improvise", route="issue", url=ISSUE_URL),
+            disp(S3, "asked-and-answered", option="Improvise", route="issue", url=ISSUE_URL),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
-        h.test_result("option label that is not one of the assess options fails", rc != 0,
+        h.test_result("option label that is not one of the assess options fails 'not an issue-routed assessor option'",
+                      rc != 0 and "not an issue-routed assessor option" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = base(td)
+        write_answers(flow, 1, [("q1", S3, "File a follow-up", None), ("q2", S4, "Open an issue", None)])
+        write_marker(flow, [
+            disp(S3, "asked-and-answered", option="File a follow-up", route="issue", url=ISSUE_URL),
+            good_lines()[1],
+        ])
+        rc, out, err = gate(flow, home)
+        h.test_result("assessor option 'File a follow-up' routed issue with a URL passes", rc == 0,
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -228,7 +242,7 @@ def main():
         ])
         write_answers(flow, 1, [("q1", S3, "Leave as-is", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "leave-as-is", option="Leave as-is"),
+            disp(S3, "asked-and-answered", option="Leave as-is", route="leave"),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
@@ -244,7 +258,7 @@ def main():
         ])
         write_answers(flow, 1, [("q1", S3, "Pause to finish by hand", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "paused", option="Pause to finish by hand", route="pause"),
+            disp(S3, "asked-and-answered", option="Pause to finish by hand", route="pause"),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
@@ -255,7 +269,7 @@ def main():
         home, flow = base(td)
         write_answers(flow, 1, [("q1", S3, "Pause to finish by hand", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "paused", option="Pause to finish by hand", route="pause"),
+            disp(S3, "asked-and-answered", option="Pause to finish by hand", route="pause"),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
@@ -278,7 +292,7 @@ def main():
         home, flow = base(td)
         write_answers(flow, 1, [("q1", S3, "Confirm already done", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "already-done", by="assessor", answer_ref="none"),
+            disp(S3, "finished", by="assessor-verified", answer_ref="none"),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
@@ -294,7 +308,7 @@ def main():
         ])
         write_answers(flow, 1, [("q1", S3, "Confirm already done", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
-            disp(S3, "already-done", by="human", option="Confirm already done"),
+            disp(S3, "finished", by="human", option="Confirm already done"),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
@@ -338,7 +352,7 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         home, flow = taken_flow(td)
         write_answers(flow, 1, [("q1", "implement:coverage-unavailable", "Leave as-is", None)])
-        write_marker(flow, [disp("implement:coverage-unavailable", "leave-as-is", option="Leave as-is")],
+        write_marker(flow, [disp("implement:coverage-unavailable", "asked-and-answered", option="Leave as-is", route="leave")],
                      assessment="taken-over")
         rc, out, err = gate(flow, home)
         h.test_result("taken-over marker with leave-as-is fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
@@ -359,7 +373,15 @@ def main():
         home, flow = legacy_flow(td)
         write_marker(flow, legacy_ok, fmt=True)
         rc, out, err = gate(flow, home)
-        h.test_result("format-2 marker carrying legacy lines fails 'legacy marker not allowed'",
+        h.test_result("format-2 header carrying unparseable legacy lines fails", rc != 0,
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = legacy_flow(td)
+        (flow / "state.json").write_text('{"outstanding_format": 2}')
+        write_marker(flow, legacy_ok, fmt=False)
+        rc, out, err = gate(flow, home)
+        h.test_result("legacy marker in a flow with outstanding_format fails 'legacy marker not allowed'",
                       rc != 0 and "legacy marker not allowed" in combined(out, err), f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:

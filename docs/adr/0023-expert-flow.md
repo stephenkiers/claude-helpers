@@ -772,11 +772,11 @@ This amendment closes four gaps discovered in lotl#1809 dogfooding and tracked a
 
 - **Fix 4: required `OUTSTANDING:` receipt line; ship-step relay** (per D2, option A, and Q2, option A).
   - Implement and fix `Decision: OK` receipts carry `OUTSTANDING:` listing units the step left undone, each with a reason and a provenance label (`[self-report]` or `[both]`). `OUTSTANDING: none` is allowed. Units flagged by the diff heuristic alone (not self-reported) are never written; they stay a silent miss for the verifier.
-  - The ship step reads both `OUTSTANDING:` lines (from implement and fix receipts) and the persisted coverage tables (`steps/<NN>-<STEP>.coverage.txt`), unioning declared and uncovered units. ~~It asks one batched question per relay-set item: **Open an issue** or **Drop**.~~ *Superseded by the 2026-10-27 amendment.* ~~The question is skipped if the relay set is empty or the idempotence marker (`steps/<NN>-ship.outstanding.md` with `<!-- outstanding-end -->`) exists.~~ *Superseded by the 2026-10-27 amendment.*
+  - The ship step reads both `OUTSTANDING:` lines (from implement and fix receipts) and the persisted coverage tables (`steps/<NN>-<STEP>.coverage.txt`), unioning declared and uncovered units. ~~It asks one batched question per relay-set item: **Open an issue** or **Drop**.~~ *(This sentence is superseded by the 2026-10-27 amendment.)* ~~The question is skipped if the relay set is empty or the idempotence marker (`steps/<NN>-ship.outstanding.md` with `<!-- outstanding-end -->`) exists.~~ *(This sentence is superseded by the 2026-10-27 amendment.)*
   - The done line appends `   outstanding: <ids>` listing items with no recorded disposition or issues opened.
   - This prepares #288 (post-merge verification) to read the same `OUTSTANDING:` line and relay set.
 
-**Consequences.** A plan step that leaves work unbuilt and undeclared now fails the audit and surfaces every uncovered unit to the human at ship. A failed step resumed without its audit evidence hard-stops. A failure reason is always logged, enabling post-merge triage. ~~Outstanding items are relayed once at ship and listed on the done line, with a choice between deferral or dropping each item.~~ *Superseded by the 2026-10-27 amendment.*
+**Consequences.** A plan step that leaves work unbuilt and undeclared now fails the audit and surfaces every uncovered unit to the human at ship. A failed step resumed without its audit evidence hard-stops. A failure reason is always logged, enabling post-merge triage. ~~Outstanding items are relayed once at ship and listed on the done line, with a choice between deferral or dropping each item.~~ *(This sentence is superseded by the 2026-10-27 amendment.)*
 
 **Related.** This amendment depends on and amends the 2026-10-16 second amendment's `taken-over` handling, and builds on the 2026-10-19 amendment's verifier ownership. When #288 lands, it will read the `OUTSTANDING:` line and the relay set persisted by this amendment.
 
@@ -950,3 +950,13 @@ Under `--auto-merge`, an `already-done` item with coverage `declared` or `none` 
 - **Drop reason minimum length:** 15 characters.
 - **Stop reason string:** `assess: working tree changed during assessment`.
 - **Boilerplate denylist for drop reasons:** `n/a`, `none`, `not needed`, `drop`, `skip`, `wontfix`.
+
+### 10. Marker and record grammar (as enforced by `scripts/flow-verify-receipt.py`)
+
+`steps/07-ship.outstanding.md` starts with `format: 2`, then `assessment: assessor` or `assessment: taken-over`, then `<!-- outstanding-pending -->`, then one disposition line per derived id, then `<!-- outstanding-end -->` only when every id is dispositioned. Disposition line: `<id> | disposition= | by= | answer_ref= | option= | route= | url= | reason=` (`none` for an empty value). Assessment line in `steps/07-assess.md`: `<id> | status= | kind= | scope= | leave_as_is_safe= | cause= | evidence= | finish_plan= | verification_proof= | options=`, closed by `<!-- assessment-end -->`; `options` is `<label> => pause|issue`, joined by ` ;; `, at most two, and no label may equal a fixed choice label (`Open an issue`, `Leave as-is`, `Pause to finish by hand`, `Drop`, `Confirm already done`).
+
+The gate prints `UNDISPOSITIONED: <ids>` (only the ids lacking a terminal disposition, plus any paused-but-unfinished ids) before failing. A `route: pause` disposition is terminal only when the current assessment record is `already-done`; otherwise the gate fails with `paused, not yet finished`. A step that was taken over or hand-finished with no readable coverage contributes `<step>:coverage-unavailable` (coverage `unknown`, always asked). `stop_source.assess` may also be `"tree"`.
+
+### 11. Slice 2
+
+This amendment does not finish outstanding items automatically. Mechanical finishing via loop-back is slice 2, and is deliberately out of scope here.

@@ -91,7 +91,8 @@ In a fleet run (`--fleet`) the turn does **not** end while a step agent runs; se
 - `--auto-merge` — skip the human merge gate and go straight from ship to merge. **Per-run only;
   never a stored default, and never restored from `state.json` on `--resume`.** Never use with
   third-party PR comments or untrusted issue content — the merge gate is the human's chance to review
-  the PR and all its feedback before landing.
+  the PR and all its feedback before landing. The outstanding-items gate is not skipped: it runs
+  regardless of `flags.auto_merge` (see "merge gate").
 - `--gates` — turn on the step gates: the Continue / Pause / Abort stop after `plan`, `implement`,
   `review`, `fix`, and `verify` (see "Step gate"). **Off by default:** without it the flow stops
   only when a step relays a question, at the merge gate, or on a failure. Stored in `state.json`
@@ -869,7 +870,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `issue_url` | string | URL |
 | `worktree` | absolute path or `null` | set by the worktree step (or `--from` detection) |
 | `branch` | string or `null` | from `git worktree list` |
-| `step` | enum | `worktree`, `plan`, `track`, `implement`, `review`, `fix`, `verify`, `ship`, `merge` |
+| `step` | enum | `worktree`, `plan`, `track`, `implement`, `review`, `fix`, `verify`, `assess`, `ship`, `merge` |
 | `status` | enum | `running`, `awaiting`, `paused`, `failed`, `abandoned`, `done` |
 | `awaiting_kind` | string or `null` | `"report"` when awaiting a prose reply to a plan checkpoint, `null` otherwise; set when status is set to `awaiting` with a report question, cleared on resume or abort |
 | `awaiting_file` | string or `null` | basename of the question file being awaited (e.g., `"plan-01"`); set when `awaiting_kind: report`, cleared on resume or abort |
@@ -884,7 +885,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `implementer_model` | object step → `null`, `"sonnet"` | set when escalating to Sonnet; sticky once set; `implement` and `fix` only |
 | `escalations` | object step → integer | count of escalations per step (auto or manual); incremented on every escalation trigger; default: 0 per step on resume if absent |
 | `outstanding_format` | integer | version of the disposition marker format; `2` for flows created after the 2026-10-27 amendment; absent for earlier flows |
-| `stop_source` | object step → `"receipt"`, `"validation"`, `"audit"` | how the step reached FAILED: from the receipt itself, from a validation rule, or from fidelity audit; cleared on every `begin` or `retry` |
+| `stop_source` | object step → `"receipt"`, `"validation"`, `"audit"` (assess also uses `"tree"`) | how the step reached FAILED: from the receipt itself, from a validation rule, or from fidelity audit; cleared on every `begin` or `retry` |
 | `redos` | object step → integer | human-chosen redos per step, cap 2, incremented at launch, never decremented, kept as history; a redo leaves `gates[STEP]` absent so the gate is asked again after the redo closes OK |
 | `redo_archive` | object or `null` | `{step, attempt, nn}` written at Redo step 6 (after the archive succeeds, before the counters) and cleared when the redo lineage closes; a `null` value with an archive file present is a crash window and is handled by the redo's crash rule |
 | `live` | object or `null` | `{step, attempt, since}` while a step agent may be running or awaiting; `null` otherwise |
@@ -959,7 +960,7 @@ Redo-able steps: plan, review.
 **Agent column note:** plan, ship, merge stay general-purpose pending #359/#360. This table is the single place a step's `subagent_type` is named.
 
 The step names are also the telemetry stage names: `worktree`, `plan`, `track`, `implement`,
-`review`, `fix`, `verify`, `ship`, `merge`. Every step runs the same loop; `assess` is the one
+`review`, `fix`, `verify`, `assess`, `ship`, `merge`. Every step runs the same loop; `assess` is the one
 orchestrator stage outside the loop (listed in the roster for position and telemetry only). The per-step differences are listed
 after it.
 
@@ -1872,18 +1873,27 @@ reported by the step agent, not measured by the orchestrator, so verify is **adv
 authoritative gate is `/shipit`'s own local CI run in the ship step.
 Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in ship is the gate.
 
-**assess.** An orchestrator stage (not a step-loop step), placed here to validate and disposition all outstanding items before ship. Set `step: "assess"`, increment `attempts.assess`, log `assess begin`, `stage-begin --stage assess`, `WRITE-STATE`. Then, in order:
+**assess.** An orchestrator stage (not a step-loop step), placed here to validate and disposition all outstanding items before the ship stage. Set `step: "assess"`, increment `attempts.assess`, log `assess begin`, `stage-begin --stage assess`, `WRITE-STATE`. Then, in order:
 
-1. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-set --flow-dir "${FLOW_DIR}"`. If it prints `ITEMS: 0`, write an orchestrator receipt `ASSESSED: 0` to `${FLOW_DIR}/steps/07-assess.md`, log `assess ok` and `assessed items=0`, `outstanding dispositions=0 dropped=0 filed=0 finished=0`, `stage-end --stage assess`, `WRITE-STATE`, and continue to ship. If it exits 2, hard stop with the script's reason and `stop_source.assess = "validation"`.
+1. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-set --flow-dir "${FLOW_DIR}"`. If it prints `ITEMS: 0`, write an orchestrator receipt `ASSESSED: 0` to `${FLOW_DIR}/steps/07-assess.md`, log `assess ok` and `assessed items=0`, `outstanding dispositions=0 dropped=0 filed=0 finished=0`, `stage-end --stage assess`, `WRITE-STATE`, and continue to the ship stage. If it exits 2, hard stop with the script's reason and `stop_source.assess = "validation"`.
 
-2. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"`. On exit 0 (meaning a prior attempt already assessed and dispositioned every item), log `assess skipped` and continue to ship. Otherwise, keep its stdout's `UNDISPOSED:` line (if present) as `TODO_IDS`. If no marker exists, `TODO_IDS` is the whole set from the `--outstanding-set` output (one line per item, space-separated ids).
+2. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"`. On exit 0 (meaning a prior attempt already assessed and dispositioned every item), log `assess skipped` and continue to the ship stage. Otherwise, keep the ids on its stdout `UNDISPOSITIONED:` line (comma-separated, if present) as `TODO_IDS`. If no marker exists, `TODO_IDS` is every id in the `--outstanding-set` output (the first field of each `<id> | <provenance> | <coverage> | <reason>` line after `ITEMS: <n>`).
 
 3. If an `answers/assess-<SEQ>.json` exists whose entries are not yet in the marker (items without `<!-- outstanding-end -->` yet), write those dispositions now (apply the rules in item 10 below) and drop their ids from `TODO_IDS`. They are never re-asked.
 
 4. Record `HEAD` from `git rev-parse HEAD` and the worktree status from `git status --porcelain`.
 
 5. Spawn `flow-assessor` for the `TODO_IDS` items only, in batches of at most 8, in the background. For each batch, pass:
-   - Each item fenced as `<<<ITEM <id> <status> <reason> <evidence> ITEM>>>`, where status is the item's current `status` (from the latest assessment or disposition), reason and evidence are the item's reason from the outstanding set.
+   - Each item fenced as a data block, with fields the `--outstanding-set` output supplies:
+     ```
+     <<<ITEM
+     id: <id>
+     provenance: <self-report|both|verifier>
+     coverage: <declared|uncovered|unknown|none>
+     coverage_reason: <reason text from the outstanding set>
+     <<<
+     ```
+     The assessor finds the files and symbols itself from the unit id and the reason.
    - `bases[implement]` and `bases[fix]` from state.json.
    - The task runs in `WORKTREE` cwd. On completion, the assessor's reply is the assessment lines and `<!-- assessment-end -->`, and the orchestrator writes `steps/07-assess.md` from it.
 
@@ -1893,7 +1903,7 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 
 8. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --step assess --receipt "${FLOW_DIR}/steps/07-assess.md" --flow-dir "${FLOW_DIR}"`. A non-zero exit is a hard stop: increment `failures.assess`, set `stop_source.assess = "validation"`, log `assess failed (<reason>)`, `stage-end --stage assess --outcome failure`, `WRITE-STATE`, and enter the hard-stop menu (Retry, Take over, Abort). Max 2 failures per assess stage (same cap as other steps).
 
-9. **Already-done notice (always).** For each `already-done` item in the receipt, print `Already done (assessor-verified): <id>` with its evidence. Log `assessed items=<n> unfinished=<m> already_done=<comma-separated ids>`. For each `already-done` id with coverage `declared` or `none`, persist to the marker a `finished`/`assessor-verified` disposition. `already-done` ids with coverage `uncovered` go to the question instead (item 10).
+9. **Already-done notice (always).** For each `already-done` item in the receipt, print `Already done (assessor-verified): <id>` with its evidence. Log `assessed items=<n> unfinished=<m> already-done=<comma-separated ids>`. For each `already-done` id with coverage `declared` or `none`, persist to the marker a `finished`/`assessor-verified` disposition. `already-done` ids with coverage `uncovered` go to the question instead (item 10).
 
 10. **Ask.** If any `TODO_IDS` item still needs a human, ask one batched `AskUserQuestion` (header `Outstanding`, **apply the Ask block from `~/.claude/prompts/flow-reference.md`**). Persist it as `questions/assess-<SEQ>.json` (each question carries an `item: <id>` field) and `answers/assess-<SEQ>.json`. Each item's `brief` prints its full assessment from the receipt. Each item gets at most four choices (fixed layout):
     - **unfinished + mechanical:** `Pause to finish by hand` | `Leave as-is` (only when `leave_as_is_safe=yes`) | `Open an issue` | `Drop`.
@@ -1904,7 +1914,7 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
     - **Open an issue**, or an assessor option routed `issue`: first run `gh issue list --state all --search "flow-outstanding: ${FLOW_ID} <id>" --json url` and reuse a hit. Otherwise run `gh issue create --title "<title>" --body-file <tmp>`, where the body is the item's assessment plus chosen option and a `flow-outstanding: ${FLOW_ID} <id>` line. Write the disposition straight after `gh issue create` returns: `filed-as-issue` for the fixed choice, or `asked-and-answered` with the chosen `option`, `route: issue`, and `url` for an assessor option.
     - **Leave as-is:** `asked-and-answered`, `route: leave`.
     - **Confirm already done:** `finished`, `by=human`.
-    - **Pause to finish by hand**, or an assessor option routed `pause`: `asked-and-answered` with the chosen `option` and `route: pause`. After every answer in the batch is persisted, set the paused item's `status: paused` in the assessment receipt, log `assess paused`, `WRITE-STATE`, and stop. Resume re-enters assess at step 1.
+    - **Pause to finish by hand**, or an assessor option routed `pause`: `asked-and-answered` with the chosen `option` and `route: pause`. After every answer in the batch is persisted, leave the assessment record as it is (the gate treats a pause as terminal only once the current record reads `already-done`), log `assess paused`, `WRITE-STATE`, and stop. Resume re-enters assess at step 1.
     - **Drop:** the reason comes from the typed answer and is written verbatim. If no reason, ask one follow-up `AskUserQuestion` (header `Outstanding`, **apply the Ask block**) for the drop reason. With still no reason, the item stays undispositioned and the gate fails.
 
     Every human disposition carries `by=human` and `answer_ref: answers/assess-<SEQ>.json`.
@@ -1913,9 +1923,11 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 
 12. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"`. Non-zero exit is a hard stop.
 
-13. Log `assess ok`, `assessed items=<n> unfinished=<m> already_done=<ids> dropped=<ids> filed=<ids> finished=<ids>` (counts from the marker), `outstanding dispositions=<n> dropped=<n> filed=<n> finished=<n>`, `stage-end --stage assess`, `WRITE-STATE`.
+13. Log `assess ok`, `assessed items=<n> unfinished=<m> already-done=<ids> dropped=<ids> filed=<ids> finished=<ids>` (counts from the marker), `outstanding dispositions=<n> dropped=<n> filed=<n> finished=<n>`, `stage-end --stage assess`, `WRITE-STATE`.
 
 **Take over at assess.** Log `assess taken-over`, `WRITE-STATE`. Rewrite the marker with `assessment: taken-over`, keeping only existing `filed-as-issue` and `dropped` lines (remove any `finished`, leave-as-is, or assessor-option line, since no validated assessment backs them under taken-over). Then run the human-only relay for every id without a kept line: one batched `AskUserQuestion` (header `Outstanding`, **apply the Ask block**) whose `brief` says `no assessment: <reason>`, with fixed choices `Open an issue` | `Drop` | `Pause to finish by hand`. Persist each answer as in item 10, then items 11–13.
+
+**Marker header.** Whenever the orchestrator writes `07-ship.outstanding.md` it starts with `format: 2`, then `assessment: assessor` (or `taken-over` after Take over at assess), then `<!-- outstanding-pending -->`, then one disposition line per item (`<id> | disposition=<finished|asked-and-answered|filed-as-issue|dropped> | by=<human|assessor-verified> | answer_ref=<answers/assess-<SEQ>.json|none> | option=<label|none> | route=<leave|pause|issue|none> | url=<url|none> | reason=<text|none>`), and `<!-- outstanding-end -->` last, only when complete. A Drop whose reason needed a follow-up question uses a one-question batch (`questions/assess-<SEQ>.json`, carrying `item`, options `Drop` and `Open an issue`) and the disposition's `answer_ref` names that file, with the typed reason in `annotations.<qid>.notes`. Write via temp file then `mv`, content through `printf '%s'`.
 
 **ship.** Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"` before spawning `/shipit`. Non-zero exit is a hard stop; `/shipit` is never spawned.
 
@@ -1958,7 +1970,7 @@ for the whole epic and runs every child flow from there with **no hand-off**; ea
 `worktree` step creates its worktree, and the child's later steps use `RUN_DIR` as in the table.
 
 Telemetry: the epic run is one `expert-flow` command record; each sub-ticket's steps reuse the
-same nine stage names, so the stage ledger shows them in sequence.
+same stage names, so the stage ledger shows them in sequence.
 
 **E1. Decompose.** Run the plan step for the epic with `--epic` added:
 `/expert-plan <ISSUE_URL> --flow <FLOW_DIR> --epic [--effort <PLAN_EFFORT>]`, receipt
@@ -2047,7 +2059,7 @@ FAILED outcome is issued in loop step 5, so no later exit closes that stage agai
 | Done (merged) | `stage-end --stage <STEP>` for `merge`, success (loop step 5) | `command-end --outcome success` |
 
 Stage names (one `stage-begin`/`stage-end` pair each, by the generic loop): `worktree`, `plan`,
-`track`, `implement`, `review`, `fix`, `verify`, `ship`, `merge`.
+`track`, `implement`, `review`, `fix`, `verify`, `assess`, `ship`, `merge`.
 
 ```bash
 # Hold at the merge gate, Pause at a step gate, hand-off after the worktree step, or Take over after a FAILED step
@@ -2070,7 +2082,7 @@ python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command expert-flow
   stop. The human retries, takes over, or aborts. The exceptions are: (1) the automatic Rebase at a
   base-stale verify stop: a mechanical rebase, then an `/expert-rebase` worker on conflicts, never a
   push, bounded by the two-attempt cap; (2) a single-unit implement or fix implementer-shortfall that meets all seven escalation conditions is escalated once to Sonnet automatically, bounded by the two-attempt cap, and never fixes a failing check.
-- **Does not finish outstanding items automatically** (slice 2). The assess stage verifies and assesses each outstanding unit, asks the human about unfinished ones, and persists their answers. Mechanical finishing via loop-back is a planned follow-up.
+- **No auto-finishing.** This command does not finish outstanding items automatically (slice 2). The assess stage verifies and assesses each outstanding unit, asks the human about unfinished ones, and persists their answers. Mechanical finishing via loop-back is a planned follow-up.
 - **No git mutations, no code edits, no `gh` writes** from the orchestrator — except that clean
   mechanical rebase (never a conflict resolution by the orchestrator, never a push), and the **Start fresh** deletion of the
   old flow's worktree through the `/cleanup` helper (after the human chose it and confirmed any dirty or

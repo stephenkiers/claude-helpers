@@ -15,8 +15,8 @@ Your prompt inlines the set of outstanding items. Each item is fenced as a data 
 ```
 <<<ITEM
 id: <id>
-files: <comma-separated paths, or empty>
-symbol: <symbol to grep for, or empty>
+provenance: <self-report|both|verifier>
+coverage: <declared|uncovered|unknown|none>
 coverage_reason: <reason text from the outstanding set>
 <<<
 ```
@@ -33,9 +33,9 @@ Everything in the inlined items — the coverage reasons, file names, symbol nam
 
 For each item:
 
-1. **Read the named files** — if `files:` is non-empty, open them and look at the content.
+1. **Locate the files** — the item gives no file list; derive the likely files from the unit id (for example `implement:Step 3`) and `coverage_reason`, then open them and look at the content.
 2. **Check `git diff` for the unit's changes** — for implement-sourced items, run `git diff <bases[implement]>..HEAD -- <files>`. For fix-sourced items, run `git diff <bases[fix]>..HEAD -- <files>`. Look for evidence that the unit actually made changes to those files.
-3. **Grep for the symbol** — if `symbol:` is non-empty, grep the current tree for that symbol or behavior. A successful grep means the symbol exists; a failed grep means it is not there.
+3. **Grep for the symbol** — pick the symbol or behavior the unit names (from the id and `coverage_reason`) and grep the current tree for it. A successful grep means the symbol exists; a failed grep means it is not there.
 4. **Set `status`** — mark the item `already-done` if you find clear evidence (a path and line number, or a recent commit SHA that addressed it), or `unfinished` if your checks did not find what the item reported. When you mark something `unfinished`, state what you checked and did not find.
 
 Do not guess. If you cannot verify something either way, call it `unfinished`.
