@@ -448,7 +448,7 @@ def main():
         h.test_result(
             "implement-with-haiku spawns are non-empty",
             len(impl_spawns) > 0,
-            f"Expected subagent spawns, found none"
+            "Expected subagent spawns, found none"
         )
         h.test_result(
             "implement-with-haiku spawns only allowed agents (spawns <= allowed)",
@@ -461,7 +461,7 @@ def main():
         h.test_result(
             "expert-review spawns are non-empty",
             len(review_spawns) > 0,
-            f"Expected subagent spawns, found none"
+            "Expected subagent spawns, found none"
         )
         h.test_result(
             "expert-review spawns only allowed agents (spawns <= allowed)",
