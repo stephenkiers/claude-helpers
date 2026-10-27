@@ -557,7 +557,7 @@ state a why, write `WHY: not stated in ticket` rather than inventing one. For a 
 
 **Non-flow branch:** Call the Precedent block (defined below) after the decision briefs and index are built and before the Ask. The block writes `precedent.md` and sets `PRECEDENT_TRACE`. For each 2-4-option or open-ended question eligible for Precedent annotation, call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json"` (only when `PRECEDENT_TRACE` starts with `shown`) to get the Precedent line and display it in the brief/chat round-up directly below the matching brief — never modify the brief text or option descriptions. For 2-4-option questions, call `AskUserQuestion` by applying the Ask block from `~/.claude/prompts/flow-reference.md` — one Ask per batch of ≤4 questions. Open-ended questions, or themes with >4 questions, stay markdown + conversation. Wait for answers.
 
-After all Asks are answered and the checkpoint results are recorded, append two sections to `decisions.md`: first, call `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"` (only when `PRECEDENT_TRACE` starts with `shown`) to get the `## Precedent` section and append it; then append the trace line `precedent: <PRECEDENT_TRACE>` on its own line. Both sections go after the checkpoint results.
+After all Asks are answered and the checkpoint results are recorded, append two sections to `decisions.md`: first, call `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"` (only when `PRECEDENT_TRACE` starts with `shown`) to get the `## Precedent` section and append it; then append the trace line `precedent: <PRECEDENT_TRACE>` on its own line, directly followed by the contents of `${SESSION_DIR}/precedent-digest-line.txt` on the next line when that file is non-empty. Both sections go after the checkpoint results.
 
 When `PRECEDENT_TRACE` starts with `shown`, use the `Write` tool to create `${SESSION_DIR}/precedent-answers.json` as `{"answers": {"<handle>": "<the label the human picked, or their typed text>"}}`, one entry per answered question that has a block in `precedent-validated.json`. Then run:
 
@@ -631,7 +631,7 @@ If more than five Qs survive, set `headline` to "This ticket looks under-specifi
 
 **Self-check (before the round-1 report):** run `python3 "$HOME/.claude/scripts/plan-checkpoint-tiers.py" --decisions "${SESSION_DIR}/decisions.md" --check-ledger`. On a non-zero exit, rewrite the ledger extension from the `--fragment` output and re-run once. If it still fails, write `Decision: FAILED` with `Reason: checkpoint ledger shape: <stderr reason>` and stop before any question file is written. The verifier remains the backstop.
 
-**Flow branch: Precedent handling.** Call the Precedent block (defined below) after the D/W/Q sections are written and before the round-1 report file is written. The block runs once per checkpoint and sets `PRECEDENT_TRACE`. For each spoken Q item whose `why` does not already start with `Precedent:` (checking prior rounds), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json" --out "${SESSION_DIR}/precedent-lines.json"` to get the Precedent line for that item's id. Store all per-handle lines in `${SESSION_DIR}/precedent-lines.json` (a JSON object `{id: "Precedent: ..."}`). For each Q item, append to its `why` field a blank line followed by the stored line (if it exists). D and W items are never annotated; their `options[]`, `for`, `against`, `recommendation`, and `must_answer` fields remain unchanged. On later rounds resuming the same attempt, re-emitting a Q item reuses the stored line from `precedent-lines.json` and skips the append if the `why` already contains a line starting `Precedent:` (Pat is never re-dispatched within an attempt). After the checkpoint loop ends, append two sections to `decisions.md` after the ledger block: first, the `## Precedent` section from `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"`, then the trace line `precedent: <PRECEDENT_TRACE>`. The ledger's handle keys stay at the top level of its JSON block.
+**Flow branch: Precedent handling.** Call the Precedent block (defined below) after the D/W/Q sections are written and before the round-1 report file is written. The block runs once per checkpoint and sets `PRECEDENT_TRACE`. For each spoken Q item whose `why` does not already start with `Precedent:` (checking prior rounds), call `precedent-render.py line --validated "${SESSION_DIR}/precedent-validated.json" --questions "${SESSION_DIR}/precedent-questions.json" --out "${SESSION_DIR}/precedent-lines.json"` to get the Precedent line for that item's id. Store all per-handle lines in `${SESSION_DIR}/precedent-lines.json` (a JSON object `{id: "Precedent: ..."}`). For each Q item, append to its `why` field a blank line followed by the stored line (if it exists). D and W items are never annotated; their `options[]`, `for`, `against`, `recommendation`, and `must_answer` fields remain unchanged. On later rounds resuming the same attempt, re-emitting a Q item reuses the stored line from `precedent-lines.json` and skips the append if the `why` already contains a line starting `Precedent:` (Pat is never re-dispatched within an attempt). After the checkpoint loop ends, append two sections to `decisions.md` after the ledger block: first, the `## Precedent` section from `precedent-render.py section --validated "${SESSION_DIR}/precedent-validated.json"`, then the trace line `precedent: <PRECEDENT_TRACE>`, directly followed by the contents of `${SESSION_DIR}/precedent-digest-line.txt` on the next line when that file is non-empty. The ledger's handle keys stay at the top level of its JSON block.
 
 Write the round-1 `kind: report` question file per the Ask block in `~/.claude/prompts/flow-reference.md` — one question file with `kind: report`, `attempt: 1`, `round: 1`, and all briefs, with `must_answer` true for Qs and items with recorded disagreement or protest. Record the `awaiting` marker.
 
@@ -658,9 +658,9 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    - **Non-flow**: Read all `#### Q[n].` briefs from the checkpoint section as-built below (before any Ask is called).
    - **Flow**: Read Q items only from the ledger you built with `plan-checkpoint-tiers.py` (D and W items are excluded).
    
-   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. If zero questions remain, write `PRECEDENT_TRACE="no-eligible-questions"` to `${SESSION_DIR}/precedent-trace.txt` and stop (skip steps 2–10).
+   Exclude any question whose brief header or Why-it-matters prose (both fields; case-insensitive match) contains one of: `security`, `auth`, `credential`, `secret`, `token`, `injection`, `permission`, `crypt`, `vulnerab`, `CRITICAL`. Excluded briefs get no Precedent annotation anywhere. Before that check, remove stale digest outputs from any earlier attempt, so an early stop cannot leave a previous digest line for `decisions.md` to append: `rm -f "${SESSION_DIR}/precedent-questions.json" "${SESSION_DIR}/precedent-validated.json" "${SESSION_DIR}/precedent-digest.jsonl" "${SESSION_DIR}/precedent-digest.status.json" "${SESSION_DIR}/precedent-digest-line.txt"`. If zero questions remain, write `PRECEDENT_TRACE="no-eligible-questions"` to `${SESSION_DIR}/precedent-trace.txt` and stop (skip steps 2–10).
 
-2. **Write questions file and clean stale files.** Remove any stale precedent files from prior attempts: `rm -f "${SESSION_DIR}/precedent-questions.json" "${SESSION_DIR}/precedent-validated.json" "${SESSION_DIR}/precedent-digest.jsonl"`. Then use the `Write` tool to create `${SESSION_DIR}/precedent-questions.json` with one entry per eligible question:
+2. **Write questions file and clean stale files.** Remove any stale precedent files from prior attempts: `rm -f "${SESSION_DIR}/precedent-questions.json" "${SESSION_DIR}/precedent-validated.json" "${SESSION_DIR}/precedent-digest.jsonl" "${SESSION_DIR}/precedent-digest.status.json" "${SESSION_DIR}/precedent-digest-line.txt"`. Then use the `Write` tool to create `${SESSION_DIR}/precedent-questions.json` with one entry per eligible question:
    ```json
    {"questions":[
      {"id":"Q1","header":"the brief header","question":"brief question + Why-it-matters, whitespace-normalised, capped at 600 chars","options":["Option A","Option B"],"recommended":"Option B"},
@@ -669,16 +669,43 @@ Follow these steps in order. Persist the outcome to `${SESSION_DIR}/precedent-tr
    ```
    Fields: `id` = brief handle (e.g., `Q1`, `Q2`); `header` = brief title line; `question` = the question text and Why-it-matters prose joined and normalised; `options` = exact option label strings (no `(Recommended)` marker); `recommended` = the panel's recommended option label.
 
-3. **Digest.** Dispatch to `precedent-digest.py` with project scope:
+3. **Digest.** Dispatch to `precedent-digest.py` with project scope. Pass the project root (`"$PROJECT_ROOT"`), not `REPO_KEY`. The digest uses that root to derive its own repo key from the origin remote (which selects the raw history sources) and to read curated decision and constraint docs from this working tree. The origin-derived key can differ from `REPO_KEY` (set from `gh repo view`). The digest reports its origin-derived key as `repo_key` in the status file, and this step compares it with `REPO_KEY`; a mismatch is reported in the digest line, never fatal. The curated read is anchored to `PROJECT_ROOT`, and only when the digest resolves its repo key from origin. Its diagnostics go to a status file that this step reads, because stderr is discarded.
    ```bash
    DIGEST_RC=0
-   python3 "$HOME/.claude/scripts/precedent-digest.py" "$REPO_KEY" --match "${SESSION_DIR}/precedent-questions.json" --top 60 --out "${SESSION_DIR}/precedent-digest.raw.jsonl" 2>/dev/null || DIGEST_RC=$?
+   python3 "$HOME/.claude/scripts/precedent-digest.py" "$PROJECT_ROOT" --match "${SESSION_DIR}/precedent-questions.json" --top 60 --out "${SESSION_DIR}/precedent-digest.raw.jsonl" --status-out "${SESSION_DIR}/precedent-digest.status.json" 2>/dev/null || DIGEST_RC=$?
    if [ "$DIGEST_RC" -ne 0 ]; then
+     echo "digest-failed" > "${SESSION_DIR}/precedent-trace.txt"
+     rm -f "${SESSION_DIR}/precedent-digest.raw.jsonl" "${SESSION_DIR}/precedent-digest.status.json"
+     # Skip to step 10 (trace line); a non-zero exit (e.g. exit 2 with partial output) is never read further
+   fi
+   ```
+   Then, only when `DIGEST_RC` is 0, read the status file with `jq`. A missing or unreadable field defaults to empty or zero:
+   ```bash
+   DIGEST_STATUS="${SESSION_DIR}/precedent-digest.status.json"
+   DG_RESOLVED=$(jq -r '.repo_resolved' "${DIGEST_STATUS}" 2>/dev/null) || DG_RESOLVED=""
+   DG_ROOT=$(jq -r '.curated_root // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ROOT=""
+   DG_YAML=$(jq -r '.yaml // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_YAML=""
+   DG_CURATED=$(jq -r '.curated // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_CURATED=0
+   DG_CAPPED=$(jq -r '.curated_capped // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_CAPPED=0
+   DG_REJECTED=$(jq -r '.curated_rejected // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_REJECTED=0
+   DG_NO_RULE=$(jq -r '.curated_no_rule // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_NO_RULE=0
+   DG_SCREENED=$(jq -r '.curated_screened // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_SCREENED=0
+   DG_REASON=$(jq -r '.reason // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REASON=""
+   DG_ERROR=$(jq -r '.curated_error // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ERROR=""
+   DG_REPO_KEY=$(jq -r '.repo_key // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REPO_KEY=""
+   DG_KEY_MISMATCH=""
+   if [ -n "$DG_REPO_KEY" ] && [ "$(printf '%s' "$DG_REPO_KEY" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO_KEY" | tr '[:upper:]' '[:lower:]')" ]; then DG_KEY_MISMATCH="${DG_REPO_KEY}"; fi
+   if [ "$DG_RESOLVED" = "false" ]; then
      echo "digest-failed" > "${SESSION_DIR}/precedent-trace.txt"
      # Skip to step 10 (trace line)
    fi
+   DIGEST_LINE=""
+   if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ] || [ -n "${DG_ERROR}" ] || [ -n "${DG_KEY_MISMATCH}" ]; then
+     DIGEST_LINE="precedent-digest: curated_root=${DG_ROOT} yaml=${DG_YAML} curated=${DG_CURATED} capped=${DG_CAPPED} rejected=${DG_REJECTED} no_rule=${DG_NO_RULE} screened=${DG_SCREENED}${DG_REASON:+ reason=${DG_REASON}}${DG_ERROR:+ error=${DG_ERROR}}${DG_KEY_MISMATCH:+ repo_key_mismatch=${DG_KEY_MISMATCH}}"
+   fi
+   if [ -n "${DIGEST_LINE}" ]; then printf '%s\n' "${DIGEST_LINE}" > "${SESSION_DIR}/precedent-digest-line.txt"; fi
    ```
-   The REPO_KEY format is `owner-name` (hyphen-separated). See `scripts/precedent-digest.py` docstring for how it resolves a repo argument.
+   If `repo_resolved` is `false`, or the digest exited non-zero, the trace is `digest-failed` and steps 4–9 are skipped (go to step 10). Otherwise continue to step 4. The file `precedent-digest-line.txt` holds one `precedent-digest:` line (newline-terminated) when the root is `none`, the yaml is `missing` or `unreadable`, a curated entry was capped or rejected, the curated layer failed (`curated_error`, shown as `error=`), or the digest's `repo_key` differs from `REPO_KEY` (shown as `repo_key_mismatch=`), and does not exist otherwise. The decisions.md steps below append it.
 
 4. **Self-exclusion and security filter.** When digest succeeded, filter it to exclude past questions from the same ticket's session or flow attempt, and drop entries with security-related `question` or `reason` text. Use one `jq -c` filter with five variables to drop entries whose `path` matches self-exclusion patterns or whose `question`/`reason` contain security keywords:
    ```bash

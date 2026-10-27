@@ -30,6 +30,8 @@ names under `strategicDocuments`. Read the index in full, then open every record
 touches the Subject. Report each related record: what it decided, in its own words, and where the
 Subject meets it. Include amendments — a later amendment often reverses the headline decision.
 
+This includes `decisionsDirectory` and `constraintsDirectory` when the local yaml names them; read those records the same way.
+
 ### `docs` — what the project says it is
 
 Read the documents at the repo root (`README.md`, `CLAUDE.md`, `AGENTS.md`, `ROADMAP.md`,

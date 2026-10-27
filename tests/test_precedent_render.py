@@ -12,6 +12,7 @@ Testing Strategy:
 Run with: python3 tests/test_precedent_render.py
 """
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -1010,7 +1011,282 @@ precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 m
 
     print()
 
+    curated_render_cases(h)
+    curated_review_fix_cases(h)
+
     h.summarize_and_exit()
+
+
+# ============================================================================
+# CURATED CITATIONS (#297)
+# ============================================================================
+
+CURATED_RULE_PATH = "/Users/example/repo/docs/decisions/0001-cache.md"
+
+
+def curated_precedent_md(path, answer="Option A", high=False):
+    """A precedent.md whose single citation is a curated rule line."""
+    confidence = "high" if high else "medium"
+    receipt = (f"precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | "
+               f"confidence: high={1 if high else 0} medium={0 if high else 1}")
+    return f"""# Precedent — session-123
+
+{receipt}
+
+## Q1 [q-001] Sample question header
+
+**Precedent**: curated rule "{answer}" ({path}) · spirit: "keeps things simple"
+**Prediction**: {answer}
+**Confidence**: {confidence}
+**Why**: The project's standing rule says so; this is project-written, not a recorded human ruling.
+**Distinguish**: No material difference seen.
+"""
+
+
+def curated_questions():
+    return make_questions([{
+        "id": "q-001",
+        "header": "Sample question header",
+        "question": "What?",
+        "options": ["Option A", "Option B"],
+        "recommended": "Option B",
+    }])
+
+
+def curated_render_cases(h):
+    with TempFiles() as tmp:
+        questions_path = tmp.write("questions.json", curated_questions())
+        curated_digest = tmp.write("digest-curated.jsonl", json.dumps(make_digest_entry(
+            source="curated", ref=None, answer="Option A", recommended=None,
+            reason="keeps things simple", path=CURATED_RULE_PATH)) + "\n")
+        precedent_ok = tmp.write("precedent-ok.md", curated_precedent_md(CURATED_RULE_PATH))
+        precedent_high = tmp.write("precedent-high.md", curated_precedent_md(CURATED_RULE_PATH, high=True))
+
+        rc, out, err = run_render(["validate", "--precedent", precedent_ok,
+                                   "--questions", questions_path, "--digest", curated_digest])
+        result = json.loads(out) if out.strip() else {}
+        h.test_result("curated validate: accepted curated citation returns status ok",
+                      rc == 0 and result.get("status") == "ok" and "q-001" in result.get("blocks", {}),
+                      f"rc={rc} result={result} err={err}")
+
+        rc, out, err = run_render(["validate", "--precedent", precedent_high,
+                                   "--questions", questions_path, "--digest", curated_digest])
+        result_high = json.loads(out) if out.strip() else {}
+        h.test_result("curated validate: single curated citation may be high confidence",
+                      result_high.get("status") == "ok", f"result={result_high} err={err}")
+
+        validated = tmp.write("validated.json", json.dumps(result) if result else "{}")
+        rc, out, err = run_render(["line", "--validated", validated, "--questions", questions_path])
+        line = (json.loads(out) if out.strip() else {}).get("q-001", "")
+        expected_line = f'Precedent: curated rule "Option A" ({CURATED_RULE_PATH})'
+        h.test_result("curated line: renders exact curated line with full path and no 'chose'",
+                      expected_line in line and "chose" not in line, f"line={line!r} err={err}")
+
+        rc, out, err = run_render(["section", "--validated", validated])
+        expected_section = f'> **Precedent**: curated rule "Option A" ({CURATED_RULE_PATH})'
+        h.test_result("curated section: renders blockquote curated line",
+                      expected_section in out, f"out={out!r} err={err}")
+
+        digest_bad_path = tmp.write("digest-other.jsonl", json.dumps(make_digest_entry(
+            source="curated", ref=None, answer="Option A", recommended=None,
+            reason="keeps things simple", path="/Users/example/repo/docs/decisions/other.md")) + "\n")
+        rc, out, err = run_render(["validate", "--precedent", precedent_ok,
+                                   "--questions", questions_path, "--digest", digest_bad_path])
+        h.test_result("curated validate: path absent from digest gives status invalid",
+                      json.loads(out).get("status") == "invalid" if out.strip() else False,
+                      f"out={out!r}")
+
+        precedent_mismatch = tmp.write("precedent-mismatch.md",
+                                       curated_precedent_md(CURATED_RULE_PATH, answer="Option B"))
+        rc, out, err = run_render(["validate", "--precedent", precedent_mismatch,
+                                   "--questions", questions_path, "--digest", curated_digest])
+        # A mismatched curated answer drops only its own block; the file itself stays ok.
+        mismatch_result = json.loads(out) if out.strip() else {}
+        h.test_result("curated validate: answer not matching the digest entry drops that block (status ok, block absent)",
+                      mismatch_result.get("status") == "ok" and "q-001" not in mismatch_result.get("blocks", {}),
+                      f"out={out!r}")
+
+        raw_digest = tmp.write("digest-raw-same-path.jsonl", json.dumps(make_digest_entry(
+            source="review", ref=142, answer="Option A", recommended="Option B",
+            reason="test reason", path=CURATED_RULE_PATH)) + "\n")
+        rc, out, err = run_render(["validate", "--precedent", precedent_ok,
+                                   "--questions", questions_path, "--digest", raw_digest])
+        h.test_result("curated validate: path matching a raw entry (not curated) gives status invalid",
+                      json.loads(out).get("status") == "invalid" if out.strip() else False,
+                      f"out={out!r}")
+
+        raw_validated = tmp.write("validated-raw.json", json.dumps({
+            "status": "ok",
+            "blocks": {"q-001": {
+                "precedent_lines": [{
+                    "date": "2026-01-15", "ref": 142, "source": "review", "answer": "Option A",
+                    "recommended": "Option B", "reason": "test reason",
+                }],
+                "prediction": "Option A", "confidence": "medium", "why": "Test", "distinguish": "Test",
+            }},
+        }))
+        rc, out, err = run_render(["line", "--validated", raw_validated, "--questions", questions_path])
+        raw_line = (json.loads(out) if out.strip() else {}).get("q-001", "")
+        h.test_result("raw line unchanged: 'Precedent: you chose \"Option A\" on 2026-01-15'",
+                      'Precedent: you chose "Option A" on 2026-01-15' in raw_line, f"line={raw_line!r}")
+        rc, out, err = run_render(["section", "--validated", raw_validated])
+        h.test_result("raw section unchanged: '· review · chose \"Option A\"'",
+                      '· review · chose "Option A"' in out, f"out={out!r}")
+
+    print()
+
+
+def curated_review_fix_cases(h):
+    """Review-fix cases: sanitized answer compare (F3), prior-answer note (F14),
+    source-based discrimination (F15), and curated entries indexed by path only (F16)."""
+    with TempFiles() as tmp:
+        questions_path = tmp.write("questions.json", curated_questions())
+        curated_digest = tmp.write("digest-curated.jsonl", json.dumps(make_digest_entry(
+            source="curated", ref=None, answer="Option A", recommended=None,
+            reason="keeps things simple", path=CURATED_RULE_PATH)) + "\n")
+
+        # F3: answers that differ only in whitespace match after sanitizing
+        digest_ws = tmp.write("digest-ws.jsonl", json.dumps(make_digest_entry(
+            source="curated", ref=None, answer="Option  A ", recommended=None,
+            reason="keeps things simple", path=CURATED_RULE_PATH)) + "\n")
+        precedent_ok = tmp.write("precedent-ok.md", curated_precedent_md(CURATED_RULE_PATH))
+        rc, out, err = run_render(["validate", "--precedent", precedent_ok,
+                                   "--questions", questions_path, "--digest", digest_ws])
+        result_ws = json.loads(out) if out.strip() else {}
+        h.test_result("curated validate: answer differing only in whitespace matches (sanitized compare)",
+                      result_ws.get("status") == "ok" and "q-001" in result_ws.get("blocks", {}),
+                      f"out={out!r} err={err}")
+
+        # F3: a mismatched curated block is dropped; a valid raw block in the same file survives
+        two_questions = tmp.write("questions-two.json", make_questions([
+            {"id": "q-001", "header": "First", "question": "Q?", "options": ["Option A", "Option B"],
+             "recommended": "Option B"},
+            {"id": "q-002", "header": "Second", "question": "Q?", "options": ["Option A", "Option B"],
+             "recommended": "Option B"},
+        ]))
+        digest_both = tmp.write("digest-both.jsonl",
+                                json.dumps(make_digest_entry(
+                                    source="curated", ref=None, answer="Option A", recommended=None,
+                                    reason="keeps things simple", path=CURATED_RULE_PATH)) + "\n"
+                                + json.dumps(make_digest_entry(ref=142)) + "\n")
+        precedent_mixed = tmp.write("precedent-mixed.md", f"""# Precedent — session-123
+
+precedent-pat | questions: 2 | spoke-on: 2 | citations: 2 | confidence: high=0 medium=2
+
+## Q1 [q-001] First
+
+**Precedent**: curated rule "Option B" ({CURATED_RULE_PATH}) · spirit: "keeps things simple"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+
+## Q2 [q-002] Second
+
+**Precedent**: 2026-01-15 · #142 · review · chose "Option A" (recommended was "Option B") · reason: "test reason"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+""")
+        rc, out, err = run_render(["validate", "--precedent", precedent_mixed,
+                                   "--questions", two_questions, "--digest", digest_both])
+        mixed = json.loads(out) if out.strip() else {}
+        h.test_result("curated validate: mismatched curated block is dropped while the raw block survives",
+                      mixed.get("status") == "ok" and "q-001" not in mixed.get("blocks", {})
+                      and "q-002" in mixed.get("blocks", {}) and mixed.get("shown") == 1 and mixed.get("asked") == 2,
+                      f"out={out!r} err={err}")
+
+        # F15: a raw-shaped line that claims source "curated" but has no path fails closed
+        precedent_spoof = tmp.write("precedent-spoof.md", """# Precedent — session-123
+
+precedent-pat | questions: 1 | spoke-on: 1 | citations: 1 | confidence: high=0 medium=1
+
+## Q1 [q-001] Sample question header
+
+**Precedent**: 2026-01-15 · #142 · curated · chose "Option A" (recommended was "Option B") · reason: "test reason"
+**Prediction**: Option A
+**Confidence**: medium
+**Why**: Test
+**Distinguish**: Test
+""")
+        digest_raw = tmp.write("digest-raw.jsonl", json.dumps(make_digest_entry(ref=142)) + "\n")
+        rc, out, err = run_render(["validate", "--precedent", precedent_spoof,
+                                   "--questions", questions_path, "--digest", digest_raw])
+        h.test_result("curated discrimination: raw-shaped line with source curated and no path gives status invalid",
+                      json.loads(out).get("status") == "invalid" if out.strip() else False,
+                      f"out={out!r} err={err}")
+
+        # F16: curated entries are indexed by path only, never under refs[None]
+        spec = importlib.util.spec_from_file_location("precedent_render_under_test", str(SCRIPT))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        refs, curated_paths = module._load_digest(curated_digest)
+        h.test_result("digest load: curated entry indexed by path and not written under refs[None]",
+                      None not in refs and curated_paths.get(CURATED_RULE_PATH, {}).get("source") == "curated",
+                      f"refs_keys={list(refs.keys())} curated_paths={list(curated_paths.keys())}")
+
+        # F14: curated-first line notes a conflicting raw prior citation
+        conflict_validated = tmp.write("validated-conflict.json", json.dumps({
+            "status": "ok",
+            "blocks": {"q-001": {
+                "precedent_lines": [
+                    {"ref": None, "source": "curated", "answer": "Option A", "path": CURATED_RULE_PATH,
+                     "recommended": None, "reason": "keeps things simple"},
+                    {"date": "2026-01-15", "ref": 142, "source": "review", "answer": "Option B",
+                     "recommended": "Option B", "reason": "test reason"},
+                ],
+                "prediction": "Option A", "confidence": "medium", "why": "Test", "distinguish": "Test",
+            }},
+        }))
+        rc, out, err = run_render(["line", "--validated", conflict_validated, "--questions", questions_path])
+        conflict_line = (json.loads(out) if out.strip() else {}).get("q-001", "")
+        expected_conflict = (f'Precedent: curated rule "Option A" ({CURATED_RULE_PATH}). '
+                             f"Prediction: Option A (medium). Differs from the panel's recommendation. "
+                             f"Your earlier answer differed.")
+        h.test_result("curated line: conflicting raw prior adds 'Your earlier answer differed.'",
+                      conflict_line == expected_conflict, f"line={conflict_line!r} err={err}")
+
+        # F14: a raw prior that agrees with the prediction adds nothing
+        agree_validated = tmp.write("validated-agree.json", json.dumps({
+            "status": "ok",
+            "blocks": {"q-001": {
+                "precedent_lines": [
+                    {"ref": None, "source": "curated", "answer": "Option A", "path": CURATED_RULE_PATH,
+                     "recommended": None, "reason": "keeps things simple"},
+                    {"date": "2026-01-15", "ref": 142, "source": "review", "answer": "Option A",
+                     "recommended": "Option B", "reason": "test reason"},
+                ],
+                "prediction": "Option A", "confidence": "medium", "why": "Test", "distinguish": "Test",
+            }},
+        }))
+        rc, out, err = run_render(["line", "--validated", agree_validated, "--questions", questions_path])
+        agree_line = (json.loads(out) if out.strip() else {}).get("q-001", "")
+        expected_agree = (f'Precedent: curated rule "Option A" ({CURATED_RULE_PATH}). '
+                          f"Prediction: Option A (medium). Differs from the panel's recommendation.")
+        h.test_result("curated line: agreeing raw prior adds no prior-answer note",
+                      agree_line == expected_agree, f"line={agree_line!r} err={err}")
+
+        # F14: the prior-answer note stays inside the 240-char budget with a long curated answer
+        long_validated = tmp.write("validated-long.json", json.dumps({
+            "status": "ok",
+            "blocks": {"q-001": {
+                "precedent_lines": [
+                    {"ref": None, "source": "curated", "answer": "x" * 300, "path": CURATED_RULE_PATH,
+                     "recommended": None, "reason": None},
+                    {"date": "2026-01-15", "ref": 142, "source": "review", "answer": "Option B",
+                     "recommended": "Option B", "reason": "test reason"},
+                ],
+                "prediction": "Option A", "confidence": "medium", "why": "Test", "distinguish": "Test",
+            }},
+        }))
+        rc, out, err = run_render(["line", "--validated", long_validated, "--questions", questions_path])
+        long_line = (json.loads(out) if out.strip() else {}).get("q-001", "")
+        h.test_result("curated line: long answer keeps the prior-answer note within 240 chars",
+                      0 < len(long_line) <= 240 and long_line.endswith("Your earlier answer differed."),
+                      f"len={len(long_line)} line={long_line[:80]!r} err={err}")
+
+    print()
 
 
 if __name__ == "__main__":

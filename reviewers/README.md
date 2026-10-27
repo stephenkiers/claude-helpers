@@ -321,6 +321,21 @@ git check-ignore -v --no-index .claude/reviewers/{expert-name}-local.yaml   # ex
 - Untracking does not remove the file from existing git history; old commits will still have it.
 - The cascade loads `{expert}-local.yaml` from `.claude/reviewers/` only. If your file has a different name or location, the cascade will not find it.
 
+### Curated precedent directories (optional `strategicDocuments` keys)
+
+`north-star-nick-local.yaml` may name two optional directories under `strategicDocuments`, which Precedent Pat's digest reads as curated project rules (ADR-0024, 2026-10-25 amendment):
+
+```yaml
+strategicDocuments:
+  decisionsDirectory: docs/decisions/
+  constraintsDirectory: docs/constraints/
+```
+
+- The paths are repo-relative directories. Absolute paths, `..` segments, and symlinks that point outside the repo are rejected.
+- Only the block-style yaml subset is read: a column-0 `strategicDocuments:` key with directly nested scalar keys. Flow style (`{...}`) and nested maps are not supported. Commented-out keys are inactive.
+- The digest reads the `*.md` files directly in each directory (not recursively). `README.md` and `index.md` are excluded. Each file's H1 becomes the rule's header. The rule text is the first `Rule:` / `Decision:` line; failing that, the first prose line under a `## Rule`, `## Decision` or `## Decisions` heading, or the first data row of that section's table (cells joined with ` — `). The reason is the first `Spirit:` / `Rationale:` line; failing that, the first prose line under `## Spirit` or `## Rationale`.
+- At most 20 curated entries are used. Overflow is counted and reported, not silently dropped.
+
 Example structure:
 
 ```yaml

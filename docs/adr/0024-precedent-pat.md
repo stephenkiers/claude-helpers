@@ -1,6 +1,6 @@
 # ADR-0024: Precedent Pat — a prompt-the-human digest of past answers
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
@@ -40,10 +40,10 @@ This relates to [ADR-0005](0005-three-layer-context-cascade.md)'s amended statem
 
 ### 5. Thresholds (stated as parameters, #300 may amend)
 
-These are the Proposed values and are named as parameters the thresholds ticket (#300) may amend:
+These are the initial values, named as parameters the thresholds ticket (#300) may amend:
 
 - **Speak only at medium or above.** Low confidence is expressed as silence.
-- **High needs two consistent priors** (or one curated rule, reserved until #297; until then only two consistent priors yield high). External priors count toward the 5-citation ceiling but not toward the high-confidence rule; only user priors marked with confirmed provenance count as independent toward high. Unknown provenance is fail-closed to medium confidence.
+- **High needs two consistent priors** (or one curated rule, per the 2026-10-25 amendment below). External priors count toward the 5-citation ceiling but not toward the high-confidence rule; only user priors marked with confirmed provenance count as independent toward high. Unknown provenance is fail-closed to medium confidence.
 - **Five citations per batch in total; no question exceeds 3 citations.** When citations would exceed five, questions get citations in descending confidence order; ties are broken by input order. A high question cites both of its priors (or is demoted to medium with one citation if only one slot remains). A question that cannot get a citation goes silent. All of this is recorded in the receipt.
 
 **Receipt format (pinned).** The receipt is a single-line header in the output file following this format:
@@ -126,4 +126,28 @@ Predictions are now logged to measure Pat's accuracy (hit rate by confidence). T
 
 The row schema includes `actual_source` (option | free_text | accepted-on-continue), `anchored` (always true for rows written by `/expert-plan` today, since the call sites gate on a `shown` trace; the field exists for later callers), and `citations` holding Pat's `ref` integers copied from `blocks[id].precedent_lines[].ref` (no new id scheme, consistent with §7:93). Hit-rate semantics: null rows are excluded from denominators, the baseline (always predict recommended) is reported, and the deviation cell is a three-way split (pat_right / panel_right / neither). The log is never a prior, so marking it does not close the anchoring loop. The digest's plan-session source (`decisions.md` entries) is not yet anchoring-aware, even though those files carry `precedent: shown K of N`, and #292 owns closing that gap. Free-text answers are stored in plaintext locally, in the same tier as `decisions.md`. The write is made by a script, not by a panel agent's `Write`, so the ADR-0018 sanctioned-prefix list does not apply.
 
-If ADR-0024 is further amended (for example, when #297 enables curated rules, or #299 adds personal scope, or #300 finalizes thresholds), add amendments following the format of [ADR-0023](0023-expert-flow.md).
+If ADR-0024 is further amended (for example, when #299 adds personal scope, or #300 finalizes thresholds), add amendments following the format of [ADR-0023](0023-expert-flow.md).
+
+## Amendment (2026-10-25) — curated layer (#297)
+
+The digest gains a second input kind. Pat still reads the user's past answers, and it now also reads project-authored decision and constraint files. The Context section above describes only the first kind, and this amendment completes it.
+
+**Second input kind (curated).** A project names two optional directories in its local yaml, `.claude/reviewers/north-star-nick-local.yaml`, under `strategicDocuments`: `decisionsDirectory` and `constraintsDirectory`. Each `*.md` file in those directories, except `README.md` and `index.md`, becomes one digest entry with `source: "curated"`. The digest reads the two keys with a stdlib line scanner that supports the block-style subset only; commented-out keys are inactive, and flow-style or nested maps are ignored. Each entry carries the file's H1 as its header. Its answer is the first `Rule:` or `Decision:` line; failing that, the first prose line under a `## Rule`, `## Decision` or `## Decisions` heading, or, when that section opens with a markdown table, the first data row with its cells joined by ` — `. Its reason is the first `Spirit:` or `Rationale:` line; failing that, the first prose line under `## Spirit` or `## Rationale`. A file with no H1 or no answer is skipped and counted. Curated entries never write, edit or move files; the digest only reads them.
+
+**High confidence.** A curated entry alone justifies `high`. Its provenance is the curated source (§5), not a user's prior. The high-confidence rule is therefore "two consistent priors, or one curated rule", and the medium-only demotion in §5 applies to the two-prior route only.
+
+**Precedence.** A curated entry outranks a conflicting raw answer, and Pat calls it "the project's standing rule". Pat cites the curated rule first and also cites the conflicting raw answer. It names the conflict in its Why and Distinguish lines, so the human can see their own departure from the rule. Confidence for that case follows the contradicting-priors rule and is capped at medium. This is display-only: no override logic is added, and the newer raw answer is never hidden.
+
+**Scope of "always survive".** Curated entries bypass scoring and the raw `--top`/300 bounds. Every curated entry, up to `CURATED_CAP`, reaches Pat on every `--match` run; the digest does not judge their relevance. Pat's own silence rule decides whether a curated rule is cited for a given question. The guarantee is bounded by a single constant, `CURATED_CAP = 20`, applied in the digest. Entries beyond the cap, and path-safe candidate files past the cap that were not opened (so they may not have qualified), are counted in `curated_capped`. Raw entries keep their full budget. Overflow, no-root and yaml problems are reported in a status file (`--status-out`) that the `/expert-plan` Step 5 caller reads; they are not reported on stderr alone.
+
+**Security screen.** The §8 security denylist still applies at the caller and is unchanged. The digest adds a curated-only screen over the header, question, answer and reason fields (`SECURITY_KEYWORDS`). Its keyword set must equal the token set in the `/expert-plan` Step 5 jq filter, and a test asserts that equality. Raw entries are not screened by the digest.
+
+**Injection residual risk.** `reason` and `answer` are now project-authored markdown, not only the user's prose (see the Consequences residual on quoted reason text). Pat treats curated text as quoted data, never as instructions, and the existing never-open-`path` rule still applies. This is recorded as a residual.
+
+**Display-only (unchanged, §7).** Curated entries add no decision-logic reader. Panel reviewers, the Amalgamator, the Triage Chief and orchestrator logic still do not read `precedent.md`.
+
+**Accepted risk: working-tree reads (Q1 C).** The digest reads curated files from the working tree under the repo root it is given, not from a base ref. A branch can therefore add or edit the rule that Pat cites. This is an explicit deviation from two earlier decisions. ADR-0007's read-semantics amendment rejected in-tree decision files because an in-tree file lets a branch license its own review, and ADR-0005 keeps decided truth out of tracked files. The deviation is tolerated for one reason: the curated layer is display-only. It suppresses no finding, changes no review or triage outcome, and every curated citation names its file path, so the exposure is a misleading citation rather than a silenced finding. The human accepted this risk (Q1 C). #296 (PR mode) must revisit it before it ships: either turn curated reading off for PR worktrees, or read base-ref blobs.
+
+**Per-machine opt-in (by design).** The curated directories are named in `.claude/reviewers/north-star-nick-local.yaml`, which is gitignored per-persona local state by default (in this repo, `.claude/.gitignore` tracks it as the sole exception). The opt-in is therefore personal to each machine: in a consuming project, a fresh clone reports `yaml=missing` until its owner writes that local file; a fresh clone of this repo reports `yaml=no_keys` while its keys are commented out. This is intentional and matches what ships today. Whether the setting should move to a shared, tracked home is a question deferred to a ticket that owns it. This amendment changes no config and no code.
+
+**Acceptance status.** The `Status: Accepted` line at the top of this ADR was set in #297 while Gate 1 (#349), #299 and #300 remain open. Those gates have not passed, and this amendment does not claim otherwise. Rationale (confirmed by the human, 2026-10-26): Accepted means the design decision is settled and already in use. Pat is wired into `/expert-plan` Step 5 (#294) and the curated layer exercises it (#297). The open gates measure how far Pat is relied on, not whether the design is adopted, so "Accepted" here is "adopted and in use", not "the gates have passed".
