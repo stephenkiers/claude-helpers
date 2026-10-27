@@ -8,6 +8,9 @@ The append subcommand logs one JSONL row per answered question that Pat spoke on
 (has a block in validated JSON). Rows record the predicted answer, actual answer,
 confidence, and whether Pat was right (hit).
 
+This helper is called after Step 5 answers in /expert-plan (both non-flow and flow modes)
+and after Step 12 rulings in /expert-review (#296).
+
 Inputs:
   --validated PATH           Path to precedent-validated.json (the output of precedent-render.py validate).
   --questions PATH           Path to precedent-questions.json, with schema {"questions":[{id, header, options, recommended}]}.
@@ -56,6 +59,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Final, List, Literal, NoReturn, Optional, Tuple, TypedDict
 
+
+# Pattern for case-insensitive "(recommended)" marker strip (matches `(Recommended)`, `(recommended)`, etc.)
+RECOMMENDED_RE = re.compile(r"\(\s*recommended\b[^)]*\)", re.IGNORECASE)
 
 Command = Literal["expert-plan", "expert-review"]
 Confidence = Literal["high", "medium"]
@@ -297,10 +303,8 @@ def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "fr
       - actual: canonical label for option, or normalized text for free_text
       - actual_source: "option" or "free_text"
     """
-    # Strip trailing " (Recommended)" marker
-    stripped = value.rstrip()
-    if stripped.endswith("(Recommended)"):
-        stripped = stripped[: stripped.rfind("(Recommended)")].rstrip()
+    # Strip trailing "(recommended)" marker (case-insensitive)
+    stripped = RECOMMENDED_RE.sub("", value).rstrip()
 
     # Exact match to an option label
     if stripped in options:
@@ -508,7 +512,7 @@ def _append_rows(log_dir: str, repo_key: str, rows: List[PredictionRow]) -> Tupl
 
 
 def _build_parser() -> _Parser:
-    parser = _Parser(description="Log predictions after Step 5 answers.")
+    parser = _Parser(description="Log predictions after Step 5 answers in /expert-plan or Step 12 rulings in /expert-review.")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     append_parser = subparsers.add_parser("append", help="Append prediction rows to the log")
