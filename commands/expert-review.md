@@ -707,7 +707,7 @@ If `needs-you: 0`, skip the ruling loop entirely. Do not manufacture a question 
 
 **Precedent block (Step 12, display-only).** Run once per attempt when the action plan is ready. This block surfaces the human's past answers to similar *Needs you* items as display-only annotations (ADR-0024). No decision logic reads the precedent file. The block runs only in non-PR mode and when at least one *Needs you* item is pending. It is transparent when the digest is empty or Pat times out.
 
-Follow these steps in order. Persist the outcome to `${REVIEW_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. If `${REVIEW_DIR}/precedent-trace.txt` already exists (from a prior attempt or batch), skip the entire block (including telemetry) and reuse `${REVIEW_DIR}/precedent-lines.json` and `${REVIEW_DIR}/precedent-validated.json` in the batch rendering below.
+Follow these steps in order. Persist the outcome to `${REVIEW_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. If `${REVIEW_DIR}/precedent-trace.txt` already exists (from a prior attempt or batch), skip the entire block (including telemetry) and reuse `${REVIEW_DIR}/precedent-lines.json` and `${REVIEW_DIR}/precedent-validated.json` in the batch rendering below. Define `FLOWS_ROOT="$HOME/.claude/flows"`.
 
 Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0`.
 
@@ -765,7 +765,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    # Build the flow prefix only if FLOW_DIR is non-empty
    FLOW_PREFIX=""
    if [ -n "${FLOW_DIR}" ]; then
-     FLOW_PREFIX="$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; p=sys.stdin.read().strip().split("/")[-1].split("-", 1)[0]; print("'"$HOME"'/.claude/flows/" + p + "-")' 2>/dev/null)" || FLOW_PREFIX=""
+     FLOW_PREFIX="$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; p=sys.stdin.read().strip().split("/")[-1].split("-", 1)[0]; print("'"$FLOWS_ROOT"'/" + p + "-")' 2>/dev/null)" || FLOW_PREFIX=""
    fi
    
    jq -c --arg rd "${REVIEW_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOW_PREFIX}" '
