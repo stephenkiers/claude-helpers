@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Pinning tests for /expert-fleet invariants (Q2).
 
-These tests assert two hard constraints:
-1. The parser rejects `--fleet` with `--auto-merge`.
-2. The default `permission_mode` is not `bypassPermissions`.
+These tests assert three hard constraints:
+1. The /expert-flow parser rejects `--fleet` combined with `--auto-merge`, `--gates`, or `--redo`,
+   with the exact fleet rejection message (not just any output that mentions `--fleet`).
+2. The headless argv `fleet.py` builds never carries `--auto-merge`.
+3. The default `permission_mode` written by `fleet.py init` is `auto` (never `bypassPermissions`),
+   and an unsupported mode is rejected by argparse.
 """
 import importlib.util
 import json
@@ -24,11 +27,14 @@ _spec.loader.exec_module(fl)
 
 EXPERT_FLOW_CMD = REPO_ROOT / "commands" / "expert-flow.md"
 
+# The exact text the parser sets in BAD for `--fleet` with a flag it does not combine with.
+FLEET_FLAG_BAD = "--fleet combines only with an issue, --resume, --plan-effort, and --review-effort"
+
 
 def main():
     h = Harness("fleet invariants")
 
-    # Case 1: Parser rejects --fleet with --auto-merge
+    # Case 1: Parser rejects --fleet with --auto-merge, --gates, and --redo
     # Extract the bash block under "### Argument parsing" and run it.
     expert_flow_text = EXPERT_FLOW_CMD.read_text()
 
@@ -47,77 +53,90 @@ def main():
         )
     else:
         bash_block = match.group(1)
-        # Run the extracted block with test arguments
-        # The bash block is parameterized: it reads arguments from $@ and populates variables
-
-        # Test with 12 --fleet --auto-merge (should fail)
+        # The bash block is parameterized: it reads arguments from $@ and sets $BAD on rejection.
         cmd = f"{bash_block}\nprintf %s \"$BAD\""
-        result = subprocess.run(
-            ["bash", "-c", cmd, "_", "12", "--fleet", "--auto-merge"],
-            capture_output=True,
-            text=True,
-        )
-        bad_output = result.stdout
-        h.test_result(
-            "Parser rejects --fleet --auto-merge",
-            "--fleet" in bad_output and len(bad_output) > 0,
-            f"BAD={bad_output}"
-        )
 
-        # Test with 12 --fleet (BAD must be exactly empty)
-        result = subprocess.run(
-            ["bash", "-c", cmd, "_", "12", "--fleet"],
-            capture_output=True,
-            text=True,
-        )
-        bad_output_pass = result.stdout
-        h.test_result(
-            "Parser: 12 --fleet accepts (empty BAD)",
-            bad_output_pass == "",
-            f"BAD={bad_output_pass}"
-        )
+        def parse_bad(*argv):
+            result = subprocess.run(
+                ["bash", "-c", cmd, "_", *argv],
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout
 
-        # Test with --resume 12 --fleet (BAD must be exactly empty)
-        result = subprocess.run(
-            ["bash", "-c", cmd, "_", "--resume", "12", "--fleet"],
-            capture_output=True,
-            text=True,
-        )
-        bad_output_resume = result.stdout
-        h.test_result(
-            "Parser: --resume 12 --fleet accepts (empty BAD)",
-            bad_output_resume == "",
-            f"BAD={bad_output_resume}"
-        )
+        reject_cases = {
+            "--fleet --auto-merge": ["12", "--fleet", "--auto-merge"],
+            "--fleet --gates": ["12", "--fleet", "--gates"],
+            # --redo needs --resume to parse; with --resume present the fleet rule is what fires.
+            "--fleet --redo": ["--resume", "12", "--fleet", "--redo", "plan"],
+        }
+        for label, argv in reject_cases.items():
+            bad = parse_bad(*argv)
+            h.test_result(
+                f"Parser rejects {label} with the fleet message",
+                bad == FLEET_FLAG_BAD,
+                f"BAD={bad!r}"
+            )
 
-    # Case 2: Default permission_mode is not bypassPermissions
+        accept_cases = {
+            "12 --fleet": ["12", "--fleet"],
+            "--resume 12 --fleet": ["--resume", "12", "--fleet"],
+        }
+        for label, argv in accept_cases.items():
+            bad = parse_bad(*argv)
+            h.test_result(
+                f"Parser: {label} accepts (empty BAD)",
+                bad == "",
+                f"BAD={bad!r}"
+            )
+
+    # Case 2: The headless argv never carries --auto-merge (fresh and resume)
+    fresh_argv = fl.claude_cmd("/expert-flow 1 --fleet", "auto")
+    h.test_result(
+        "Fresh fleet argv has no --auto-merge",
+        "--auto-merge" not in fresh_argv,
+        f"argv={fresh_argv}"
+    )
+    resume_argv = fl.claude_cmd("Fleet answer for Flow stop:\nRetry", "auto", "sess-1")
+    h.test_result(
+        "Resume fleet argv has no --auto-merge",
+        "--auto-merge" not in resume_argv,
+        f"argv={resume_argv}"
+    )
+
+    # Case 3: Default permission_mode is 'auto'; an unsupported mode is rejected.
+    # FLEET_ROOT is computed from Path.home() at import, so HOME is pointed at a temp dir and the
+    # init run writes only there.
     with tempfile.TemporaryDirectory() as tmp:
-        fleet_root = Path(tmp) / "fleets"
-        fleet_root.mkdir()
+        home = Path(tmp) / "home"
+        home.mkdir()
         tickets_file = Path(tmp) / "tickets.json"
         tickets_file.write_text(json.dumps([{"issue": 1, "title": "Test ticket"}]))
 
         main_wt = Path(tmp) / "main"
         main_wt.mkdir()
 
-        env = {**os.environ, "FLEET_ROOT": str(fleet_root)}
+        env = {**os.environ, "HOME": str(home)}
+        init_base = [
+            sys.executable, str(SCRIPT), "init",
+            "--repo", "test/repo",
+            "--main-worktree", str(main_wt),
+            "--epic", "https://github.com/test/repo/issues/100",
+            "--tickets", str(tickets_file),
+        ]
 
         # Call fleet.py init with no --permission-mode
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), "init",
-             "--repo", "test/repo",
-             "--main-worktree", str(main_wt),
-             "--epic", "https://github.com/test/repo/issues/100",
-             "--tickets", str(tickets_file)],
-            capture_output=True,
-            text=True,
-            env=env
-        )
+        result = subprocess.run(init_base, capture_output=True, text=True, env=env)
 
         if result.returncode == 0:
             fleet_dir = Path(result.stdout.strip())
+            h.test_result(
+                "init writes only under the temp HOME",
+                str(fleet_dir).startswith(str(home / ".claude" / "fleets") + os.sep),
+                f"fleet_dir={fleet_dir}"
+            )
             fleet_json = json.loads((fleet_dir / "fleet.json").read_text())
-            permission_mode = fleet_json.get("permission_mode", "auto")
+            permission_mode = fleet_json["permission_mode"]
 
             h.test_result(
                 "Default permission_mode is 'auto'",
@@ -135,6 +154,18 @@ def main():
                 False,
                 f"stderr: {result.stderr}"
             )
+
+        bad_mode = subprocess.run(
+            init_base + ["--permission-mode", "yolo"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        h.test_result(
+            "init rejects an unsupported --permission-mode",
+            bad_mode.returncode != 0 and "invalid choice" in bad_mode.stderr,
+            f"rc={bad_mode.returncode} stderr={bad_mode.stderr!r}"
+        )
 
     h.summarize_and_exit()
 

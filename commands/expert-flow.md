@@ -179,7 +179,9 @@ rewrite `fleet-ask.json` with `"status": "answered"` and an `"answered": "<ISO-8
   is `true`. `flags.fleet` is written `true`, and resume rule 9 sets it from whether the resume carries
   `--fleet`.
 - **Merge gate** parks as a `gate` ask with the same Merge / Hold / Take over options. The fleet
-  batches it with everything else, so a held PR is one answer away from merging.
+  batches it with everything else. Hold in a fleet is a manual hand-off, not a re-ask: the fleet does not
+  ask the merge gate again, and the ticket resumes only when a human runs `/expert-flow --resume <ISSUE>`
+  (ADR-0025 §6; automatic re-asking is deferred to #371).
 - **Hand-off** after the `worktree` step is unchanged: the fresh run from Main stops, and the fleet
   starts the ticket worktree's session with `/expert-flow --resume <ISSUE> --fleet`.
 - **Existing flow** (a fresh `/expert-flow <N> --fleet` for an issue that already has one) never

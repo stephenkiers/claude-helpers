@@ -89,7 +89,7 @@ def main():
             {"issue": 6, "deps": []},
         ]}
         write_state(root, 1, step="merge", status="paused", pr="https://x/pr/1")
-        d3 = write_state(root, 3, step="plan", status="paused")
+        write_state(root, 3, step="plan", status="paused")
         d4 = write_state(root, 4, step="review", status="awaiting")
         (d4 / "fleet-ask.json").write_text(json.dumps({"status": "open", "kind": "relay", "step": "review",
                                                        "question_file": "questions/review-01.json", "report_file": None}))
@@ -107,6 +107,8 @@ def main():
 
         rows2 = {r["issue"]: r for r in fl.compute(data, root, closed=lambda r, n: (r, n) == ("a/b", 9))}
         h.test_result("closed dep is satisfied", rows2[5]["state"] == "pending" and not rows2[5]["unmet"])
+        # ready() keeps data["tickets"] order. Both candidates fit under max_parallel=2, so this line checks
+        # the ordering only; the cap itself is exercised by the running-ticket assertion below.
         h.test_result("ready capped by max_parallel", fl.ready(data, list(rows2.values())) == [3, 5])
         rows2[6]["state"] = "running"
         h.test_result("running ticket takes a slot", fl.ready(data, list(rows2.values())) == [3])
@@ -120,9 +122,10 @@ def main():
                       and items[0]["question_data"] == {"questions": [{"id": "q1"}]})
         (d4 / "fleet-ask.json").write_text(json.dumps({"status": "answered"}))
         h.test_result("answered ask leaves inbox", fl.inbox(data, root) == [])
-        _ = d3
 
-        # find_flow picks the newest by `updated`
+        # Regression guard: find_flow picks the newest flow by state.json `updated`, not by directory name.
+        # The newer directory ("7-other-id2") sorts before the older one ("7-slug-id"), so a pick by name
+        # (max or last glob match) would return the older flow and fail this assertion.
         write_state(root, 7, step="plan", status="failed")
         newer = root / "o_r" / "7-other-id2"
         newer.mkdir()
@@ -138,8 +141,10 @@ def main():
         rc.write_text("ATTEMPT: 1\n<!-- awaiting-answers: questions/plan-01.json -->")
         h.test_result("unchanged settled receipt times out", fl.wait(rc, 0.2, 0.05) == "timeout")
         import threading
-        threading.Timer(0.1, lambda: rc.write_text("ATTEMPT: 1\nDecision: PASS")).start()
+        settle = threading.Timer(0.1, lambda: rc.write_text("ATTEMPT: 1\nDecision: PASS"))
+        settle.start()
         h.test_result("changed receipt settles", fl.wait(rc, 2, 0.05) == "settled")
+        settle.join()
 
     # End-to-end `run` with a fake claude, in a temp HOME: fresh -> hand-off -> resume -> park, then answer -> done.
     with tempfile.TemporaryDirectory() as tmp:

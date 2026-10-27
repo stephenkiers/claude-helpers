@@ -12,13 +12,15 @@ The POC was exercised via fresh launches against base 8e97cbf only through 2026-
 
 ### 1. Layering
 
-`/expert-fleet` is a layer over `/expert-flow`, which is a layer over the individual lifecycle commands. Each layer stays independently usable: `/expert-flow` without `--fleet` behaves exactly as before, and every lifecycle command still runs on its own. The diff verifies this: every expert-flow change is conditional on `--fleet` / `flags.fleet`.
+`/expert-fleet` is a layer over `/expert-flow`, which is a layer over the individual lifecycle commands. Each layer stays independently usable: `/expert-flow` without `--fleet` behaves exactly as before, and every lifecycle command still runs on its own. Every expert-flow change is conditional on `--fleet` / `flags.fleet`, so the non-fleet path is intended to be unchanged. No test compares non-fleet behaviour before and after the change; that claim rests on review.
 
 ### 2. The model
 
 `scripts/fleet.py` launches one headless `claude -p` process per sub-issue (`claude_cmd` function, `--output-format json`, stdin closed) running `/expert-flow <N> --fleet` or `/expert-flow --resume <N> --fleet`. Up to `max_parallel` tickets run at once (default 3, enforced by `ready()` function), and dependants launch once their deps are merged or CLOSED on GitHub.
 
-A per-ticket `flock` allows at most one runner per ticket, and `main.lock` serializes fresh worktree creation from the main worktree. A ticket that needs the human **parks** by writing `fleet-ask.json` in its flow directory and exiting. The flow's orchestrator is the single writer of `fleet-ask.json`; `fleet.py` only reads it.
+The cap gates fresh admission only. `ready()` counts `running` tickets against `max_parallel`; an answer resume (`run --message-file`) continues a ticket that was already admitted, so it is exempt from the cap and can briefly run more than `max_parallel` processes at once.
+
+A per-ticket `flock` allows at most one runner per ticket, and `main.lock` serializes fresh worktree creation from the main worktree against other fresh launches only. Nothing checks that a ticket's dependencies are merged into MAIN before its worktree is cut (see §6). A ticket that needs the human **parks** by writing `fleet-ask.json` in its flow directory and exiting. The flow's orchestrator is the single writer of `fleet-ask.json`; `fleet.py` only reads it.
 
 Each flow has one open ask at a time. The `/expert-fleet` session batches open asks to the human and resumes the ticket's own session with `fleet.py run --message-file`. For the `fleet-ask.json` schema and lifecycle, see `commands/expert-flow.md` "Fleet mode"; this ADR does not copy it, as siblings (#365, #367, #370) will change it.
 
@@ -58,6 +60,26 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 | Run-sequence race; unbounded growth of `fleet.json` `runs` and `runs/*.json`/`.err`; `pid_alive` pid recycling; no `schema_version` on `fleet.json`; answer delivery not exactly-once; Pat's write-prefix conflict; `fleet.py --from`/`--plan-file`; CLAUDE.md "Agents" text does not mention fleet's headless processes; global `~/.claude` symlinks as shared mutable state (2026-10-23 `/setup-local` swap); `runs/*.json`/`.err` files written with default umask and may hold model output | #381 | all unticketed items; each a separate concern |
 | **Fleet mode on main: not exercised end to end** | none | Validation counts only when at least one fleet child is launched **fresh** on main and reaches its first park. Unknown include whether `flow-verify-receipt.py --flow-dir` accepts a plan report shown through `fleet-report-<SEQ>.md`, and how the main-only ask sites from the Fleet mode section behave (specifically: resume rule 3b and hard-stop item 4 (Keep previous attempt), both reachable via `--resume --fleet` on a flow with prior redo history and covered only by the general Park rule; resume rule 0 and the redo-note follow-up are unreachable under `--fleet` because the argument parser rejects `--redo`). |
 | Headless step agents are `general-purpose` with full capability (ADR-0008 standing exception) | none | Noted. In-flight #358 may narrow this. |
+| Merge-gate Hold in a fleet strands the ticket and its dependants: the flow is `paused at merge` (reported `held`, not `LAUNCHABLE`), no ask is open, dependants stay `blocked`. Decision: manual hand-off. The human runs `/expert-flow --resume <N>`; the fleet does not re-ask. | #371 (automatic re-ask deferred) | Decided. Recovery is manual and was undocumented until this landing. |
+| A failed launch is relaunched and `run()` exits 0 | #381 (fix: #371) | Not fixed here; `run()` reports success although a launch failed. |
+| Answered-but-undelivered asks are re-listed by `inbox`: there is no delivery record | #381 (fix: #371) | A crash between delivery and closing the ask re-lists it. Same family as the exactly-once gap above. |
+| `main.lock` covers fresh launches only; a dependency merge is not checked against MAIN before a worktree is cut | #371 | Guarantee is fresh-vs-fresh only (see §2). |
+| Free-text answer is passed as a bare positional argv to `claude -p`; the `--` end-of-options terminator is unverified | #381 (fix: #371) | `claude --help` does not document `--`, and a message that starts with `-` could be read as an option. Verify on a live `claude` before relying on `--`, or prefix messages with a fixed line. |
+| `question_file` / `report_file` are joined to the flow directory without a containment check | #381 (fix: #371) | Names come from `fleet-ask.json`, which the flow orchestrator writes from model-influenced content. |
+| `wait` takes its baseline when called, so a receipt that settled before the call never reads as `settled`; each call can burn the full timeout | #371 (`--since` baseline) | Severity pending a live measurement: LOW if `wait` returns promptly after a step finishes, MEDIUM if it blocks for the full 540s. |
+| Flocks are not inherited by the `claude` child | #381 (fix: #371) | LOW. Verbatim POC code. |
+| No wall-clock bound on `claude -p` or the wait loop | #371 | Needs new timeout and park-gate behaviour. |
+| `--max` is not validated | #371 | One-line fix, deferred to keep `fleet.py` byte-identical. |
+| `init` validation raises tracebacks | #371 | Verbatim POC code. |
+| An unreadable `state.json` is treated as "no flow" | #371 | Narrow window, limited by the flock and pid. |
+| A stale `session` is kept after an unparsed run | #371 | Verbatim POC code. |
+| `find_flow` counts older flows as progress | #371 | Low confidence; the code fix breaks the byte-identical claim. |
+| `fleet.py` is outside the mypy gate; state is untyped | #371 | Adding it to the gate conflicts with the byte-identical claim. Follow-up ticket. |
+| `run()` mixes responsibilities; `range(3)` is unexplained | #371 | Readability refactor of verbatim code. |
+| The lock handle is never closed and is undocumented | #371 | Matters only to in-process callers. |
+| `wait` and `run` exit codes are undocumented | #371 | The exit-code contract is written with the follow-up. |
+| Error and crash paths are untested | #371 | Verbatim POC tests; tests to be written under #371. |
+| `SETTLED` constant is unused in `fleet.py` | #371 | Not removed here (byte-identical). Remove or use when the Hold fix lands. |
 
 ## Consequences
 
