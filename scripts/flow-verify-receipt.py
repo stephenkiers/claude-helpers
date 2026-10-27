@@ -1972,7 +1972,10 @@ def check_discarded_files(repo: str, branch: str, discarded_files: List[str]) ->
 
 
 def iter_outstanding_lines(receipt: str) -> tuple:
-    """Iterate OUTSTANDING: lines from receipt until blank line or step-end marker.
+    """Iterate OUTSTANDING: lines from receipt until the step-end marker.
+
+    Blank lines before the first OUTSTANDING: line are skipped; once the block starts,
+    a blank line ends it as an error (see Raises).
 
     Returns (valid_items, has_none, has_items) where:
     - valid_items: list of OutstandingItem objects
@@ -1996,9 +1999,10 @@ def iter_outstanding_lines(receipt: str) -> tuple:
         if in_outstanding_block and not line.strip():
             raise ValueError("blank line in OUTSTANDING block")
 
-        # Stop at blank line if we haven't entered OUTSTANDING yet
+        # Blank lines before the block are skipped, not terminal: a receipt with a blank
+        # line above OUTSTANDING: is still a valid receipt (#322 side finding)
         if not line.strip() and not in_outstanding_block:
-            break
+            continue
 
         if line.startswith("OUTSTANDING:"):
             in_outstanding_block = True

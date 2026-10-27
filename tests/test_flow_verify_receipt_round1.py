@@ -251,6 +251,20 @@ def main() -> None:
                   elapsed < 2.0 and result is False,
                   f"elapsed={elapsed:.2f}s, matched={result}")
 
+    # #322 side finding: a blank line above OUTSTANDING: must not read as "missing OUTSTANDING".
+    # Blank lines inside the block remain an error.
+    _items, has_none, _has_items = flow_verify_module.iter_outstanding_lines(
+        "Decision: OK\n\nOUTSTANDING: none\n<!-- step-end -->\n")
+    h.test_result("Blank line before OUTSTANDING: is skipped, not terminal", has_none is True,
+                  f"has_none={has_none}")
+    try:
+        flow_verify_module.iter_outstanding_lines(
+            "OUTSTANDING: u1 (reason) [self-report]\n\nOUTSTANDING: u2 (reason) [both]\n")
+        inside_rejected = False
+    except ValueError:
+        inside_rejected = True
+    h.test_result("Blank line inside the OUTSTANDING block is still rejected", inside_rejected)
+
     h.summarize_and_exit()
 
 
