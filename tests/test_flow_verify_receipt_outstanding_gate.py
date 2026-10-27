@@ -121,6 +121,19 @@ def main():
             rc, out, err = gate(flow, home)
             h.test_result(f"drop with reason {label!r} fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
 
+    for n_chars, want_ok in ((14, False), (15, True)):
+        reason = "x" * (n_chars - 1) + "y"
+        with tempfile.TemporaryDirectory() as td:
+            home, flow = base(td)
+            write_answers(flow, 1, [("q1", S3, "Drop", reason), ("q2", S4, "Open an issue", None)])
+            write_marker(flow, [
+                disp(S3, "dropped", option="Drop", reason=reason),
+                good_lines()[1],
+            ])
+            rc, out, err = gate(flow, home)
+            h.test_result(f"drop reason of exactly {n_chars} chars {'passes' if want_ok else 'fails'}",
+                          (rc == 0) == want_ok, f"rc={rc} out:\n{out}\nerr:\n{err}")
+
     with tempfile.TemporaryDirectory() as td:
         home, flow = base(td)
         write_answers(flow, 1, [("q1", S3, "Drop", DROP_REASON), ("q2", S4, "Open an issue", None)])
