@@ -32,12 +32,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _test_harness import (
     Harness,
     REPO_ROOT,
-    SLUG_PREFIX,
-    FALLBACK_LINE,
     EXPERT_PLAN,
     EXPERT_PLAN_V2,
+    detect_sed_flavor,
     sed_path_env,
     run_slug,
+    extract_slug_sites_edge_cases,
     extract_flag_loop,
     run_flag_loop,
 )
@@ -77,31 +77,16 @@ SLUG_CASES = [
 ]
 
 
-def extract_slug_sites_edge_cases():
-    """Return [(doc relative path, SLUG line)] for every SLUG line followed by the fallback line."""
-    sites = []
-    for doc in SLUG_DOCS:
-        lines = doc.read_text().splitlines()
-        found = 0
-        for i, line in enumerate(lines):
-            if line.strip().startswith(SLUG_PREFIX):
-                nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
-                if nxt == FALLBACK_LINE:
-                    sites.append((doc.relative_to(REPO_ROOT), line.strip()))
-                    found += 1
-        if found == 0:
-            sites.append((doc.relative_to(REPO_ROOT), None))
-    return sites
-
-
 def main():
     h = Harness("SLUG EDGE CASES AND --model FLAG BOUNDARY (#377)")
 
-    env, notice = sed_path_env()
-    if notice:
-        print(notice)
+    sed_type, flavor_notice = detect_sed_flavor()
+    env, path_notice = sed_path_env()
+    if flavor_notice:
+        notice = flavor_notice
     else:
-        print("sed under test: /usr/bin/sed (first on PATH)")
+        notice = f"sed under test: /usr/bin/sed ({sed_type.upper()}, first on PATH)"
+    print(notice)
     print()
 
     print("[Section 1] Extracted slug lines exist and avoid BSD-unsafe sed constructs")

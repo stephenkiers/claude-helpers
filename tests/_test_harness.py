@@ -95,6 +95,23 @@ def extract_slug_sites(path: Path) -> list:
     return sites
 
 
+def extract_slug_sites_edge_cases() -> list:
+    """
+    Return [(doc relative path, SLUG line)] for every SLUG line followed by the fallback line.
+    For each doc in EXPECTED_SITES, includes an entry with None if no SLUG line is found.
+    """
+    sites = []
+    for doc in EXPECTED_SITES.keys():
+        doc_sites = []
+        for line_no, slug_line, following in extract_slug_sites(doc):
+            if following == FALLBACK_LINE:
+                sites.append((doc.relative_to(REPO_ROOT), slug_line))
+                doc_sites.append((doc.relative_to(REPO_ROOT), slug_line))
+        if not doc_sites:
+            sites.append((doc.relative_to(REPO_ROOT), None))
+    return sites
+
+
 def run_slug(site_line: str, title: str, env: dict) -> Tuple[int, str, str]:
     """Run the extracted SLUG line plus fallback under bash. Returns (returncode, stdout, stderr)."""
     script = site_line + "\n" + FALLBACK_LINE + '\nprintf "%s" "$SLUG"\n'

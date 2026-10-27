@@ -28,6 +28,7 @@ from _test_harness import (
     REPO_ROOT,
     EXPECTED_SITES,
     FALLBACK_LINE,
+    detect_sed_flavor,
     extract_slug_sites,
     sed_path_env,
     run_pipeline,
@@ -97,10 +98,14 @@ def main():
     )
 
     # Test 3: execute every site against every case.
-    env, notice = sed_path_env()
-    if notice:
-        print(notice)
-        print()
+    sed_type, flavor_notice = detect_sed_flavor()
+    env, path_notice = sed_path_env()
+    if flavor_notice:
+        notice = flavor_notice
+    else:
+        notice = f"sed under test: /usr/bin/sed ({sed_type.upper()}, first on PATH)"
+    print(notice)
+    print()
     for path in EXPECTED_SITES:
         for line_no, slug_line, following in all_sites[path]:
             for title, expected, is_guard in CASES:
