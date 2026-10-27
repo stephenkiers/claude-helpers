@@ -887,8 +887,17 @@ When a drifted agent's work is in the primary checkout (not the unit's own workt
 1. **Confirm no stray commits:** `git -C "$PRIMARY_CHECKOUT" log --oneline <expected-HEAD>..HEAD` must be empty
    (cwd drift creates uncommitted changes only, never new commits).
 2. **Scope the dirt:** `git -C "$PRIMARY_CHECKOUT" status --porcelain` must touch **only this unit's owned files**.
-   Any overlap with other units' owned files → **stop and write the FAILED receipt** with
-   Reason `primary-checkout-drift: overlap <unit-id>` and the overlapping files.
+   Any overlap with other units' owned files → **stop** and make the shared `fail` call (see Drift barrier failure
+   block), which emits the `cwd_drift` telemetry and writes the FAILED receipt with Reason
+   `primary-checkout-drift: overlap <unit-id>` and the overlapping files:
+   ```bash
+   python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 1 \
+     --label "(overlap, unit <unit-id>)" --reason "primary-checkout-drift: overlap <unit-id>" \
+     --overlap-files "<comma-separated overlapping files>" \
+     ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+     --units "<n>" --max-turns "<n>"
+   exit $?
+   ```
 3. **Verify the drifted work is actually the unit's deliverable.** Read the diff against the
    sub-task: does this match what the unit was supposed to do? Never assume drifted work is
    complete.
@@ -900,10 +909,19 @@ When a drifted agent's work is in the primary checkout (not the unit's own workt
 5. **Do NOT commit.** The drifted work stays in the primary checkout, uncommitted.
 
 **If sibling units are still running,** record the drift and wait for them to finish (bound the wait to 5 minutes per sibling; escalate if a sibling exceeds that). Once all
-siblings are terminal, write the FAILED receipt with `Reason: primary-checkout-drift: unit <unit-id>`, `FAILURE_CLASS: cwd-drift`,
-the patch path `<SCRATCH_PATH>/unit-${UNIT_ID}-drifted.patch`, the list of drifted files from
-`git -C "$PRIMARY_CHECKOUT" status --porcelain -- <owned-files>`, the untracked files list, and the explicit line
-`nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. Then stop.
+siblings are terminal, make the shared `fail` call (see Drift barrier failure block) with `Reason: primary-checkout-drift: unit <unit-id>`;
+it emits the `cwd_drift` telemetry and writes `FAILURE_CLASS: cwd-drift`, the patch path, the drifted files (from
+`git -C "$PRIMARY_CHECKOUT" status --porcelain -- <owned-files>`), the untracked files list, and the explicit line
+`nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. Then stop (`exit $?`).
+```bash
+python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 1 \
+  --label "(unit <unit-id>)" --reason "primary-checkout-drift: unit <unit-id>" \
+  --patch-path "<SCRATCH_PATH>/unit-${UNIT_ID}-drifted.patch" \
+  --drifted-files "<comma-separated drifted files>" --untracked-files "<comma-separated untracked files or empty>" \
+  ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+  --units "<n>" --max-turns "<n>"
+exit $?
+```
 
 **Otherwise, apply the unit's staged diff from the ticket worktree** (never cd into the unit's
 worktree; never merge or commit inside it):
@@ -998,7 +1016,7 @@ When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), o
 3. writes the FAILED receipt, ending with `<!-- step-end -->`, **only when `--receipt` is given** (the barriers pass it via `${FLOW_DIR:+--receipt "<RECEIPT_PATH>"}`, so nothing is written outside a flow);
 4. returns exit code 1, which the barrier passes on with `exit $?`.
 
-Flags: `--compare-exit <1|2>` (1 = drift, 2 = baseline unavailable; a failed snapshot passes 2), `--label`, `--receipt`, `--attempt` (the step prompt's `ATTEMPT=<k>`, `1` if none), `--implementer-model`, `--units`, `--max-turns`, `--fail-paths <a,b>` (the paths on the compare's `ERROR primary-checkout-drift <paths>` line). `--detail` (drift only) adds the richer sections from `--warn-paths`, repeatable `--ticket-match <path>:<status>` and repeatable `--owned-overlap <unit-id>:<paths>`, plus the standard `NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. `--reason` overrides the Reason and must start with `primary-checkout-drift:` (e.g. `primary-checkout-drift: unit <unit-id>`).
+Flags: `--compare-exit <1|2>` (1 = drift, 2 = baseline unavailable; a failed snapshot passes 2), `--label`, `--receipt`, `--attempt` (the step prompt's `ATTEMPT=<k>`, `1` if none), `--implementer-model`, `--units`, `--max-turns`, `--fail-paths <a,b>` (the paths on the compare's `ERROR primary-checkout-drift <paths>` line). `--detail` (drift only) adds the richer sections from `--warn-paths`, repeatable `--ticket-match <path>:<status>` and repeatable `--owned-overlap <unit-id>:<paths>`, plus the standard `NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. The multi-unit sites in Failure procedure for cwd drift add `--overlap-files <a,b>` (writes `OVERLAP_FILES`) or `--patch-path`, `--drifted-files`, `--untracked-files` (write `PATCH_PATH`, `DRIFTED_FILES`, `UNTRACKED_FILES` and the standard `NOTE`). `--reason` overrides the Reason and must start with `primary-checkout-drift:` (e.g. `primary-checkout-drift: unit <unit-id>`).
 
 The script fixes the Reason values and class: drift writes `Reason: primary-checkout-drift: <comma-separated FAIL paths>`, a missing baseline writes `Reason: primary-checkout-drift: baseline-unavailable`, and both write `FAILURE_CLASS: cwd-drift`. Receipt shape: `ATTEMPT`, `Decision: FAILED`, `Reason`, `FAILURE_CLASS`, (with `--detail`: `FAIL_PATHS`, `WARN_PATHS`, `TICKET_MATCH_STATUS`, `OWNED_FILE_OVERLAP`, `NOTE`), `IMPLEMENTER_MODEL`, `UNITS`, `TURNS_USED: unknown`, `MAX_TURNS`, `TURNS_EXHAUSTED: unknown`, `<!-- step-end -->`. Do not inline the telemetry call or a receipt heredoc at a barrier; call `fail`.
 

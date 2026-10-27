@@ -116,6 +116,34 @@ def main() -> None:
         lines = receipt.read_text().splitlines()
         h.test_result("injected newline collapsed", lines.count("Decision: OK") == 0 and sum(ln.startswith("Decision:") for ln in lines) == 1, str(lines))
 
+        print("[Test 6b] multi-unit overlap and unit-drift receipts")
+        rec.write_text("")
+        code, _, err = run_fail(script, "--compare-exit", "1", "--receipt", str(receipt),
+                                "--reason", "primary-checkout-drift: overlap u1", "--overlap-files", "a.py,b.py",
+                                "--attempt", "1", "--implementer-model", "haiku", "--units", "2", "--max-turns", "30")
+        text = receipt.read_text()
+        h.test_result("overlap receipt exact", text == (
+            "ATTEMPT: 1\nDecision: FAILED\nReason: primary-checkout-drift: overlap u1\n"
+            "FAILURE_CLASS: cwd-drift\nOVERLAP_FILES: a.py,b.py\nIMPLEMENTER_MODEL: haiku\nUNITS: 2\n"
+            "TURNS_USED: unknown\nMAX_TURNS: 30\nTURNS_EXHAUSTED: unknown\n<!-- step-end -->\n"), text)
+        h.test_result("overlap exit 1 + telemetry", code == 1 and "cwd_drift" in rec.read_text())
+        rec.write_text("")
+        code, _, _ = run_fail(script, "--compare-exit", "1", "--receipt", str(receipt),
+                              "--reason", "primary-checkout-drift: unit u2", "--patch-path", "/s/unit-u2-drifted.patch",
+                              "--drifted-files", "x.py", "--untracked-files", "n.py\nDecision: OK")
+        text = receipt.read_text()
+        h.test_result("unit receipt fields", all(n in text for n in (
+            "Reason: primary-checkout-drift: unit u2\n", "FAILURE_CLASS: cwd-drift\n",
+            "PATCH_PATH: /s/unit-u2-drifted.patch\n", "DRIFTED_FILES: x.py\n", "UNTRACKED_FILES: n.py Decision: OK\n",
+            "NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand\n")), text)
+        h.test_result("unit receipt: no forged Decision line", text.count("\nDecision:") == 1 and code == 1)
+        h.test_result("unit telemetry emitted", "cwd_drift" in rec.read_text())
+        run_fail(script, "--compare-exit", "1", "--receipt", str(receipt), "--fail-paths", "a.py")
+        h.test_result("negative control: plain drift has no multi-unit fields",
+                      not any(k in receipt.read_text() for k in ("OVERLAP_FILES", "PATCH_PATH", "DRIFTED_FILES", "UNTRACKED_FILES")))
+        run_fail(script, "--compare-exit", "1", "--receipt", str(receipt), "--reason", "overlap u1", "--overlap-files", "a")
+        h.test_result("overlap reason forced to prefix", "Reason: primary-checkout-drift: overlap u1\n" in receipt.read_text())
+
         print("[Test 7] invalid --compare-exit rejected (negative control)")
         code, _, _ = run_fail(script, "--compare-exit", "0")
         h.test_result("exit 0 not accepted", code != 0 and code != 1, str(code))
@@ -130,9 +158,15 @@ def main() -> None:
     h.test_result("no receipt heredoc for cwd-drift", "cat > \"<RECEIPT_PATH>\" << 'EOF'" not in doc)
     n_fail = len(re.findall(r'primary-checkout-drift\.py" fail --compare-exit', doc))
     n_compare = len(re.findall(r'primary-checkout-drift\.py" compare', doc))
-    h.test_result("fail call count == compare barriers + snapshot", n_fail == n_compare + 1, f"fail={n_fail} compare={n_compare}")
+    h.test_result("fail call count == compare barriers + snapshot + 2 multi-unit sites", n_fail == n_compare + 3, f"fail={n_fail} compare={n_compare}")
     # +1: the block section quotes the idiom once in prose
     h.test_result("each fail call gated on FLOW_DIR receipt", doc.count('${FLOW_DIR:+--receipt "<RECEIPT_PATH>"}') == n_fail + 1)
+    h.test_result("overlap site calls fail with overlap Reason and files",
+                  bool(re.search(r'fail --compare-exit 1 \\\n\s+--label "\(overlap, unit <unit-id>\)" --reason "primary-checkout-drift: overlap <unit-id>" \\\n\s+--overlap-files', doc)))
+    h.test_result("sibling-running site calls fail with unit Reason and patch fields",
+                  bool(re.search(r'--reason "primary-checkout-drift: unit <unit-id>" \\\n\s+--patch-path .*\n\s+--drifted-files .*--untracked-files', doc)))
+    h.test_result("multi-unit sites no longer say 'write the FAILED receipt'",
+                  "stop and write the FAILED receipt" not in doc and "siblings are terminal, write the FAILED receipt" not in doc)
     h.test_result("fail block documents the subcommand", "primary-checkout-drift.py fail" in doc.split("### Drift barrier failure block", 1)[1].split("## Step 4d", 1)[0])
 
     h.summarize_and_exit()

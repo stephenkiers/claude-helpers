@@ -26,6 +26,9 @@ Subcommands:
        [--implementer-model <m>] [--units <n>] [--max-turns <n>] [--fail-paths <a,b>]
        [--reason <primary-checkout-drift: ...>] [--detail --warn-paths <a,b>
        --ticket-match <path:status>... --owned-overlap <unit:paths>...]
+       [--overlap-files <a,b>] [--patch-path <p>] [--drifted-files <a,b>] [--untracked-files <a,b>]
+    - Multi-unit sites: --overlap-files writes OVERLAP_FILES; --patch-path/--drifted-files/
+      --untracked-files write PATCH_PATH/DRIFTED_FILES/UNTRACKED_FILES plus the standard NOTE
     - The single shared drift-barrier failure mechanism (F4/F20 of #336): prints the stderr
       FAILED line, best-effort emits run-metrics.py command-end (failure-class cwd_drift),
       and writes the FAILED receipt (ending with <!-- step-end -->) only when --receipt is given
@@ -396,6 +399,10 @@ def cmd_compare(
 
 
 REASON_PREFIX = "primary-checkout-drift:"
+RECOVER_NOTE = (
+    "NOTE: nothing in the primary checkout was changed by this run's orchestrator; "
+    "recover by hand"
+)
 
 
 def _one_line(value: str) -> str:
@@ -437,10 +444,14 @@ def build_fail_receipt(args: argparse.Namespace, reason: str) -> str:
         for entry in args.owned_overlap:
             unit, _, paths = entry.partition(":")
             lines.append(f"  {_one_line(unit)}: {_one_line(paths)}")
-        lines.append(
-            "NOTE: nothing in the primary checkout was changed by this run's orchestrator; "
-            "recover by hand"
-        )
+        lines.append(RECOVER_NOTE)
+    if args.overlap_files:
+        lines.append(f"OVERLAP_FILES: {_one_line(args.overlap_files)}")
+    if args.patch_path or args.drifted_files or args.untracked_files:
+        lines.append(f"PATCH_PATH: {_one_line(args.patch_path)}")
+        lines.append(f"DRIFTED_FILES: {_one_line(args.drifted_files)}")
+        lines.append(f"UNTRACKED_FILES: {_one_line(args.untracked_files)}")
+        lines.append(RECOVER_NOTE)
     lines += [
         f"IMPLEMENTER_MODEL: {_one_line(args.implementer_model)}",
         f"UNITS: {_one_line(args.units)}",
@@ -513,6 +524,12 @@ def main() -> int:
                              help="<path>:<ticket-match|ticket-differs|ticket-absent>, repeatable (with --detail)")
     fail_parser.add_argument("--owned-overlap", action="append", default=[],
                              help="<unit-id>:<comma-separated owned paths>, repeatable (with --detail)")
+
+    fail_parser.add_argument("--overlap-files", default="",
+                             help="Comma-separated files overlapping other units' owned files")
+    fail_parser.add_argument("--patch-path", default="", help="Path of the saved drifted patch")
+    fail_parser.add_argument("--drifted-files", default="", help="Comma-separated drifted files")
+    fail_parser.add_argument("--untracked-files", default="", help="Comma-separated untracked drifted files")
 
     args = parser.parse_args()
 
