@@ -22,6 +22,17 @@ Subcommands:
     - Exit 0 clean, 1 drift (FAIL including head-moved), 2 error
     - ERROR lines to stdout: baseline-unavailable, probe-failed, planned-set-unavailable
 
+  fail --compare-exit <1|2> [--label <text>] [--receipt <path>] [--attempt <k>]
+       [--implementer-model <m>] [--units <n>] [--max-turns <n>] [--fail-paths <a,b>]
+       [--reason <primary-checkout-drift: ...>] [--detail --warn-paths <a,b>
+       --ticket-match <path:status>... --owned-overlap <unit:paths>...]
+    - The single shared drift-barrier failure mechanism (F4/F20 of #336): prints the stderr
+      FAILED line, best-effort emits run-metrics.py command-end (failure-class cwd_drift),
+      and writes the FAILED receipt (ending with <!-- step-end -->) only when --receipt is given
+    - --compare-exit 1 = drift (Reason: primary-checkout-drift: <fail paths>), 2 = baseline
+      unavailable (Reason: primary-checkout-drift: baseline-unavailable)
+    - Always exits 1 (the code every barrier uses); telemetry or receipt problems never change it
+
 Exit codes: 0 clean, 1 drift, 2 error (missing evidence, probe failures, etc.)
 """
 
@@ -384,6 +395,87 @@ def cmd_compare(
     return EXIT_CLEAN
 
 
+REASON_PREFIX = "primary-checkout-drift:"
+
+
+def _one_line(value: str) -> str:
+    """Collapse a field value onto one line so it cannot forge extra receipt lines."""
+    return " ".join(str(value).split())
+
+
+def emit_cwd_drift_telemetry() -> None:
+    """Best-effort run-metrics command-end (failure-class cwd_drift); never raises."""
+    script = Path(__file__).parent / "run-metrics.py"
+    try:
+        subprocess.run(
+            [sys.executable, str(script), "command-end", "--command", "implement-with-haiku",
+             "--outcome", "failure", "--failure-class", "cwd_drift"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+
+def build_fail_receipt(args: argparse.Namespace, reason: str) -> str:
+    """Render the FAILED receipt text (always ends with the step-end marker)."""
+    lines = [
+        f"ATTEMPT: {_one_line(args.attempt)}",
+        "Decision: FAILED",
+        f"Reason: {reason}",
+        "FAILURE_CLASS: cwd-drift",
+    ]
+    if args.detail and args.compare_exit == EXIT_DRIFT:
+        lines.append(f"FAIL_PATHS: {_one_line(args.fail_paths)}")
+        lines.append(f"WARN_PATHS: {_one_line(args.warn_paths)}")
+        lines.append("TICKET_MATCH_STATUS:")
+        for entry in args.ticket_match:
+            path, _, status = entry.rpartition(":")
+            lines.append(f"  {_one_line(path)}: {_one_line(status)}")
+        lines.append("OWNED_FILE_OVERLAP:")
+        for entry in args.owned_overlap:
+            unit, _, paths = entry.partition(":")
+            lines.append(f"  {_one_line(unit)}: {_one_line(paths)}")
+        lines.append(
+            "NOTE: nothing in the primary checkout was changed by this run's orchestrator; "
+            "recover by hand"
+        )
+    lines += [
+        f"IMPLEMENTER_MODEL: {_one_line(args.implementer_model)}",
+        f"UNITS: {_one_line(args.units)}",
+        "TURNS_USED: unknown",
+        f"MAX_TURNS: {_one_line(args.max_turns)}",
+        "TURNS_EXHAUSTED: unknown",
+        "<!-- step-end -->",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_fail(args: argparse.Namespace) -> int:
+    """Shared drift-barrier failure: stderr line, best-effort telemetry, optional receipt."""
+    if args.compare_exit == EXIT_DRIFT:
+        suffix = f" {args.label}" if args.label else ""
+        print(f"FAILED: primary-checkout-drift detected \u2014 cwd drift found{suffix}", file=sys.stderr)
+        reason = args.reason or f"{REASON_PREFIX} {_one_line(args.fail_paths) or 'unknown'}"
+    else:
+        print("FAILED: primary-checkout-drift baseline unavailable", file=sys.stderr)
+        reason = f"{REASON_PREFIX} baseline-unavailable"
+    if not reason.startswith(REASON_PREFIX):
+        print(f"fail: --reason must start with '{REASON_PREFIX}'", file=sys.stderr)
+        reason = f"{REASON_PREFIX} {_one_line(reason)}"
+    reason = _one_line(reason)
+
+    emit_cwd_drift_telemetry()
+
+    if args.receipt:
+        try:
+            Path(args.receipt).write_text(build_fail_receipt(args, reason))
+        except OSError as e:
+            print(f"fail: could not write receipt {args.receipt}: {e}", file=sys.stderr)
+    return EXIT_DRIFT
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", help="Subcommand")
@@ -403,12 +495,33 @@ def main() -> int:
     compare_parser.add_argument("--start-sha", required=True, help="Starting commit SHA")
     compare_parser.add_argument("--planned", required=True, help="Planned paths file")
 
+    fail_parser = subparsers.add_parser("fail", help="Shared drift-barrier failure (telemetry + receipt)")
+    fail_parser.add_argument("--compare-exit", type=int, choices=[EXIT_DRIFT, EXIT_ERROR], required=True,
+                             help="Exit code the compare (or snapshot) returned: 1 drift, 2 baseline unavailable")
+    fail_parser.add_argument("--label", default="", help="Barrier label appended to the stderr line")
+    fail_parser.add_argument("--receipt", default="", help="Receipt path; omit to write no receipt")
+    fail_parser.add_argument("--attempt", default="1")
+    fail_parser.add_argument("--implementer-model", default="haiku")
+    fail_parser.add_argument("--units", default="1")
+    fail_parser.add_argument("--max-turns", default="unknown")
+    fail_parser.add_argument("--fail-paths", default="", help="Comma-separated FAIL paths")
+    fail_parser.add_argument("--reason", default="", help="Override Reason (must start with primary-checkout-drift:)")
+    fail_parser.add_argument("--detail", action="store_true",
+                             help="Write the richer drift receipt sections (drift only)")
+    fail_parser.add_argument("--warn-paths", default="", help="Comma-separated WARN paths (with --detail)")
+    fail_parser.add_argument("--ticket-match", action="append", default=[],
+                             help="<path>:<ticket-match|ticket-differs|ticket-absent>, repeatable (with --detail)")
+    fail_parser.add_argument("--owned-overlap", action="append", default=[],
+                             help="<unit-id>:<comma-separated owned paths>, repeatable (with --detail)")
+
     args = parser.parse_args()
 
     if args.command == "snapshot":
         return cmd_snapshot(args.checkout, args.orchestrator_cwd, args.out)
     elif args.command == "compare":
         return cmd_compare(args.baseline, args.ticket_wt, args.start_sha, args.planned)
+    elif args.command == "fail":
+        return cmd_fail(args)
     else:
         parser.print_help()
         return EXIT_ERROR

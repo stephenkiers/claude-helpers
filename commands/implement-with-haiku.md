@@ -507,22 +507,11 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" snapshot --checkout "$
 SNAPSHOT_EXIT=$?
 if [[ $SNAPSHOT_EXIT -ne 0 ]]; then
   printf '%s\n' "Error: primary-checkout-drift.py snapshot failed (exit code $SNAPSHOT_EXIT)" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: baseline-unavailable
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
+  # See Drift barrier failure block: a failed snapshot is reported as baseline-unavailable (compare-exit 2)
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit 2 \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>"
+  exit $?
 fi
 ```
 
@@ -722,52 +711,15 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
-# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
-if [[ $COMPARE_EXIT -eq 1 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: <comma-separated FAIL paths>
-FAILURE_CLASS: cwd-drift
-FAIL_PATHS: <comma-separated FAIL paths>
-WARN_PATHS: <comma-separated WARN paths or empty>
-TICKET_MATCH_STATUS:
-  <path>: <ticket-match | ticket-differs | ticket-absent>
-  (one line per FAIL path)
-OWNED_FILE_OVERLAP:
-  <unit-id>: <comma-separated owned paths that match FAIL paths>
-  (one line per unit with overlapping owned files)
-NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
-elif [[ $COMPARE_EXIT -eq 2 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: baseline-unavailable
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
+# See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
+if [[ $COMPARE_EXIT -ne 0 ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
+    --detail --warn-paths "<comma-separated WARN paths or empty>" \
+    --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
+    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
+  exit $?
 fi
 ```
 
@@ -1039,32 +991,16 @@ the fix for the nested-worktree hook-resolution failures seen historically.
 
 ### Drift barrier failure block
 
-When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), emit telemetry and write a FAILED receipt (if in a flow). The telemetry call and receipt template are shared across all compare barriers (single-unit fallback, Round 2 apply, Round 3 follow-up apply, and end-of-run).
+When a primary-checkout-drift compare returns exit 1 (FAIL) or exit 2 (ERROR), or the baseline snapshot fails, every barrier makes the **same single call** to `primary-checkout-drift.py fail`. The logic lives in the script, not in this doc, because a shell function cannot be shared across separate Bash calls and the near-identical heredocs used to drift apart. The call:
 
-**Telemetry line (identical at all sites):**
-```bash
-python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-```
+1. prints the stderr `FAILED:` line (`--label` names the barrier);
+2. best-effort emits `run-metrics.py command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift` (a telemetry error never changes the result);
+3. writes the FAILED receipt, ending with `<!-- step-end -->`, **only when `--receipt` is given** (the barriers pass it via `${FLOW_DIR:+--receipt "<RECEIPT_PATH>"}`, so nothing is written outside a flow);
+4. returns exit code 1, which the barrier passes on with `exit $?`.
 
-**Receipt template (when `FLOW_DIR` is set; substitute the `Reason:` value per barrier):**
-```
-ATTEMPT: <k>
-Decision: FAILED
-Reason: <barrier-specific reason>
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-```
+Flags: `--compare-exit <1|2>` (1 = drift, 2 = baseline unavailable; a failed snapshot passes 2), `--label`, `--receipt`, `--attempt` (the step prompt's `ATTEMPT=<k>`, `1` if none), `--implementer-model`, `--units`, `--max-turns`, `--fail-paths <a,b>` (the paths on the compare's `ERROR primary-checkout-drift <paths>` line). `--detail` (drift only) adds the richer sections from `--warn-paths`, repeatable `--ticket-match <path>:<status>` and repeatable `--owned-overlap <unit-id>:<paths>`, plus the standard `NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand`. `--reason` overrides the Reason and must start with `primary-checkout-drift:` (e.g. `primary-checkout-drift: unit <unit-id>`).
 
-Each compare barrier substitutes its own `Reason:` value:
-- **Exit 1 (drift found):** `Reason: primary-checkout-drift: <comma-separated FAIL paths>` or similar detail
-- **Exit 2 (baseline unavailable):** `Reason: primary-checkout-drift: baseline-unavailable`
-
-At each barrier, capture the exit code, conditionally emit the telemetry line and receipt template with the appropriate `Reason:` value, then `exit 1` or `exit 2` accordingly (the same exit code as the detector returned).
+The script fixes the Reason values and class: drift writes `Reason: primary-checkout-drift: <comma-separated FAIL paths>`, a missing baseline writes `Reason: primary-checkout-drift: baseline-unavailable`, and both write `FAILURE_CLASS: cwd-drift`. Receipt shape: `ATTEMPT`, `Decision: FAILED`, `Reason`, `FAILURE_CLASS`, (with `--detail`: `FAIL_PATHS`, `WARN_PATHS`, `TICKET_MATCH_STATUS`, `OWNED_FILE_OVERLAP`, `NOTE`), `IMPLEMENTER_MODEL`, `UNITS`, `TURNS_USED: unknown`, `MAX_TURNS`, `TURNS_EXHAUSTED: unknown`, `<!-- step-end -->`. Do not inline the telemetry call or a receipt heredoc at a barrier; call `fail`.
 
 ## Step 4d: Join barrier
 
@@ -1100,43 +1036,12 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
-# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
-if [[ $COMPARE_EXIT -eq 1 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: <failed-paths>
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
-elif [[ $COMPARE_EXIT -eq 2 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: baseline-unavailable
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
+# See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
+if [[ $COMPARE_EXIT -ne 0 ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>"
+  exit $?
 fi
 ```
 
@@ -1631,52 +1536,16 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
-# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
-if [[ $COMPARE_EXIT -eq 1 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found in Round 2" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: <comma-separated FAIL paths>
-FAILURE_CLASS: cwd-drift
-FAIL_PATHS: <comma-separated FAIL paths>
-WARN_PATHS: <comma-separated WARN paths or empty>
-TICKET_MATCH_STATUS:
-  <path>: <ticket-match | ticket-differs | ticket-absent>
-  (one line per FAIL path)
-OWNED_FILE_OVERLAP:
-  <unit-id>: <comma-separated owned paths that match FAIL paths>
-  (one line per unit with overlapping owned files)
-NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
-elif [[ $COMPARE_EXIT -eq 2 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: baseline-unavailable
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
+# See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
+if [[ $COMPARE_EXIT -ne 0 ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    --label "in Round 2" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
+    --detail --warn-paths "<comma-separated WARN paths or empty>" \
+    --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
+    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
+  exit $?
 fi
 ```
 
@@ -1892,52 +1761,16 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
-# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
-if [[ $COMPARE_EXIT -eq 1 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found in Round 3 follow-up" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: <comma-separated FAIL paths>
-FAILURE_CLASS: cwd-drift
-FAIL_PATHS: <comma-separated FAIL paths>
-WARN_PATHS: <comma-separated WARN paths or empty>
-TICKET_MATCH_STATUS:
-  <path>: <ticket-match | ticket-differs | ticket-absent>
-  (one line per FAIL path)
-OWNED_FILE_OVERLAP:
-  <unit-id>: <comma-separated owned paths that match FAIL paths>
-  (one line per unit with overlapping owned files)
-NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
-elif [[ $COMPARE_EXIT -eq 2 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: baseline-unavailable
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
+# See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
+if [[ $COMPARE_EXIT -ne 0 ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    --label "in Round 3 follow-up" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
+    --detail --warn-paths "<comma-separated WARN paths or empty>" \
+    --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
+    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
+  exit $?
 fi
 ```
 
@@ -2323,52 +2156,16 @@ python3 "$HOME/.claude/scripts/primary-checkout-drift.py" compare \
   --start-sha "$START_SHA" \
   --planned "<SCRATCH_PATH>/planned-paths.txt"
 COMPARE_EXIT=$?
-# See Drift barrier failure block: emit cwd_drift telemetry + FAILED receipt on exit 1 or 2
-if [[ $COMPARE_EXIT -eq 1 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift detected — cwd drift found (end-of-run)" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: <comma-separated FAIL paths>
-FAILURE_CLASS: cwd-drift
-FAIL_PATHS: <comma-separated FAIL paths>
-WARN_PATHS: <comma-separated WARN paths or empty>
-TICKET_MATCH_STATUS:
-  <path>: <ticket-match | ticket-differs | ticket-absent>
-  (one line per FAIL path)
-OWNED_FILE_OVERLAP:
-  <unit-id>: <comma-separated owned paths that match FAIL paths>
-  (one line per unit with overlapping owned files)
-NOTE: nothing in the primary checkout was changed by this run's orchestrator; recover by hand
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
-elif [[ $COMPARE_EXIT -eq 2 ]]; then
-  printf '%s\n' "FAILED: primary-checkout-drift baseline unavailable" >&2
-  python3 "$HOME/.claude/scripts/run-metrics.py" command-end --command implement-with-haiku --outcome failure --failure-class cwd_drift 2>/dev/null || true
-  if [[ -n "$FLOW_DIR" ]]; then
-    cat > "<RECEIPT_PATH>" << 'EOF'
-ATTEMPT: <k>
-Decision: FAILED
-Reason: primary-checkout-drift: baseline-unavailable
-FAILURE_CLASS: cwd-drift
-IMPLEMENTER_MODEL: <haiku|sonnet>
-UNITS: <n>
-TURNS_USED: unknown
-MAX_TURNS: <n>
-TURNS_EXHAUSTED: unknown
-<!-- step-end -->
-EOF
-  fi
-  exit 1
+# See Drift barrier failure block: one shared `fail` call emits telemetry + the FAILED receipt
+if [[ $COMPARE_EXIT -ne 0 ]]; then
+  python3 "$HOME/.claude/scripts/primary-checkout-drift.py" fail --compare-exit "$COMPARE_EXIT" \
+    --label "(end-of-run)" \
+    ${FLOW_DIR:+--receipt "<RECEIPT_PATH>"} --attempt "<k>" --implementer-model "<haiku|sonnet>" \
+    --units "<n>" --max-turns "<n>" --fail-paths "<comma-separated FAIL paths>" \
+    --detail --warn-paths "<comma-separated WARN paths or empty>" \
+    --ticket-match "<path>:<ticket-match|ticket-differs|ticket-absent>" \
+    --owned-overlap "<unit-id>:<comma-separated owned paths that match FAIL paths>"
+  exit $?
 fi
 ```
 
