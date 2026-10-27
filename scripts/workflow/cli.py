@@ -15,12 +15,16 @@ Usage:
   python3 -m scripts.workflow.cli track apply <plan_json_or_->
   python3 -m scripts.workflow.cli track seed-cache --from <main> --to <worktree>
   python3 -m scripts.workflow.cli worktree detect-parent [--cwd <dir>]
+  python3 -m scripts.workflow.cli checks resolve-check --worktree <dir> [--main-worktree <dir>]
+
+Exit codes for `checks resolve-check`: 0 when a command resolved; 1 whenever failure_reason is
+set, including an explicit checkOptOut. A caller that must tell opt-out from not-configured
+reads `source` ("opt-out" vs null) from the JSON, not the exit code.
 """
 
 import sys
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Callable, Any, Tuple
 
@@ -293,7 +297,16 @@ def main() -> None:
         help="Timeout per check in seconds (default: SHIPIT_CHECK_TIMEOUT_SECS, then the cache's checkTimeoutSecs, then 300)"
     )
 
-    checks_resolve_check_parser = checks_subparsers.add_parser("resolve-check", help="Resolve check command")
+    checks_resolve_check_parser = checks_subparsers.add_parser(
+        "resolve-check",
+        help="Resolve check command and timeout",
+        description=(
+            "Print JSON with command, source, failure_reason, opt_out_reason, timeout_secs, "
+            "and timeout_source. Exit 1 whenever failure_reason is set, including an explicit "
+            "checkOptOut. A caller that must tell opt-out from not-configured must read `source` "
+            "(\"opt-out\" vs null) from the JSON, not the exit code."
+        ),
+    )
     checks_resolve_check_parser.add_argument(
         "--worktree",
         required=True,
@@ -302,7 +315,10 @@ def main() -> None:
     checks_resolve_check_parser.add_argument(
         "--main-worktree",
         default=None,
-        help="Main worktree path for fallback (optional)"
+        help=(
+            "Main worktree path for fallback (optional). Exit 1 means failure_reason is set "
+            "(opt-out or not configured); read `source` from the JSON to tell them apart."
+        )
     )
 
     worktree_parser = subparsers.add_parser("worktree", help="Worktree layout detection")
@@ -561,11 +577,10 @@ def main() -> None:
                 repo_cache = RepoCacheData.from_dict(cache_data)
                 timeout = args.timeout
                 if timeout is None:
-                    env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
-                    if env_timeout:
-                        timeout = int(env_timeout)
-                    else:
-                        timeout = repo_cache.check_timeout_secs or 300
+                    # Same precedence and ignore rule as checks.resolve_check_timeout: an invalid
+                    # env value falls through to the cache value, then the default.
+                    env_value = checks.env_timeout_secs()
+                    timeout = env_value or repo_cache.check_timeout_secs or checks.DEFAULT_CHECK_TIMEOUT_SECS
                 result, err = checks.run_checks(
                     commands=repo_cache.commands,
                     repo_root=Path.cwd(),
@@ -591,22 +606,31 @@ def main() -> None:
             try:
                 worktree_path = Path(args.worktree)
                 main_worktree_path = Path(args.main_worktree) if args.main_worktree else None
-                check_cmd, source, failure_reason = checks.resolve_check_command(
-                    worktree_path, main_worktree_path
+                resolution = checks.resolve_check_detail(worktree_path, main_worktree_path)
+                source_kind: checks.ConfigKind = "project.yaml" if resolution.source == "project.yaml" else "repo-cache"
+                timeout_secs, timeout_source = checks.resolve_check_timeout(
+                    worktree_path, main_worktree_path, resolution.source_file, source_kind,
+                    resolution.source_scope,
                 )
                 output = {
-                    "command": check_cmd,
-                    "source": source,
-                    "failure_reason": failure_reason
+                    "command": resolution.command,
+                    "source": resolution.source,
+                    "failure_reason": resolution.failure_reason,
+                    "opt_out_reason": resolution.opt_out_reason,
+                    "timeout_secs": timeout_secs,
+                    "timeout_source": timeout_source,
                 }
                 print(json.dumps(output))
-                if failure_reason:
+                if resolution.failure_reason:
                     sys.exit(1)
             except Exception as e:
                 output = {
                     "command": None,
                     "source": None,
-                    "failure_reason": str(e)
+                    "failure_reason": str(e),
+                    "opt_out_reason": None,
+                    "timeout_secs": None,
+                    "timeout_source": None,
                 }
                 print(json.dumps(output))
                 sys.exit(1)

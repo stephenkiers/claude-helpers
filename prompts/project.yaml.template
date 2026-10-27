@@ -45,6 +45,19 @@ commands:
   build: null          # not applicable for this project
   check: null          # composite check (replaces lint+typecheck if set)
 
+# Explicit opt-out for the implement/fix check gate. Top-level key, next to `commands`.
+# Applies only when no check resolves (commands.check, repo-cache, or justfile check recipe).
+# Recorded as `opted-out` in the implement/fix receipt, never as a pass.
+# Covers only the implement/fix check gate: an /expert-flow run will still stop at verify and ship,
+# which require a check, and `checks run` refuses to pass with no check configured.
+# checkOptOut: "docs-only repo"
+
+# Per-check timeout in seconds for the check command (default 300). Raise it when the suite
+# outlasts 300s. Only a positive integer is used; any other value (a string, true, 0) is ignored,
+# the next source applies, and `checks resolve-check` names the ignored file in timeout_source.
+# SHIPIT_CHECK_TIMEOUT_SECS overrides it when set.
+# checkTimeoutSecs: 900
+
 # ─── Documentation Style ──────────────────────────────────────────────────────
 # Used by Contract Chris to frame docstring findings.
 # Options: google | numpy | sphinx | jsdoc | rustdoc | godoc | none

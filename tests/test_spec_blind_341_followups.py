@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from _check_gate_fixture import with_check_lines
 from _test_harness import REPO_ROOT, Harness
 
 VERIFIER = REPO_ROOT / "scripts" / "flow-verify-receipt.py"
@@ -50,6 +51,7 @@ def verify(receipt_text, step="implement", **kwargs):
     """Run the verifier CLI on one receipt. Returns (returncode, stdout+stderr)."""
     with tempfile.TemporaryDirectory() as tmp:
         receipt = Path(tmp) / "receipt.md"
+        receipt_text, check_argv = with_check_lines(receipt_text, REPO_ROOT, Path(tmp))
         receipt.write_text(receipt_text)
         argv = [sys.executable, str(VERIFIER), "--step", step, "--receipt", str(receipt),
                 "--since", SINCE, "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", BASE]
@@ -58,6 +60,7 @@ def verify(receipt_text, step="implement", **kwargs):
             argv.append(f"--{key.replace('_', '-')}")
             if value is not True:
                 argv.append(str(value))
+        argv += check_argv
         if step == "fix":
             argv += ["--review-dir", tmp]
         r = subprocess.run(argv, capture_output=True, text=True)

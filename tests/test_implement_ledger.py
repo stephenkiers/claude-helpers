@@ -42,14 +42,14 @@ SKIP_REASONS = il.SKIP_REASONS
 EXPECTED_STEP_IDS = {
     "round1", "integration-gate", "round-sizing", "pause", "usage-check-round1-join",
     "fanout", "round2-apply", "partc-dedup", "partc-reference-check", "partc-mutation-a",
-    "partc-mutation-b", "round3-followup", "round4", "usage-check-final",
+    "partc-mutation-b", "round3-followup", "round4", "usage-check-final", "full-check",
 }
 EXPECTED_SKIP_REASONS = {
     "mechanical", "test-only", "no-test-files-changed", "dirty-file",
     "no-comparison-operator", "no-new-tests", "pause-not-requested",
 }
 PAUSE_ROWS = {"pause", "usage-check-round1-join"}
-MECHANICAL_REQUIRED = ["round1", "integration-gate", "round-sizing", "usage-check-final"]
+MECHANICAL_REQUIRED = ["round1", "integration-gate", "round-sizing", "usage-check-final", "full-check"]
 PARTC_ROWS = ["partc-dedup", "partc-reference-check", "partc-mutation-a", "partc-mutation-b"]
 
 SESSION = "sess-ledger-test"
@@ -576,6 +576,66 @@ def test_required_absent_row_renders_not_run():
         ok = rc == 1 and "MISSING: integration-gate" in out and any(
             "integration-gate" in ln and "NOT RUN" in ln for ln in rendered.splitlines())
         return ok, f"check rc={rc}; render lines={[ln for ln in rendered.splitlines() if 'integration' in ln]}"
+    finally:
+        sb.close()
+
+
+# (class, reason used for the SKIPPED full-check negative): full-check is required for every class
+# (#338), and no skip reason is permitted for it.
+FULL_CHECK_CLASSES = (("mechanical", "mechanical"), ("test-only", "test-only"), ("full", "dirty-file"))
+
+
+def test_full_check_done_passes_and_missing_fails_for_every_class():
+    """full-check DONE passes for mechanical, test-only and full; an absent full-check row fails each,
+    and the render shows it NOT RUN."""
+    problems = []
+    sb = Sandbox()
+    try:
+        for cls, _reason in FULL_CHECK_CLASSES:
+            ok_run = Run(sb, f"run-fc-ok-{cls}", f"scratch-fc-ok-{cls}")
+            ok_run.init()
+            if cls == "mechanical":
+                ok_run.append(mechanical_rows(ok_run))
+            else:
+                ok_run.append(full_rows(ok_run, cls=cls))
+            rc_ok, out_ok = _check_rows(ok_run)
+            if rc_ok != 0:
+                problems.append(f"{cls}: full-check DONE rejected rc={rc_ok} output={out_ok[:200]!r}")
+
+            miss_run = Run(sb, f"run-fc-miss-{cls}", f"scratch-fc-miss-{cls}")
+            miss_run.init()
+            if cls == "mechanical":
+                miss_run.append(mechanical_rows(miss_run, drop={"full-check"}))
+            else:
+                miss_run.append(full_rows(miss_run, cls=cls, drop={"full-check"}))
+            rc_miss, out_miss = _check_rows(miss_run)
+            rendered = _out(miss_run.render())
+            if rc_miss != 1 or "MISSING: full-check" not in out_miss:
+                problems.append(f"{cls}: absent full-check not rejected rc={rc_miss} output={out_miss[:200]!r}")
+            if not any("full-check" in ln and "NOT RUN" in ln for ln in rendered.splitlines()):
+                problems.append(f"{cls}: render has no NOT RUN line for full-check")
+        return not problems, "; ".join(problems) or "ok"
+    finally:
+        sb.close()
+
+
+def test_full_check_skipped_is_rejected_for_every_class():
+    """SKIPPED full-check is rejected for mechanical, test-only and full, whatever the reason."""
+    problems = []
+    sb = Sandbox()
+    try:
+        for cls, reason in FULL_CHECK_CLASSES:
+            run = Run(sb, f"run-fc-skip-{cls}", f"scratch-fc-skip-{cls}")
+            run.init()
+            if cls == "mechanical":
+                rows = mechanical_rows(run, drop={"full-check"})
+            else:
+                rows = full_rows(run, cls=cls, drop={"full-check"})
+            run.append(rows + [f"{run.rk} SKIPPED full-check {reason}"])
+            rc, out = _check_rows(run)
+            if rc != 1 or "full-check" not in out:
+                problems.append(f"{cls}: SKIPPED full-check {reason} not rejected rc={rc} output={out[:200]!r}")
+        return not problems, "; ".join(problems) or "ok"
     finally:
         sb.close()
 
@@ -1386,6 +1446,8 @@ TESTS = [
     ("missing round-sizing row is treated as full", test_missing_round_sizing_treated_as_full),
     ("mechanical: absent or SKIPPED non-required rows both pass", test_mechanical_non_required_rows_absent_or_skipped_both_pass),
     ("mechanical: required absent row fails and renders NOT RUN", test_required_absent_row_renders_not_run),
+    ("full-check: DONE passes and absent fails for mechanical, test-only and full", test_full_check_done_passes_and_missing_fails_for_every_class),
+    ("full-check: SKIPPED is rejected for mechanical, test-only and full", test_full_check_skipped_is_rejected_for_every_class),
     ("locate: session hit and --run-key", test_locate_session_hit_and_run_key),
     ("locate: falls back to repo toplevel when session differs", test_locate_falls_back_to_repo_toplevel),
     ("locate: exits 3 when nothing found", test_locate_exits_3_when_nothing_found),

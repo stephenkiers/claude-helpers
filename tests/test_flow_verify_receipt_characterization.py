@@ -201,7 +201,7 @@ def main() -> None:
                    check_implement(tmp / "r3" / "receipt.md", "/repo", "feat/x", "main"), IMPL_MISSING)
 
             home6, review_dir6 = make_review_fixture(tmp / "f1", action_plan=ACTION_PLAN_ONE_DOING_IT)
-            receipt6 = write_receipt(tmp / "f1", "ATTEMPT: 1\n")
+            receipt6 = write_receipt(tmp / "f1", "ATTEMPT: 1\nDecision: FAILED\n")
 
             outside6 = tmp / "f1" / "elsewhere"
             outside6.mkdir()

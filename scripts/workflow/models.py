@@ -127,6 +127,20 @@ class IssuesCacheData:
         return obj
 
 
+def valid_timeout_secs(value: Any) -> Optional[int]:
+    """
+    Return value if it is a positive integer, otherwise None. Never raises.
+
+    This is the one validity rule for every checkTimeoutSecs source: project.yaml, repo-cache.json,
+    and SHIPIT_CHECK_TIMEOUT_SECS (after int() parsing). Accepted: an int greater than zero.
+    Ignored (callers fall through to the next source, then the default timeout): bool
+    (an int subclass), strings such as "900", floats, lists, None, zero, and negative integers.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 @dataclass
 class RepoCacheData:
     """Schema for .claude/repo-cache.json."""
@@ -169,10 +183,9 @@ class RepoCacheData:
         parallelizable = data.get("parallelizable", [])
         if not isinstance(parallelizable, list):
             parallelizable = []
-        check_timeout_secs = data.get("checkTimeoutSecs")
-        # bool is an int subclass; reject it along with non-positive / non-integer values.
-        if isinstance(check_timeout_secs, bool) or not isinstance(check_timeout_secs, int) or check_timeout_secs <= 0:
-            check_timeout_secs = None
+        # Invalid values (bool, string, float, zero, negative) become None, the same ignore rule
+        # resolve_check_timeout applies to every checkTimeoutSecs source.
+        check_timeout_secs = valid_timeout_secs(data.get("checkTimeoutSecs"))
         return cls(
             schema_version=str(version),
             repo_path=data.get("repo_path", ""),

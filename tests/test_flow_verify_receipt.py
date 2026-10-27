@@ -161,6 +161,18 @@ def create_git_repo(repo_path: str) -> None:
     subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_path, capture_output=True)
 
 
+def write_check_cache(repo_path: str) -> None:
+    """Configure a check in the temp repo's repo-cache so the implement/fix check gate resolves it (#338)."""
+    cache_dir = Path(repo_path) / ".claude"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "repo-cache.json").write_text(json.dumps({"commands": {"check": "just check"}}))
+
+
+def check_lines(head_sha: str) -> str:
+    """The CHECK key lines an OK implement/fix receipt carries for a passing full check on head_sha (#338)."""
+    return f"CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\nCHECK_SHA: {head_sha}\n"
+
+
 def run_verifier_argv(args: list, env_home: str) -> tuple:
     """Run the verifier with an exact argv (for modes that take no --since); return (exit_code, stdout, stderr)."""
     env = os.environ.copy()
@@ -353,8 +365,11 @@ def main():
         subprocess.run(["git", "add", "file2.txt"], cwd=repo_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
 
+        # #338: an OK implement receipt carries the full-check outcome, which must name the final HEAD.
+        write_check_cache(repo_path)
+        head_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True).stdout.strip()
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\n" + check_lines(head_sha) + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "implement", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -902,8 +917,10 @@ No items."""
         Path(f"{review_dir}/reviewer-pass1.md").write_text("# Pass 1")
         Path(f"{review_dir}/reviewer2-pass1.md").write_text("# Pass 1 #2")
 
+        # #338: zero commits, so the final HEAD is the base SHA.
+        write_check_cache(repo_path)
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, f"REVIEW_DIR: {review_dir}\nRound 1\n" + check_lines(base_sha) + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
 
         exit_code, stdout, stderr = run_verifier(
             "fix", receipt_path, "2026-10-13T00:00:00Z", tmp_home,
@@ -2133,8 +2150,10 @@ No items."""
         Path(f"{repo_path}/file2.txt").write_text("new")
         subprocess.run(["git", "add", "file2.txt"], cwd=repo_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "add file2"], cwd=repo_path, capture_output=True)
+        write_check_cache(repo_path)
+        head_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True).stdout.strip()
         receipt_path = f"{tmp_home}/receipt.md"
-        create_receipt(receipt_path, "ROUND 1\nOUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
+        create_receipt(receipt_path, "ROUND 1\n" + check_lines(head_sha) + "OUTSTANDING: none\nDecision: OK\n<!-- step-end -->")
         ts = iso_z(time.time() - 3600)
         flow_dir = f"{tmp_home}/.claude/flows/flow-79"
         Path(flow_dir).mkdir(parents=True, exist_ok=True)

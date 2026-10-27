@@ -81,6 +81,7 @@ STEP_IDS: Tuple[str, ...] = (
     "partc-mutation-b",
     "round3-followup",
     "round4",
+    "full-check",
     "usage-check-final",
 )
 ClassLiteral = Literal["mechanical", "test-only", "full"]
@@ -107,7 +108,9 @@ SKIP_REASONS: FrozenSet[str] = frozenset(
 CLASSES: Tuple[str, ...] = ("mechanical", "test-only", "full")
 
 PAUSE_ROWS: FrozenSet[str] = frozenset({"pause", "usage-check-round1-join"})
-MECHANICAL_ROWS: FrozenSet[str] = frozenset({"round1", "integration-gate", "round-sizing", "usage-check-final"})
+MECHANICAL_ROWS: FrozenSet[str] = frozenset(
+    {"round1", "integration-gate", "round-sizing", "full-check", "usage-check-final"}
+)
 ROUND2_APPLY = "round2-apply"
 FURTHER_SKIPS: Dict[str, FrozenSet[str]] = {
     "round2-apply": frozenset({"no-new-tests"}),

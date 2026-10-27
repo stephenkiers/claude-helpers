@@ -50,6 +50,17 @@ def run_verifier(step: str, receipt_path: str, escalation: bool = True, **kwargs
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
+def with_check(receipt: str, repo_path: str) -> str:
+    """Prepend passing CHECK lines for the repo's HEAD, and configure its check (#338)."""
+    cache = Path(repo_path) / ".claude" / "repo-cache.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text('{"commands": {"check": "just check"}}')
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True
+    ).stdout.strip()
+    return f"CHECK: just check\nCHECK_EXIT: 0\nCHECK_SOURCE: repo-cache\nCHECK_SHA: {head}\n" + receipt
+
+
 def create_receipt(path: str, content: str) -> None:
     """Create a receipt file with the given content."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -510,7 +521,7 @@ ROUND 1
 Decision: OK
 OUTSTANDING: none
 <!-- step-end -->"""
-        create_receipt(receipt_path, receipt)
+        create_receipt(receipt_path, with_check(receipt, repo_path))
 
         exit_code, stdout, stderr = run_verifier(
             "implement",
@@ -547,7 +558,7 @@ ROUND 1
 Decision: OK
 OUTSTANDING: none
 <!-- step-end -->"""
-        create_receipt(receipt_path, receipt)
+        create_receipt(receipt_path, with_check(receipt, repo_path))
 
         exit_code, stdout, stderr = run_verifier(
             "implement",
@@ -586,7 +597,7 @@ ROUND 1
 Decision: OK
 OUTSTANDING: none
 <!-- step-end -->"""
-        create_receipt(receipt_path, receipt)
+        create_receipt(receipt_path, with_check(receipt, repo_path))
 
         exit_code, stdout, stderr = run_verifier(
             "implement",
@@ -629,7 +640,7 @@ ROUND 1
 Decision: OK
 OUTSTANDING: none
 <!-- step-end -->"""
-        create_receipt(receipt_path, receipt)
+        create_receipt(receipt_path, with_check(receipt, repo_path))
 
         exit_code, stdout, stderr = run_verifier(
             "implement",
@@ -664,7 +675,7 @@ ROUND 1
 Decision: OK
 OUTSTANDING: none
 <!-- step-end -->"""
-        create_receipt(receipt_path, receipt)
+        create_receipt(receipt_path, with_check(receipt, repo_path))
 
         exit_code, stdout, stderr = run_verifier(
             "implement",
@@ -918,7 +929,7 @@ ROUND 1
 Decision: OK
 OUTSTANDING: none
 <!-- step-end -->"""
-        create_receipt(receipt_path, receipt)
+        create_receipt(receipt_path, with_check(receipt, repo_path))
 
         # Pass escalations=1 and expect-model
         cmd = [

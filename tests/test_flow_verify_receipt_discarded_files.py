@@ -11,6 +11,7 @@ Run with: python3 tests/test_flow_verify_receipt_discarded_files.py
 """
 
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -58,10 +59,15 @@ class ImplementFixture:
             capture_output=True,
             check=True,
         )
+        # #338: the repo resolves a check, so an OK implement receipt can carry its CHECK lines.
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "repo-cache.json").write_text(
+            json.dumps({"commands": {"check": "just check"}})
+        )
         # Initial commit
         (self.repo / "initial.txt").write_text("initial\n")
         subprocess.run(
-            ["git", "add", "initial.txt"],
+            ["git", "add", "initial.txt", ".claude/repo-cache.json"],
             cwd=self.repo,
             capture_output=True,
             check=True,
@@ -72,6 +78,18 @@ class ImplementFixture:
             capture_output=True,
             check=True,
         )
+
+    def check_lines(self):
+        """CHECK key lines for a passing full check on the repo's current HEAD (#338)."""
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        return [
+            "CHECK: just check",
+            "CHECK_EXIT: 0",
+            "CHECK_SOURCE: repo-cache",
+            f"CHECK_SHA: {head}",
+        ]
 
     def write_receipt(self, body_lines, path=None):
         """Write an implement receipt with given lines."""
@@ -157,6 +175,7 @@ def main():
                 "Implement summary",
                 "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
+                *fx.check_lines(),
                 "DISCARDED_ADDED_FILES:",
                 "  - test.py",
                 "  - doc.md",
@@ -202,6 +221,7 @@ def main():
                 "Implement summary",
                 "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
+                *fx.check_lines(),
                 "DISCARDED_ADDED_FILES:",
                 "single.py",
                 "OUTSTANDING: none",
@@ -335,6 +355,7 @@ def main():
                 "Implement summary",
                 "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
+                *fx.check_lines(),
                 "Decision: WRONG",
                 "OUTSTANDING: none",
                 "Decision: OK",  # Last one should win
@@ -376,6 +397,7 @@ def main():
                 "Implement summary",
                 "ROUND 1 — Implementer (parallel)",
                 "FLOW_DIR: " + str(fx.flow),
+                *fx.check_lines(),
                 "OUTSTANDING: none",
                 "Decision: OK",
                 "<!-- step-end -->",
