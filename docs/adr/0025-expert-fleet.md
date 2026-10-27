@@ -30,7 +30,7 @@ Delivery of answers to tickets is not exactly-once: a crash between consuming an
 
 The gate is split into two halves:
 
-- **Code-enforced:** `fleet.py`'s `claude_cmd` function builds argv without `--auto-merge` (it is never added). The `/expert-flow` parse block rejects `--fleet` together with `--auto-merge`. This is pinned by `tests/test_fleet_invariants.py`.
+- **Code-enforced:** `fleet.py`'s `claude_cmd` function builds argv without `--auto-merge` (it is never added). A shell block in `commands/expert-flow.md` rejects `--fleet` together with `--auto-merge`. This is pinned by `tests/test_fleet_invariants.py`.
 - **Prose-enforced:** the merge gate parks as a `gate` ask. The answer that reaches the ticket is text composed by the `/expert-fleet` model session from the human's reply. No code distinguishes a human-chosen Merge from one the model wrote. "A fleet run never answers for the human" is a prose rule. Resume rule 9 (resume forcing `auto_merge` false) is also prose-enforced.
 
 Claim nothing stronger than ADR-0023 §4 item 2 about merge-gate enforcement; it does not require code proof.
@@ -45,7 +45,7 @@ The 540-second `fleet.py wait` loop is a known workaround. Headless sessions abo
 
 ### 6. Known gaps
 
-The table below lists gaps fixed elsewhere (in numbered sibling issues or the catch-all) and gaps deferred to later work. Parent epic #371. None are fixed in this landing; all are marked `not fixed here`.
+The table below lists gaps fixed elsewhere (in numbered sibling issues or the catch-all) and gaps deferred to later work. Parent epic #371. None are fixed in this landing; each row's Qualifies column states the disposition.
 
 | Gap | Issue | Qualifies |
 |-----|-------|-----------|
@@ -64,7 +64,11 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 | A failed launch is relaunched and `run()` exits 0 | #381 (fix: #371) | Not fixed here; `run()` reports success although a launch failed. |
 | Answered-but-undelivered asks are re-listed by `inbox`: there is no delivery record | #381 (fix: #371) | A crash between delivery and closing the ask re-lists it. Same family as the exactly-once gap above. |
 | `main.lock` covers fresh launches only; a dependency merge is not checked against MAIN before a worktree is cut | #371 | Guarantee is fresh-vs-fresh only (see §2). |
-| Free-text answer is passed as a bare positional argv to `claude -p`; the `--` end-of-options terminator is unverified | #381 (fix: #371) | `claude --help` does not document `--`, and a message that starts with `-` could be read as an option. Verify on a live `claude` before relying on `--`, or prefix messages with a fixed line. |
+| Report reply (the body of a `FLEET-REPLY #N` block) is passed as a bare positional argv to `claude -p`; the `--` end-of-options terminator is unverified | #381 (fix: #371) | `claude --help` does not document `--`, and a report body that starts with `-` could be read as an option. Relay and gate messages are not affected: they start with a fixed `Fleet answer for` header. Verify on a live `claude` before relying on `--`, or prefix report messages with a fixed line. |
+| `gh_issue_closed` maps any lookup failure (auth, network, timeout) to not-closed, so a dependant stays blocked | none | Fail-safe: a dependant is never launched early on an unknown state. Documented; no follow-up scheduled. |
+| `run()` re-asks a held ticket if it is launched without a guard: the expert-flow resume rule re-parks the merge gate | #371 | Same family as the Hold row above. Launched without a guard, `run()` resumes a held ticket and the resume rule re-parks the merge gate. |
+| Concurrent `--fleet` telemetry correlation is unchecked | ADR-0023 §4 item 3 | Recorded from ADR-0023 §4 item 3; not checked at landing. |
+| `init` can raise `FileExistsError` when two fleets are initialised in the same second | #371 | Narrow window; verbatim POC code. |
 | `question_file` / `report_file` are joined to the flow directory without a containment check | #381 (fix: #371) | Names come from `fleet-ask.json`, which the flow orchestrator writes from model-influenced content. |
 | `wait` takes its baseline when called, so a receipt that settled before the call never reads as `settled`; each call can burn the full timeout | #371 (`--since` baseline) | Severity pending a live measurement: LOW if `wait` returns promptly after a step finishes, MEDIUM if it blocks for the full 540s. |
 | Flocks are not inherited by the `claude` child | #381 (fix: #371) | LOW. Verbatim POC code. |
@@ -92,9 +96,9 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 
 This ADR documents the implementation landing on main at a known state:
 
-- New files: `commands/expert-fleet.md` (174 lines), `scripts/fleet.py` (499 lines), `tests/test_fleet.py` (196 lines), verbatim from the POC base 8e97cbf. `fleet.py` stays byte-identical; the test suite adds `tests/test_fleet_invariants.py` (new file) to pin parser and default-mode invariants.
+- New files: `commands/expert-fleet.md`, `scripts/fleet.py`, `tests/test_fleet.py`, taken verbatim from the POC base 8e97cbf except for review-round edits. `scripts/fleet.py` stays byte-identical to POC commit 67d40ca. The test suite adds `tests/test_fleet_invariants.py` (new file) to pin parser and default-mode invariants, and `tests/test_fleet_docs_contract.py` (new file) to pin the ADR and command-doc contract.
 - Fleet mode ported onto `commands/expert-flow.md` with every cross-reference re-pointed to main's step and rule numbers. All changes are conditional on `FLEET` / `flags.fleet`.
-- `tests/test_expert_flow.py` changes: `fleet.py wait` added to `READ_ONLY_BASH`; POC regression test added; no `NO_GATES` count changes.
+- `tests/test_expert_flow.py` is not changed by this landing. Its `fleet.py wait` entry in `READ_ONLY_BASH` and the POC regression comment predate it (commit eb2985b and the POC base). No `NO_GATES` count changes.
 - ADR-0023 pointer at §4 item 3 (sequential epic execution is a separate layer; `/expert-fleet` is parallel; `--epic` itself stays sequential).
 - ADR-0019 pointer after the "no headless invocation" amendment (a headless caller now exists; questions park to `fleet-ask.json`).
 - Two follow-up issues: #381 (catch-all for unticketed gaps) and #382 (`bypassPermissions` risk).

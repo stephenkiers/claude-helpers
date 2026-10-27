@@ -109,7 +109,7 @@ def main():
         h.test_result("closed dep is satisfied", rows2[5]["state"] == "pending" and not rows2[5]["unmet"])
         # ready() keeps data["tickets"] order. Both candidates fit under max_parallel=2, so this line checks
         # the ordering only; the cap itself is exercised by the running-ticket assertion below.
-        h.test_result("ready capped by max_parallel", fl.ready(data, list(rows2.values())) == [3, 5])
+        h.test_result("ready keeps ticket order", fl.ready(data, list(rows2.values())) == [3, 5])
         rows2[6]["state"] = "running"
         h.test_result("running ticket takes a slot", fl.ready(data, list(rows2.values())) == [3])
 

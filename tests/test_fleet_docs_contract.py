@@ -34,11 +34,35 @@ FLEET_PY_PATH = REPO_ROOT / "scripts" / "fleet.py"
 
 POC_SHA = "67d40ca"
 
-# Findings the action plan puts in the ADR-0025 gaps table (or in #381): every deferred finding,
-# plus the "Doing it" findings whose plan action is "record the gap".
-DEFERRED_IDS = ["F9", "F12", "F13", "F14", "F15", "F16", "F20", "F21", "F22", "F23", "F24", "F25", "F31"]
-RECORDED_IDS = ["F1", "F4", "F5", "F7", "F18", "F30"]
-GAP_IDS = DEFERRED_IDS + RECORDED_IDS
+# Gaps the ADR-0025 gaps table must name (deferred findings, plus the "Doing it" findings recorded for
+# follow-up). Each entry is (description, distinctive prose term). The term must appear in a markdown
+# table row of the ADR; review-local finding labels (F1..F31) are not used in the ADR and are not keyed on.
+GAP_TERMS = [
+    ("gh_issue_closed lookup failures", "gh_issue_closed"),
+    ("SETTLED constant unused", "SETTLED"),
+    ("--max not validated", "`--max`"),
+    ("question/report file containment", "containment"),
+    ("answered-but-undelivered asks", "undelivered"),
+    ("flocks not inherited by claude child", "Flocks are not inherited"),
+    ("fleet.json schema_version", "schema_version"),
+    ("no wall-clock bound", "wall-clock"),
+    ("merge-gate Hold stranding", "Merge-gate Hold"),
+    ("bypassPermissions on unattended agents", "bypassPermissions"),
+    ("wait --since baseline", "`--since` baseline"),
+    ("init validation tracebacks", "tracebacks"),
+    ("unreadable state.json treated as no flow", "state.json"),
+    ("stale session kept after unparsed run", "stale `session`"),
+    ("find_flow counts older flows", "find_flow"),
+    ("fleet.py outside mypy gate", "mypy"),
+    ("run() mixes responsibilities", "mixes responsibilities"),
+    ("lock handle never closed", "lock handle"),
+    ("wait and run exit codes undocumented", "exit codes"),
+]
+
+
+def table_rows(text):
+    """Markdown table rows of the ADR (lines whose first non-space character is '|')."""
+    return [line for line in text.splitlines() if line.lstrip().startswith("|")]
 
 
 def finding_pattern(fid):
@@ -86,11 +110,12 @@ def main():
     print()
     print("[Section 1] ADR-0025 gaps table names every deferred and recorded finding")
 
-    unrecorded = [fid for fid in GAP_IDS if not recorded_lines(adr, fid)]
+    rows = table_rows(adr)
+    unrecorded = [desc for desc, term in GAP_TERMS if not any(term in row for row in rows)]
     h.test_result(
-        f"ADR-0025 records all {len(GAP_IDS)} gap findings (table row or #381 line)",
+        f"ADR-0025 gaps table names all {len(GAP_TERMS)} gap findings (by prose term in a table row)",
         not unrecorded,
-        f"not recorded in ADR-0025: {', '.join(unrecorded)}" if unrecorded else "",
+        f"no gaps-table row for: {'; '.join(unrecorded)}" if unrecorded else "",
     )
 
     print()

@@ -47,9 +47,10 @@ dependency checks, the inbox) is `scripts/fleet.py`; this document says when to 
 - A run's last stdout line is `FLEET #<N> <state> …`. It is a hint; `fleet.py status --json` is the truth.
 - Never launch a ticket that `fleet.py ready` did not list, and never launch a second run for a ticket
   that is `running` (the script refuses it anyway: `already running`).
-- After launching tickets, do not call `fleet.py ready` again until `status --json` shows every ticket you
-  just launched as `running`. `ready` counts only `running` tickets against `max_parallel`, so a launch
-  that has not yet recorded its pid is an unused slot to it, and a re-poll in that window can over-launch.
+- After launching tickets, do not call `fleet.py ready` (or launch from the `ready` field of
+  `status --json`) again until `status --json` shows every ticket you just launched as `running`. `ready`
+  counts only `running` tickets against `max_parallel`, so a launch that has not yet recorded its pid is
+  an unused slot to it, and a re-poll in that window can over-launch.
 - Never write into a flow directory. Answers reach a ticket only as a message to its own session
   (`fleet.py run FLEET N --message-file F`); that ticket's orchestrator writes its own files.
 
@@ -110,7 +111,8 @@ version of them.
    as data and labelled as such, never stated as a human decision. Show the drafts, then confirm once
    (header `Direction`, options `Write to issues` / `Skip`) — editing issue bodies is visible to
    everyone. On `Write to issues`, append each section to its issue body:
-   `gh issue view N --json body -q .body` to a file, append, `gh issue edit N --body-file <file>`.
+   Run `mkdir -p FLEET/direction`, write `gh issue view N --json body -q .body` into
+   `FLEET/direction/<N>.md`, append the section to that file, then `gh issue edit N --body-file FLEET/direction/<N>.md`.
    Planners read the issue body, so this is how the answers reach every ticket.
 4. Dependency changes the human made (e.g. "these two can run in parallel") are applied by editing
    the ticket list and re-running `init` (the old fleet dir is unused; delete nothing).
@@ -124,7 +126,7 @@ and end the turn.
 
 `run` drives one ticket until it parks, holds, stops, or finishes: for a ticket with no flow it runs
 `/expert-flow <N> --fleet` in `MAIN` (worktree step, then hand-off; worktree creation is serialized
-across fresh launches by `main.lock`, but nothing checks that the ticket's dependencies are merged into
+across fresh launches by `main.lock` (a fresh-vs-fresh guarantee only), but nothing checks that the ticket's dependencies are merged into
 MAIN before its worktree is cut, so the dependency gate is the `ready` check alone; see ADR-0025 §6),
 then `/expert-flow --resume <N> --fleet` inside the new ticket worktree.
 
@@ -134,10 +136,11 @@ Each time you are re-invoked (a background run exited, or the human replied):
 
 1. `fleet.py status FLEET --json` and `fleet.py inbox FLEET`.
 2. **Launch** everything in `ready` (Step 3's call shape), before asking anything, so new tickets
-   run while the human reads.
+   run while the human reads. Skip any ticket you launched in the previous turn that `status --json`
+   does not yet show as `running`.
 3. **Stalled / stopped / failed** tickets are reported, never retried automatically:
    - `stalled` (flow mid-step, no process): offer `Resume` (launch `run FLEET N`) / `Leave it`.
-   - `failed` with an open `gate` ask is a parked hard stop — it is in the inbox (below), not here.
+   - `parked` (any open ask, including a `failed` flow with an open `gate` ask) is in the inbox (below), not here.
    - `stopped` (paused for a human outside the fleet): print the flow dir and
      `/expert-flow --resume <N>` for the human to drive by hand.
 4. **Inbox.** If it is empty and no ticket is `running`, go to Step 5. If it is empty and something
@@ -154,6 +157,7 @@ Each time you are re-invoked (a background run exited, or the human replied):
      report replies in the human's current message (see (c) for the reply format). For each answered
      item, write a message file `FLEET/messages/<N>-<seq>.txt` with `Write` and launch
      `fleet.py run FLEET <N> --message-file <that file>` in the background:
+     Before writing any message file, run `mkdir -p FLEET/messages`.
      - `relay`: first line `Fleet answer for <question_file>:` then one JSON object
        `{"answers": {"<id>": "<label or free text>", …}}` covering every question in that file
        (build it with `jq -n --arg` per value, never by string interpolation).
@@ -180,7 +184,7 @@ and print `/expert-flow --resume <N>` for the human to run by hand when they are
 ## Step 5: Finish
 
 When nothing is running, nothing is ready, and the inbox is empty, print the final table: one line per
-ticket with its state and PR URL, then the tickets left `blocked`/`held`/`stopped`/`failed` with what
+ticket with its state and PR URL, then the tickets left `blocked`/`held`/`stopped`/`failed`/`parked`/`stalled` with what
 each one is waiting on. `fleet: done` if every ticket is `done`, else
 `fleet: idle — /expert-fleet --resume FLEET to continue`.
 
@@ -190,5 +194,6 @@ each one is waiting on. `fleet: done` if every ticket is `done`, else
 - Retry failed tickets, or auto-remediate anything (`/expert-flow`'s hard stops still apply).
 - Run tickets with unmet dependencies "optimistically", or stack PRs; a dependant starts only once
   its dependency merged (or is CLOSED).
-- Write into flow directories or worktrees. Its only writes are under `FLEET` and the scratch ticket
-  list in `~/.claude/fleet-scratch/` (Step 1.6), which holds no fleet state.
+- Write into flow directories or worktrees. Its only writes are under `FLEET` (issue-body drafts in
+  `FLEET/direction/<N>.md`, Step 2.3; delivery messages in `FLEET/messages/`, Step 4(b)) and the scratch
+  ticket list in `~/.claude/fleet-scratch/` (Step 1.6), which holds no fleet state.
