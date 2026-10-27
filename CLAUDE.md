@@ -115,9 +115,9 @@ for each spoken pending question. Curated rules come from the `*.md` files in th
 logic reads it, and triage never reads it. Sanctioned readers are the calling command's own step (rendering Precedent 
 lines beside questions), logging, and the caller's own validation of the receipt. Nothing is suppressed; every question's 
 handling and the human's prior choice are visible. Pat runs on Sonnet (ADR-0004) and has no index entry or routing 
-configuration. Pat is wired into `/expert-plan` Step 5 (#294); `/expert-review` wiring is pending (#296).
+configuration. Pat is wired into `/expert-plan` Step 5 (#294) and `/expert-review` Step 12 (#296, non-PR mode only).
 
-Predictions are logged to measure Pat's accuracy. `scripts/precedent-log.py append` writes one JSONL row per answered question that Pat spoke on, to `~/.claude/precedent/<owner-name>/predictions.jsonl` (append-only, per repo). It is called after Step 5 answers in both `/expert-plan` branches (non-flow and flow). `scripts/precedent-digest.py --stats` is its sole reader other than the writer's own dedup read (project-scoped only), and prints hit rate by confidence alongside an always-recommended baseline. Pat, triage, reviewers, and the digest `--match` path never read it.
+Predictions are logged to measure Pat's accuracy. `scripts/precedent-log.py append` writes one JSONL row per answered question that Pat spoke on, to `~/.claude/precedent/<owner-name>/predictions.jsonl` (append-only, per repo). It is called after Step 5 answers in both `/expert-plan` branches (non-flow and flow) and per Ask batch after the Step 12 rulings in /expert-review. `scripts/precedent-digest.py --stats` is its sole reader other than the writer's own dedup read (project-scoped only), and prints hit rate by confidence alongside an always-recommended baseline. Pat, triage, reviewers, and the digest `--match` path never read it.
 
 ## User preferences
 
