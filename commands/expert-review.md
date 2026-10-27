@@ -696,7 +696,7 @@ fi
 ```
 
 Read **only** `{REVIEW_DIR}/claude-action-plan.md` — not the pass files, not the final report. This is
-the one file the orchestrator reads, and it is small by construction.
+the one file the orchestrator reads, and it is small by construction. The Precedent block's own `precedent*` files (precedent.md, precedent-questions.json, precedent-validated.json, precedent-lines.json, precedent-trace.txt) are display-only, read only to render lines and to log, and are not triage inputs. The `DECISION: {Option} — {reasoning}` text and the folded rejected options are always taken from `claude-action-plan.md`, never from the rendered option descriptions, which now carry Precedent text.
 
 This step is scoped to the **Needs you** section only. **Needs measurement** items are never put to
 `AskUserQuestion` and are not relayed through a flow (no question file, no Ask block) — there is
@@ -704,6 +704,151 @@ nothing to choose between until the command in the item has been run, so the too
 does not fit them. They are surfaced separately, below.
 
 If `needs-you: 0`, skip the ruling loop entirely. Do not manufacture a question to seem thorough.
+
+**Precedent block (Step 12, display-only).** Run once per attempt when the action plan is ready. This block surfaces the human's past answers to similar *Needs you* items as display-only annotations (ADR-0024). No decision logic reads the precedent file. The block runs only in non-PR mode and when at least one *Needs you* item is pending. It is transparent when the digest is empty or Pat times out.
+
+Follow these steps in order. Persist the outcome to `${REVIEW_DIR}/precedent-trace.txt` at step 10 (one of the closed-set reasons listed below); read it back at every subsequent step. If `${REVIEW_DIR}/precedent-trace.txt` already exists (from a prior attempt or batch), skip the entire block (including telemetry) and reuse `${REVIEW_DIR}/precedent-lines.json` and `${REVIEW_DIR}/precedent-validated.json` in the batch rendering below.
+
+Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0`.
+
+1. **Eligible questions.** Extract pending *Needs you* items from `${REVIEW_DIR}/claude-action-plan.md`. Read all `### N.` item headings with `pending-decision` status (before any Ask is called). There is **no security/CRITICAL keyword exclusion** at this call site. Before extracting, remove stale digest outputs from any earlier attempt: `rm -f "${REVIEW_DIR}/precedent-questions.json" "${REVIEW_DIR}/precedent-validated.json" "${REVIEW_DIR}/precedent-digest.jsonl" "${REVIEW_DIR}/precedent-digest.status.json" "${REVIEW_DIR}/precedent-digest-line.txt"`. If zero items are pending, write `no-eligible-questions` to `${REVIEW_DIR}/precedent-trace.txt` and return (skip steps 2–10).
+
+2. **Write questions file.** Use the `Write` tool to create `${REVIEW_DIR}/precedent-questions.json` with one entry per eligible item:
+   ```json
+   {"questions":[
+     {"id":"N1","header":"the item title","question":"Why this is yours + The finding, whitespace-normalised, capped at 600 chars","options":["Option A","Option B"],"recommended":"Option B"},
+     ...
+   ]}
+   ```
+   Fields: `id` = item handle from the `### N.` heading (e.g., `N1`, `N2`); `header` = item title; `question` = the "Why this is yours" and "The finding" sections joined and normalised; `options` = exact option label strings **as they will be passed to `AskUserQuestion`** (via the Ask block), minus the `(recommended)` marker, recommended option first; `recommended` = the Triage Chief's recommended option label in the same Ask-label form. Never build options from the action plan's `**A — {name}** (recommended)` markup — build them from the exact labels that the Ask block will use.
+
+3. **Digest.** Dispatch to `precedent-digest.py` with project scope. Pass the project root (`"$PROJECT_ROOT"`), not `REPO_KEY`. The digest uses that root to derive its own repo key from the origin remote (which selects the raw history sources) and to read curated decision and constraint docs from this working tree. The origin-derived key can differ from `REPO_KEY` (set from `gh repo view`). The digest reports its origin-derived key as `repo_key` in the status file, and this step compares it with `REPO_KEY`; a mismatch is reported in the digest line, never fatal. The curated read is anchored to `PROJECT_ROOT`, and only when the digest resolves its repo key from origin. Its diagnostics go to a status file that this step reads, because stderr is discarded.
+   ```bash
+   DIGEST_RC=0
+   python3 "$HOME/.claude/scripts/precedent-digest.py" "$PROJECT_ROOT" --match "${REVIEW_DIR}/precedent-questions.json" --top 60 --out "${REVIEW_DIR}/precedent-digest.raw.jsonl" --status-out "${REVIEW_DIR}/precedent-digest.status.json" 2>/dev/null || DIGEST_RC=$?
+   if [ "$DIGEST_RC" -ne 0 ]; then
+     echo "digest-failed" > "${REVIEW_DIR}/precedent-trace.txt"
+     rm -f "${REVIEW_DIR}/precedent-digest.raw.jsonl" "${REVIEW_DIR}/precedent-digest.status.json"
+     # Return (skip steps 4–10); a non-zero exit (e.g. exit 2 with partial output) is never read further
+   fi
+   ```
+   Then, only when `DIGEST_RC` is 0, read the status file with `jq`. A missing or unreadable field defaults to empty or zero:
+   ```bash
+   DIGEST_STATUS="${REVIEW_DIR}/precedent-digest.status.json"
+   DG_RESOLVED=$(jq -r '.repo_resolved' "${DIGEST_STATUS}" 2>/dev/null) || DG_RESOLVED=""
+   DG_ROOT=$(jq -r '.curated_root // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ROOT=""
+   DG_YAML=$(jq -r '.yaml // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_YAML=""
+   DG_CURATED=$(jq -r '.curated // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_CURATED=0
+   DG_CAPPED=$(jq -r '.curated_capped // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_CAPPED=0
+   DG_REJECTED=$(jq -r '.curated_rejected // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_REJECTED=0
+   DG_NO_RULE=$(jq -r '.curated_no_rule // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_NO_RULE=0
+   DG_SCREENED=$(jq -r '.curated_screened // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_SCREENED=0
+   DG_REASON=$(jq -r '.reason // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REASON=""
+   DG_ERROR=$(jq -r '.curated_error // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ERROR=""
+   DG_REPO_KEY=$(jq -r '.repo_key // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REPO_KEY=""
+   DG_KEY_MISMATCH=""
+   if [ -n "$DG_REPO_KEY" ] && [ "$(printf '%s' "$DG_REPO_KEY" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO_KEY" | tr '[:upper:]' '[:lower:]')" ]; then DG_KEY_MISMATCH="${DG_REPO_KEY}"; fi
+   if [ "$DG_RESOLVED" = "false" ]; then
+     echo "digest-failed" > "${REVIEW_DIR}/precedent-trace.txt"
+     # Return (skip steps 4–10)
+   fi
+   DIGEST_LINE=""
+   if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ] || [ -n "${DG_ERROR}" ] || [ -n "${DG_KEY_MISMATCH}" ]; then
+     DIGEST_LINE="precedent-digest: curated_root=${DG_ROOT} yaml=${DG_YAML} curated=${DG_CURATED} capped=${DG_CAPPED} rejected=${DG_REJECTED} no_rule=${DG_NO_RULE} screened=${DG_SCREENED}${DG_REASON:+ reason=${DG_REASON}}${DG_ERROR:+ error=${DG_ERROR}}${DG_KEY_MISMATCH:+ repo_key_mismatch=${DG_KEY_MISMATCH}}"
+   fi
+   if [ -n "${DIGEST_LINE}" ]; then printf '%s\n' "${DIGEST_LINE}" > "${REVIEW_DIR}/precedent-digest-line.txt"; fi
+   ```
+   If `repo_resolved` is `false`, or the digest exited non-zero, the trace is `digest-failed` and steps 4–9 are skipped (return now). Otherwise continue to step 4.
+
+4. **Self-exclusion.** When digest succeeded, filter it to exclude past questions from the same review attempt, and apply no security filter at this call site. Use one `jq -c` filter with three variables:
+   ```bash
+   # Build the flow prefix only if FLOW_DIR is non-empty
+   FLOW_PREFIX=""
+   if [ -n "${FLOW_DIR}" ]; then
+     FLOW_PREFIX="$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; p=sys.stdin.read().strip().split("/")[-1].split("-", 1)[0]; print("'"$HOME"'/.claude/flows/" + p + "-")' 2>/dev/null)" || FLOW_PREFIX=""
+   fi
+   
+   jq -c --arg rd "${REVIEW_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOW_PREFIX}" '
+     select(
+       ((.path | startswith($rd) or (if ($fd | length) > 0 then startswith($fd) else false end) or (if ($fp | length) > 0 then startswith($fp) else false end)) | not)
+     )
+   ' "${REVIEW_DIR}/precedent-digest.raw.jsonl" > "${REVIEW_DIR}/precedent-digest.jsonl" 2>/dev/null || {
+     echo '{"status":"invalid","reason":"digest-failed","blocks":{},"shown":0,"asked":0}' > "${REVIEW_DIR}/precedent-validated.json"
+   }
+   ```
+   Pipe all variable interpolations with `printf '%s'` and a pipe, never with `echo` or bare `$VAR`. Use only the braced form `${N}` for shell positional tokens; no bare positional tokens.
+
+5. **Empty digest check.** If the filtered digest is empty (zero lines in `${REVIEW_DIR}/precedent-digest.jsonl`), write `no-digest-entries` to `${REVIEW_DIR}/precedent-trace.txt` and return (skip steps 6–9). Do not emit telemetry for this path.
+
+6. **Telemetry: close rulings, open precedent.** The `run-metrics.py` script maintains one open stage slot; nesting stages overwrites it. Close the rulings stage and open precedent in two separate invocations:
+   ```bash
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage rulings --outcome success 2>/dev/null || true
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
+   ```
+
+7. **Dispatch Precedent Pat.** Call one `Task` (`subagent_type: "expert-reviewer"`, `model: sonnet`) with:
+   - Role prompt: `~/.claude/prompts/precedent-pat.md`
+   - Filtered digest path: `${REVIEW_DIR}/precedent-digest.jsonl`
+   - Questions path: `${REVIEW_DIR}/precedent-questions.json`
+   - Output path: `${REVIEW_DIR}/precedent.md` (always under `~/.claude/reviews/`, **never under `FLOW_DIR`**)
+   - Timeout: 120 seconds (bounded wait; on timeout go to step 9 without retry)
+   
+   Join on file-exists (`-f "${REVIEW_DIR}/precedent.md"`) and a receipt line starting with `precedent-pat |` (the exact format defined in `prompts/precedent-pat.md`'s Receipt section). If the join fails or times out, do not retry. On failure, write `pat-failed` to `${REVIEW_DIR}/precedent-trace.txt` and go to step 9.
+
+8. **Validate.** Check the file's completeness with `precedent-render.py`:
+   ```bash
+   RENDER_RC=0
+   python3 "$HOME/.claude/scripts/precedent-render.py" validate --precedent "${REVIEW_DIR}/precedent.md" --questions "${REVIEW_DIR}/precedent-questions.json" --digest "${REVIEW_DIR}/precedent-digest.jsonl" --out "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null || RENDER_RC=$?
+   
+   VALIDATED_STATUS=""
+   VALIDATED_REASON=""
+   SHOWN_COUNT=0
+   ASKED_COUNT=0
+   if [ "$RENDER_RC" -eq 0 ]; then
+     VALIDATED=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""))' 2>/dev/null)
+     VALIDATED_REASON=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("reason",""))' 2>/dev/null)
+     SHOWN_COUNT=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("shown", 0))' 2>/dev/null)
+     ASKED_COUNT=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("asked", 0))' 2>/dev/null)
+     VALIDATED_STATUS="$VALIDATED"
+   fi
+   
+   # Determine PRECEDENT_TRACE based on validation result
+   if [ "$RENDER_RC" -ne 0 ]; then
+     PRECEDENT_TRACE="render-failed"
+   elif [ "$VALIDATED_REASON" = "pat-failed" ]; then
+     PRECEDENT_TRACE="pat-failed"
+   elif [ "$VALIDATED_STATUS" = "invalid" ]; then
+     PRECEDENT_TRACE="pat-invalid"
+   elif [ "$VALIDATED_STATUS" = "ok" ] && [ "$SHOWN_COUNT" -eq 0 ]; then
+     PRECEDENT_TRACE="pat-silent"
+   elif [ "$VALIDATED_STATUS" = "ok" ]; then
+     PRECEDENT_TRACE="shown $SHOWN_COUNT of $ASKED_COUNT"
+   else
+     PRECEDENT_TRACE="render-failed"
+   fi
+   echo "$PRECEDENT_TRACE" > "${REVIEW_DIR}/precedent-trace.txt"
+   ```
+   The `PRECEDENT_TRACE` value is determined as follows:
+   - If `precedent-render.py` is missing or any call exits non-zero → `"render-failed"`
+   - If the reason field in the validated JSON is `"pat-failed"` → `"pat-failed"` (the file was unreadable after validation dispatch)
+   - If it succeeds but the validated status is `invalid` → `"pat-invalid"`
+   - If the validated file exists and has status `ok` but `shown` count is zero → `"pat-silent"`
+   - Otherwise (valid, non-silent) → `"shown ${SHOWN_COUNT} of ${ASKED_COUNT}"`
+
+9. **Close telemetry.** Always emit this when step 6 was reached (digest was non-empty):
+   ```bash
+   TRACE_VALUE=$(cat "${REVIEW_DIR}/precedent-trace.txt" 2>/dev/null || echo "")
+   if [[ "$TRACE_VALUE" == "pat-failed" ]] || [[ "$TRACE_VALUE" == "pat-invalid" ]] || [[ "$TRACE_VALUE" == "render-failed" ]]; then
+     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage precedent --outcome failure --failure-class other 2>/dev/null || true
+   else
+     python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage precedent --outcome success 2>/dev/null || true
+   fi
+   python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage rulings >/dev/null 2>&1 || true
+   ```
+
+10. **Persist trace.** Validate and write the trace to `${REVIEW_DIR}/precedent-trace.txt`. The trace must be one of these eight values: `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. When the trace starts with `shown`, also run `precedent-render.py line --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --out "${REVIEW_DIR}/precedent-lines.json"` once, so every batch reads stored lines.
+
+**Display-only rule:** The `precedent.md` file and its digest files are read-only by the batch rendering below (for showing Precedent lines beside questions) and by per-batch logging. Nothing in Step 12's decision path — the Edit mechanism or any other logic — reads `precedent.md` or the digest files. Option labels and the `(Recommended)` marker are never modified based on precedent. Precedent never influences which option is offered, which is highlighted, or which is presented as recommended. No decision path uses it to pick, reorder, or change any default for any question.
 
 Otherwise, present each escalation with **`AskUserQuestion`** via the Ask block (`prompts/flow-reference.md`) — one question per item, the Triage
 Chief's recommended option **first and labeled `(recommended)`**, with the pros and cons from the
@@ -753,6 +898,10 @@ Restructure the item from an open options menu into a resolved question-and-answ
    `<details><summary>Options considered and rejected (record only — do not act on these)</summary>`
    … the non-chosen options, each with its original Pro/Con … `</details>`. This is the only place the
    rejected options live once an item is ruled; do not also leave a live copy above it.
+
+**Rendering precedent per surface.** Each batch renders the Precedent annotation per item from the stored `${REVIEW_DIR}/precedent-lines.json` (keyed by `N<k>` id). The prediction to match comes from `${REVIEW_DIR}/precedent-validated.json` `blocks[N<k>].prediction` (sanitised), matched exactly against the Ask label strings after stripping `(recommended)`. Precedent text never goes into a question's `header`, `question` or option `label` — these fields are indexed, so text placed there would come back later as the human's "past answer". Only the validated, rendered line is shown, never raw `precedent.md` content. The label "Precedent" stays distinct from reviewer voices. When the line is rendered (the handle is present in `precedent-lines.json` and its prediction exactly matches an option label), show it on that item's surface; when there is no precedent for the item (trace does not start with `shown`, Pat abstained on the item, or its validated block has no precedent lines), show `Precedent: none` only on that item; when precedent exists but the line was skipped or the prediction matches no option label, show no Precedent text for that item and do not log it.
+
+**Per-batch logging.** Define `<SEQ>` as the flow answers-file sequence (`${FLOW_DIR}/answers/review-<SEQ>.json`) in the flow path, and a batch counter in the non-flow path (SEQ = 1, 2, … for each Ask batch in order). When each batch is built, record that batch's `qK -> N<k>` map and which handles had a line rendered in `${REVIEW_DIR}/precedent-batch-map.json`, keyed by `<SEQ>` in both paths. After that batch's answers are recorded with the `Edit` (and only when the persisted `${REVIEW_DIR}/precedent-trace.txt` starts with `shown`), write `${REVIEW_DIR}/precedent-answers-<SEQ>.json` with the `Write` tool. The format is `{"answers": {"N<k>": "<picked label or typed text>"}}`, one entry per answered item whose line was actually rendered (handle present in `precedent-lines.json` and matched to an option, as recorded in the batch map). Items shown `Precedent: none` or shown no Precedent text are not logged. In the flow path the source is `${FLOW_DIR}/answers/review-<SEQ>.json` mapped through the batch map. In the non-flow path it is the tool's returned answers, mapped through the same batch map. Then run `precedent-log.py append --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --answers "${REVIEW_DIR}/precedent-answers-<SEQ>.json" --repo-key "$REPO_KEY" --command expert-review --run "$(basename "$REVIEW_DIR")" --trace-file "${REVIEW_DIR}/precedent-trace.txt" >> "${REVIEW_DIR}/precedent-log-output.txt" 2>&1 || true`. Never pass `--flow-answers` files directly. A re-resume of an already-logged batch is a no-op through the helper's first-wins `(run, question_id, command)` keys, which is safe because the handles are item-stable. Nothing is appended to the action plan.
 
 Runs **unconditionally whenever `needs-you > 0`**.
 
@@ -1037,3 +1186,28 @@ ceiling), or when no Critical findings came back.
 /expert-review https://github.com/owner/repo/pull/123            # PR mode
 /expert-review https://github.com/owner/repo/pull/123 --effort 1 # PR mode, swarm
 ```
+
+---
+
+**Role prompts:**
+- `~/.claude/prompts/precedent-pat.md` — Precedent Pat role prompt, surfaces past answers to similar *Needs you* items (Step 12, non-PR mode; ADR-0024)
+
+**Supporting scripts:**
+- `scripts/precedent-digest.py` — reads the repo's prior decision rulings and filters by keyword match; called in Step 12's Precedent block
+- `scripts/precedent-render.py` — validates Precedent Pat's output and renders display lines; called in Step 12's Precedent block and by batch rendering when using the results
+- `scripts/precedent-log.py` — logs per-batch answers with hit predictions for accuracy measurement; called after each batch's Edit completes
+
+**Design documents:**
+- `docs/adr/0024-precedent-pat.md` — the design decision for Precedent Pat as a display-only role (ADR-0024)
+
+**Precedent artifacts** (Step 12, non-PR mode only):
+- `precedent-questions.json` — normalized questions file (one entry per eligible *Needs you* item)
+- `precedent.md` — Precedent Pat's output, read-only for rendering and logging
+- `precedent-validated.json` — validated Pat output with hit/miss counts
+- `precedent-digest.jsonl` — filtered digest with `REVIEW_DIR` self-exclusion applied
+- `precedent-lines.json` — rendered Precedent lines, keyed by `N<k>` id
+- `precedent-trace.txt` — internal telemetry, one of eight values: `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`
+- `precedent-batch-map.json` — per-batch `qK -> N<k>` mapping and rendered handles
+- `precedent-answers-<SEQ>.json` — per-batch normalized answers for logged items (flow sequence or batch counter)
+
+**Precedent stage telemetry note:** The `precedent` stage (Step 12, Precedent block) never asks the human — it reads past answers and writes an annotation file. Therefore, an interrupt can only originate from the rulings stage itself. When Pat is dispatched and completes (or fails), the telemetry closes the `rulings` stage and opens `precedent`, then closes `precedent` and reopens `rulings` (steps 6 and 9 of the Precedent block). In telemetry analysis, a run with Precedent Pat shows two separate `rulings` stage records; their durations should be summed to get the total rulings time.
