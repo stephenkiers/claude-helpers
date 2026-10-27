@@ -172,7 +172,7 @@ When `FLOW_DIR` is set:
   (Optional blocks `INCOMPLETE_STEPS:`, `PARTIAL_WORK:`, and `DISCARDED_ADDED_FILES:` are omitted when empty.
   On escalated attempts, when `PARTIAL_WORK:` or `DISCARDED_ADDED_FILES:` are present they are included;
   when absent, they are omitted.)
-  **FAILURE_CLASS spelling.** Telemetry `--failure-class` values are snake_case (the list at the top of this doc). Receipt `FAILURE_CLASS:` values use the same snake_case spelling, with one exception: the receipt value is `implementer-shortfall` (hyphen), where the telemetry value is `implementer_shortfall`. Reasons on the `Reason:` line are hyphenated prose (`check-not-run: <detail>`, `gate-not-converged`) and are never `FAILURE_CLASS` values.
+  **FAILURE_CLASS spelling (the `FAILURE_CLASS:` field above).** Telemetry `--failure-class` values are snake_case (the list at the top of this doc). Receipt `FAILURE_CLASS:` values use the same snake_case spelling except for one intentional split: the receipt value is `implementer-shortfall` (hyphen, read by `scripts/flow-verify-receipt.py` and its escalation tests), where the telemetry value is `implementer_shortfall` (`scripts/telemetry_schema.py`). The two spellings are kept on purpose; renaming either side is a separate change. Reasons on the `Reason:` line are hyphenated prose (`check-not-run: <detail>`, `gate-not-converged`) and are never `FAILURE_CLASS` values.
   The Final check's hard stops use the Reasons `check-not-run: <detail>` and `check-not-configured` (with
   `FAILURE_CLASS: check_not_run` or `check_not_configured`). A FAILED receipt written at or after the
   Final check also carries the `CHECK:`, `CHECK_EXIT:`, `CHECK_SOURCE:`, and `CHECK_SHA:` key lines
@@ -1792,8 +1792,6 @@ survive between Bash calls, so each block below re-reads what it needs from the 
 `CHECK_SHA` the receipt carries is read from `<SCRATCH_PATH>/check-sha.txt` when the receipt is written
 (for an opt-out, the current HEAD).
 
-**Landing order.** #338 lands first. #336, #351, and #352 touch this same check gate and rebase onto it; they do not land ahead of it.
-
 **1. Resolve the check.** Write the resolver's JSON to a scratch file:
 ```bash
 source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh" || { printf '%s\n' "ERROR: could not resolve claude-helpers scripts directory — run /setup-local to (re)install claude-helpers symlinks" >&2; exit 1; }
@@ -1830,10 +1828,10 @@ Never wrap this in `timeout` or `gtimeout` (see Gate step 1). The block's first 
 written or launched, requires a clean tree: the porcelain status of `<WORKTREE>` must print nothing. Any
 output exits `2` without starting the run, which is the not-run outcome `check-not-run: worktree not clean`
 (see the table). `CHECK_SHA` attests a commit, not a tree, so the
-clean-tree checks before and after the run are what tie the check to the tree the step hands on.
+clean-tree checks before and after the run are what tie the check to the tree the step hands on. They are deliberately strict: an untracked file that is not gitignored counts as a dirty tree, so the project's check command must write only gitignored output (build artifacts, caches, coverage); a check that litters the tree is `check-not-run: worktree not clean` by design.
 
 Launch the run with `run_in_background` and wait for it with the join-barrier wait.
-**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while the background task is outstanding; never poll. A run whose wait never completes is `check-not-run`. The background task's exit status is the runner's exit status.
+**Waiting:** follow `~/.claude/prompts/join-barrier-pattern.md` § Waiting for the barrier — end your turn while the background task is outstanding; never poll. The launched set is this one background Bash run. Its completion notification closes the barrier, and the background task's exit status is the runner's exit status. A turn that begins for any other reason while the run is outstanding (including the barrier's 1800s status wakeup) only reports that the check is still running and ends the turn: it starts no second run and does not kill the first. The runner's own `timeout_secs` bounds the run, so a notification always arrives; a notification that reports the task killed or lost with no exit status is `check-not-run`.
 
 **3. Check that HEAD and the tree did not move.** After the run exits, re-read the tree:
 ```bash
@@ -2156,6 +2154,11 @@ CHECK_SHA: <full 40-hex SHA the check ran on>
 OUTSTANDING: <line>
 <!-- step-end -->
 ```
+
+**Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason` and
+`OUTSTANDING` only up to the first blank line, so write the receipt as one contiguous block with no blank line from the first
+summary line through `<!-- step-end -->` (drop the summary's blank lines when copying it). A receipt whose `Decision:` sits below a
+blank line is rejected with `receipt Decision missing or outside the header block`; the check gate is never skipped.
 
 Where `OUTSTANDING: <line>` is either `none` or the lines computed above. The `CHECK:` lines are the
 Final check's result, taken from its resolver output and its run (see the Final check section); never

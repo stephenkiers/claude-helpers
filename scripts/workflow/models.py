@@ -127,6 +127,20 @@ class IssuesCacheData:
         return obj
 
 
+def valid_timeout_secs(value: Any) -> Optional[int]:
+    """
+    Return value if it is a positive integer, otherwise None. Never raises.
+
+    This is the one validity rule for every checkTimeoutSecs source: project.yaml, repo-cache.json,
+    and SHIPIT_CHECK_TIMEOUT_SECS (after int() parsing). Accepted: an int greater than zero.
+    Ignored (callers fall through to the next source, then the default timeout): bool
+    (an int subclass), strings such as "900", floats, lists, None, zero, and negative integers.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 @dataclass
 class RepoCacheData:
     """Schema for .claude/repo-cache.json."""
@@ -163,9 +177,6 @@ class RepoCacheData:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RepoCacheData":
         """Construct from parsed JSON dict."""
-        # Imported here, not at module level: checks -> cache -> models would otherwise be a cycle.
-        from .checks import valid_timeout_secs
-
         # /shipit's real cache (commands/shipit.md) writes a top-level "version" int, never
         # "schema_version" — accept whichever key is present rather than losing the field.
         version = data.get("schema_version", data.get("version", REPO_CACHE_SCHEMA_VERSION))

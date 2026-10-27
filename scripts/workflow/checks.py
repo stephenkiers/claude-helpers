@@ -17,7 +17,7 @@ from typing import List, Dict, Optional, Tuple, Any, Mapping, Final, Literal
 
 from .safety import Unknown, fail_closed
 from .cache import read_repo_cache
-from .models import validate_repo_cache
+from .models import validate_repo_cache, valid_timeout_secs  # noqa: F401  (re-exported)
 
 try:
     import yaml  # type: ignore[import-untyped]
@@ -54,6 +54,7 @@ CHECK_OPT_OUT_INVALID_NOTE = (
     "note: checkOptOut must be a non-empty string; the invalid value was ignored"
 )
 NO_CHECK_KEY_NOTE = "no commands.check found in project.yaml"
+REPO_CACHE_NO_KEY_SUFFIX = " (no check key)"
 OPT_OUT_MESSAGE_TEMPLATE = (
     "check opted out: {reason} (implement/fix gate only; verify and /shipit still require a check)"
 )
@@ -167,18 +168,15 @@ class CheckResults:
         }
 
 
-def valid_timeout_secs(value: Any) -> Optional[int]:
-    """
-    Return value if it is a positive integer, otherwise None. Never raises.
-
-    This is the one validity rule for every checkTimeoutSecs source: project.yaml, repo-cache.json,
-    and SHIPIT_CHECK_TIMEOUT_SECS (after int() parsing). Accepted: an int greater than zero.
-    Ignored (callers fall through to the next source, then DEFAULT_CHECK_TIMEOUT_SECS): bool
-    (an int subclass), strings such as "900", floats, lists, None, zero, and negative integers.
-    """
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+def env_timeout_secs() -> Optional[int]:
+    """SHIPIT_CHECK_TIMEOUT_SECS as a valid positive int, or None when unset or invalid. Never raises."""
+    raw = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
+    if not raw:
         return None
-    return value
+    try:
+        return valid_timeout_secs(int(raw))
+    except ValueError:
+        return None
 
 
 def execute_check(
@@ -477,7 +475,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
             if isinstance(check_cmd, str) and check_cmd.strip():
                 return CheckResolution(check_cmd.strip(), "repo-cache", cache_file, None, source_scope="worktree")
             else:
-                sources_tried[-1] += " (no check key)"
+                sources_tried[-1] += REPO_CACHE_NO_KEY_SUFFIX
         else:
             sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
     else:
@@ -494,7 +492,7 @@ def resolve_check_detail(worktree: Path, main_worktree: Optional[Path] = None) -
                 if isinstance(check_cmd, str) and check_cmd.strip():
                     return CheckResolution(check_cmd.strip(), "repo-cache", main_cache_file, None, source_scope="main")
                 else:
-                    sources_tried[-1] += " (no check key)"
+                    sources_tried[-1] += REPO_CACHE_NO_KEY_SUFFIX
             else:
                 sources_tried[-1] += f" ({read_err})" if read_err else " (validation failed)"
         else:
@@ -633,14 +631,9 @@ def resolve_check_timeout(
         config file set checkTimeoutSecs to an invalid value and it was ignored, that file is named,
         e.g. "default (ignored invalid checkTimeoutSecs in worktree repo-cache.json)".
     """
-    env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
-    if env_timeout:
-        try:
-            parsed_env = valid_timeout_secs(int(env_timeout))
-        except ValueError:
-            parsed_env = None
-        if parsed_env is not None:
-            return parsed_env, "env:SHIPIT_CHECK_TIMEOUT_SECS"
+    parsed_env = env_timeout_secs()
+    if parsed_env is not None:
+        return parsed_env, "env:SHIPIT_CHECK_TIMEOUT_SECS"
 
     candidates: List[Tuple[Path, str, ConfigKind]] = []
     if command_source_file is not None:

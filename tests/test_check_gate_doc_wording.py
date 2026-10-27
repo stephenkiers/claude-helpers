@@ -121,4 +121,19 @@ if __name__ == "__main__":
         )
 
     print()
+    print("[Section 4] Other docs that tell an agent to wait for a background check (#338)")
+
+    expert_flow = read(EXPERT_FLOW) if "EXPERT_FLOW" in globals() else ""
+    test_result(
+        "expert-flow.md generic check step points at the barrier wait, not polling",
+        "join-barrier-pattern.md" in expert_flow and "run_in_background` and poll" not in expert_flow,
+        "expert-flow.md still tells the agent to poll, or lacks the barrier pointer",
+    )
+    test_result(
+        "implement-with-haiku.md receipt instructions require one contiguous header block",
+        "outside the header block" in implement,
+        "missing the header-block rule for the receipt",
+    )
+
+    print()
     h.summarize_and_exit()

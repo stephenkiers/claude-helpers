@@ -25,9 +25,8 @@ reads `source` ("opt-out" vs null) from the JSON, not the exit code.
 import sys
 import argparse
 import json
-import os
 from pathlib import Path
-from typing import Callable, Any, Optional, Tuple
+from typing import Callable, Any, Tuple
 
 from . import cleanup, merge, shipit, checks, track, verify_queue
 from .models import RepoCacheData
@@ -580,13 +579,7 @@ def main() -> None:
                 if timeout is None:
                     # Same precedence and ignore rule as checks.resolve_check_timeout: an invalid
                     # env value falls through to the cache value, then the default.
-                    env_timeout = os.environ.get("SHIPIT_CHECK_TIMEOUT_SECS")
-                    env_value: Optional[int] = None
-                    if env_timeout:
-                        try:
-                            env_value = checks.valid_timeout_secs(int(env_timeout))
-                        except ValueError:
-                            env_value = None
+                    env_value = checks.env_timeout_secs()
                     timeout = env_value or repo_cache.check_timeout_secs or checks.DEFAULT_CHECK_TIMEOUT_SECS
                 result, err = checks.run_checks(
                     commands=repo_cache.commands,

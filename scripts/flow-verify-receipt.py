@@ -1781,7 +1781,7 @@ def _check_gate_reason(
             return f"check substituted: receipt ran '{outcome.check}', resolved '{source}'"
         return (
             f"check not configured: receipt says OK with '{outcome.check}' but no check command resolves "
-            f"({failure_reason or 'no reason reported by the resolver'})"
+            f"({' '.join((failure_reason or 'no reason reported by the resolver').split())})"
         )
     else:
         # Rule (b): the receipt must name the resolved command verbatim.
@@ -1803,6 +1803,21 @@ def _check_gate_reason(
         return f"check ran on {outcome.sha or 'none'}, step ends at {head}"
 
     return None
+
+
+def _undecided_reason(receipt: str) -> Optional[str]:
+    """Fail closed (#338): an implement/fix receipt whose Decision is not OK or FAILED in the header block.
+
+    parse_receipt_field stops at the first blank line, so a Decision (or CHECK lines) that sits
+    below a blank line reads as absent. Treating that as "not OK" would skip the check gate, so it
+    is rejected by name instead.
+    """
+    if parse_receipt_field(receipt, "Decision") in ("OK", "FAILED"):
+        return None
+    return (
+        "receipt Decision missing or outside the header block "
+        "(no blank line may precede the CHECK, ATTEMPT and Decision lines)"
+    )
 
 
 def check_implement(
@@ -1827,6 +1842,9 @@ def check_implement(
             return discard_error
 
     # An OK receipt must carry a check outcome that matches the resolver and the final HEAD.
+    undecided = _undecided_reason(receipt)
+    if undecided:
+        return undecided
     if parse_receipt_field(receipt, "Decision") == "OK":
         return _check_gate_reason(receipt, repo, branch, main_worktree, check_worktree)
 
@@ -1849,6 +1867,9 @@ def check_fix(
         return artifact_reason
 
     receipt = read_file(receipt_file)
+    undecided = _undecided_reason(receipt)
+    if undecided:
+        return undecided
     if parse_receipt_field(receipt, "Decision") == "OK":
         return _check_gate_reason(receipt, repo, branch, main_worktree, check_worktree)
 
@@ -2660,6 +2681,11 @@ def main() -> None:
         # For expect-model mode: fall through to OUTSTANDING and ROUND 1 checks (NY1)
         # These checks are run after expect-model validation, same as standard verification
         decision = parse_receipt_field(receipt, "Decision")
+        if args.step in ["implement", "fix"] and decision != "FAILED":
+            undecided = _undecided_reason(receipt)
+            if undecided:
+                print(f"Reason: {undecided}")
+                sys.exit(1)
         if decision == "OK" and args.step in ["implement", "fix"]:
             # Check for OUTSTANDING: line using shared helper (F2)
             try:
@@ -2742,6 +2768,13 @@ def main() -> None:
         else:
             print("Reason: receipt is FAILED but has no reason")
         sys.exit(1)
+
+    # An implement/fix receipt whose Decision is not readable in the header block is rejected, never skipped (#338).
+    if args.step in ["implement", "fix"]:
+        undecided = _undecided_reason(receipt)
+        if undecided:
+            print(f"Reason: {undecided}")
+            sys.exit(1)
 
     # Validate OUTSTANDING: line and ROUND 1 header for implement/fix OK receipts
     if decision == "OK" and args.step in ["implement", "fix"]:

@@ -388,4 +388,30 @@ if __name__ == "__main__":
                     f"rc={r.returncode} stdout={r.stdout.strip()[:300]!r} stderr={r.stderr.strip()[:200]!r}")
 
     print()
+    print("[Section 10] Fail closed: a Decision or CHECK block below a blank line is rejected, never skipped (#338)")
+
+    with tempfile.TemporaryDirectory() as home:
+        repo, base_sha, head_sha = make_repo(home)
+        write_cache(repo)
+        # The shape of the defective fix-step receipt: prose, a blank line, then the header fields.
+        body = "ROUND SIZING: full\n\n" + passing_lines(head_sha) + "ATTEMPT: 1\nDecision: OK\nOUTSTANDING: none\n<!-- step-end -->"
+        for step in ("implement", "fix"):
+            receipt = write_receipt(home, body)
+            review_dir = Path(home) / "rv"
+            review_dir.mkdir(exist_ok=True)
+            (review_dir / "claude-action-plan.md").write_text("# Action plan\n\nNo items to do.\n")
+            cmd = [sys.executable, str(VERIFIER), "--step", step, "--receipt", receipt,
+                   "--since", SINCE, "--repo", repo, "--branch", "HEAD", "--base", base_sha,
+                   "--review-dir", str(review_dir)]
+            env = os.environ.copy()
+            env["HOME"] = home
+            r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            test_result(
+                f"{step}: a Decision below a blank line is rejected with a named reason (not ARTIFACTS: ok)",
+                r.returncode == 1 and "receipt Decision missing or outside the header block" in r.stdout
+                and "ARTIFACTS: ok" not in r.stdout,
+                f"rc={r.returncode} stdout={r.stdout.strip()[:300]!r}",
+            )
+
+    print()
     h.summarize_and_exit()
