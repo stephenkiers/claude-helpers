@@ -19,33 +19,68 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
 
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
 
 def parse_markdown_frontmatter(text):
-    """Extract YAML frontmatter from markdown as a dict of key: value lines."""
+    """Extract YAML frontmatter from markdown as a dict.
+
+    Uses PyYAML if available (for strict parsing), falls back to regex-based parsing.
+    """
     match = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
     if not match:
         return {}
 
     fm_text = match.group(1)
+
+    # Try PyYAML first if available
     result = {}
-    for line in fm_text.split('\n'):
-        if ':' not in line:
-            continue
-        key, value = line.split(':', 1)
-        key = key.strip()
-        value = value.strip()
-        # Handle comma-separated lists (for tools, etc.)
-        if key in ('tools', 'allowed-tools'):
-            # Split on comma, but preserve Bash(...) entries
-            result[key] = [v.strip() for v in value.split(',')]
-        else:
-            result[key] = value
+    if HAS_YAML:
+        try:
+            result = yaml.safe_load(fm_text) or {}
+        except yaml.YAMLError:
+            # Fall through to regex parser
+            pass
+
+    # If YAML parsing failed or wasn't available, use fallback parser
+    if not result:
+        for line in fm_text.split('\n'):
+            if ':' not in line or line.strip().startswith('#'):
+                continue
+            key, value = line.split(':', 1)
+            key = key.strip()
+            value = value.strip()
+            # Handle comma-separated lists (for tools, etc.)
+            if key in ('tools', 'allowed-tools'):
+                # Split on comma, preserving Bash(...) entries
+                result[key] = [v.strip() for v in value.split(',')]
+            else:
+                result[key] = value
+    else:
+        # Post-process YAML result to ensure tools/allowed-tools are lists
+        for key in ('tools', 'allowed-tools'):
+            if key in result:
+                val = result[key]
+                if isinstance(val, str):
+                    # Convert comma-separated string to list
+                    result[key] = [v.strip() for v in val.split(',')]
+
     return result
 
 
 def parse_expert_flow_steps_table():
-    """Extract the Steps table from expert-flow.md and return step->agent mapping."""
+    """Extract the Steps table from expert-flow.md and return step->agent mapping.
+
+    Raises: FileNotFoundError if expert-flow.md does not exist.
+    """
     expert_flow = REPO_ROOT / "commands" / "expert-flow.md"
+    if not expert_flow.exists():
+        raise FileNotFoundError(f"Required file not found: {expert_flow}")
+
     text = expert_flow.read_text()
 
     # Find the table: it starts after "## Steps" and has columns for Agent
@@ -55,7 +90,7 @@ def parse_expert_flow_steps_table():
     )
 
     if not steps_section:
-        return {}
+        raise ValueError("Steps table not found in expert-flow.md")
 
     table_text = steps_section.group(1)
     lines = table_text.split('\n')
@@ -97,9 +132,9 @@ def parse_expert_flow_steps_table():
 def extract_subagent_spawns(text):
     """Extract all subagent_type spawns from command/prompt markdown.
 
-    Returns a set of (command_name, subagent_type) tuples where:
-    - command_name is the markdown filename without .md
-    - subagent_type is the value from subagent_type: "..." or the agent name in a prose spawn pattern
+    Returns a set of subagent_type values found in the text, where:
+    - Patterns include: subagent_type: "value" and `agent-name` followed by agent/subagent.
+    Excludes negations (e.g., "... are blocked", "... cannot...").
     """
     spawns = set()
 
@@ -108,7 +143,8 @@ def extract_subagent_spawns(text):
         spawns.add(match.group(1))
 
     # Pattern 2: background `<agent>` spawn (from commands/implement-with-haiku.md prose)
-    for match in re.finditer(r'`([a-z][a-z-]*)`\s+(?:agent|subagent)', text, re.IGNORECASE):
+    # Requires word boundary after agent/subagent to avoid matching "subagents are blocked"
+    for match in re.finditer(r'`([a-z][a-z-]*)`\s+(?:agent|subagent)\b', text, re.IGNORECASE):
         spawns.add(match.group(1))
 
     return spawns
@@ -234,10 +270,11 @@ def main():
             flow_review_tools = extract_tools(flow_review_fm.get('tools', []))
 
             # flow-review should have: review_tools + Agent + Skill + Edit (retained)
-            required_tools = review_tools | {'Agent', 'Skill'}
+            # but NOT AskUserQuestion (questions relayed via files in flow, not direct ask-sites)
+            required_tools = (review_tools - {'AskUserQuestion'}) | {'Agent', 'Skill'}
             missing = required_tools - flow_review_tools
             h.test_result(
-                "flow-review tools contain expert-review tools + Agent + Skill",
+                "flow-review tools contain expert-review tools (minus AskUserQuestion) + Agent + Skill",
                 missing == set(),  # [WEAK_ASSERTION] Pin empty set explicitly instead of truthiness
                 f"Missing tools: {missing}"
             )
@@ -270,6 +307,49 @@ def main():
                 'Edit' not in flow_impl_tools,
                 "Edit must be omitted from flow-implement"
             )
+
+    print()
+    print("[Test 4b] Exact tool set for flow-* agents\n")
+
+    # Verify exact tool set for flow-review (must have Edit, must NOT have AskUserQuestion)
+    # and flow-implement (must NOT have Edit or AskUserQuestion)
+    if flow_review.exists():
+        flow_review_text = flow_review.read_text()
+        flow_review_fm = parse_markdown_frontmatter(flow_review_text)
+        flow_review_tools = extract_tools(flow_review_fm.get('tools', []))
+
+        # flow-review must have Edit (for red-lining claude-action-plan.md)
+        h.test_result(
+            "flow-review has Edit tool",
+            'Edit' in flow_review_tools,
+            f"Edit missing from {flow_review_tools}"
+        )
+
+        # flow-review must NOT have AskUserQuestion (questions relayed via files in flow)
+        h.test_result(
+            "flow-review does NOT have AskUserQuestion",
+            'AskUserQuestion' not in flow_review_tools,
+            f"AskUserQuestion should not be in flow-review tools: {flow_review_tools}"
+        )
+
+    if flow_implement.exists():
+        flow_impl_text = flow_implement.read_text()
+        flow_impl_fm = parse_markdown_frontmatter(flow_impl_text)
+        flow_impl_tools = extract_tools(flow_impl_fm.get('tools', []))
+
+        # flow-implement must NOT have Edit (no source file editing)
+        h.test_result(
+            "flow-implement does NOT have Edit tool",
+            'Edit' not in flow_impl_tools,
+            f"Edit should not be in flow-implement tools: {flow_impl_tools}"
+        )
+
+        # flow-implement must NOT have AskUserQuestion (questions relayed via files in flow)
+        h.test_result(
+            "flow-implement does NOT have AskUserQuestion",
+            'AskUserQuestion' not in flow_impl_tools,
+            f"AskUserQuestion should not be in flow-implement tools: {flow_impl_tools}"
+        )
 
     print()
     print("[Test 5] No permissionMode on flow-*\n")
@@ -307,7 +387,9 @@ def main():
     flow_skill_guard = REPO_ROOT / "scripts" / "flow-skill-guard.py"
 
     # Extract ALLOWED_SUBAGENT_TYPES from flow-agent-guard.py
-    agent_guard_text = flow_agent_guard.read_text() if flow_agent_guard.exists() else ""
+    if not flow_agent_guard.exists():
+        raise FileNotFoundError(f"Required file not found: {flow_agent_guard}")
+    agent_guard_text = flow_agent_guard.read_text()
     agent_allowlist = {}
     for match in re.finditer(
         r'"(flow-[^"]+)":\s*\{([^}]+)\}',
@@ -325,7 +407,9 @@ def main():
     )
 
     # Extract ALLOWED_SKILLS from flow-skill-guard.py
-    skill_guard_text = flow_skill_guard.read_text() if flow_skill_guard.exists() else ""
+    if not flow_skill_guard.exists():
+        raise FileNotFoundError(f"Required file not found: {flow_skill_guard}")
+    skill_guard_text = flow_skill_guard.read_text()
     skill_allowlist = {}
     for match in re.finditer(
         r'"(flow-[^"]+)":\s*\{([^}]+)\}',
@@ -342,29 +426,47 @@ def main():
         f"Found {len(skill_allowlist)} skill allowlists"
     )
 
-    # Now check that commands spawn the right agents
-    impl_text = implement_with_haiku.read_text() if implement_with_haiku.exists() else ""
-    review_text = expert_review.read_text() if expert_review.exists() else ""
+    # Now check that commands spawn only allowed agents
+    if not implement_with_haiku.exists():
+        raise FileNotFoundError(f"Required file not found: {implement_with_haiku}")
+    if not expert_review.exists():
+        raise FileNotFoundError(f"Required file not found: {expert_review}")
+
+    impl_text = implement_with_haiku.read_text()
+    review_text = expert_review.read_text()
+
+    # Also include expert-review-panel.md which contains expert-review's escalation asks
+    expert_review_panel = REPO_ROOT / "prompts" / "expert-review-panel.md"
+    if expert_review_panel.exists():
+        review_text += "\n" + expert_review_panel.read_text()
 
     impl_spawns = extract_subagent_spawns(impl_text)
     review_spawns = extract_subagent_spawns(review_text)
 
     if agent_allowlist.get('flow-implement'):
         allowed = agent_allowlist['flow-implement']
-        allowed_in_spawns = impl_spawns & allowed
         h.test_result(
-            "implement-with-haiku spawns only allowed agents",
-            len(allowed_in_spawns) > 0,
-            f"Expected one of {allowed} in spawns, found {impl_spawns}"
+            "implement-with-haiku spawns are non-empty",
+            len(impl_spawns) > 0,
+            f"Expected subagent spawns, found none"
+        )
+        h.test_result(
+            "implement-with-haiku spawns only allowed agents (spawns <= allowed)",
+            impl_spawns <= allowed,
+            f"Spawns {impl_spawns} not subset of allowed {allowed}"
         )
 
     if agent_allowlist.get('flow-review'):
         allowed = agent_allowlist['flow-review']
-        allowed_in_spawns = review_spawns & allowed
         h.test_result(
-            "expert-review spawns only allowed agents",
-            len(allowed_in_spawns) > 0,
-            f"Expected one of {allowed} in spawns, found {review_spawns}"
+            "expert-review spawns are non-empty",
+            len(review_spawns) > 0,
+            f"Expected subagent spawns, found none"
+        )
+        h.test_result(
+            "expert-review spawns only allowed agents (spawns <= allowed)",
+            review_spawns <= allowed,
+            f"Spawns {review_spawns} not subset of allowed {allowed}"
         )
 
     # Check that general-purpose is not in either allowlist

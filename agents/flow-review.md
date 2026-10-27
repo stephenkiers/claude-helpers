@@ -2,7 +2,7 @@
 name: flow-review
 description: Runs the /expert-flow review step by invoking /expert-review via Skill.
 model: sonnet
-tools: Read, Write, Edit, Bash, Glob, Grep, Task, AskUserQuestion, Agent, Skill
+tools: Read, Write, Edit, Bash, Glob, Grep, Task, Agent, Skill
 hooks:
   PreToolUse:
     - matcher: "Agent|Task"

@@ -1053,8 +1053,9 @@ Reply with the receipt's `Decision:` and `Reason:` lines, plus any lines the per
 run in `MAIN_WORKTREE` do so by `cwd` in the step prompt only.
 
   **Spawn error handling:** When the Task call errors, check whether an agent id or transcript was returned (the probed never-started signal that indicates no agent was launched):
-  - **Never-started** (Task error message contains "Agent type '<agent>' not found" and no agent id exists): set `live: null`, `WRITE-STATE`, close the open telemetry stage (`python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STEP> --outcome failure 2>/dev/null || true`), then `STOP unknown subagent_type: <AGENT_FROM_TABLE> — the agent file exists but this session has not registered it; restart the session (or run /setup-local) and resume`.
-  - **Any other Task error**: leave `live` set, close the telemetry stage, then `STOP step agent unreachable (hot-load lag: <STEP> subagent <AGENT_FROM_TABLE> not registered) — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume`.
+  - **Never-started** (Task error message contains exactly "Agent type '<agent>' not found" [probed with Claude Code version >= 2024-12-19] and no agent id exists): a never-started spawn records no failure; set `live: null`, `WRITE-STATE`, close the open telemetry stage (`python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STEP> --outcome failure 2>/dev/null || true`), then `STOP unknown subagent_type: <AGENT_FROM_TABLE> — the agent file exists but this session has not registered it; restart the session (or run /setup-local) and resume`.
+  - **Hot-load lag** (Task launched but registration failed; a Task error that is not never-started): leave `live` set, close the telemetry stage, then `STOP step agent unreachable (hot-load lag: <STEP> subagent <AGENT_FROM_TABLE> not registered) — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume`.
+  - **Agent lost after launch** (Task spawned successfully but lost during/after execution): leave `live` set, close the telemetry stage, then `STOP step agent unreachable — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume`.
 
 **4. End the turn.** Say one line (`▶️ expert-flow #<ISSUE> — running: <STEP>`), optionally
 schedule one 1800-second `ScheduleWakeup` as the fallback heartbeat, and stop. The step's
@@ -1730,9 +1731,10 @@ The automatic path stays dormant: no reliable turns source exists yet. The trail
 ### Stop lines
 
 **Agent-related stop conditions:**
-- `STOP agent file missing: <path> — run /setup-local` (preflight check failure)
-- `STOP unknown subagent_type: <agent> — the agent file exists but this session has not registered it; restart the session (or run /setup-local) and resume` (Task spawn rejected, hot-load lag)
-- `STOP step agent unreachable` (Task launched but then lost)
+- `STOP agent file missing: <path> — run /setup-local` (preflight check failure; `live` stays null)
+- `STOP unknown subagent_type: <agent> — the agent file exists but this session has not registered it; restart the session (or run /setup-local) and resume` (never-started: no agent launched at all; `live` becomes null)
+- `STOP step agent unreachable (hot-load lag: <step> subagent <agent> not registered) — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume` (hot-load lag: Task launched but registration failed; `live` stays set)
+- `STOP step agent unreachable — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume` (agent lost: Task spawned but lost during/after execution; `live` stays set)
 
 Every stop — awaiting, paused, failed, done — prints exactly these two lines first:
 

@@ -16,12 +16,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telemetry_schema
 
 # Cut-over date: when flow-implement and flow-review agents replaced general-purpose for flow steps.
-# This is the merge date of ticket #358; update to the actual merge date if different.
+# IMPORTANT: Set to the merge date of ticket #358; must be set at merge time and never changed thereafter
+# (changing it retroactively invalidates historical bucketing and trends). Current value: 2026-10-26.
 FLOW_AGENT_CUTOVER_DATE = "2026-10-26"
 
-# Session IDs from the 7 Step 2.1–2.6 hermetic probes in the 2026-10-26 #358 hook/permission/model
-# probes (see ADR-0008 amendment). These test-fixture rows pollute telemetry; exclude from all bucketing.
-# List is append-only: older probes are never removed, ensuring metrics remain stable as new probes run.
+# Session IDs from the Step 2 hermetic probes in the 2026-10-26 #358 ticket (7 distinct sessions:
+# Steps 2.1–2.6 hook/permission/model probes; see ADR-0008 amendment). These test-fixture rows
+# pollute telemetry; completely excluded from all bucketing (counted separately in
+# excluded_probe_sessions output). List is append-only: older probe sessions are never removed,
+# ensuring metrics remain stable as new probes run and preventing drift in leaderboard rankings.
 PROBE_SESSION_IDS: Set[str] = frozenset({
     "04a8f48c-638f-4955-8e62-875e46f8d12c",
     "6f4a40a1-3ce5-43be-a1a6-5471cdc38681",
