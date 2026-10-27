@@ -47,6 +47,23 @@ def setup_test_repo_with_install_sh(tmpdir_path, source_repo):
     return install_sh_copy
 
 
+def setup_test_settings_with_hooks(test_home):
+    """Pre-seed settings.json with flow agent hooks to satisfy install.sh --check assertions."""
+    import json
+    settings_file = test_home / ".claude" / "settings.json"
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Agent|Task", "hooks": [{"type": "command", "command": f"{test_home}/.claude/scripts/flow-agent-guard.py --agent auto"}]},
+                {"matcher": "Skill", "hooks": [{"type": "command", "command": f"{test_home}/.claude/scripts/flow-skill-guard.py --agent auto"}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": f"{test_home}/.claude/scripts/flow-bash-guard.py --agent auto"}]},
+            ]
+        }
+    }
+    settings_file.write_text(json.dumps(settings))
+
+
 def test_nested_file_symlinked():
     """A nested file (scripts/workflow/cli.py) gets symlinked into mirrored path."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -55,6 +72,9 @@ def test_nested_file_symlinked():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo with nested file
         source_repo = tmpdir_path / "repo"
@@ -106,6 +126,9 @@ def test_doubly_nested_file_symlinked():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo with doubly-nested file
         source_repo = tmpdir_path / "repo"
@@ -160,6 +183,9 @@ def test_pycache_files_not_symlinked():
         test_home = tmpdir_path / "home"
         test_home.mkdir()
 
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
@@ -213,6 +239,9 @@ def test_pycache_at_any_depth_not_symlinked():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
@@ -269,8 +298,11 @@ def test_stale_nested_symlink_pruned():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         claude_dir = test_home / ".claude"
-        claude_dir.mkdir()
 
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
@@ -332,6 +364,9 @@ def test_top_level_files_still_work():
         test_home = tmpdir_path / "home"
         test_home.mkdir()
 
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         # Create synthetic source repo with only top-level files
         source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
@@ -378,8 +413,11 @@ def test_empty_subdirectories_cleaned_up():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         claude_dir = test_home / ".claude"
-        claude_dir.mkdir()
 
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
@@ -439,6 +477,9 @@ def test_nested_structure_preserved():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo with deeply nested structure
         source_repo = tmpdir_path / "repo"
@@ -500,6 +541,9 @@ def test_second_run_skips_relink_of_correct_symlink():
 
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
@@ -717,6 +761,9 @@ def test_flow_step_agent_files_detected_by_check():
         tmpdir_path = Path(tmpdir)
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create a single repo with the new files added but not yet installed
         source_repo = tmpdir_path / "repo"
