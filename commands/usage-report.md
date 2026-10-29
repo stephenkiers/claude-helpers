@@ -37,7 +37,7 @@ A flow session is one that contains either a `command.begin` event with `command
 event with `agent_type` in `{flow-implement, flow-review}`. The attribution is deliberately coarse: all
 pre-cutover `general-purpose` agent rows in a flow session are grouped together (no per-stage join).
 
-The cut-over date (recorded as a module constant; currently `2026-10-26`, the merge date of ticket #358)
+The cut-over date (recorded as a module constant; currently `2026-10-26`, the date of the #358 probes, a fixed boundary rather than the merge date)
 marks when flow steps transitioned from `general-purpose` agents to `flow-implement` and `flow-review`.
 `agent_type` is still recorded verbatim in telemetry; this is a reporting-side grouping with no backfill.
 

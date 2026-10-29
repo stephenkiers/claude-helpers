@@ -16,8 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telemetry_schema
 
 # Cut-over date: when flow-implement and flow-review agents replaced general-purpose for flow steps.
-# IMPORTANT: Set to the merge date of ticket #358; must be set at merge time and never changed thereafter
-# (changing it retroactively invalidates historical bucketing and trends). Current value: 2026-10-26.
+# The current value, 2026-10-26, is the date of the #358 probes (ADR-0008 amendment), NOT the merge
+# date: it was fixed before the PR existed. It is a deliberate boundary choice; any earlier
+# general-purpose flow agent rows are bucketed as pre-cutover. If the actual merge date matters to
+# you, edit this one constant before merging #358; after merge, never change it (changing it
+# retroactively invalidates historical bucketing and trends).
 FLOW_AGENT_CUTOVER_DATE = "2026-10-26"
 
 # Session IDs from the Step 2 hermetic probes in the 2026-10-26 #358 ticket (7 distinct sessions:

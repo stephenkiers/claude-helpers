@@ -980,7 +980,7 @@ There are two attempts per step. If `failures[STEP] >= 2`: `STOP attempts
 exhausted for <STEP>` — only a human can lift it (by taking over). Otherwise `attempts[STEP]` +1;
 record that value as `k`. Clear `stop_source[STEP]` (so the previous attempt's failure reason does not carry over). Log `begin` for the first spawn of the step or `retry` after a FAILED
 outcome, then `WRITE-STATE`. `attempts` counts spawns; only FAILED outcomes count toward the
-two-attempt cap, tracked in `failures`.
+two-attempt cap, tracked in `failures`. A never-started spawn (see the Never-started rule below) does not consume an attempt: `attempts[STEP]` is not decremented, but the failure is not recorded either, so the `k` of the next spawn may skip a value (e.g. `k=1` never started, the resumed spawn is `k=2`). Receipt validation uses the `k` recorded for the spawn, so a skipped value is expected, not an error.
 
 **2. Open the stage** (the orchestrator owns the `<STEP>` stage — see Telemetry ownership below).
 
@@ -1053,7 +1053,7 @@ Reply with the receipt's `Decision:` and `Reason:` lines, plus any lines the per
 run in `MAIN_WORKTREE` do so by `cwd` in the step prompt only.
 
   **Spawn error handling:** When the Task call errors, check whether an agent id or transcript was returned (the probed never-started signal that indicates no agent was launched):
-  - **Never-started** (Task error message contains exactly "Agent type '<agent>' not found" [probed with Claude Code version >= 2024-12-19] and no agent id exists): a never-started spawn records no failure; set `live: null`, `WRITE-STATE`, close the open telemetry stage (`python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STEP> --outcome failure 2>/dev/null || true`), then `STOP unknown subagent_type: <AGENT_FROM_TABLE> — the agent file exists but this session has not registered it; restart the session (or run /setup-local) and resume`.
+  - **Never-started** (Task error message contains exactly "Agent type '<agent>' not found" [observed in the ADR-0008 amendment probe 2.5, run 2026-10-26; no Claude Code version bound was recorded] and no agent id exists): a never-started spawn records no failure; set `live: null`, `WRITE-STATE`, close the open telemetry stage (`python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage <STEP> --outcome failure 2>/dev/null || true`), then `STOP unknown subagent_type: <AGENT_FROM_TABLE> — the agent file exists but this session has not registered it; restart the session (or run /setup-local) and resume`.
   - **Hot-load lag** (Task launched but registration failed; a Task error that is not never-started): leave `live` set, close the telemetry stage, then `STOP step agent unreachable (hot-load lag: <STEP> subagent <AGENT_FROM_TABLE> not registered) — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume`.
   - **Agent lost after launch** (Task spawned successfully but lost during/after execution): leave `live` set, close the telemetry stage, then `STOP step agent unreachable — if the agent is alive, a human kills it; otherwise, clear `live` in state.json and resume`.
 

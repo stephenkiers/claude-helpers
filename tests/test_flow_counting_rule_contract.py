@@ -235,6 +235,22 @@ def main():
         h.test_result("docs/adr/0023-expert-flow.md exists", False)
 
     print()
+    print("[Test (f)] Never-started wording cites the ADR-0008 probe, not a version bound")
+    ef_text = expert_flow_doc.read_text()
+    adr8_text = (REPO_ROOT / "docs" / "adr" / "0008-machine-enforced-agent-guardrails.md").read_text()
+    h.test_result(
+        "expert-flow.md never-started rule has no fake version bound",
+        "Claude Code version >=" not in ef_text,
+    )
+    h.test_result(
+        "expert-flow.md never-started rule cites ADR-0008 probe 2.5",
+        "ADR-0008 amendment probe 2.5" in ef_text and "**2.5 Unregistered subagent_type" in adr8_text,
+    )
+    h.test_result(
+        "expert-flow.md documents that a never-started spawn does not consume an attempt and k may skip",
+        "does not consume an attempt" in ef_text and "may skip a value" in ef_text,
+    )
+
     h.summarize_and_exit()
 
 
