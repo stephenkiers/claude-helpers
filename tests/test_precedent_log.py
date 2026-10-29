@@ -1384,6 +1384,125 @@ def case_recommended_type_and_options_guard(h):
                       f"recommended={_row_for(rows, 'Q2').get('recommended', 'missing')!r}")
 
 
+def case_classify_recommended_marker_strip(h):
+    """Test: classify() correctly strips (recommended) from any position and handles free text."""
+    import subprocess
+    import tempfile
+
+    # Test script to import and call classify from precedent-log.py
+    script_path = str(REPO_ROOT / "scripts")
+    test_script = f"""
+import sys
+import importlib.util
+_spec = importlib.util.spec_from_file_location("precedent_log", {script_path!r} + "/precedent-log.py")
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+classify = _mod.classify
+
+# Test 1: Exact option match (no special handling needed)
+result1 = classify("A", ["A", "B", "C"])
+assert result1 == ("A", "option"), f"exact match failed: {{result1}}"
+
+# Test 2: Trailing (recommended) marker
+result2 = classify("A (recommended)", ["A", "B"])
+assert result2 == ("A", "option"), f"trailing recommended failed: {{result2}}"
+
+# Test 3: Mid-string (recommended) marker (should strip it)
+result3 = classify("A (recommended) is good", ["A (recommended) is good", "B"])
+actual, source = result3
+assert "(recommended)" not in actual.lower(), f"mid-string recommended not stripped: {{actual}}"
+assert source == "free_text", f"mid-string should be free_text, got {{source}}"
+
+# Test 4: Free text with (Recommended) at different positions
+result4 = classify("This is (Recommended) feedback", ["A", "B"])
+actual, source = result4
+assert "(Recommended)" not in actual, f"free text should not contain (Recommended): {{actual}}"
+assert source == "free_text", f"free text failed: {{source}}"
+
+# Test 5: Case-insensitive (RECOMMENDED)
+result5 = classify("Option A (RECOMMENDED)", ["Option A"])
+actual, source = result5
+assert actual == "Option A", f"case-insensitive strip failed: {{actual}}"
+assert source == "option", f"should match option: {{source}}"
+
+print("All classify tests passed")
+"""
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(test_script)
+        f.flush()
+        rc = subprocess.run(["python3", f.name], capture_output=True, text=True).returncode
+        h.test_result("classify: recommended marker stripping works correctly", rc == 0,
+                      "test script failed" if rc != 0 else "")
+
+
+def case_holdout_deterministic_across_processes(h):
+    """Test: holdout determination is deterministic across separate processes."""
+    question_ids = [f"Q{i}" for i in range(1, 801)]  # 800 questions
+
+    # Run holdout subcommand twice
+    result1 = subprocess.run(
+        ["python3", str(HELPER), "holdout"] + question_ids,
+        capture_output=True, text=True
+    )
+    rc1 = result1.returncode
+    out1 = result1.stdout
+
+    result2 = subprocess.run(
+        ["python3", str(HELPER), "holdout"] + question_ids,
+        capture_output=True, text=True
+    )
+    rc2 = result2.returncode
+    out2 = result2.stdout
+
+    try:
+        held_out1 = json.loads(out1) if out1 else []
+        held_out2 = json.loads(out2) if out2 else []
+    except json.JSONDecodeError:
+        h.test_result("holdout: deterministic output is valid JSON", False,
+                      f"first={out1!r}, second={out2!r}")
+        return
+
+    h.test_result("holdout: first run exits 0", rc1 == 0, f"rc={rc1}")
+    h.test_result("holdout: second run exits 0", rc2 == 0, f"rc={rc2}")
+    h.test_result("holdout: deterministic output across processes",
+                  held_out1 == held_out2, f"first={held_out1}, second={held_out2}")
+
+    # Check that roughly 1/8 are held out (statistical test: allow 10-150 out of 800)
+    held_out_count = len(held_out1)
+    h.test_result("holdout: roughly 1/8 held out (100±50 of 800)",
+                  50 <= held_out_count <= 150, f"count={held_out_count}, expected_approx=100")
+
+
+def case_holdout_displayed_field_in_row(h):
+    """Test: displayed field is present in logged rows and reflects holdout status."""
+    with Fixture() as fx:
+        validated = make_validated([("N1", "A", "high", [1])])
+        questions = {
+            "N1": {"header": "Needs you 1", "id": "N1", "options": ["A", "B"]},
+        }
+        answers_obj = {"answers": {"N1": "A"}}
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", {"questions": list(questions.values())})
+        answers_file = fx.put_json("answers.json", answers_obj)
+
+        common = ["--validated", str(validated_file), "--questions", str(questions_file),
+                  "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan"]
+
+        rc, _, _ = run_helper(fx.home, fx.log_root, [*common, "--run", "1-test-displayed"], "shown 1 of 1")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("displayed field: one row written", rc == 0 and len(rows) == 1, f"rc={rc}, n={len(rows)}")
+
+        if rows:
+            row = _only(rows)
+            h.test_result("displayed field: present in row", "displayed" in row,
+                          f"keys={list(row.keys())}")
+            h.test_result("displayed field: is boolean", isinstance(row.get("displayed"), bool),
+                          f"displayed={row.get('displayed')!r}")
+
+
 if __name__ == "__main__":
     h = Harness("PRECEDENT-LOG TEST SUITE")
 
@@ -1415,5 +1534,8 @@ if __name__ == "__main__":
     case_digest_unresolved_repo_arg_not_read(h)
     case_md_hit_rate_subset_figure(h)
     case_recommended_type_and_options_guard(h)
+    case_classify_recommended_marker_strip(h)
+    case_holdout_deterministic_across_processes(h)
+    case_holdout_displayed_field_in_row(h)
 
     h.summarize_and_exit()

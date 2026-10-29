@@ -91,7 +91,10 @@ def main():
     # 1.2: Block sits after "claude-action-plan.md" read
     if "## Step 12" in doc_text:
         step12_start = doc_text.index("## Step 12")
-        step12_section = doc_text[step12_start:]
+        # Find the next "### Step" heading after Step 12 to bound the section
+        next_heading_match = doc_text.find("### Step ", step12_start + 1)
+        step12_end = next_heading_match if next_heading_match != -1 else len(doc_text)
+        step12_section = doc_text[step12_start:step12_end]
         has_action_plan_read = "claude-action-plan.md" in step12_section
         h.test_result(
             "ordering: references claude-action-plan.md read",
@@ -351,7 +354,9 @@ def main():
 
     # 9.2: Uses --answers, not --flow-answers
     if "## Step 12" in doc_text:
-        has_answers = "--answers" in step12_section
+        import re
+        # Use regex to match --answers not followed by a dash (e.g., --answers-SEQ.json is not a match)
+        has_answers = bool(re.search(r'--answers\b(?!-)', step12_section))
         h.test_result(
             "logging: uses --answers",
             has_answers,
@@ -436,12 +441,13 @@ def main():
 
     # 11.2: No banned words (ledger outside human-ledger context, decisions.yaml, etc.)
     if "## Step 12" in doc_text:
-        has_ledger_ban = ("ledger" in step12_section and
-                         "human" not in step12_section.split("ledger")[0][-50:])
+        import re
+        # Use negative lookbehind to ensure 'ledger' is not preceded by 'human-'
+        bare_ledger = re.search(r'(?<!human-)ledger', step12_section, re.IGNORECASE)
         h.test_result(
             "shell conventions: no bare 'ledger' (only 'human-ledger' allowed)",
-            not has_ledger_ban,
-            "'ledger' found outside human-ledger context" if has_ledger_ban else "",
+            bare_ledger is None,
+            f"'ledger' found at position {bare_ledger.start()} without 'human-' prefix" if bare_ledger else "",
         )
 
     # 11.3: No decisions.yaml or DECISIONS_FILE in new prose
@@ -457,6 +463,18 @@ def main():
             "shell conventions: no DECISIONS_FILE reference",
             not has_decisions_file,
             "DECISIONS_FILE found" if has_decisions_file else "",
+        )
+
+    # 14.2: Two-surface rendering rule is stated
+    if "## Step 12" in doc_text:
+        # Check for the two-surface rule (option description vs Precedent block)
+        two_surface_rule = ("option description" in step12_section and
+                           "Precedent block" in step12_section and
+                           ("Surface 1" in step12_section or "Surface 2" in step12_section or "two.surface" in step12_section or "two-surface" in step12_section))
+        h.test_result(
+            "rendering: two-surface rule is stated (Surface 1 option description, Surface 2 Precedent block)",
+            two_surface_rule,
+            "two-surface rule not found or not properly documented" if not two_surface_rule else "",
         )
 
     print()

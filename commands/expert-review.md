@@ -787,6 +787,8 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
 
 6. **Telemetry: close rulings, open precedent.** The `run-metrics.py` script maintains one open stage slot; nesting stages overwrites it. Close the rulings stage and open precedent in two separate invocations:
    ```bash
+   # Write a sentinel to detect if this block was interrupted (for cleanup on resume)
+   echo "pat-started" > "${REVIEW_DIR}/precedent-pat-started.txt"
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage rulings --outcome success 2>/dev/null || true
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
    ```
@@ -844,6 +846,20 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    # When Pat spoke (trace starts with "shown"), extract the rendered lines for batch rendering
    if [[ "$PRECEDENT_TRACE" == "shown"* ]]; then
      python3 "$HOME/.claude/scripts/precedent-render.py" line --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --out "${REVIEW_DIR}/precedent-lines.json" 2>/dev/null || true
+     # Filter out held-out questions: deterministic 1-in-8 hold-out to control for anchoring bias
+     if [ -f "${REVIEW_DIR}/precedent-lines.json" ] && [ -f "${REVIEW_DIR}/precedent-questions.json" ]; then
+       QUESTION_IDS=$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1])); print(" ".join(q["id"] for q in f.get("questions", []) if isinstance(q, dict) and "id" in q))' "${REVIEW_DIR}/precedent-questions.json" 2>/dev/null || echo "")
+       if [ -n "$QUESTION_IDS" ]; then
+         HELD_OUT=$(python3 "$HOME/.claude/scripts/precedent-log.py" holdout $QUESTION_IDS 2>/dev/null || echo "[]")
+         python3 -c "
+import json, sys
+lines = json.load(open(sys.argv[1]))
+held_out = json.loads(sys.argv[2])
+filtered = {k: v for k, v in lines.items() if k not in held_out}
+json.dump(filtered, open(sys.argv[1], 'w'))
+" "${REVIEW_DIR}/precedent-lines.json" "$HELD_OUT" 2>/dev/null || true
+       fi
+     fi
    fi
    ```
    The `PRECEDENT_TRACE` value is determined as follows:
@@ -917,7 +933,13 @@ Restructure the item from an open options menu into a resolved question-and-answ
    … the non-chosen options, each with its original Pro/Con … `</details>`. This is the only place the
    rejected options live once an item is ruled; do not also leave a live copy above it.
 
-**Rendering precedent per surface.** Each batch renders the Precedent annotation per item from the stored `${REVIEW_DIR}/precedent-lines.json` (keyed by `N<k>` id). The prediction to match comes from `${REVIEW_DIR}/precedent-validated.json` `blocks[N<k>].prediction` (sanitised), matched exactly against the Ask label strings after stripping `(recommended)`. Precedent text never goes into a question's `header`, `question` or option `label` — these fields are indexed, so text placed there would come back later as the human's "past answer". Only the validated, rendered line is shown, never raw `precedent.md` content. The label "Precedent" stays distinct from reviewer voices. When the line is rendered (the handle is present in `precedent-lines.json` and its prediction exactly matches an option label), show it on that item's surface; when there is no precedent for the item (trace does not start with `shown`, Pat abstained on the item, or its validated block has no precedent lines), show `Precedent: none` only on that item; when precedent exists but the line was skipped or the prediction matches no option label, show no Precedent text for that item and do not log it.
+**Rendering precedent per surface (two-surface rule).** Each batch renders the Precedent annotation per item from the stored `${REVIEW_DIR}/precedent-lines.json` (keyed by `N<k>` id). The prediction to match comes from `${REVIEW_DIR}/precedent-validated.json` `blocks[N<k>].prediction` (sanitised), matched exactly against the Ask label strings after stripping `(recommended)`. Precedent text never goes into a question's `header`, `question` or option `label` — these fields are indexed, so text placed there would come back later as the human's "past answer". Only the validated, rendered line is shown, never raw `precedent.md` content. The label "Precedent" stays distinct from reviewer voices. 
+
+Rendering location (two surfaces, depending on context):
+- **Surface 1 (option description):** On surfaces that render option descriptions, show the Precedent line inline on the matching option's description (label-exact match).
+- **Surface 2 (Precedent block):** On surfaces that do not render option descriptions (or when the line cannot be rendered inline), show the Precedent line in a separate delimited block immediately after the verbatim brief and before the Ask options.
+
+When the line is rendered (the handle is present in `precedent-lines.json` and its prediction exactly matches an option label), show it on the appropriate surface for the context; when there is no precedent for the item (trace does not start with `shown`, Pat abstained on the item, or its validated block has no precedent lines), show `Precedent: none` only on that item; when precedent exists but the line was skipped or the prediction matches no option label, show no Precedent text for that item and do not log it.
 
 **Per-batch logging.** Define `<SEQ>` as the flow answers-file sequence (`${FLOW_DIR}/answers/review-<SEQ>.json`) in the flow path, and a batch counter in the non-flow path (SEQ = 1, 2, … for each Ask batch in order). When each batch is built, record that batch's `qK -> N<k>` map and which handles had a line rendered in `${REVIEW_DIR}/precedent-batch-map.json`, keyed by `<SEQ>` in both paths. After that batch's answers are recorded with the `Edit` (and only when the persisted `${REVIEW_DIR}/precedent-trace.txt` starts with `shown`), write `${REVIEW_DIR}/precedent-answers-<SEQ>.json` with the `Write` tool. The format is `{"answers": {"N<k>": "<picked label or typed text>"}}`, one entry per answered item whose line was actually rendered (handle present in `precedent-lines.json` and matched to an option, as recorded in the batch map). Items shown `Precedent: none` or shown no Precedent text are not logged. In the flow path the source is `${FLOW_DIR}/answers/review-<SEQ>.json` mapped through the batch map. In the non-flow path it is the tool's returned answers, mapped through the same batch map. Then run `precedent-log.py append --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --answers "${REVIEW_DIR}/precedent-answers-<SEQ>.json" --repo-key "$REPO_KEY" --command expert-review --run "$(basename "$REVIEW_DIR")" --trace-file "${REVIEW_DIR}/precedent-trace.txt" >> "${REVIEW_DIR}/precedent-log-output.txt" 2>&1 || true`. Never pass `--flow-answers` files directly. A re-resume of an already-logged batch is a no-op through the helper's first-wins `(run, question_id, command)` keys, which is safe because the handles are item-stable. Nothing is appended to the action plan.
 
@@ -943,6 +965,19 @@ outside this conversation, so it shouldn't cost them a second file-open to disco
 conversation, when they report back, or when `/verify-queue` drains it — at which point Claude (not
 the human) edits `STATUS: measured` and `DECISION: {result}` in place. There is no hand-editing path
 for this field anymore.
+
+Print precedent debug output (for observability):
+```bash
+# Print digest status line if available
+if [ -f "${REVIEW_DIR}/precedent-digest-line.txt" ]; then
+  echo "Precedent Pat digest status: $(cat "${REVIEW_DIR}/precedent-digest-line.txt")" >&2
+fi
+# Print log append output if available (shows what was logged)
+if [ -f "${REVIEW_DIR}/precedent-log-output.txt" ] && [ -s "${REVIEW_DIR}/precedent-log-output.txt" ]; then
+  echo "Precedent log output:" >&2
+  cat "${REVIEW_DIR}/precedent-log-output.txt" >&2
+fi
+```
 
 Emit `stage-end --stage rulings --outcome success` (non-PR mode only):
 ```bash

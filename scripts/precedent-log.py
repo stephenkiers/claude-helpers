@@ -52,6 +52,7 @@ never read the prediction log. The log is measurement only. Its sole reader othe
 the writer's own dedup read is scripts/precedent-digest.py --stats (project-scoped only).
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -61,6 +62,7 @@ from typing import Any, Dict, Final, List, Literal, NoReturn, Optional, Tuple, T
 
 
 # Pattern for case-insensitive "(recommended)" marker strip (matches `(Recommended)`, `(recommended)`, etc.)
+# Used with .sub() to remove all occurrences from any position in the string.
 RECOMMENDED_RE = re.compile(r"\(\s*recommended\b[^)]*\)", re.IGNORECASE)
 
 Command = Literal["expert-plan", "expert-review"]
@@ -301,15 +303,18 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, Answer
 def _should_display(question_id: str) -> bool:
     """Deterministic hold-out for control measurement: 1 in 8 questions are held out.
 
-    Uses hash of question_id mod 8 to determine display status. This ensures:
-    - Deterministic: same question_id always gets the same result across runs
+    Uses stable SHA256 hash of question_id mod 8 to determine display status. This ensures:
+    - Deterministic: same question_id always gets the same result across processes and runs
     - Distributed: roughly 7/8 of questions are displayed, 1/8 held out
     - Independent: no server state needed, works per-batch
 
     Held-out questions get no Precedent line rendered but are still logged with
     displayed=false for control-arm measurement of Pat's accuracy (avoiding anchoring bias).
     """
-    return hash(question_id) % 8 != 0
+    # Use first 8 hex digits of SHA256 as a stable hash value
+    hash_hex = hashlib.sha256(question_id.encode()).hexdigest()[:8]
+    hash_int = int(hash_hex, 16)
+    return hash_int % 8 != 0
 
 
 def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "free_text"]]:
@@ -543,6 +548,10 @@ def _build_parser() -> _Parser:
     append_parser.add_argument("--run", required=True, help="Run identifier")
     append_parser.add_argument("--trace-file", required=True, help="Path to precedent-trace.txt")
     append_parser.add_argument("--log-root", default=os.path.expanduser("~/.claude/precedent"), help="Log root directory")
+
+    holdout_parser = subparsers.add_parser("holdout", help="Output JSON list of held-out question IDs")
+    holdout_parser.add_argument("questions", nargs="+", help="Question IDs to check for hold-out status")
+
     return parser
 
 
@@ -664,8 +673,14 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    # Handle 'holdout' subcommand: output JSON list of held-out question ids
+    if args.subcommand == "holdout":
+        held_out = [qid for qid in args.questions if not _should_display(qid)]
+        print(json.dumps(held_out))
+        sys.exit(0)
+
     if args.subcommand != "append":
-        parser.error("only 'append' subcommand is supported")
+        parser.error("only 'append' and 'holdout' subcommands are supported")
 
     _check_answer_flags(parser, args)
     _trace_gate(args.trace_file)
