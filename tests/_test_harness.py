@@ -140,7 +140,6 @@ def run_slugify(title: str, env: dict) -> Tuple[int, str, str]:
     if not SLUGIFY_SCRIPT.exists():
         return 127, "", f"slugify.sh not found at {SLUGIFY_SCRIPT}"
 
-    run_env = dict(env)
     # Do not force LC_ALL so the script's internal handling is tested
     result = subprocess.run(
         ["bash", str(SLUGIFY_SCRIPT)],

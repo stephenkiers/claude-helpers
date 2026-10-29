@@ -18,9 +18,7 @@ Covers:
 Run with: python3 tests/test_slugify_title_file.py
 """
 
-import os
 import re
-import stat
 import subprocess
 import sys
 import tempfile
