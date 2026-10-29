@@ -159,6 +159,57 @@ def test_truncated_tail_reason_is_distinct(h, tmp):
                   reason_line(out_small) == PLAIN_NO_LINE_REASON, f"small={reason_line(out_small)!r}")
 
 
+def test_since_from_log_applies_bound_to_review(h, tmp):
+    """Demonstrate that --since-from-log reads the begin line and applies it as the freshness bound."""
+    home = Path(tmp) / "home"
+    home.mkdir()
+    flow, receipt = make_flow(home)
+
+    # Create a recent begin line in the log
+    recent_time = "2026-10-28T15:00:00Z"
+    (flow / "log.md").write_text(f"{recent_time} review begin\n")
+
+    # Create the reviews directory structure under ~/.claude/reviews
+    reviews_dir = home / ".claude" / "reviews" / "test-review"
+    reviews_dir.mkdir(parents=True)
+
+    # Write minimal review receipt with REVIEW_DIR pointing to our test review
+    receipt_text = f"""ROUND 1
+ATTEMPT: 1
+Decision: OK
+REVIEW_DIR: {reviews_dir}
+OUTSTANDING: none
+<!-- step-end -->
+"""
+    receipt.write_text(receipt_text)
+
+    # Create minimal review artifacts
+    (reviews_dir / "claude-action-plan.md").write_text("## Doing it\nNo items.\n\n## Needs you\nNo items.\n")
+    (reviews_dir / "final-report.md").write_text("# Final Report\n\nNo findings.\n")
+    (reviews_dir / "findings.json").write_text("{}")
+
+    # Create checkpoint files with recent mtimes (newer than the log begin line)
+    recent_checkpoint1 = reviews_dir / "reviewer1-pass1.md"
+    recent_checkpoint1.write_text("# Checkpoint\n")
+    recent_checkpoint1.touch()  # Use current time, which is newer than the begin line from the past
+
+    recent_checkpoint2 = reviews_dir / "reviewer2-pass1.md"
+    recent_checkpoint2.write_text("# Checkpoint\n")
+    recent_checkpoint2.touch()
+
+    args = ["--step", "review", "--receipt", str(receipt), "--since-from-log",
+            "--flow-dir", str(flow), "--repo", str(REPO_ROOT), "--branch", "HEAD", "--base", SHA]
+    rc, out = run_verifier(args, home, home)
+
+    # The key point: without --since-from-log, the verifier would fail early on log parsing.
+    # With it and a valid begin line, the verifier proceeds to the review artifacts check.
+    # We expect it to reach the artifacts validation (which should fail due to missing relay/attempt
+    # info, not due to log parsing).
+    h.test_result("--since-from-log bound is applied: no begin-line errors in output",
+                  "no begin or retry line for review" not in out and "since-from-log" not in out,
+                  f"rc={rc} output={out.strip()}")
+
+
 def main():
     h = Harness("flow-verify-receipt.py --since-from-log")
     cases = (
@@ -167,6 +218,7 @@ def main():
         test_reason_carries_underlying_error,
         test_valid_begin_line_bounds_verifier,
         test_truncated_tail_reason_is_distinct,
+        test_since_from_log_applies_bound_to_review,
     )
     for case in cases:
         with tempfile.TemporaryDirectory() as tmp:

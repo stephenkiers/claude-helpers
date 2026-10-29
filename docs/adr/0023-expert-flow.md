@@ -996,7 +996,7 @@ An OK implement/fix receipt now carries `RUN_KEY:` and `RECEIPT_CONTRACT: 1` in 
 
 **Missing-key policy (Q2 = C).** The marker and the key are independent in their failure modes:
 - If the marker is present and the key is absent, the receipt is `FAILED` with reason `receipt missing RUN_KEY (required by RECEIPT_CONTRACT: 1)`.
-- If the marker is absent and the key is absent, the receipt falls back to `locate` (grandfathered). The verifier prints `RUN_KEY_SOURCE: locate-fallback (receipt predates RECEIPT_CONTRACT)`, and the auditor prompt carries `LEDGER LOOKUP: locate-fallback (receipt predates RECEIPT_CONTRACT)`.
+- If the marker is absent and the key is absent, the receipt falls back to `locate` (grandfathered). The verifier prints `RUN_KEY_SOURCE: locate-fallback (receipt has no RECEIPT_CONTRACT line)`, and the auditor prompt carries `LEDGER LOOKUP: locate-fallback (receipt predates RECEIPT_CONTRACT)`.
 - A well-formed key without the marker is accepted and rendered directly (backward compatibility).
 - A malformed, duplicated, below-header, or mismatched key always fails, with or without the marker. The validation failure reason names the defect (`receipt RUN_KEY duplicated`, `receipt RUN_KEY outside the header block`, `receipt RUN_KEY malformed`, or in the fidelity audit, a `render` exit code with a `NOT FOUND:` reason).
 
