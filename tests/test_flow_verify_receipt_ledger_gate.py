@@ -90,7 +90,6 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         # Write answers file manually
         make_answers_no_ledger(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
-        answer_file = flow / "answers" / "assess-01.json"
 
         # Create ledger with wrong sha256
         wrong_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
