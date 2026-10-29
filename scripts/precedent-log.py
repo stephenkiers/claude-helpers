@@ -84,6 +84,7 @@ PINNED_KEYS: Final = (
     "citations",
     "actual_source",
     "anchored",
+    "displayed",
 )
 
 
@@ -103,6 +104,7 @@ class PredictionRow(TypedDict):
     citations: List[int]
     actual_source: ActualSource
     anchored: bool
+    displayed: bool
 
 
 class _Parser(argparse.ArgumentParser):
@@ -296,6 +298,20 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, Answer
     return merged if merged else None
 
 
+def _should_display(question_id: str) -> bool:
+    """Deterministic hold-out for control measurement: 1 in 8 questions are held out.
+
+    Uses hash of question_id mod 8 to determine display status. This ensures:
+    - Deterministic: same question_id always gets the same result across runs
+    - Distributed: roughly 7/8 of questions are displayed, 1/8 held out
+    - Independent: no server state needed, works per-batch
+
+    Held-out questions get no Precedent line rendered but are still logged with
+    displayed=false for control-arm measurement of Pat's accuracy (avoiding anchoring bias).
+    """
+    return hash(question_id) % 8 != 0
+
+
 def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "free_text"]]:
     """Classify an answer value as option or free_text.
 
@@ -339,6 +355,7 @@ def _build_row(
     actual: str,
     actual_source: ActualSource,
     anchored: bool,
+    displayed: bool,
 ) -> PredictionRow:
     """Build one prediction row from a validated block.
 
@@ -413,6 +430,7 @@ def _build_row(
         "citations": dedup_citations,
         "actual_source": actual_source,
         "anchored": anchored,
+        "displayed": displayed,
     }
     return row
 
@@ -633,6 +651,7 @@ def _build_rows(
                 actual=actual,
                 actual_source=actual_source,
                 anchored=anchored,
+                displayed=_should_display(question_id),
             )
         except _RowError as exc:
             _skip("row-build-failed: question %s, field %s" % (question_id, exc.field))

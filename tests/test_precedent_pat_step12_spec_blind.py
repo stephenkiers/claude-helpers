@@ -169,14 +169,15 @@ def main():
     print("[Section 3] Red-line contract (Edit clause)")
 
     # The plan says: "Leave the Edit red line paragraph byte-identical."
-    # This test pins the literal so drift is caught.
-    edit_red_line = "DECISION: {Option} — {reasoning}"
+    # This test pins a real red-line substring from the actual red-line paragraph,
+    # ensuring the controlling sentence is present and appears exactly once (no duplication).
+    edit_red_line = "Write `- **DECISION**: {Option} — {reasoning}` directly below"
     if "## Step 12" in doc_text:
         has_edit_red_line = edit_red_line in step12_section
         h.test_result(
-            "red-line: Edit sources DECISION from action-plan.md",
+            "red-line: Edit red line paragraph is present and unchanged",
             has_edit_red_line,
-            "DECISION sourcing not found" if not has_edit_red_line else "",
+            "red-line paragraph not found" if not has_edit_red_line else "",
         )
         # Count occurrences to ensure it appears exactly once (no duplication)
         edit_count = step12_section.count(edit_red_line)

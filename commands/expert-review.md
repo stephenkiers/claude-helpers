@@ -711,7 +711,7 @@ Follow these steps in order. Persist the outcome to `${REVIEW_DIR}/precedent-tra
 
 Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0`.
 
-1. **Eligible questions.** Extract pending *Needs you* items from `${REVIEW_DIR}/claude-action-plan.md`. Read all `### N.` item headings with `pending-decision` status (before any Ask is called). There is **no security/CRITICAL keyword exclusion** at this call site. Before extracting, remove stale digest outputs from any earlier attempt: `rm -f "${REVIEW_DIR}/precedent-questions.json" "${REVIEW_DIR}/precedent-validated.json" "${REVIEW_DIR}/precedent-digest.jsonl" "${REVIEW_DIR}/precedent-digest.status.json" "${REVIEW_DIR}/precedent-digest-line.txt"`. If zero items are pending, write `no-eligible-questions` to `${REVIEW_DIR}/precedent-trace.txt` and return (skip steps 2–10).
+1. **Eligible questions.** Extract pending *Needs you* items from `${REVIEW_DIR}/claude-action-plan.md`. Read all `### N.` item headings with `pending-decision` status (before any Ask is called). There is **no security/CRITICAL keyword exclusion** at this call site. Before extracting, remove stale digest outputs and precedent files from any earlier attempt: `rm -f "${REVIEW_DIR}/precedent-questions.json" "${REVIEW_DIR}/precedent-validated.json" "${REVIEW_DIR}/precedent-digest.jsonl" "${REVIEW_DIR}/precedent-digest.raw.jsonl" "${REVIEW_DIR}/precedent-digest.status.json" "${REVIEW_DIR}/precedent-digest-line.txt" "${REVIEW_DIR}/precedent-trace.txt" "${REVIEW_DIR}/precedent.md" "${REVIEW_DIR}/precedent-lines.json" "${REVIEW_DIR}/precedent-batch-map.json" "${REVIEW_DIR}/precedent-answers-"*.json "${REVIEW_DIR}/precedent-log-output.txt"`. If zero items are pending, write `no-eligible-questions` to `${REVIEW_DIR}/precedent-trace.txt` and return (skip steps 2–10).
 
 2. **Write questions file.** Use the `Write` tool to create `${REVIEW_DIR}/precedent-questions.json` with one entry per eligible item:
    ```json
@@ -729,28 +729,31 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    if [ "$DIGEST_RC" -ne 0 ]; then
      echo "digest-failed" > "${REVIEW_DIR}/precedent-trace.txt"
      rm -f "${REVIEW_DIR}/precedent-digest.raw.jsonl" "${REVIEW_DIR}/precedent-digest.status.json"
-     # Return (skip steps 4–10); a non-zero exit (e.g. exit 2 with partial output) is never read further
+     # Exit early: digest failed, remaining steps are skipped
+     exit 0
    fi
    ```
-   Then, only when `DIGEST_RC` is 0, read the status file with `jq`. A missing or unreadable field defaults to empty or zero:
+   Then, only when `DIGEST_RC` is 0, read the status file with `jq`. A missing or unreadable field defaults to empty or zero via jq's `//` operator:
    ```bash
    DIGEST_STATUS="${REVIEW_DIR}/precedent-digest.status.json"
-   DG_RESOLVED=$(jq -r '.repo_resolved' "${DIGEST_STATUS}" 2>/dev/null) || DG_RESOLVED=""
-   DG_ROOT=$(jq -r '.curated_root // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ROOT=""
-   DG_YAML=$(jq -r '.yaml // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_YAML=""
-   DG_CURATED=$(jq -r '.curated // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_CURATED=0
-   DG_CAPPED=$(jq -r '.curated_capped // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_CAPPED=0
-   DG_REJECTED=$(jq -r '.curated_rejected // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_REJECTED=0
-   DG_NO_RULE=$(jq -r '.curated_no_rule // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_NO_RULE=0
-   DG_SCREENED=$(jq -r '.curated_screened // 0' "${DIGEST_STATUS}" 2>/dev/null) || DG_SCREENED=0
-   DG_REASON=$(jq -r '.reason // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REASON=""
-   DG_ERROR=$(jq -r '.curated_error // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_ERROR=""
-   DG_REPO_KEY=$(jq -r '.repo_key // ""' "${DIGEST_STATUS}" 2>/dev/null) || DG_REPO_KEY=""
+   DG_RESOLVED=$(jq -r '(.repo_resolved // false)' "${DIGEST_STATUS}" 2>/dev/null) || DG_RESOLVED="false"
+   DG_ROOT=$(jq -r '(.curated_root // "")' "${DIGEST_STATUS}" 2>/dev/null) || DG_ROOT=""
+   DG_YAML=$(jq -r '(.yaml // "")' "${DIGEST_STATUS}" 2>/dev/null) || DG_YAML=""
+   DG_CURATED=$(jq -r '(.curated // 0)' "${DIGEST_STATUS}" 2>/dev/null) || DG_CURATED=0
+   DG_CAPPED=$(jq -r '(.curated_capped // 0)' "${DIGEST_STATUS}" 2>/dev/null) || DG_CAPPED=0
+   DG_REJECTED=$(jq -r '(.curated_rejected // 0)' "${DIGEST_STATUS}" 2>/dev/null) || DG_REJECTED=0
+   DG_NO_RULE=$(jq -r '(.curated_no_rule // 0)' "${DIGEST_STATUS}" 2>/dev/null) || DG_NO_RULE=0
+   DG_SCREENED=$(jq -r '(.curated_screened // 0)' "${DIGEST_STATUS}" 2>/dev/null) || DG_SCREENED=0
+   DG_REASON=$(jq -r '(.reason // "")' "${DIGEST_STATUS}" 2>/dev/null) || DG_REASON=""
+   DG_ERROR=$(jq -r '(.curated_error // "")' "${DIGEST_STATUS}" 2>/dev/null) || DG_ERROR=""
+   DG_REPO_KEY=$(jq -r '(.repo_key // "")' "${DIGEST_STATUS}" 2>/dev/null) || DG_REPO_KEY=""
    DG_KEY_MISMATCH=""
    if [ -n "$DG_REPO_KEY" ] && [ "$(printf '%s' "$DG_REPO_KEY" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO_KEY" | tr '[:upper:]' '[:lower:]')" ]; then DG_KEY_MISMATCH="${DG_REPO_KEY}"; fi
    if [ "$DG_RESOLVED" = "false" ]; then
      echo "digest-failed" > "${REVIEW_DIR}/precedent-trace.txt"
-     # Return (skip steps 4–10)
+     rm -f "${REVIEW_DIR}/precedent-digest.raw.jsonl" "${REVIEW_DIR}/precedent-digest.status.json"
+     # Exit early: digest resolution failed, remaining steps are skipped
+     exit 0
    fi
    DIGEST_LINE=""
    if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ] || [ -n "${DG_ERROR}" ] || [ -n "${DG_KEY_MISMATCH}" ]; then
@@ -765,7 +768,9 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    # Build the flow prefix only if FLOW_DIR is non-empty
    FLOW_PREFIX=""
    if [ -n "${FLOW_DIR}" ]; then
-     FLOW_PREFIX="$(printf '%s' "${FLOW_DIR}" | python3 -c 'import sys; p=sys.stdin.read().strip().split("/")[-1].split("-", 1)[0]; print("'"$FLOWS_ROOT"'/" + p + "-")' 2>/dev/null)" || FLOW_PREFIX=""
+     PARENT_DIR=$(dirname "${FLOW_DIR}")
+     ISSUE=$(basename "${FLOW_DIR}" | cut -d'-' -f1)
+     FLOW_PREFIX="${PARENT_DIR}/${ISSUE}-"
    fi
    
    jq -c --arg rd "${REVIEW_DIR}" --arg fd "${FLOW_DIR}" --arg fp "${FLOW_PREFIX}" '
@@ -802,13 +807,19 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    
    VALIDATED_STATUS=""
    VALIDATED_REASON=""
-   SHOWN_COUNT=0
-   ASKED_COUNT=0
+   SHOWN_COUNT="${SHOWN_COUNT:-0}"
+   ASKED_COUNT="${ASKED_COUNT:-0}"
    if [ "$RENDER_RC" -eq 0 ]; then
      VALIDATED=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""))' 2>/dev/null)
      VALIDATED_REASON=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("reason",""))' 2>/dev/null)
-     SHOWN_COUNT=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("shown", 0))' 2>/dev/null)
-     ASKED_COUNT=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("asked", 0))' 2>/dev/null)
+     SHOWN_COUNT=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); v=j.get("shown", 0); print(v if isinstance(v, int) else 0)' 2>/dev/null)
+     SHOWN_COUNT="${SHOWN_COUNT:-0}"
+     # Validate SHOWN_COUNT is numeric
+     if ! [[ "$SHOWN_COUNT" =~ ^[0-9]+$ ]]; then SHOWN_COUNT=0; fi
+     ASKED_COUNT=$(cat "${REVIEW_DIR}/precedent-validated.json" 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); v=j.get("asked", 0); print(v if isinstance(v, int) else 0)' 2>/dev/null)
+     ASKED_COUNT="${ASKED_COUNT:-0}"
+     # Validate ASKED_COUNT is numeric
+     if ! [[ "$ASKED_COUNT" =~ ^[0-9]+$ ]]; then ASKED_COUNT=0; fi
      VALIDATED_STATUS="$VALIDATED"
    fi
    
@@ -826,7 +837,14 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    else
      PRECEDENT_TRACE="render-failed"
    fi
+   
+   # Write the single trace file that all subsequent steps read and reuse
    echo "$PRECEDENT_TRACE" > "${REVIEW_DIR}/precedent-trace.txt"
+   
+   # When Pat spoke (trace starts with "shown"), extract the rendered lines for batch rendering
+   if [[ "$PRECEDENT_TRACE" == "shown"* ]]; then
+     python3 "$HOME/.claude/scripts/precedent-render.py" line --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --out "${REVIEW_DIR}/precedent-lines.json" 2>/dev/null || true
+   fi
    ```
    The `PRECEDENT_TRACE` value is determined as follows:
    - If `precedent-render.py` is missing or any call exits non-zero → `"render-failed"`
@@ -846,7 +864,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage rulings >/dev/null 2>&1 || true
    ```
 
-10. **Persist trace.** Validate and write the trace to `${REVIEW_DIR}/precedent-trace.txt`. The trace must be one of these eight values: `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. When the trace starts with `shown`, also run `precedent-render.py line --validated "${REVIEW_DIR}/precedent-validated.json" --questions "${REVIEW_DIR}/precedent-questions.json" --out "${REVIEW_DIR}/precedent-lines.json"` once, so every batch reads stored lines.
+10. **Persist trace.** The trace has already been validated and written in step 8. Re-read `${REVIEW_DIR}/precedent-trace.txt` to check it is one of these eight values: `shown K of N`, `no-eligible-questions`, `digest-failed`, `no-digest-entries`, `pat-failed`, `pat-invalid`, `pat-silent`, `render-failed`. The `precedent-lines.json` file (containing rendered lines for batch annotation) is written in step 8 when the trace starts with `shown`. When the file is missing or empty (e.g., the trace is not `shown*`), display-only batch rendering must show `Precedent: none` for all items (no line was rendered; nothing to log).
 
 **Display-only rule:** The `precedent.md` file and its digest files are read-only by the batch rendering below (for showing Precedent lines beside questions) and by per-batch logging. Nothing in Step 12's decision path — the Edit mechanism or any other logic — reads `precedent.md` or the digest files. Option labels and the `(Recommended)` marker are never modified based on precedent. Precedent never influences which option is offered, which is highlighted, or which is presented as recommended. No decision path uses it to pick, reorder, or change any default for any question.
 

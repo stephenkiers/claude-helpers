@@ -466,7 +466,7 @@ def case_row_contract(h):
 
         row = _only(rows)
         expected_keys = ("ts", "repo_key", "command", "run", "question_id", "header", "recommended",
-                         "predicted", "confidence", "actual", "hit", "citations", "actual_source", "anchored")
+                         "predicted", "confidence", "actual", "hit", "citations", "actual_source", "anchored", "displayed")
         h.test_result("row contract: keys match PINNED_KEYS", tuple(row.keys()) == expected_keys,
                       f"expected={expected_keys}, got={tuple(row.keys())}")
         h.test_result("row contract: repo_key is lowercase", row.get("repo_key") == "owner-name",
