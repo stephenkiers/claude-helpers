@@ -3468,6 +3468,301 @@ def coverage_mode(
     sys.exit(0)
 
 
+# --- Heal records (#380): the durable HEAL: line, scoped by source -------------------------------------
+HEAL_SOURCES = ("check", "fix-now")
+HEAL_PLAIN_STATES = frozenset({"started", "converged", "needs-human", "not-converged", "interrupted"})
+HEAL_KEYS = frozenset({
+    "id", "source", "state", "sha_before", "sha_after", "signature", "class", "tools_sha", "units",
+    "review", "reasons", "fixed", "outstanding",
+})
+HEAL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+HEAL_TOOLS_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+HEAL_TRAILER_RE = re.compile(r"(?m)^Flow-Heal:[ \t]*(\S+)[ \t]*$")
+HEAL_SCAN_RE = re.compile(r"(?m)^SCAN:[ \t]+(\S+)[ \t]+(pass|fail)\b")
+HEAL_COMPLEXITY_RE = re.compile(r"(?m)^COMPLEXITY:[ \t]+(required|skipped)\b")
+
+
+def parse_heal_record(text: str) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """Parse the LAST `HEAL:` line of a heal record file into key=value tokens.
+
+    Returns (fields, None) or (None, reason). A missing line, a token without `key=value`, an empty
+    value, a duplicate key, or an unknown key fails closed.
+    """
+    last: Optional[str] = None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("HEAL:"):
+            last = stripped[len("HEAL:"):]
+    if last is None:
+        return None, "heal record has no HEAL: line"
+    fields: Dict[str, str] = {}
+    for token in last.split():
+        key, sep, value = token.partition("=")
+        if not sep or not key or not value:
+            return None, f"malformed HEAL: token {token!r}"
+        if key not in HEAL_KEYS:
+            return None, f"unknown HEAL: key {key!r}"
+        if key in fields:
+            return None, f"duplicate HEAL: key {key!r}"
+        fields[key] = value
+    return fields, None
+
+
+def _git_out(repo: str, args: List[str]) -> Tuple[int, str]:
+    """Run `git -C repo <args>`; (returncode, stdout). Timeout or OS failure is (1, '')."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo] + args,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return 1, ""
+    return result.returncode, result.stdout
+
+
+def _heal_is_ancestor(repo: str, older: str, newer: str) -> bool:
+    rc, _ = _git_out(repo, ["merge-base", "--is-ancestor", older, newer])
+    return rc == 0
+
+
+def _heal_single_commit_reason(repo: str, sha_before: str, sha_after: str, heal_id: str) -> Optional[str]:
+    """sha_before..sha_after is exactly one commit, parented on sha_before, with the matching trailer."""
+    rc, out = _git_out(repo, ["rev-list", f"{sha_before}..{sha_after}"])
+    if rc != 0:
+        return "cannot list sha_before..sha_after"
+    commits = out.split()
+    if len(commits) != 1:
+        return f"heal range sha_before..sha_after has {len(commits)} commits, expected exactly one"
+    rc, parents = _git_out(repo, ["log", "-1", "--format=%P", commits[0]])
+    if rc != 0 or parents.split() != [sha_before]:
+        return "heal commit's only parent is not sha_before"
+    rc, body = _git_out(repo, ["log", "-1", "--format=%B", commits[0]])
+    if rc != 0 or heal_id not in HEAL_TRAILER_RE.findall(body):
+        return f"heal commit lacks a matching Flow-Heal: {heal_id} trailer"
+    return None
+
+
+def _safe_read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _heal_receipt_check_sha(path: Path) -> Optional[str]:
+    """CHECK_SHA of a verify receipt, or None when the file or line is absent."""
+    for line in _safe_read(path).split("\n"):
+        m = re.match(r"^CHECK_SHA:[ \t]*([0-9a-f]{40})[ \t]*$", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _heal_record_base(record_file: Path) -> Tuple[str, str]:
+    """(`NN-step` stem, kind) for `<stem>.heal.md` or `<stem>.fixnow.md`; kind is '' otherwise."""
+    name = record_file.name
+    for suffix, kind in ((".heal.md", "check"), (".fixnow.md", "fix-now")):
+        if name.endswith(suffix):
+            return name[: -len(suffix)], kind
+    return name, ""
+
+
+def check_heal(record_file: Path, flow_dir: Path, repo: str) -> Optional[str]:
+    """Validate one heal record file (`steps/*.heal.md` or `steps/*.fixnow.md`); None when OK.
+
+    Rules are scoped by `source`: an unknown source, an unknown state, or a malformed line fails closed.
+    """
+    try:
+        text = record_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return f"cannot read heal record: {e}"
+    fields, bad = parse_heal_record(text)
+    if fields is None:
+        return bad
+    # Common rules
+    for key in ("id", "source", "state", "sha_before"):
+        if key not in fields:
+            return f"HEAL: missing {key}"
+    source = fields["source"]
+    if source not in HEAL_SOURCES:
+        return f"unknown HEAL source {source!r}"
+    stem, kind = _heal_record_base(record_file)
+    if kind and kind != source:
+        return f"HEAL source={source} does not match record file {record_file.name}"
+    state = fields["state"]
+    if not (state in HEAL_PLAIN_STATES or (state.startswith("rejected:") and len(state) > len("rejected:"))):
+        return f"unknown HEAL state {state!r}"
+    heal_id = fields["id"]
+    sha_before = fields["sha_before"]
+    sha_after = fields.get("sha_after")
+    if not HEAL_SHA_RE.match(sha_before):
+        return "HEAL sha_before is not a 40-hex SHA"
+    if sha_after is not None and not HEAL_SHA_RE.match(sha_after):
+        return "HEAL sha_after is not a 40-hex SHA"
+    converged = state == "converged"
+    if converged and sha_after is None:
+        return "converged HEAL has no sha_after"
+    steps_dir = flow_dir / "steps"
+
+    if source == "check":
+        for key in ("signature", "class"):
+            if key not in fields:
+                return f"check HEAL: missing {key}"
+        if fields["class"] not in ("lint", "test"):
+            return f"check HEAL class {fields['class']!r} is not healable"
+        if state != "interrupted":
+            tools_sha = fields.get("tools_sha")
+            if tools_sha is None or not HEAL_TOOLS_SHA_RE.match(tools_sha):
+                return "check HEAL: missing or malformed tools_sha"
+        recorded = _heal_receipt_check_sha(steps_dir / f"{stem}.md")
+        if recorded is None:
+            return "verify receipt for the heal has no CHECK_SHA"
+        if recorded not in (sha_before, sha_after):
+            return "HEAL sha_before does not equal the failing verify's CHECK_SHA"
+        if converged and sha_after is not None:
+            reason = _heal_single_commit_reason(repo, sha_before, sha_after, heal_id)
+            if reason:
+                return reason
+            scans = HEAL_SCAN_RE.findall(text)
+            if not any(p == "heal" and v == "pass" for p, v in scans):
+                return "converged check HEAL has no `SCAN: heal pass` line"
+            if not HEAL_COMPLEXITY_RE.search(text):
+                return "converged check HEAL has no COMPLEXITY: line"
+            healer_receipts = [
+                p for p in sorted(steps_dir.glob(f"{stem}.heal-*.md")) if not p.name.endswith(".audit.md")
+            ]
+            if not any(f"HEAL_ID: {heal_id}" in _safe_read(p).split("\n") for p in healer_receipts):
+                return "healer receipt missing for the converged heal"
+        return None
+
+    # source == "fix-now"
+    units_raw = fields.get("units")
+    if units_raw is None:
+        return "fix-now HEAL: missing units"
+    units = [u for u in units_raw.split(",") if u]
+    if not units:
+        return "fix-now HEAL: units is empty"
+    if sha_after is not None and not _heal_is_ancestor(repo, sha_before, sha_after):
+        return "fix-now HEAL sha_before is not an ancestor of sha_after"
+    if not converged or sha_after is None:
+        return None
+    verify_receipts = sorted(steps_dir.glob("*-verify.md"))
+    if not any(_heal_receipt_check_sha(p) == sha_after for p in verify_receipts):
+        return "converged fix-now sha_after does not equal the CHECK_SHA of the following verify receipt"
+    owning = [
+        p for p in (sorted(steps_dir.glob("*-fix.md")) + sorted(steps_dir.glob("*-implement.md")))
+        if parse_receipt_field(_safe_read(p), "Decision") == "OK"
+    ]
+    if not owning:
+        return "re-spawned fix/implement receipt for fix-now is missing or not OK"
+    scans = HEAL_SCAN_RE.findall(text)
+    if not any(p == "fix-now" and v == "pass" for p, v in scans):
+        return "converged fix-now HEAL has no `SCAN: fix-now pass` line"
+    if not HEAL_COMPLEXITY_RE.search(text):
+        return "converged fix-now HEAL has no COMPLEXITY: line"
+    return _fixed_units_reason(steps_dir, units)
+
+
+def _fixed_units_reason(steps_dir: Path, units: List[str]) -> Optional[str]:
+    """A unit marked `fix-now: fixed` must not be uncovered/declared/unknown in the re-run's coverage table."""
+    fixed: List[str] = []
+    for outstanding in sorted(steps_dir.glob("*-ship.outstanding.md")):
+        for line in _safe_read(outstanding).split("\n"):
+            if "fix-now: fixed" not in line:
+                continue
+            for unit in units:
+                if re.search(r"(?<![A-Za-z0-9_])" + re.escape(unit) + r"(?![A-Za-z0-9_])", line):
+                    fixed.append(unit)
+    if not fixed:
+        return None
+    coverage_files = sorted(steps_dir.glob("*-fix.coverage.txt")) + sorted(steps_dir.glob("*-implement.coverage.txt"))
+    if not coverage_files:
+        return "coverage table unavailable for fix-now units marked fixed"
+    for cov in coverage_files:
+        for line in _safe_read(cov).split("\n"):
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 2 and parts[0] in fixed and parts[1] in ("uncovered", "declared", "unknown"):
+                return f"unit {parts[0]} marked fix-now: fixed but coverage shows {parts[1]}"
+            if line.startswith("unknown-declared:") and line.split(":", 1)[1].strip() in fixed:
+                return f"unit {line.split(':', 1)[1].strip()} marked fix-now: fixed but coverage shows unknown"
+    return None
+
+
+def _heal_records(flow_dir: Path) -> List[Tuple[Path, Optional[Dict[str, str]]]]:
+    """Every heal record file under steps/ with its parsed last HEAL: line (None when unparseable)."""
+    steps_dir = flow_dir / "steps"
+    found: List[Tuple[Path, Optional[Dict[str, str]]]] = []
+    for pattern in ("*.heal.md", "*.fixnow.md"):
+        for path in sorted(steps_dir.glob(pattern)):
+            fields, _ = parse_heal_record(_safe_read(path))
+            found.append((path, fields))
+    return found
+
+
+def _flow_state(flow_dir: Path) -> Dict:
+    try:
+        data = json.loads((flow_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _flow_heal_commit_ids(flow_dir: Path, repo: Optional[str], branch: Optional[str]) -> Optional[List[str]]:
+    """Heal ids from `Flow-Heal:` trailers in `bases[implement]..HEAD`; '' marks a matched commit with no id.
+
+    None when the range cannot be established (no repo, or no bases.implement): the git half is then skipped.
+    """
+    if not repo:
+        return None
+    bases = _flow_state(flow_dir).get("bases")
+    base = bases.get("implement") if isinstance(bases, dict) else None
+    if not isinstance(base, str) or not re.match(r"^[0-9a-f]{7,40}$", base):
+        return None
+    rc, out = _git_out(repo, ["log", "--grep", "^Flow-Heal:", "--format=%B%x01", f"{base}..{branch or 'HEAD'}"])
+    if rc != 0:
+        return None
+    ids: List[str] = []
+    for message in out.split("\x01"):
+        if not message.strip():
+            continue
+        found = HEAL_TRAILER_RE.findall(message)
+        ids.extend(found if found else [""])
+    return ids
+
+
+def check_verify_heal(receipt: str, flow_dir: Path, repo: Optional[str], branch: Optional[str]) -> Optional[str]:
+    """Heal-aware checks for an OK verify receipt (#380); None when OK."""
+    records = _heal_records(flow_dir)
+    known_ids = {f["id"] for _, f in records if f and "id" in f}
+    healed_id = _last_header_value(receipt, "HEALED")
+    if healed_id is not None and healed_id not in known_ids:
+        return f"verify receipt names HEALED: {healed_id} but no HEAL: record has that id"
+    receipt_sha = _last_header_value(receipt, "CHECK_SHA")
+    for _, fields in records:
+        if not fields or fields.get("source") != "check" or fields.get("state") != "converged":
+            continue
+        if healed_id != fields.get("id"):
+            return f"converged heal {fields.get('id')} has no verify receipt carrying HEALED: {fields.get('id')}"
+        if receipt_sha != fields.get("sha_after"):
+            return f"verify receipt CHECK_SHA does not equal sha_after of heal {fields.get('id')}"
+    for cid in _flow_heal_commit_ids(flow_dir, repo, branch) or []:
+        if cid not in known_ids:
+            return f"Flow-Heal commit {cid or '(no id)'} has no HEAL: record"
+    return None
+
+
+def check_merge_heal(flow_dir: Path, repo: Optional[str], branch: Optional[str]) -> Optional[str]:
+    """A healed run (any HEAL: record, healed: true, or a Flow-Heal: commit in range) needs a human gate_passed."""
+    state = _flow_state(flow_dir)
+    commit_ids = _flow_heal_commit_ids(flow_dir, repo, branch)
+    healed = bool(_heal_records(flow_dir)) or state.get("healed") is True or bool(commit_ids)
+    if healed and state.get("gate_passed") is not True:
+        return "healed run merged without a human merge gate (gate_passed is not true)"
+    return None
+
+
 def main() -> None:
     """Main entry point."""
     # RUN_KEY reference for an OK implement/fix receipt (#346). Bound once here, set by either verdict path
@@ -3479,7 +3774,7 @@ def main() -> None:
     parser.add_argument(
         "--step",
         required=False,
-        choices=["plan", "review", "implement", "fix", "track", "verify", "ship", "merge", "assess"],
+        choices=["plan", "review", "implement", "fix", "track", "verify", "ship", "merge", "assess", "heal"],
         help="Step name",
     )
     parser.add_argument("--receipt", required=False, help="Path to receipt file")
@@ -3817,6 +4112,21 @@ def main() -> None:
         print("ARTIFACTS: ok")
         sys.exit(0)
 
+    # Heal-record mode (#380): --receipt is the heal record (steps/*.heal.md or steps/*.fixnow.md); no
+    # begin/retry line exists for a heal, so no --since is needed.
+    if args.step == "heal":
+        heal_flow_dir = resolve_flow_dir(args.flow_dir, receipt_file)
+        if heal_flow_dir is None:
+            error("--step heal needs --flow-dir (or a record under steps/)")
+        if not args.repo:
+            error("--step heal requires --repo")
+        heal_reason = check_heal(receipt_file, heal_flow_dir, args.repo)
+        if heal_reason:
+            print(f"Reason: {heal_reason}")
+            sys.exit(1)
+        print("ARTIFACTS: ok")
+        sys.exit(0)
+
     # Standard artifact verification mode
     if args.since is None and not args.since_from_log:
         error("--since or --since-from-log required for standard verification")
@@ -3932,7 +4242,14 @@ def main() -> None:
             receipt_file, args.repo, args.branch, args.base, args.review_dir, home,
             args.main_worktree, args.check_worktree,
         )
-    elif args.step in ["track", "verify", "ship", "merge"]:
+    elif args.step == "verify":
+        # Heal-aware checks need the flow dir; without one there is nothing to read.
+        if flow_dir is not None:
+            error_reason = check_verify_heal(receipt, flow_dir, args.repo, args.branch)
+    elif args.step == "merge":
+        if flow_dir is not None:
+            error_reason = check_merge_heal(flow_dir, args.repo, args.branch)
+    elif args.step in ["track", "ship"]:
         # No artifact checks
         step_error = None
 
