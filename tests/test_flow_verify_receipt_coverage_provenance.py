@@ -54,7 +54,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("[verifier] provenance in disposition fails",
-                      rc != 0 and ("verifier" in text.lower() or "invalid" in text.lower()),
+                      rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
 
     print("[ISSUE_URL validation: must be https://github.com/<owner>/<repo>/issues/<n>]")
@@ -82,7 +82,7 @@ def main():
             rc, out, err = gate(flow, home)
             text = combined(out, err)
             h.test_result(f"URL {reason!r} fails validation",
-                          rc != 0 and ("url" in text.lower() or "github" in text.lower()),
+                          rc != 0 and "issue URL" in text,
                           f"rc={rc} out:\n{text}")
 
     # Valid URLs that should pass
@@ -139,7 +139,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("Duplicate question ids cause validation issues",
-                      rc != 0 and ("cover" in text.lower() or "duplicate" in text.lower() or "q1" in text),
+                      rc != 0 and ("does not cover" in text or "not found" in text.lower()),
                       f"rc={rc} out:\n{text}")
 
     h.summarize_and_exit()

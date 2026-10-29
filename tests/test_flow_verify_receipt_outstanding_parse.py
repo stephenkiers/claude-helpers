@@ -49,7 +49,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("OUTSTANDING line with missing fields raises error",
-                      rc != 0 and ("malformed" in text.lower() or "outstanding" in text.lower()),
+                      rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -70,7 +70,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("Line with OUTSTANDING: prefix but invalid format raises error",
-                      rc != 0 and ("malformed" in text.lower() or "outstanding" in text.lower()),
+                      rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -91,7 +91,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("Empty OUTSTANDING line raises error",
-                      rc != 0 and ("malformed" in text.lower() or "outstanding" in text.lower()),
+                      rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
 
     print()
@@ -114,7 +114,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("Unterminated marker (no sentinel) fails",
-                      rc != 0 and ("incomplete" in text.lower() or "malformed" in text.lower() or "marker" in text.lower()),
+                      rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -134,7 +134,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("Truncated sentinel line means incomplete marker, not parse crash",
-                      rc != 0 and ("incomplete" in text.lower() or "malformed" in text.lower() or "marker" in text.lower()),
+                      rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
 
     h.summarize_and_exit()

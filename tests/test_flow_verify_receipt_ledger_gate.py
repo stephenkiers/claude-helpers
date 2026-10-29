@@ -67,7 +67,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("by=human disposition without ledger record fails",
-                      rc != 0 and ("ledger" in text.lower() or "record" in text.lower()),
+                      rc != 0 and "cannot read human ledger" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -116,7 +116,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("ledger record with mismatched sha256 fails",
-                      rc != 0 and ("sha256" in text.lower() or "checksum" in text.lower()),
+                      rc != 0 and "sha256 mismatch" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -133,7 +133,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("unreadable/malformed ledger fails closed",
-                      rc != 0 and ("ledger" in text.lower() or "human.jsonl" in text),
+                      rc != 0 and "malformed JSON" in text,
                       f"rc={rc} out:\n{text}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -149,7 +149,7 @@ def main():
         rc, out, err = gate(flow, home)
         text = combined(out, err)
         h.test_result("answer_ref mismatched with actual file fails (no ledger record)",
-                      rc != 0 and ("ledger" in text.lower() or "record" in text.lower() or "assess-02" in text),
+                      rc != 0 and "answer file not found" in text,
                       f"rc={rc} out:\n{text}")
 
     h.summarize_and_exit()
