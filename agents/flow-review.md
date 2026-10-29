@@ -6,9 +6,13 @@ tools: Read, Write, Edit, Bash, Glob, Grep, Task, Agent, Skill
 hooks:
   PreToolUse:
     - matcher: "Agent|Task"
-      command: "$HOME/.claude/scripts/flow-agent-guard.py --agent flow-review"
+      hooks:
+        - type: command
+          command: "$HOME/.claude/scripts/flow-agent-guard.py --agent flow-review"
     - matcher: "Skill"
-      command: "$HOME/.claude/scripts/flow-skill-guard.py --agent flow-review"
+      hooks:
+        - type: command
+          command: "$HOME/.claude/scripts/flow-skill-guard.py --agent flow-review"
 ---
 
 You are the review coordinator for the `/expert-flow` workflow. You run the `review` step by orchestrating

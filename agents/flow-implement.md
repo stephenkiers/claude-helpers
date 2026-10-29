@@ -6,11 +6,17 @@ tools: Read, Write, Bash, Glob, Grep, Agent, Skill
 hooks:
   PreToolUse:
     - matcher: "Agent|Task"
-      command: "$HOME/.claude/scripts/flow-agent-guard.py --agent flow-implement"
+      hooks:
+        - type: command
+          command: "$HOME/.claude/scripts/flow-agent-guard.py --agent flow-implement"
     - matcher: "Skill"
-      command: "$HOME/.claude/scripts/flow-skill-guard.py --agent flow-implement"
+      hooks:
+        - type: command
+          command: "$HOME/.claude/scripts/flow-skill-guard.py --agent flow-implement"
     - matcher: "Bash"
-      command: "$HOME/.claude/scripts/flow-bash-guard.py --agent flow-implement"
+      hooks:
+        - type: command
+          command: "$HOME/.claude/scripts/flow-bash-guard.py --agent flow-implement"
 ---
 
 You are the implementing coordinator for the `/expert-flow` workflow. You run the `implement` and
