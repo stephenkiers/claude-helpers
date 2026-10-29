@@ -190,7 +190,8 @@ def main():
             assess_line(S4, finish_plan=""),
         ])
         rc, out, err = assess_check(flow, home)
-        h.test_result("unfinished+mechanical with empty finish_plan fails (rule 4)", rc != 0,
+        h.test_result("unfinished+mechanical with empty finish_plan fails (rule 4)",
+                      rc != 0 and "missing finish_plan" in combined(out, err),
                       f"rc={rc} out:\n{combined(out, err)}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -201,7 +202,8 @@ def main():
             assess_line(S4, verification_proof=""),
         ])
         rc, out, err = assess_check(flow, home)
-        h.test_result("unfinished+mechanical with empty verification_proof fails (rule 4)", rc != 0,
+        h.test_result("unfinished+mechanical with empty verification_proof fails (rule 4)",
+                      rc != 0 and "missing verification_proof" in combined(out, err),
                       f"rc={rc} out:\n{combined(out, err)}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -212,7 +214,9 @@ def main():
             assess_line(S4, status="already-done", evidence=""),
         ])
         rc, out, err = assess_check(flow, home)
-        h.test_result("already-done with empty evidence fails", rc != 0, f"rc={rc} out:\n{combined(out, err)}")
+        h.test_result("already-done with empty evidence fails",
+                      rc != 0 and "evidence is empty" in combined(out, err),
+                      f"rc={rc} out:\n{combined(out, err)}")
 
     with tempfile.TemporaryDirectory() as td:
         home = make_home(td)
@@ -220,7 +224,8 @@ def main():
                          log=[f"{TS} implement ok", f"{TS} fix skipped"])
         write_assess(flow, [assess_line(S5, kind="mechanical")])
         rc, out, err = assess_check(flow, home)
-        h.test_result("unknown-coverage item assessed mechanical fails (D2)", rc != 0,
+        h.test_result("unknown-coverage item assessed mechanical fails (D2)",
+                      rc != 0 and "must be unfinished+decision" in combined(out, err),
                       f"rc={rc} out:\n{combined(out, err)}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -229,7 +234,8 @@ def main():
                          log=[f"{TS} implement ok", f"{TS} fix skipped"])
         write_assess(flow, [assess_line(S5, status="already-done")])
         rc, out, err = assess_check(flow, home)
-        h.test_result("unknown-coverage item assessed already-done fails (D2)", rc != 0,
+        h.test_result("unknown-coverage item assessed already-done fails (D2)",
+                      rc != 0 and "must be unfinished+decision" in combined(out, err),
                       f"rc={rc} out:\n{combined(out, err)}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -246,7 +252,8 @@ def main():
         flow = make_flow(td, implement=BASE_IMPL)
         write_assess(flow, [assess_line(S3, kind="decision", options=""), assess_line(S4)])
         rc, out, err = assess_check(flow, home)
-        h.test_result("unfinished+decision with no options fails (rule 6)", rc != 0,
+        h.test_result("unfinished+decision with no options fails (rule 6)",
+                      rc != 0 and "needs 1-2 options" in combined(out, err),
                       f"rc={rc} out:\n{combined(out, err)}")
 
     bad_options = {
@@ -262,7 +269,8 @@ def main():
             flow = make_flow(td, implement=BASE_IMPL)
             write_assess(flow, [assess_line(S3, kind="decision", options=options), assess_line(S4)])
             rc, out, err = assess_check(flow, home)
-            h.test_result(f"malformed option set fails ({label})", rc != 0,
+            h.test_result(f"malformed option set fails ({label})",
+                          rc != 0 and ("malformed" in combined(out, err).lower() or S3 in combined(out, err)),
                           f"options={options!r} rc={rc} out:\n{combined(out, err)}")
 
     with tempfile.TemporaryDirectory() as td:

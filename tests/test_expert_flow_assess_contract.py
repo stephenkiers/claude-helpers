@@ -78,7 +78,7 @@ def main():
                   any(p in assess_sec for p in ("persist each", "as it is made", "as soon as")))
     h.test_result("assess section has the 'Already done (assessor-verified):' label",
                   "Already done (assessor-verified):" in assess_sec)
-    h.test_result("assess section offers Take over", "Take over" in assess_sec or "Take over" in ef)
+    h.test_result("assess section offers Take over", "Take over" in assess_sec)
     h.test_result("resume rules name step: \"assess\" and re-enter",
                   'step: "assess"' in ef and "re-enter" in ef)
     h.test_result("roster row '| 07 | assess |' is present", "| 07 | assess |" in ef)
@@ -89,8 +89,8 @@ def main():
     print()
     print("[docs/adr/0023-expert-flow.md: amendment]")
 
-    h.test_result("ADR has the 2026-10-27 assess amendment heading",
-                  "## Amendment (2026-10-27): assess outstanding items before ship (#383, slice 1)" in adr)
+    h.test_result("ADR has an assess amendment heading",
+                  "## Amendment" in adr and "assess outstanding items before ship" in adr and "#383" in adr)
     h.test_result("ADR has at least three 'superseded ... 2026-10-27' mentions",
                   len(re.findall(r"superseded[\s\S]{0,120}2026-10-27", adr)) >= 3
                   or len(re.findall(r"2026-10-27[\s\S]{0,120}superseded", adr)) >= 3)

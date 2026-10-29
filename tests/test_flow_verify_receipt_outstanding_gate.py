@@ -107,7 +107,8 @@ def main():
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
-        h.test_result("assessor-verified drop fails (drops need a human answer)", rc != 0,
+        h.test_result("assessor-verified drop fails (drops need a human answer)",
+                      rc != 0 and "drop without human answer" in combined(out, err),
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     for label, reason in (("n/a", "n/a"), ("too short", "drop it")):
@@ -119,7 +120,9 @@ def main():
                 good_lines()[1],
             ])
             rc, out, err = gate(flow, home)
-            h.test_result(f"drop with reason {label!r} fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+            h.test_result(f"drop with reason {label!r} fails",
+                          rc != 0 and "drop reason too thin" in combined(out, err),
+                          f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     for n_chars, want_ok in ((14, False), (15, True)):
         reason = "x" * (n_chars - 1) + "y"
@@ -164,28 +167,39 @@ def main():
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
-        h.test_result("answer_ref naming a missing file fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("answer_ref naming a missing file fails",
+                      rc != 0 and "answer file not found" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
 
-    for label, ref in (("relative escape", "../outside/assess-01.json"), ("absolute path", "/etc/hosts")):
-        with tempfile.TemporaryDirectory() as td:
-            home, flow = base(td)
-            outside = Path(td) / "outside"
-            outside.mkdir(parents=True, exist_ok=True)
-            (outside / "assess-01.json").write_text(json.dumps({"step": "assess", "seq": 1, "answers": {"q1": "Open an issue"}}))
-            write_marker(flow, [
-                disp(S3, "filed-as-issue", option="Open an issue", route="issue", answer_ref=ref, url=ISSUE_URL),
-                good_lines()[1],
-            ])
-            rc, out, err = gate(flow, home)
-            h.test_result(f"answer_ref outside FLOW_DIR ({label}) fails", rc != 0,
-                          f"ref={ref} rc={rc} out:\n{out}\nerr:\n{err}")
+    # Test grammar-valid ref that escapes via symlink (F17: reach the containment check)
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td)
+        flow = make_flow(td, implement=BASE_IMPL)
+        write_assess(flow, [assess_line(S3, kind="decision", options=OPTS), assess_line(S4, kind="decision", options=OPTS)])
+        write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
+        outside = Path(td) / "outside"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "assess-02.json").write_text(json.dumps({"step": "assess", "seq": 2, "answers": {"q1": "Open an issue"}}))
+        # Create a symlink within answers/ that points outside FLOW_DIR
+        symlink_path = flow / "answers" / "assess-02.json"
+        symlink_path.symlink_to(outside / "assess-02.json")
+        write_marker(flow, [
+            disp(S3, "filed-as-issue", option="Open an issue", route="issue", answer_ref="answers/assess-02.json", url=ISSUE_URL),
+            disp(S4, "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL),
+        ])
+        rc, out, err = gate(flow, home)
+        h.test_result("answer_ref outside FLOW_DIR (symlink escape) fails",
+                      rc != 0 and "answer file outside FLOW_DIR" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
         home, flow = base(td)
         (flow / "answers" / "assess-01.json").write_text("{not json")
         write_marker(flow, good_lines())
         rc, out, err = gate(flow, home)
-        h.test_result("invalid answers JSON fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("invalid answers JSON fails",
+                      rc != 0 and "cannot read answers" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
         home, flow = base(td)
@@ -196,7 +210,9 @@ def main():
         qf.write_text(json.dumps(data))
         write_marker(flow, good_lines())
         rc, out, err = gate(flow, home)
-        h.test_result("question without an item field fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("question without an item field fails",
+                      rc != 0 and "has no item field" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
         home, flow = base(td)
@@ -244,7 +260,9 @@ def main():
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
-        h.test_result("filed-as-issue without a URL fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("filed-as-issue without a URL fails",
+                      rc != 0 and "needs an issue URL" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
         home = make_home(td)
@@ -302,14 +320,20 @@ def main():
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
-        home, flow = base(td)
+        home = make_home(td)
+        flow = make_flow(td, implement=BASE_IMPL)
+        write_assess(flow, [
+            assess_line(S3, status="already-done", evidence="commit 91373c8 adds the handler at src/api.py:12"),
+            assess_line(S4, kind="decision", options=OPTS),
+        ])
         write_answers(flow, 1, [("q1", S3, "Confirm already done", None), ("q2", S4, "Open an issue", None)])
         write_marker(flow, [
             disp(S3, "finished", by="assessor-verified", answer_ref="none"),
             good_lines()[1],
         ])
         rc, out, err = gate(flow, home)
-        h.test_result("assessor-verified already-done on an uncovered row fails", rc != 0,
+        h.test_result("assessor-verified finished on an uncovered row fails 'needs a human confirmation'",
+                      rc != 0 and "needs a human confirmation" in combined(out, err),
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -370,6 +394,22 @@ def main():
         rc, out, err = gate(flow, home)
         h.test_result("taken-over marker with leave-as-is fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
 
+    # Opposite-direction tests for taken-over combinations (F37)
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = taken_flow(td)
+        write_marker(flow, [disp("implement:coverage-unavailable", "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL)],
+                     assessment="assessor")
+        rc, out, err = gate(flow, home)
+        h.test_result("assessor marker with a filed issue on taken-over item fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = taken_flow(td, log=[f"{TS} implement taken-over", f"{TS} assess ok"])
+        write_marker(flow, [disp("implement:coverage-unavailable", "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL)],
+                     assessment="taken-over")
+        rc, out, err = gate(flow, home)
+        h.test_result("taken-over marker with 'assess ok' instead of 'assess taken-over' log line fails", rc != 0,
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
+
     print()
     print("[Gate: legacy pre-amendment markers]")
 
@@ -406,8 +446,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as td:
         home, flow = legacy_flow(td)
-        path = write_marker(flow, legacy_ok, fmt=False)
-        path.write_text("\n".join(legacy_ok) + "\n")
+        write_marker(flow, legacy_ok, fmt=False, sentinel=False)
         rc, out, err = gate(flow, home)
         h.test_result("legacy marker without the outstanding-end sentinel fails", rc != 0,
                       f"rc={rc} out:\n{out}\nerr:\n{err}")

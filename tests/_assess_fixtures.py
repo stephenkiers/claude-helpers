@@ -6,6 +6,7 @@ scripts/flow-verify-receipt.py as a subprocess. The shared line grammar is the #
 " | " separated records, <id> = <source-step>:<unit-id>.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -100,10 +101,9 @@ def assess_line(item, *, status="unfinished", kind="mechanical", scope="in-scope
     return " | ".join(fields)
 
 
-def write_assess(flow, lines, count=None, end_marker=True):
-    """Write steps/07-assess.md: ASSESSED header, item lines, assessment-end block, trailer."""
-    n = len(lines) if count is None else count
-    text = f"ASSESSED: {n}\n" + "".join(f"{ln}\n" for ln in lines)
+def write_assess(flow, lines, end_marker=True):
+    """Write steps/07-assess.md: item lines, assessment-end block, trailer."""
+    text = "".join(f"{ln}\n" for ln in lines)
     if end_marker:
         text += "<!-- assessment-end -->\n"
     text += TRAILER
@@ -119,14 +119,12 @@ def disp(item, disposition, *, by="human", answer_ref=ANS, option="none", route=
     return " | ".join(fields)
 
 
-def write_marker(flow, lines, *, fmt=True, assessment="assessor", sentinel=True, extra_head=None):
+def write_marker(flow, lines, *, fmt=True, assessment="assessor", sentinel=True):
     """Write steps/07-ship.outstanding.md. fmt=False gives a legacy-style marker (no format/assessment
-    lines). sentinel=False omits <!-- outstanding-end -->. extra_head adds raw lines before pending."""
+    lines). sentinel=False omits <!-- outstanding-end -->."""
     body = []
     if fmt:
         body += ["format: 2", f"assessment: {assessment}"]
-    if extra_head:
-        body += extra_head
     body.append("<!-- outstanding-pending -->")
     body += lines
     if sentinel:
@@ -136,10 +134,10 @@ def write_marker(flow, lines, *, fmt=True, assessment="assessor", sentinel=True,
     return path
 
 
-def write_answers(flow, seq, entries):
+def write_answers(flow, seq, entries, ledger=False):
     """entries: list of (qid, item_id, label, notes_or_None). Writes questions/assess-<seq>.json (each
     question carries `item`) and answers/assess-<seq>.json (answers keyed by question id, notes under
-    annotations.<qid>.notes)."""
+    annotations.<qid>.notes). When ledger=True, appends a human.jsonl record for answer_ref tracking."""
     questions = []
     answers = {}
     annotations = {}
@@ -153,8 +151,36 @@ def write_answers(flow, seq, entries):
             annotations[qid] = {"notes": notes}
     (flow / "questions" / f"assess-{seq:02d}.json").write_text(
         json.dumps({"step": "assess", "seq": seq, "questions": questions}))
-    (flow / "answers" / f"assess-{seq:02d}.json").write_text(
+    answer_file = flow / "answers" / f"assess-{seq:02d}.json"
+    answer_file.write_text(
         json.dumps({"step": "assess", "seq": seq, "answers": answers, "annotations": annotations}))
+
+    if ledger:
+        # Append human.jsonl record for answer_ref tracking (F2 directive)
+        ledger_file = flow / "human.jsonl"
+        answer_bytes = answer_file.read_bytes()
+        sha256_hash = hashlib.sha256(answer_bytes).hexdigest()
+        answer_ref = f"answers/assess-{seq:02d}.json"
+
+        # Get current line count for seq
+        line_count = 0
+        if ledger_file.exists():
+            line_count = len(ledger_file.read_text().splitlines())
+
+        record = {
+            "seq": line_count + 1,
+            "ts": TS,
+            "step": "assess",
+            "attempt": 1,
+            "kind": "answer",
+            "text": f"answer_ref: {answer_ref}\nsha256: {sha256_hash}",
+            "transcript": None,
+            "status": "addressed",
+            "addressed_by": "steps/07-assess.md",
+            "supersedes": None,
+        }
+        with open(ledger_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
 
 def parse_outstanding(stdout):
