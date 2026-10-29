@@ -41,7 +41,7 @@ import json
 import re
 import subprocess
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Tuple
 
 PROFILES = ("implement", "heal", "fix-now")
 
