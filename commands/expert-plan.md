@@ -1,7 +1,7 @@
 ---
 description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
 argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic] [--allow-degraded]
-allowed-tools: Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(bash:*), Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -132,8 +132,13 @@ REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr 
 INVOCATION_ID="$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)"
 
 # Derive slug from ticket title (or default) — will be updated in Step 1 after fetching ticket
-TICKET_TITLE="${TICKET_TITLE:-plan}"
-SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-50 | sed -e 's/^-*//' -e 's/-*$//')
+SLUGIFY="$HOME/.claude/scripts/slugify.sh"
+SLUG=""
+if [ -f "$SLUGIFY" ]; then
+  SLUG=$(printf '%s\n' "${TICKET_TITLE:-plan}" | bash "$SLUGIFY") || SLUG=""
+else
+  printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >&2
+fi
 [ -n "$SLUG" ] || SLUG="plan"
 
 # North Star preflight (#273): pre-scan for --allow-degraded (full flag parsing happens below,
@@ -380,11 +385,20 @@ fi
 
 Announce the chosen effort and reason to the user; they can re-run with `--effort` to override.
 
-**After resolving the ticket title**, recompute SLUG and FINAL_PLAN_PATH:
+**After resolving the ticket title**, use the `Write` tool (never a shell redirect) to write the resolved title to `{SESSION_DIR}/ticket-title.txt` on a single line. This ensures the title never appears in a shell string literal. Then recompute SLUG and FINAL_PLAN_PATH:
 
 ```bash
-TICKET_TITLE="[the title you resolved]"
-SLUG=$(printf '%s\n' "$TICKET_TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-50 | sed -e 's/^-*//' -e 's/-*$//')
+TITLE_FILE="$SESSION_DIR/ticket-title.txt"
+SLUGIFY="$HOME/.claude/scripts/slugify.sh"
+SLUG=""
+if [ ! -f "$SLUGIFY" ]; then
+  printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >&2
+elif [ ! -s "$TITLE_FILE" ]; then
+  printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.\n' "$TITLE_FILE" >&2
+  printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.\n' "$TITLE_FILE" >> "$SESSION_DIR/slug-warning.txt"
+else
+  SLUG=$(bash "$SLUGIFY" < "$TITLE_FILE") || SLUG=""
+fi
 [ -n "$SLUG" ] || SLUG="plan"
 FINAL_PLAN_PATH="$HOME/.claude/plans/${SLUG}-${INVOCATION_ID}.md"
 echo "Plan will be written to: $FINAL_PLAN_PATH"
@@ -941,9 +955,14 @@ NS_LINE=$(python3 "$HOME/.claude/scripts/north-star-preflight.py" blind-line --t
 if [ -n "$NS_LINE" ]; then
   { printf '%s\n\n' "$NS_LINE"; cat "$FINAL_PLAN_PATH"; } > "$FINAL_PLAN_PATH.tmp" && mv "$FINAL_PLAN_PATH.tmp" "$FINAL_PLAN_PATH"
 fi
+
+# Slug warning line: mechanically prepend if non-empty
+if [ -f "$SESSION_DIR/slug-warning.txt" ] && [ -s "$SESSION_DIR/slug-warning.txt" ]; then
+  { cat "$SESSION_DIR/slug-warning.txt"; printf '\n'; cat "$FINAL_PLAN_PATH"; } > "$FINAL_PLAN_PATH.tmp" && mv "$FINAL_PLAN_PATH.tmp" "$FINAL_PLAN_PATH"
+fi
 ```
 
-The `--nick-file` argument folds Nick's `nick=` tokens (or `nick=unparseable`) into that line, matching Step 5. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key).
+The `--nick-file` argument folds Nick's `nick=` tokens (or `nick=unparseable`) into that line, matching Step 5. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key). Similarly, any slug warning (from a missing title file or unlinked script) is prepended from `slug-warning.txt`.
 
 Print the path, selected scope, effort, panel + model choices, and review status (one of: "main-thread consistency check only," "targeted independent check: <question>," "independent final audit"). Suggest `/track-and-start` or `/expert-review-plan` as next steps.
 
