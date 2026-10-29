@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Test suite for the portable slug pipeline used by /expert-plan (#377).
+Test suite for the portable slug pipeline used by /expert-plan (#377, #389).
 
 What this proves, and where:
-- The SLUG= pipeline at every site is extracted from the real command docs and executed,
-  not re-typed here. Sites: two in commands/expert-plan.md, one in
-  commands/expert-plan-deprecated-v2.md (count and identity are pinned).
-- Each site runs under /usr/bin/sed when that binary exists, with /usr/bin and /bin first on
-  PATH so a Homebrew gnubin sed cannot mask BSD behaviour. On macOS this exercises BSD sed;
+- Inline-pipeline sites (in commands/expert-plan-deprecated-v2.md) are extracted and executed.
+  Count pinned: v2 has 1 inline-pipeline site.
+- Slugify sites (in commands/expert-plan.md invoking bash "$SLUGIFY") are extracted and executed.
+  Count pinned: expert-plan.md has 2 slugify sites.
+- The /usr/bin/sed behavior is tested at inline sites; slugify sites test the script's own LC_ALL=C handling.
+- Each inline site runs under /usr/bin/sed when that binary exists. On macOS this exercises BSD sed;
   on Linux /usr/bin/sed is GNU sed. When /usr/bin/sed is absent the native sed is tested and
   a notice says so.
 - Guard cases (tagged GUARD below) fail the old GNU-only pipeline on BSD and GNU sed alike,
@@ -18,6 +19,7 @@ What this proves, and where:
 Run with: python3 tests/test_slug_pipeline.py
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -27,11 +29,14 @@ from _test_harness import (
     Harness,
     REPO_ROOT,
     EXPECTED_SITES,
+    EXPECTED_SLUGIFY_SITES,
     FALLBACK_LINE,
     detect_sed_flavor,
     extract_slug_sites,
+    extract_slugify_sites,
     sed_path_env,
     run_pipeline,
+    run_slugify,
 )
 
 # The old GNU-only expression, assembled as a constant. Scanned for under commands/ and prompts/.
@@ -57,47 +62,73 @@ CASES = [
 def main():
     h = Harness("EXPERT-PLAN SLUG PIPELINE TEST SUITE")
 
-    # Test 1: extraction and fallback-line assertion at every site.
-    all_sites = {}
+    # Test 1: extraction and fallback-line assertion at inline sites.
+    all_inline_sites = {}
     for path in EXPECTED_SITES:
         sites = extract_slug_sites(path)
-        all_sites[path] = sites
+        all_inline_sites[path] = sites
         for line_no, _slug_line, following in sites:
             h.test_result(
-                f"{path.name}:{line_no} SLUG line is followed by the fallback line",
+                f"{path.name}:{line_no} inline SLUG line is followed by the fallback line",
                 following == FALLBACK_LINE,
                 f"next line is {following!r}, expected {FALLBACK_LINE!r}" if following != FALLBACK_LINE else "",
             )
 
-    # Test 2: site inventory (D2) and identity across sites.
-    found_slug_lines = set()
+    # Test 1b: extraction of slugify sites
+    all_slugify_sites = {}
+    for path in EXPECTED_SLUGIFY_SITES:
+        sites = extract_slugify_sites(path)
+        all_slugify_sites[path] = sites
+        # For slugify sites, check that the fallback line exists within the block
+        lines = path.read_text().splitlines()
+        for line_no, _slug_line, _following in sites:
+            has_fallback = False
+            for i in range(line_no, min(line_no + 10, len(lines))):
+                if FALLBACK_LINE in lines[i]:
+                    has_fallback = True
+                    break
+            h.test_result(
+                f"{path.name}:{line_no} slugify SLUG block has fallback line within 10 lines",
+                has_fallback,
+                f"could not find {FALLBACK_LINE!r}" if not has_fallback else "",
+            )
+
+    # Test 2: site inventory and identity checks.
+    found_inline_lines = set()
     for path, expected in EXPECTED_SITES.items():
-        found = len(all_sites[path])
+        found = len(all_inline_sites[path])
         h.test_result(
-            f"{path.name} has exactly {expected} SLUG site(s)",
+            f"{path.name} has exactly {expected} inline-pipeline site(s)",
             found == expected,
             (
-                f"found {found}, expected {expected}; a new or removed slug site needs a deliberate "
-                "edit to EXPECTED_SITES in tests/test_slug_pipeline.py"
+                f"found {found}, expected {expected}; a new or removed inline site needs a deliberate "
+                "edit to EXPECTED_SITES in tests/_test_harness.py"
             ) if found != expected else "",
         )
-        for _line_no, slug_line, _following in all_sites[path]:
-            found_slug_lines.add(slug_line)
+        for _line_no, slug_line, _following in all_inline_sites[path]:
+            found_inline_lines.add(slug_line)
 
-    total_found = sum(len(sites) for sites in all_sites.values())
-    total_expected = sum(EXPECTED_SITES.values())
+    found_slugify_lines = set()
+    for path, expected in EXPECTED_SLUGIFY_SITES.items():
+        found = len(all_slugify_sites[path])
+        h.test_result(
+            f"{path.name} has exactly {expected} slugify site(s)",
+            found == expected,
+            (
+                f"found {found}, expected {expected}; a new or removed slugify site needs a deliberate "
+                "edit to EXPECTED_SLUGIFY_SITES in tests/_test_harness.py"
+            ) if found != expected else "",
+        )
+        for _line_no, slug_line, _following in all_slugify_sites[path]:
+            found_slugify_lines.add(slug_line)
+
     h.test_result(
-        f"total slug sites is {total_expected}",
-        total_found == total_expected,
-        f"found {total_found}, expected {total_expected}" if total_found != total_expected else "",
-    )
-    h.test_result(
-        "all SLUG= lines across both docs are identical",
-        len(found_slug_lines) == 1,
-        f"{len(found_slug_lines)} distinct SLUG= lines found" if len(found_slug_lines) != 1 else "",
+        "all inline SLUG= lines are identical",
+        len(found_inline_lines) <= 1,
+        f"{len(found_inline_lines)} distinct inline SLUG= lines found" if len(found_inline_lines) > 1 else "",
     )
 
-    # Test 3: execute every site against every case.
+    # Test 3: execute inline sites against every case.
     sed_type, flavor_notice = detect_sed_flavor()
     env, path_notice = sed_path_env()
     if flavor_notice:
@@ -107,7 +138,7 @@ def main():
     print(notice)
     print()
     for path in EXPECTED_SITES:
-        for line_no, slug_line, following in all_sites[path]:
+        for line_no, slug_line, following in all_inline_sites[path]:
             for title, expected, is_guard in CASES:
                 label = "GUARD " if is_guard else ""
                 name = f"{path.name}:{line_no} {label}{title!r} -> {expected!r}"
@@ -119,6 +150,24 @@ def main():
                     name,
                     stdout == expected,
                     f"got {stdout!r}" if stdout != expected else "",
+                )
+
+    # Test 3b: execute slugify sites against every case.
+    env = dict(os.environ)
+    for path in EXPECTED_SLUGIFY_SITES:
+        for line_no, _slug_line, _following in all_slugify_sites[path]:
+            for title, expected, is_guard in CASES:
+                label = "GUARD " if is_guard else ""
+                name = f"{path.name}:{line_no} slugify {label}{title!r} -> {expected!r}"
+                returncode, stdout, stderr = run_slugify(title, env)
+                if returncode != 0:
+                    h.test_result(name, False, f"bash exited {returncode}: {stderr.strip()}")
+                    continue
+                slug_output = stdout.strip() if stdout else ""
+                h.test_result(
+                    name,
+                    slug_output == expected,
+                    f"got {slug_output!r}" if slug_output != expected else "",
                 )
 
     # Test 4: recurrence scan for the old GNU-only expression under commands/ and prompts/.
@@ -133,6 +182,23 @@ def main():
                     offenders.append(f"{file_path.relative_to(REPO_ROOT)}:{line_no}")
     h.test_result(
         "no commands/ or prompts/ file contains the old GNU-only slug sed expression",
+        not offenders,
+        "found in: " + ", ".join(offenders) if offenders else "",
+    )
+
+    # Test 5: recurrence scan in scripts/ for old GNU-only expression
+    offenders = []
+    scripts_dir = REPO_ROOT / "scripts"
+    if scripts_dir.exists():
+        for file_path in sorted(scripts_dir.rglob("*")):
+            if not file_path.is_file():
+                continue
+            text = file_path.read_text(errors="replace")
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                if OLD_GNU_SED_NEEDLE in line:
+                    offenders.append(f"{file_path.relative_to(REPO_ROOT)}:{line_no}")
+    h.test_result(
+        "no scripts/ file contains the old GNU-only slug sed expression",
         not offenders,
         "found in: " + ", ".join(offenders) if offenders else "",
     )
