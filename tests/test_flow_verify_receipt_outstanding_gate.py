@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Spec-blind tests for the #383 slice 1 outstanding gate in scripts/flow-verify-receipt.py
-(--outstanding-gate --flow-dir F --receipt steps/07-ship.outstanding.md).
+(--outstanding-gate --flow-dir F --receipt steps/08-ship.outstanding.md).
 
 Covers the assessor/human disposition rules, answer-file binding, drop reasons, the taken-over
 path, and the legacy (pre-amendment) marker path. Every case runs the real script as a subprocess.
@@ -48,7 +48,7 @@ def good_lines(**overrides):
 def legacy_flow(td, log=None):
     home = make_home(td)
     flow = make_flow(td, implement=BASE_IMPL, log=log)
-    (flow / "steps" / "07-ship.md").write_text("Shipped\n<!-- step-end -->\n")
+    (flow / "steps" / "08-ship.md").write_text("Shipped\n<!-- step-end -->\n")
     return home, flow
 
 

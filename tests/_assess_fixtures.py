@@ -124,7 +124,7 @@ def disp(item, disposition, *, by="human", answer_ref=ANS, option="none", route=
 
 
 def write_marker(flow, lines, *, fmt=True, assessment="assessor", sentinel=True):
-    """Write steps/07-ship.outstanding.md. fmt=False gives a legacy-style marker (no format/assessment
+    """Write steps/08-ship.outstanding.md. fmt=False gives a legacy-style marker (no format/assessment
     lines). sentinel=False omits <!-- outstanding-end -->."""
     body = []
     if fmt:
@@ -133,7 +133,7 @@ def write_marker(flow, lines, *, fmt=True, assessment="assessor", sentinel=True)
     body += lines
     if sentinel:
         body.append("<!-- outstanding-end -->")
-    path = flow / "steps" / "07-ship.outstanding.md"
+    path = flow / "steps" / "08-ship.outstanding.md"
     path.write_text("\n".join(body) + "\n")
     return path
 
@@ -203,7 +203,7 @@ def parse_outstanding(stdout):
 
 def gate(flow, home):
     return run_verifier(["--outstanding-gate", "--flow-dir", str(flow),
-                         "--receipt", str(flow / "steps" / "07-ship.outstanding.md")], home)
+                         "--receipt", str(flow / "steps" / "08-ship.outstanding.md")], home)
 
 
 def assess_check(flow, home):

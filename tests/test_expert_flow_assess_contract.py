@@ -49,12 +49,20 @@ def main():
     print("[commands/expert-flow.md: assess stage]")
 
     # Section boundaries are the bold stage headings: the bare strings "assess." / "ship." / "merge gate"
-    # also occur in prose and in file names such as 07-ship.outstanding.md, which cut sections short.
+    # also occur in prose and in file names such as 08-ship.outstanding.md, which cut sections short.
     assess_sec = section(ef, "**assess.**", "**ship.**")
     ship_sec = section(ef, "**ship.**", "**merge gate.**")
     merge_sec = section(ef, "**merge gate.**", "\n## ")
 
     h.test_result("expert-flow.md has an assess. section before ship.", len(assess_sec) > 0)
+    h.test_result("roster numbers assess 07, ship 08, merge 09",
+                  all(r in ef for r in ("| 07 | assess |", "| 08 | ship |", "| 09 | merge |")))
+    h.test_result("roster documents the outstanding_format legacy numbering rule",
+                  "Numbering is keyed on `outstanding_format`" in ef and "keeps ship at `07` and merge at `08`" in ef)
+    h.test_result("marker path is defined once as MARKER and used by the gate calls",
+                  "MARKER=${FLOW_DIR}/steps/08-ship.outstanding.md" in ef
+                  and ef.count('--receipt "${MARKER}"') == 4
+                  and '--receipt "${FLOW_DIR}/steps/07-ship.outstanding.md"' not in ef)
     h.test_result("ship. section contains --outstanding-gate", "--outstanding-gate" in ship_sec,
                   f"ship section length={len(ship_sec)}")
     h.test_result("ship. section has no 'Open an issue ... or ... Drop' relay",

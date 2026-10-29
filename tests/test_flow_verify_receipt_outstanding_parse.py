@@ -38,7 +38,7 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         # Write marker with malformed OUTSTANDING line (missing fields)
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n"
             "<!-- outstanding-pending -->\n"
@@ -58,7 +58,7 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         # Write marker with line that looks like OUTSTANDING but is invalid
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n"
             "<!-- outstanding-pending -->\n"
@@ -79,7 +79,7 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         # Write marker with an empty OUTSTANDING line
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n"
             "<!-- outstanding-pending -->\n"
@@ -103,7 +103,7 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         # Write marker without closing sentinel (incomplete)
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n"
             "<!-- outstanding-pending -->\n"
@@ -123,7 +123,7 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         # Write marker with partial/truncated last line
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n"
             "<!-- outstanding-pending -->\n"
@@ -144,7 +144,7 @@ def main():
         flow = make_flow(td, implement=BASE_IMPL)
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n<!-- outstanding-pending -->\n"
             + disp(S3, "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL) + "\n"

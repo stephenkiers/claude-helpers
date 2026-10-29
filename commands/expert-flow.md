@@ -953,11 +953,13 @@ Redo-able steps: plan, review.
 | 06 | verify | the project's check command (below) | ticket worktree | general-purpose | `CHECK:` `CHECK_EXIT:` (orchestrator-written) |
 | — | step gate | `AskUserQuestion` Continue / Redo with notes (plan, review only) / Pause / Abort after plan, implement, review, fix, and verify — only with `--gates` (`flags.step_gates`) | orchestrator | — | — |
 | 07 | assess | flow-assessor agent(s) + orchestrator relay (orchestrator stage, not the step loop) | ticket worktree | flow-assessor | `ASSESSED: <n>` (orchestrator-written) |
-| 07 | ship | `/shipit` | ticket worktree | general-purpose | `PR_URL:` |
+| 08 | ship | `/shipit` | ticket worktree | general-purpose | `PR_URL:` |
 | — | merge gate | `AskUserQuestion` Merge / Hold / Take over — skipped with `--auto-merge` | orchestrator | — | — |
-| 08 | merge | `/merge-and-cleanup <WORKTREE>` | main worktree | general-purpose | `MERGED: yes` (the line is **omitted** unless the PR merged) |
+| 09 | merge | `/merge-and-cleanup <WORKTREE>` | main worktree | general-purpose | `MERGED: yes` (the line is **omitted** unless the PR merged) |
 
 **Agent column note:** plan, ship, merge stay general-purpose pending #359/#360. This table is the single place a step's `subagent_type` is named.
+
+**Numbering is keyed on `outstanding_format`.** The table is for a flow whose `state.json` has `outstanding_format: 2` (every flow created after the 2026-10-27 amendment). A flow without that key predates it and keeps ship at `07` and merge at `08`, with `07-assess.md` unchanged. Resolve `<NN>` for ship and merge from `outstanding_format` on every use, including the fleet `wait` path. `07-assess.md` is the same in both. The verifier does not key on these names; the marker path arrives via `--receipt`.
 
 The step names are also the telemetry stage names: `worktree`, `plan`, `track`, `implement`,
 `review`, `fix`, `verify`, `assess`, `ship`, `merge`. Every step runs the same loop; `assess` is the one
@@ -1873,11 +1875,11 @@ reported by the step agent, not measured by the orchestrator, so verify is **adv
 authoritative gate is `/shipit`'s own local CI run in the ship step.
 Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in ship is the gate.
 
-**assess.** An orchestrator stage (not a step-loop step), placed here to validate and disposition all outstanding items before the ship stage. (Note: assess shares step number 07 with ship by design; they are distinct stages with separate files — `07-assess.md` (receipt) and `07-ship.outstanding.md` (marker) — and distinct step names.) Set `step: "assess"`, increment `attempts.assess`, log `assess begin`, `stage-begin --stage assess`, `WRITE-STATE`. Then, in order:
+**assess.** An orchestrator stage (not a step-loop step), placed here to validate and disposition all outstanding items before the ship stage. (Note: assess is `07`; ship and merge are `08` and `09` when `state.json` has `outstanding_format: 2`, and `07` and `08` in an older flow. The receipt is `07-assess.md` either way.) Define the marker path once: `MARKER=${FLOW_DIR}/steps/08-ship.outstanding.md`, or `${FLOW_DIR}/steps/07-ship.outstanding.md` when `state.json` has no `outstanding_format`. Use `MARKER` everywhere below. Set `step: "assess"`, increment `attempts.assess`, log `assess begin`, `stage-begin --stage assess`, `WRITE-STATE`. Then, in order:
 
 1. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-set --flow-dir "${FLOW_DIR}"`. If it prints `ITEMS: 0`, write an orchestrator receipt `ASSESSED: 0` to `${FLOW_DIR}/steps/07-assess.md`, log `assess ok` and `assessed items=0`, `outstanding dispositions=0 dropped=0 filed=0 finished=0`, `stage-end --stage assess`, `WRITE-STATE`, and continue to the ship stage. If it exits 2, hard stop with the script's reason. (For all assess hard stops, use the "Assess hard stop" procedure below.)
 
-2. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"`. On exit 0 (meaning a prior attempt already assessed and dispositioned every item), log `assess skipped` and continue to the ship stage. Otherwise, keep the ids on its stdout `UNDISPOSITIONED:` line (comma-separated, if present) as `TODO_IDS`. If no marker exists, `TODO_IDS` is every id in the `--outstanding-set` output (the first field of each `<id> | <provenance> | <coverage> | <reason>` line after `ITEMS: <n>`). On Retry, TODO_IDS is recomputed from ids lacking a valid assessment in steps/07-assess.md (valid = parses and passes the script check), so successfully assessed batches are not re-spawned.
+2. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${MARKER}" --flow-dir "${FLOW_DIR}"`. On exit 0 (meaning a prior attempt already assessed and dispositioned every item), log `assess skipped` and continue to the ship stage. Otherwise, keep the ids on its stdout `UNDISPOSITIONED:` line (comma-separated, if present) as `TODO_IDS`. If no marker exists, `TODO_IDS` is every id in the `--outstanding-set` output (the first field of each `<id> | <provenance> | <coverage> | <reason>` line after `ITEMS: <n>`). On Retry, TODO_IDS is recomputed from ids lacking a valid assessment in steps/07-assess.md (valid = parses and passes the script check), so successfully assessed batches are not re-spawned.
 
 3. If an `answers/assess-<SEQ>.json` exists whose entries are not yet in the marker (items without `<!-- outstanding-end -->` yet), write those dispositions now (apply the rules in item 10 below) and drop their ids from `TODO_IDS`. They are never re-asked.
 
@@ -1925,7 +1927,7 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 
 11. When every derived id has a terminal disposition, rewrite the marker atomically with the sentinel `<!-- outstanding-end -->` last. At this point, every `by=human` disposition has a corresponding ledger record from the step above.
 
-12. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"`. Non-zero exit is a hard stop: use the "Assess hard stop" procedure with `stop_source.assess = "validation"` and the reason from the script.
+12. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${MARKER}" --flow-dir "${FLOW_DIR}"`. Non-zero exit is a hard stop: use the "Assess hard stop" procedure with `stop_source.assess = "validation"` and the reason from the script.
 
 13. Log `assess ok` and `assessed items=<n> unfinished=<m> already-done=<ids> dropped=<ids> filed=<ids> finished=<ids>` (counts from the marker) only when assessment was `assessor`. If assessment was `taken-over` (see "Take over at assess"), log `assess taken-over` only. In both cases, log `outstanding dispositions=<n> dropped=<n> filed=<n> finished=<n>`, `stage-end --stage assess`, `WRITE-STATE`.
 
@@ -1935,9 +1937,9 @@ Artifact check: none needed. Orchestrator-written and advisory; `/shipit` in shi
 
 **Flattening for free-text fields.** Before writing any free-text field (reason, option label, url, evidence) into the disposition line, flatten it: collapse every run of whitespace including newlines to one space, and replace every `|` with `/`. This ensures the `| ` field delimiter is never ambiguous.
 
-**Marker header.** Whenever the orchestrator writes `07-ship.outstanding.md` it starts with `format: 2`, then `assessment: assessor` (or `taken-over` after Take over at assess), then `<!-- outstanding-pending -->`, then one disposition line per item (`<id> | disposition=<finished|asked-and-answered|filed-as-issue|dropped> | by=<human|assessor-verified> | answer_ref=<answers/assess-<SEQ>.json|none> | option=<label|none> | route=<leave|pause|issue|none> | url=<url|none> | reason=<text|none>`), and `<!-- outstanding-end -->` last, only when complete. A Drop whose reason needed a follow-up question uses a one-question batch (`questions/assess-<SEQ>.json`, carrying `item`, options `Drop` and `Open an issue`) and the disposition's `answer_ref` names that file, with the typed reason in `annotations.<qid>.notes`. Write via temp file then `mv`, content through `printf '%s'`.
+**Marker header.** Whenever the orchestrator writes `MARKER` it starts with `format: 2`, then `assessment: assessor` (or `taken-over` after Take over at assess), then `<!-- outstanding-pending -->`, then one disposition line per item (`<id> | disposition=<finished|asked-and-answered|filed-as-issue|dropped> | by=<human|assessor-verified> | answer_ref=<answers/assess-<SEQ>.json|none> | option=<label|none> | route=<leave|pause|issue|none> | url=<url|none> | reason=<text|none>`), and `<!-- outstanding-end -->` last, only when complete. A Drop whose reason needed a follow-up question uses a one-question batch (`questions/assess-<SEQ>.json`, carrying `item`, options `Drop` and `Open an issue`) and the disposition's `answer_ref` names that file, with the typed reason in `annotations.<qid>.notes`. Write via temp file then `mv`, content through `printf '%s'`.
 
-**ship.** Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"` before spawning `/shipit`. Non-zero exit is a hard stop; `/shipit` is never spawned.
+**ship.** Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${MARKER}" --flow-dir "${FLOW_DIR}"` before spawning `/shipit`. Non-zero exit is a hard stop; `/shipit` is never spawned.
 
 Then spawn `/shipit`. Force-push confirmations for stacked children and the ambiguous-PR-body
 question are relayed; a failing check or a rebase conflict is a hard stop whose reason carries the
@@ -1946,7 +1948,7 @@ with `gh pr view <PR_URL> --json state -q .state` = `OPEN`.
 Artifact check: the existing `gh pr view … = OPEN` check.
 
 **merge gate.** Before asking, check the PR state with `gh pr view "<PR_URL>" --json state -q .state`.
-If already `MERGED`, skip the gate and go straight to the merge step. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${FLOW_DIR}/steps/07-ship.outstanding.md" --flow-dir "${FLOW_DIR}"` regardless of `flags.auto_merge`. If it fails, re-enter the assess stage at step 1 (the gate may pass after a paused assessment is resolved). This gate runs **even under `--auto-merge`**, which only skips the Merge/Hold/Take over question below. If `gate_passed` is already `true` (a Merge answer recorded earlier in this run or a prior session), skip the gate question. Otherwise ask (header `Merge gate`; a fleet run parks it as a `gate` ask, see "Fleet mode"):
+If already `MERGED`, skip the gate and go straight to the merge step. Run `python3 "$HOME/.claude/scripts/flow-verify-receipt.py" --outstanding-gate --receipt "${MARKER}" --flow-dir "${FLOW_DIR}"` regardless of `flags.auto_merge`. If it fails, re-enter the assess stage at step 1 (the gate may pass after a paused assessment is resolved). This gate runs **even under `--auto-merge`**, which only skips the Merge/Hold/Take over question below. If `gate_passed` is already `true` (a Merge answer recorded earlier in this run or a prior session), skip the gate question. Otherwise ask (header `Merge gate`; a fleet run parks it as a `gate` ask, see "Fleet mode"):
 
 - **Merge** — set `gate_passed: true`, log `gate`, `WRITE-STATE`, continue to the merge step.
 - **Hold** — `status: paused` at `merge`, `gate_passed` stays `false`, log `paused`, `WRITE-STATE`,

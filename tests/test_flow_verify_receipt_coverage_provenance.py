@@ -43,7 +43,7 @@ def main():
         write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
         write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         # Write marker with [verifier] provenance (should be rejected)
-        path = flow / "steps" / "07-ship.outstanding.md"
+        path = flow / "steps" / "08-ship.outstanding.md"
         path.write_text(
             "format: 2\nassessment: assessor\n"
             "<!-- outstanding-pending -->\n"

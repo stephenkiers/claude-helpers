@@ -484,8 +484,8 @@ A command reached through a nested `Skill` call writes no receipt. The outer ste
 and its trailer.
 
 **Path:** `${FLOW_DIR}/steps/<NN>-<STEP_NAME>.md`, where `<NN>` is the step's position in the flow
-(`01-plan`, `02-track`, `03-implement`, `04-review`, `05-fix`, `06-verify`, `07-assess`, `07-ship`, `08-merge`).
-The orchestrator names the path in its step prompt; use that path verbatim. Note that `assess` shares position `07` with `ship`, writing distinct files `07-assess.md` and `07-ship.md`.
+(`01-plan`, `02-track`, `03-implement`, `04-review`, `05-fix`, `06-verify`, `07-assess`, `08-ship`, `09-merge`; a flow created before the `outstanding_format` key existed keeps `07-ship` and `08-merge`).
+The orchestrator names the path in its step prompt; use that path verbatim. Note that in a flow with `outstanding_format: 2` `assess` is `07`, `ship` `08` and `merge` `09`; in an older flow `ship` stays `07` and `merge` `08`, alongside `07-assess.md`.
 
 **Content:** the command's **existing final summary**, unchanged (the closing message it already
 prints — the plan path, the review counts, the ROUND lines, the PR URL), followed by a decision
@@ -549,7 +549,7 @@ and verify they lie under their expected roots: `FINAL_PLAN_PATH` under `$HOME/.
 | ship | `PR_URL: <url>` | `PR_URL: https://github.com/o/r/pull/123` |
 | merge | `MERGED: yes` | from `gh pr view --json state`; written only when the state is `MERGED`, otherwise the line is omitted |
 
-**Assess records.** `steps/07-assess.md` holds `ASSESSED: <n>`, one line per item (`<id> | status= | kind= | scope= | leave_as_is_safe= | cause= | evidence= | finish_plan= | verification_proof= | options=`), then `<!-- assessment-end -->`. The disposition marker `steps/07-ship.outstanding.md` starts with `format: 2`, `assessment: assessor|taken-over`, `<!-- outstanding-pending -->`, then `<id> | disposition= | by= | answer_ref= | option= | route= | url= | reason=` lines, and `<!-- outstanding-end -->` only when complete. The grammar and gate rules are in ADR-0023 (2026-10-27 amendment, section 10); `scripts/flow-verify-receipt.py --outstanding-gate` is the enforcement point. Assess questions carry `item: <id>`; the free-text Drop reason lives in `annotations.<qid>.notes` of the answers file.
+**Assess records.** `steps/07-assess.md` holds `ASSESSED: <n>`, one line per item (`<id> | status= | kind= | scope= | leave_as_is_safe= | cause= | evidence= | finish_plan= | verification_proof= | options=`), then `<!-- assessment-end -->`. The disposition marker `steps/08-ship.outstanding.md` (`07-ship.outstanding.md` in a flow without `outstanding_format`) starts with `format: 2`, `assessment: assessor|taken-over`, `<!-- outstanding-pending -->`, then `<id> | disposition= | by= | answer_ref= | option= | route= | url= | reason=` lines, and `<!-- outstanding-end -->` only when complete. The grammar and gate rules are in ADR-0023 (2026-10-27 amendment, section 10); `scripts/flow-verify-receipt.py --outstanding-gate` is the enforcement point. Assess questions carry `item: <id>`; the free-text Drop reason lives in `annotations.<qid>.notes` of the answers file.
 
 **Artifact verification.** A receipt is a claim. On `OK`, the orchestrator verifies the step's on-disk artifacts with
 `scripts/flow-verify-receipt.py`. For plan, that is the session dir named by `FINAL_PLAN_PATH`'s
