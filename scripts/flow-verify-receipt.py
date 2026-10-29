@@ -2588,6 +2588,11 @@ def main() -> None:
             print("ESCALATE: none not-failed")
             sys.exit(0)
 
+        # cwd-drift is never escalation-eligible
+        if failure_class == "cwd-drift":
+            print("ESCALATE: none cwd-drift")
+            sys.exit(0)
+
         # Check auto path eligibility (all 7 conditions)
         auto_eligible = (
             args.stop_source == "receipt"

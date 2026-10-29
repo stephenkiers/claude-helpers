@@ -151,3 +151,93 @@ already governing other multi-step commands.
 
 **Decision:** No machine-enforced guardrails are required for `/expert-flow` step agents. No follow-up
 issue is filed — this is a standing exception, not a temporary deferral.
+
+## Amendment 2026-10-26 (#336)
+
+The earlier amendment (2026-07-30) stated that "the `cd`-at-start prevention in `plan-implementer.md`,
+flat worktree placement, and the detection + salvage half (in `implement-with-haiku.md`) together
+close the incident class" — specifically incident 7F17AECE where an agent's cwd drifted. This
+amendment corrects that statement and records the actual prevention contract.
+
+**Definitions:**
+- **Primary checkout** — the first entry from `git worktree list` in the repo root; the human's
+  regular checkout where they commit code. One per repo.
+- **Ticket worktree** — the worktree path passed to an agent as `Working directory: <path>` in the
+  orchestrator's prompt. One per agent invocation.
+
+**Drift frequency finding (from receipt analysis, 2026-10-26):**
+- Method: grep of `~/.claude/flows` receipts for `salvaged-from-main` and `cwd-drift`, 0 hits
+  dated 2026-10-23 to 2026-10-26; hits for #293 (2026-10-19) and #287 (2026-10-20).
+- Limitation: receipts only. A drift the orchestrator never noticed leaves no receipt line, so the
+  true rate is unknown. That limit is why the detector exists.
+
+**Cause investigation (#293, 2026-10-19, docs unit transcript analysis):**
+The drifted #293 unit's first Bash call was `date +%s > "$(git rev-parse --git-dir)/iwh-agent-start"`.
+The output printed `~/.../worktrees/main/.git/worktrees/293-...-haiku-docs` (the primary checkout path).
+This was the FIRST appearance of the primary checkout path in the agent's context. The unit then Read
+and Edited absolute paths under the primary checkout (worktrees/main), despite the assigned Working
+directory being the ticket worktree.
+
+**Cause class:** (d) Other — the agent derived an absolute path from the output of `git rev-parse
+--git-dir`, not from a cwd reset, not from the environment block, not from "main worktree" wording
+in Block A. A linked worktree's git-dir lives under the primary checkout's `.git/worktrees/`, and
+printing that output leaked the primary checkout's path, allowing the agent to build paths into it.
+
+**Prevention contract:**
+The sentence "Your Bash tool's working directory persists across your subsequent calls" in the
+earlier amendment was wrong. The Bash tool's cwd may reset between calls. The prevention contract
+is:
+
+1. **Baseline snapshot at Step 2** — before any implementer agent runs, the orchestrator snapshots
+   the primary checkout's git status via `primary-checkout-drift.py snapshot`.
+2. **Agent-level prevention** — every Bash call must start with `cd <Working directory> &&`. Every
+   Write/Edit/Read `file_path` must be absolute and start with the assigned Working directory. Never
+   derive paths from git output (`--git-dir`, `--git-common-dir`, `git worktree list`,
+   `--show-toplevel`). These rules are stated in `agents/plan-implementer.md` (D2 fallback prevention,
+   targeted to cause class (d)).
+3. **Orchestrator-side detection at barriers** — after all Round 1 units complete (merged with the
+   integration gate compare), after each serial pass (single-unit fallback, Round 2 apply, Round 3
+   follow-up apply), and once after the last agent pass (before the final summary), the orchestrator
+   compares the primary checkout's status against the baseline via `primary-checkout-drift.py compare`.
+4. **Fail condition** — fail only on the planned file set (all units' owned files plus the ticket
+   branch's changes since START_SHA). Warn on other new dirt. Skip the check when the primary
+   checkout's realpath equals the orchestrator cwd.
+5. **Fail-closed on missing baseline** — a missing baseline exits with code 2, reported as a FAILED
+   receipt with Reason `primary-checkout-drift: baseline-unavailable` and failure class `cwd-drift`.
+6. **Never touch the human's checkout** — the detector is report-only; it never writes to or reverts
+   anything in the primary checkout. On exit 1 (drift detected), the ticket-worktree check in Step 4c
+   saves a diff patch, and the FAILED receipt names the patch and the drifted files. The human
+   decides what to do by hand (no auto-salvage).
+
+Spelling convention: receipt `FAILURE_CLASS:` value is hyphenated `cwd-drift`; telemetry failure
+class is underscored `cwd_drift`. This is a hard stop (see ADR-0023 for cwd-drift as a never-auto-remediated
+incident class in the lifecycle).
+
+**Earlier amendment corrections:**
+- The sentence near line ~115 saying the measures "together close the incident class" was
+  incomplete — the baseline and barrier detects (new in #336) are also required.
+- The phrase near line ~107 saying the detection "checks the main worktree state" was imprecise.
+  It checks the **primary checkout** state (first `git worktree list` entry), not "main worktree",
+  which was overloaded. See primary-checkout-drift.py in #336's implementation.
+
+**Related tickets:**
+- #358 (expert-flow: flow-review + flow-implement step agents) — adds a **PreToolUse guard on
+  Write/Edit** to block writes outside the Working directory at tool invocation time. Complements
+  but does not replace #336's prompt-level prevention and detection.
+- #327 (expert-flow: takeover leaves uncommitted work) — adds a **pre-spawn cleanliness check**
+  of the ticket tree before implementer/fixer agents start. Complements but does not replace #336's
+  primary-checkout detection.
+- The two (#327 and #336) are not merged by accident — #336's probe detects primary-checkout drift
+  (caused by guide paths), #327's check ensures the ticket tree is clean (preventing overlap in
+  receipt interpretation).
+
+**Known gaps:**
+- Sibling worktrees under the repo root are not inspected. W1 deferred this — it multiplies false
+  positives from concurrent flows. The helper accepts a list of paths.
+- Re-edits of already-dirty planned files may only appear as WARN (not FAIL) if the same-XY file
+  edits do not create measurably-new drift outside the baseline status. Mitigation: a `WARN
+  pre-dirty-planned` line makes the gap visible on each run. This is rare and only occurs when a file
+  was dirty before the agent started, the agent edits it, and the result is not detectably different
+  from the pre-agent state.
+- The detector baseline (#336) and barrier checks are required to prevent drift class incidents (#338
+  implements a `just check` timeout addressing a consequence; both are independent fixes).
