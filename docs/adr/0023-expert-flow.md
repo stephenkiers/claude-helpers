@@ -886,7 +886,7 @@ The required `OUTSTANDING:` line and the #288 hand-off remain in force.
 
 **Log lifecycle lines:** `assess begin`, `assess ok`, `assess failed (<reason>)`, `assess taken-over`, `assess skipped`, `assess paused`, plus events `assessed` and `outstanding`.
 
-**Position:** After verify, before ship, at position `07` (shared with ship, so files are `steps/07-assess.md`; ship and merge keep `07`/`08` so in-flight flows still resolve).
+**Position:** After verify, before ship, at position `07` (shared with ship by design, so receipt files are `steps/07-assess.md` and `steps/07-ship.outstanding.md`, distinct files in the same step directory; ship and merge keep their steps at `07`/`08` for in-flight flow compatibility).
 
 **Stage and telemetry name:** `assess` (reported as `stage-begin`/`stage-end --stage assess`).
 
@@ -896,13 +896,15 @@ The required `OUTSTANDING:` line and the #288 hand-off remain in force.
 
 ### 3. Assessor constraints
 
-The assessor runs as a restricted, no-Write, no-Edit agent (ADR-0008 standing deviation) with read-only git Bash. The orchestrator writes the receipt.
+The assessor runs as a restricted agent — no Edit, no Write (prompt-scoped only), and read-only git Bash (`git diff`, `git log`, `git show`, `git grep` only; no checkout, reset, or branch mutation). This restriction is by design: assessment is a judgment role, not an implementation role, and the assessor cannot alter code, state, or worktree. The orchestrator writes the receipt.
 
 The unchanged-tree check is always applied and fails closed: `HEAD` and `git status --porcelain` are recorded before spawning the assessor and checked after; any change is a hard stop with reason `assess: working tree changed during assessment` and `stop_source.assess = "tree"`.
 
 Batches are bounded at 8 items; overflow splits into further batches.
 
 The assessor runs on **Sonnet**, because this is judgment work (ADR-0004).
+
+**Agent file note:** `agents/flow-assessor.md` predates the #358-#360 step-agent conventions and should be conformed when next touched (adding any convention table entries or preflight procedures that land after this amendment).
 
 ### 4. Verify-first is mandatory
 
@@ -911,7 +913,7 @@ Every item gets `status` ∈ {`unfinished`, `already-done`} with **cited evidenc
 ### 5. Closed vocabularies and gate rules
 
 - `unknown` coverage rows are always asked (never finished, never marked `already-done`).
-- Every human attribution must match the answers file's entry for that item and choice.
+- Every human disposition (`by=human`) must have a corresponding record in the flow's human ledger (`human.jsonl`, written only by `scripts/flow-ledger.py`): a record with `kind: answer`, `step: assess`, and text lines `answer_ref: <ref>` and `sha256: <hex of the answers file>`. The outstanding gate verifies the ledger record exists and its `sha256` matches the current answers file, even under `--auto-merge`. This proves the answers file was recorded through the sanctioned script writer and has not been altered since, not that a human necessarily typed it — the orchestrator still invokes the ledger script.
 - Assessment records carry typed `Disposition` fields: `id`, `disposition` ∈ {`finished`, `asked-and-answered`, `filed-as-issue`, `dropped`}, `by` ∈ {`human`, `assessor-verified`}, `answer_ref`, `option`, `route` ∈ {`leave`, `pause`, `issue`, `none`}, `url` and `reason`.
 - Drop reasons must be at least 15 characters and are not in a small boilerplate denylist (`n/a`, `none`, `not needed`, `drop`, `skip`, `wontfix`).
 - A drop is never `assessor-verified`.
@@ -932,31 +934,27 @@ Each disposition is written as it is made, into a pending section without the se
 
 Decision items offer the assessor's 1–2 typed options as answer choices. In slice 1 each option routes to Pause or Open an issue, recorded as `asked-and-answered` with the chosen option. The choices are never pre-selected and the assessor's options are never dropped. This allows the slice-2 finish loop to recognize assessor-option routes without interpreter ambiguity.
 
-### 10. Slice-2 design note
+### 10. Slice-2 design note (deferred; boundary with #380 to be settled)
 
-Slice 2 will add automatic finishing via loop-back for `unfinished`+`mechanical`+`in-scope` items, gated on an `--only-units` test. It will use a separate persisted finish-round cap of 2 plus a total implement/fix spawn ceiling per ship (Q3 C), where exhaustion goes to the hard-stop menu, never ship. Re-verification will be scoped by item source (W3). A `finish` route will be added for assessor options. Slice 2 adds the **third auto-remediation exception** to Decision 1 of the ADR.
+Slice 2 will add automatic finishing via loop-back for `unfinished`+`mechanical`+`in-scope` items, gated on an `--only-units` test. It will use a separate persisted finish-round cap of 2 plus a total implement/fix spawn ceiling per ship (Q3 C), where exhaustion goes to the hard-stop menu, never ship. Re-verification will be scoped by item source (W3). A `finish` route will be added for assessor options. Slice 2 adds the **third auto-remediation exception** to Decision 1 of the ADR. The boundary between slice 2 (auto-finish) and open issue #380 (Fix now / self-heal) is to be settled when either lands.
 
-### 11. Extended by #380
+### 11. Residual risk
 
-The "Fix now" option and self-heal are defined in #380. This amendment reserves where they attach.
+Under `--auto-merge`, an `already-done` item with coverage `declared` or `uncovered` closes with only the printed notice. Evidence quality is a judgment the script cannot type. This is a candidate for a slice-2 fidelity audit of assess.
 
-### Residual risk
-
-Under `--auto-merge`, an `already-done` item with coverage `declared` or `none` closes with only the printed notice. Evidence quality is a judgment the script cannot type. This is a candidate for a slice-2 fidelity audit of assess.
-
-### Constants
+### 12. Constants
 
 - **Assessor batch bound:** 8 items per spawn.
 - **Drop reason minimum length:** 15 characters.
 - **Stop reason string:** `assess: working tree changed during assessment`.
 - **Boilerplate denylist for drop reasons:** `n/a`, `none`, `not needed`, `drop`, `skip`, `wontfix`.
 
-### 10. Marker and record grammar (as enforced by `scripts/flow-verify-receipt.py`)
+### 13. Marker and record grammar (as enforced by `scripts/flow-verify-receipt.py`)
 
 `steps/07-ship.outstanding.md` starts with `format: 2`, then `assessment: assessor` or `assessment: taken-over`, then `<!-- outstanding-pending -->`, then one disposition line per derived id, then `<!-- outstanding-end -->` only when every id is dispositioned. Disposition line: `<id> | disposition= | by= | answer_ref= | option= | route= | url= | reason=` (`none` for an empty value). Assessment line in `steps/07-assess.md`: `<id> | status= | kind= | scope= | leave_as_is_safe= | cause= | evidence= | finish_plan= | verification_proof= | options=`, closed by `<!-- assessment-end -->`; `options` is `<label> => pause|issue`, joined by ` ;; `, at most two, and no label may equal a fixed choice label (`Open an issue`, `Leave as-is`, `Pause to finish by hand`, `Drop`, `Confirm already done`).
 
 The gate prints `UNDISPOSITIONED: <ids>` (only the ids lacking a terminal disposition, plus any paused-but-unfinished ids) before failing. A `route: pause` disposition is terminal only when the current assessment record is `already-done`; otherwise the gate fails with `paused, not yet finished`. A step that was taken over or hand-finished with no readable coverage contributes `<step>:coverage-unavailable` (coverage `unknown`, always asked). `stop_source.assess` may also be `"tree"`.
 
-### 11. Slice 2
+### 14. Scope of slice 1
 
 This amendment does not finish outstanding items automatically. Mechanical finishing via loop-back is slice 2, and is deliberately out of scope here.
