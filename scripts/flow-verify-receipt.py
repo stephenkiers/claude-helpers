@@ -20,6 +20,7 @@ Exit codes:
      invalid flow dir is exit 2.
 """
 
+# mypy: strict-equality
 import argparse
 import hashlib
 import json
@@ -28,7 +29,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, Dict, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple
+from typing import cast, Dict, get_args, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple
 
 # Import shared schema module
 try:
@@ -117,8 +118,21 @@ class FoldRecord(NamedTuple):
     disposition: Optional[str]
     item_data: Dict
     source_file: str
-    round_num: int
+    round_num: Optional[int]
     loop_end: Optional[str]
+
+
+Provenance = Literal["self-report", "both", "verifier"]
+AssessStatus = Literal["unfinished", "already-done"]
+AssessKind = Literal["mechanical", "decision"]
+AssessScope = Literal["in-scope", "separate-ticket"]
+LeaveSafe = Literal["yes", "no"]
+OptionRoute = Literal["pause", "issue"]
+DispositionValue = Literal["finished", "asked-and-answered", "filed-as-issue", "dropped"]
+DispositionBy = Literal["human", "assessor-verified"]
+DispositionRoute = Literal["leave", "pause", "issue", "none"]
+MarkerKind = Literal["v2", "legacy"]
+AssessmentMode = Literal["assessor", "taken-over"]
 
 
 class OutstandingItem(NamedTuple):
@@ -131,7 +145,7 @@ class OutstandingItem(NamedTuple):
     """
     unit_id: str
     reason: str
-    provenance: Literal["self-report", "both", "verifier"]
+    provenance: Provenance
 
 
 class AssessorOption(NamedTuple):
@@ -142,7 +156,7 @@ class AssessorOption(NamedTuple):
         route: The route for this option, either 'pause' or 'issue'
     """
     label: str
-    route: Literal["pause", "issue"]
+    route: OptionRoute
 
 
 class Assessment(NamedTuple):
@@ -161,10 +175,10 @@ class Assessment(NamedTuple):
         options: Tuple of AssessorOption entries (empty for non-decision)
     """
     id: str
-    status: Literal["unfinished", "already-done"]
-    kind: Literal["mechanical", "decision"]
-    scope: Literal["in-scope", "separate-ticket"]
-    leave_as_is_safe: Literal["yes", "no"]
+    status: AssessStatus
+    kind: AssessKind
+    scope: AssessScope
+    leave_as_is_safe: LeaveSafe
     cause: str
     evidence: str
     finish_plan: str
@@ -186,11 +200,11 @@ class Disposition(NamedTuple):
         reason: Text describing the reason or 'none'
     """
     id: str
-    disposition: Literal["finished", "asked-and-answered", "filed-as-issue", "dropped"]
-    by: Literal["human", "assessor-verified"]
+    disposition: DispositionValue
+    by: DispositionBy
     answer_ref: str
     option: str
-    route: Literal["leave", "pause", "issue", "none"]
+    route: DispositionRoute
     url: str
     reason: str
 
@@ -1003,7 +1017,7 @@ def check_report_checkpoint(
         return fold_err
 
     # Extract dispositions from fold
-    final_dispositions: Dict[str, str] = {}
+    final_dispositions: Dict[str, Optional[str]] = {}
     for handle, fold_record in fold.items():
         final_dispositions[handle] = fold_record.disposition
 
@@ -1053,14 +1067,14 @@ def check_report_checkpoint(
                     for q_item in q_items:
                         if not isinstance(q_item, dict):
                             continue
-                        handle = q_item.get("handle")
+                        q_handle = q_item.get("handle")
                         must_answer = q_item.get("must_answer", False)
                         reason_must_answer = q_item.get("reason_must_answer")
 
                         # If this item is must-answer in this round's question file,
                         # it must appear in this round's answer file
-                        if (must_answer or reason_must_answer) and handle not in items:
-                            return f"plan checkpoint incomplete (answer file missing handle: {handle} in {answer_file.name})"
+                        if (must_answer or reason_must_answer) and q_handle not in items:
+                            return f"plan checkpoint incomplete (answer file missing handle: {q_handle} in {answer_file.name})"
 
     # Check that all ledger handles appear in at least one file (union coverage)
     for handle in ledger_handles:
@@ -1091,17 +1105,17 @@ def check_report_checkpoint(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            handle = item.get("handle")
-            if not handle:
+            item_handle = item.get("handle")
+            if not item_handle:
                 continue
 
             must_answer = item.get("must_answer", False)
             reason_must_answer = item.get("reason_must_answer")
 
             if must_answer or reason_must_answer:
-                must_answer_items[handle] = True
+                must_answer_items[item_handle] = True
                 if reason_must_answer:
-                    must_answer_reasons[handle] = reason_must_answer
+                    must_answer_reasons[item_handle] = reason_must_answer
 
     # Rule 5: Check must-answer items have proper dispositions (use fold)
     for handle in must_answer_items:
@@ -1113,22 +1127,22 @@ def check_report_checkpoint(
             return f"plan checkpoint incomplete (must-answer without quote: {handle})"
 
         if disposition in ["answered", "overridden"]:
-            fold_record = fold.get(handle)
-            if fold_record:
-                excerpt_err = _check_excerpt_validity(handle, fold_record, adir)
+            folded = fold.get(handle)
+            if folded:
+                excerpt_err = _check_excerpt_validity(handle, folded, adir)
                 if excerpt_err:
                     return excerpt_err
 
         if disposition == "accepted-on-continue":
-            fold_record = fold.get(handle)
-            if not fold_record:
+            folded = fold.get(handle)
+            if not folded:
                 return f"plan checkpoint incomplete (accepted-on-continue not found: {handle})"
 
-            if fold_record.loop_end != "continue":
+            if folded.loop_end != "continue":
                 return f"plan checkpoint incomplete (accepted-on-continue without loop_end: {handle})"
 
             # Check excerpt validity
-            excerpt_err = _check_excerpt_validity(handle, fold_record, adir)
+            excerpt_err = _check_excerpt_validity(handle, folded, adir)
             if excerpt_err:
                 return excerpt_err
 
@@ -1451,7 +1465,7 @@ def check_plan(receipt_file: Path, since: float, home: Path, flow_dir: Optional[
                         is_report_checkpoint = True
                         break
 
-    if is_report_checkpoint:
+    if is_report_checkpoint and flow_dir is not None:
         return check_report_checkpoint(session_dir, flow_dir, decisions_text, attempt, relay_count)
 
     # Fail closed: if ledger carries D/W/Q handles but we didn't take the report branch,
@@ -1649,9 +1663,9 @@ def count_relayed_questions(
     # Candidates: all <step>-NN.json files in questions/
     candidates = set()
     if qdir.exists():
-        for qfile in qdir.glob(f"{step}-*.json"):
-            if qfile.is_file():
-                candidates.add(qfile.name)
+        for cand_file in qdir.glob(f"{step}-*.json"):
+            if cand_file.is_file():
+                candidates.add(cand_file.name)
 
     # Add marker-named files even if they don't exist on disk yet
     candidates.update(awaiting_basenames)
@@ -1678,9 +1692,9 @@ def count_relayed_questions(
         # Validate the file's schema
         data, problem = validate_question_file(qfile, step)
 
-        if problem is not None:
-            # Schema invalid
-            malformed.append(f"{basename} ({problem})")
+        if problem is not None or data is None:
+            # Schema invalid (data is None only alongside a problem; the check narrows the type)
+            malformed.append(f"{basename} ({problem or 'unreadable'})")
             # Also check if this file has no answers and is named by awaiting-answers marker
             answers_file = adir / basename if adir.exists() else None
             if basename in awaiting_basenames and (answers_file is None or not answers_file.is_file()):
@@ -2284,7 +2298,7 @@ def iter_outstanding_lines(receipt: str) -> tuple:
                 # Validate provenance is one of the allowed values
                 if provenance not in ["self-report", "both", "verifier"]:
                     raise ValueError(f"invalid provenance {provenance!r} in OUTSTANDING line: {line[:100]}")
-                valid_items.append(OutstandingItem(unit_id, reason, provenance))
+                valid_items.append(OutstandingItem(unit_id, reason, cast(Provenance, provenance)))
                 has_items = True
 
     # Reject mixing "none" with items
@@ -2653,12 +2667,16 @@ def load_assess_answers(flow_dir: Path, answer_ref: str) -> Tuple[Optional[Dict[
 FIXED_CHOICE_LABELS = ("Open an issue", "Leave as-is", "Pause to finish by hand", "Drop", "Confirm already done")
 DROP_REASON_MIN_LEN = 15
 ISSUE_URL_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+$")
-_ASSESS_STATUSES = ("unfinished", "already-done")
-_ASSESS_KINDS = ("mechanical", "decision")
-_ASSESS_SCOPES = ("in-scope", "separate-ticket")
-_DISPOSITIONS = ("finished", "asked-and-answered", "filed-as-issue", "dropped")
-_DISPOSITION_BYS = ("human", "assessor-verified")
-_DISPOSITION_ROUTES = ("leave", "pause", "issue", "none")
+# Derived from the Literal aliases so the runtime checks and the types cannot drift apart.
+_ASSESS_STATUSES = get_args(AssessStatus)
+_ASSESS_KINDS = get_args(AssessKind)
+_ASSESS_SCOPES = get_args(AssessScope)
+_LEAVE_SAFE_VALUES = get_args(LeaveSafe)
+_OPTION_ROUTES = get_args(OptionRoute)
+_DISPOSITIONS = get_args(DispositionValue)
+_DISPOSITION_BYS = get_args(DispositionBy)
+_DISPOSITION_ROUTES = get_args(DispositionRoute)
+_ASSESSMENT_MODES = get_args(AssessmentMode)
 
 
 def parse_options(text: str) -> Tuple[Tuple[AssessorOption, ...], Optional[str]]:
@@ -2671,13 +2689,13 @@ def parse_options(text: str) -> Tuple[Tuple[AssessorOption, ...], Optional[str]]
         label, route = label.strip(), route.strip()
         if not sep or not label:
             return ((), f"option {chunk!r} is not '<label> => pause|issue'")
-        if route not in ("pause", "issue"):
+        if route not in _OPTION_ROUTES:
             return ((), f"option {label!r} has route {route!r}, expected pause or issue")
         if label.casefold() in {f.casefold() for f in FIXED_CHOICE_LABELS}:
             return ((), f"option label {label!r} equals a fixed choice label")
         if label.casefold() in {o.label.casefold() for o in opts}:
             return ((), f"duplicate option label {label!r}")
-        opts.append(AssessorOption(label, cast(Literal["pause", "issue"], route)))
+        opts.append(AssessorOption(label, cast(OptionRoute, route)))
     if len(opts) > 2:
         return ((), f"{len(opts)} options, at most 2 allowed")
     return (tuple(opts), None)
@@ -2692,7 +2710,7 @@ def parse_assessment_line(line: str) -> Tuple[Optional[Assessment], Optional[str
     item_id, status, kind, scope, leave, cause, evidence, plan, proof, options_text = (g.strip() for g in m.groups())
     for name, value, allowed in (
         ("status", status, _ASSESS_STATUSES), ("kind", kind, _ASSESS_KINDS), ("scope", scope, _ASSESS_SCOPES),
-        ("leave_as_is_safe", leave, ("yes", "no")),
+        ("leave_as_is_safe", leave, _LEAVE_SAFE_VALUES),
     ):
         if value not in allowed:
             return (None, f"assess receipt: invalid {name} value in {item_id}: {value}")
@@ -2701,10 +2719,10 @@ def parse_assessment_line(line: str) -> Tuple[Optional[Assessment], Optional[str
         return (None, f"assess receipt: {item_id}: {opt_err}")
     rec = Assessment(
         item_id,
-        cast(Literal["unfinished", "already-done"], status),
-        cast(Literal["mechanical", "decision"], kind),
-        cast(Literal["in-scope", "separate-ticket"], scope),
-        cast(Literal["yes", "no"], leave),
+        cast(AssessStatus, status),
+        cast(AssessKind, kind),
+        cast(AssessScope, scope),
+        cast(LeaveSafe, leave),
         cause,
         evidence,
         plan,
@@ -2795,7 +2813,7 @@ def _gate_fail_undisposed(ids: List[str], reason: str) -> NoReturn:
     error(reason)
 
 
-def _parse_marker(text: str) -> Tuple[str, Optional[str], List[Disposition], bool]:
+def _parse_marker(text: str) -> Tuple[MarkerKind, Optional[AssessmentMode], List[Disposition], bool]:
     """Parse a marker. Returns (kind, assessment_mode, dispositions, has_sentinel); kind is "v2" or "legacy".
 
     Calls error() on a malformed v2 marker (names the offending line).
@@ -2808,11 +2826,11 @@ def _parse_marker(text: str) -> Tuple[str, Optional[str], List[Disposition], boo
     if nonblank[0].strip() != "format: 2":
         error(f"outstanding gate: unsupported marker format line: {nonblank[0]}")
     if len(nonblank) < 3 or not nonblank[1].startswith("assessment: ") \
-            or nonblank[1][len("assessment: "):].strip() not in ("assessor", "taken-over") \
+            or nonblank[1][len("assessment: "):].strip() not in _ASSESSMENT_MODES \
             or nonblank[2].strip() != "<!-- outstanding-pending -->":
         error("outstanding gate: malformed marker header (expected 'format: 2', 'assessment: assessor|taken-over', "
               "'<!-- outstanding-pending -->')")
-    mode = nonblank[1][len("assessment: "):].strip()
+    mode = cast(AssessmentMode, nonblank[1][len("assessment: "):].strip())  # validated against _ASSESSMENT_MODES above
     dispositions: List[Disposition] = []
     ended = False
     for ln in nonblank[3:]:
@@ -2838,11 +2856,11 @@ def _parse_marker(text: str) -> Tuple[str, Optional[str], List[Disposition], boo
             error(f"outstanding gate: invalid route value for {item_id}: {route}")
         dispositions.append(Disposition(
             item_id,
-            cast(Literal["finished", "asked-and-answered", "filed-as-issue", "dropped"], disp_v),
-            cast(Literal["human", "assessor-verified"], by),
+            cast(DispositionValue, disp_v),
+            cast(DispositionBy, by),
             answer_ref,
             option,
-            cast(Literal["leave", "pause", "issue", "none"], route),
+            cast(DispositionRoute, route),
             url,
             reason
         ))
@@ -2958,7 +2976,7 @@ def _legacy_gate(flow_dir: Path, marker_text: str, derived_ids: List[str], has_s
     sys.exit(0)
 
 
-def _paused_unfinished(dispositions: List[Disposition], assessments: Dict[str, Assessment], mode: str) -> List[str]:
+def _paused_unfinished(dispositions: List[Disposition], assessments: Dict[str, Assessment], mode: AssessmentMode) -> List[str]:
     """Ids whose disposition is a pause that is not yet terminal (current record is not already-done)."""
     out = []
     for d in dispositions:
@@ -3622,9 +3640,9 @@ def main() -> None:
     decision = parse_receipt_field(receipt, "Decision")
     if decision == "FAILED":
         # Try "REASON:" (uppercase) first, then "Reason:" (title case)
-        reason = parse_receipt_field(receipt, "REASON") or parse_receipt_field(receipt, "Reason")
-        if reason:
-            print(f"Reason: {reason}")
+        failed_reason = parse_receipt_field(receipt, "REASON") or parse_receipt_field(receipt, "Reason")
+        if failed_reason:
+            print(f"Reason: {failed_reason}")
         else:
             print("Reason: receipt is FAILED but has no reason")
         sys.exit(1)
@@ -3658,21 +3676,21 @@ def main() -> None:
     home = Path.home().resolve()
 
     # Step-specific checks
-    error_reason: Optional[str] = None
+    step_error: Optional[str] = None
 
-    flow_dir = resolve_flow_dir(args.flow_dir, receipt_file)
+    step_flow_dir = resolve_flow_dir(args.flow_dir, receipt_file)
 
     if args.step == "plan":
-        error_reason = check_plan(receipt_file, since_ts, home, flow_dir)
+        step_error = check_plan(receipt_file, since_ts, home, step_flow_dir)
     elif args.step == "review":
-        error_reason = check_review(receipt_file, since_ts, home, flow_dir)
+        step_error = check_review(receipt_file, since_ts, home, step_flow_dir)
     elif args.step == "implement":
         if not all([args.repo, args.branch, args.base]):
             error("--repo, --branch, --base required for implement")
         # Validate base as hex SHA (7-40 chars)
         if not re.match(r"^[0-9a-f]{7,40}$", args.base):
             error(f"Invalid base SHA: {args.base}")
-        error_reason = check_implement(
+        step_error = check_implement(
             receipt_file, args.repo, args.branch, args.base, args.main_worktree,
             args.check_worktree,
         )
@@ -3682,16 +3700,16 @@ def main() -> None:
         # Validate base as hex SHA (7-40 chars)
         if not re.match(r"^[0-9a-f]{7,40}$", args.base):
             error(f"Invalid base SHA: {args.base}")
-        error_reason = check_fix(
+        step_error = check_fix(
             receipt_file, args.repo, args.branch, args.base, args.review_dir, home,
             args.main_worktree, args.check_worktree,
         )
     elif args.step in ["track", "verify", "ship", "merge"]:
         # No artifact checks
-        error_reason = None
+        step_error = None
 
-    if error_reason:
-        print(f"Reason: {error_reason}")
+    if step_error:
+        print(f"Reason: {step_error}")
         sys.exit(1)
 
     print("ARTIFACTS: ok")

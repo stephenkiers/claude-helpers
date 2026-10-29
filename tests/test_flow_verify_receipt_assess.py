@@ -12,6 +12,7 @@ Every case runs the real script as a subprocess against a FLOW_DIR fixture built
 Run with: python3 tests/test_flow_verify_receipt_assess.py
 """
 
+import importlib.util
 import sys
 import tempfile
 from pathlib import Path
@@ -284,6 +285,26 @@ def main():
         rc, out, err = assess_check(flow, home)
         h.test_result("a receipt without <!-- assessment-end --> fails", rc != 0,
                       f"rc={rc} out:\n{combined(out, err)}")
+
+    print("[Literal-derived tuples (D28)]")
+    spec = importlib.util.spec_from_file_location(
+        "flow_verify_receipt_under_test", Path(__file__).resolve().parent.parent / "scripts" / "flow-verify-receipt.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    expected = {
+        "_ASSESS_STATUSES": ("unfinished", "already-done"),
+        "_ASSESS_KINDS": ("mechanical", "decision"),
+        "_ASSESS_SCOPES": ("in-scope", "separate-ticket"),
+        "_LEAVE_SAFE_VALUES": ("yes", "no"),
+        "_OPTION_ROUTES": ("pause", "issue"),
+        "_DISPOSITIONS": ("finished", "asked-and-answered", "filed-as-issue", "dropped"),
+        "_DISPOSITION_BYS": ("human", "assessor-verified"),
+        "_DISPOSITION_ROUTES": ("leave", "pause", "issue", "none"),
+        "_ASSESSMENT_MODES": ("assessor", "taken-over"),
+    }
+    for name, want in expected.items():
+        got = getattr(mod, name, None)
+        h.test_result(f"{name} equals the expected ordered values", got == want, f"got {got!r}, want {want!r}")
 
     h.summarize_and_exit()
 
