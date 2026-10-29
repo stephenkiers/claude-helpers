@@ -286,6 +286,34 @@ def main():
         h.test_result("a receipt without <!-- assessment-end --> fails", rc != 0,
                       f"rc={rc} out:\n{combined(out, err)}")
 
+    print("[Documented 07-assess.md layout (D3)]")
+
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td)
+        flow = make_flow(td, implement=BASE_IMPL)
+        write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4)], assessed_header=True)
+        text = (flow / "steps" / "07-assess.md").read_text()
+        h.test_result("fixture writes the documented layout (ASSESSED, records, end block, ATTEMPT, step-end)",
+                      text.startswith("ASSESSED: 2\n") and "<!-- assessment-end -->\nATTEMPT: 1\n" in text
+                      and text.rstrip().endswith("<!-- step-end -->"), text)
+        rc, out, err = assess_check(flow, home)
+        h.test_result("the ASSESSED: header is tolerated by --step assess", rc == 0,
+                      f"rc={rc} out:\n{combined(out, err)}")
+
+    print("[Continuation line names its position (D29)]")
+
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td)
+        flow = make_flow(td, implement=BASE_IMPL)
+        write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS),
+                            "and the wrapped rest of the previous record's text"])
+        rc, out, err = assess_check(flow, home)
+        text = combined(out, err)
+        h.test_result("a continuation line fails with its line number and the previous good id",
+                      rc != 0 and "line 2" in text and f"after {S3}" in text, f"rc={rc} out:\n{text}")
+
+    print("[Unreadable assess file (D21), see the gate tests for the marker side]")
+
     print("[Field invariants in both directions (D30)]")
 
     invariant_cases = {

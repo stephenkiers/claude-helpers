@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _test_harness import Harness  # noqa: E402
 from _assess_fixtures import (  # noqa: E402
-    BASE_IMPL, DECISION_OPTIONS, ISSUE_URL, S3, S4, assess_line, gate, make_flow, make_home, write_answers, write_assess,
+    BASE_IMPL, DECISION_OPTIONS, ISSUE_URL, S3, S4, assess_line, disp, gate, make_flow, make_home, write_answers, write_assess,
 )
 
 
@@ -136,6 +136,36 @@ def main():
         h.test_result("Truncated sentinel line means incomplete marker, not parse crash",
                       rc != 0 and "malformed disposition line" in text,
                       f"rc={rc} out:\n{text}")
+
+    print("[Content after the sentinel (D26)]")
+
+    def sentinel_flow(td, extra):
+        home = make_home(td)
+        flow = make_flow(td, implement=BASE_IMPL)
+        write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
+        write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
+        path = flow / "steps" / "07-ship.outstanding.md"
+        path.write_text(
+            "format: 2\nassessment: assessor\n<!-- outstanding-pending -->\n"
+            + disp(S3, "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL) + "\n"
+            + disp(S4, "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL) + "\n"
+            + "<!-- outstanding-end -->\n" + extra
+        )
+        return home, flow
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = sentinel_flow(td, "")
+        baseline_rc, _, _ = gate(flow, home)
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = sentinel_flow(td, "some trailing note that is not a disposition\n")
+        rc, out, err = gate(flow, home)
+        h.test_result("a non-disposition junk line after the sentinel leaves the result unchanged",
+                      baseline_rc == 0 and rc == baseline_rc, f"baseline={baseline_rc} rc={rc} out:\n{combined(out, err)}")
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = sentinel_flow(td, disp("implement:Step 5", "dropped") + "\n")
+        rc, out, err = gate(flow, home)
+        h.test_result("a disposition-shaped line after the sentinel errors 'content after the sentinel'",
+                      rc != 0 and "content after the sentinel" in combined(out, err), f"rc={rc} out:\n{combined(out, err)}")
 
     h.summarize_and_exit()
 

@@ -71,11 +71,11 @@ def main():
                   "assess: working tree changed during assessment" in ef)
     h.test_result("assess section bounds the batch at most 8", "at most 8" in assess_sec,
                   f"assess section length={len(assess_sec)}")
-    h.test_result("assess section uses mv for atomic writes", "mv" in assess_sec)
+    h.test_result("assess section uses mv for atomic writes", "temp file then `mv`" in assess_sec)
     h.test_result("assess section uses printf '%s' for JSON piping", "printf '%s'" in assess_sec)
     h.test_result("assess section mentions follow-up", "follow-up" in assess_sec)
     h.test_result("assess section says persist each answer as it is made",
-                  any(p in assess_sec for p in ("persist each", "as it is made", "as soon as")))
+                  "Persist each answer as soon as it is applied" in assess_sec)
     h.test_result("assess section has the 'Already done (assessor-verified):' label",
                   "Already done (assessor-verified):" in assess_sec)
     h.test_result("assess section offers Take over", "Take over" in assess_sec)

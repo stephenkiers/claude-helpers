@@ -2705,7 +2705,7 @@ def parse_options(text: str) -> Tuple[Tuple[AssessorOption, ...], Optional[str]]
 
 def parse_assessment_line(line: str) -> Tuple[Optional[Assessment], Optional[str]]:
     """Parse one assessment record. Returns (record, None) or (None, reason naming the id)."""
-    hint = line.split(" | ")[0].strip()
+    hint = line.split(" | ")[0].strip()[:60]  # capped: a stray continuation line can be long
     m = ASSESSMENT_ITEM_RE.match(line)
     if not m:
         return (None, f"assess receipt: malformed line for {hint}")
@@ -2740,14 +2740,18 @@ def load_assessments(receipt_text: str) -> Tuple[Optional[List[Assessment]], Opt
         return (None, "assess receipt missing <!-- assessment-end --> block")
     records: List[Assessment] = []
     seen = set()
-    for line in receipt_text.split("\n"):
+    prev_id = ""
+    for n, line in enumerate(receipt_text.split("\n"), 1):
         if line.strip() == "<!-- assessment-end -->":
             break
         if not line.strip() or line.startswith("ASSESSED:"):
             continue
         rec, err = parse_assessment_line(line)
         if rec is None:
-            return (None, err)
+            # The id parse_assessment_line names comes from this very line, so for a wrapped
+            # continuation line it names stray text; the position and last good id point at the real cause.
+            return (None, f"{err} (line {n}, after {prev_id[:60] or 'the start'})")
+        prev_id = rec.id
         if rec.id in seen:
             return (None, f"assess receipt: duplicate assessment for {rec.id}")
         seen.add(rec.id)
@@ -2850,8 +2854,9 @@ def _parse_marker(text: str) -> Tuple[MarkerKind, Optional[AssessmentMode], List
             ended = True
             continue
         if ended:
-            # F28: Tolerate trailing partial lines (unterminated last line) that come after sentinel
-            # Skip blank-ish lines or clearly partial lines (don't match regex)
+            # F28: junk after the sentinel never yields a disposition: a line that does not look like a
+            # disposition is skipped, and a disposition-shaped line there errors. (A truncated last line
+            # BEFORE the sentinel is rejected by the malformed-disposition check below.)
             m = DISPOSITION_ITEM_RE.match(ln)
             if not m:
                 continue
@@ -3058,6 +3063,9 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
         try:
             recs, _ = load_assessments(assess_file.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
+            # Fail-closed reasoning (D21): an unreadable or malformed assess file leaves `assessments`
+            # empty. Assessor mode then fails in check_assess (which re-reads the file); taken-over mode
+            # never needs a record to pass; and `rec is None` counts as paused, never as finished.
             recs = None
         assessments = {r.id: r for r in recs or []}
 

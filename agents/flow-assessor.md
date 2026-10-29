@@ -113,7 +113,7 @@ Emit one line per item in this exact format:
 ### Grammar Preconditions
 
 Each assessment line must satisfy:
-- **Ids contain no spaces or `|`** — the id field is the sole key and cannot contain field separators.
+- **Ids contain no `|`** — the id field is the sole key and cannot contain the field separator. (Ids may contain spaces, e.g. `implement:Step 3`.)
 - **One line per item** — each item is exactly one record, never split across lines.
 - **Each item id appears exactly once** — no duplicate ids in the output.
 - **The sentinel `<!-- assessment-end -->` is the last line** — nothing follows it.

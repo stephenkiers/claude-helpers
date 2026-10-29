@@ -422,14 +422,14 @@ def main():
         write_marker(flow, [disp("implement:coverage-unavailable", "finished", option="Open an issue", route="issue", url=ISSUE_URL)],
                      assessment="taken-over")
         rc, out, err = gate(flow, home)
-        h.test_result("taken-over marker with a finished line fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("taken-over marker with a finished line fails", rc != 0 and "finished not allowed under taken-over" in combined(out, err), f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
         home, flow = taken_flow(td, log=[f"{TS} implement taken-over"])
         write_marker(flow, [disp("implement:coverage-unavailable", "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL)],
                      assessment="taken-over")
         rc, out, err = gate(flow, home)
-        h.test_result("taken-over marker without an 'assess taken-over' log line fails", rc != 0,
+        h.test_result("taken-over marker without an 'assess taken-over' log line fails", rc != 0 and "newest assess log line" in combined(out, err),
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -438,7 +438,7 @@ def main():
         write_marker(flow, [disp("implement:coverage-unavailable", "asked-and-answered", option="Leave as-is", route="leave")],
                      assessment="taken-over")
         rc, out, err = gate(flow, home)
-        h.test_result("taken-over marker with leave-as-is fails", rc != 0, f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("taken-over marker with leave-as-is fails", rc != 0 and "leave-as-is not allowed under taken-over" in combined(out, err), f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     # Opposite-direction tests for taken-over combinations (F37)
     with tempfile.TemporaryDirectory() as td:
@@ -453,8 +453,43 @@ def main():
         write_marker(flow, [disp("implement:coverage-unavailable", "filed-as-issue", option="Open an issue", route="issue", url=ISSUE_URL)],
                      assessment="taken-over")
         rc, out, err = gate(flow, home)
-        h.test_result("taken-over marker with 'assess ok' instead of 'assess taken-over' log line fails", rc != 0,
+        h.test_result("taken-over marker with 'assess ok' instead of 'assess taken-over' log line fails", rc != 0 and "newest assess log line" in combined(out, err),
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    print()
+    print("[Gate: unreadable assess file fails closed (D21)]")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = base(td)
+        (flow / "steps" / "07-assess.md").write_bytes(b"\xff\xfe")
+        write_marker(flow, good_lines())
+        rc, out, err = gate(flow, home)
+        h.test_result("assessor marker with a non-UTF-8 assess receipt fails 'cannot read assess receipt'",
+                      rc != 0 and "cannot read assess receipt" in combined(out, err), f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td)
+        flow = make_flow(td, implement=None, log=taken_log)
+        write_answers(flow, 1, [("q1", "implement:coverage-unavailable", "File a follow-up", None)])
+        (flow / "steps" / "07-assess.md").write_bytes(b"\xff\xfe")
+        write_marker(flow, [disp("implement:coverage-unavailable", "asked-and-answered", option="File a follow-up",
+                                 route="issue", url=ISSUE_URL)], assessment="taken-over")
+        rc, out, err = gate(flow, home)
+        h.test_result("taken-over marker, unreadable assess file, issue-routed option: not an issue-routed assessor option",
+                      rc != 0 and "not an issue-routed assessor option" in combined(out, err),
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = taken_flow(td)
+        (flow / "steps" / "07-assess.md").write_bytes(b"\xff\xfe")
+        write_answers(flow, 1, [("q1", "implement:coverage-unavailable", "Pause to finish by hand", None)])
+        write_marker(flow, [disp("implement:coverage-unavailable", "asked-and-answered", option="Pause to finish by hand",
+                                 route="pause")], assessment="taken-over")
+        rc, out, err = gate(flow, home)
+        h.test_result("taken-over marker, unreadable assess file, pause: paused, not yet finished",
+                      rc != 0 and "paused, not yet finished" in combined(out, err), f"rc={rc} out:\n{out}\nerr:\n{err}")
+        h.test_result("... and the id is on UNDISPOSITIONED:",
+                      "UNDISPOSITIONED: implement:coverage-unavailable" in out, f"out:\n{out}")
 
     print()
     print("[Gate: legacy pre-amendment markers]")

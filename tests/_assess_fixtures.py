@@ -103,9 +103,11 @@ def assess_line(item, *, status="unfinished", kind="mechanical", scope="in-scope
     return " | ".join(fields)
 
 
-def write_assess(flow, lines, end_marker=True):
-    """Write steps/07-assess.md: item lines, assessment-end block, trailer."""
-    text = "".join(f"{ln}\n" for ln in lines)
+def write_assess(flow, lines, end_marker=True, assessed_header=False):
+    """Write steps/07-assess.md: item lines, assessment-end block, trailer. assessed_header=True
+    prepends the documented `ASSESSED: <n>` line."""
+    text = f"ASSESSED: {len(lines)}\n" if assessed_header else ""
+    text += "".join(f"{ln}\n" for ln in lines)
     if end_marker:
         text += "<!-- assessment-end -->\n"
     text += TRAILER
