@@ -321,6 +321,7 @@ SLUG=""
 
 if [ ! -f "$SLUGIFY" ]; then
   echo "SLUG WARNING: $SLUGIFY is not linked — run /setup-local" >&2
+  echo "SLUG WARNING: $SLUGIFY is not linked — run /setup-local" >> "$SESSION_DIR/slug-warning.txt"
 fi
 
 [ -n "$SLUG" ] || SLUG="plan"
@@ -343,6 +344,11 @@ printf '%s' "$SLUG"
                 "Missing script produces warning naming /setup-local",
                 "/setup-local" in stderr_output,
                 f"stderr: {stderr_output!r}",
+            )
+            h.test_result(
+                "Missing script warning written to slug-warning.txt",
+                warning_file.exists(),
+                f"file exists: {warning_file.exists()}",
             )
 
     print()

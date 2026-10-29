@@ -385,7 +385,7 @@ fi
 
 Announce the chosen effort and reason to the user; they can re-run with `--effort` to override.
 
-**After resolving the ticket title**, use the `Write` tool (never a shell redirect) to write the resolved title to `{SESSION_DIR}/ticket-title.txt` on a single line. This ensures the title never appears in a shell string literal. Then recompute SLUG and FINAL_PLAN_PATH:
+**After resolving the ticket title**, use the `Write` tool (never a shell redirect, echo, or heredoc) to write the resolved title to the file `$SESSION_DIR/ticket-title.txt` (file_path: `{SESSION_DIR}/ticket-title.txt` expanded to its absolute path with `$HOME` substituted) on a single line. This ensures the title never appears in a shell string literal. Then recompute SLUG and FINAL_PLAN_PATH:
 
 ```bash
 TITLE_FILE="$SESSION_DIR/ticket-title.txt"
@@ -393,6 +393,7 @@ SLUGIFY="$HOME/.claude/scripts/slugify.sh"
 SLUG=""
 if [ ! -f "$SLUGIFY" ]; then
   printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >&2
+  printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >> "$SESSION_DIR/slug-warning.txt"
 elif [ ! -s "$TITLE_FILE" ]; then
   printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.\n' "$TITLE_FILE" >&2
   printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.\n' "$TITLE_FILE" >> "$SESSION_DIR/slug-warning.txt"
@@ -956,13 +957,11 @@ if [ -n "$NS_LINE" ]; then
   { printf '%s\n\n' "$NS_LINE"; cat "$FINAL_PLAN_PATH"; } > "$FINAL_PLAN_PATH.tmp" && mv "$FINAL_PLAN_PATH.tmp" "$FINAL_PLAN_PATH"
 fi
 
-# Slug warning line: mechanically prepend if non-empty
-if [ -f "$SESSION_DIR/slug-warning.txt" ] && [ -s "$SESSION_DIR/slug-warning.txt" ]; then
-  { cat "$SESSION_DIR/slug-warning.txt"; printf '\n'; cat "$FINAL_PLAN_PATH"; } > "$FINAL_PLAN_PATH.tmp" && mv "$FINAL_PLAN_PATH.tmp" "$FINAL_PLAN_PATH"
-fi
+# Slug warning: mechanically print if non-empty
+[ -s "$SESSION_DIR/slug-warning.txt" ] && cat "$SESSION_DIR/slug-warning.txt" || true
 ```
 
-The `--nick-file` argument folds Nick's `nick=` tokens (or `nick=unparseable`) into that line, matching Step 5. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key). Similarly, any slug warning (from a missing title file or unlinked script) is prepended from `slug-warning.txt`.
+The `--nick-file` argument folds Nick's `nick=` tokens (or `nick=unparseable`) into that line, matching Step 5. When any blind line exists, print it as the **first body line** of the delivery summary below (the receipt a flow relays — a body line, never a trailer key). When any slug warning is printed above (from a missing title file or unlinked script), include it as a body line of the closing message.
 
 Print the path, selected scope, effort, panel + model choices, and review status (one of: "main-thread consistency check only," "targeted independent check: <question>," "independent final audit"). Suggest `/track-and-start` or `/expert-review-plan` as next steps.
 
