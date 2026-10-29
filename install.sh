@@ -69,6 +69,15 @@ list_source_files() {
     find "$1" -type f -not -path '*/__pycache__/*'
 }
 
+# Hook command per PreToolUse matcher (case, not `declare -A`: macOS ships bash 3.2).
+flow_hook_command() {
+    case "${1}" in
+        "Agent|Task") echo "$HOME/.claude/scripts/flow-agent-guard.py --agent auto" ;;
+        "Skill") echo "$HOME/.claude/scripts/flow-skill-guard.py --agent auto" ;;
+        "Bash") echo "$HOME/.claude/scripts/flow-bash-guard.py --agent auto" ;;
+    esac
+}
+
 # --check: read-only. Reports drift, creates/removes/moves nothing.
 if [ "$CHECK_ONLY" -eq 1 ]; then
     drift=0
@@ -76,15 +85,8 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     # Check for missing flow agent hooks in settings.json
     SETTINGS_FILE="$CLAUDE_DIR/settings.json"
     if command -v jq &> /dev/null && [ -e "$SETTINGS_FILE" ] && jq empty "$SETTINGS_FILE" 2>/dev/null; then
-        # Define the three expected flow agent hooks
-        declare -A flow_hooks=(
-            ["Agent|Task"]="$HOME/.claude/scripts/flow-agent-guard.py --agent auto"
-            ["Skill"]="$HOME/.claude/scripts/flow-skill-guard.py --agent auto"
-            ["Bash"]="$HOME/.claude/scripts/flow-bash-guard.py --agent auto"
-        )
-
         for matcher in "Agent|Task" "Skill" "Bash"; do
-            hook_command="${flow_hooks[$matcher]}"
+            hook_command=$(flow_hook_command "$matcher")
             if ! jq --arg matcher "$matcher" --arg cmd "$hook_command" \
                 '(.hooks.PreToolUse // []) | any(.matcher == $matcher and .hooks[]?.command == $cmd)' \
                 "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
@@ -356,15 +358,8 @@ if command -v jq &> /dev/null; then
     if ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
         echo "Warning: $SETTINGS_FILE is not valid JSON, skipping flow agent hook registration" >&2
     else
-        # Define the three flow agent hooks
-        declare -A flow_hooks=(
-            ["Agent|Task"]="$HOME/.claude/scripts/flow-agent-guard.py --agent auto"
-            ["Skill"]="$HOME/.claude/scripts/flow-skill-guard.py --agent auto"
-            ["Bash"]="$HOME/.claude/scripts/flow-bash-guard.py --agent auto"
-        )
-
         for matcher in "Agent|Task" "Skill" "Bash"; do
-            hook_command="${flow_hooks[$matcher]}"
+            hook_command=$(flow_hook_command "$matcher")
 
             # Check if this hook already exists by matching the command exactly
             if jq --arg matcher "$matcher" --arg cmd "$hook_command" \
