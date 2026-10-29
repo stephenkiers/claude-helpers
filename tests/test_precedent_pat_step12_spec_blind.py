@@ -468,13 +468,14 @@ def main():
     # 14.2: Two-surface rendering rule is stated
     if "## Step 12" in doc_text:
         # Check for the two-surface rule (option description vs Precedent block)
-        two_surface_rule = ("option description" in step12_section and
-                           "Precedent block" in step12_section and
-                           ("Surface 1" in step12_section or "Surface 2" in step12_section or "two.surface" in step12_section or "two-surface" in step12_section))
+        # Require both "Surface 1" and "Surface 2" explicitly named, plus the surface descriptions
+        has_surface_1 = "Surface 1" in step12_section and "option description" in step12_section
+        has_surface_2 = "Surface 2" in step12_section and "Precedent block" in step12_section
+        two_surface_rule = has_surface_1 and has_surface_2
         h.test_result(
             "rendering: two-surface rule is stated (Surface 1 option description, Surface 2 Precedent block)",
             two_surface_rule,
-            "two-surface rule not found or not properly documented" if not two_surface_rule else "",
+            "two-surface rule not properly documented (both Surface 1 and Surface 2 required)" if not two_surface_rule else "",
         )
 
     print()
