@@ -157,6 +157,16 @@ _DeviationStats = TypedDict("_DeviationStats", {
 })
 
 
+_HoldoutStats = TypedDict("_HoldoutStats", {
+    "logged": int,
+    "scored": int,
+    "hit_rate": Optional[float],
+    "baseline_n": int,
+    "baseline_hit_rate": Optional[float],
+    "by_confidence": Dict[str, _ConfidenceStats],
+})
+
+
 class PredictionStats(TypedDict):
     """The --stats predictions section. Always has every key, even when the log is absent."""
     log_path: str
@@ -174,6 +184,7 @@ class PredictionStats(TypedDict):
     by_confidence: Dict[str, _ConfidenceStats]
     deviation: _DeviationStats
     anchoring_caveat: str
+    holdout: _HoldoutStats
 
 
 PREDICTION_LOG_PATH_LABEL = "~/.claude/precedent/<owner-name>/predictions.jsonl"
@@ -1648,6 +1659,12 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> PredictionStats:
     read_error are set by the caller; this function leaves them at zero and None.
     The --match path builds its stub from build_prediction_stats([]).
     """
+    # Hold-out rows (displayed: false) are the unbiased arm: the human saw no prediction.
+    # Rows with no displayed field are displayed. The top-level keys cover displayed rows only;
+    # hold-out rows are reported separately under "holdout".
+    holdout_rows = [r for r in rows if r.get("displayed") is False]
+    rows = [r for r in rows if r.get("displayed") is not False]
+
     # Count logged rows (across all attempts, since we loaded per repo_key)
     logged = len(rows)
 
@@ -1739,6 +1756,44 @@ def build_prediction_stats(rows: List[Dict[str, Any]]) -> PredictionStats:
             "neither": deviation_neither,
         },
         "anchoring_caveat": ANCHORING_CAVEAT,
+        "holdout": _holdout_stats(holdout_rows),
+    }
+
+
+def _holdout_stats(rows: List[Dict[str, Any]]) -> _HoldoutStats:
+    """Hit rate and always-recommended baseline for hold-out rows, overall and by confidence."""
+    scored_rows = [r for r in rows if r.get("hit") is not None]
+
+    def _rates(subset: List[Dict[str, Any]]) -> Tuple[Optional[float], int, Optional[float]]:
+        hits = sum(1 for r in subset if r.get("hit") is True)
+        base = [r for r in subset if r.get("recommended") is not None]
+        base_hits = sum(1 for r in base if r.get("actual") == r.get("recommended"))
+        return (
+            round(hits / float(len(subset)), 4) if subset else None,
+            len(base),
+            round(base_hits / float(len(base)), 4) if base else None,
+        )
+
+    hit_rate, baseline_n, baseline_rate = _rates(scored_rows)
+    by_conf: Dict[str, _ConfidenceStats] = {}
+    for confidence in ("high", "medium"):
+        conf_rows = [r for r in scored_rows if r.get("confidence") == confidence]
+        c_rate, c_n, c_base = _rates(conf_rows)
+        by_conf[confidence] = {
+            "logged": len([r for r in rows if r.get("confidence") == confidence]),
+            "scored": len(conf_rows),
+            "hits": sum(1 for r in conf_rows if r.get("hit") is True),
+            "hit_rate": c_rate,
+            "baseline_n": c_n,
+            "baseline_hit_rate": c_base,
+        }
+    return {
+        "logged": len(rows),
+        "scored": len(scored_rows),
+        "hit_rate": hit_rate,
+        "baseline_n": baseline_n,
+        "baseline_hit_rate": baseline_rate,
+        "by_confidence": by_conf,
     }
 
 
@@ -1875,6 +1930,22 @@ def render_stats(stats: Dict[str, Any], fmt: str) -> str:
                         _fmt_rate(conf_hit_rate),
                         _fmt_rate(conf_baseline_rate),
                         conf_n,
+                    )
+                ho = value.get("holdout") or {}
+                pred_md += (
+                    "**Hold-out** (displayed=false, unbiased; the rows above are displayed rows only): "
+                    "logged=%d, scored=%d, pat=(%s), baseline-recommended=(%s, n=%d)\n\n"
+                ) % (
+                    ho.get("logged", 0), ho.get("scored", 0), _fmt_rate(ho.get("hit_rate")),
+                    _fmt_rate(ho.get("baseline_hit_rate")), ho.get("baseline_n", 0),
+                )
+                for confidence in ("high", "medium"):
+                    hconf = (ho.get("by_confidence") or {}).get(confidence, {})
+                    pred_md += "**Hold-out %s**: logged=%d, scored=%d, hits=%d, pat=(%s), baseline-recommended=(%s, n=%d)\n\n" % (
+                        confidence.capitalize(),
+                        hconf.get("logged", 0), hconf.get("scored", 0), hconf.get("hits", 0),
+                        _fmt_rate(hconf.get("hit_rate")), _fmt_rate(hconf.get("baseline_hit_rate")),
+                        hconf.get("baseline_n", 0),
                     )
                 dev = value.get("deviation", {})
                 pred_md += "**Deviation** (pat vs. panel): n=%d, excluded_null=%d, pat_right=%d, panel_right=%d, neither=%d" % (

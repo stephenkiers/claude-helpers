@@ -8,6 +8,9 @@ The append subcommand logs one JSONL row per answered question that Pat spoke on
 (has a block in validated JSON). Rows record the predicted answer, actual answer,
 confidence, and whether Pat was right (hit).
 
+This helper is called after Step 5 answers in /expert-plan (both non-flow and flow modes)
+and after Step 12 rulings in /expert-review (#296).
+
 Inputs:
   --validated PATH           Path to precedent-validated.json (the output of precedent-render.py validate).
   --questions PATH           Path to precedent-questions.json, with schema {"questions":[{id, header, options, recommended}]}.
@@ -49,6 +52,7 @@ never read the prediction log. The log is measurement only. Its sole reader othe
 the writer's own dedup read is scripts/precedent-digest.py --stats (project-scoped only).
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -56,6 +60,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Final, List, Literal, NoReturn, Optional, Tuple, TypedDict
 
+
+# Pattern for case-insensitive "(recommended)" marker strip (matches `(Recommended)`, `(recommended)`, etc.)
+# Used with .sub() to remove all occurrences from any position in the string.
+RECOMMENDED_RE = re.compile(r"\(\s*recommended\b[^)]*\)", re.IGNORECASE)
 
 Command = Literal["expert-plan", "expert-review"]
 Confidence = Literal["high", "medium"]
@@ -78,6 +86,7 @@ PINNED_KEYS: Final = (
     "citations",
     "actual_source",
     "anchored",
+    "displayed",
 )
 
 
@@ -97,6 +106,7 @@ class PredictionRow(TypedDict):
     citations: List[int]
     actual_source: ActualSource
     anchored: bool
+    displayed: bool
 
 
 class _Parser(argparse.ArgumentParser):
@@ -290,6 +300,23 @@ def _load_flow_answers(paths: List[str]) -> Optional[Dict[str, Tuple[str, Answer
     return merged if merged else None
 
 
+def _should_display(question_id: str) -> bool:
+    """Deterministic hold-out for control measurement: 1 in 8 questions are held out.
+
+    Uses stable SHA256 hash of question_id mod 8 to determine display status. This ensures:
+    - Deterministic: same question_id always gets the same result across processes and runs
+    - Distributed: roughly 7/8 of questions are displayed, 1/8 held out
+    - Independent: no server state needed, works per-batch
+
+    Held-out questions get no Precedent line rendered but are still logged with
+    displayed=false for control-arm measurement of Pat's accuracy (avoiding anchoring bias).
+    """
+    # Use first 8 hex digits of SHA256 as a stable hash value
+    hash_hex = hashlib.sha256(question_id.encode()).hexdigest()[:8]
+    hash_int = int(hash_hex, 16)
+    return hash_int % 8 != 0
+
+
 def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "free_text"]]:
     """Classify an answer value as option or free_text.
 
@@ -297,10 +324,8 @@ def classify(value: str, options: List[str]) -> Tuple[str, Literal["option", "fr
       - actual: canonical label for option, or normalized text for free_text
       - actual_source: "option" or "free_text"
     """
-    # Strip trailing " (Recommended)" marker
-    stripped = value.rstrip()
-    if stripped.endswith("(Recommended)"):
-        stripped = stripped[: stripped.rfind("(Recommended)")].rstrip()
+    # Strip trailing "(recommended)" marker (case-insensitive)
+    stripped = RECOMMENDED_RE.sub("", value).rstrip()
 
     # Exact match to an option label
     if stripped in options:
@@ -335,6 +360,7 @@ def _build_row(
     actual: str,
     actual_source: ActualSource,
     anchored: bool,
+    displayed: bool,
 ) -> PredictionRow:
     """Build one prediction row from a validated block.
 
@@ -409,6 +435,7 @@ def _build_row(
         "citations": dedup_citations,
         "actual_source": actual_source,
         "anchored": anchored,
+        "displayed": displayed,
     }
     return row
 
@@ -508,7 +535,7 @@ def _append_rows(log_dir: str, repo_key: str, rows: List[PredictionRow]) -> Tupl
 
 
 def _build_parser() -> _Parser:
-    parser = _Parser(description="Log predictions after Step 5 answers.")
+    parser = _Parser(description="Log predictions after Step 5 answers in /expert-plan or Step 12 rulings in /expert-review.")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     append_parser = subparsers.add_parser("append", help="Append prediction rows to the log")
@@ -521,6 +548,10 @@ def _build_parser() -> _Parser:
     append_parser.add_argument("--run", required=True, help="Run identifier")
     append_parser.add_argument("--trace-file", required=True, help="Path to precedent-trace.txt")
     append_parser.add_argument("--log-root", default=os.path.expanduser("~/.claude/precedent"), help="Log root directory")
+
+    holdout_parser = subparsers.add_parser("holdout", help="Output JSON list of held-out question IDs")
+    holdout_parser.add_argument("questions", nargs="+", help="Question IDs to check for hold-out status")
+
     return parser
 
 
@@ -629,6 +660,7 @@ def _build_rows(
                 actual=actual,
                 actual_source=actual_source,
                 anchored=anchored,
+                displayed=_should_display(question_id),
             )
         except _RowError as exc:
             _skip("row-build-failed: question %s, field %s" % (question_id, exc.field))
@@ -641,8 +673,14 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    # Handle 'holdout' subcommand: output JSON list of held-out question ids
+    if args.subcommand == "holdout":
+        held_out = [qid for qid in args.questions if not _should_display(qid)]
+        print(json.dumps(held_out))
+        sys.exit(0)
+
     if args.subcommand != "append":
-        parser.error("only 'append' subcommand is supported")
+        parser.error("only 'append' and 'holdout' subcommands are supported")
 
     _check_answer_flags(parser, args)
     _trace_gate(args.trace_file)

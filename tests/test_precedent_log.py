@@ -466,7 +466,7 @@ def case_row_contract(h):
 
         row = _only(rows)
         expected_keys = ("ts", "repo_key", "command", "run", "question_id", "header", "recommended",
-                         "predicted", "confidence", "actual", "hit", "citations", "actual_source", "anchored")
+                         "predicted", "confidence", "actual", "hit", "citations", "actual_source", "anchored", "displayed")
         h.test_result("row contract: keys match PINNED_KEYS", tuple(row.keys()) == expected_keys,
                       f"expected={expected_keys}, got={tuple(row.keys())}")
         h.test_result("row contract: repo_key is lowercase", row.get("repo_key") == "owner-name",
@@ -913,6 +913,92 @@ def case_answer_normalization(h):
                       f"hit={q2_row.get('hit')}")
 
 
+def case_lowercase_recommended_marker(h):
+    """Test: lowercase (recommended) marker is stripped case-insensitively (D1 casing fix)."""
+    with Fixture() as fx:
+        validated = make_validated([
+            ("Q1", "A. Option A", "high", [1]),
+            ("Q2", "B. Option B", "high", [2]),
+        ])
+        questions = make_questions([
+            ("Q1", "First", ["A. Option A", "B. Option B"], "A. Option A"),
+            ("Q2", "Second", ["A. Option A", "B. Option B"], "B. Option B"),
+        ])
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", make_answers({
+            "Q1": "A. Option A (recommended)",  # lowercase (recommended)
+            "Q2": "B. Option B (RECOMMENDED)",  # uppercase (RECOMMENDED)
+        }))
+
+        rc, _, _ = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-plan", "--run", "1-test-p"],
+            "shown")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("lowercase recommended: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("lowercase recommended: got 2 rows", len(rows) == 2, f"n={len(rows)}")
+
+        q1_row = _row_for(rows, "Q1")
+        q2_row = _row_for(rows, "Q2")
+        h.test_result("lowercase recommended: '(recommended)' stripped to exact label",
+                      q1_row.get("actual") == "A. Option A" and q1_row.get("actual_source") == "option",
+                      f"actual={q1_row.get('actual')}, source={q1_row.get('actual_source')}")
+        h.test_result("lowercase recommended: lowercase predicted correctly (hit True)",
+                      q1_row.get("hit") is True, f"hit={q1_row.get('hit')}")
+        h.test_result("lowercase recommended: '(RECOMMENDED)' uppercase also stripped",
+                      q2_row.get("actual") == "B. Option B" and q2_row.get("actual_source") == "option",
+                      f"actual={q2_row.get('actual')}, source={q2_row.get('actual_source')}")
+        h.test_result("lowercase recommended: uppercase predicted correctly (hit True)",
+                      q2_row.get("hit") is True, f"hit={q2_row.get('hit')}")
+
+
+def case_real_ask_label_with_recommended(h):
+    """Test: end-to-end append with real Ask label shape 'A - Not a divergence (recommended)' logs correctly (D1 end-to-end)."""
+    with Fixture() as fx:
+        # Real Ask label format: "A - Option text (recommended)"
+        validated = make_validated([
+            ("N1", "A - Not a divergence", "high", [100]),
+        ])
+        questions = make_questions([
+            ("N1", "Is this a divergence from past scope?",
+             ["A - Not a divergence", "B - Yes, new scope", "C - Partial divergence"],
+             "A - Not a divergence"),
+        ])
+        answers = make_answers({"N1": "A - Not a divergence (recommended)"})
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", questions)
+        answers_file = fx.put_json("answers.json", answers)
+
+        rc, _, stderr = run_helper(
+            fx.home, fx.log_root,
+            ["--validated", str(validated_file), "--questions", str(questions_file),
+             "--answers", str(answers_file),
+             "--repo-key", "owner-name", "--command", "expert-review", "--run", "1-review-p"],
+            "shown")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("ask label with recommended: exits 0", rc == 0, f"rc={rc}")
+        h.test_result("ask label with recommended: logs 1 row", len(rows) == 1, f"n={len(rows)}")
+
+        row = _only(rows)
+        h.test_result("ask label with recommended: actual_source is 'option' not 'free_text'",
+                      row.get("actual_source") == "option",
+                      f"actual_source={row.get('actual_source')}")
+        h.test_result("ask label with recommended: actual matches the option label (without marker)",
+                      row.get("actual") == "A - Not a divergence",
+                      f"actual={row.get('actual')}")
+        h.test_result("ask label with recommended: prediction matched correctly (hit True)",
+                      row.get("hit") is True, f"hit={row.get('hit')}")
+        h.test_result("ask label with recommended: stderr reports logged 1",
+                      "logged 1, skipped-duplicate 0" in stderr, f"stderr={stderr}")
+
+
 def case_round_trip_real_validator(h):
     """Real producer end to end: precedent-render.py validate -> precedent-log.py append -> digest --stats."""
     with Fixture() as fx:
@@ -1298,6 +1384,125 @@ def case_recommended_type_and_options_guard(h):
                       f"recommended={_row_for(rows, 'Q2').get('recommended', 'missing')!r}")
 
 
+def case_classify_recommended_marker_strip(h):
+    """Test: classify() correctly strips (recommended) from any position and handles free text."""
+    import subprocess
+    import tempfile
+
+    # Test script to import and call classify from precedent-log.py
+    script_path = str(REPO_ROOT / "scripts")
+    test_script = f"""
+import sys
+import importlib.util
+_spec = importlib.util.spec_from_file_location("precedent_log", {script_path!r} + "/precedent-log.py")
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+classify = _mod.classify
+
+# Test 1: Exact option match (no special handling needed)
+result1 = classify("A", ["A", "B", "C"])
+assert result1 == ("A", "option"), f"exact match failed: {{result1}}"
+
+# Test 2: Trailing (recommended) marker
+result2 = classify("A (recommended)", ["A", "B"])
+assert result2 == ("A", "option"), f"trailing recommended failed: {{result2}}"
+
+# Test 3: Mid-string (recommended) marker (should strip it)
+result3 = classify("A (recommended) is good", ["A (recommended) is good", "B"])
+actual, source = result3
+assert "(recommended)" not in actual.lower(), f"mid-string recommended not stripped: {{actual}}"
+assert source == "free_text", f"mid-string should be free_text, got {{source}}"
+
+# Test 4: Free text with (Recommended) at different positions
+result4 = classify("This is (Recommended) feedback", ["A", "B"])
+actual, source = result4
+assert "(Recommended)" not in actual, f"free text should not contain (Recommended): {{actual}}"
+assert source == "free_text", f"free text failed: {{source}}"
+
+# Test 5: Case-insensitive (RECOMMENDED)
+result5 = classify("Option A (RECOMMENDED)", ["Option A"])
+actual, source = result5
+assert actual == "Option A", f"case-insensitive strip failed: {{actual}}"
+assert source == "option", f"should match option: {{source}}"
+
+print("All classify tests passed")
+"""
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(test_script)
+        f.flush()
+        rc = subprocess.run(["python3", f.name], capture_output=True, text=True).returncode
+        h.test_result("classify: recommended marker stripping works correctly", rc == 0,
+                      "test script failed" if rc != 0 else "")
+
+
+def case_holdout_deterministic_across_processes(h):
+    """Test: holdout determination is deterministic across separate processes."""
+    question_ids = [f"Q{i}" for i in range(1, 801)]  # 800 questions
+
+    # Run holdout subcommand twice
+    result1 = subprocess.run(
+        ["python3", str(HELPER), "holdout"] + question_ids,
+        capture_output=True, text=True
+    )
+    rc1 = result1.returncode
+    out1 = result1.stdout
+
+    result2 = subprocess.run(
+        ["python3", str(HELPER), "holdout"] + question_ids,
+        capture_output=True, text=True
+    )
+    rc2 = result2.returncode
+    out2 = result2.stdout
+
+    try:
+        held_out1 = json.loads(out1) if out1 else []
+        held_out2 = json.loads(out2) if out2 else []
+    except json.JSONDecodeError:
+        h.test_result("holdout: deterministic output is valid JSON", False,
+                      f"first={out1!r}, second={out2!r}")
+        return
+
+    h.test_result("holdout: first run exits 0", rc1 == 0, f"rc={rc1}")
+    h.test_result("holdout: second run exits 0", rc2 == 0, f"rc={rc2}")
+    h.test_result("holdout: deterministic output across processes",
+                  held_out1 == held_out2, f"first={held_out1}, second={held_out2}")
+
+    # Check that roughly 1/8 are held out (statistical test: allow 10-150 out of 800)
+    held_out_count = len(held_out1)
+    h.test_result("holdout: roughly 1/8 held out (100±50 of 800)",
+                  50 <= held_out_count <= 150, f"count={held_out_count}, expected_approx=100")
+
+
+def case_holdout_displayed_field_in_row(h):
+    """Test: displayed field is present in logged rows and reflects holdout status."""
+    with Fixture() as fx:
+        validated = make_validated([("N1", "A", "high", [1])])
+        questions = {
+            "N1": {"header": "Needs you 1", "id": "N1", "options": ["A", "B"]},
+        }
+        answers_obj = {"answers": {"N1": "A"}}
+
+        validated_file = fx.put_json("validated.json", validated)
+        questions_file = fx.put_json("questions.json", {"questions": list(questions.values())})
+        answers_file = fx.put_json("answers.json", answers_obj)
+
+        common = ["--validated", str(validated_file), "--questions", str(questions_file),
+                  "--answers", str(answers_file), "--repo-key", "owner-name", "--command", "expert-plan"]
+
+        rc, _, _ = run_helper(fx.home, fx.log_root, [*common, "--run", "1-test-displayed"], "shown 1 of 1")
+
+        rows = fx.read_log_file("owner-name")
+        h.test_result("displayed field: one row written", rc == 0 and len(rows) == 1, f"rc={rc}, n={len(rows)}")
+
+        if rows:
+            row = _only(rows)
+            h.test_result("displayed field: present in row", "displayed" in row,
+                          f"keys={list(row.keys())}")
+            h.test_result("displayed field: is boolean", isinstance(row.get("displayed"), bool),
+                          f"displayed={row.get('displayed')!r}")
+
+
 if __name__ == "__main__":
     h = Harness("PRECEDENT-LOG TEST SUITE")
 
@@ -1316,6 +1521,8 @@ if __name__ == "__main__":
     case_letter_to_label_mapping(h)
     case_ambiguous_letter_free_text(h)
     case_answer_normalization(h)
+    case_lowercase_recommended_marker(h)
+    case_real_ask_label_with_recommended(h)
     case_round_trip_real_validator(h)
     case_make_validated_matches_real_validator(h)
     case_match_never_opens_predictions(h)
@@ -1327,5 +1534,8 @@ if __name__ == "__main__":
     case_digest_unresolved_repo_arg_not_read(h)
     case_md_hit_rate_subset_figure(h)
     case_recommended_type_and_options_guard(h)
+    case_classify_recommended_marker_strip(h)
+    case_holdout_deterministic_across_processes(h)
+    case_holdout_displayed_field_in_row(h)
 
     h.summarize_and_exit()
