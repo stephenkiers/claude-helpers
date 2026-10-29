@@ -41,7 +41,7 @@ import json
 import re
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 PROFILES = ("implement", "heal", "fix-now")
 
@@ -322,7 +322,7 @@ def check_revert_to_pass(
     prior = file_hunks(repo, revert_base, base, path)
     if not prior:
         return []
-    prior_added = set()  # type: Set[int]
+    prior_added: Set[int] = set()
     for ph in prior:
         for n, _ in ph.added:
             prior_added.add(n)
@@ -372,7 +372,7 @@ def scan(
     rb_sha = resolve_ref(repo, revert_base) if revert_base else None
 
     files = changed_files(repo, base_sha, head_sha)
-    hunk_cache = {}  # type: Dict[str, List[Hunk]]
+    hunk_cache: Dict[str, List[Hunk]] = {}
 
     def hunks_for(p: str) -> List[Hunk]:
         if p not in hunk_cache:
@@ -403,7 +403,7 @@ def scan(
             if status == "A":
                 continue
             reasons.extend(check_revert_to_pass(repo, rb_sha, base_sha, path, hunks_for(path)))
-    seen = set()  # type: Set[str]
+    seen: Set[str] = set()
     unique = []  # type: List[str]
     for r in reasons:
         if r not in seen:

@@ -1037,7 +1037,7 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
 - **Mechanism.** The dedicated `flow-healer` agent (`agents/flow-healer.md`) for check heals. The `--only-units` fix/implement re-spawn for Fix now, relayed before ship only.
 - **Budget.** `failures[verify]` bounds the check heal, so there is at most one check heal per flow. `failures[ship]` bounds Fix now plus ship attempts (two counters, which do not stack). A non-converging heal goes to Take over / Abort only: no Retry and no `Retry with sonnet`. Worst-case automatic spawns: 8 (4 verify-type, 1 `flow-healer`, 1 Fix now re-spawn, 2 ship).
 - **Required checks.**
-  - The mechanical anti-cheat scan (`scripts/anti-cheat-scan.py`): no test edits and the narrowed revert-to-pass rule on a check heal; Fix now's scan is no stricter than an ordinary `fix`.
+  - The mechanical anti-cheat scan (`scripts/anti-cheat-scan.py`): no test edits and the narrowed revert-to-pass rule on a check heal; Fix now's scan is no stricter than an ordinary `fix` (it omits the test-edit rule but keeps `test-removed`, so Fix now cannot delete tests).
   - Healer integrity checks: a single commit whose parent is `sha_before`; the judging scripts unchanged.
   - The complexity floor and behaviour check (`scripts/heal-check.py complexity`), run outside the healer.
   - The `HEAL:` record, plus the verifier and fidelity-audit requirements on it.
@@ -1052,4 +1052,4 @@ This amendment adds the third bounded exception to the no-auto-remediation stanc
 
   The `flow-healer` agent's tools are exactly: `Read, Edit, Grep, Glob, Bash(git diff:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(PYTHONPATH=* python3 -m scripts.workflow.cli checks run -)`. It has no `Write`, push, fetch, WebFetch, WebSearch, Task, or generic Bash.
 
-**Consequences.** `flow-healer` is a capability-restricted agent, narrower than the ADR-0008 standing exception for general-purpose step agents. Its `Edit` is not path-scoped, and `git commit:*` admits `--amend`; the prompt forbids both misuses and the orchestrator checks them mechanically after the healer returns. This is a residual risk, not an eliminated one. A healed run never auto-merges: the human merge gate always fires.
+**Consequences.** `flow-healer` is a capability-restricted agent, narrower than the ADR-0008 standing exception for general-purpose step agents. Its `Edit` is not path-scoped, and `git commit:*` admits `--amend`; the prompt forbids both misuses, and the orchestrator mechanically checks only the commit count, single parent, trailer, clean worktree and the three script hashes after the healer returns (an edit outside the worktree is not detected). This is a residual risk, not an eliminated one. A healed run never auto-merges: the human merge gate always fires.

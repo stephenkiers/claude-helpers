@@ -3619,7 +3619,13 @@ def check_heal(record_file: Path, flow_dir: Path, repo: str) -> Optional[str]:
         recorded = _heal_receipt_check_sha(steps_dir / f"{stem}.md")
         if recorded is None:
             return "verify receipt for the heal has no CHECK_SHA"
-        if recorded not in (sha_before, sha_after):
+        later_verify = (
+            converged
+            and sha_after is not None
+            and recorded != sha_after
+            and _heal_is_ancestor(repo, sha_after, recorded)
+        )
+        if recorded not in (sha_before, sha_after) and not later_verify:
             return "HEAL sha_before does not equal the failing verify's CHECK_SHA"
         if converged and sha_after is not None:
             reason = _heal_single_commit_reason(repo, sha_before, sha_after, heal_id)
@@ -3743,9 +3749,21 @@ def check_verify_heal(receipt: str, flow_dir: Path, repo: Optional[str], branch:
     for _, fields in records:
         if not fields or fields.get("source") != "check" or fields.get("state") != "converged":
             continue
+        sha_after = fields.get("sha_after")
+        if (
+            healed_id is None
+            and repo
+            and receipt_sha
+            and sha_after
+            and receipt_sha != sha_after
+            and _heal_is_ancestor(repo, sha_after, receipt_sha)
+        ):
+            # A later verify re-run (Fix now, ship-routed) built on top of the converged heal: the heal's
+            # own receipt was overwritten, so this one need not carry HEALED.
+            continue
         if healed_id != fields.get("id"):
             return f"converged heal {fields.get('id')} has no verify receipt carrying HEALED: {fields.get('id')}"
-        if receipt_sha != fields.get("sha_after"):
+        if receipt_sha != sha_after:
             return f"verify receipt CHECK_SHA does not equal sha_after of heal {fields.get('id')}"
     for cid in _flow_heal_commit_ids(flow_dir, repo, branch) or []:
         if cid not in known_ids:

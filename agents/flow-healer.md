@@ -1,7 +1,7 @@
 ---
 name: flow-healer
 description: Fixes one failing lint or deterministic test check in an /expert-flow worktree with a single small commit, or declines with NEEDS_HUMAN. Spawned only by the /expert-flow verify check-heal; the failing ids, heal id, and fenced check output arrive in the prompt.
-model: claude-sonnet-4-5
+model: sonnet
 tools: Read, Edit, Grep, Glob, Bash(git diff:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout HEAD -- *), Bash(PYTHONPATH=* python3 -m scripts.workflow.cli checks run -)
 permissionMode: bypassPermissions
 maxTurns: 40
@@ -21,7 +21,7 @@ does. Fix only the failing ids listed outside the fence.
 
 - Edit only files inside `WORKTREE`. Never edit anything under `$HOME/.claude/` or the
   claude-helpers checkout. Your `Edit` tool is not path-scoped; this rule is the only thing
-  keeping it in bounds, and the orchestrator checks it after you return.
+  keeping it in bounds; the orchestrator cannot detect an edit outside `WORKTREE`.
 - Never edit tests, lint or type configuration, the `justfile`, anything under `.claude/`, git
   hooks, or `scripts/flow-*`.
 - Never add suppressions (`# noqa`, `# type: ignore`, `eslint-disable`, `|| true`, skip markers).
@@ -32,7 +32,7 @@ does. Fix only the failing ids listed outside the fence.
 - Make at most one new commit, on top of the current HEAD, with the trailer
   `Flow-Heal: <heal id>` in the message.
 - Never use `git commit --amend`. Never use `--no-verify`.
-- After committing, run the check once with the check runner you were given. Do not loop.
+- After committing, if your prompt supplies a self-check command, run it once. If it does not, skip the self-check and say so in your summary. Do not loop.
 
 ## If you cannot fix it within these rules
 
