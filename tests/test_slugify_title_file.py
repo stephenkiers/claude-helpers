@@ -15,7 +15,7 @@ Covers:
 - Security: hostile titles do not escape into shell
 - Script location assumptions (under ~/.claude/scripts/)
 
-Run with: python3 tests/test_slugify_integration.py
+Run with: python3 tests/test_slugify_title_file.py
 """
 
 import os

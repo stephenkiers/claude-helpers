@@ -12,7 +12,7 @@ Covers:
 - install.sh symlink integration (script mirroring from repo to ~/.claude)
 - Script presence and linkage in install paths
 
-Run with: python3 tests/test_slugify_roundtwo.py
+Run with: python3 tests/test_slugify_blackbox.py
 """
 
 import os
