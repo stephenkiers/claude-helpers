@@ -19,8 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _test_harness import Harness  # noqa: E402
 from _assess_fixtures import (  # noqa: E402
-    BASE_IMPL, DECISION_OPTIONS, ISSUE_URL, S3, S4, TS,
-    assess_line, disp, gate, make_flow, make_home, write_answers, write_assess, write_marker,
+    BASE_IMPL, DECISION_OPTIONS, ISSUE_URL, S3, S4, assess_line, disp, gate, make_flow, make_home, write_answers, write_assess, write_marker,
 )
 
 

@@ -2294,20 +2294,6 @@ def iter_outstanding_lines(receipt: str) -> tuple:
     return (valid_items, has_none, has_items)
 
 
-def parse_outstanding(receipt: str) -> List[OutstandingItem]:
-    """Parse OUTSTANDING: lines from receipt.
-
-    Returns a list of OutstandingItem objects. Returns empty list if no OUTSTANDING:
-    lines found or if only "OUTSTANDING: none" is present.
-    """
-    try:
-        valid_items, has_none, has_items = iter_outstanding_lines(receipt)
-        return valid_items
-    except ValueError:
-        # If validation fails, return empty list (fail closed)
-        return []
-
-
 def _enumerate_step_headings(plan_text: str) -> List[str]:
     """Enumerate ### Step N headings from plan text.
 

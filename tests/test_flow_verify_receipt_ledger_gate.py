@@ -14,7 +14,6 @@ Every case runs the real script as a subprocess against a FLOW_DIR fixture.
 Run with: python3 tests/test_flow_verify_receipt_ledger_gate.py
 """
 
-import hashlib
 import json
 import sys
 import tempfile
@@ -92,7 +91,6 @@ def main():
         # Write answers file manually
         make_answers_no_ledger(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
         answer_file = flow / "answers" / "assess-01.json"
-        answer_bytes = answer_file.read_bytes()
 
         # Create ledger with wrong sha256
         wrong_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
