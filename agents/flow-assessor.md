@@ -106,7 +106,7 @@ Emit one line per item in this exact format:
 ```
 
 - **Field separator** is literal ` | ` (space pipe space).
-- **Empty text fields** are written as nothing after `=` (e.g., `finish_plan=` for a decision item).
+- **Empty text fields** are written as nothing after `=` (e.g., `finish_plan=` and `verification_proof=` for a decision item). The verifier enforces this: a decision item with a non-empty `finish_plan` or `verification_proof`, or a mechanical item with non-empty `options`, fails the receipt.
 - **Options** (decision items only) are separated by ` ;; `. For mechanical items, `options=` is empty.
 - Each field is exactly as listed above; no other fields.
 

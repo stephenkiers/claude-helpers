@@ -353,6 +353,52 @@ def main():
                       f"rc={rc} out:\n{out}\nerr:\n{err}")
 
     print()
+    print("[Gate: issue URLs bind to the flow's repo (D22)]")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = base(td)
+        other = "https://github.com/other/repo/issues/7"
+        write_marker(flow, good_lines(s3=disp(S3, "filed-as-issue", option="Open an issue", route="issue", url=other)))
+        rc, out, err = gate(flow, home)
+        text = combined(out, err)
+        h.test_result("an issue URL in another repo fails and names the flow's repo",
+                      rc != 0 and "not in acme/app" in text and S3 in text, f"rc={rc} out:\n{text}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home, flow = base(td)
+        mixed = "https://github.com/Acme/App/issues/7"
+        write_marker(flow, good_lines(s3=disp(S3, "filed-as-issue", option="Open an issue", route="issue", url=mixed)))
+        rc, out, err = gate(flow, home)
+        h.test_result("a mixed-case owner/repo still binds (case-insensitive)", rc == 0,
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    for label, state_text in (("missing", None), ("not JSON", "{not json"), ("unusable value", '{"issue_url": "nope"}')):
+        with tempfile.TemporaryDirectory() as td:
+            home, flow = base(td)
+            if state_text is None:
+                (flow / "state.json").unlink()
+            else:
+                (flow / "state.json").write_text(state_text)
+            write_marker(flow, good_lines())
+            rc, out, err = gate(flow, home)
+            h.test_result(f"state.json {label} with a filed-as-issue line fails 'cannot bind issue URLs'",
+                          rc != 0 and "cannot bind issue URLs" in combined(out, err),
+                          f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td)
+        flow = make_flow(td, implement=BASE_IMPL, no_issue_url=True)
+        write_assess(flow, [assess_line(S3, kind="decision", options=OPTS), assess_line(S4, kind="decision", options=OPTS)])
+        write_answers(flow, 1, [("q1", S3, "Drop", DROP_REASON), ("q2", S4, "Drop", DROP_REASON)])
+        write_marker(flow, [
+            disp(S3, "dropped", option="Drop", reason=DROP_REASON),
+            disp(S4, "dropped", option="Drop", reason=DROP_REASON),
+        ])
+        rc, out, err = gate(flow, home)
+        h.test_result("no issue_url in state.json is fine when no disposition needs a URL", rc == 0,
+                      f"rc={rc} out:\n{out}\nerr:\n{err}")
+
+    print()
     print("[Gate: taken-over implement]")
 
     taken_log = [f"{TS} implement taken-over", f"{TS} assess taken-over"]

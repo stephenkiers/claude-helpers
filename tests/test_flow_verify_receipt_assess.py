@@ -286,6 +286,26 @@ def main():
         h.test_result("a receipt without <!-- assessment-end --> fails", rc != 0,
                       f"rc={rc} out:\n{combined(out, err)}")
 
+    print("[Field invariants in both directions (D30)]")
+
+    invariant_cases = {
+        "decision item with a finish_plan": (
+            assess_line(S3, kind="decision", options=DECISION_OPTIONS, finish_plan="Add the handler"), "finish_plan"),
+        "decision item with a verification_proof": (
+            assess_line(S3, kind="decision", options=DECISION_OPTIONS, verification_proof="pytest -k x"),
+            "verification_proof"),
+        "mechanical item with options": (assess_line(S3, kind="mechanical", options=DECISION_OPTIONS), "options"),
+    }
+    for label, (bad_line, field) in invariant_cases.items():
+        with tempfile.TemporaryDirectory() as td:
+            home = make_home(td)
+            flow = make_flow(td, implement=BASE_IMPL)
+            write_assess(flow, [bad_line, assess_line(S4)])
+            rc, out, err = assess_check(flow, home)
+            text = combined(out, err)
+            h.test_result(f"{label} fails and names the id and field",
+                          rc != 0 and S3 in text and field in text, f"rc={rc} out:\n{text}")
+
     print("[Literal-derived tuples (D28)]")
     spec = importlib.util.spec_from_file_location(
         "flow_verify_receipt_under_test", Path(__file__).resolve().parent.parent / "scripts" / "flow-verify-receipt.py")

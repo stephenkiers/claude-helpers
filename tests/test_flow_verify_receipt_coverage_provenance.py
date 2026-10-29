@@ -95,7 +95,7 @@ def main():
     for valid_url in valid_urls:
         with tempfile.TemporaryDirectory() as td:
             home = make_home(td)
-            flow = make_flow(td, implement=BASE_IMPL)
+            flow = make_flow(td, implement=BASE_IMPL, state={"issue_url": valid_url})  # the URL must be in the flow's repo
             write_assess(flow, [assess_line(S3, kind="decision", options=DECISION_OPTIONS), assess_line(S4, kind="decision", options=DECISION_OPTIONS)])
             write_answers(flow, 1, [("q1", S3, "Open an issue", None), ("q2", S4, "Open an issue", None)])
             write_marker(flow, [

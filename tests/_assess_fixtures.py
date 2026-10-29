@@ -67,9 +67,10 @@ def _write_step(flow, name, spec):
         (flow / "steps" / f"{name}.coverage.txt").write_text(text)
 
 
-def make_flow(td, *, implement=None, fix=None, log=None, state=None):
+def make_flow(td, *, implement=None, fix=None, log=None, state=None, no_issue_url=False):
     """Build <td>/flow. `implement`/`fix` are step specs (see _write_step) or None when the step has no
-    files. `log` defaults to implement ok + fix skipped. `state` is written as state.json."""
+    files. `log` defaults to implement ok + fix skipped. `state` is merged over a default state.json that
+    carries `issue_url` (acme/app, so ISSUE_URL binds); `no_issue_url=True` omits that default."""
     flow = Path(td) / "flow"
     for sub in ("steps", "questions", "answers"):
         (flow / sub).mkdir(parents=True, exist_ok=True)
@@ -79,7 +80,8 @@ def make_flow(td, *, implement=None, fix=None, log=None, state=None):
         _write_step(flow, "05-fix", fix)
     lines = DEFAULT_LOG if log is None else log
     (flow / "log.md").write_text("\n".join(lines) + "\n")
-    (flow / "state.json").write_text(json.dumps(state or {}))
+    base_state = {} if no_issue_url else {"issue_url": "https://github.com/acme/app/issues/1"}
+    (flow / "state.json").write_text(json.dumps({**base_state, **(state or {})}))
     return flow
 
 

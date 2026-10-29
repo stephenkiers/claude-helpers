@@ -168,11 +168,11 @@ class Assessment(NamedTuple):
         kind: Either 'mechanical' or 'decision'
         scope: Either 'in-scope' or 'separate-ticket'
         leave_as_is_safe: Either 'yes' or 'no'
-        cause: Text describing the cause (non-empty)
-        evidence: Text citing verification evidence (non-empty)
-        finish_plan: Text describing how to finish (empty for non-mechanical)
-        verification_proof: Text describing how to verify (empty for non-mechanical)
-        options: Tuple of AssessorOption entries (empty for non-decision)
+        cause: Free text; the parser does not check it
+        evidence: Text citing verification evidence (check_assess requires it non-empty)
+        finish_plan: How to finish. Required for unfinished mechanical items; must be empty for decision items
+        verification_proof: How to verify. Required for unfinished mechanical items; must be empty for decision items
+        options: AssessorOption entries. 1-2 for unfinished decision items; must be empty for mechanical items
     """
     id: str
     status: AssessStatus
@@ -2666,7 +2666,9 @@ def load_assess_answers(flow_dir: Path, answer_ref: str) -> Tuple[Optional[Dict[
 
 FIXED_CHOICE_LABELS = ("Open an issue", "Leave as-is", "Pause to finish by hand", "Drop", "Confirm already done")
 DROP_REASON_MIN_LEN = 15
-ISSUE_URL_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+$")
+# Groups: 1 = owner, 2 = repo. An issue URL in a disposition must also belong to the flow's own repo
+# (see _flow_repo), so a pasted URL for some other repo cannot satisfy the gate.
+ISSUE_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/[0-9]+$")
 # Derived from the Literal aliases so the runtime checks and the types cannot drift apart.
 _ASSESS_STATUSES = get_args(AssessStatus)
 _ASSESS_KINDS = get_args(AssessKind)
@@ -2762,7 +2764,11 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
     - Rule 3: Evidence is non-empty for all items
     - Rule 4: Mechanical unfinished items have finish_plan and verification_proof
     - Rule 5: Unknown-coverage items must be unfinished+decision
-    - Rule 6: Decision items need 1-2 options
+    - Rule 6: Unfinished decision items need 1-2 options
+    - Rule 7: Field invariants in both directions: a decision item has empty finish_plan and
+      verification_proof; a mechanical item has empty options
+
+    The rules are specified in docs/adr/0023-expert-flow.md section 13.
 
     Returns an error reason, or None when the receipt passes.
     """
@@ -2803,6 +2809,12 @@ def check_assess(receipt_path: Path, flow_dir: Path) -> Optional[str]:
             return f"assess receipt: unknown-coverage item {r.id} must be unfinished+decision"
         if r.status == "unfinished" and r.kind == "decision" and not (1 <= len(r.options) <= 2):  # rule 6
             return f"assess receipt: decision item {r.id} needs 1-2 options"
+        if r.kind == "decision" and r.finish_plan:  # rule 7
+            return f"assess receipt: decision item {r.id} must have an empty finish_plan"
+        if r.kind == "decision" and r.verification_proof:
+            return f"assess receipt: decision item {r.id} must have an empty verification_proof"
+        if r.kind == "mechanical" and r.options:
+            return f"assess receipt: mechanical item {r.id} must have empty options"
     return None
 
 
@@ -2976,6 +2988,24 @@ def _legacy_gate(flow_dir: Path, marker_text: str, derived_ids: List[str], has_s
     sys.exit(0)
 
 
+def _flow_repo(flow_dir: Path) -> str:
+    """The flow's `owner/repo`, read strictly from state.json `issue_url`.
+
+    Fails closed (exit 2) on a missing or unreadable file, invalid JSON, a missing `issue_url`, or a
+    value that is not a GitHub issue URL. Deliberately not `_read_state`, which swallows all of those.
+    """
+    reason = "outstanding gate: cannot bind issue URLs: state.json has no usable issue_url"
+    try:
+        data = json.loads((flow_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        error(reason)
+    url = data.get("issue_url") if isinstance(data, dict) else None
+    m = ISSUE_URL_RE.fullmatch(url) if isinstance(url, str) else None
+    if m is None:
+        error(reason)
+    return f"{m.group(1)}/{m.group(2)}"
+
+
 def _paused_unfinished(dispositions: List[Disposition], assessments: Dict[str, Assessment], mode: AssessmentMode) -> List[str]:
     """Ids whose disposition is a pause that is not yet terminal (current record is not already-done)."""
     out = []
@@ -3056,6 +3086,17 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
             error("outstanding gate: assessment: taken-over needs the newest assess log line to be 'taken-over'")
 
     answer_cache: Dict[str, Dict[str, Tuple[str, str]]] = {}
+    flow_repo_cache: List[str] = []
+
+    def require_issue_url(d: Disposition, missing_msg: str) -> None:
+        """Fail unless d.url is a well-formed issue URL inside the flow's repo (case-insensitive)."""
+        m = ISSUE_URL_RE.fullmatch(d.url)
+        if m is None:
+            error(missing_msg)
+        if not flow_repo_cache:  # lazy: flows with only drops or pauses never need state.json
+            flow_repo_cache.append(_flow_repo(flow_dir))
+        if f"{m.group(1)}/{m.group(2)}".lower() != flow_repo_cache[0].lower():
+            error(f"outstanding gate: issue URL is not in {flow_repo_cache[0]}: {d.id}")
 
     def answer_for(d: Disposition) -> Tuple[str, str]:
         if d.answer_ref == "none":
@@ -3100,8 +3141,7 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
         if d.disposition == "filed-as-issue":
             if label != "Open an issue":
                 mismatch(d, label)
-            if not ISSUE_URL_RE.fullmatch(d.url):
-                error(f"outstanding gate: filed-as-issue needs an issue URL: {d.id}")
+            require_issue_url(d, f"outstanding gate: filed-as-issue needs an issue URL: {d.id}")
         elif d.disposition == "dropped":
             if label != "Drop":
                 mismatch(d, label)
@@ -3122,8 +3162,7 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
             elif d.route == "issue":
                 if options.get(label) != "issue":
                     error(f"outstanding gate: option {label!r} is not an issue-routed assessor option for {d.id}")
-                if not ISSUE_URL_RE.fullmatch(d.url):
-                    error(f"outstanding gate: issue-routed option needs an issue URL: {d.id}")
+                require_issue_url(d, f"outstanding gate: issue-routed option needs an issue URL: {d.id}")
             elif d.route == "pause":
                 if label != "Pause to finish by hand" and options.get(label) != "pause":
                     error(f"outstanding gate: option {label!r} is not a pause option for {d.id}")
