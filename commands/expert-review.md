@@ -729,8 +729,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    if [ "$DIGEST_RC" -ne 0 ]; then
      echo "digest-failed" > "${REVIEW_DIR}/precedent-trace.txt"
      rm -f "${REVIEW_DIR}/precedent-digest.raw.jsonl" "${REVIEW_DIR}/precedent-digest.status.json"
-     # Exit early: digest failed, remaining steps are skipped
-     exit 0
+     # Skip to step 10 (trace line); a non-zero exit is never read further
    fi
    ```
    Then, only when `DIGEST_RC` is 0, read the status file with `jq`. A missing or unreadable field defaults to empty or zero via jq's `//` operator:
@@ -752,8 +751,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
    if [ "$DG_RESOLVED" = "false" ]; then
      echo "digest-failed" > "${REVIEW_DIR}/precedent-trace.txt"
      rm -f "${REVIEW_DIR}/precedent-digest.raw.jsonl" "${REVIEW_DIR}/precedent-digest.status.json"
-     # Exit early: digest resolution failed, remaining steps are skipped
-     exit 0
+     # Skip to step 10 (trace line)
    fi
    DIGEST_LINE=""
    if [ "$DG_ROOT" = "none" ] || [ "$DG_YAML" = "missing" ] || [ "$DG_YAML" = "unreadable" ] || [ "${DG_CAPPED:-0}" -gt 0 ] || [ "${DG_REJECTED:-0}" -gt 0 ] || [ -n "${DG_ERROR}" ] || [ -n "${DG_KEY_MISMATCH}" ]; then
@@ -787,8 +785,6 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
 
 6. **Telemetry: close rulings, open precedent.** The `run-metrics.py` script maintains one open stage slot; nesting stages overwrites it. Close the rulings stage and open precedent in two separate invocations:
    ```bash
-   # Write a sentinel to detect if this block was interrupted (for cleanup on resume)
-   echo "pat-started" > "${REVIEW_DIR}/precedent-pat-started.txt"
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-end --stage rulings --outcome success 2>/dev/null || true
    python3 "$HOME/.claude/scripts/run-metrics.py" stage-begin --stage precedent >/dev/null 2>&1 || true
    ```
@@ -856,7 +852,7 @@ Guard this block: run only when `"${PR_MODE:-false}" != true` and `needs-you > 0
        else
          # Split unquoted: QUESTION_IDS word split is intentional (holdout output is JSON, passed literally)
          HELD_OUT=$(python3 "$HOME/.claude/scripts/precedent-log.py" holdout $QUESTION_IDS 2>/dev/null || echo "[]")
-         python3 << 'EOF_FILTER_HELD_OUT'
+         python3 - "${REVIEW_DIR}/precedent-lines.json" "$HELD_OUT" << 'EOF_FILTER_HELD_OUT'
 import json, sys, os, tempfile
 try:
   with open(sys.argv[1]) as f:
@@ -875,7 +871,6 @@ try:
 except Exception:
   pass
 EOF_FILTER_HELD_OUT
- "${REVIEW_DIR}/precedent-lines.json" "$HELD_OUT" || true
        fi
      fi
    fi
