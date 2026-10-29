@@ -983,3 +983,42 @@ This amendment adds a fifth hard-stop choice for one class of stop: a human who 
 - **Installation.** `scripts/flow-accept.py` must be linked into `~/.claude/scripts/`, by `/setup-local` or `./install.sh`. The orchestrator invokes it from there. A missing script fails closed silently: exit code 2 counts as "no", so Accept is never offered and no error is shown. Re-run `/setup-local` after pulling this change.
 
 **Consequences.** Accept is the only route past a verifier or audit rejection that a human chooses. It is default-deny and typed, so a new verifier reason is refused until it is added to the allowlist and tested. Accepted deviations stay visible on the done line and in ship's Outstanding relay. Accepting a rule-8 rejection (for example, `receipt admits deviation`) skips the fidelity audit for that attempt, because rule 8 runs before the audit. That is accepted by design and is stated in the option description. Downstream steps are not told an accepted step was partial beyond the step-gate digest and the coverage relay. Mirroring the accept note into `human.jsonl` for downstream workers is a deferred follow-up to be addressed in a future issue.
+
+## Amendment (2026-10-29): implement/fix receipts name their ledger run (#346)
+
+An OK implement/fix receipt now carries `RUN_KEY:` and `RECEIPT_CONTRACT: 1` in the header block, between `CHECK_SHA:` and `OUTSTANDING:`. The Fidelity audit renders the ledger by the verified key, bound to the ticket worktree and the attempt-start epoch. The audit falls back to a time-window `locate` scan only for grandfathered receipts written before this contract, and it names the fallback in output. Rule 8's verify-receipt command uses `--since-from-log` on both the live and resume paths.
+
+**Receipt lines.** OK implement/fix receipts carry two new header-block lines:
+- `RUN_KEY: <run-id>` — the literal recorded from `scripts/implement-ledger.py init`'s `RUN_KEY:` line output, the same value passed to `finish --run-key`. Never sourced from memory, a prior attempt, or a `locate` scan.
+- `RECEIPT_CONTRACT: 1` — a new-contract marker. Its presence signals that `RUN_KEY:` must be present and well-formed. The value `1` means "this receipt was written under the #346 contract"; a future bump will increment it. Both lines sit between `CHECK_SHA:` and `OUTSTANDING:` in the one contiguous header block.
+
+**The marker, named explicitly.** `RECEIPT_CONTRACT: 1` is the discriminator. `CHECK_SHA:` was not chosen because the #338 check-gate amendment (prior amendment above) already requires every OK implement/fix receipt that reaches the Fidelity audit to carry a `CHECK_SHA:` line that matches the step's final HEAD. As a marker it would make every receipt strict (no fallback for any), leaving the fallback path as dead code and stranding in-flight flows started before #338 landed.
+
+**Missing-key policy (Q2 = C).** The marker and the key are independent in their failure modes:
+- If the marker is present and the key is absent, the receipt is `FAILED` with reason `receipt missing RUN_KEY (required by RECEIPT_CONTRACT: 1)`.
+- If the marker is absent and the key is absent, the receipt falls back to `locate` (grandfathered). The verifier prints `RUN_KEY_SOURCE: locate-fallback (receipt predates RECEIPT_CONTRACT)`, and the auditor prompt carries `LEDGER LOOKUP: locate-fallback (receipt predates RECEIPT_CONTRACT)`.
+- A well-formed key without the marker is accepted and rendered directly (backward compatibility).
+- A malformed, duplicated, below-header, or mismatched key always fails, with or without the marker. The validation failure reason names the defect (`receipt RUN_KEY duplicated`, `receipt RUN_KEY outside the header block`, `receipt RUN_KEY malformed`, or in the fidelity audit, a `render` exit code with a `NOT FOUND:` reason).
+
+**Ownership.**
+- The verifier (`flow-verify-receipt.py`) owns the mechanical receipt facts: presence, grammar, duplicates, header placement, and the marker-gated strictness. It calls `_parse_run_ref(receipt)` at both OK implement/fix call sites (the standard path and the `--expect-model` branch), validates the two lines together, and prints `RUN_KEY_SOURCE: receipt` or `RUN_KEY_SOURCE: locate-fallback` on success. Invalid receipts print `Reason: <reason>` and exit 1.
+- `scripts/implement-ledger.py render` owns the repo and epoch binding against ledger state. When called with `--repo`, `--flow-dir`, and `--step`, it re-resolves the record by key and checks: repo equality (`run <k> belongs to another repo (<r>), not <repo>`), a finite `created_epoch` (`run <k> has no finite created_epoch`), and the epoch bound against the attempt start (`run <k> created before this attempt's start <since>`). It validates and renders from one resolved record without a re-look (check-then-act, Feynman's pre-mortem). An invalid key shape is still rejected by `RUN_KEY_RE` before any path join.
+- The verifier still reads no ledger state; it reads only the receipt.
+
+**Rule 8 (live and resume paths).** Both paths now run the verifier with `--since-from-log` instead of a model-typed `--since` value. The verifier reads the attempt start from the newest `<STEP> begin` or `<STEP> retry` line in `log.md` itself. The begin/retry-line failure reasons (`no begin or retry line for <STEP>`, `malformed begin or retry line for <STEP>`, `cannot read begin or retry line for <STEP>`) apply on both paths when no bound can be derived from the log. They are exit 1 reasons and sit in rule 8's reason list after the ROUND 1 header check and before the check-gate and artifact reasons.
+
+**Fidelity audit lookup.**
+- **Key path (receipt source).** When rule 8's verifier output carries `RUN_KEY_SOURCE: receipt` with a valid `RUN_KEY: <k>` line, the orchestrator runs `python3 "$HOME/.claude/scripts/implement-ledger.py" render --run-key "<RUN_KEY>" --repo "<WORKTREE>" --flow-dir "$FLOW_DIR" --step <STEP>`. The auditor is handed the output.
+- **Fallback path (locate-fallback source).** When the verifier prints `RUN_KEY_SOURCE: locate-fallback`, the orchestrator runs `locate` followed by `render --run-key "<located key>" --repo "<WORKTREE>"`, and pastes a `LEDGER LOOKUP: locate-fallback (receipt predates RECEIPT_CONTRACT)` line into the auditor prompt first.
+- **Unrecognised source.** No `RUN_KEY_SOURCE:` line, more than one, an unknown value, or `receipt` without exactly one valid `RUN_KEY:` line → the step is `FAILED` with reason `fidelity audit failed: ledger unavailable (verifier gave no run-key source)`. The auditor is not spawned; this never defaults to `locate`.
+- **Failure.** A non-zero exit or empty output from `render` (either path) → the step is `FAILED` with reason `fidelity audit failed: ledger unavailable` and the command's first `NOT FOUND:` stderr line appended in parentheses.
+
+**Telemetry.** The `audits.jsonl` line gains a `ledger_lookup` field (one of `receipt`, `locate-fallback`, or `none` for implement/fix/plan respectively). It is never absent, empty, or null.
+
+**Residuals, stated plainly.**
+- **W1: Step binding.** The key is bound to repo and the attempt-start epoch window, not to the step. A fix attempt cannot name the implement run (that run's `created_epoch` predates fix's `begin`). A second run started in the same worktree within the same attempt would still pass the epoch bound. This is recorded as an accepted residual (W1 = A in the ticket).
+- **Forged receipt.** A deliberately forged receipt naming a real in-window run of this worktree is not caught by `render --repo` and the epoch bound, the same limitation #338 accepted for forged `CHECK_SHA:` lines.
+- **`locate` is not retired.** The fallback lookup still exists, runs today's code-derived, repo- and time-bounded `locate`, and the #322 follow-up may use it too. The ADR does not claim "no `locate` scan is needed". It claims the primary path names its input explicitly and is not inferred.
+- **Marker is agent-written.** An agent that drops both lines gets the fallback. The fallback is never silent (verifier prints it, auditor prompt names it, telemetry records it), but the fallback still runs the same code. Retiring the fallback when telemetry shows no `ledger_lookup: "locate-fallback"` rows for a period is a follow-up decision.
+
+**In-flight consequence.** None. Marker-less receipts (all existing ones) are grandfathered and fall back unchanged. The amendment strands no in-flight flow.

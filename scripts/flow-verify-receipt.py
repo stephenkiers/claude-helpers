@@ -9,6 +9,12 @@ masks a skipped step), and a bound that is too late or missing gives a false `le
 Design: ADR-0013 (deterministic logic lives in scripts, not prose) and ADR-0023 (the receipt is a claim
 that the Fidelity audit exists to check).
 
+RUN_KEY parsing (#346): OK implement/fix receipts carry RECEIPT_CONTRACT and RUN_KEY lines in the header
+block (above the first blank line or <!-- step-end --> marker). The verifier parses and enforces these
+lines: present and well-formed -> `RUN_KEY_SOURCE: receipt`, absent with RECEIPT_CONTRACT: 1 -> exit 1,
+absent without marker -> `RUN_KEY_SOURCE: locate-fallback`, malformed/duplicated/misplaced -> exit 1 with
+reason. Plan and review receipts are unaffected.
+
 Exit codes:
   0: artifacts OK
   1: receipt admits deviation, artifact missing, or a plan/review checkpoint was not fully relayed
@@ -16,6 +22,7 @@ Exit codes:
      questions/<step>-NN.json whose attempt equals the receipt's ATTEMPT, or a
      reused-answers marker names, counted only when their answers/<step>-NN.json exists).
      With --since-from-log, a missing or malformed begin/retry line in log.md is exit 1.
+     OK implement/fix receipts with invalid RECEIPT_CONTRACT or RUN_KEY lines also exit 1.
   2: bad arguments or internal error (message on stderr). With --since-from-log, an absent or
      invalid flow dir is exit 2.
 """
@@ -260,6 +267,11 @@ ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\*
 ROUND1_HEADER_RE = re.compile(ROUND1_HEADER_PATTERN)
 # Markdown table separator row (allow :?-+:? per cell)
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")
+# RUN_KEY grammar (#346): implements/fix receipts carry RUN_KEY lines in the header block. The pattern
+# matches a string that starts with alphanumeric, followed by 0-199 characters of alphanumeric/./,/_/-,
+# for a total max length of 200 characters. This pattern is declared once and tested against
+# implement-ledger.py's RUN_KEY_RE for equality.
+RUN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 
 def _is_markdown_separator_row(line: str) -> bool:
@@ -1835,6 +1847,101 @@ def _parse_check_outcome(receipt: str) -> CheckOutcome:
         source=parse_receipt_field(receipt, "CHECK_SOURCE"),
         sha=parse_receipt_field(receipt, "CHECK_SHA"),
     )
+
+
+@dataclass(frozen=True)
+class RunRef:
+    """The RECEIPT_CONTRACT and RUN_KEY lines of an OK implement/fix receipt (#346), parsed once.
+
+    Fields:
+    - status: 'present' if a well-formed RUN_KEY is in the header, 'grandfathered' if neither
+      RECEIPT_CONTRACT nor RUN_KEY is present, or 'invalid' if there's an error.
+    - key: The RUN_KEY value if status is 'present', otherwise None.
+    - reason: An error message if status is 'invalid', otherwise None.
+    """
+
+    status: Literal["present", "grandfathered", "invalid"]
+    key: Optional[str]
+    reason: Optional[str]
+
+
+def _parse_run_ref(receipt: str) -> RunRef:
+    """Parse and validate RECEIPT_CONTRACT and RUN_KEY lines from a receipt header (#346).
+
+    Rules for an OK implement/fix receipt:
+    - Both lines must appear at most once and only in the header block (before first blank line).
+    - If RECEIPT_CONTRACT is present and its value is not "1", return invalid with "unknown RECEIPT_CONTRACT '<v>'".
+    - If RUN_KEY is present and malformed (doesn't match RUN_KEY_RE), return invalid.
+    - If RUN_KEY is well-formed, return present with the key, regardless of whether the marker is there.
+    - If RECEIPT_CONTRACT: 1 is present and RUN_KEY is absent, return invalid with specific reason.
+    - If neither line is present, return grandfathered.
+    - If RUN_KEY or RECEIPT_CONTRACT appear outside the header block (after blank line), return invalid.
+    - If RUN_KEY or RECEIPT_CONTRACT appear more than once, return invalid.
+    """
+
+    # Find all RUN_KEY and RECEIPT_CONTRACT lines in the whole receipt
+    run_key_lines = []
+    receipt_contract_lines = []
+    header_end = None
+
+    for i, line in enumerate(receipt.split("\n")):
+        # Track where the header block ends
+        if header_end is None:
+            if not line.strip() or "<!-- step-end -->" in line:
+                header_end = i
+
+        if line.startswith("RUN_KEY:"):
+            run_key_lines.append((i, line))
+        elif line.startswith("RECEIPT_CONTRACT:"):
+            receipt_contract_lines.append((i, line))
+
+    # If header_end is still None, the whole receipt is a header
+    if header_end is None:
+        header_end = len(receipt.split("\n"))
+
+    # Check for duplicates
+    if len(run_key_lines) > 1:
+        return RunRef(status="invalid", key=None, reason="receipt RUN_KEY duplicated")
+    if len(receipt_contract_lines) > 1:
+        return RunRef(status="invalid", key=None, reason="receipt RECEIPT_CONTRACT duplicated")
+
+    # Check if lines are outside the header block
+    for line_num, _ in run_key_lines:
+        if line_num >= header_end:
+            return RunRef(status="invalid", key=None, reason="receipt RUN_KEY outside the header block")
+    for line_num, _ in receipt_contract_lines:
+        if line_num >= header_end:
+            return RunRef(status="invalid", key=None, reason="receipt RECEIPT_CONTRACT outside the header block")
+
+    # Parse RECEIPT_CONTRACT if present
+    has_contract_marker = False
+    if receipt_contract_lines:
+        contract_line = receipt_contract_lines[0][1]
+        contract_value = contract_line.split(":", 1)[1].strip()
+        if contract_value != "1":
+            return RunRef(status="invalid", key=None, reason=f"unknown RECEIPT_CONTRACT '{contract_value}'")
+        has_contract_marker = True
+
+    # Parse RUN_KEY if present
+    run_key_value = None
+    if run_key_lines:
+        run_key_line = run_key_lines[0][1]
+        run_key_value = run_key_line.split(":", 1)[1].strip()
+
+        # Validate RUN_KEY format
+        if not RUN_KEY_RE.match(run_key_value):
+            return RunRef(status="invalid", key=None, reason="receipt RUN_KEY malformed")
+
+        # If we have a well-formed key, return present
+        return RunRef(status="present", key=run_key_value, reason=None)
+
+    # No well-formed RUN_KEY found
+    if has_contract_marker:
+        # Marker present but no key: this is an error
+        return RunRef(status="invalid", key=None, reason="receipt missing RUN_KEY (required by RECEIPT_CONTRACT: 1)")
+
+    # Neither line present: grandfathered
+    return RunRef(status="grandfathered", key=None, reason=None)
 
 
 def _check_gate_reason(
@@ -3635,6 +3742,11 @@ def main() -> None:
             if not ROUND1_HEADER_RE.search(receipt):
                 print("Reason: receipt missing ROUND 1 section header")
                 sys.exit(1)
+            # Parse and validate RUN_KEY (#346), called right after ROUND 1 check
+            run_ref = _parse_run_ref(receipt)
+            if run_ref.status == "invalid":
+                print(f"Reason: {run_ref.reason}")
+                sys.exit(1)
             # The check gate (#338) applies to escalated re-runs too. It cannot run without the repo and
             # branch it resolves and compares against, so a missing pair is a usage error, not a skip.
             if not (args.repo and args.branch):
@@ -3645,6 +3757,12 @@ def main() -> None:
             if gate_reason:
                 print(f"Reason: {gate_reason}")
                 sys.exit(1)
+            # Print RUN_KEY_SOURCE before ARTIFACTS: ok
+            if run_ref.status == "present":
+                print("RUN_KEY_SOURCE: receipt")
+                print(f"RUN_KEY: {run_ref.key}")
+            elif run_ref.status == "grandfathered":
+                print("RUN_KEY_SOURCE: locate-fallback (receipt has no RECEIPT_CONTRACT line)")
 
         print("ARTIFACTS: ok")
         sys.exit(0)
@@ -3722,6 +3840,7 @@ def main() -> None:
             sys.exit(1)
 
     # Validate OUTSTANDING: line and ROUND 1 header for implement/fix OK receipts
+    run_ref: Optional[RunRef] = None
     if decision == "OK" and args.step in ["implement", "fix"]:
         # Check for OUTSTANDING: line using shared helper (F2)
         try:
@@ -3737,6 +3856,11 @@ def main() -> None:
         # ROUND 1 section header (#341, item 5). Only OK receipts: a FAILED receipt keeps its real stop reason.
         if not ROUND1_HEADER_RE.search(receipt):
             print("Reason: receipt missing ROUND 1 section header")
+            sys.exit(1)
+        # Parse and validate RUN_KEY (#346), called right after ROUND 1 check
+        run_ref = _parse_run_ref(receipt)
+        if run_ref.status == "invalid":
+            print(f"Reason: {run_ref.reason}")
             sys.exit(1)
 
     # Home directory for artifact roots
@@ -3778,6 +3902,14 @@ def main() -> None:
     if step_error:
         print(f"Reason: {step_error}")
         sys.exit(1)
+
+    # Print RUN_KEY_SOURCE before ARTIFACTS: ok (implement/fix OK receipts only)
+    if run_ref is not None:
+        if run_ref.status == "present":
+            print("RUN_KEY_SOURCE: receipt")
+            print(f"RUN_KEY: {run_ref.key}")
+        elif run_ref.status == "grandfathered":
+            print("RUN_KEY_SOURCE: locate-fallback (receipt has no RECEIPT_CONTRACT line)")
 
     print("ARTIFACTS: ok")
     sys.exit(0)

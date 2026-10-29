@@ -6,7 +6,7 @@ Usage:
                              [--carried A..B] [--session-id SID] [--run-key K]
     implement-ledger.py locate [--repo R] [--run-key K | --since ISO | --flow-dir D --step {implement,fix}]
     implement-ledger.py check [--run-key K]
-    implement-ledger.py render [--run-key K]
+    implement-ledger.py render [--run-key K] [--repo R] [--flow-dir D --step {implement,fix}]
     implement-ledger.py finish [--run-key K] [--log P --state-dir D]
 
 Each run has a ledger at <SCRATCH>/ledger.md with one line per mandatory step:
@@ -37,7 +37,8 @@ Exit codes:
             created_epoch (NaN, infinity, or an integer too large for a float). A bounded locate fails closed:
             it never skips an unreadable record.
     check   0 complete; 1 incomplete or malformed, or no pointer found; 2 unreadable state.
-    render  0 rendered; 3 nothing found; 2 unreadable state.
+    render  0 rendered; 3 nothing found, binding check failed (repo mismatch, stale created_epoch,
+            non-finite created_epoch), or no begin/retry line for --step; 2 invalid arguments or unreadable state.
     finish  0 success, or already finished (no-op); 1 gate failed (command-end recorded as
             steps_skipped), or success event could not be recorded (FINISHED not written);
             3 no pointer or tombstone found (steps_skipped recorded); 2 bad arguments.
@@ -424,9 +425,11 @@ def _scan_records(root: Path, warn_unreadable: bool = False) -> Tuple[List[Tuple
 
 def _is_finite_epoch(created: Any) -> bool:
     """True when created is a number that converts to a finite float. A huge int raises OverflowError: not finite."""
+    if created is None or isinstance(created, bool):
+        return False
     try:
         return math.isfinite(float(created))
-    except OverflowError:
+    except (OverflowError, TypeError):
         return False
 
 
@@ -744,12 +747,86 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_render(args: argparse.Namespace) -> int:
-    found = _resolve(args.run_key)
+    """Print the summary block.
+
+    When --flow-dir and --step are given, bind the key to the worktree and the attempt start:
+    resolve the record once, derive the attempt start from log.md, and check repo equality
+    and created_epoch >= attempt_start - SINCE_SKEW_SECS on that same record.
+    """
+    repo = args.repo or git_toplevel()
+    found = _resolve(args.run_key, repo=repo)
+
+    # When found is None and we have a run_key, check if the record exists but belongs to a different repo.
+    data = None
+    run_key = args.run_key
+    if found is None and run_key is not None:
+        root = state_root()
+        for suffix in (POINTER_SUFFIX, FINISHED_SUFFIX):
+            path = root / f"{run_key}{suffix}"
+            if path.is_file():
+                try:
+                    record = _read_record(path)
+                    record_repo = record.get("repo")
+                    if record_repo is not None and record_repo != repo:
+                        # The record exists but belongs to a different repo.
+                        print(
+                            f"NOT FOUND: run {run_key} belongs to another repo ({record_repo}), not {repo}",
+                            file=sys.stderr,
+                        )
+                        return 3
+                except (OSError, json.JSONDecodeError):
+                    pass
+
     if found is None:
-        print("NOT FOUND: no implement-with-haiku run pointer", file=sys.stderr)
+        if args.run_key:
+            print(f"NOT FOUND: run {args.run_key} not found", file=sys.stderr)
+        else:
+            print("NOT FOUND: no implement-with-haiku run pointer", file=sys.stderr)
         return 3
+
     _path, _finished, data = found
-    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, data["run_key"])
+    run_key = data["run_key"]
+
+    # If binding flags are given, validate the epoch against the attempt start.
+    if args.flow_dir is not None:
+        try:
+            flow_dir = flow_log.validate_flow_dir(args.flow_dir)
+            since_iso, window_cut = flow_log.newest_attempt_start_detail(flow_dir / "log.md", args.step)
+        except flow_log.FlowLogError as e:
+            print(f"NOT FOUND: {e}", file=sys.stderr)
+            return 3
+
+        if since_iso is None and window_cut:
+            print(
+                f"NOT FOUND: no begin or retry line for {args.step} in the readable tail of log.md (only the "
+                f"last {flow_log.LOG_READ_CAP_BYTES} bytes were read; an older line may exist)",
+                file=sys.stderr,
+            )
+            return 3
+        if since_iso is None:
+            print(f"NOT FOUND: no begin or retry line for {args.step}", file=sys.stderr)
+            return 3
+
+        # Check created_epoch is finite and >= attempt_start - SINCE_SKEW_SECS.
+        created = data.get("created_epoch")
+        if not _is_finite_epoch(created):
+            print(f"NOT FOUND: run {run_key} has no finite created_epoch", file=sys.stderr)
+            return 3
+
+        try:
+            since_epoch = flow_log.parse_iso8601(since_iso)
+        except ValueError as e:
+            print(f"NOT FOUND: {e}", file=sys.stderr)
+            return 3
+
+        if float(created) < since_epoch - SINCE_SKEW_SECS:
+            print(
+                f"NOT FOUND: run {run_key} created before this attempt's start {since_iso}",
+                file=sys.stderr,
+            )
+            return 3
+
+    ev = evaluate(data, Path(data["scratch"]) / LEDGER_NAME, run_key)
     for line in render_lines(ev):
         print(line)
     return 0
@@ -927,6 +1004,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_render = sub.add_parser("render", help="print the summary block")
     p_render.add_argument("--run-key", default=None, dest="run_key")
+    p_render.add_argument("--repo", default=None, dest="repo")
+    p_render.add_argument("--flow-dir", default=None, dest="flow_dir")
+    p_render.add_argument(
+        "--step",
+        default=None,
+        choices=["implement", "fix"],
+        help="step whose attempt start bounds the epoch check (required with --flow-dir, rejected otherwise)",
+    )
 
     p_finish = sub.add_parser("finish", help="check, record command-end, and tombstone the run")
     p_finish.add_argument("--run-key", default=None, dest="run_key")
@@ -944,6 +1029,9 @@ def main(argv: List[str]) -> int:
             parser.error("locate: --step is required with --flow-dir")
         if args.flow_dir is None and args.step is not None:
             parser.error("locate: --step is only valid with --flow-dir")
+    if args.command == "render":
+        if (args.flow_dir is None) != (args.step is None):
+            parser.error("render: --step is required with --flow-dir, and must be omitted without it")
     handlers = {
         "init": cmd_init,
         "locate": cmd_locate,

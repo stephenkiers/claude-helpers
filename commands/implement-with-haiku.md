@@ -2331,14 +2331,16 @@ CHECK: <resolved command verbatim | opted-out>
 CHECK_EXIT: <n | none>
 CHECK_SOURCE: <repo-cache | project.yaml | justfile | opt-out>
 CHECK_SHA: <full 40-hex SHA the check ran on>
+RUN_KEY: <RUN_KEY>
+RECEIPT_CONTRACT: 1
 OUTSTANDING: <line>
 <!-- step-end -->
 ```
 
-**Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason` and
+**Header block.** The verifier reads `CHECK`, `CHECK_EXIT`, `CHECK_SOURCE`, `CHECK_SHA`, `ATTEMPT`, `Decision`, `Reason`, `RUN_KEY`, `RECEIPT_CONTRACT` and
 `OUTSTANDING` only up to the first blank line, so write the receipt as one contiguous block with no blank line from the first
 summary line through `<!-- step-end -->` (drop the summary's blank lines when copying it). A receipt whose `Decision:` sits below a
-blank line is rejected with `receipt Decision missing or outside the header block`; the check gate is never skipped.
+blank line is rejected with `receipt Decision missing or outside the header block`; the check gate is never skipped. `RUN_KEY:` is the literal value recorded from `init`'s `RUN_KEY:` line (the same value passed to `finish --run-key`). `RECEIPT_CONTRACT: 1` is written verbatim and never omitted.
 
 Where `OUTSTANDING: <line>` is either `none` or the lines computed above. The `CHECK:` lines are the
 Final check's result, taken from its resolver output and its run (see the Final check section); never
