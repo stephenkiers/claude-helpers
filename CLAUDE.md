@@ -15,7 +15,10 @@ re-run any time. Both refuse to run from a linked worktree (`~/.claude` links mu
 
 It creates **file-level symlinks** from `~/.claude/{dir}/` into this repo for each of `commands`,
 `reviewers`, `prompts`, `agents`, and `scripts`. File-level (not directory-level) symlinks let your
-own personal or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files:
+own personal or project-specific files coexist in `~/.claude/{dir}/` alongside the repo's files.
+It also registers machine-enforced guardrail hooks (Bash guard, Agent/Task allowlist, Skill allowlist)
+in `~/.claude/settings.json` for `/expert-flow` step agents; these hooks are required for restricted
+step agent controls to function:
 
 - Ensure `~/.claude/{dir}/` exists as a real directory (replace any old directory-level symlink).
 - For each file in `{repo}/{dir}/` and its subdirectories: if `~/.claude/{dir}/{file}` is already the correct symlink, skip;
@@ -222,8 +225,7 @@ separate from the reviewer-context cascade.
   Failures are hard stops (Retry ≤2 / Take over / Abort, with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment; a single-unit implement/fix implementer-shortfall offers a fourth option `Retry with sonnet` for manual escalation, and automatic escalation is dormant until a turns source exists per the 2026-10-16 amendment; the 2026-10-25 amendment (#341) records that the turns probe was not run) — never auto-remediated. At ship time, outstanding units discovered in implement/fix receipts and coverage tables are relayed once with a choice to open an issue or drop (see ADR-0023 amendment 2026-10-21). State
   under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
   (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
-  scope: `FLOW_DIR` and the marker file). Its step agents are `general-purpose` subagents with full
-  capability, not restricted panel agents; see ADR-0008 (standing exception, 2026-10-13). See [ADR-0023](docs/adr/0023-expert-flow.md)
+  scope: `FLOW_DIR` and the marker file). **Implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`; see ADR-0008); other steps spawn `general-purpose` subagents (pending #359/#360). After pulling this change, run `/setup-local` before the next flow. See [ADR-0023](docs/adr/0023-expert-flow.md)
 - `/expert-fleet` — **[experimental: not yet validated on main; see ADR-0025]** run a whole epic: one headless `/expert-flow <N> --fleet` process per sub-issue (`scripts/fleet.py` launches them), independent tickets in parallel up to `--max` (default 3; the 1–6 range is advisory, not enforced), dependants only once their deps merged or are CLOSED. A ticket that needs you **parks** (writes `fleet-ask.json` in its flow dir and exits) while the others keep running; the fleet asks every open question in batches, tagged `#N`, and resumes each ticket's own session with the answer. `--prepass` asks big direction questions once and writes them into the sub-issues before any ticket plans. `--resume`/`--status` re-enter or inspect a fleet under `~/.claude/fleets/`. See [ADR-0025](docs/adr/0025-expert-fleet.md).
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. If a merge-queue configuration exists and the PR targets the queue's base branch, routes the PR through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports it MERGED; a kickback or refusal stops and leaves the worktree intact. An `unknown`/undeterminable queue state still refuses (exit 3). PRs targeting other bases merge normally. When no queue is configured (but the layout supports one), offers to create `merge-queue.json` and then routes through `/queued-merge`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
 - `/queued-merge` — merge an open PR through the local merge queue when a `merge-queue.json` config exists. The queue serializes PRs and merges them one at a time in arrival order, testing each against the exact base it will land on, with unverified-main detection. See [ADR-0021](docs/adr/0021-local-merge-queue.md) for the force-push carve-out (the queue's only authorized force-push, audited and constrained, happens only after the full gate passes).
@@ -377,6 +379,17 @@ avoidable, so this relies on self-report rather than a lint rule.
 - `spike-researcher` — web-only worker for `/expert-spike` (WebSearch/WebFetch only, no Write). It
   answers one sub-question and returns its research body as the reply; the orchestrator validates it
   and writes `research/<id>.md`.
+- `flow-implement` — shared agent for the `implement` and `fix` steps of `/expert-flow` (used by
+  `/implement-with-haiku` when invoked as a step agent). Model pinned to `sonnet` (the coordinator's
+  model); the units it spawns run on `plan-implementer` (Haiku). Tools: no `Edit` (but `Write`, sed,
+  and heredoc still edit). Machine-enforced via Bash guard and step-contract checking; see ADR-0008
+  2026-10-26 amendment.
+- `flow-review` — agent for the `review` step of `/expert-flow` (used by `/expert-review` when invoked
+  as a step agent). Model pinned to `sonnet` (restores the documented `/expert-review` panel default);
+  `Edit` kept solely for red-lining `claude-action-plan.md` (prompt-scoped, not path-scoped). Agent/Task
+  and Skill guards apply (as `flow-implement`); **Bash guard does not apply** (flow-review's Skill-only role
+  invoking `/expert-review` does not require Bash restrictions; see ADR-0008 2026-10-26 and ADR-0023
+  2026-10-26 amendments).
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory
@@ -394,11 +407,16 @@ otherwise catch a stray `Write` elsewhere. Keep both halves — the real `Edit`/
 the prompt-level `Write`-scoping instruction — when adding a panel agent; treat the latter as a
 residual, not eliminated, risk. `/expert-spike` expert roles also write one orchestrator-named file
 under `${PROJECT_ROOT}/spikes/`, which is still prompt-scoped; see the ADR-0018 2026-10-09 amendment.
-`/expert-flow` is the exception to the tool-restriction story: its step
-agents are `general-purpose` Task subagents with full capability, and its orchestrator's `Write` is
-prompt-scoped only (ADR-0023 §1, ADR-0008 standing exception). The `tools:` restriction above does not apply to them. **Hard rule:** Commands invoked as `/expert-flow` step agents
-(`/merge-and-cleanup`, `/stack-sync`, `/implement-with-haiku`) carry `Write` in their `allowed-tools`.
-Their prompts enforce (via hard-rule sentence near the Resolve FLOW_DIR block) that `Write` is used
-**ONLY to write receipts and markers under a validated `FLOW_DIR`** — never for repo content. The
-sanctioned write prefix is `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`; see ADR-0018 2026-10-13
-amendment for the full governance rule.
+
+**`/expert-flow` step agents are mixed:** `flow-implement` and `flow-review` are restricted agents
+(no `Edit` on implement, tools limited, model pinned, Bash/Skill/contract guards; see ADR-0008 2026-10-26).
+Worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase worker spawn
+`general-purpose` Task subagents with full capability (pending #359/#360). General-purpose steps carry
+`Write` in their `allowed-tools` and the orchestrator's `Write` is prompt-scoped only (ADR-0023 §1).
+**Hard rule:** For restricted step agents (`flow-implement`, `flow-review`), `Write` is used only to
+write receipts and markers under a validated `FLOW_DIR` — never for repo content. For general-purpose
+step agents (`/merge-and-cleanup`, `/stack-sync`, `/implement-with-haiku` invoked outside a flow,
+`/expert-rebase`, etc.), this same rule applies via their own prompt instructions. The sanctioned
+write prefix is `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`; see ADR-0018 2026-10-13 amendment for
+the full governance rule. A nested `general-purpose` agent spawned from a restricted step gets full
+capability and no hook (an open residual; see ADR-0008 2026-10-26).

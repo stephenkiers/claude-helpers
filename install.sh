@@ -72,6 +72,34 @@ list_source_files() {
 # --check: read-only. Reports drift, creates/removes/moves nothing.
 if [ "$CHECK_ONLY" -eq 1 ]; then
     drift=0
+
+    # Check for missing flow agent hooks in settings.json
+    SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+    if command -v jq &> /dev/null && [ -e "$SETTINGS_FILE" ] && jq empty "$SETTINGS_FILE" 2>/dev/null; then
+        # Define the three expected flow agent hooks
+        declare -A flow_hooks=(
+            ["Agent|Task"]="$HOME/.claude/scripts/flow-agent-guard.py --agent auto"
+            ["Skill"]="$HOME/.claude/scripts/flow-skill-guard.py --agent auto"
+            ["Bash"]="$HOME/.claude/scripts/flow-bash-guard.py --agent auto"
+        )
+
+        for matcher in "Agent|Task" "Skill" "Bash"; do
+            hook_command="${flow_hooks[$matcher]}"
+            if ! jq --arg matcher "$matcher" --arg cmd "$hook_command" \
+                '(.hooks.PreToolUse // []) | any(.matcher == $matcher and .hooks[]?.command == $cmd)' \
+                "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
+                echo "hook-missing: PreToolUse $matcher"
+                drift=1
+            fi
+        done
+    elif ! command -v jq &> /dev/null || [ ! -e "$SETTINGS_FILE" ] || ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
+        # settings.json is missing or invalid
+        if [ ! -e "$SETTINGS_FILE" ]; then
+            echo "hook-missing: settings.json does not exist"
+            drift=1
+        fi
+    fi
+
     for dir in commands reviewers prompts agents scripts; do
         target_dir="$CLAUDE_DIR/$dir"
         source_dir="$REPO_DIR/$dir"
@@ -313,6 +341,55 @@ else
     else
         echo "Telemetry hooks not registered (pass --with-telemetry to opt in; see docs/metrics.md)"
     fi
+fi
+
+# Register PreToolUse hooks for flow agents (always, not opt-in)
+if command -v jq &> /dev/null; then
+    SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+
+    # Create settings.json if it doesn't exist
+    if [ ! -e "$SETTINGS_FILE" ]; then
+        echo '{}' > "$SETTINGS_FILE"
+    fi
+
+    # Validate existing JSON
+    if ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
+        echo "Warning: $SETTINGS_FILE is not valid JSON, skipping flow agent hook registration" >&2
+    else
+        # Define the three flow agent hooks
+        declare -A flow_hooks=(
+            ["Agent|Task"]="$HOME/.claude/scripts/flow-agent-guard.py --agent auto"
+            ["Skill"]="$HOME/.claude/scripts/flow-skill-guard.py --agent auto"
+            ["Bash"]="$HOME/.claude/scripts/flow-bash-guard.py --agent auto"
+        )
+
+        for matcher in "Agent|Task" "Skill" "Bash"; do
+            hook_command="${flow_hooks[$matcher]}"
+
+            # Check if this hook already exists by matching the command exactly
+            if jq --arg matcher "$matcher" --arg cmd "$hook_command" \
+                '(.hooks.PreToolUse // []) | any(.matcher == $matcher and .hooks[]?.command == $cmd)' \
+                "$SETTINGS_FILE" 2>/dev/null | grep -q "true"; then
+                # Hook already registered
+                continue
+            fi
+
+            # Add a new matcher group with this hook to the PreToolUse array
+            TMP_SETTINGS=$(mktemp "$SETTINGS_FILE.XXXXXX")
+            jq --arg matcher "$matcher" --arg cmd "$hook_command" \
+                '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher": $matcher, "hooks": [{"type": "command", "command": $cmd}]}])' \
+                "$SETTINGS_FILE" > "$TMP_SETTINGS"
+            if jq empty "$TMP_SETTINGS" 2>/dev/null; then
+                mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+            else
+                echo "Warning: jq produced invalid JSON while registering PreToolUse hook for $matcher; leaving $SETTINGS_FILE unchanged" >&2
+                rm -f "$TMP_SETTINGS"
+            fi
+        done
+        echo "Flow agent hooks registered in $SETTINGS_FILE"
+    fi
+else
+    echo "Warning: jq not found; skipping flow agent hook registration (manual setup available in docs/adr/0008-machine-enforced-agent-guardrails.md)" >&2
 fi
 
 echo ""

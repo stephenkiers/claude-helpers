@@ -280,10 +280,10 @@ def main():
     print("[Section 7] Receipt hardening (#273 dogfood)")
     rows = {m.group(1): m.group(0) for m in re.finditer(r"^\| \d\d \| (\w+) \|.*$", text, re.M)}
     h.test_result("implement row does not require ACTION PLAN SOURCE",
-                  "implement" in rows and "`ACTION PLAN SOURCE:`" not in rows["implement"].split("|")[5],
+                  "implement" in rows and "`ACTION PLAN SOURCE:`" not in rows["implement"].split("|")[6],
                   "implement-with-haiku prints it only for a claude-action-plan source")
     h.test_result("fix row requires ACTION PLAN SOURCE",
-                  "fix" in rows and "`ACTION PLAN SOURCE:`" in rows["fix"].split("|")[5])
+                  "fix" in rows and "`ACTION PLAN SOURCE:`" in rows["fix"].split("|")[6])
     impl_cmd = (REPO_ROOT / "commands" / "implement-with-haiku.md").read_text()
     h.test_result("implement-with-haiku emits ACTION PLAN SOURCE only for an action-plan source",
                   "ACTION PLAN SOURCE: <path>  [only when PLAN_SOURCE=claude-action-plan]" in impl_cmd)

@@ -47,6 +47,23 @@ def setup_test_repo_with_install_sh(tmpdir_path, source_repo):
     return install_sh_copy
 
 
+def setup_test_settings_with_hooks(test_home):
+    """Pre-seed settings.json with flow agent hooks to satisfy install.sh --check assertions."""
+    import json
+    settings_file = test_home / ".claude" / "settings.json"
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Agent|Task", "hooks": [{"type": "command", "command": f"{test_home}/.claude/scripts/flow-agent-guard.py --agent auto"}]},
+                {"matcher": "Skill", "hooks": [{"type": "command", "command": f"{test_home}/.claude/scripts/flow-skill-guard.py --agent auto"}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": f"{test_home}/.claude/scripts/flow-bash-guard.py --agent auto"}]},
+            ]
+        }
+    }
+    settings_file.write_text(json.dumps(settings))
+
+
 def test_nested_file_symlinked():
     """A nested file (scripts/workflow/cli.py) gets symlinked into mirrored path."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -55,6 +72,9 @@ def test_nested_file_symlinked():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo with nested file
         source_repo = tmpdir_path / "repo"
@@ -106,6 +126,9 @@ def test_doubly_nested_file_symlinked():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo with doubly-nested file
         source_repo = tmpdir_path / "repo"
@@ -160,6 +183,9 @@ def test_pycache_files_not_symlinked():
         test_home = tmpdir_path / "home"
         test_home.mkdir()
 
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
@@ -213,6 +239,9 @@ def test_pycache_at_any_depth_not_symlinked():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
@@ -269,8 +298,11 @@ def test_stale_nested_symlink_pruned():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         claude_dir = test_home / ".claude"
-        claude_dir.mkdir()
 
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
@@ -332,6 +364,9 @@ def test_top_level_files_still_work():
         test_home = tmpdir_path / "home"
         test_home.mkdir()
 
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         # Create synthetic source repo with only top-level files
         source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
@@ -378,8 +413,11 @@ def test_empty_subdirectories_cleaned_up():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
         claude_dir = test_home / ".claude"
-        claude_dir.mkdir()
 
         # Create synthetic source repo
         source_repo = tmpdir_path / "repo"
@@ -439,6 +477,9 @@ def test_nested_structure_preserved():
         # Create fake HOME and source repo structure
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         # Create synthetic source repo with deeply nested structure
         source_repo = tmpdir_path / "repo"
@@ -500,6 +541,9 @@ def test_second_run_skips_relink_of_correct_symlink():
 
         test_home = tmpdir_path / "home"
         test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
 
         source_repo = tmpdir_path / "repo"
         source_repo.mkdir()
@@ -704,6 +748,102 @@ def test_refuses_linked_worktree():
         return True, ""
 
 
+def test_flow_step_agent_files_detected_by_check():
+    """./install.sh --check detects missing flow-*.md, flow-step-contract.md, and flow-*-guard.py files.
+
+    Tests the new files added in #358: agents/flow-implement.md, agents/flow-review.md,
+    prompts/flow-step-contract.md, and the guard scripts.
+
+    Uses a single temp repo: first checks for unlinked files before install, then installs,
+    then verifies no drift and all files are symlinked.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        test_home = tmpdir_path / "home"
+        test_home.mkdir()
+
+        # Pre-seed settings.json with flow agent hooks
+        setup_test_settings_with_hooks(test_home)
+
+        # Create a single repo with the new files added but not yet installed
+        source_repo = tmpdir_path / "repo"
+        source_repo.mkdir()
+
+        # Create directory structure
+        for dirname in ["commands", "reviewers", "prompts", "agents", "scripts"]:
+            (source_repo / dirname).mkdir()
+            (source_repo / dirname / "keep.md").write_text("placeholder\n")
+
+        # Add preferences.yaml.template (required by install.sh)
+        (source_repo / "prompts" / "preferences.yaml.template").write_text("# Preferences template\n")
+
+        # Add the six new files to the repo
+        (source_repo / "agents" / "flow-implement.md").write_text("---\nname: flow-implement\n---\n")
+        (source_repo / "agents" / "flow-review.md").write_text("---\nname: flow-review\n---\n")
+        (source_repo / "prompts" / "flow-step-contract.md").write_text("# Step contract\n")
+        (source_repo / "scripts" / "flow-agent-guard.py").write_text("#!/usr/bin/env python3\n")
+        (source_repo / "scripts" / "flow-skill-guard.py").write_text("#!/usr/bin/env python3\n")
+        (source_repo / "scripts" / "flow-bash-guard.py").write_text("#!/usr/bin/env python3\n")
+
+        # Copy install.sh into the repo so REPO_DIR resolves correctly
+        setup_test_repo_with_install_sh(tmpdir_path, source_repo)
+
+        env = os.environ.copy()
+        env["HOME"] = str(test_home)
+
+        # Phase 1: Run --check before installing (should report unlinked files)
+        code, stdout, stderr = run_bash_script(
+            [str(source_repo / "install.sh"), "--check"],
+            env=env
+        )
+
+        # The check should report unlinked files and exit nonzero
+        drift_reported = (
+            "unlinked:" in stdout or "unlinked:" in stderr or
+            "flow-implement.md" in stdout or "flow-implement.md" in stderr
+        )
+
+        if not drift_reported:
+            return False, f"--check should report unlinked flow-*.md files, got code={code} stdout: {stdout}, stderr: {stderr}"
+
+        if code == 0:
+            return False, f"--check should exit nonzero when drift is detected, got code {code}"
+
+        # Phase 2: Run install.sh to install the files
+        code, stdout, stderr = run_bash_script(
+            [str(source_repo / "install.sh")],
+            env=env
+        )
+
+        if code != 0:
+            return False, f"install.sh should succeed, got code={code} stderr={stderr}"
+
+        # Phase 3: Run --check again (should report no drift)
+        code, stdout, stderr = run_bash_script(
+            [str(source_repo / "install.sh"), "--check"],
+            env=env
+        )
+
+        if code != 0 or "No drift" not in stdout:
+            return False, f"--check should report no drift after installation, got code={code} stdout: {stdout}"
+
+        # Verify the new files were actually symlinked
+        new_files_to_check = [
+            test_home / ".claude" / "agents" / "flow-implement.md",
+            test_home / ".claude" / "agents" / "flow-review.md",
+            test_home / ".claude" / "prompts" / "flow-step-contract.md",
+            test_home / ".claude" / "scripts" / "flow-agent-guard.py",
+            test_home / ".claude" / "scripts" / "flow-skill-guard.py",
+            test_home / ".claude" / "scripts" / "flow-bash-guard.py",
+        ]
+
+        missing_links = [f for f in new_files_to_check if not f.is_symlink()]
+        if missing_links:
+            return False, f"New files not symlinked: {missing_links}"
+
+        return True, ""
+
+
 if __name__ == "__main__":
     h = Harness("INSTALL.SH RECURSIVE SYMLINK TEST SUITE")
     test_result = h.test_result
@@ -768,6 +908,12 @@ if __name__ == "__main__":
 
     passed, msg = test_refuses_linked_worktree()
     test_result("install.sh refuses a linked worktree unless --from-worktree", passed, msg)
+
+    print()
+
+    print("[Section 10] Flow step agent files (ticket #358)")
+    passed, msg = test_flow_step_agent_files_detected_by_check()
+    test_result("--check detects flow-*.md, flow-step-contract.md, and flow-*-guard.py files", passed, msg)
 
     print()
 

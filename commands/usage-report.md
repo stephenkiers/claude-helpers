@@ -26,7 +26,25 @@ python3 "$HOME/.claude/scripts/run-metrics.py" diagnose --window-days 30
 Present these two blocks to the user as-is (you may add a short heading above each, but do not
 alter, recompute, or summarize the numbers inside them).
 
-## 2. Instruction to future-Claude: deeper breakdowns are ad hoc, not built-in
+## 2. Flow step agents bucket
+
+The report includes a "Flow step agents" line showing agent activity from `/expert-flow` runs. It groups:
+- agent.begin events with `agent_type` in `{flow-implement, flow-review}` (the new agent types for flow steps)
+- agent.begin events with `agent_type=general-purpose` recorded **before** the cut-over date that occur in a
+  flow session
+
+A flow session is one that contains either a `command.begin` event with `command=expert-flow` or any agent
+event with `agent_type` in `{flow-implement, flow-review}`. The attribution is deliberately coarse: all
+pre-cutover `general-purpose` agent rows in a flow session are grouped together (no per-stage join).
+
+The cut-over date (recorded as a module constant; currently `2026-10-26`, the date of the #358 probes, a fixed boundary rather than the merge date)
+marks when flow steps transitioned from `general-purpose` agents to `flow-implement` and `flow-review`.
+`agent_type` is still recorded verbatim in telemetry; this is a reporting-side grouping with no backfill.
+
+Probe session IDs from Step 2 hermetic probes (T-D3) are excluded from the bucket to avoid polluting
+the report with test-fixture rows.
+
+## 3. Instruction to future-Claude: deeper breakdowns are ad hoc, not built-in
 
 If the user asks for something `diagnose` doesn't print — a parent-vs-subagent cost split, cost
 per accepted finding, retry/zero-yield stage detection, or a concurrency-band breakdown — this is
@@ -37,7 +55,7 @@ directly in conversation. Do not build a new deterministic report or aggregation
 — the log stays a flat file meant to be queried fresh per question, since a fixed report can't
 anticipate every value-vs-cost question worth asking (see ADR-0016's rationale).
 
-## 3. Never fabricate numbers
+## 4. Never fabricate numbers
 
 If either `diagnose` invocation reports that the log doesn't exist yet, is empty, or has a 0%
 match rate because nothing has been recorded, say so plainly — for example:
