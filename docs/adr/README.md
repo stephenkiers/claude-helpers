@@ -89,6 +89,11 @@ to North Star Nick).
 - [ADR-0024: Precedent Pat — a prompt-the-human digest of past answers](0024-precedent-pat.md) — Status Accepted; amended (#297): curated layer;
   exercises the ADR-0007 escape hatch with a display-only pipeline role that surfaces past answers and citations beside
   pending questions without suppression; triage never reads it
+- [ADR-0025: /expert-fleet — Parallel epic execution via headless dispatcher](0025-expert-fleet.md) — Status Proposed;
+  a layer over `/expert-flow` running independent tickets in parallel as headless processes, batching questions to the
+  human via `fleet-ask.json` parks; records the merge-gate split (code + prose enforcement) and known gaps; amended with
+  landing preparation (POC base 8e97cbf ported onto main with re-pointed cross-references, two follow-up issues, and
+  ADR-0023/ADR-0019 pointers)
 
 ## Format
 

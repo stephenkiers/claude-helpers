@@ -80,6 +80,7 @@ READ_ONLY_BASH = (
     r".*run-metrics\.py['\"]?(?: .*)?",
     r".*implement-ledger\.py['\"]? (?:locate|render)(?: .*)?",
     r".*flow-verify-receipt\.py['\"]?(?: .*)?",
+    r".*fleet\.py['\"]? wait(?: .*)?",
     r".*flow-ledger\.py['\"]?(?: .*)?",
     r"python3 \"\$HOME/\.claude/scripts/flow-redo\.py['\"]?(?: .*)?",
 )
@@ -705,6 +706,14 @@ def main():
                   "--gates" in args_sec and "**Off by default:**" in args_sec and "restored on `--resume`" in args_sec)
     h.test_result("--gates is rejected with --resume/--abandon/--retro/--list",
                   text.count('|| [ "$GATES" = yes ]') == 4)
+    # Regression (Todoed #103 review attempt 1): a step prompt line forcing foreground-only
+    # subagents contradicted the harness (nested Agent calls always run in the background) and the
+    # join barrier (the step ends its turn and is re-invoked by completion notices, spike #246),
+    # so the review step could never join its panel and ended with no receipt.
+    h.test_result("step prompt does not forbid ending the turn while subagents run",
+                  "never end your turn while an agent you launched is still running" not in text
+                  and "never pass `run_in_background`" not in text
+                  and "parallel foreground calls" not in text)
     h.test_result("--no-gates is gone from the command",
                   "no-gates" not in text and "no_gates" not in text and "NO_GATES" not in text)
     h.test_result("epic children inherit flags.step_gates",

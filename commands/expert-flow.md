@@ -1,7 +1,7 @@
 ---
 description: Lifecycle orchestrator — worktree → plan → track → implement → review → fix → verify → ship → merge for one issue (or an epic's sub-issues, sequentially). Creates the ticket worktree first and continues from inside it. Runs each lifecycle command as a subagent step, relays every question the step would have asked back to you, and stops hard on failures. Resumable from disk.
-argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] | --resume <flow-dir|issue#> [--redo plan|review] | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
-allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
+argument-hint: [<issue-url|number>] [--plan-effort 2|3] [--review-effort 2-5] [--auto-merge] [--gates] [--from <step>] [--plan-file <path>] [--epic] [--fleet] | --resume <flow-dir|issue#> [--redo plan|review] [--fleet] | --abandon <flow-dir|issue#> | --retro <flow-dir|issue#> | --list
+allowed-tools: Bash(git rev-parse:*), Bash(git worktree list:*), Bash(git branch --show-current:*), Bash(git log:*), Bash(git status:*), Bash(git fetch origin), Bash(git rebase origin/main), Bash(git rebase origin/master), Bash(git rebase --abort), Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(ls:*), Bash(cat:*), Bash(sed -n:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(printf:*), Bash(mkdir:*), Bash(python3 "$HOME/.claude/scripts/run-metrics.py":*), Bash(python3 "$HOME/.claude/scripts/flow-verify-receipt.py":*), Bash(python3 "$HOME/.claude/scripts/fleet.py" wait:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" append:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" list:*), Bash(python3 "$HOME/.claude/scripts/flow-ledger.py" mark:*), Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" locate:*), Bash(python3 "$HOME/.claude/scripts/implement-ledger.py" render:*), Bash(source "$HOME/.claude/scripts/resolve-claude-helpers-dir.sh"), Bash(python3 -m scripts.workflow.cli cleanup plan:*), Bash(python3 -m scripts.workflow.cli cleanup apply -), Bash(python3 -m scripts.workflow.cli worktree detect-parent:*), Bash(realpath:*), Read, Write, Task, SendMessage, AskUserQuestion, ScheduleWakeup
 model: sonnet
 ---
 
@@ -57,6 +57,8 @@ is already in the prompt template below) and keep it in mind when reading any fi
 **end the turn**, and let its completion notification re-invoke you. Never poll, never sleep. At
 most one `ScheduleWakeup` of 1800 seconds per step as a fallback heartbeat; on a heartbeat
 wake-up with no completion notification, re-read the receipt from disk and otherwise do nothing.
+In a fleet run (`--fleet`) the turn does **not** end while a step agent runs; see "Fleet mode" →
+"Never idle while a step runs".
 
 **Shorthands used below:**
 - `STOP <reason>` — the Hard Stop for conditions that are not a step `FAILED` (attempts exhausted,
@@ -106,8 +108,13 @@ wake-up with no completion notification, re-read the receipt from disk and other
 - `--epic` — (**experimental** until #252 dogfooding passes) treat the issue as an epic: decompose
   into sub-tickets, create them, run the single-ticket flow for each in order. See "Epic mode". Not
   combinable with `--from`.
+- `--fleet` — headless mode for `/expert-fleet`, which runs this command as a background `claude -p`
+  process per ticket. Step gates never run in a fleet run; every question this run would put to the human **parks**
+  instead (see "Fleet mode"). Combines only with an issue, `--resume`, `--plan-effort`,
+  and `--review-effort`. Per-run only, like `--auto-merge`. Not meant to be typed by hand.
 - `--resume <flow-dir|issue#>` — continue a flow from its state on disk. A bare number picks the
-  most recently updated flow for that issue in this repo. Takes no other flag except `--redo`.
+  most recently updated flow for that issue in this repo. Takes no other flag except `--redo` and
+  `--fleet`.
 - `--redo <plan|review>` — only with `--resume`: redo that finished step with a human note, in any flow
   (gate-less or `--gates`). It runs the shared Redo procedure (see "Redo"). Refused with a one-line
   reason and the state untouched when the flow is running or live, the step is not `plan` or `review`,
@@ -122,12 +129,84 @@ wake-up with no completion notification, re-read the receipt from disk and other
 Unknown flags, a bad `--from` value, a value flag with no value, two issue arguments, `--abandon`
 or `--retro` combined with any other flag, `--redo` without `--resume` or with a value other than `plan` or `review`, a `--plan-file` path outside the allowed character set, bare `/expert-flow` with other flags, an argument string that is present but parses to nothing, or a missing issue without a bare run in a ticket worktree stop before any telemetry with a `guard_block` exit. Only a run with no arguments at all is a bare run.
 
+## Fleet mode
+
+`--fleet` is set by `/expert-fleet`, which runs one headless `claude -p` process per ticket and
+holds the human conversation itself. A headless session has no `AskUserQuestion` (the harness does
+not offer it under `-p`), and when this orchestrator ends its turn with no step agent running, the
+process exits. Fleet mode turns that exit into a clean **park**: the question goes to a file the
+fleet reads, the flow stays `awaiting`, and the fleet resumes this same Claude session
+(`claude -p --resume <session>`) with the answer as the next message. The step agent from before
+the park is still reachable by `SendMessage` from the resumed session, so the relay continues
+exactly where it stopped.
+
+**Park.** Wherever this document says to call `AskUserQuestion` (or, for a plan report, to end the
+turn and wait for a reply), a fleet run instead:
+
+1. Writes `${FLOW_DIR}/fleet-ask.json` with the `Write` tool, overwriting any earlier one:
+   `{"status": "open", "kind": "<relay|report|gate>", "step": "<STEP>", "question_file": "questions/<STEP>-<SEQ>.json" or null, "report_file": "fleet-report-<SEQ>.md" or null, "gate": null or {"header": "…", "question": "…", "options": [{"label": "…", "description": "…"}], "context": "…"}, "asked": "<ISO-8601 UTC>"}`.
+   - `relay` — a step's form-kind question file (form-kind relay step 3). `question_file` names it; the fleet
+     shows the file's `summary`, `brief`s, and `context_path` itself.
+   - `report` — a plan checkpoint report (report-kind relay step 3). Write the rendered report
+     (exactly what relay step 3 would print) to `${FLOW_DIR}/fleet-report-<SEQ>.md` first and name
+     it in `report_file`; also set `question_file`.
+   - `gate` — one of this orchestrator's own questions (merge gate, hard-stop menu, resume rules 1
+     and 3a). `gate` carries the header, question text, and options exactly as they would have been
+     asked, and `context` carries the lines that would have been printed above the form (stop line,
+     failure reason, PR URL).
+2. Sets `status: awaiting` (with `awaiting_kind`/`awaiting_file` as the report path already
+   requires), logs `awaiting`, `WRITE-STATE`, prints the stop lines with `(fleet: parked)` after the step name,
+   and ends the turn. `live` stays as it was; no telemetry stage is closed.
+
+**Unpark.** The next message is the human's answer, relayed by the fleet. Before acting on it,
+rewrite `fleet-ask.json` with `"status": "answered"` and an `"answered": "<ISO-8601 UTC>"` field
+(everything else unchanged), and set `status: running`, log `resumed`, `WRITE-STATE`. Then:
+
+- `relay` — the message carries the answers as a JSON object keyed by question **id**
+  (`{"answers": {"<id>": "<label or free text>"}}`). Write it to `answers/<STEP>-<SEQ>.json` as form-kind relay
+  step 4 says (you remain the only writer of answer files), then continue at relay step 4a (the human-ledger append of free-text answers), then 5 and 6. An `id` the
+  message does not answer is a re-park of that question alone, never a default.
+- `report` — the message is the prose reply. Continue at relay step 4 (the prose interpreter). Step
+  5's echo is printed but never waited on ("Reply 'ok'" is dropped): if nothing is unresolved, carry on. If
+  relay step 5 would fall back to the `AskUserQuestion` escape hatch, park a `relay`-shaped ask for the
+  unresolved handles instead (write the one-question-per-handle form to
+  `questions/<STEP>-<SEQ>-reask.json` with the step-question shape, and name it in `question_file`).
+- `gate` — the message names one option label (or gives free text, which is handled exactly as that
+  question's "Other"/free-text rule says). Continue as if `AskUserQuestion` had returned it.
+
+**What fleet mode changes, and nothing else:**
+- **Step gates** never run: `--fleet` rejects `--gates`, and the step gate is skipped whenever `flags.fleet`
+  is `true`. `flags.fleet` is written `true`, and resume rule 9 sets it from whether the resume carries
+  `--fleet`.
+- **Merge gate** parks as a `gate` ask with the same Merge / Hold / Take over options. The fleet
+  batches it with everything else. Hold in a fleet is a manual hand-off, not a re-ask: the fleet does not
+  ask the merge gate again, and the ticket resumes only when a human runs `/expert-flow --resume <ISSUE>`
+  (ADR-0025 §6; automatic re-asking is deferred to #371).
+- **Hand-off** after the `worktree` step is unchanged: the fresh run from Main stops, and the fleet
+  starts the ticket worktree's session with `/expert-flow --resume <ISSUE> --fleet`.
+- **Existing flow** (a fresh `/expert-flow <N> --fleet` for an issue that already has one) never
+  parks: `guard_block` with `existing flow — the fleet resumes it with --resume`. The fleet only
+  starts fresh runs for issues with no flow. The no-argument `ask` route never happens in a fleet.
+- **Relay step 3 (form kind)** parks instead of calling the form; the rule that the
+  `AskUserQuestion` call is mandatory reads, in a fleet run, "the park is mandatory". Printing the
+  questions and ending the turn without writing `fleet-ask.json` is the same defect.
+- **Never idle while a step runs.** A headless session aborts its background agents about ten
+  minutes after its own turn goes idle (observed 2026-10-16: a plan step killed at exactly 10:00),
+  so after every step `Task` launch and every `SendMessage` that resumes a step agent, do not end the
+  turn. Instead call, in the foreground,
+  `python3 "$HOME/.claude/scripts/fleet.py" wait "$FLOW_DIR/steps/<NN>-<STEP>.md" --timeout 540`
+  (Bash timeout 600000) and repeat it until it prints `settled` or the step agent's completion
+  notification has arrived; then handle the step as usual. This is the one sanctioned wait loop and
+  replaces the `ScheduleWakeup` heartbeat, which a fleet run never schedules.
+- Everything else — the step loop, receipts, fidelity audit, auto-rebase, hard-stop options, the
+  two-attempt cap — is unchanged. A fleet run never answers for the human and never picks a default.
+
 ## Step 0: Setup
 
 ### Argument parsing
 
 ```bash
-PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no
+PLAN_EFFORT=""; REVIEW_EFFORT=""; AUTO_MERGE=no; GATES=no; FROM_STEP=""; PLAN_FILE_FLAG=""; EPIC=no; FLEET=no
 RESUME_REF=""; REDO_REF=""; ABANDON_REF=""; RETRO_REF=""; LIST=no; ISSUE_ARG=""; ISSUE_SEEN=no; NO_ARG=no; BAD=""
 RAW_ARGC=$#
 flag_bad() { [ -n "$BAD" ] || BAD="${1}"; }
@@ -158,6 +237,7 @@ while [ $# -gt 0 ]; do
     --auto-merge) AUTO_MERGE=yes ;;
     --gates) GATES=yes ;;
     --epic) EPIC=yes ;;
+    --fleet) FLEET=yes ;;
     --list) LIST=yes ;;
     --*) flag_bad "unknown flag: ${1}" ;;
     *) if [ -z "${1}" ]; then flag_bad "an empty argument is not an issue number or URL"; elif [ "$ISSUE_SEEN" = yes ]; then flag_bad "only one issue argument is allowed"; else ISSUE_SEEN=yes; ISSUE_ARG="${1}"; fi ;;
@@ -173,12 +253,13 @@ case "$PLAN_FILE_FLAG" in *[!A-Za-z0-9._/~+:=@,-]*) flag_bad "--plan-file path m
 [ -n "$FROM_STEP" ] && [ "$EPIC" = yes ] && flag_bad "--from cannot be combined with --epic"
 [ -n "$REDO_REF" ] && [ -z "$RESUME_REF" ] && flag_bad "--redo requires --resume"
 case "$REDO_REF" in ""|plan|review) ;; *) flag_bad "--redo must be plan or review" ;; esac
+[ "$FLEET" = yes ] && { [ "$GATES" = yes ] || [ -n "$ABANDON_REF$RETRO_REF$FROM_STEP$REDO_REF" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--fleet combines only with an issue, --resume, --plan-effort, and --review-effort"
 [ -n "$RESUME_REF" ] && { [ -n "$ISSUE_ARG$RETRO_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--resume takes no other flags"
 [ -n "$ABANDON_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--abandon takes no other flags"
 [ -n "$RETRO_REF" ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ] || [ "$LIST" = yes ]; } && flag_bad "--retro takes no other flags"
 [ "$LIST" = yes ] && { [ -n "$ISSUE_ARG$RESUME_REF$ABANDON_REF$RETRO_REF$PLAN_EFFORT$REVIEW_EFFORT$FROM_STEP$PLAN_FILE_FLAG" ] || [ "$EPIC" = yes ] || [ "$AUTO_MERGE" = yes ] || [ "$GATES" = yes ]; } && flag_bad "--list takes no other flags"
 if [ "$LIST" = no ] && [ -z "$RESUME_REF" ] && [ -z "$ABANDON_REF" ] && [ -z "$RETRO_REF" ] && [ -z "$ISSUE_ARG" ]; then
-  if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$GATES" = no ] && [ "$EPIC" = no ]; then
+  if [ "$RAW_ARGC" -eq 0 ] && [ -z "$PLAN_EFFORT" ] && [ -z "$REVIEW_EFFORT" ] && [ -z "$FROM_STEP" ] && [ -z "$PLAN_FILE_FLAG" ] && [ "$AUTO_MERGE" = no ] && [ "$GATES" = no ] && [ "$EPIC" = no ] && [ "$FLEET" = no ]; then
     NO_ARG=yes
   else
     flag_bad "an issue URL or number is required (a bare /expert-flow takes no flags)"
@@ -444,7 +525,7 @@ Resume rules, applied in this order:
 1. **Live step.** If `live` is not `null`, the previous session left a step agent that was running or
    waiting for answers, and a new session cannot reach it. `--resume` is the only way back into a
    crashed or interrupted `running`/`awaiting` flow, so this is not a refusal: ask once with
-   `AskUserQuestion` — "state.json shows `<live.step>` attempt `<live.attempt>` live since
+   `AskUserQuestion` (a fleet run parks it as a `gate` ask) — "state.json shows `<live.step>` attempt `<live.attempt>` live since
    `<live.since>`. Is another session still driving this flow?" — options `No — clear it and resume
    (Recommended)` and `Yes — stop`. On `No`, set `live: null`, log `resumed`, and continue to rule 2;
    a re-run is the only recovery, so the agent is treated as gone. On `Yes` (or no answer),
@@ -501,7 +582,7 @@ Resume rules, applied in this order:
    **Exemptions to rule 2 (no re-ask of the gate):** `taken-over`; `verify` (not audited); skipped `review` or `fix` (which have no `Decision: OK` receipt, so rule 2 never applies); epic child flows (rule 8, which resume through their own `FLOW_DIR`).
 
 3. `status: done` → print `flow already done` and the PR URL; stop, no telemetry.
-3a. `status: abandoned` → ask once with `AskUserQuestion` — "This flow was abandoned at `<STEP>`.
+3a. `status: abandoned` → ask once with `AskUserQuestion` (a fleet run parks it as a `gate` ask) — "This flow was abandoned at `<STEP>`.
    Resume it?" — options `Yes — resume (Recommended)` and `No — stop`. On `No` (or no answer), print
    `flow abandoned` and stop, no telemetry, state untouched. On `Yes`, continue as `paused` (rule 2, then 5).
 1a. **Pending human input (legacy and human ledger).** Run `python3 "$HOME/.claude/scripts/flow-ledger.py" list --flow-dir "$FLOW_DIR" --status pending --md`. If it prints anything, print it under a `Pending human input (human.jsonl):` heading. If the legacy `gate_note` saved earlier is non-null, also print it under a `Legacy gate note (pre-ledger): <text>` heading (read-fallback; do not migrate it into the human ledger). A non-zero exit from the script is `STOP human ledger error: <first stderr line>`. This rule runs only when rule 2 does not apply. When rule 2 re-asks a gate, the gate's item 1 is the single place that prints pending records and the legacy `gate_note`, so rule 1a is skipped. Otherwise it prints them once and continues to rule 4.
@@ -544,6 +625,7 @@ Resume rules, applied in this order:
    `--auto-merge` is per-run only and is never restored. `flags.step_gates` is restored from
    `state.json` as persisted (`--gates` adds stops, so a stored value is safe to keep); when it is
    true, a resumed flow asks every step gate not already recorded as `continue` in `gates`.
+   `flags.fleet` is set `true` when this resume carries `--fleet` and `false` otherwise; a fleet resume never runs step gates (see "Step gate").
    `gate_passed` is reset to `false` on every
    resume: `--resume` always re-asks the merge gate.
 10. **Telemetry.** If the earlier session left a stage open (status `awaiting`, `running`), close it
@@ -615,6 +697,8 @@ runs" (classify `HERE` now that `ISSUE` is known).
 `<ISSUE>-*` directory with a `state.json` does not resume silently. When the no-arg route set `EXISTING_DIR`, use it; otherwise pick the newest with the shared newest-flow lookup, `<PREFIX>` = `<ISSUE>-` (this
 is the `EXISTING_DIR`). Read its `status`, `step`, and `live` with `jq`. Then:
 
+0. **Fleet run** (`FLEET=yes`): `guard_block` with `existing flow — the fleet resumes it with --resume`,
+   no question, no telemetry, state untouched (see "Fleet mode").
 1. If `live` is not `null`, resume rule 1 applies first (its own question); the question below is
    asked only once `live` is `null`. When `EXISTING_DIR` is set and **Resume** is chosen, continue as `--resume "$EXISTING_DIR"` with all resume rules and flag reset.
 2. Ask once with `AskUserQuestion` (header `Existing flow`): "`#<ISSUE>` already has a flow at
@@ -739,7 +823,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
   "bases": {"implement": "abc123def456...", "fix": "abc123def456..."},
   "live": {"step": "review", "attempt": 2, "since": "2026-10-09T11:01:58Z"},
   "started": "2026-10-09T10:15:00Z", "updated": "2026-10-09T11:02:13Z",
-  "flags": {"plan_effort": null, "review_effort": null, "auto_merge": false, "step_gates": false, "from": null},
+  "flags": {"plan_effort": null, "review_effort": null, "auto_merge": false, "step_gates": false, "fleet": false, "from": null},
   "redos": {}, "redo_archive": null,
   "epic": null
 }
@@ -775,6 +859,7 @@ with the `Write` tool (never a shell redirect) every time a recorded value chang
 | `flags.review_effort` | `null`, `2`–`5` | forwarded to review |
 | `flags.auto_merge` | boolean | per-run; never restored on resume |
 | `flags.step_gates` | boolean | `--gates` was passed; stored and restored on resume; default `false` |
+| `flags.fleet` | boolean | per-run; `true` while `/expert-fleet` drives the flow (see "Fleet mode") |
 | `flags.from` | `null`, `implement`, `review`, `verify`, `ship`, `merge` | the `--from` start point |
 | `epic` | `null` or the epic object | see "Epic mode" |
 
@@ -784,7 +869,8 @@ The epic object: `{"decomposition": "<path>", "approved": bool, "current": <int 
 
 Layout under `FLOW_DIR`: `state.json`, `log.md` (one line per event, orchestrator-authored fixed
 strings only), `steps/<NN>-<step>.md` (receipts), `gates/<NN>-<STEP>.md` (gate digests), `questions/<step>-<SEQ>.json` (written by steps),
-`answers/<step>-<SEQ>.json` (written by the orchestrator). Flow directories are **never
+`answers/<step>-<SEQ>.json` (written by the orchestrator), and in a fleet run `fleet-ask.json` and
+`fleet-report-<SEQ>.md` (see "Fleet mode"). Flow directories are **never
 auto-deleted**; `--list` shows them and the human prunes by hand.
 
 **Flow marker validity.** The marker `<WORKTREE>/.claude/flow-run` holds one line, a `FLOW_DIR`. It
@@ -1151,6 +1237,7 @@ If the target seq is not unambiguous from the human's words, the orchestrator do
    `paused at: <STEP> (awaiting <k> answers)` so the state is legible even if you are interrupted
    before answering. The stage stays open and `live` stays set. Do this in the same turn as step 3:
    `awaiting` is only legitimate once the `AskUserQuestion` call has been issued, or once a `kind: report` was printed, never instead of it.
+   In a fleet run, steps 3 onward park instead (see "Fleet mode" → Park); `awaiting` is legitimate once `fleet-ask.json` is written.
 
 #### Report-kind questions (`kind: "report"`)
 
@@ -1339,7 +1426,7 @@ decides whether the next step may build on it. **It is opt-in** (`--gates`, pers
 `flags.step_gates`): by default the flow does not stop between steps, because the human's part is
 answering what a step asks, not confirming that it finished. It runs in the loop's `OK` branch after `plan`,
 `implement`, `review`, `fix`, and `verify` — after that step's `WRITE-STATE`; the gate owns the advance of `STEP` — never after `worktree`, `track`, `ship` (the merge gate follows ship), or `merge`. It is
-skipped when `flags.step_gates` is false (the default) or `gates[STEP]` is already `continue`.
+skipped when `flags.step_gates` is false (the default), `flags.fleet` is true (a fleet run never has step gates), or `gates[STEP]` is already `continue`.
 
 1. **Print pending human input (legacy and ledger).** Run `python3 "$HOME/.claude/scripts/flow-ledger.py" list --flow-dir "$FLOW_DIR" --status pending --md`. If it prints anything, print it under a `Pending human input (human.jsonl):` heading with a note that these records stay pending for the flow's lifetime until #288 adds a `mark` caller. Also check for a non-null legacy `gate_note` in `state.json` (pre-ledger free text); if present, print it under a `Legacy gate note (pre-ledger): <text>` heading (read-fallback; do not migrate it into the ledger). A non-zero exit from the script is `STOP human ledger error: <first stderr line>`.
 
@@ -1493,7 +1580,7 @@ On a validated `FAILED` (the stage is already closed as `failure` by the loop), 
    5. Re-ask the gate.
    `redos[STEP]` stays spent (not decremented). Retry remains offered while `failures[STEP] < 2`, re-runs with the same `HUMAN_NOTE` rebuilt from the still-pending record, and does not increment `redos`.
 
-5. Ask (header `Flow stop`), in this order:
+5. Ask (header `Flow stop`; a fleet run parks it as a `gate` ask, see "Fleet mode"), in this order:
    - **Keep previous attempt (Recommended)** — only when item 4 offers it; procedure above.
    When the eligibility line is `ESCALATE: manual sonnet <reason>` and the failed step is `implement` or `fix`, offer the following option after Keep previous attempt and before Retry:
    - **Retry with sonnet** (or `Retry with sonnet (single unit; plan had <n> units)` if the receipt's `UNITS:` is greater than 1, so the human sees the collapse) — set `implementer_model[STEP] = "sonnet"`, `escalations[STEP] += 1`, log `escalated`, `WRITE-STATE`, build and append the escalation event to `$FLOWS_ROOT/escalations.jsonl` (event: "escalation", trigger: "manual"), and re-run the step through the normal loop. For `implement`: args are `<PLAN_PATH> --implementer-model sonnet --partial-base <bases[STEP]>`. For `fix`: args are `<REVIEW_DIR>/claude-action-plan.md --implementer-model sonnet --partial-base <bases[STEP]>`. Offered only while `failures[STEP] < 2`.
@@ -1716,7 +1803,7 @@ Artifact check: the existing `gh pr view … = OPEN` check.
 If already `MERGED`, skip the gate and go straight to the merge step. If not already merged and the flow has not yet relayed outstanding items (no `steps/<NN>-ship.outstanding.md` marker with sentinel), run the ship relay now (read implement and fix receipts, union with coverage, ask the question). Skipped when the run's `flags.auto_merge`
 is true (use only for trusted plan and PR author; never with third-party PR comments or untrusted issue
 content). If `gate_passed` is already `true` (a Merge answer recorded earlier in this run or a prior
-session), skip the gate too. Otherwise ask (header `Merge gate`):
+session), skip the gate too. Otherwise ask (header `Merge gate`; a fleet run parks it as a `gate` ask, see "Fleet mode"):
 
 - **Merge** — set `gate_passed: true`, log `gate`, `WRITE-STATE`, continue to the merge step.
 - **Hold** — `status: paused` at `merge`, `gate_passed` stays `false`, log `paused`, `WRITE-STATE`,
