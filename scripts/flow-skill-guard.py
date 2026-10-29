@@ -73,9 +73,6 @@ def main():
         agent = sys.argv[2]
 
         # Parse JSON payload from stdin
-        if not isinstance(sys.stdin, object):
-            sys.exit(2)
-
         payload = json.load(sys.stdin)
 
         # Validate payload structure

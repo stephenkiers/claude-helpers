@@ -418,6 +418,32 @@ def main():
         f"rc={rc} (should be 2)"
     )
 
+    # Test 9: groups, brace groups and substitutions are recursed into, not skipped
+    def bash_rc(cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        return run_guard(BASH_GUARD, payload, agent_type_arg="flow-implement")[0]
+
+    for label, cmd in (
+        ("subshell group", "(git push origin x)"),
+        ("command substitution", "echo $(git push origin x)"),
+        ("brace group", "{ git push origin x; }"),
+        ("backtick substitution", "echo `git push origin x`"),
+        ("nested substitution", "echo $(echo $(git push origin x))"),
+        ("wrapper in subshell", '(bash -c "ls")'),
+        ("unclosed group", "(git push origin x"),
+    ):
+        rc = bash_rc(cmd)
+        h.test_result(f"flow-bash-guard.py blocks publishing verb in {label} (exit 2)", rc == 2, f"rc={rc} cmd={cmd!r}")
+
+    for label, cmd in (
+        ("subshell group", "(git status; ls)"),
+        ("command substitution", "echo $(date)"),
+        ("brace group", "{ ls; }"),
+        ("parameter expansion", "echo ${HOME}"),
+    ):
+        rc = bash_rc(cmd)
+        h.test_result(f"flow-bash-guard.py allows benign command in {label} (exit 0)", rc == 0, f"rc={rc} cmd={cmd!r}")
+
     print()
     h.summarize_and_exit()
 

@@ -63,57 +63,64 @@ PUBLISHING_VERBS = (
 _SEGMENT_RE = re.compile(r'(;|&&|\|\||&|\||`|$\(|[({]|\n)')
 
 
+def _group_end(command, start):
+    """Return the index just past the group opened before `start`.
+
+    `start` is the index of the first character inside the group. Counts nested
+    ( ) and { } together. If the group never closes, returns len(command) so the
+    caller still inspects the whole remainder (fail closed).
+    """
+    depth = 1
+    i = start
+    while i < len(command) and depth > 0:
+        if command[i] in "({":
+            depth += 1
+        elif command[i] in ")}":
+            depth -= 1
+        i += 1
+    return i
+
+
 def split_segments(command):
     """Split command into segments on metacharacters, subshells, and grouping.
 
-    Returns list of command segments, each separated by shell metacharacters.
+    Returns a flat list of command segments. The contents of (...), {...} and
+    $(...) are recursed into (not skipped), so a publishing verb or wrapper inside
+    a group is still seen. An unclosed group is inspected through to the end.
     """
-    # Use a simple heuristic: split on ; && || | & newline and subshell/group starts
     segments = []
     current = []
     i = 0
+
+    def flush():
+        if current:
+            segments.append("".join(current).strip())
+            del current[:]
+
     while i < len(command):
-        if i + 1 < len(command) and command[i:i+2] in ("&&", "||"):
-            if current:
-                segments.append("".join(current).strip())
-                current = []
+        if command[i:i+2] in ("&&", "||"):
+            flush()
             i += 2
-        elif command[i] in (";", "&", "|", "`", "\n", "(", "{"):
-            if current:
-                segments.append("".join(current).strip())
-                current = []
-            if command[i] in ("(", "{"):
-                # Skip grouping; include until matching close
-                depth = 1
-                i += 1
-                while i < len(command) and depth > 0:
-                    if command[i] == "(" or command[i] == "{":
-                        depth += 1
-                    elif command[i] == ")" or command[i] == "}":
-                        depth -= 1
-                    i += 1
-            else:
-                i += 1
-        elif i + 1 < len(command) and command[i:i+2] == "$(":
-            # Skip $(...) subshell
-            if current:
-                segments.append("".join(current).strip())
-                current = []
-            depth = 1
-            i += 2
-            while i < len(command) and depth > 0:
-                if command[i] == "(":
-                    depth += 1
-                elif command[i] == ")":
-                    depth -= 1
-                i += 1
+        elif command[i:i+2] == "$(":
+            flush()
+            end = _group_end(command, i + 2)
+            inner_end = end - 1 if end <= len(command) and command[end - 1:end] in (")", "}") else end
+            segments.extend(split_segments(command[i + 2:inner_end]))
+            i = end
+        elif command[i] in ("(", "{"):
+            flush()
+            end = _group_end(command, i + 1)
+            inner_end = end - 1 if command[end - 1:end] in (")", "}") else end
+            segments.extend(split_segments(command[i + 1:inner_end]))
+            i = end
+        elif command[i] in (";", "&", "|", "`", "\n"):
+            flush()
+            i += 1
         else:
             current.append(command[i])
             i += 1
 
-    if current:
-        segments.append("".join(current).strip())
-
+    flush()
     return [s for s in segments if s]
 
 
@@ -398,9 +405,6 @@ def main():
         agent = sys.argv[2]
 
         # Parse JSON payload from stdin
-        if not isinstance(sys.stdin, object):
-            sys.exit(2)
-
         payload = json.load(sys.stdin)
 
         # Validate payload structure
