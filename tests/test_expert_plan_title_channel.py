@@ -24,7 +24,6 @@ Behavioral section:
 Run with: python3 tests/test_expert_plan_title_channel.py
 """
 
-import os
 import re
 import subprocess
 import sys
@@ -143,7 +142,7 @@ def main():
         h.test_result(
             f"SLUG site at line {line_no} is in a block with fallback",
             found_fallback,
-            f"could not find fallback in next 10 lines",
+            "could not find fallback in next 10 lines",
         )
 
     # Structural check (f): Each site has missing-script warning

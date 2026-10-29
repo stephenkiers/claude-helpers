@@ -126,14 +126,13 @@ def main():
         )
 
     # Check BSD-unsafe constructs in slugify sites (script itself)
-    from pathlib import Path as PathlibPath
     slugify_script = REPO_ROOT / "scripts" / "slugify.sh"
     if slugify_script.exists():
         script_text = slugify_script.read_text()
         h.test_result(
             "scripts/slugify.sh has no BSD-unsafe sed escape",
             not BSD_UNSAFE.search(script_text),
-            f"found in script" if BSD_UNSAFE.search(script_text) else "",
+            "found in script" if BSD_UNSAFE.search(script_text) else "",
         )
 
     print()
