@@ -95,7 +95,7 @@ def main():
                   len(re.findall(r"superseded[\s\S]{0,120}2026-10-27", adr)) >= 3
                   or len(re.findall(r"2026-10-27[\s\S]{0,120}superseded", adr)) >= 3)
     for term in ("orchestrator stage", "attempts.assess", "failures.assess", "stop_source.assess",
-                 "outstanding_format", "legacy", "Extended by #380", "slice 2"):
+                 "outstanding_format", "legacy", "boundary with #380", "slice 2"):
         h.test_result(f"ADR mentions {term!r}", term in adr)
 
     print()

@@ -3036,15 +3036,6 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
     if extra:
         error(f"outstanding gate: extra dispositions: {', '.join(extra)}")
 
-    # F2: Check ledger records for human-answered dispositions
-    human_answer_refs: Set[str] = set()
-    for d in dispositions:
-        if d.by == "human" and d.answer_ref != "none":
-            human_answer_refs.add(d.answer_ref)
-    ledger_err = _check_ledger_records(flow_dir, human_answer_refs)
-    if ledger_err:
-        error(ledger_err)
-
     # The assessment must back the marker (assessor) or the log must show the take-over (taken-over).
     if mode == "assessor":
         if not assess_file.exists():
@@ -3089,7 +3080,7 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
             if rec is None or rec.status != "already-done":
                 error(f"outstanding gate: finished needs an already-done assessment: {d.id}")
             if d.by == "assessor-verified":
-                if cov not in ("declared", "none"):
+                if cov != "declared":
                     error(f"outstanding gate: finished on {cov} coverage needs a human confirmation: {d.id}")
             else:
                 if cov != "uncovered":
@@ -3136,6 +3127,14 @@ def outstanding_gate(flow_dir: Path, marker_file: Path) -> NoReturn:
                     error(f"outstanding gate: only 'Pause to finish by hand' is allowed under taken-over: {d.id}")
             else:
                 error(f"outstanding gate: asked-and-answered needs route leave|issue|pause: {d.id}")
+    # F2: After the answers files validate, check ledger records for human-answered dispositions
+    human_answer_refs: Set[str] = set()
+    for d in dispositions:
+        if d.by == "human" and d.answer_ref != "none":
+            human_answer_refs.add(d.answer_ref)
+    ledger_err = _check_ledger_records(flow_dir, human_answer_refs)
+    if ledger_err:
+        error(ledger_err)
     # F14: Use _paused_unfinished helper to identify unfinished paused items
     paused = _paused_unfinished(dispositions, assessments, mode)
     if paused:

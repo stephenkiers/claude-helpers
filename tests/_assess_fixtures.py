@@ -134,10 +134,10 @@ def write_marker(flow, lines, *, fmt=True, assessment="assessor", sentinel=True)
     return path
 
 
-def write_answers(flow, seq, entries, ledger=False):
+def write_answers(flow, seq, entries, ledger=True):
     """entries: list of (qid, item_id, label, notes_or_None). Writes questions/assess-<seq>.json (each
     question carries `item`) and answers/assess-<seq>.json (answers keyed by question id, notes under
-    annotations.<qid>.notes). When ledger=True, appends a human.jsonl record for answer_ref tracking."""
+    annotations.<qid>.notes). When ledger=True (default), appends a human.jsonl record for answer_ref tracking."""
     questions = []
     answers = {}
     annotations = {}
