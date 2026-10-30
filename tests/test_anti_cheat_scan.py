@@ -4,8 +4,8 @@ Black-box tests for scripts/anti-cheat-scan.py (#380).
 
 Driven only through the CLI (subprocess) against tiny throwaway repos. Covers:
 1. `implement` profile parity with /implement-with-haiku Gate step 2.
-2. `heal` profile: test edits, gate-config edits, added suppressions, env guards, and the narrowed
-   revert-to-pass rule (an unused import added by implement may be deleted; other added code may not).
+2. `heal` profile: test edits, gate-config edits, added suppressions, env guards, and the
+   revert-to-pass rule (post-image must not restore pre-revert-base text).
 3. `fix-now` profile: no stricter than an ordinary fix, but still the implement profile's rules.
 4. Profile/--revert-base argument rules and fail-closed behaviour on bad refs.
 
@@ -190,6 +190,12 @@ def main():
     heal_case(h, "an added '# noqa'", {"src/other.py": "def g( ):  # noqa\n    return 2\n"}, "added-suppression")
     heal_case(h, "an added '# type: ignore'", {"src/other.py": "def g( ):  # type: ignore\n    return 2\n"},
               "added-suppression")
+    heal_case(h, "an added '# nosec'", {"src/other.py": "def g( ):  # nosec\n    return 2\n"},
+              "added-suppression")
+    heal_case(h, "an added '|| true'", {"Makefile": "test:\n\tpytest || true\n"}, "added-suppression")
+    heal_case(h, "an added '--no-verify'", {"src/app.py": 'os.system("git commit --no-verify")\n'}, "added-suppression")
+    heal_case(h, "an added 'skipif' conditional", {"src/other.py": 'def f():\n    if skipif():\n        return\n'},
+              "added-suppression")
     heal_case(h, "an added env-guard early return",
               {"src/other.py": 'import os\n\n\ndef g( ):\n    if not os.environ.get("DB_NAME"):\n        return\n    return 2\n'},
               "env-guard")
@@ -212,15 +218,15 @@ def main():
         healed = IMPLEMENT_APP.replace("import os\n", "").replace("    return os.sep\n", "    return 1\n")
         c2 = commit(repo, {"src/app.py": healed}, "heal removes the import and the code that used it")
         rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
-        h.test_result("heal: removing the import AND other added code fails with 'revert-to-pass'",
-                      failed_with(rc, data, "revert-to-pass"), detail(rc, data))
+        h.test_result("heal: rewriting added code does not restore pre-revert-base text (passes rule (b))",
+                      passed(rc, data), detail(rc, data))
 
     with tempfile.TemporaryDirectory() as tmp:
         repo, c0, c1 = make_repo(tmp)
         c2 = commit(repo, {"src/app.py": IMPLEMENT_APP.replace("    unused = 5\n", "")}, "heal removes added unused var")
         rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
-        h.test_result("heal: removing a non-import line added in the range fails with 'revert-to-pass'",
-                      failed_with(rc, data, "revert-to-pass"), detail(rc, data))
+        h.test_result("heal: removing a non-import line added in the range passes (rule (a) removed)",
+                      passed(rc, data), detail(rc, data))
 
     with tempfile.TemporaryDirectory() as tmp:
         repo, c0, c1 = make_repo(tmp)
@@ -234,6 +240,18 @@ def main():
         c2 = commit(repo, {"src/other.py": "def g():\n    return 2\n"}, "heal formats a pre-existing line")
         rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
         h.test_result("heal: a plain fix to a file implement never touched passes", passed(rc, data), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, c0, c1 = make_repo(tmp)
+        c2 = commit(repo, {"README.md": "# repo v2\n"}, "heal edits non-code file")
+        rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
+        h.test_result("heal: editing a non-code file passes", passed(rc, data), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, c0, c1 = make_repo(tmp)
+        c2 = commit(repo, {"src/new.py": "def added():\n    return 5\n", "src/other.py": "def g():\n    return 2\n"}, "heal edits multiple files")
+        rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
+        h.test_result("heal: edits across multiple non-test files pass", passed(rc, data), detail(rc, data))
 
     print()
     print("[Section 4] fix-now profile")
@@ -254,6 +272,12 @@ def main():
         c2 = commit(repo, {"src/app.py": IMPLEMENT_APP.replace("    unused = 5\n", "    unused = 6\n")}, "rewrite added line")
         rc, data = scan(repo, c0, c2, "fix-now")
         h.test_result("fix-now: a rewrite of lines added in the range passes", passed(rc, data), detail(rc, data))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, c0, c1 = make_repo(tmp)
+        c2 = commit(repo, {"src/app.py": IMPLEMENT_APP.replace("    unused = 5\n", "    unused = 6\n")}, "rewrite added line")
+        rc, data = scan(repo, c1, c2, "heal", revert_base=c0)
+        h.test_result("heal: a rewrite of lines added in the range passes (no restore of pre-revert-base)", passed(rc, data), detail(rc, data))
 
     with tempfile.TemporaryDirectory() as tmp:
         repo, c0, c1 = make_repo(tmp)

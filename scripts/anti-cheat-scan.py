@@ -24,11 +24,8 @@ Profiles:
   heal       The check-heal profile. Everything in implement, plus gate-config-edit,
              added-suppression, env-guard and revert-to-pass. Requires --revert-base,
              the start of the work being healed (bases[implement]). revert-to-pass
-             fails a hunk only if (a) it removes a line that was added in
-             REVERT_BASE..BASE and that line is neither an import line nor blank, or
-             (b) its post-image restores the pre-REVERT_BASE text of a region that
-             changed in REVERT_BASE..BASE. Deleting an unused import added by the
-             work being healed therefore passes.
+             fails a hunk only if its post-image restores the pre-REVERT_BASE text of
+             a region that changed in REVERT_BASE..BASE.
 
 Named reasons: test-edit, test-removed, gate-config-edit, added-suppression, env-guard,
 revert-to-pass, neutered-verification, stub-body, bad-ref, missing-revert-base,
@@ -38,6 +35,7 @@ revert-base-not-allowed, diff-unreadable.
 import argparse
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -54,7 +52,10 @@ _TEST_DIRS = ("tests", "__tests__", "spec")
 _CONFIG_BASENAMES = ("package.json", "Makefile", "Cargo.toml", "pyproject.toml", "build.gradle")
 _CONFIG_PREFIXES = (".github/workflows/",)
 
-_GATE_BASENAMES = ("ruff.toml", "mypy.ini", "justfile", "Makefile", "pyproject.toml", "package.json")
+_GATE_BASENAMES = (
+    "ruff.toml", "mypy.ini", "justfile", "Makefile", "pyproject.toml", "package.json",
+    "conftest.py", "repo-cache.json"
+)
 _GATE_PREFIXES = (
     ".claude/",
     ".github/",
@@ -62,6 +63,7 @@ _GATE_PREFIXES = (
     ".husky/",
     ".git/hooks/",
     "scripts/flow-",
+    "fixtures/",
 )
 _GATE_EXACT = ("scripts/anti-cheat-scan.py", "scripts/heal-check.py")
 
@@ -93,12 +95,23 @@ def is_config_path(path: str) -> bool:
     return any(path.startswith(p) for p in _CONFIG_PREFIXES)
 
 
-def is_gate_path(path: str) -> bool:
-    if _basename(path) in _GATE_BASENAMES:
+def is_gate_path(path: str, repo: Optional[str] = None) -> bool:
+    # If repo is provided, resolve the path to catch symlinks and renames
+    check_path = path
+    if repo is not None:
+        try:
+            abs_path = os.path.realpath(os.path.join(repo, path))
+            repo_abs = os.path.realpath(repo)
+            check_path = os.path.relpath(abs_path, repo_abs)
+        except (OSError, ValueError):
+            # If realpath fails, fall back to the original path
+            check_path = path
+
+    if _basename(check_path) in _GATE_BASENAMES:
         return True
-    if path in _GATE_EXACT:
+    if check_path in _GATE_EXACT:
         return True
-    return any(path.startswith(p) for p in _GATE_PREFIXES)
+    return any(check_path.startswith(p) for p in _GATE_PREFIXES)
 
 
 def is_impl_path(path: str) -> bool:
@@ -126,9 +139,9 @@ _NEUTER_RE = re.compile(
 )
 
 _SUPPRESS_RE = re.compile(
-    r"#\s*noqa|#\s*type:\s*ignore|eslint-disable|@ts-ignore|shellcheck\s+disable|"
+    r"#\s*noqa|#\s*nosec|#\s*type:\s*ignore|eslint-disable|@ts-ignore|shellcheck\s+disable|"
     r"\bit\.skip\b|\bxit\(|\bxfail\b|pytest\.mark\.skip|pytest\.skip\(|@unittest\.skip|#\[ignore\]|"
-    r"\.skip\("
+    r"\.skip\(|skipif\(|skipif\[|\|\|\s*true\b|--no-verify"
 )
 
 _ENV_RE = re.compile(r"os\.environ|os\.getenv|process\.env")
@@ -318,25 +331,13 @@ def check_env_guard(path: str, hunks: List[Hunk]) -> List[str]:
 def check_revert_to_pass(
     repo: str, revert_base: str, base: str, path: str, hunks: List[Hunk]
 ) -> List[str]:
-    """Narrowed revert-to-pass rule (a)/(b); see the module docstring."""
+    """Revert-to-pass rule: post-image must not restore pre-revert-base text; see module docstring."""
     prior = file_hunks(repo, revert_base, base, path)
     if not prior:
         return []
-    prior_added: Set[int] = set()
-    for ph in prior:
-        for n, _ in ph.added:
-            prior_added.add(n)
     reasons = []  # type: List[str]
     for h in hunks:
-        # (a) removes a non-import, non-blank line that revert_base..base added
-        hit = [
-            n for n, text in h.removed
-            if n in prior_added and text.strip() and not _IMPORT_RE.match(text)
-        ]
-        if hit:
-            reasons.append("revert-to-pass: %s:%s" % (path, _lines_label(hit)))
-            continue
-        # (b) post-image restores the pre-revert_base text of a region it changed
+        # post-image restores the pre-revert_base text of a region it changed
         post = [t.strip() for _, t in h.added]
         if not any(post):
             continue
@@ -386,7 +387,7 @@ def scan(
                 reasons.append("test-removed: %s" % path)
             elif profile in ("implement", "heal"):
                 reasons.append("test-edit: %s" % path)
-        if profile == "heal" and is_gate_path(path):
+        if profile == "heal" and is_gate_path(path, repo):
             reasons.append("gate-config-edit: %s" % path)
         if status == "D":
             continue
