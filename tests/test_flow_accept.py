@@ -389,7 +389,32 @@ def main():
                       rc == 2, f"rc={rc}, err={err!r}")
 
         print()
+        print("[Section 6] outstanding set reads an accepted step as taken-over")
+        verify = _load_verify_receipt()
+        for name, log, want in [
+            ("accepted line", f"{TS} implement begin\n{TS} implement accepted (audit-reduced: x)\n", "taken-over"),
+            ("a trailing gate line does not hide accepted",
+             f"{TS} implement accepted (receipt-reduction: x)\n{TS} implement gate\n", "taken-over"),
+            ("hand-finished still reads as taken-over", f"{TS} implement hand-finished\n", "taken-over"),
+            ("a later ok supersedes an earlier accepted",
+             f"{TS} implement accepted (audit-reduced: x)\n{TS} implement ok\n", "ok"),
+            ("accepted for another step is ignored", f"{TS} fix accepted (audit-reduced: x)\n", None),
+        ]:
+            got = verify._newest_step_status(log, "implement")
+            h.test_result(f"_newest_step_status: {name}", got == want, f"got {got!r}, want {want!r}")
+
+        print()
         h.summarize_and_exit()
+
+
+def _load_verify_receipt():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("flow_verify_receipt", REPO_ROOT / "scripts" / "flow-verify-receipt.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _source_for(cls):
