@@ -20,7 +20,7 @@ The cap gates fresh admission only. `ready()` counts `running` tickets against `
 
 A per-ticket `flock` allows at most one runner per ticket, and `main.lock` serializes fresh worktree creation from the main worktree against other fresh launches only. Nothing checks that a ticket's dependencies are merged into MAIN before its worktree is cut (see §6). A ticket that needs the human **parks** by writing `fleet-ask.json` in its flow directory and exiting. The flow's orchestrator is the single writer of `fleet-ask.json`; `fleet.py` only reads it.
 
-Each flow has one open ask at a time. The `/expert-fleet` session batches open asks to the human and resumes the ticket's own session with `fleet.py run --message-file`. For the `fleet-ask.json` schema and lifecycle, see `commands/expert-flow.md` "Fleet mode"; this ADR does not copy it, as siblings (#365, #367, #370) will change it.
+Each flow has one open ask at a time. The `/expert-fleet` session batches open asks to the human and resumes the ticket's own session with `fleet.py run --message-file`. For the `fleet-ask.json` schema and lifecycle, see `commands/expert-flow.md` "Fleet mode"; this ADR does not copy it, as siblings (#365, #367, #370) will change it. (#365 is resolved by ADR-0023's 2026-10-29 amendment.)
 
 Delivery of answers to tickets is not exactly-once: a crash between consuming an answer and closing the ask can leave a ticket re-parked on the same question. This is recorded in the catch-all issue #381.
 
@@ -47,7 +47,7 @@ The table below lists gaps fixed elsewhere (in numbered sibling issues or the ca
 
 | Gap | Issue | Qualifies |
 |-----|-------|-----------|
-| Accept-and-continue at hard-stop gates | #365 | "Not exercised end to end" if untested |
+| Accept-and-continue at hard-stop gates | #365 | "Not exercised end to end" if untested — resolved by ADR-0023 amendment (2026-10-29) |
 | Ledger enforcement | #288 | hard-stop and merge-gate answers via prose |
 | Non-code plan obligations | #366 | `depends-on` linking (ordering obligations as dependency edges) |
 | Post-review commits and test budget | #367 | #367 covers post-review commits, test budget, and fails-at-base proof. Answer replay testing and answer-path audit are untracked gaps in #381 (comment). |
