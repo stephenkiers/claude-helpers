@@ -46,7 +46,8 @@ def run_slugify(title_bytes, env=None):
         ["bash", str(SCRIPT)],
         input=title_bytes,
         capture_output=True,
-        cwd=tempfile.mkdtemp(),
+        cwd=tempfile.gettempdir(),
+        env=run_env,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -59,7 +60,8 @@ def run_slugify_with_arg(arg, env=None):
     result = subprocess.run(
         ["bash", str(SCRIPT), arg],
         capture_output=True,
-        cwd=tempfile.mkdtemp(),
+        cwd=tempfile.gettempdir(),
+        env=run_env,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -198,13 +200,12 @@ def main():
     test_cases = benign_cases + [(title, exp) for title, exp in hostile_cases]
     for title_bytes, expected in test_cases:
         returncode, stdout, stderr = run_slugify(title_bytes)
-        if returncode == 0:
-            slug = stdout.decode().strip()
-            h.test_result(
-                f"shape check: {expected!r} matches slug pattern",
-                SLUG_PATTERN.match(slug),
-                f"slug={slug!r} does not match pattern" if not SLUG_PATTERN.match(slug) else "",
-            )
+        slug = stdout.decode().strip()
+        h.test_result(
+            f"shape check: {expected!r} matches slug pattern",
+            bool(returncode == 0 and SLUG_PATTERN.match(slug)),
+            f"returncode={returncode}, slug={slug!r}" if not bool(returncode == 0 and SLUG_PATTERN.match(slug)) else "",
+        )
 
     # Test 10: Argv rejection
     returncode, stdout, stderr = run_slugify_with_arg("Some Title")

@@ -19,6 +19,7 @@ Run with: python3 tests/test_slugify_title_file.py
 """
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,14 +29,57 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _test_harness import Harness, REPO_ROOT
 
+DOC = REPO_ROOT / "commands" / "expert-plan.md"
 
-def run_slug_from_file(title_file_path, slugify_script_path, shell="bash"):
+
+def extract_step1_slug_block(doc_text):
     """
-    Run the Step 1 slug pattern: read from a file and pipe into the script.
-    Simulates: SLUG=$(bash "$SLUGIFY" < "$TITLE_FILE") || SLUG=""
+    Extract the Step 1 slug block from the doc.
+    Starts at the TITLE_FILE= line and ends at the fallback line.
+    Returns the extracted text or None if not found.
+    """
+    lines = doc_text.splitlines()
+    start_idx = None
+    end_idx = None
+
+    for i, line in enumerate(lines):
+        if 'TITLE_FILE=' in line and 'ticket-title.txt' in line:
+            start_idx = i
+        if start_idx is not None and '[ -n "$SLUG" ] || SLUG="plan"' in line:
+            end_idx = i
+            break
+
+    if start_idx is not None and end_idx is not None:
+        return "\n".join(lines[start_idx:end_idx + 1])
+
+    return None
+
+
+def run_slug_from_file(title_file_path, slugify_script_path, temp_session_dir, shell="bash"):
+    """
+    Run the Step 1 slug pattern: extract from the doc and run with variables.
+    Sets up a temp HOME with the script at the expected location.
     Returns (returncode, stdout, stderr).
     """
-    script_content = f'''
+    doc_text = DOC.read_text()
+    step1_block = extract_step1_slug_block(doc_text)
+
+    # Copy the title file to the expected location
+    expected_title_file = Path(temp_session_dir) / "ticket-title.txt"
+    if Path(title_file_path).exists():
+        shutil.copy2(title_file_path, expected_title_file)
+
+    # Create a temp HOME with the script at $HOME/.claude/scripts/slugify.sh
+    with tempfile.TemporaryDirectory() as temp_home:
+        scripts_dir = Path(temp_home) / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        script_path = scripts_dir / "slugify.sh"
+        if Path(slugify_script_path).exists():
+            shutil.copy2(slugify_script_path, script_path)
+
+        if not step1_block:
+            # Fallback to direct script if extraction fails
+            script_content = f'''
 TITLE_FILE="{title_file_path}"
 SLUGIFY="{slugify_script_path}"
 SLUG=""
@@ -47,13 +91,22 @@ fi
 [ -n "$SLUG" ] || SLUG="plan"
 printf "%s" "$SLUG"
 '''
+        else:
+            # Use the extracted block with the proper environment variables
+            script_content = f'''
+export HOME="{temp_home}"
+export SESSION_DIR="{temp_session_dir}"
+SLUG=""
+{step1_block}
+printf "%s" "$SLUG"
+'''
 
-    result = subprocess.run(
-        [shell, "-c", script_content],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, result.stdout, result.stderr
+        result = subprocess.run(
+            [shell, "-c", script_content],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout, result.stderr
 
 
 def test_title_from_file():
@@ -62,16 +115,18 @@ def test_title_from_file():
         title_file = Path(tmpdir) / "title.txt"
         title_file.write_text("My Project Title")
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        slug = stdout.strip()
-        if slug != "my-project-title":
-            return False, f"expected 'my-project-title', got {slug!r}"
+            slug = stdout.strip()
+            if slug != "my-project-title":
+                return False, f"expected 'my-project-title', got {slug!r}"
 
-        return True, ""
+            return True, ""
 
 
 def test_missing_title_file_fallback():
@@ -79,19 +134,21 @@ def test_missing_title_file_fallback():
     with tempfile.TemporaryDirectory() as tmpdir:
         title_file = Path(tmpdir) / "nonexistent.txt"
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        slug = stdout.strip()
-        if slug != "plan":
-            return False, f"expected 'plan', got {slug!r}"
+            slug = stdout.strip()
+            if slug != "plan":
+                return False, f"expected 'plan', got {slug!r}"
 
-        if "SLUG WARNING" not in stderr:
-            return False, "expected warning in stderr"
+            if "SLUG WARNING" not in stderr:
+                return False, "expected warning in stderr"
 
-        return True, ""
+            return True, ""
 
 
 def test_missing_script_fallback():
@@ -101,19 +158,21 @@ def test_missing_script_fallback():
         title_file.write_text("Some Title")
         missing_script = Path(tmpdir) / "nonexistent.sh"
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(missing_script)
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(missing_script),
+                session_dir
+            )
 
-        slug = stdout.strip()
-        if slug != "plan":
-            return False, f"expected 'plan', got {slug!r}"
+            slug = stdout.strip()
+            if slug != "plan":
+                return False, f"expected 'plan', got {slug!r}"
 
-        if "SLUG WARNING" not in stderr:
-            return False, "expected warning in stderr"
+            if "SLUG WARNING" not in stderr:
+                return False, "expected warning in stderr"
 
-        return True, ""
+            return True, ""
 
 
 def test_hostile_title_from_file():
@@ -126,21 +185,23 @@ def test_hostile_title_from_file():
         hostile_title = 'x"; touch ' + str(canary_file) + ' || true; echo "y'
         title_file.write_text(hostile_title)
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        # The canary file should NOT exist (no command execution)
-        if canary_file.exists():
-            return False, "hostile title attempted to create a file (command execution)"
+            # The canary file should NOT exist (no command execution)
+            if canary_file.exists():
+                return False, "hostile title attempted to create a file (command execution)"
 
-        # Should still produce a valid slug
-        slug = stdout.strip()
-        if not re.match(r"^[a-z0-9-]{1,50}$|^plan$", slug):
-            return False, f"invalid slug format: {slug!r}"
+            # Should still produce a valid slug
+            slug = stdout.strip()
+            if not re.match(r"^[a-z0-9-]{1,50}$|^plan$", slug):
+                return False, f"invalid slug format: {slug!r}"
 
-        return True, ""
+            return True, ""
 
 
 def test_hostile_title_backtick():
@@ -153,15 +214,17 @@ def test_hostile_title_backtick():
         hostile_title = f"Title `touch {canary_file}`"
         title_file.write_text(hostile_title)
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        if canary_file.exists():
-            return False, "backtick substitution attempted to execute"
+            if canary_file.exists():
+                return False, "backtick substitution attempted to execute"
 
-        return True, ""
+            return True, ""
 
 
 def test_hostile_title_command_substitution():
@@ -174,15 +237,17 @@ def test_hostile_title_command_substitution():
         hostile_title = f"Title $(touch {canary_file})"
         title_file.write_text(hostile_title)
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        if canary_file.exists():
-            return False, "$(...) substitution attempted to execute"
+            if canary_file.exists():
+                return False, "$(...) substitution attempted to execute"
 
-        return True, ""
+            return True, ""
 
 
 def test_multiline_title_from_file():
@@ -191,19 +256,21 @@ def test_multiline_title_from_file():
         title_file = Path(tmpdir) / "title.txt"
         title_file.write_text("Line One\nLine Two\nLine Three")
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        slug = stdout.strip()
-        if "\n" in slug or "\r" in slug:
-            return False, f"slug contains newline: {slug!r}"
+            slug = stdout.strip()
+            if "\n" in slug or "\r" in slug:
+                return False, f"slug contains newline: {slug!r}"
 
-        if not re.match(r"^[a-z0-9-]{1,50}$|^plan$", slug):
-            return False, f"invalid slug format: {slug!r}"
+            if not re.match(r"^[a-z0-9-]{1,50}$|^plan$", slug):
+                return False, f"invalid slug format: {slug!r}"
 
-        return True, ""
+            return True, ""
 
 
 def test_long_title_truncation():
@@ -213,22 +280,24 @@ def test_long_title_truncation():
         long_title = "A" * 100
         title_file.write_text(long_title)
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        slug = stdout.strip()
+            slug = stdout.strip()
 
-        # Should be at most 50 characters
-        if len(slug) > 50:
-            return False, f"slug length {len(slug)} exceeds 50"
+            # Should be at most 50 characters
+            if len(slug) > 50:
+                return False, f"slug length {len(slug)} exceeds 50"
 
-        # Should not have trailing dash
-        if slug.endswith("-"):
-            return False, f"slug has trailing dash: {slug!r}"
+            # Should not have trailing dash
+            if slug.endswith("-"):
+                return False, f"slug has trailing dash: {slug!r}"
 
-        return True, ""
+            return True, ""
 
 
 def test_empty_title_file():
@@ -237,16 +306,18 @@ def test_empty_title_file():
         title_file = Path(tmpdir) / "title.txt"
         title_file.write_text("")
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        slug = stdout.strip()
-        if slug != "plan":
-            return False, f"expected 'plan' for empty file, got {slug!r}"
+            slug = stdout.strip()
+            if slug != "plan":
+                return False, f"expected 'plan' for empty file, got {slug!r}"
 
-        return True, ""
+            return True, ""
 
 
 def test_title_with_special_characters():
@@ -255,22 +326,24 @@ def test_title_with_special_characters():
         title_file = Path(tmpdir) / "title.txt"
         title_file.write_text("Fix Bug! (Security-Related) [URGENT]")
 
-        code, stdout, stderr = run_slug_from_file(
-            str(title_file),
-            str(REPO_ROOT / "scripts" / "slugify.sh")
-        )
+        with tempfile.TemporaryDirectory() as session_dir:
+            code, stdout, stderr = run_slug_from_file(
+                str(title_file),
+                str(REPO_ROOT / "scripts" / "slugify.sh"),
+                session_dir
+            )
 
-        slug = stdout.strip()
+            slug = stdout.strip()
 
-        # All should be lowercase and only contain a-z0-9 and dash
-        if not re.match(r"^[a-z0-9-]{1,50}$|^plan$", slug):
-            return False, f"invalid slug format: {slug!r}"
+            # All should be lowercase and only contain a-z0-9 and dash
+            if not re.match(r"^[a-z0-9-]{1,50}$|^plan$", slug):
+                return False, f"invalid slug format: {slug!r}"
 
-        # Should not contain any of the original special chars
-        if any(c in slug for c in "!()[]"):
-            return False, f"slug contains special characters: {slug!r}"
+            # Should not contain any of the original special chars
+            if any(c in slug for c in "!()[]"):
+                return False, f"slug contains special characters: {slug!r}"
 
-        return True, ""
+            return True, ""
 
 
 def main():
