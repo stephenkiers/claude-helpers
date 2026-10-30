@@ -228,7 +228,7 @@ separate from the reviewer-context cascade.
   Failures are hard stops (Retry ≤2 / Take over / Abort, plus a human-only **Accept and continue** for allowlisted verifier and fidelity-audit rejections the human judges acceptable (ADR-0023 2026-10-29 amendment), with a base-stale `verify` failure auto-rebased first — naive rebase, then an `/expert-rebase` worker on conflicts, never a push — per ADR-0023's auto-Rebase amendment; a single-unit implement/fix implementer-shortfall offers a fourth option `Retry with sonnet` for manual escalation, and automatic escalation is dormant until a turns source exists per the 2026-10-16 amendment; the 2026-10-25 amendment (#341) records that the turns probe was not run) — never auto-remediated. Before ship, an `assess` stage verifies and assesses each outstanding unit; already-done ones are always reported; unfinished ones are relayed with their assessment (the assessor's own options, open an issue, leave as-is where safe, pause to finish by hand, or drop with a human reason), and each answer is saved as it is made; a script gate checks every answer against the answers file and blocks ship and merge, `--auto-merge` included, until every item has a disposition; automatic finishing is a planned slice 2 (see the 2026-10-27 amendment to ADR-0023). State
   under `~/.claude/flows/<repo>/<issue>-<slug>-<id>/`, `--resume`/`--list`, human merge gate unless `--auto-merge`
   (per-run only; trusts the plan/PR author). The orchestrator's `Write` is not path-scoped (intended
-  scope: `FLOW_DIR` and the marker file). **Implement, fix and review steps run restricted agents** (`flow-implement`, `flow-review`; see ADR-0008); other steps spawn `general-purpose` subagents (pending #359/#360). After pulling this change, run `/setup-local` before the next flow. See [ADR-0023](docs/adr/0023-expert-flow.md)
+  scope: `FLOW_DIR` and the marker file). **Implement, fix, review, ship and merge steps run restricted agents** (`flow-implement`, `flow-review`, `flow-ship`, `flow-merge`; see ADR-0008 and ADR-0023); other steps spawn `general-purpose` subagents (pending #360). After pulling this change, run `/setup-local` before the next flow. See [ADR-0023](docs/adr/0023-expert-flow.md)
 - `/expert-fleet` — **[experimental: not yet validated on main; see ADR-0025]** run a whole epic: one headless `/expert-flow <N> --fleet` process per sub-issue (`scripts/fleet.py` launches them), independent tickets in parallel up to `--max` (default 3; the 1–6 range is advisory, not enforced), dependants only once their deps merged or are CLOSED. A ticket that needs you **parks** (writes `fleet-ask.json` in its flow dir and exits) while the others keep running; the fleet asks every open question in batches, tagged `#N`, and resumes each ticket's own session with the answer. `--prepass` asks big direction questions once and writes them into the sub-issues before any ticket plans. `--resume`/`--status` re-enter or inspect a fleet under `~/.claude/fleets/`. See [ADR-0025](docs/adr/0025-expert-fleet.md).
 - `/merge-and-cleanup` — merge an open PR through the repo's real merge gate (auto-detected: `just merge`, then a `repo-cache.json` check command, then a plain `gh pr merge --squash` fallback), gated by a push-completeness check, then hands off to `/cleanup`. If a merge-queue configuration exists and the PR targets the queue's base branch, routes the PR through `/queued-merge` (blocking while the queue drains) and runs `/cleanup` once GitHub reports it MERGED; a kickback or refusal stops and leaves the worktree intact. An `unknown`/undeterminable queue state still refuses (exit 3). PRs targeting other bases merge normally. When no queue is configured (but the layout supports one), offers to create `merge-queue.json` and then routes through `/queued-merge`. Accepts an optional PR number or worktree path; defaults to auto-detecting from the current worktree when omitted
 - `/queued-merge` — merge an open PR through the local merge queue when a `merge-queue.json` config exists. The queue serializes PRs and merges them one at a time in arrival order, testing each against the exact base it will land on, with unverified-main detection. See [ADR-0021](docs/adr/0021-local-merge-queue.md) for the force-push carve-out (the queue's only authorized force-push, audited and constrained, happens only after the full gate passes).
@@ -334,6 +334,15 @@ so newly-written bash blocks don't regress the printf pattern.
 
 ## Force-push carve-out
 
+**Fifth control (best-effort Bash guard):**
+A per-agent **Bash guard** in `flow-bash-guard.py` allows only the push forms the authorized commands
+emit. It is labelled **best-effort** (documented bypasses and blind spots; see ADR-0008 2026-10-30
+amendment). The guard covers model-issued Bash only. An unknown push form is denied (exit 2) with
+an escalation instruction: surface it to the human via the Ask block. Branch protection with
+force-push disabled on the default branch is the real backstop. See ADR-0008 2026-10-30 and ADR-0023
+amendments for details.
+
+**Four authorized commands:**
 Four commands are authorized to use `--force-with-lease` (never bare `--force`) in this repo's
 tooling, each with its own audit and confirmation gate:
 
@@ -343,7 +352,8 @@ tooling, each with its own audit and confirmation gate:
 2. **`/shipit`** — stacked-branch `--force-with-lease` push (for rebased stacked branches), confirmed
    after the local CI gate passes. See `commands/shipit.md` "Sync stacked children" section. Also,
    after a stale-base self-heal rebase of an already-pushed branch, a user-confirmed
-   `--force-with-lease` push of that branch (see "Stale-base rebase" in Step 3).
+   `--force-with-lease` push of that branch (see "Stale-base rebase" in Step 3). Inside a flow, the
+   force-push confirmation goes through the Ask block (see #318 answer in ADR-0008 2026-10-30 amendment).
 3. **`/stack-sync`** — per-child `--force-with-lease` push, gated behind the project's check gate
    inside the canonical Restack-a-child block. See `commands/stack-sync.md`.
 4. **`/expert-rebase`** — per-branch `--force-with-lease` push (or `--force-with-lease --force-if-includes`
@@ -396,6 +406,16 @@ avoidable, so this relies on self-report rather than a lint rule.
 - `flow-assessor` — restricted, no-Write, no-Edit agent for the `/expert-flow` assess stage (runs on Sonnet).
   It reads outstanding items and verifies each is really unfinished, then assesses them and returns the body
   as its reply; the orchestrator validates the receipt and writes `steps/07-assess.md`.
+- `flow-ship` — agent for the `ship` step of `/expert-flow` (used by `/shipit` when invoked as a step
+  agent). Model pinned to `haiku` (mechanical work: runs `/shipit` in the ticket worktree). No `Edit`
+  tool. Skill and Bash guards apply with an allow-list for authorized push forms (see ADR-0008
+  2026-10-30 amendment). Force-push confirmations go through the Ask block, never auto-confirmed via
+  `--yes` (see #318 answer in ADR-0008 2026-10-30 amendment).
+- `flow-merge` — agent for the `merge` step of `/expert-flow` (used by `/merge-and-cleanup` when
+  invoked as a step agent). Model pinned to `haiku` (mechanical work: runs merge-related commands in
+  the ticket/main worktree). No `Edit` tool. Skill and Bash guards apply with the same push allow-list
+  as `flow-ship` (see ADR-0008 2026-10-30 amendment). The orchestrator's `gh pr view … state`
+  verification is the primary backstop for MERGED state.
 
 **Panel agents are capability-restricted, not dialog-gated.** They run `bypassPermissions` — because
 20 concurrent subagents reading personas and writing checkpoints outside the working directory
@@ -414,11 +434,11 @@ the prompt-level `Write`-scoping instruction — when adding a panel agent; trea
 residual, not eliminated, risk. `/expert-spike` expert roles also write one orchestrator-named file
 under `${PROJECT_ROOT}/spikes/`, which is still prompt-scoped; see the ADR-0018 2026-10-09 amendment.
 
-**`/expert-flow` step agents are mixed:** `flow-implement` and `flow-review` are restricted agents
-(no `Edit` on implement, tools limited, model pinned, Bash/Skill/contract guards; see ADR-0008 2026-10-26).
-Worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase worker spawn
-`general-purpose` Task subagents with full capability (pending #359/#360). General-purpose steps carry
-`Write` in their `allowed-tools` and the orchestrator's `Write` is prompt-scoped only (ADR-0023 §1).
+**`/expert-flow` step agents are mixed:** `flow-implement`, `flow-review`, `flow-ship` and `flow-merge`
+are restricted agents (no `Edit` on implement, tools limited, model pinned, Bash/Skill guards; see
+ADR-0008 2026-10-26 and 2026-10-30). Worktree, plan, track, verify, the retro grader and the
+auto-rebase worker spawn `general-purpose` Task subagents with full capability (pending #360). General-purpose
+steps carry `Write` in their `allowed-tools` and the orchestrator's `Write` is prompt-scoped only (ADR-0023 §1).
 **Hard rule:** For restricted step agents (`flow-implement`, `flow-review`), `Write` is used only to
 write receipts and markers under a validated `FLOW_DIR` — never for repo content. For general-purpose
 step agents (`/merge-and-cleanup`, `/stack-sync`, `/implement-with-haiku` invoked outside a flow,

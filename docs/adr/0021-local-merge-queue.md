@@ -43,11 +43,12 @@ analysis; the queue should catch it automatically.
    (the lease pins the branch's *pre-rebase* tip, so the push is rejected if the remote moved
    underneath it) with an explicit refspec `<tested_sha>:refs/heads/<branch>` for what's actually
    pushed, audited in a single function (`force_push_tested()`) with no other push call site in the
-   queue module and no bare `--force` or `+`-prefixed refspecs. This is one of three **authorized
+   queue module and no bare `--force` or `+`-prefixed refspecs. This is one of four **authorized
    force-pushes** in this repo's tooling: the merge queue's pinned force-push (after the full gate
    passes), `/stack-sync`'s `--force-with-lease` push (gated behind the project check gate per child),
-   and `/expert-rebase`'s `--force-with-lease` push (confirmation-gated for the branch being rebased).
-   All three use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
+   `/shipit`'s `--force-with-lease` push (confirmation-gated via the Ask block in a flow), and
+   `/expert-rebase`'s `--force-with-lease` push (confirmation-gated for the branch being rebased).
+   All four use `--force-with-lease` (never bare `--force`) and never inherit from `git config`.
 
 7. **Parallel mutation seam:** This module's `Runner.run_git`/`Runner.run_gh` are a separate, self-audited
    choke point for merge-queue mutations — they do not go through `scripts/workflow/mutations.py`'s

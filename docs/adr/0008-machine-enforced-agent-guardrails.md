@@ -248,7 +248,7 @@ incident class in the lifecycle).
 
 The standing exception narrowed: **implement, fix and review are restricted** (`flow-implement`,
 `flow-review`); **worktree, plan, track, verify, ship, merge, the retro grader and the auto-rebase
-worker remain general-purpose, pending #359/#360** (the fidelity-audit scout is already a restricted
+worker remain general-purpose, pending #360** (the fidelity-audit scout is already a restricted
 `expert-scout`).
 
 The implement and fix steps run `flow-implement.md` (model pinned to `sonnet`, no `Edit`, Bash guard);
@@ -376,3 +376,67 @@ This supersedes the 2.2, 2.3 and 2.4 results above where they differ.
 
 Open: interactive-session permission behaviour, and behaviour under a recorded parent permission mode, are still unprobed (needs a human session; watch for prompts during
 a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied paths and the allowed Skill path.
+
+## Amendment: flow-ship and flow-merge restricted agents with Bash push guard (2026-10-30)
+
+The standing exception further narrowed: **implement, fix, review, ship and merge are restricted**
+(`flow-implement`, `flow-review`, `flow-ship`, `flow-merge`); **worktree, plan, track, verify, the
+retro grader and the auto-rebase worker remain general-purpose, pending #360**.
+
+`flow-ship` and `flow-merge` run on Haiku (mechanical work; see ADR-0004 2026-10-30 amendment) with
+no `Edit` tool, `Skill` allowlist (same closure as implement/fix), and an agent-specific **Bash
+guard** that controls push forms. The guard is labelled **best-effort** and covers model-issued Bash
+only (see "Bash guard for push validation" below).
+
+### Bash guard for push validation (Q1 B')
+
+A per-agent rule table in `scripts/flow-bash-guard.py` extends the guard with an allow-list for `git
+push` forms that the authorized commands actually emit:
+
+- **`flow-ship` push allow-list:** plain `git push [-u] origin <branch>`; `git push --force-with-lease
+  --force-if-includes origin HEAD` (stacked sync); `git -C <wt> push --force-with-lease ...` (stack-sync);
+  `git push --force-with-lease=<branch>:<40-hex> origin <40-hex>:refs/heads/<branch>` (pinned form); `gh
+  stack sync` (Q2).
+- **`flow-merge` push allow-list:** same as ship (W1: `flow-merge` inherits the stack-sync closure from
+  its Skill allowlist).
+- **Unknown forms:** denied (exit 2) with a message naming the agent, rule id, and command, followed by
+  an escalation instruction: "do not retry or rewrite; surface this push to the user via the Ask block"
+  (see `prompts/flow-reference.md` Ask block).
+- **Wrapper set bans:** `sh -c`, `bash -c`, `zsh -c`, `xargs git|gh`, `env git|gh`, `git -c`,
+  `git --git-dir`, `git --exec-path` stay denied. Allowed forms are exact literal matches only (no
+  pattern/prefix matching) and must be listed in the marked block below; the block is drift-checked by
+  corpus test and receipt-level rule tests.
+- **Fail closed (W5):** an unregistered `flow-*` agent name exits 2; absent or non-`flow-*` agent types
+  pass as today.
+
+<!-- flow-bash-push-allowlist:begin -->
+git push [-u] origin <branch>
+git push --force-with-lease --force-if-includes origin HEAD
+git -C <wt> push --force-with-lease ...
+git push --force-with-lease=<branch>:<40-hex> origin <40-hex>:refs/heads/<branch>
+gh stack sync
+<!-- flow-bash-push-allowlist:end -->
+
+**Named blind spots and residuals:** The guard covers model-issued Bash only. It is blind to:
+- `force_push_tested()` — Python subprocess in `/queued-merge`, not inspectable by the Bash guard.
+- `/shipit`'s push and `gh pr create`/`edit` inside the `python3 -m scripts.workflow.cli shipit apply`
+  layer — Python CLI, outside the Bash guard.
+- `just merge` — runs a recipe, not a Bash command the agent invokes directly.
+- `gh stack sync` (Q2) — an atomic force-push the hook cannot inspect; allowed explicitly and named as
+  a blind spot.
+- `gh api graphql -F` mutations — pass the non-GET check without `-X`; a pre-existing gap, not addressed.
+- Bypasses: script-then-run (write a script to `/tmp` and invoke it), the allowed `python3 -c` forms
+  used by the closure (e.g., `cleanup.md` ~71), any `eval` indirection not caught by exact-literal
+  matching, and a nested `general-purpose` agent spawned from a restricted step (which gets full
+  capability and no hook).
+- Unpinned `--force-with-lease` relies on a remote-tracking ref refreshed by a background fetch and is
+  weaker than the pinned form; see "Pinned-lease follow-up" in the plan's Open Items.
+- Q3 residual: a ship agent can open or edit a PR outside `/shipit` (not blocked).
+- **Wiring for these two agents not yet probed.** #402 probed hook firing for `flow-implement` and `flow-review` only; `flow-ship` and `flow-merge` still need their own probe (see "Pattern for #359"), and headless/fleet firing is unprobed.
+- **Branch protection with force-push disabled on the default branch is the real backstop.**
+
+#318 answer (**ask-block-confirmed force-push for step agents**): A step agent never confirms its own
+force-push. Every confirmation that the authorised command (`/shipit`, `/stack-sync`) would put to a
+human goes through the Ask block (no auto-confirm via `--yes` or other flags). In a flow, `/shipit`
+drops `--yes` when invoking `/stack-sync`, so the confirmation relays through the Ask block and the
+human decides.
