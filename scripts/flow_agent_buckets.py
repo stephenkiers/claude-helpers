@@ -15,6 +15,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telemetry_schema
 
+# Flow step agents: the set of agents that run as restricted Haiku or coordinator agents in /expert-flow steps.
+FLOW_STEP_AGENTS = {"flow-implement", "flow-review", "flow-ship", "flow-merge"}
+
 # Cut-over date: when flow-implement and flow-review agents replaced general-purpose for flow steps.
 # The current value, 2026-10-26, is the date of the #358 probes (ADR-0008 amendment), NOT the merge
 # date: it was fixed before the PR existed. It is a deliberate boundary choice; any earlier
@@ -65,10 +68,10 @@ def bucket_flow_agent_rows(
 
     A flow session is one that contains either:
     - A command.begin event with command="expert-flow", OR
-    - Any agent.begin event with agent_type in {flow-implement, flow-review}
+    - Any agent.begin event with agent_type in FLOW_STEP_AGENTS (flow-implement, flow-review, flow-ship, flow-merge)
 
     For each flow session, this function counts:
-    - agent.begin events with agent_type in {flow-implement, flow-review}
+    - agent.begin events with agent_type in FLOW_STEP_AGENTS
     - agent.begin events with agent_type=general-purpose recorded BEFORE cutover_date
 
     Probe session IDs (from Step 2 hermetic probes) are completely excluded from all bucketing.
@@ -130,7 +133,7 @@ def bucket_flow_agent_rows(
         # Mark flow sessions: those with flow-* agent types
         if event_type == "agent.begin":
             agent_type = event.get("agent_type")
-            if agent_type in {"flow-implement", "flow-review"}:
+            if agent_type in FLOW_STEP_AGENTS:
                 flow_session_ids.add(session_id)
                 flow_agent_count += 1
 

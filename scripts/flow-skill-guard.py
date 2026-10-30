@@ -12,6 +12,8 @@ import sys
 ALLOWED_SKILLS = {
     "flow-implement": {"implement-with-haiku"},
     "flow-review": {"expert-review"},
+    "flow-ship": {"shipit", "stack-sync"},
+    "flow-merge": {"merge-and-cleanup", "queued-merge", "cleanup", "stack-sync"},
 }
 
 
@@ -67,7 +69,7 @@ def main():
     try:
         # Parse CLI argument
         if len(sys.argv) < 3 or sys.argv[1] != "--agent":
-            print("Usage: flow-skill-guard.py --agent <flow-implement|flow-review|auto>", file=sys.stderr)
+            print("Usage: flow-skill-guard.py --agent <flow-implement|flow-review|flow-ship|flow-merge|auto>", file=sys.stderr)
             sys.exit(2)
 
         agent = sys.argv[2]
@@ -85,7 +87,7 @@ def main():
             agent_type = payload.get("agent_type")
 
             # If agent_type is missing or not a flow agent, allow
-            if not agent_type or agent_type not in ("flow-implement", "flow-review"):
+            if not agent_type or agent_type not in ("flow-implement", "flow-review", "flow-ship", "flow-merge"):
                 print(f"Auto mode: agent_type '{agent_type}' is not a flow agent, allowing", file=sys.stderr)
                 sys.exit(0)
 
