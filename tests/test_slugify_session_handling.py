@@ -18,7 +18,6 @@ as specified in the action plan.
 Run with: python3 tests/test_slugify_session_handling.py
 """
 
-import os
 import subprocess
 import sys
 import tempfile
@@ -26,15 +25,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness, REPO_ROOT
+from _test_harness import Harness
 
 
 def test_slug_warning_file_content():
     """Test that slug-warning.txt would contain the expected warning message."""
-    # The warning message should be consistent with what is mentioned in the action plan:
-    # SLUG WARNING: script not found
-    expected_warning = "SLUG WARNING"
-
+    # [WEAK_ASSERTION] This test only validates hard-coded strings, not actual implementation behavior.
+    # It does not run the implementation or verify that the warning is actually produced correctly.
     # Simulate a scenario where a script path is constructed
     # The warning file should be created with a predictable message
     warning_message = "SLUG WARNING: script not found at $HOME/.claude/scripts/slugify.sh"
@@ -50,6 +47,8 @@ def test_slug_warning_file_content():
 
 def test_session_dir_slug_warning_path():
     """Test that slug-warning.txt path follows SESSION_DIR/{filename} pattern."""
+    # [WEAK_ASSERTION] This test only validates path structure with hard-coded values.
+    # It does not test actual file system operations or the implementation's path construction.
     # From the action plan: files should be at $SESSION_DIR/slug-warning.txt
     session_dir = "/tmp/test-session"
     expected_warning_file = f"{session_dir}/slug-warning.txt"
@@ -97,6 +96,8 @@ def test_warning_file_creation_simulation():
 
 def test_slug_warning_multi_sink():
     """Test that warning messages reach multiple output sinks consistently."""
+    # [WEAK_ASSERTION] This test only validates hard-coded string equality and substring matching.
+    # It does not test actual implementation behavior for writing to stderr and files.
     warning_text = "SLUG WARNING: script not found"
 
     # Simulate writing to both stderr (immediate feedback) and file (delivery)
@@ -116,6 +117,8 @@ def test_slug_warning_multi_sink():
 
 def test_session_dir_env_variable():
     """Test that SESSION_DIR environment variable pattern is correct."""
+    # [WEAK_ASSERTION] This test only validates path structure with hard-coded values.
+    # It does not test the actual environment variable construction by the implementation.
     # From the action plan and expert-plan.md, SESSION_DIR should follow format:
     # SESSION_DIR="$HOME/.claude/plan-sessions/${REPO_KEY}/${SLUG}-${INVOCATION_ID}"
 

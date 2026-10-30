@@ -101,6 +101,8 @@ def test_utf8_with_lc_all_c():
     if code != 0:
         return False, f"UTF-8 with LC_ALL=C: expected exit 0, got {code}"
 
+    # [WEAK_ASSERTION] This uses substring matching ("caf" not in slug) instead of exact matching.
+    # A plausible broken implementation could output "cafe" or "cafs" and still pass this test.
     if "caf" not in slug and slug != "plan":
         return False, f"UTF-8 with LC_ALL=C: expected slug containing 'caf' or 'plan', got {slug!r}"
 

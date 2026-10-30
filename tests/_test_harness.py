@@ -101,12 +101,12 @@ def extract_slug_sites(path: Path) -> list:
 
 def extract_slugify_sites(path: Path) -> list:
     """
-    Return [(line_number, slug_line, following)] for each SLUG=$( line invoking bash "$SLUGIFY" in path.
+    Return [(line_number, slug_line, following)] for each SLUG=$( line invoking bash ~/.claude/scripts/slugify.sh in path.
     """
     lines = path.read_text().splitlines()
     sites = []
     for index, line in enumerate(lines):
-        if 'SLUG=$(' in line and 'bash "$SLUGIFY"' in line:
+        if 'SLUG=$(' in line and 'bash ~/.claude/scripts/slugify.sh' in line:
             following = lines[index + 1] if index + 1 < len(lines) else ""
             sites.append((index + 1, line, following))
     return sites

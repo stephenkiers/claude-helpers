@@ -7,13 +7,13 @@ This test must fail on the unfixed doc and pass after Steps 4-6 are applied.
 Structural checks (a-i):
   (a) No line matches \\bTICKET_TITLE= (no literal assignments)
   (b) No line runs the inline pipeline (no SLUG=$( + tr '[:upper:]' in same line)
-  (c) Exactly 2 SLUG=$( lines invoking bash "$HOME/.claude/scripts/slugify.sh"
+  (c) Exactly 2 SLUG=$( lines invoking bash ~/.claude/scripts/slugify.sh
   (d) Step 1 site redirects from a variable ending in ticket-title.txt
   (e) Each slug site has [ -n "$SLUG" ] || SLUG="plan" fallback
   (f) Each SLUGIFY site has missing-script warning with SLUG WARNING: and /setup-local nearby
   (g) Step 1 prose instructs Write tool for {SESSION_DIR}/ticket-title.txt
   (h) (Step 9 section) prints slug-warning.txt if non-empty
-  (i) allowed-tools line contains narrow Bash(bash "$HOME/.claude/scripts/slugify.sh":*) and NOT Bash(bash:*)
+  (i) allowed-tools line contains narrow Bash(bash ~/.claude/scripts/slugify.sh:*) and NOT Bash(bash:*)
 
 Behavioral section:
   - Extract Step 1 slug lines, run them in a temp HOME/SESSION_DIR
@@ -99,11 +99,11 @@ def main():
     # Structural check (c): Exactly 2 SLUG=$( lines invoking bash with the slugify script
     slugify_sites = []
     for line_no, line in enumerate(doc_text.splitlines(), start=1):
-        if 'SLUG=$(' in line and 'bash "$HOME/.claude/scripts/slugify.sh"' in line:
+        if 'SLUG=$(' in line and 'bash ~/.claude/scripts/slugify.sh' in line:
             slugify_sites.append((line_no, line))
 
     h.test_result(
-        "Exactly 2 SLUG=$( lines invoking bash \"$HOME/.claude/scripts/slugify.sh\"",
+        "Exactly 2 SLUG=$( lines invoking bash ~/.claude/scripts/slugify.sh",
         len(slugify_sites) == 2,
         f"found {len(slugify_sites)}, expected 2" if len(slugify_sites) != 2 else "",
     )
@@ -197,10 +197,10 @@ def main():
     # Structural check (i): allowed-tools line 4 contains narrow Bash grant and NO bare Bash(bash:*)
     lines = doc_text.splitlines()
     allowed_tools_line = lines[3] if len(lines) > 3 else ""
-    has_narrow_grant = 'Bash(bash "$HOME/.claude/scripts/slugify.sh":*)' in allowed_tools_line
+    has_narrow_grant = 'Bash(bash ~/.claude/scripts/slugify.sh:*)' in allowed_tools_line
     has_bare_grant = 'Bash(bash:*)' in allowed_tools_line
     h.test_result(
-        "allowed-tools has narrow Bash(bash \"$HOME/.claude/scripts/slugify.sh\":*) grant",
+        "allowed-tools has narrow Bash(bash ~/.claude/scripts/slugify.sh:*) grant",
         has_narrow_grant,
         f"line: {allowed_tools_line!r}" if not has_narrow_grant else "",
     )
