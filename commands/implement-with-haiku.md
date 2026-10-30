@@ -2342,6 +2342,8 @@ OUTSTANDING: <line>
 summary line through `<!-- step-end -->` (drop the summary's blank lines when copying it). A receipt whose `Decision:` sits below a
 blank line is rejected with `receipt Decision missing or outside the header block`; the check gate is never skipped. `RUN_KEY:` is the literal value recorded from `init`'s `RUN_KEY:` line (the same value passed to `finish --run-key`). `RECEIPT_CONTRACT: 1` is written verbatim and never omitted.
 
+**Finish cross-check on `RUN_KEY`.** Every `finish` that reaches the completeness gate appends one parse-inert line to the run's `ledger.md`: `# finish-event run-key=<RUN_KEY> outcome=<success|steps_skipped> epoch=<seconds>`. The bound `render --flow-dir <FLOW_DIR> --step <implement|fix>` (the form the Fidelity audit uses, not the bare summary render above) reads those lines for every run of this repo created in the attempt's window, pointers, tombstones and superseded runs alike. The named `RUN_KEY` must be the run whose finish event is the latest in that window; if another run finished last, `render` exits 3 with `is not the run this step recorded finishing`, so a receipt cannot name a clean run while an incomplete run did the work. When no finish event exists in the window, `render` prints a `render: warning:` line on stderr and proceeds (a render before the run's own `finish` is expected). Write the receipt's `RUN_KEY` from `init`'s line only; never reuse a key from an earlier run.
+
 Where `OUTSTANDING: <line>` is either `none` or the lines computed above. The `CHECK:` lines are the
 Final check's result, taken from its resolver output and its run (see the Final check section); never
 write a `CHECK:` line from memory or from the step's own claim. `CHECK_EXIT: none` is legal only together
