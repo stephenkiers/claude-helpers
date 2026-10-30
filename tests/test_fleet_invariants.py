@@ -7,6 +7,8 @@ These tests assert three hard constraints:
 2. The headless argv `fleet.py` builds never carries `--auto-merge`.
 3. The default `permission_mode` written by `fleet.py init` is `auto` (never `bypassPermissions`),
    and an unsupported mode is rejected by argparse.
+4. The Accept and continue label is relayed unchanged through the resume argv, and fleet.py
+   hard-codes no gate option labels (#365).
 """
 import importlib.util
 import json
@@ -166,6 +168,25 @@ def main():
             bad_mode.returncode != 0 and "invalid choice" in bad_mode.stderr,
             f"rc={bad_mode.returncode} stderr={bad_mode.stderr!r}"
         )
+
+    # Case 4: the Accept and continue label reaches the flow unchanged through the fleet's resume argv,
+    # and fleet.py hard-codes no gate option labels (the labels come from the flow's own gate ask).
+    accept_answer = "Fleet answer for Flow stop:\nAccept and continue"
+    accept_argv = fl.claude_cmd(accept_answer, "auto", "sess-1")
+    h.test_result(
+        "Resume argv relays the Accept and continue answer unchanged",
+        accept_answer in accept_argv,
+        f"argv={accept_argv}"
+    )
+    fleet_text = SCRIPT.read_text(encoding="utf-8")
+    for label in ("Accept and continue", "Retry", "Take over"):
+        for quote in ('"', "'"):
+            hard_coded = f"{quote}{label}"
+            h.test_result(
+                f"fleet.py has no hard-coded option string {hard_coded!r}",
+                hard_coded not in fleet_text,
+                f"found {hard_coded!r} in scripts/fleet.py"
+            )
 
     h.summarize_and_exit()
 
