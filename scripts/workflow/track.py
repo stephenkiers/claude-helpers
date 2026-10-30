@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from . import git, worktrees
-from .cache import hash_cache_file, hash_file_content, write_cache, seed_worktree_cache
+from .cache import hash_cache_file, hash_file_content, write_cache, seed_worktree_cache, exclude_local_cache_files
 from .safety import Unknown, fail_closed
 from .models import IssueInfo, GitHubCacheData
 from .providers.base import Provider
@@ -489,6 +489,11 @@ def apply_track(provider: Provider, plan_json: str, cwd: Optional[Path] = None) 
             result.error = Unknown(f"cache write failed: {e}")
             result.steps_failed.append(STEP_WRITE_CACHE)
             return result, result.error
+
+        # 6b. Keep the local .claude cache files out of git status (non-fatal)
+        exclude_error = exclude_local_cache_files(real_worktree_path)
+        if exclude_error:
+            result.seed_errors.append(exclude_error)
 
         # 7. Seed cache files from main worktree (non-fatal)
         try:

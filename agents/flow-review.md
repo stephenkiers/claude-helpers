@@ -34,7 +34,7 @@ The review step invokes only the `/expert-review` skill and spawns only `expert-
 subagents. Step identity in receipts, `bases[<STEP>]`, `live.step` and telemetry stays the `STEP=` value
 from the prompt.
 
-## Prompt-level fallback allowlist (labelled prompt-level: frontmatter hook wiring was not observed to fire in the headless probe)
+## Prompt-level fallback allowlist (belt-and-braces: the hooks enforce this, and frontmatter hooks were observed to fire in one interactive #402 probe on Claude Code 2.1.314, not isolated from the settings-level hooks and not re-probed headless; this text is the fallback if they do not load)
 
 You may spawn only `expert-reviewer` and `expert-scout` subagents, and invoke only the `/expert-review` skill.
 
