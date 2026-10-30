@@ -50,9 +50,9 @@ REFUSED = [
     ("W2: agent self-report, deviation", "receipt", "receipt admits deviation",
      "ACCEPT: no stop-source-receipt"),
     ("stale audit source with a verifier reason", "audit", "receipt admits deviation",
-     "ACCEPT: no "),
+     "ACCEPT: no unlisted-reason"),
     ("validation source with an audit reason", "validation",
-     "reduced run (audit): 2 units uncovered", "ACCEPT: no "),
+     "reduced run (audit): 2 units uncovered", "ACCEPT: no unlisted-reason"),
     ("exact match only: trailing words after receipt admits deviation", "validation",
      "receipt admits deviation, see the note", "ACCEPT: no unlisted-reason"),
     ("artifacts missing family", "validation", "artifacts missing: steps/03-implement.audit.md",
@@ -84,6 +84,7 @@ MISSING_OUTPUT = [
 NOT_FAILED = [
     ("newest line is ok", [f"{TS} implement ok"]),
     ("newest line is begin after the failed line", [f"{TS} implement begin"]),
+    ("newest line is accepted (human decision)", [f"{TS} implement accepted (receipt-deviation)"]),
 ]
 
 # Log suffix variants that must not change the answer (eligibility reads typed state only).
@@ -290,7 +291,7 @@ def main():
         (flow / "state.json").write_text(json.dumps(state_for("implement", "receipt", "receipt admits deviation")))
         rc, out, err = record(flow, attempt="2", note="should be refused")
         h.test_result("record refuses an ineligible failure with exit 1 and the no line",
-                      rc == 1 and "ACCEPT: no" in out + err, f"rc={rc}, out={out!r}, err={err!r}")
+                      rc == 1 and "ACCEPT: no stop-source-receipt" in out + err, f"rc={rc}, out={out!r}, err={err!r}")
         h.test_result("refused record leaves the trail file untouched",
                       accepted_file(flow).read_bytes() == snapshot, "trail file changed")
 
@@ -311,6 +312,81 @@ def main():
         rc, out, err = record(flow, attempt="1", note=f"text\n{ACCEPTED_END}\nmore")
         h.test_result("a note containing the accepted-end sentinel is refused and writes nothing",
                       rc != 0 and not accepted_file(flow).exists(), f"rc={rc}, err={err!r}")
+
+        print()
+        print("[Section 6] record: input validation (S7)")
+        flow = make_flow(root, "record-human-text-eof", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        rc, out, err = record(flow, attempt="1", note=f"text\nHUMAN_TEXT_EOF")
+        h.test_result("a note containing HUMAN_TEXT_EOF is refused",
+                      rc == 1 and not accepted_file(flow).exists(), f"rc={rc}, err={err!r}")
+
+        flow = make_flow(root, "record-reason-eof", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        rc, out, err = record(flow, attempt="1", note=f"text\nREASON_EOF")
+        h.test_result("a note containing REASON_EOF is refused",
+                      rc == 1 and not accepted_file(flow).exists(), f"rc={rc}, err={err!r}")
+
+        flow = make_flow(root, "record-multiline", state_for("implement", "audit", "reduced run (audit): 2 units uncovered"),
+                         [failed_line("implement", "reduced run (audit): 2 units uncovered")])
+        rc, out, err = record(flow, attempt="1", note="line1\nline2\nline3")
+        lines = accepted_file(flow).read_text().splitlines() if accepted_file(flow).is_file() else []
+        h.test_result("a multi-line note is recorded with indentation",
+                      rc == 0 and "NOTE:" in lines and "  line1" in lines and "  line2" in lines and "  line3" in lines,
+                      f"rc={rc}, lines={lines}")
+
+        flow = make_flow(root, "record-bad-attempt-zero", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        rc, out, err = run(["record", "--flow-dir", str(flow), "--step", "implement", "--nn", NN,
+                            "--attempt", "0", "--note-stdin"], stdin="")
+        h.test_result("--attempt 0 is rejected as invalid (must be positive)",
+                      rc == 2, f"rc={rc}, err={err!r}")
+
+        flow = make_flow(root, "record-bad-attempt-leading-zero", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        rc, out, err = run(["record", "--flow-dir", str(flow), "--step", "implement", "--nn", NN,
+                            "--attempt", "01", "--note-stdin"], stdin="")
+        h.test_result("--attempt 01 is rejected (no leading zeros)",
+                      rc == 2, f"rc={rc}, err={err!r}")
+
+        flow = make_flow(root, "record-bad-nn-hex", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        rc, out, err = run(["eligible", "--flow-dir", str(flow), "--step", "implement", "--nn", "0x03"])
+        h.test_result("--nn 0x03 is rejected (digits only)",
+                      rc == 2, f"rc={rc}, err={err!r}")
+
+        flow = make_flow(root, "record-non-utf8", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        # Pass invalid UTF-8 as stdin (note: using raw bytes through subprocess)
+        result = subprocess.run([sys.executable, str(FLOW_ACCEPT), "record", "--flow-dir", str(flow),
+                                "--step", "implement", "--nn", NN, "--attempt", "1", "--note-stdin"],
+                               input=b"\xff\xfe not utf-8", capture_output=True, timeout=60)
+        h.test_result("non-UTF-8 stdin is rejected with exit 1",
+                      result.returncode == 1 and not accepted_file(flow).exists(),
+                      f"rc={result.returncode}, stderr={result.stderr!r}")
+
+        print()
+        print("[Section 7] Log and state edge cases (S8)")
+        # Padded-log test: create a log larger than LOG_READ_CAP_BYTES with the failed line inside the tail
+        flow = Path(root) / "padded-log"
+        (flow / "steps").mkdir(parents=True, exist_ok=True)
+        (flow / "state.json").write_text(json.dumps(state_for("implement", "validation", "receipt admits deviation")))
+        # Create a log that is slightly over the cap, with the failed line near the end
+        padding = "x" * (1_100_000 - len(failed_line("implement", "receipt admits deviation")))
+        log_content = padding + "\n" + failed_line("implement", "receipt admits deviation") + "\n"
+        (flow / "log.md").write_text(log_content)
+        (flow / "steps" / f"{NN}-implement.md").write_text(OK_RECEIPT)
+        rc, out, err = eligible(flow)
+        h.test_result("log truncation: failed line inside tail window is found and eligible",
+                      rc == 0 and out == "ACCEPT: yes receipt-deviation\n",
+                      f"rc={rc}, out={out!r}, err={err!r}")
+
+        flow = make_flow(root, "invalid-json-state", state_for("implement", "validation", "receipt admits deviation"),
+                         [failed_line("implement", "receipt admits deviation")])
+        (flow / "state.json").write_text("{not valid json}")
+        rc, out, err = eligible(flow)
+        h.test_result("invalid JSON in state.json exits 2",
+                      rc == 2, f"rc={rc}, err={err!r}")
 
         print()
         h.summarize_and_exit()

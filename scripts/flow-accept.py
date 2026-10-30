@@ -22,21 +22,26 @@ Subcommands:
 
   eligible --flow-dir D --step S --nn NN
       Print exactly one line: `ACCEPT: yes <class>` or `ACCEPT: no <why>`. Exit 0.
-      <why> is one of: step-<s>, stop-source-<v>, missing-output, unlisted-reason, not-failed.
+      <why> is one of: step-<s>, stop-source-<v>, stop-source-absent, missing-output, unlisted-reason, not-failed.
 
   record --flow-dir D --step S --nn NN --attempt J --note-stdin
-      Re-run the eligibility check. If it refuses, print the `ACCEPT: no <why>` line and exit 1.
+      Re-run the eligibility check. If it refuses, print the `ACCEPT: no <why>` line to stderr and
+      exit 1. Note that the refusal output may be stderr-only with no `ACCEPT: no` line in stdout;
+      the caller's recovery is: clean the note and re-run `record` once.
       Otherwise append one block to steps/NN-S.accepted.md (append-only trail), print the class,
       and exit 0. The note is read from stdin; an empty note is recorded as `none`.
 
 Stdout:
   eligible: the ACCEPT line.
-  record: the class on success; the ACCEPT: no line on refusal.
+  record: the class on success; nothing on refusal (output is on stderr).
+
+Stderr:
+  record refusal (ineligible or note validation): the `ACCEPT: no <why>` line.
 
 Exit codes:
-  0: success (eligible prints yes or no)
-  1: record refused (ineligible, or note contains a sentinel line)
-  2: usage error, or IO error (missing or unreadable state.json, unreadable receipt or log)
+  0: success (eligible prints yes or no; record appends a block or refuses gracefully)
+  1: record refused (ineligible, note validation failed, or IO error during write)
+  2: usage error, or fatal IO error (missing or unreadable state.json, unreadable receipt or log)
 """
 
 import argparse
@@ -45,10 +50,9 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn, Optional, Tuple
+from typing import Any, Dict, Literal, NamedTuple, NoReturn, Optional, Tuple
 
 STEPS: Tuple[str, ...] = ("plan", "implement", "review", "fix", "verify")
-STOP_SOURCES_ELIGIBLE: Tuple[str, ...] = ("audit", "validation")
 
 NN_RE = re.compile(r"[0-9]+")
 ATTEMPT_RE = re.compile(r"[1-9][0-9]*")
@@ -63,24 +67,36 @@ SENTINELS = ("HUMAN_TEXT_EOF", "REASON_EOF")
 # so this CLI has no import coupling to other repo scripts.
 LOG_READ_CAP_BYTES = 1_048_576
 
-# (stop_source, reason, match kind, class). match kind is "prefix" or "exact".
-ALLOWLIST: Tuple[Tuple[str, str, str, str], ...] = (
-    ("audit", "reduced run (audit): ", "prefix", "audit-reduced"),
-    ("validation", "reduced run: ", "prefix", "receipt-reduction"),
-    ("validation", "receipt admits deviation", "exact", "receipt-deviation"),
-    ("validation", "plan checkpoint incomplete (", "prefix", "plan-checkpoint"),
-    ("validation", "review rulings incomplete (", "prefix", "review-rulings"),
+
+class AllowlistEntry(NamedTuple):
+    """One entry in the allowlist: (stop_source, reason text, match kind, class name)."""
+
+    stop_source: str
+    text: str
+    kind: Literal["prefix", "exact"]
+    klass: str
+
+
+# Allowlist of (stop_source, reason, match kind, class). match kind is "prefix" or "exact".
+ALLOWLIST: Tuple[AllowlistEntry, ...] = (
+    AllowlistEntry("audit", "reduced run (audit): ", "prefix", "audit-reduced"),
+    AllowlistEntry("validation", "reduced run: ", "prefix", "receipt-reduction"),
+    AllowlistEntry("validation", "receipt admits deviation", "exact", "receipt-deviation"),
+    AllowlistEntry("validation", "plan checkpoint incomplete (", "prefix", "plan-checkpoint"),
+    AllowlistEntry("validation", "review rulings incomplete (", "prefix", "review-rulings"),
 )
 
+# Derive eligible stop sources from allowlist, preserving order.
+STOP_SOURCES_ELIGIBLE: Tuple[str, ...] = tuple(dict.fromkeys(entry.stop_source for entry in ALLOWLIST))
 
-class Decision:
+
+class Decision(NamedTuple):
     """Outcome of the eligibility check. accept True carries a class; False carries a why token."""
 
-    def __init__(self, accept: bool, token: str, stop_source: str = "", reason: str = "") -> None:
-        self.accept = accept
-        self.token = token
-        self.stop_source = stop_source
-        self.reason = reason
+    accept: bool
+    token: str
+    stop_source: str = ""
+    reason: str = ""
 
     def line(self) -> str:
         """Return the one-line ACCEPT verdict."""
@@ -115,7 +131,7 @@ def resolve_flow_dir(raw: str) -> Path:
     return flow
 
 
-def load_state(flow: Path) -> dict:
+def load_state(flow: Path) -> Dict[str, Any]:
     """Return the parsed state.json object, or exit 2 if it is missing, unreadable or not an object."""
     state_path = flow / "state.json"
     if not state_path.is_file():
@@ -129,7 +145,7 @@ def load_state(flow: Path) -> dict:
     return data
 
 
-def step_map(state: dict, key: str) -> dict:
+def step_map(state: Dict[str, Any], key: str) -> Dict[str, Any]:
     """Return state[key] as a dict, treating an absent key as empty and exiting 2 on a wrong type."""
     value = state.get(key)
     if value is None:
@@ -207,7 +223,16 @@ def newest_lifecycle_is_failed(flow: Path, step: str) -> bool:
 
 
 def decide(flow: Path, step: str, nn: str) -> Decision:
-    """Run the closed, default-deny eligibility check in order (a) through (d)."""
+    """Run the closed, default-deny eligibility check.
+
+    Returns Decision(accept=True, token=<class>, stop_source, reason) if eligible.
+    Returns Decision(accept=False, token=<why>) otherwise, where <why> is one of:
+    step-<s>, stop-source-<v>, stop-source-absent, missing-output, unlisted-reason, not-failed.
+
+    Note: missing-output is returned for three failure cases that all indicate missing receipt
+    output: the receipt file is absent, the last Decision line is not "Decision: OK", or the
+    step-end marker is missing.
+    """
     if step not in STEPS:
         return Decision(False, f"step-{safe_token(step)}")
 
@@ -283,7 +308,14 @@ def cmd_eligible(flow: Path, step: str, nn: str) -> None:
 
 
 def cmd_record(flow: Path, step: str, nn: str, attempt: int, note: str) -> None:
-    """Refuse with the no line and exit 1 if ineligible; otherwise append the trail block and print the class."""
+    """Refuse with the no line and exit 1 if ineligible; otherwise append the trail block and print the class.
+
+    Non-idempotent: each call appends a new block to the trail file if the step is eligible, even if the
+    same note and attempt are passed multiple times. The required caller sequence is: check eligibility,
+    prompt for the note, validate the note (refusing on HUMAN_TEXT_EOF, REASON_EOF, or block-end sentinel),
+    then record. Re-running record with the same arguments is safe only if the second run's note is
+    different or if the step's eligibility has changed (e.g., the receipt was updated).
+    """
     decision = decide(flow, step, nn)
     if not decision.accept:
         print(decision.line())
@@ -325,7 +357,7 @@ def main() -> None:
     record_parser.add_argument("--nn", required=True, help="Step number (digits only)")
     record_parser.add_argument("--attempt", required=True, help="Attempt number J (positive integer)")
     record_parser.add_argument("--note-stdin", action="store_true", required=True,
-                               help="Read the human note from stdin")
+                               help="Deliberate stdin marker: read the human note from stdin")
 
     args = parser.parse_args()
 
