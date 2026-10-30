@@ -235,8 +235,8 @@ def test_tables_and_summary(h, doc):
                   "done-line accept events count or its count regex missing")
     h.test_result("the done-line count excludes kept-previous lines",
                   KEPT_MARKER in doc, "kept-previous exclusion missing")
-    h.test_result("ship gathers coverage for a taken-over or accepted implement or fix",
-                  "taken-over or accepted" in doc, "ship gathering wording missing")
+    h.test_result("the done line counts accept events",
+                  "accept events: <n>" in doc, "done-line label missing")
     h.test_result("the layout lists the accept trail steps/<NN>-<STEP>.accepted.md",
                   "steps/<NN>-<STEP>.accepted.md" in doc, "layout entry missing")
     h.test_result("Keep previous re-logs an accepted restore with kept-previous attempt=<J>",

@@ -2445,20 +2445,21 @@ def _git_diff_names(repo: str, base: str, branch: str) -> Optional[Set[str]]:
         return None
 
 
-_STEP_TERMINAL_EVENTS = frozenset({"ok", "failed", "taken-over", "hand-finished", "skipped"})
+_STEP_TERMINAL_EVENTS = frozenset({"ok", "failed", "taken-over", "hand-finished", "accepted", "skipped"})
 
 
 def _newest_step_status(log_text: str, step: str) -> Optional[str]:
     """Newest terminal lifecycle event for `step` in log.md, or None.
 
-    Only ok|failed|taken-over|hand-finished|skipped count; begin/retry and mid-step events such as
-    `gate`/`paused` are skipped, so a trailing `gate` line never hides a step's items. `hand-finished`
-    is reported as `taken-over` (the same family: a human finished the step).
+    Only ok|failed|taken-over|hand-finished|accepted|skipped count; begin/retry and mid-step events such
+    as `gate`/`paused` are skipped, so a trailing `gate` line never hides a step's items. `hand-finished`
+    and `accepted` are reported as `taken-over` (the same family: a human judged the step done, so its
+    uncovered units still reach the outstanding set).
     """
     for line in reversed(log_text.split("\n")):
         parts = line.split()
         if len(parts) >= 3 and parts[1] == step and parts[2] in _STEP_TERMINAL_EVENTS:
-            return "taken-over" if parts[2] == "hand-finished" else parts[2]
+            return "taken-over" if parts[2] in ("hand-finished", "accepted") else parts[2]
     return None
 
 
