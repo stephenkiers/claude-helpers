@@ -42,7 +42,6 @@ NEW_GRANTS = [
 HEALER_TOOLS = [
     "Read", "Edit", "Grep", "Glob", "Bash(git diff:*)", "Bash(git status:*)", "Bash(git rev-parse:*)",
     "Bash(git add:*)", "Bash(git commit:*)", "Bash(git checkout HEAD -- *)",
-    "Bash(PYTHONPATH=* python3 -m scripts.workflow.cli checks run -)",
 ]
 FORBIDDEN_HEALER_TOOLS = ["Write", "WebFetch", "WebSearch", "Task", "Bash(git push", "Bash(git fetch", "Bash(*)", "Bash:"]
 NON_HEALABLE = ["base-stale", "infra", "timeout", "check_not_run", "check_not_configured", "unknown"]
@@ -140,17 +139,25 @@ def main():
 
     print()
     print("[Section 3] the check-heal block in commands/expert-flow.md")
-    h.test_result("a 'Check heal' block exists", re.search(r"Check heal", flow) is not None)
+    check_heal_match = re.search(r"3a\. \*\*Check heal", flow)
+    h.test_result("a 'Check heal' block exists", check_heal_match is not None)
+    check_heal_section = ""
+    if check_heal_match:
+        # Extract from "3a. **Check heal" to the next numbered section (3b, 4, etc.)
+        start = check_heal_match.start()
+        next_section = re.search(r"\n3[b-z]\. \*\*|^4\. \*\*", flow[start:])
+        end = start + next_section.start() if next_section else len(flow)
+        check_heal_section = flow[start:end]
     for needle, label in (("shasum -a 256", "the pre/post shasum check"),
-                          ("rejected:tooling-modified", "the tooling-modified rejection"),
-                          ("%P", "the %P parent check"),
-                          ("Flow-Heal:", "the Flow-Heal trailer"),
-                          ("HEAL_CANDIDATE", "the HEAL_CANDIDATE receipt line"),
-                          ("CHECK_SHA", "the CHECK_SHA receipt line"),
-                          ("heals.jsonl", "the per-repo heal log"),
-                          ("probe-mutated", "the probe-mutated non-healable reason"),
-                          ("flow-healer", "the flow-healer agent")):
-        h.test_result(f"expert-flow.md names {label}", needle in flow)
+                          (r"\brejected:tooling-modified\b", "the tooling-modified rejection"),
+                          (r"%P", "the %P parent check"),
+                          (r"\bFlow-Heal:", "the Flow-Heal trailer"),
+                          (r"\bHEAL_CANDIDATE\b", "the HEAL_CANDIDATE receipt line"),
+                          (r"\bCHECK_SHA\b", "the CHECK_SHA receipt line"),
+                          (r"\bheals\.jsonl\b", "the per-repo heal log"),
+                          (r"\bprobe-mutated\b", "the probe-mutated non-healable reason"),
+                          (r"\bflow-healer\b", "the flow-healer agent")):
+        h.test_result(f"Check heal section names {label}", re.search(needle, check_heal_section) is not None)
     h.test_result("the menu after a non-converging heal is 'Take over / Abort only'", "Take over / Abort only" in flow)
     h.test_result("the heal log events are in the vocabulary",
                   all(ev in flow for ev in ("heal-skipped", "heal-rejected", "fix-now")))
