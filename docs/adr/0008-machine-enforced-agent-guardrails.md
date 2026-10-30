@@ -284,7 +284,7 @@ omit `permissionMode` per T-W2; do not add `bypassPermissions` unless future pro
 `flow-review` keeps `Edit` despite omission on `flow-implement` (residual below).
 
 **2.4 Hook payload (T-W4, CP-W3):** Settings-level `PreToolUse` hook with Bash guard showed exit 2 blocks
-on denylisted verbs and off-list Skill names. Observed payload for Agent/Task: `tool_input = {description, prompt, subagent_type, run_in_background}`; for Skill: `tool_input = {skill: "<name>"}`. Subagent calls carry top-level `agent_id` and `agent_type`; main-session calls do not. **Frontmatter hooks in project-scoped agents did NOT fire headless** (no payload logged); settings-level hooks fired with `agent_type` payload. **Result:** Settings-level wiring is verified technical; frontmatter wiring is UNVERIFIED as a technical control (user-scoped agents like plan-implementer may differ, not probed). Per CP-W3: ship both script + settings-level form and agent-body prompt-level allowlists, labelled as such.
+on denylisted verbs and off-list Skill names. Observed payload for Agent/Task: `tool_input = {description, prompt, subagent_type, run_in_background}`; for Skill: `tool_input = {skill: "<name>"}`. Subagent calls carry top-level `agent_id` and `agent_type`; main-session calls do not. **Frontmatter hooks in project-scoped agents did NOT fire headless** (no payload logged; superseded by the 2026-10-30 amendment, which observed them firing); settings-level hooks fired with `agent_type` payload. **Result:** Settings-level wiring is verified technical; frontmatter wiring is UNVERIFIED as a technical control (user-scoped agents like plan-implementer may differ, not probed). Per CP-W3: ship both script + settings-level form and agent-body prompt-level allowlists, labelled as such.
 
 **2.5 Unregistered subagent_type (CP-W2):** Agent call with type `does-not-exist` returned immediately,
 error text `"Agent type 'does-not-exist' not found."` No subagent transcript or agent id created (only
@@ -299,7 +299,7 @@ no narrowing of Bash guard required.
 
 **Best-effort bypasses:** The Bash guard can be bypassed by (a) writing a script to a temp file and
 invoking it, (b) `python3 -c "..."`, (c) nested `general-purpose` agent if the Agent hook is not technical
-(Q1 confounder: the Agent hook wiring path is unverified frontmatter-only for project agents).
+(Q1 confounder: originally the Agent hook wiring path was unverified frontmatter-only for project agents; frontmatter hooks were observed to fire in the 2026-10-30 probe, so this bypass now depends on the settings-level and frontmatter Agent hooks being loaded).
 
 **Residual risks:**
 - `Write` tool is not path-scoped; writes outside the worktree are undetected (open issue #353).
@@ -350,7 +350,7 @@ gh workflow run
 Q1 = C guard wiring and Q2 = A contract placement are the pattern #359 copies:
 - Q1 = C: named constant wrapper set in a marked block (drift guard target), explicit verb denylist, and fail-closed guard script (exit 2 on parse failure).
 - Q2 = A: one shared contract file with marked injection-defence block, inlined byte-checked into agent system prompts, preflight enforcement.
-**#359 must not copy an unprobed hook** (frontmatter-declared Agent/Skill hooks are unverified as technical controls).
+**#359 must not copy an unprobed hook.** Frontmatter-declared Agent/Skill/Bash hooks were observed to fire for `flow-implement` and `flow-review` in the 2026-10-30 probe (#402); #359 should still probe each new agent it adds.
 
 ## Amendment 2026-10-30 (#402): live probe of the guard wiring
 
@@ -366,5 +366,13 @@ This supersedes the 2.2, 2.3 and 2.4 results above where they differ.
 | Permissions (`bypassPermissions`) | **Partial.** No permission prompt or non-hook denial for any call in either agent. Not probed: the allowed `/implement-with-haiku` Skill path, and an interactive-session prompt (cannot be driven from a subagent). |
 | Hot-load lag | **Not instant, about 20 s.** A temporary hook added to `~/.claude/settings.json` missed a Read ~2 s later and fired on a Read ~23 s later; other sessions picked it up within ~30 s of first registration. Coarse (two samples). Consequence: run `/setup-local` and wait before the first flow. |
 
-Open: the Skill-allowed path and interactive permission behaviour are still unprobed; "machine-enforced"
-is now evidenced for the hook-denied paths only.
+**Follow-up (#411, same day):**
+- *Skill-allowed path:* `flow-implement` invoking `/implement-with-haiku` was **allowed** with no hook text and no
+  permission prompt or denial; the skill content loaded (probe stopped there, no skill work was run).
+- *Hot-load lag, re-sample:* a temporary Bash hook added while a fresh `flow-implement` subagent was spawning logged
+  its first firing about 15 s after registration (upper bound; the subagent's first tool call time is unknown). This is
+  consistent with the ~20 s figure above; a tighter number was not obtainable because model latency between calls
+  (~100 s) exceeds the lag. Treat "up to ~20-30 s" as the working figure.
+
+Open: interactive-session permission behaviour is still unprobed (needs a human session; watch for prompts during
+a real `/expert-flow` run). "Machine-enforced" is evidenced for the hook-denied paths and the allowed Skill path.

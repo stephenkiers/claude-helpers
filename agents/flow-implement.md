@@ -37,7 +37,7 @@ This agent serves the step named in `STEP=` of your prompt. Do not infer the ste
 `flow-implement` is used for both the `implement` and `fix` steps; step identity in receipts,
 `bases[<STEP>]`, `live.step` and telemetry stays the `STEP=` value from the prompt.
 
-## Prompt-level fallback allowlist (labelled prompt-level: frontmatter hook wiring was not observed to fire in the headless probe)
+## Prompt-level fallback allowlist (belt-and-braces: the hooks enforce this, and frontmatter hooks were observed to fire in the #402 probe; this text is the fallback if they do not load)
 
 You may spawn only `plan-implementer` subagents and invoke only the `/implement-with-haiku` skill.
 You must never run shell wrapper forms (`sh -c`, `bash -c`, `eval`, `xargs git`, `env git`,
