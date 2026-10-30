@@ -185,6 +185,29 @@ def run_pipeline(slug_line: str, fallback_line: str, title: str, env: dict) -> T
     return result.returncode, result.stdout, result.stderr
 
 
+def extract_step1_slug_block(doc_text):
+    """
+    Extract the Step 1 slug block from the doc.
+    Starts at the TITLE_FILE= line and ends at the fallback line.
+    Returns the extracted text or None if not found.
+    """
+    lines = doc_text.splitlines()
+    start_idx = None
+    end_idx = None
+
+    for i, line in enumerate(lines):
+        if 'TITLE_FILE=' in line and 'ticket-title.txt' in line:
+            start_idx = i
+        if start_idx is not None and '[ -n "$SLUG" ] || SLUG="plan"' in line:
+            end_idx = i
+            break
+
+    if start_idx is not None and end_idx is not None:
+        return "\n".join(lines[start_idx:end_idx + 1])
+
+    return None
+
+
 def extract_flag_loop(text: str) -> Optional[str]:
     """
     Return the `while [ $# -gt 0 ]; do` ... matching `done` block (indent-aware),
