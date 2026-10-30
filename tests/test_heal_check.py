@@ -127,6 +127,20 @@ def test_signature(h):
         _, do, _ = signature_of(tmp, other, "p.txt")
         h.test_result("lint capture: a different file gives a different signature", do and do["signature"] != sig_a, f"{do}")
 
+    print()
+    print("[Section 1b] signature: test count validation (#8)")
+    with tempfile.TemporaryDirectory() as tmp:
+        # Create a synthetic output with mismatch: says 2 failed but only 1 id reported
+        mismatch_text = """
+AGGREGATE SUMMARY
+  Suites run: 3
+  Suites failed: 2
+  ✗ test_bad_suite.py
+"""
+        rc, data, raw = signature_of(tmp, mismatch_text, "mismatch.txt")
+        h.test_result("test capture with mismatched counts (2 failed but 1 id) is 'unknown' (#8)",
+                      data and data["class"] == "unknown", f"expected unknown, got {data['class'] if data else None}")
+
     with tempfile.TemporaryDirectory() as tmp:
         rc, data, raw = signature_of(tmp, fixture_text("run-all-failing-suite.txt"))
         h.test_result("run_all capture: class is 'test'", rc == 0 and data and data["class"] == "test", raw[:300])
@@ -176,6 +190,21 @@ def test_signature(h):
         h.test_result("a missing output file never classifies as lint or test", never_healable(data), raw[:300])
 
 
+def test_mypy_hyphenated_codes(h):
+    print()
+    print("[Section 2b] mypy hyphenated codes (#9)")
+    with tempfile.TemporaryDirectory() as tmp:
+        # Create synthetic mypy output with hyphenated codes like [name-defined]
+        mypy_text = """src/example.py:5:0: error: Name "undefined" is not defined [name-defined]
+src/other.py:10:0: error: Name "value" is not defined [unused-variable]"""
+        rc, data, raw = signature_of(tmp, mypy_text, "mypy.txt")
+        h.test_result("mypy with hyphenated codes: class is 'lint'",
+                      rc == 0 and data and data["class"] == "lint", raw[:300])
+        h.test_result("mypy with hyphenated codes: ids parse both files",
+                      data and any("example.py" in i for i in data.get("ids", [])) and
+                      any("other.py" in i for i in data.get("ids", [])), raw[:300])
+
+
 def test_compare(h):
     print()
     print("[Section 3] compare")
@@ -206,6 +235,28 @@ def test_compare(h):
         h.test_result("an unparseable input fails closed (never recurs: true)", not (data and data.get("recurs") is True), raw[:300])
         rc, data, raw = run_cli("compare", "--first", str(Path(tmp) / "missing.json"), "--second", files["lint"])
         h.test_result("a missing input fails closed (never recurs: true)", not (data and data.get("recurs") is True), raw[:300])
+
+
+def test_negative_counts(h):
+    print()
+    print("[Section 3b] negative counts validation (#27)")
+    with tempfile.TemporaryDirectory() as tmp:
+        named = {"test_sample.py": "x=1\n\n\ndef test_b():\n    assert x == 1\n"}
+        named_fmt = {"test_sample.py": "x = 1\n\n\ndef test_b():\n    assert x == 1\n"}
+        ids = ["test_sample.py::test_b"]
+        # Test with negative run count
+        before = {"run": -1, "failed": 1}
+        after = {"run": 3, "failed": 0}
+        repo, b, a = make_repo(tmp, named, named_fmt)
+        rc, data, raw = complexity(repo, b, a, ids, before, after)
+        h.test_result("negative run count is rejected, review is 'required' with 'counts-missing' (#27)",
+                      data and data["review"] == "required" and "counts-missing" in reasons_of(data), raw[:300])
+        # Test with negative failed count
+        before = {"run": 3, "failed": -1}
+        after = {"run": 3, "failed": 0}
+        rc, data, raw = complexity(repo, b, a, ids, before, after)
+        h.test_result("negative failed count is rejected, review is 'required' with 'counts-missing' (#27)",
+                      data and data["review"] == "required" and "counts-missing" in reasons_of(data), raw[:300])
 
 
 def test_complexity(h):
@@ -284,7 +335,24 @@ def test_complexity(h):
                           data and data["review"] == "required" and reason in reasons_of(data), raw[:300])
 
     print()
-    print("[Section 5] complexity: fail closed and monotonic")
+    print("[Section 5] complexity: git ref validation (#25)")
+    with tempfile.TemporaryDirectory() as tmp:
+        named = {"test_sample.py": "x=1\n\n\ndef test_b():\n    assert x == 1\n"}
+        repo, b, a = make_repo(tmp, named, named)
+        ids = ["test_sample.py::test_b"]
+        before = {"run": 1, "failed": 0}
+        after = {"run": 1, "failed": 0}
+        # Test with invalid base ref
+        rc, data, raw = complexity(repo, "invalid_ref_xxxxxx", a, ids, before, after)
+        h.test_result("invalid base ref is caught, review is 'required' with 'diff-unparseable' (#25)",
+                      data and data["review"] == "required" and "diff-unparseable" in reasons_of(data), raw[:300])
+        # Test with invalid head ref
+        rc, data, raw = complexity(repo, b, "invalid_head_ref", ids, before, after)
+        h.test_result("invalid head ref is caught, review is 'required' with 'diff-unparseable' (#25)",
+                      data and data["review"] == "required" and "diff-unparseable" in reasons_of(data), raw[:300])
+
+    print()
+    print("[Section 5b] complexity: fail closed and monotonic")
     with tempfile.TemporaryDirectory() as tmp:
         repo, b, a = make_repo(tmp, named, named_fmt)
         rc, data, raw = complexity(repo, b, "f" * 40, ids, before, after)
@@ -306,7 +374,9 @@ def test_complexity(h):
 def main():
     h = Harness("HEAL-CHECK TEST SUITE")
     test_signature(h)
+    test_mypy_hyphenated_codes(h)
     test_compare(h)
+    test_negative_counts(h)
     test_complexity(h)
     h.summarize_and_exit()
 
