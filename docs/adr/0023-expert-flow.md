@@ -772,11 +772,11 @@ This amendment closes four gaps discovered in lotl#1809 dogfooding and tracked a
 
 - **Fix 4: required `OUTSTANDING:` receipt line; ship-step relay** (per D2, option A, and Q2, option A).
   - Implement and fix `Decision: OK` receipts carry `OUTSTANDING:` listing units the step left undone, each with a reason and a provenance label (`[self-report]` or `[both]`). `OUTSTANDING: none` is allowed. Units flagged by the diff heuristic alone (not self-reported) are never written; they stay a silent miss for the verifier.
-  - The ship step reads both `OUTSTANDING:` lines (from implement and fix receipts) and the persisted coverage tables (`steps/<NN>-<STEP>.coverage.txt`), unioning declared and uncovered units. It asks one batched question per relay-set item: **Open an issue** or **Drop**. The question is skipped if the relay set is empty or the idempotence marker (`steps/<NN>-ship.outstanding.md` with `<!-- outstanding-end -->`) exists.
+  - The ship step reads both `OUTSTANDING:` lines (from implement and fix receipts) and the persisted coverage tables (`steps/<NN>-<STEP>.coverage.txt`), unioning declared and uncovered units. ~~It asks one batched question per relay-set item: **Open an issue** or **Drop**.~~ *(This sentence is superseded by the 2026-10-27 amendment.)* ~~The question is skipped if the relay set is empty or the idempotence marker (`steps/<NN>-ship.outstanding.md` with `<!-- outstanding-end -->`) exists.~~ *(This sentence is superseded by the 2026-10-27 amendment.)*
   - The done line appends `   outstanding: <ids>` listing items with no recorded disposition or issues opened.
   - This prepares #288 (post-merge verification) to read the same `OUTSTANDING:` line and relay set.
 
-**Consequences.** A plan step that leaves work unbuilt and undeclared now fails the audit and surfaces every uncovered unit to the human at ship. A failed step resumed without its audit evidence hard-stops. A failure reason is always logged, enabling post-merge triage. Outstanding items are relayed once at ship and listed on the done line, with a choice between deferral or dropping each item.
+**Consequences.** A plan step that leaves work unbuilt and undeclared now fails the audit and surfaces every uncovered unit to the human at ship. A failed step resumed without its audit evidence hard-stops. A failure reason is always logged, enabling post-merge triage. ~~Outstanding items are relayed once at ship and listed on the done line, with a choice between deferral or dropping each item.~~ *(This sentence is superseded by the 2026-10-27 amendment.)*
 
 **Related.** This amendment depends on and amends the 2026-10-16 second amendment's `taken-over` handling, and builds on the 2026-10-19 amendment's verifier ownership. When #288 lands, it will read the `OUTSTANDING:` line and the relay set persisted by this amendment.
 
@@ -864,3 +864,99 @@ The review step's agent pin (`flow-review.md`, `model: sonnet`) restores the doc
 ### Implement step coordinator model
 
 The `flow-implement` agent pin (model `sonnet`) governs the step coordinator only. The Haiku units continue to run under `plan-implementer`'s own model and `--implementer-model` flag (unchanged). The #315 Sonnet escalation also remains: a single-unit shortfall on Haiku offers a manual `Retry with sonnet` option (see the 2026-10-16 fourth amendment).
+
+## Amendment (2026-10-27): assess outstanding items before ship (#383, slice 1)
+
+Every outstanding item a flow carries into ship reaches the human with a written, verified assessment instead of a blind choice. Before ship, an `assess` stage verifies each outstanding unit and returns typed assessment records; the orchestrator persists them as a script-validated receipt. A typed disposition gate ensures no item reaches `/shipit` (or merge, including under `--auto-merge`) without a recorded, reasoned and attributed human disposition.
+
+### 1. Superseded Fix 4 sentences
+
+This amendment supersedes three sentences from the 2026-10-21 Fix 4 (#320):
+- "It asks one batched question per relay-set item: **Open an issue** or **Drop**."
+- "The question is skipped if the relay set is empty or the idempotence marker (`steps/<NN>-ship.outstanding.md` with `<!-- outstanding-end -->`) exists."
+- "Outstanding items are relayed once at ship and listed on the done line, with a choice between deferral or dropping each item."
+
+The required `OUTSTANDING:` line and the #288 hand-off remain in force.
+
+### 2. The `assess` stage definition
+
+`assess` is an **orchestrator stage, not a step-loop step**. It runs no receipt stubs, no fidelity audit and no `ATTEMPT:` lines, and resume rule 2 (gate re-ask) never applies to it. It is listed in the roster for position and telemetry only.
+
+**State keys:** `step: "assess"` while it runs; `attempts.assess` (incremented per run); `failures.assess` (same two-failure cap as steps); `stop_source.assess` with values `"validation"` or `"tree"`; and a top-level `outstanding_format: 2`, written at flow creation by flows created after this amendment.
+
+**Log lifecycle lines:** `assess begin`, `assess ok`, `assess failed (<reason>)`, `assess taken-over`, `assess skipped`, `assess paused`, plus events `assessed` and `outstanding`.
+
+**Position:** After verify, before ship. Numbering is keyed on `state.json`'s `outstanding_format`, so flows already in flight keep their file names. A flow with `outstanding_format: 2` (created after this amendment) numbers assess `07`, ship `08` and merge `09`: receipts `steps/07-assess.md`, `steps/08-ship.md`, `steps/09-merge.md`, and the disposition marker `steps/08-ship.outstanding.md`. A flow without that key keeps ship `07`, merge `08` and the marker `steps/07-ship.outstanding.md`; if assess runs in such a flow it still writes `steps/07-assess.md`. This resolves review finding F21 (assess and ship both numbered `07`, ruled 2026-10-29) while keeping resume working for the in-flight flows, several of them paused or awaiting at `merge`, that already use `07-ship` and `08-merge`. The verifier never keys on these names: `07-assess.md` is fixed and the marker path arrives via `--receipt`.
+
+**Stage and telemetry name:** `assess` (reported as `stage-begin`/`stage-end --stage assess`).
+
+**Failure path:** The normal hard-stop menu (Retry while `failures.assess < 2`, Take over, Abort).
+
+**Take over at assess:** Logs `assess taken-over`, then runs the human-only disposition relay. Every item gets a `by=human` disposition backed by an answers-file entry, and the marker records `assessment: taken-over`. The gate then accepts the marker without `steps/07-assess.md`, but rejects any `finished`, leave-as-is or assessor-option disposition, since no assessment backs them. Take over therefore always has a reachable legal marker and is never a dead end. Conversely, an `assessment: assessor` marker is rejected when the newest `assess` log line is `taken-over`, even if a valid `07-assess.md` exists, since the take-over means no assessor backed the marker.
+
+### 3. Assessor constraints
+
+The assessor runs as a restricted agent — no Edit, no Write (prompt-scoped only), and read-only git Bash (`git diff`, `git log`, `git show`, `git grep` only; no checkout, reset, or branch mutation). This restriction is by design: assessment is a judgment role, not an implementation role, and the assessor cannot alter code, state, or worktree. The orchestrator writes the receipt.
+
+The unchanged-tree check is always applied and fails closed: `HEAD` and `git status --porcelain` are recorded before spawning the assessor and checked after; any change is a hard stop with reason `assess: working tree changed during assessment` and `stop_source.assess = "tree"`.
+
+Batches are bounded at 8 items; overflow splits into further batches.
+
+The assessor runs on **Sonnet**, because this is judgment work (ADR-0004).
+
+**Agent file note:** `agents/flow-assessor.md` predates the #358-#360 step-agent conventions and should be conformed when next touched (adding any convention table entries or preflight procedures that land after this amendment).
+
+### 4. Verify-first is mandatory
+
+Every item gets `status` ∈ {`unfinished`, `already-done`} with **cited evidence**. Only `unfinished` items are offered for action. `already-done` items are always printed in a notice before ship, logged, and listed on the done line. An `already-done` item whose coverage row says `uncovered` cannot close without a human "Confirm already done" answer.
+
+### 5. Closed vocabularies and gate rules
+
+- `unknown` coverage rows are always asked (never finished, never marked `already-done`).
+- Every human disposition (`by=human`) must have a corresponding record in the flow's human ledger (`human.jsonl`, written only by `scripts/flow-ledger.py`): a record with `kind: answer`, `step: assess`, and text lines `answer_ref: <ref>` and `sha256: <hex of the answers file>`. The outstanding gate verifies the ledger record exists and its `sha256` matches the current answers file, even under `--auto-merge`. This proves the answers file was recorded through the sanctioned script writer and has not been altered since, not that a human necessarily typed it — the orchestrator still invokes the ledger script.
+- Assessment records carry typed `Disposition` fields: `id`, `disposition` ∈ {`finished`, `asked-and-answered`, `filed-as-issue`, `dropped`}, `by` ∈ {`human`, `assessor-verified`}, `answer_ref`, `option`, `route` ∈ {`leave`, `pause`, `issue`, `none`}, `url` and `reason`.
+- Drop reasons must be at least 15 characters and are not in a small boilerplate denylist (`n/a`, `none`, `not needed`, `drop`, `skip`, `wontfix`).
+- A drop is never `assessor-verified`.
+
+### 6. The `--auto-merge` and epic rule (W1)
+
+The gate runs even under `--auto-merge`. A drop needs a human answer whose entry for that item chose Drop with the same reason. Questions relay through the Ask block, which epic children inherit unchanged.
+
+### 7. Bounded legacy-marker rule
+
+A pre-amendment `07-ship.outstanding.md` (open issue/drop lines and the sentinel, no `format:` line) is accepted only when the flow predates the amendment: `state.json` has no `outstanding_format` key, there is no `steps/07-assess.md`, and `log.md` has no `assess` line. Even then, every derived id's unit part (`Step 3`, `D2`) must appear in exactly one legacy line. A post-amendment flow with a legacy marker fails.
+
+### 8. Persistence rule
+
+Each disposition is written as it is made, into a pending section without the sentinel. An issue URL is written straight after `gh issue create` returns. The sentinel is added only when the set is complete. A resume asks only the undispositioned ids.
+
+### 9. Slice-1 decision-question shape (audit-driven)
+
+Decision items offer the assessor's 1–2 typed options as answer choices. In slice 1 each option routes to Pause or Open an issue, recorded as `asked-and-answered` with the chosen option. The choices are never pre-selected and the assessor's options are never dropped. This allows the slice-2 finish loop to recognize assessor-option routes without interpreter ambiguity.
+
+### 10. Slice-2 design note (deferred; boundary with #380 to be settled)
+
+Slice 2 will add automatic finishing via loop-back for `unfinished`+`mechanical`+`in-scope` items, gated on an `--only-units` test. It will use a separate persisted finish-round cap of 2 plus a total implement/fix spawn ceiling per ship (Q3 C), where exhaustion goes to the hard-stop menu, never ship. Re-verification will be scoped by item source (W3). A `finish` route will be added for assessor options. Slice 2 adds the **third auto-remediation exception** to Decision 1 of the ADR. The boundary between slice 2 (auto-finish) and open issue #380 (Fix now / self-heal) is to be settled when either lands.
+
+### 11. Residual risk
+
+Under `--auto-merge`, an `already-done` item with coverage `declared` or `uncovered` closes with only the printed notice. Evidence quality is a judgment the script cannot type. This is a candidate for a slice-2 fidelity audit of assess.
+
+### 12. Constants
+
+- **Assessor batch bound:** 8 items per spawn.
+- **Drop reason minimum length:** 15 characters.
+- **Stop reason string:** `assess: working tree changed during assessment`.
+- **Boilerplate denylist for drop reasons:** `n/a`, `none`, `not needed`, `drop`, `skip`, `wontfix`.
+
+### 13. Marker and record grammar (as enforced by `scripts/flow-verify-receipt.py`)
+
+`steps/<ship NN>-ship.outstanding.md` (`08-` for a flow with `outstanding_format: 2`, `07-` for an earlier one) starts with `format: 2`, then `assessment: assessor` or `assessment: taken-over`, then `<!-- outstanding-pending -->`, then one disposition line per derived id, then `<!-- outstanding-end -->` only when every id is dispositioned. Disposition line: `<id> | disposition= | by= | answer_ref= | option= | route= | url= | reason=` (`none` for an empty value). Assessment line in `steps/07-assess.md`: `<id> | status= | kind= | scope= | leave_as_is_safe= | cause= | evidence= | finish_plan= | verification_proof= | options=`, closed by `<!-- assessment-end -->`; `options` is `<label> => pause|issue`, joined by ` ;; `, at most two, and no label may equal a fixed choice label (`Open an issue`, `Leave as-is`, `Pause to finish by hand`, `Drop`, `Confirm already done`).
+
+Two checks were added after the first draft of the grammar and both fail closed. **Repo binding:** a `filed-as-issue` disposition, or an `asked-and-answered` one with `route=issue`, must carry an issue URL whose `owner/repo` equals that of the flow's own `state.json` `issue_url`, compared case-insensitively; the gate reads `state.json` strictly, and a missing or unreadable file, invalid JSON, or a missing or malformed `issue_url` fails with `cannot bind issue URLs`, while a URL in another repo fails with `issue URL is not in <owner/repo>`. A flow whose dispositions need no URL (drops, pauses, leave-as-is) never reads it. **Field invariants (rule 7 of the assess check):** a `decision` record must have empty `finish_plan` and `verification_proof`, and a `mechanical` record must have empty `options`, in addition to the positive requirements (an unfinished `mechanical` record needs both finish fields; an unfinished `decision` record needs one or two options). This is what `agents/flow-assessor.md` already requires of the assessor, so a receipt that follows the contract is unaffected.
+
+The gate prints `UNDISPOSITIONED: <ids>` (only the ids lacking a terminal disposition, plus any paused-but-unfinished ids) before failing. A `route: pause` disposition is terminal only when the current assessment record is `already-done`; otherwise the gate fails with `paused, not yet finished`. A step that was taken over or hand-finished with no readable coverage contributes `<step>:coverage-unavailable` (coverage `unknown`, always asked). `stop_source.assess` may also be `"tree"`.
+
+### 14. Scope of slice 1
+
+This amendment does not finish outstanding items automatically. Mechanical finishing via loop-back is slice 2, and is deliberately out of scope here.

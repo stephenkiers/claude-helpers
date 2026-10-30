@@ -33,7 +33,7 @@ When `FLOW_DIR` is set:
 
 - `STEP_NAME=ship`; the Ask block's `command` field is `shipit`.
 - `RECEIPT_PATH` is the receipt path the orchestrator's step prompt names, verbatim; if it names none,
-  `${FLOW_DIR}/steps/07-ship.md`.
+  `${FLOW_DIR}/steps/08-ship.md` (`07-ship.md` in a flow created before `outstanding_format` existed).
 - **FAILED receipt on a hard stop.** Every stop in this doc — each `command-end --outcome failure`
   path, every "Stop and report", the "On Failure" section — also writes `RECEIPT_PATH` with the
   `Write` tool: the error you reported to the user, then

@@ -9,7 +9,7 @@ section). They do not verify that the described orchestration behaves correctly 
 
 Covers:
 1. Command existence, frontmatter model: sonnet, documented flags
-2. Telemetry: stage-pairing linter clean; all nine stage names listed; Every Exit Path section
+2. Telemetry: stage-pairing linter clean; all ten stage names listed; Every Exit Path section
 3. Relay contract: references flow-reference.md, verifies the answers file before SendMessage,
    never passes --pause, no auto-remediation wording, stop-line format
 4. Orchestrator capability: allowed-tools is an allowlist of read-only Bash plus the
@@ -53,7 +53,7 @@ PANEL_PROMPT = REPO_ROOT / "prompts" / "expert-review-panel.md"
 LEDGER_SPAWN_LINE = "HUMAN_LEDGER: human.jsonl"
 REDO_GRANT = 'Bash(python3 "$HOME/.claude/scripts/flow-redo.py":*)'
 
-STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "ship", "merge"]
+STAGES = ["worktree", "plan", "track", "implement", "review", "fix", "verify", "assess", "ship", "merge"]
 FLAGS = ["--plan-effort", "--review-effort", "--auto-merge", "--gates", "--from", "--resume", "--list", "--epic"]
 
 # Allowlist for the orchestrator's allowed-tools grants. Bash grants must be read-only
@@ -180,7 +180,7 @@ def main():
                   begins == ends == {"<STEP>"}, f"begins={sorted(begins)} ends={sorted(ends)}")
     stage_list = re.search(r"Stage names \(one `stage-begin`/`stage-end` pair each[^\n]*\):\s*([^\n]+(?:\n[^\n]+)?)", text)
     listed = set(re.findall(r"`([a-z]+)`", stage_list.group(1))) if stage_list else set()
-    h.test_result("all nine stage names are listed", set(STAGES) <= listed,
+    h.test_result("all ten stage names are listed", set(STAGES) <= listed,
                   f"missing: {sorted(set(STAGES) - listed)}")
     h.test_result("has an Every Exit Path section", "## Every Exit Path" in text)
     h.test_result("command-begin names expert-flow", "command-begin --command expert-flow" in text)

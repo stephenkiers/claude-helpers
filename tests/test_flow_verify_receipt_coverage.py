@@ -313,13 +313,13 @@ OUTSTANDING: Step 1 (deferred) self-report
             receipt_path, plan_path, repo_path, "HEAD", base_sha
         )
 
-        # Malformed lines should be skipped, both steps unmarked
+        # F10: a malformed OUTSTANDING line is rejected, not silently dropped
         passed = (
-            exit_code == 0
-            and "Step 1 | uncovered | " in stdout
-            and "Step 2 | uncovered | " in stdout
+            exit_code != 0
+            and "malformed OUTSTANDING line" in (stdout + stderr)
+            and "uncovered" not in stdout
         )
-        h.test_result("Malformed OUTSTANDING lines are skipped", passed, f"exit_code={exit_code}, stdout:\n{stdout}")
+        h.test_result("Malformed OUTSTANDING lines are rejected (F10)", passed, f"exit_code={exit_code}, stdout:\n{stdout}\nstderr:\n{stderr}")
 
     print()
     print("[Test 9] OUTSTANDING: none in receipt")

@@ -660,7 +660,7 @@ Write it at the end of the run — after the `/cleanup` hand-off and state-dir r
 or at whichever exit stopped the run (Phase 1 failure, Phase 2b **Stop**, Phase 3 merge-gate
 failure, Phase 4 "merge did not land", a Phase 4-Q kickback/refused/unknown exit, or a `/cleanup`
 failure after the merge). Path: the one the orchestrator's step prompt names, else
-`${FLOW_DIR}/steps/08-merge.md`. FLOW_DIR lives under `~/.claude/flows/`, outside the ticket
+`${FLOW_DIR}/steps/09-merge.md` (`08-merge.md` in a flow created before `outstanding_format` existed). FLOW_DIR lives under `~/.claude/flows/`, outside the ticket
 worktree, so `/cleanup` removing that worktree does not affect the write — but compute everything
 the receipt needs from the state already captured (Phase 1's literals, the state directory, the
 `/cleanup` output) rather than reading anything from the worktree afterwards.
