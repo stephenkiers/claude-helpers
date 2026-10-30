@@ -37,7 +37,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, Dict, get_args, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple
+from typing import cast, Dict, get_args, List, Literal, NamedTuple, NoReturn, Optional, Set, Tuple, TypedDict
 
 # Import shared schema module
 try:
@@ -56,7 +56,7 @@ except ImportError:
 
 # Constants for timeouts and mtime skew tolerance
 MTIME_SKEW_SECS = 5
-GIT_TIMEOUT_SECS = 5
+GIT_TIMEOUT_SECS = 10
 
 # Implement/fix check outcome (#338): the receipt's CHECK value for an explicit opt-out. The resolver
 # source that must back it is OPT_OUT_SOURCE, imported from scripts/workflow/checks.py in the gate.
@@ -230,6 +230,26 @@ class OutstandingSetItem(NamedTuple):
     provenance: str
     coverage: str
     reason: str
+
+
+class HealFields(TypedDict, total=False):
+    """Typed schema for HEAL: line key=value tokens.
+
+    All fields are optional (total=False) because heal records vary by source/state.
+    """
+    id: str
+    source: Literal["check", "fix-now"]
+    state: Literal["started", "converged", "needs-human", "not-converged", "interrupted"]
+    sha_before: str
+    sha_after: Optional[str]
+    signature: Optional[str]
+    class_: str  # "class" is reserved; convention in TypedDict
+    tools_sha: Optional[str]
+    units: Optional[str]
+    review: Optional[str]
+    reasons: Optional[str]
+    fixed: Optional[str]
+    outstanding: Optional[str]
 
 
 # A decision brief heading in a plan session's decisions.md (`#### Q1. …`, `#### Q2 — …`).
@@ -3625,8 +3645,12 @@ def check_heal(record_file: Path, flow_dir: Path, repo: str) -> Optional[str]:
             and recorded != sha_after
             and _heal_is_ancestor(repo, sha_after, recorded)
         )
-        if recorded not in (sha_before, sha_after) and not later_verify:
-            return "HEAL sha_before does not equal the failing verify's CHECK_SHA"
+        # For rejected states (non-converged), only sha_before is expected (no healing).
+        # For converged states, sha_after is expected, or a later verify re-run.
+        expected_shas = [sha_before] if not converged else ([sha_after] if sha_after else [])
+        if recorded not in expected_shas and not later_verify:
+            expected_desc = "sha_before" if not converged else "sha_after"
+            return f"HEAL {expected_desc} does not equal the failing verify's CHECK_SHA"
         if converged and sha_after is not None:
             reason = _heal_single_commit_reason(repo, sha_before, sha_after, heal_id)
             if reason:
@@ -3639,7 +3663,10 @@ def check_heal(record_file: Path, flow_dir: Path, repo: str) -> Optional[str]:
             healer_receipts = [
                 p for p in sorted(steps_dir.glob(f"{stem}.heal-*.md")) if not p.name.endswith(".audit.md")
             ]
-            if not any(f"HEAL_ID: {heal_id}" in _safe_read(p).split("\n") for p in healer_receipts):
+            if not any(
+                any(line.strip() == f"HEAL_ID: {heal_id}" for line in _safe_read(p).split("\n"))
+                for p in healer_receipts
+            ):
                 return "healer receipt missing for the converged heal"
         return None
 
@@ -3718,7 +3745,12 @@ def _flow_state(flow_dir: Path) -> Dict:
 def _flow_heal_commit_ids(flow_dir: Path, repo: Optional[str], branch: Optional[str]) -> Optional[List[str]]:
     """Heal ids from `Flow-Heal:` trailers in `bases[implement]..HEAD`; '' marks a matched commit with no id.
 
-    None when the range cannot be established (no repo, or no bases.implement): the git half is then skipped.
+    Returns:
+    - None when the range cannot be established (no repo, or no bases.implement): the git half is skipped,
+      and callers should treat as "no commits to verify".
+    - [] (empty list) when the range can be established but no commits with Flow-Heal trailers exist.
+      Also returned when git fails (timeout/error), treating unknown state fail-closed.
+    - List of ids found in Flow-Heal trailers.
     """
     if not repo:
         return None
@@ -3728,7 +3760,9 @@ def _flow_heal_commit_ids(flow_dir: Path, repo: Optional[str], branch: Optional[
         return None
     rc, out = _git_out(repo, ["log", "--grep", "^Flow-Heal:", "--format=%B%x01", f"{base}..{branch or 'HEAD'}"])
     if rc != 0:
-        return None
+        # Git failed (timeout, OSError, or legitimate error); treat as unknown state (fail-closed).
+        # Callers must treat this as potential commits requiring a gate.
+        return []
     ids: List[str] = []
     for message in out.split("\x01"):
         if not message.strip():
@@ -3772,7 +3806,12 @@ def check_verify_heal(receipt: str, flow_dir: Path, repo: Optional[str], branch:
 
 
 def check_merge_heal(flow_dir: Path, repo: Optional[str], branch: Optional[str]) -> Optional[str]:
-    """A healed run (any HEAL: record, healed: true, or a Flow-Heal: commit in range) needs a human gate_passed."""
+    """A healed run (any HEAL: record, healed: true, or a Flow-Heal: commit in range) needs a human gate_passed.
+
+    _flow_heal_commit_ids returns None if range cannot be established (repo is None or invalid base).
+    Returns [] if no commits found, or if git fails (unknown state). Returns list of ids if found.
+    Only a non-empty list counts toward "healed" due to commits.
+    """
     state = _flow_state(flow_dir)
     commit_ids = _flow_heal_commit_ids(flow_dir, repo, branch)
     healed = bool(_heal_records(flow_dir)) or state.get("healed") is True or bool(commit_ids)

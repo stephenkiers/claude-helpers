@@ -211,12 +211,14 @@ def test_check_heals(h):
         results(h, "healer receipt absent", rc, out, False, "receipt")
 
     with tempfile.TemporaryDirectory() as tmp:
-        w, record, receipt, _ = build_check_world(tmp, record_overrides={"state": "rejected:test-edit", "sha_after": None,
-                                                                         "review": None, "reasons": None})
+        w, record, receipt, sha_after = build_check_world(tmp, record_overrides={"state": "rejected:test-edit", "sha_after": None,
+                                                                                 "review": None, "reasons": None})
+        # For a rejected state, the verify receipt's CHECK_SHA should match sha_before (no healing occurred)
+        w.step_file("04-verify.md", verify_receipt(w.c1))
         rc, out = w.run("heal", record)
         # A rejected record needs no converged-only fields; the contract only requires the common + check fields.
         h.test_result("rejected:* check record with its common fields is not rejected for converged-only fields",
-                      rc == 0 or "converged" not in out.lower(), f"rc={rc} out={out[:300]!r}")
+                      rc == 0 and "ARTIFACTS: ok" in out, f"rc={rc} out={out[:300]!r}")
 
     print()
     print("[Section 2] --step verify: heal-aware checks")
@@ -345,11 +347,42 @@ def test_merge(h):
         results(h, "an interrupted HEAL: record (any state counts)", rc, out, False, "gate")
 
 
+def test_verify_merge_with_repo_branch(h):
+    print()
+    print("[Section 6] --step verify/merge with --repo/--branch supplied (directive #1)")
+    with tempfile.TemporaryDirectory() as tmp:
+        w, record, receipt, _ = build_check_world(tmp)
+        # Test verify with --repo and --branch explicitly provided
+        cmd = [sys.executable, str(VERIFIER), "--step", "verify", "--receipt", str(receipt),
+               "--since", SINCE, "--flow-dir", str(w.flow), "--repo", str(w.repo), "--branch", "HEAD"]
+        env = os.environ.copy()
+        env["HOME"] = str(w.home)
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        rc, out = result.returncode, (result.stdout + result.stderr).strip()
+        results(h, "verify with --repo and --branch supplied", rc, out, True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        w, record, receipt, _ = build_check_world(tmp)
+        w.write_state(gate_passed=True, healed=True)
+        receipt = w.step_file("09-merge.md", "MERGED\n<!-- step-end -->\n")
+        # Test merge with --repo and --branch explicitly provided
+        cmd = [sys.executable, str(VERIFIER), "--step", "merge", "--receipt", str(receipt),
+               "--since", SINCE, "--flow-dir", str(w.flow), "--repo", str(w.repo), "--branch", "HEAD"]
+        env = os.environ.copy()
+        env["HOME"] = str(w.home)
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        rc, out = result.returncode, (result.stdout + result.stderr).strip()
+        results(h, "merge with --repo and --branch supplied (gate_passed=true)", rc, out, True)
+
+
 def main():
     h = Harness("FLOW VERIFY RECEIPT HEAL TEST SUITE")
     test_check_heals(h)
     test_fix_now(h)
     test_merge(h)
+    test_verify_merge_with_repo_branch(h)
     h.summarize_and_exit()
 
 
