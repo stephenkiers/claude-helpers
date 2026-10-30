@@ -508,7 +508,7 @@ reference, is an error (`guard_block`).
 **Agent-file preflight.** Check that these files exist and are readable regular files (following symlinks):
 
 ```bash
-for AGENT_FILE in "$HOME/.claude/agents/flow-implement.md" "$HOME/.claude/agents/flow-review.md"; do
+for AGENT_FILE in "$HOME/.claude/agents/flow-implement.md" "$HOME/.claude/agents/flow-review.md" "$HOME/.claude/agents/flow-ship.md" "$HOME/.claude/agents/flow-merge.md"; do
   [ -r "$AGENT_FILE" ] && [ -f "$AGENT_FILE" ] || { printf 'ERROR: agent file missing: %s\n' "$AGENT_FILE" >&2; exit 1; }
 done
 FLOW_CONTRACT="$HOME/.claude/prompts/flow-step-contract.md"
@@ -957,11 +957,11 @@ Redo-able steps: plan, review.
 | 06 | verify | the project's check command (below) | ticket worktree | general-purpose | `CHECK:` `CHECK_EXIT:` (orchestrator-written) |
 | — | step gate | `AskUserQuestion` Continue / Redo with notes (plan, review only) / Pause / Abort after plan, implement, review, fix, and verify — only with `--gates` (`flags.step_gates`) | orchestrator | — | — |
 | 07 | assess | flow-assessor agent(s) + orchestrator relay (orchestrator stage, not the step loop) | ticket worktree | flow-assessor | `ASSESSED: <n>` (orchestrator-written) |
-| 08 | ship | `/shipit` | ticket worktree | general-purpose | `PR_URL:` |
+| 08 | ship | `/shipit` | ticket worktree | flow-ship | `PR_URL:` |
 | — | merge gate | `AskUserQuestion` Merge / Hold / Take over — skipped with `--auto-merge` | orchestrator | — | — |
-| 09 | merge | `/merge-and-cleanup <WORKTREE>` | main worktree | general-purpose | `MERGED: yes` (the line is **omitted** unless the PR merged) |
+| 09 | merge | `/merge-and-cleanup <WORKTREE>` | main worktree | flow-merge | `MERGED: yes` (the line is **omitted** unless the PR merged) |
 
-**Agent column note:** plan, ship, merge stay general-purpose pending #359/#360. This table is the single place a step's `subagent_type` is named.
+**Agent column note:** plan stays general-purpose pending #360. This table is the single place a step's `subagent_type` is named.
 
 **Numbering is keyed on `outstanding_format`.** The table is for a flow whose `state.json` has `outstanding_format: 2` (every flow created after the 2026-10-27 amendment). A flow without that key predates it and keeps ship at `07` and merge at `08`, with `07-assess.md` unchanged. Resolve `<NN>` for ship and merge from `outstanding_format` on every use, including the fleet `wait` path. `07-assess.md` is the same in both. The verifier does not key on these names; the marker path arrives via `--receipt`.
 
@@ -977,7 +977,7 @@ For the current `STEP` with position `<NN>`:
 **1. Attempt accounting.** For steps whose Agent column is a `flow-*` agent, first check that the agent file, its hook scripts, and the contract file exist and are readable regular files (following symlinks):
 
 ```bash
-AGENT_TYPE="<AGENT_FROM_TABLE>"  # from Steps table Agent column (flow-implement or flow-review)
+AGENT_TYPE="<AGENT_FROM_TABLE>"  # from Steps table Agent column (flow-implement, flow-review, flow-ship, or flow-merge)
 AGENT_FILE="$HOME/.claude/agents/${AGENT_TYPE}.md"
 FLOW_CONTRACT="$HOME/.claude/prompts/flow-step-contract.md"
 [ -r "$AGENT_FILE" ] && [ -f "$AGENT_FILE" ] || { printf 'ERROR: agent file missing: %s\n' "$AGENT_FILE" >&2; exit 1; }

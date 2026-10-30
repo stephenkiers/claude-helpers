@@ -738,13 +738,17 @@ descendants" and silently skip the sync.
 If the branch has descendants AND `STACK_LAYOUT="per-branch"`, the push above advanced this
 branch past where its descendants branched off; per-branch children were NOT updated by the
 push. Print one line first so the descendant force-push is not silent, then invoke the
-`stack-sync` skill via the `Skill` tool, passing `--yes` so the push confirmation does not
-block the ship flow (nothing flow-related is forwarded: `/stack-sync` resolves `FLOW_DIR` itself
-from the same `.claude/flow-run` marker, writes no receipt of its own, and any question it still
-needs goes through its own Ask block — see `~/.claude/prompts/flow-reference.md`):
+`stack-sync` skill via the `Skill` tool. Outside a flow, pass `--yes` to skip the push confirmation so the ship step does not block; inside a flow, do not pass `--yes` so the confirmation relays through `/stack-sync`'s own Ask block (per ADR-0023 #318: force-push confirmations go through the Ask block, never auto-skip). Nothing flow-related is forwarded: `/stack-sync` resolves `FLOW_DIR` itself from the same `.claude/flow-run` marker, writes no receipt of its own, and any question it still needs goes through its own Ask block — see `~/.claude/prompts/flow-reference.md`:
+
+**Outside a flow:**
 
 > Syncing N stacked descendant(s) via /stack-sync
 > /stack-sync --yes "$BRANCH"
+
+**Inside a flow:**
+
+> Syncing N stacked descendant(s) via /stack-sync
+> /stack-sync "$BRANCH"
 
 stack-sync rebases each descendant onto this branch's updated tip inside each child's own
 worktree, runs the project check gate, and force-pushes with `--force-with-lease`. If the
