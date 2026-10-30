@@ -2,6 +2,7 @@
 # Convert a ticket title (from stdin) into a slug: [a-z0-9-]{1,50} with no leading/trailing -, or "plan".
 # Takes no arguments — the title MUST come from stdin only, never from argv.
 # Output: a single line containing the slug.
+# Exit: 0 always prints a slug (blank input -> "plan"); 2 if any argument is given (nothing on stdout).
 
 set -uo pipefail
 export LC_ALL=C

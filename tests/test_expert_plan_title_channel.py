@@ -4,16 +4,16 @@ Structural guard and behavioral test for the expert-plan title channel (#389).
 
 This test must fail on the unfixed doc and pass after Steps 4-6 are applied.
 
-Structural checks (a-h):
+Structural checks (a-i):
   (a) No line matches \\bTICKET_TITLE= (no literal assignments)
   (b) No line runs the inline pipeline (no SLUG=$( + tr '[:upper:]' in same line)
-  (c) Exactly 2 SLUG=$( lines invoking bash "$SLUGIFY"
+  (c) Exactly 2 SLUG=$( lines invoking bash "$HOME/.claude/scripts/slugify.sh"
   (d) Step 1 site redirects from a variable ending in ticket-title.txt
   (e) Each slug site has [ -n "$SLUG" ] || SLUG="plan" fallback
-  (f) Each site has missing-script warning with SLUG WARNING: and /setup-local
+  (f) Each SLUGIFY site has missing-script warning with SLUG WARNING: and /setup-local nearby
   (g) Step 1 prose instructs Write tool for {SESSION_DIR}/ticket-title.txt
-  (h) Step 9 prints slug-warning.txt if non-empty
-  (i) allowed-tools line 4 contains Bash(bash:*)
+  (h) (Step 9 section) prints slug-warning.txt if non-empty
+  (i) allowed-tools line contains narrow Bash(bash "$HOME/.claude/scripts/slugify.sh":*) and NOT Bash(bash:*)
 
 Behavioral section:
   - Extract Step 1 slug lines, run them in a temp HOME/SESSION_DIR
@@ -96,24 +96,32 @@ def main():
         f"found at lines: {inline_pipelines}" if inline_pipelines else "",
     )
 
-    # Structural check (c): Exactly 2 SLUG=$( lines invoking bash "$SLUGIFY"
+    # Structural check (c): Exactly 2 SLUG=$( lines invoking bash with the slugify script
     slugify_sites = []
     for line_no, line in enumerate(doc_text.splitlines(), start=1):
-        if 'SLUG=$(' in line and 'bash "$SLUGIFY"' in line:
+        if 'SLUG=$(' in line and 'bash "$HOME/.claude/scripts/slugify.sh"' in line:
             slugify_sites.append((line_no, line))
 
     h.test_result(
-        "Exactly 2 SLUG=$( lines invoking bash \"$SLUGIFY\"",
+        "Exactly 2 SLUG=$( lines invoking bash \"$HOME/.claude/scripts/slugify.sh\"",
         len(slugify_sites) == 2,
         f"found {len(slugify_sites)}, expected 2" if len(slugify_sites) != 2 else "",
     )
 
-    # Verify both SLUGIFY sites are in the same fenced block
+    # Verify both SLUGIFY sites have proper SLUGIFY variable definition
+    lines = doc_text.splitlines()
     for line_no, line in slugify_sites:
-        # Check that the line is in a bash block with SLUGIFY="$HOME/.claude/scripts/slugify.sh"
+        # Check that the site has SLUGIFY="$HOME/.claude/scripts/slugify.sh" defined in the same bash block
+        # (within 20 lines before the SLUG=$( line to account for conditional logic)
+        found_slugify_var = False
+        for i in range(max(0, line_no - 20), line_no):
+            if 'SLUGIFY="$HOME/.claude/scripts/slugify.sh"' in lines[i]:
+                found_slugify_var = True
+                break
         h.test_result(
-            f"SLUGIFY site at line {line_no} has proper form",
-            True,  # Placeholder; detailed check happens in behavioral section
+            f"SLUGIFY site at line {line_no} has SLUGIFY variable defined",
+            found_slugify_var,
+            "SLUGIFY=\"$HOME/.claude/scripts/slugify.sh\" not found in preceding lines",
         )
 
     # Structural check (d): Step 1 site redirects from a variable ending in ticket-title.txt
@@ -145,16 +153,18 @@ def main():
             "could not find fallback in next 10 lines",
         )
 
-    # Structural check (f): Each site has missing-script warning
-    warning_checks = []
-    for line_no, line in enumerate(doc_text.splitlines(), start=1):
+    # Structural check (f): Missing-script warnings are present with SLUG WARNING: and /setup-local
+    # (Note: warnings may not be in every SLUG site's block, only where error handling occurs)
+    lines = doc_text.splitlines()
+    warning_sites = []
+    for line_no, line in enumerate(lines, start=1):
         if 'SLUG WARNING:' in line and '/setup-local' in line:
-            warning_checks.append((line_no, line))
+            warning_sites.append((line_no, line))
 
     h.test_result(
         "Missing-script warning present with SLUG WARNING: and /setup-local",
-        len(warning_checks) >= 1,
-        f"found {len(warning_checks)}" if len(warning_checks) == 0 else "",
+        len(warning_sites) >= 1,
+        f"found {len(warning_sites)} warning sites" if len(warning_sites) == 0 else "",
     )
 
     # Structural check (g): Step 1 prose instructs Write tool
@@ -171,26 +181,33 @@ def main():
         "",
     )
 
-    # Structural check (h): Step 9 prints slug-warning.txt
+    # Structural check (h): Step 9 (delivery section) prints slug-warning.txt via cat
     step9_warning_print = False
     for line in doc_text.splitlines():
-        if 'slug-warning.txt' in line and 'cat' in line or 'slug-warning.txt' in line and 'print' in line.lower():
+        if ('slug-warning.txt' in line and 'cat' in line) or ('slug-warning.txt' in line and 'print' in line.lower()):
             step9_warning_print = True
             break
 
     h.test_result(
-        "Step 9 section prints slug-warning.txt if non-empty",
+        "(Step 9 section) prints slug-warning.txt if non-empty",
         step9_warning_print,
-        "",
+        "expected 'cat' or 'print' with 'slug-warning.txt'",
     )
 
-    # Structural check (i): allowed-tools line 4 contains Bash(bash:*)
+    # Structural check (i): allowed-tools line 4 contains narrow Bash grant and NO bare Bash(bash:*)
     lines = doc_text.splitlines()
     allowed_tools_line = lines[3] if len(lines) > 3 else ""
+    has_narrow_grant = 'Bash(bash "$HOME/.claude/scripts/slugify.sh":*)' in allowed_tools_line
+    has_bare_grant = 'Bash(bash:*)' in allowed_tools_line
     h.test_result(
-        "allowed-tools line contains Bash(bash:*)",
-        'Bash(bash:*)' in allowed_tools_line,
-        f"line: {allowed_tools_line!r}" if 'Bash(bash:*)' not in allowed_tools_line else "",
+        "allowed-tools has narrow Bash(bash \"$HOME/.claude/scripts/slugify.sh\":*) grant",
+        has_narrow_grant,
+        f"line: {allowed_tools_line!r}" if not has_narrow_grant else "",
+    )
+    h.test_result(
+        "allowed-tools does NOT contain bare Bash(bash:*)",
+        not has_bare_grant,
+        f"line: {allowed_tools_line!r}" if has_bare_grant else "",
     )
 
     # Behavioral section: Extract and run Step 1 slug lines
@@ -226,35 +243,39 @@ def main():
             title_file = tmp_session_path / "ticket-title.txt"
             title_file.write_text(hostile_title)
 
-            script = f"""
+            # Extract Step 1 slug block from the doc and run it
+            if not step1_block:
+                h.test_result(
+                    "Step 1 slug block extraction for behavioral test 1",
+                    False,
+                    "Could not extract Step 1 slug block",
+                )
+            else:
+                script = f"""
 set -euo pipefail
 export HOME="{tmp_home}"
 export SESSION_DIR="{tmp_session}"
-TITLE_FILE="$SESSION_DIR/ticket-title.txt"
-SLUGIFY="$HOME/.claude/scripts/slugify.sh"
-SLUG=""
-[ -f "$SLUGIFY" ] && SLUG=$(bash "$SLUGIFY" < "$TITLE_FILE") || SLUG=""
-[ -n "$SLUG" ] || SLUG="plan"
+{step1_block}
 printf '%s' "$SLUG"
 """
-            result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                cwd=str(tmp_session),
-            )
-            canary_path = tmp_session_path / "CANARY"
-            slug_output = result.stdout.decode()
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    cwd=str(tmp_session),
+                )
+                canary_path = tmp_session_path / "CANARY"
+                slug_output = result.stdout.decode()
 
-            h.test_result(
-                "Hostile title file doesn't create CANARY file",
-                not canary_path.exists(),
-                f"CANARY exists: {canary_path.exists()}",
-            )
-            h.test_result(
-                "Hostile title produces expected slug",
-                slug_output == "x-touch-canary",
-                f"got {slug_output!r}",
-            )
+                h.test_result(
+                    "Hostile title file doesn't create CANARY file",
+                    not canary_path.exists(),
+                    f"CANARY exists: {canary_path.exists()}",
+                )
+                h.test_result(
+                    "Hostile title produces expected slug",
+                    slug_output == "x-touch-canary",
+                    f"got {slug_output!r}",
+                )
 
             # Behavioral test 2: Missing title file
             print("\nTest 2: Missing title file falls back with warning")
@@ -262,47 +283,43 @@ printf '%s' "$SLUG"
             warning_file = tmp_session_path / "slug-warning.txt"
             warning_file.unlink(missing_ok=True)
 
-            script = f"""
+            if not step1_block:
+                h.test_result(
+                    "Step 1 slug block extraction for behavioral test 2",
+                    False,
+                    "Could not extract Step 1 slug block",
+                )
+            else:
+                script = f"""
 set -euo pipefail
 export HOME="{tmp_home}"
 export SESSION_DIR="{tmp_session}"
-TITLE_FILE="$SESSION_DIR/ticket-title.txt"
-SLUGIFY="$HOME/.claude/scripts/slugify.sh"
-SLUG=""
-
-if [ ! -f "$SLUGIFY" ]; then
-  echo "SLUG WARNING: ... not linked ..." >&2
-elif [ ! -s "$TITLE_FILE" ]; then
-  echo "SLUG WARNING: $TITLE_FILE is missing or empty" >&2
-  echo "SLUG WARNING: $TITLE_FILE is missing or empty" >> "$SESSION_DIR/slug-warning.txt"
-fi
-
-[ -n "$SLUG" ] || SLUG="plan"
+{step1_block}
 printf '%s' "$SLUG"
 """
-            result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                cwd=str(tmp_session),
-            )
-            slug_output = result.stdout.decode()
-            stderr_output = result.stderr.decode()
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    cwd=str(tmp_session),
+                )
+                slug_output = result.stdout.decode()
+                stderr_output = result.stderr.decode()
 
-            h.test_result(
-                "Missing title file falls back to plan",
-                slug_output == "plan",
-                f"got {slug_output!r}",
-            )
-            h.test_result(
-                "Missing title file produces warning on stderr",
-                "SLUG WARNING:" in stderr_output,
-                f"stderr: {stderr_output!r}",
-            )
-            h.test_result(
-                "Missing title file warning written to slug-warning.txt",
-                warning_file.exists(),
-                f"file exists: {warning_file.exists()}",
-            )
+                h.test_result(
+                    "Missing title file falls back to plan",
+                    slug_output == "plan",
+                    f"got {slug_output!r}",
+                )
+                h.test_result(
+                    "Missing title file produces warning on stderr",
+                    "SLUG WARNING:" in stderr_output,
+                    f"stderr: {stderr_output!r}",
+                )
+                h.test_result(
+                    "Missing title file warning written to slug-warning.txt",
+                    warning_file.exists(),
+                    f"file exists: {warning_file.exists()}",
+                )
 
             # Behavioral test 3: Missing script
             print("\nTest 3: Missing script produces warning")
@@ -310,45 +327,43 @@ printf '%s' "$SLUG"
             warning_file.unlink(missing_ok=True)
             title_file.write_text("test title")
 
-            script = f"""
+            if not step1_block:
+                h.test_result(
+                    "Step 1 slug block extraction for behavioral test 3",
+                    False,
+                    "Could not extract Step 1 slug block",
+                )
+            else:
+                script = f"""
 set -euo pipefail
 export HOME="{tmp_home}"
 export SESSION_DIR="{tmp_session}"
-TITLE_FILE="$SESSION_DIR/ticket-title.txt"
-SLUGIFY="$HOME/.claude/scripts/slugify.sh"
-SLUG=""
-
-if [ ! -f "$SLUGIFY" ]; then
-  echo "SLUG WARNING: $SLUGIFY is not linked — run /setup-local" >&2
-  echo "SLUG WARNING: $SLUGIFY is not linked — run /setup-local" >> "$SESSION_DIR/slug-warning.txt"
-fi
-
-[ -n "$SLUG" ] || SLUG="plan"
+{step1_block}
 printf '%s' "$SLUG"
 """
-            result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                cwd=str(tmp_session),
-            )
-            slug_output = result.stdout.decode()
-            stderr_output = result.stderr.decode()
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    cwd=str(tmp_session),
+                )
+                slug_output = result.stdout.decode()
+                stderr_output = result.stderr.decode()
 
-            h.test_result(
-                "Missing script falls back to plan",
-                slug_output == "plan",
-                f"got {slug_output!r}",
-            )
-            h.test_result(
-                "Missing script produces warning naming /setup-local",
-                "/setup-local" in stderr_output,
-                f"stderr: {stderr_output!r}",
-            )
-            h.test_result(
-                "Missing script warning written to slug-warning.txt",
-                warning_file.exists(),
-                f"file exists: {warning_file.exists()}",
-            )
+                h.test_result(
+                    "Missing script falls back to plan",
+                    slug_output == "plan",
+                    f"got {slug_output!r}",
+                )
+                h.test_result(
+                    "Missing script produces warning naming /setup-local",
+                    "/setup-local" in stderr_output,
+                    f"stderr: {stderr_output!r}",
+                )
+                h.test_result(
+                    "Missing script warning written to slug-warning.txt",
+                    warning_file.exists(),
+                    f"file exists: {warning_file.exists()}",
+                )
 
     print()
     h.summarize_and_exit()

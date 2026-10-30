@@ -1,7 +1,7 @@
 ---
 description: Focused isolated-expert planning — cheap main-thread orchestration and dependency-ordered synthesis, with genuinely isolated per-expert contributions and a mandatory consistency check instead of a pods/router/digest pipeline. Effort 2 or 3 (+ one independent auditor) only; auto-sized from the ticket when --effort is omitted. Formerly known as v3; superseded /expert-plan-deprecated (v1) and /expert-plan-deprecated-v2 (v2) as the default — see ADR-0020.
 argument-hint: [--effort 2|3] [--models balanced|opus] [--flow <dir>] [--epic] [--allow-degraded]
-allowed-tools: Bash(bash:*), Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
+allowed-tools: Bash(bash "$HOME/.claude/scripts/slugify.sh":*), Bash(ls:*), Bash(find:*), Bash(gh issue view:*), Bash(gh api:*), Bash(git log:*), Bash(git branch:*), Bash(mkdir:*), Bash(cp:*), Bash(date:*), Bash(python3:*), Bash(jq:*), Read, Glob, Grep, Task, Write, AskUserQuestion, ExitPlanMode
 model: sonnet
 ---
 
@@ -132,10 +132,12 @@ REPO_KEY=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr 
 INVOCATION_ID="$(date +%Y%m%dT%H%M%S)-$(printf '%05d' $RANDOM)"
 
 # Derive slug from ticket title (or default) — will be updated in Step 1 after fetching ticket
+# Note: the SLUG WARNING below is re-detected and re-emitted in Step 1 to ensure it reaches the receipt file
+# Note: Step 0 uses positive checks (if [ -f ]), Step 1 uses negative checks (if [ ! -f ]) for different control flow
 SLUGIFY="$HOME/.claude/scripts/slugify.sh"
 SLUG=""
 if [ -f "$SLUGIFY" ]; then
-  SLUG=$(printf '%s\n' "${TICKET_TITLE:-plan}" | bash "$SLUGIFY") || SLUG=""
+  SLUG=$(printf '%s\n' "${TICKET_TITLE:-plan}" | bash "$HOME/.claude/scripts/slugify.sh") || SLUG=""
 else
   printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >&2
 fi
@@ -385,20 +387,26 @@ fi
 
 Announce the chosen effort and reason to the user; they can re-run with `--effort` to override.
 
-**After resolving the ticket title**, use the `Write` tool (never a shell redirect, echo, or heredoc) to write the resolved title to the file `$SESSION_DIR/ticket-title.txt` (file_path: `{SESSION_DIR}/ticket-title.txt` expanded to its absolute path with `$HOME` substituted) on a single line. This ensures the title never appears in a shell string literal. Then recompute SLUG and FINAL_PLAN_PATH:
+**After resolving the ticket title**, use the `Write` tool (never a shell redirect, echo, or heredoc) to write the resolved title to the file `$SESSION_DIR/ticket-title.txt` (file_path: `{SESSION_DIR}/ticket-title.txt` expanded to its absolute path with `$HOME` substituted) on a single line. The title must never appear in any shell string or shell variable assignment — keeping it in a file and reading from that file protects against hostile input executing unintended commands. Then recompute SLUG and FINAL_PLAN_PATH:
 
 ```bash
+[ -n "$SESSION_DIR" ] || { echo "ERROR: SESSION_DIR is empty or unset" >&2; exit 1; }
+
 TITLE_FILE="$SESSION_DIR/ticket-title.txt"
 SLUGIFY="$HOME/.claude/scripts/slugify.sh"
 SLUG=""
+SLUG_MSG=""
+
 if [ ! -f "$SLUGIFY" ]; then
-  printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >&2
-  printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.\n' "$SLUGIFY" >> "$SESSION_DIR/slug-warning.txt"
+  SLUG_MSG=$(printf 'SLUG WARNING: %s is not linked — run /setup-local (or ./install.sh) in claude-helpers; slug falls back to '"'"'plan'"'"'.' "$SLUGIFY")
+  printf '%s\n' "$SLUG_MSG" >&2
+  printf '%s\n' "$SLUG_MSG" >> "$SESSION_DIR/slug-warning.txt" 2>/dev/null || true
 elif [ ! -s "$TITLE_FILE" ]; then
-  printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.\n' "$TITLE_FILE" >&2
-  printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.\n' "$TITLE_FILE" >> "$SESSION_DIR/slug-warning.txt"
+  SLUG_MSG=$(printf 'SLUG WARNING: %s is missing or empty (Write step skipped or mis-pathed); slug falls back to '"'"'plan'"'"'.' "$TITLE_FILE")
+  printf '%s\n' "$SLUG_MSG" >&2
+  printf '%s\n' "$SLUG_MSG" >> "$SESSION_DIR/slug-warning.txt" 2>/dev/null || true
 else
-  SLUG=$(bash "$SLUGIFY" < "$TITLE_FILE") || SLUG=""
+  SLUG=$(bash "$HOME/.claude/scripts/slugify.sh" < "$TITLE_FILE") || SLUG=""
 fi
 [ -n "$SLUG" ] || SLUG="plan"
 FINAL_PLAN_PATH="$HOME/.claude/plans/${SLUG}-${INVOCATION_ID}.md"

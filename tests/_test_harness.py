@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NoReturn, Optional, Tuple
 
@@ -141,11 +142,15 @@ def run_slugify(title: str, env: dict) -> Tuple[int, str, str]:
         return 127, "", f"slugify.sh not found at {SLUGIFY_SCRIPT}"
 
     # Do not force LC_ALL so the script's internal handling is tested
+    run_env = dict(os.environ)
+    if env:
+        run_env.update(env)
     result = subprocess.run(
         ["bash", str(SLUGIFY_SCRIPT)],
         input=title.encode(),
         capture_output=True,
-        cwd="/tmp",
+        cwd=tempfile.gettempdir(),
+        env=run_env,
     )
     return result.returncode, result.stdout.decode(), result.stderr.decode()
 
