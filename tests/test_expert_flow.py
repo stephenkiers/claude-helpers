@@ -658,7 +658,7 @@ def main():
     resume = " ".join(resume_m.group(0).split()) if resume_m else ""
     h.test_result("resume rule 2 checks how a taken-over OK was reached before its gate",
                   "Check how the `OK` was reached before the gate." in resume
-                  and 'grep -E "^[^ ]+ <STEP> (begin|retry|ok|taken-over|failed( \\(.*\\))?)$" "$FLOW_DIR/log.md" | tail -n 1' in resume)
+                  and 'grep -E "^[^ ]+ <STEP> (begin|retry|ok|taken-over|accepted \\(.*\\)|failed( \\(.*\\))?)$" "$FLOW_DIR/log.md" | tail -n 1' in resume)
     h.test_result("resume: newest ok line goes to the gate as-is",
                   "**Newest line is `ok`** → **for `plan`, `implement`, `review`, and `fix`**: read `steps/<NN>-<STEP>.audit.md`." in resume
                   and "**For `verify`** (not audited): go to the gate as-is." in resume)
