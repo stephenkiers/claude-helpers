@@ -171,8 +171,8 @@ def main():
         'plan': 'general-purpose',
         'track': 'general-purpose',
         'verify': 'general-purpose',
-        'ship': 'general-purpose',
-        'merge': 'general-purpose',
+        'ship': 'flow-ship',
+        'merge': 'flow-merge',
     }
 
     for step, expected_agent in expected.items():
@@ -478,6 +478,51 @@ def main():
     h.test_result(
         "general-purpose not in flow-review allowlist",
         'general-purpose' not in agent_allowlist.get('flow-review', set()),
+    )
+
+    print()
+
+    # ------------------------------------------------------------------
+    # flow-ship / flow-merge (#359, plan Steps 6-7)
+    # ------------------------------------------------------------------
+    print("[flow-ship / flow-merge]")
+    steps = parse_expert_flow_steps_table()
+    h.test_result("ship step spawns flow-ship", steps.get('ship') == 'flow-ship', f"got {steps.get('ship')!r}")
+    h.test_result("merge step spawns flow-merge", steps.get('merge') == 'flow-merge', f"got {steps.get('merge')!r}")
+
+    flow_doc = (REPO_ROOT / "commands" / "expert-flow.md").read_text()
+    for name in ("flow-ship", "flow-merge"):
+        fm = parse_markdown_frontmatter((REPO_ROOT / "agents" / f"{name}.md").read_text())
+        tools = fm.get('tools', [])
+        if isinstance(tools, str):
+            tools = [t.strip() for t in tools.split(',')]
+        h.test_result(f"{name} tools include Skill", 'Skill' in tools, f"tools={tools}")
+        for banned in ('Agent', 'Task', 'Edit'):
+            h.test_result(f"{name} tools exclude {banned}", banned not in tools, f"tools={tools}")
+        h.test_result(f"{name} is pinned to haiku", str(fm.get('model')).strip() == 'haiku', f"model={fm.get('model')!r}")
+        body = (REPO_ROOT / "agents" / f"{name}.md").read_text()
+        h.test_result(f"{name} body carries the #318 rule", "(#318)" in body and "--yes" in body)
+        h.test_result(
+            f"expert-flow preflight lists {name}.md",
+            f'"$HOME/.claude/agents/{name}.md"' in flow_doc,
+        )
+
+    shipit = (REPO_ROOT / "commands" / "shipit.md").read_text()
+    flow_branch = re.search(r'inside a flow, do not pass `--yes`', shipit)
+    h.test_result("shipit.md says no --yes for the in-flow stack-sync", flow_branch is not None)
+    h.test_result(
+        "shipit.md in-flow stack-sync invocation line carries no --yes",
+        '> /stack-sync "$BRANCH"' in shipit,
+    )
+
+    # W4: the orchestrator's own state checks backstop the restricted agents.
+    h.test_result(
+        "expert-flow confirms the PR is OPEN after ship",
+        "--json state -q .state` = `OPEN`" in flow_doc,
+    )
+    h.test_result(
+        "expert-flow confirms the PR is MERGED after merge",
+        "= MERGED" in flow_doc and "`MERGED: yes`" in flow_doc,
     )
 
     print()
