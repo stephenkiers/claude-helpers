@@ -43,8 +43,6 @@ CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 ACCEPT = "Accept and continue"
 HEADING_LINE = re.compile(r"^#{1,3} ")
 LEVEL2_LINE = re.compile(r"^## ")
-# The done-line count rule as the doc states it (plan Step 5), and its exclusion marker.
-DONE_COUNT_REGEX = r"^[^ ]+ [a-z]+ accepted \("
 KEPT_MARKER = "; kept-previous attempt="
 BRANCH_MARKER = "Newest line is `accepted`"
 
@@ -141,6 +139,23 @@ def rule2_grep_command(text):
     candidates = [line for line in fenced_lines(text)
                   if "grep" in line and "<STEP>" in line and "accepted" in line]
     return candidates[0].strip() if candidates else None
+
+
+def done_count_regex(text):
+    """Extract the done-line count regex from the doc's done-line rule.
+
+    Searches for the pattern in the section where the accept events counting rule is stated.
+    Returns the regex pattern as a string, or None if not found.
+    """
+    # Search for a backtick-enclosed regex pattern containing "accepted"
+    # Pattern is typically: `^[^ ]+ [a-z]+ accepted \(`
+    match = re.search(r'`(\^[^`]*accepted[^`]*)`', text)
+    if match:
+        pattern = match.group(1)
+        # Verify it looks like a regex (has special chars)
+        if any(c in pattern for c in r'[]\^$*+?.|()'):
+            return pattern
+    return None
 
 
 def run_doc_command(cmd, cwd, step):
@@ -287,6 +302,10 @@ def test_resume_behaviour(h, doc):
     if cmd is None:
         return
 
+    count_regex = done_count_regex(doc)
+    h.test_result("the done-line count regex is extractable from expert-flow.md",
+                  count_regex is not None, "no done-line count regex found in doc")
+
     with tempfile.TemporaryDirectory() as tmp:
         flow = Path(tmp)
         log = flow / "log.md"
@@ -338,10 +357,11 @@ def test_resume_behaviour(h, doc):
         h.test_result("Keep previous round trip: the re-logged accept classifies as accepted",
                       rc == 0 and classify(newest) == "accepted", f"newest={newest!r}, err={err!r}")
 
-        counted = [line for line in log.read_text().splitlines()
-                   if re.match(DONE_COUNT_REGEX, line) and KEPT_MARKER not in line]
-        h.test_result("the done-line count counts the round-tripped accept once",
-                      len(counted) == 1, f"counted={counted}")
+        if count_regex is not None:
+            counted = [line for line in log.read_text().splitlines()
+                       if re.match(count_regex, line) and KEPT_MARKER not in line]
+            h.test_result("the done-line count counts the round-tripped accept once",
+                          len(counted) == 1, f"counted={counted}")
 
 
 def main():

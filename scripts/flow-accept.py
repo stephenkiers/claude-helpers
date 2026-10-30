@@ -25,22 +25,21 @@ Subcommands:
       <why> is one of: step-<s>, stop-source-<v>, stop-source-absent, missing-output, unlisted-reason, not-failed.
 
   record --flow-dir D --step S --nn NN --attempt J --note-stdin
-      Re-run the eligibility check. If it refuses, print the `ACCEPT: no <why>` line to stderr and
-      exit 1. Note that the refusal output may be stderr-only with no `ACCEPT: no` line in stdout;
-      the caller's recovery is: clean the note and re-run `record` once.
-      Otherwise append one block to steps/NN-S.accepted.md (append-only trail), print the class,
-      and exit 0. The note is read from stdin; an empty note is recorded as `none`.
+      Re-run the eligibility check. If eligibility check refuses, print the `ACCEPT: no <why>` line
+      to stdout and exit 1. If note validation refuses, print to stderr and exit 1. Otherwise append
+      one block to steps/NN-S.accepted.md (append-only trail), print the class to stdout, and exit 0.
+      The note is read from stdin; an empty note is recorded as `none`.
 
 Stdout:
   eligible: the ACCEPT line.
-  record: the class on success; nothing on refusal (output is on stderr).
+  record: the class on success; `ACCEPT: no <why>` on eligibility refusal.
 
 Stderr:
-  record refusal (ineligible or note validation): the `ACCEPT: no <why>` line.
+  record note validation refusal: the error message from refuse().
 
 Exit codes:
-  0: success (eligible prints yes or no; record appends a block or refuses gracefully)
-  1: record refused (ineligible, note validation failed, or IO error during write)
+  0: success (eligible prints yes or no; record appends a block)
+  1: record refused (eligibility check failed, note validation failed, or IO error during write)
   2: usage error, or fatal IO error (missing or unreadable state.json, unreadable receipt or log)
 """
 
@@ -308,7 +307,11 @@ def cmd_eligible(flow: Path, step: str, nn: str) -> None:
 
 
 def cmd_record(flow: Path, step: str, nn: str, attempt: int, note: str) -> None:
-    """Refuse with the no line and exit 1 if ineligible; otherwise append the trail block and print the class.
+    """Check eligibility and record an accept block. Exit 1 if eligibility check or note validation fails.
+
+    Eligibility refusal prints `ACCEPT: no <why>` to stdout and exits 1. Note validation refusal
+    prints to stderr via refuse() and exits 1. Success appends a block to the trail file and prints
+    the class to stdout, then exits 0.
 
     Non-idempotent: each call appends a new block to the trail file if the step is eligible, even if the
     same note and attempt are passed multiple times. The required caller sequence is: check eligibility,

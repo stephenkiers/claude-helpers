@@ -317,13 +317,13 @@ def main():
         print("[Section 6] record: input validation (S7)")
         flow = make_flow(root, "record-human-text-eof", state_for("implement", "validation", "receipt admits deviation"),
                          [failed_line("implement", "receipt admits deviation")])
-        rc, out, err = record(flow, attempt="1", note=f"text\nHUMAN_TEXT_EOF")
+        rc, out, err = record(flow, attempt="1", note="text\nHUMAN_TEXT_EOF")
         h.test_result("a note containing HUMAN_TEXT_EOF is refused",
                       rc == 1 and not accepted_file(flow).exists(), f"rc={rc}, err={err!r}")
 
         flow = make_flow(root, "record-reason-eof", state_for("implement", "validation", "receipt admits deviation"),
                          [failed_line("implement", "receipt admits deviation")])
-        rc, out, err = record(flow, attempt="1", note=f"text\nREASON_EOF")
+        rc, out, err = record(flow, attempt="1", note="text\nREASON_EOF")
         h.test_result("a note containing REASON_EOF is refused",
                       rc == 1 and not accepted_file(flow).exists(), f"rc={rc}, err={err!r}")
 

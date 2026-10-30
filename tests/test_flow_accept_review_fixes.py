@@ -16,7 +16,6 @@ Run with: python3 tests/test_flow_accept_review_fixes.py
 
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -127,7 +126,7 @@ def test_done_count_regex_extraction():
 
     h.test_result("done-line count regex extracted from expert-flow.md",
                   regex_str is not None,
-                  f"regex extraction failed from doc")
+                  "regex extraction failed from doc")
 
     if regex_str is None:
         return h
@@ -228,7 +227,7 @@ def test_accepted_branch_phrases():
     # The accepted branch should NOT log a failed (resume: ...) line
     h.test_result("accepted branch does not log 'failed (resume:'",
                   "failed (resume:" not in branch,
-                  f"should not log failed (resume:) in accepted branch")
+                  "should not log failed (resume:) in accepted branch")
 
     return h
 
