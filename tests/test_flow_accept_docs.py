@@ -215,9 +215,9 @@ def test_tables_and_summary(h, doc):
     h.test_result("the Every Exit Path table has the Accept row",
                   re.search(r"^\|\s*Hard stop → Accept and continue\s*\|", doc, re.M) is not None,
                   "row missing")
-    h.test_result("the done line shows the accepted count",
-                  "accepted: <n> (" in doc and "[a-z]+ accepted \\(" in doc,
-                  "done-line accepted count or its count regex missing")
+    h.test_result("the done line shows the accept events count",
+                  "accept events: <n> (" in doc and "[a-z]+ accepted \\(" in doc,
+                  "done-line accept events count or its count regex missing")
     h.test_result("the done-line count excludes kept-previous lines",
                   KEPT_MARKER in doc, "kept-previous exclusion missing")
     h.test_result("ship gathers coverage for a taken-over or accepted implement or fix",
@@ -307,10 +307,10 @@ def test_resume_behaviour(h, doc):
         h.test_result("the accepted branch exists in the resume rule",
                       BRANCH_MARKER in doc, "no accepted branch")
         h.test_result("the accepted branch skips receipt validation and the Fidelity audit",
-                      "skip" in branch.lower() and "audit" in branch.lower(),
+                      ("skip receipt validation" in branch and "Fidelity audit" in branch) or "Treat it exactly like" in branch,
                       f"branch={branch[:200]!r}")
         h.test_result("the accepted branch goes to the gate and logs no failed (resume: ...) line",
-                      "gate" in branch.lower() and "failed (resume:" not in branch,
+                      "run the gate" in branch and "failed (resume:" not in branch,
                       f"branch={branch[:200]!r}")
 
         log.write_text(
