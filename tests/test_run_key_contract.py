@@ -7,12 +7,12 @@ implementation. It verifies the key behaviors and contracts described in the pla
 
 1. RUN_KEY_RE pattern is consistent between implement-ledger.py and flow-verify-receipt.py
 2. Old marker-less receipts still work (grandfathered backward compatibility)
-3. Verifier output includes RUN_KEY_SOURCE line for implement/fix receipts
+3. Verifier output includes RUN_KEY_SOURCE lines before ARTIFACTS: ok for implement/fix receipts
 4. Receipt template has correct header order (CHECK_SHA -> RUN_KEY -> RECEIPT_CONTRACT: 1)
 5. Doc mentions correct render command with --repo, --flow-dir, --step flags
 6. Telemetry includes ledger_lookup field for audits
 
-Run with: python3 tests/test_plan_346_spec_coverage.py
+Run with: python3 tests/test_run_key_contract.py
 """
 
 import importlib.util
@@ -68,6 +68,16 @@ def make_test_repo(root: str) -> tuple:
     return repo, base_sha
 
 
+def setup_feature_repo(root: str) -> tuple:
+    """A repo with a `just check` cache, a base commit and one feature commit. Returns (repo, base, head)."""
+    repo, base_sha = make_test_repo(root)
+    write_cache(repo)
+    Path(f"{repo}/feature.txt").write_text("feature\n")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-q", "-m", "add feature")
+    return repo, base_sha, git(repo, "rev-parse", "HEAD")
+
+
 def write_cache(repo: str, command: str = "just check") -> None:
     """Configure the repo's check command."""
     cache_dir = Path(repo) / ".claude"
@@ -75,7 +85,8 @@ def write_cache(repo: str, command: str = "just check") -> None:
     (cache_dir / "repo-cache.json").write_text(json.dumps({"commands": {"check": command}}))
 
 
-def run_verifier(receipt_path: str, repo: str, base_sha: str, home: str, step: str = "implement") -> tuple:
+def run_verifier(receipt_path: str, repo: str, base_sha: str, home: str, step: str = "implement",
+                 extra: tuple = ()) -> tuple:
     """Run the verifier CLI. Returns (returncode, stdout, stderr)."""
     cmd = [
         sys.executable, str(VERIFIER_SCRIPT),
@@ -85,6 +96,7 @@ def run_verifier(receipt_path: str, repo: str, base_sha: str, home: str, step: s
         "--repo", repo,
         "--branch", "HEAD",
         "--base", base_sha,
+        *extra,
     ]
     env = os.environ.copy()
     env["HOME"] = home
@@ -99,31 +111,73 @@ def write_receipt(home: str, text: str) -> str:
     return path
 
 
+def check_block(head_sha: str) -> str:
+    """The CHECK lines of a passing implement receipt for the repo cache's `just check`."""
+    return ("CHECK: just check\n"
+            "CHECK_EXIT: 0\n"
+            "CHECK_SOURCE: repo-cache\n"
+            "CHECK_SHA: " + head_sha + "\n")
+
+
+def marker_less_receipt(head_sha: str) -> str:
+    """An OK implement receipt from before RECEIPT_CONTRACT existed (no RUN_KEY lines)."""
+    return ("ROUND 1\n" + check_block(head_sha) +
+            "OUTSTANDING: none\n"
+            "Decision: OK\n"
+            "<!-- step-end -->")
+
+
+def keyed_receipt(head_sha: str, header_extra: str = "RECEIPT_CONTRACT: 1\nRUN_KEY: run-key-abc\n",
+                  body_extra: str = "") -> str:
+    """An OK implement receipt with the RECEIPT_CONTRACT and RUN_KEY header lines (#346)."""
+    return ("ROUND 1\n" + check_block(head_sha) + header_extra +
+            "OUTSTANDING: none\n"
+            "Decision: OK\n"
+            "<!-- step-end -->" + body_extra)
+
+
+def make_plan_fixture(home: str) -> tuple:
+    """A plan receipt that passes check_plan: plan file, session dir with a contributor-free roster."""
+    flow_dir = Path(home) / ".claude" / "flows" / "repo" / "1-x-abc"
+    (flow_dir / "steps").mkdir(parents=True)
+    (flow_dir / "log.md").write_text("2026-10-20T10:00:00Z plan begin\n")
+    plan_file = Path(home) / ".claude" / "plans" / "slug-20260101T000000-00001.md"
+    plan_file.parent.mkdir(parents=True)
+    plan_file.write_text("# plan\n")
+    session = Path(home) / ".claude" / "plan-sessions" / "repo" / "slug-20260101T000000-00001"
+    session.mkdir(parents=True)
+    (session / "context.md").write_text("context\n")
+    (session / "selected-experts.md").write_text("| Expert | Role |\n| --- | --- |\n| Auditor | audit |\n")
+    (session / "plan.md").write_text("# plan\n")
+    (session / "decisions.md").write_text("# decisions\n")
+    receipt = flow_dir / "steps" / "plan.json"
+    receipt.write_text(f"FINAL_PLAN_PATH: {plan_file}\nATTEMPT: 1\nDecision: OK\n<!-- step-end -->\n")
+    return flow_dir, receipt
+
+
+def run_plan(receipt: Path, flow_dir: Path, home: str) -> tuple:
+    """Run the plan verifier with --since-from-log against flow_dir. Returns (returncode, stdout, stderr)."""
+    env = os.environ.copy()
+    env["HOME"] = home
+    cmd = [sys.executable, str(VERIFIER_SCRIPT), "--step", "plan", "--receipt", str(receipt),
+           "--since-from-log", "--flow-dir", str(flow_dir)]
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
 def main():
     h = Harness("PLAN #346 SPEC-BLIND COVERAGE TEST SUITE")
 
     print("[Section 1] RUN_KEY_RE pattern consistency")
 
-    # Test 1.1: Both modules define RUN_KEY_RE
-    h.test_result(
-        "implement-ledger.py defines RUN_KEY_RE",
-        LEDGER_RUN_KEY_RE is not None,
-        "RUN_KEY_RE not found",
-    )
-    h.test_result(
-        "flow-verify-receipt.py defines RUN_KEY_RE",
-        VERIFIER_RUN_KEY_RE is not None,
-        "RUN_KEY_RE not found",
-    )
-
-    # Test 1.2: Patterns are equal (as required by the plan)
+    # Test 1.1: Patterns are equal (as required by the plan)
     h.test_result(
         "RUN_KEY_RE patterns are identical between scripts",
         LEDGER_RUN_KEY_RE.pattern == VERIFIER_RUN_KEY_RE.pattern,
         f"ledger={LEDGER_RUN_KEY_RE.pattern!r} vs verifier={VERIFIER_RUN_KEY_RE.pattern!r}",
     )
 
-    # Test 1.3: Validate the pattern against known valid/invalid keys
+    # Test 1.2: Validate the pattern against known valid/invalid keys
     # Pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$ means: starts with alphanumeric,
     # followed by 0-199 chars that are alphanumeric/./underscore/dash
     valid_keys = ["my-run", "run-123", "run_key", "R", "a.b", "a-b_c.d", "test-", "x.y-z"]
@@ -154,11 +208,6 @@ def main():
         "CHECK_SHA not found in template",
     )
     h.test_result(
-        "implement-with-haiku receipt template contains RUN_KEY",
-        "RUN_KEY:" in impl_text,
-        "RUN_KEY not found in template",
-    )
-    h.test_result(
         "implement-with-haiku receipt template contains RECEIPT_CONTRACT: 1",
         "RECEIPT_CONTRACT: 1" in impl_text,
         "RECEIPT_CONTRACT: 1 not found in template",
@@ -181,26 +230,13 @@ def main():
 
     flow_text = EXPERT_FLOW_CMD.read_text()
 
-    # Test that the render command with flags is documented
+    # Anchor the render check to the `render --run-key` line itself: the flags must sit on that command line,
+    # not merely appear somewhere in the document.
+    render_lines = [ln for ln in flow_text.splitlines() if "render --run-key" in ln]
     h.test_result(
-        'expert-flow mentions "render --run-key"',
-        'render --run-key' in flow_text,
-        "render --run-key command not found",
-    )
-    h.test_result(
-        'expert-flow mentions "--repo" flag for render',
-        '--repo' in flow_text and 'render' in flow_text,
-        "--repo flag not found in render context",
-    )
-    h.test_result(
-        'expert-flow mentions "--flow-dir" flag for render',
-        '--flow-dir' in flow_text and 'render' in flow_text,
-        "--flow-dir flag not found in render context",
-    )
-    h.test_result(
-        'expert-flow mentions "--step" flag for render',
-        '--step' in flow_text and 'render' in flow_text,
-        "--step flag not found in render context",
+        'expert-flow "render --run-key" line names --repo, --flow-dir and --step',
+        any(all(flag in ln for flag in ("--repo", "--flow-dir", "--step")) for ln in render_lines),
+        f"render --run-key lines={render_lines!r}",
     )
 
     # Test fallback path documentation
@@ -227,97 +263,76 @@ def main():
     print()
     print("[Section 4] Backward compatibility (marker-less receipts)")
 
-    # Test that old receipts (without RECEIPT_CONTRACT marker) still parse
-    # (verification may fail on other rules like artifacts, but the RUN_KEY parsing should succeed)
+    # An old receipt without RECEIPT_CONTRACT or RUN_KEY still passes, through the locate-fallback.
     with tempfile.TemporaryDirectory() as home:
-        repo, base_sha = make_test_repo(home)
-        write_cache(repo)
-
-        # Add a second commit so artifacts check passes
-        Path(f"{repo}/feature.txt").write_text("feature\n")
-        git(repo, "add", "feature.txt")
-        git(repo, "commit", "-q", "-m", "add feature")
-        head_sha = git(repo, "rev-parse", "HEAD")
-
-        # Marker-less receipt (old format) - refers to the new HEAD
-        old_receipt_text = (
-            "ROUND 1\n"
-            "CHECK: just check\n"
-            "CHECK_EXIT: 0\n"
-            "CHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + head_sha + "\n"
-            "OUTSTANDING: none\n"
-            "Decision: OK\n"
-            "<!-- step-end -->"
-        )
-        receipt_path = write_receipt(home, old_receipt_text)
-        rc, stdout, stderr = run_verifier(receipt_path, repo, base_sha, home, step="implement")
-
+        repo, base_sha, head_sha = setup_feature_repo(home)
+        path = write_receipt(home, marker_less_receipt(head_sha))
+        rc, stdout, stderr = run_verifier(path, repo, base_sha, home, step="implement")
+        lines = stdout.splitlines()
         h.test_result(
-            "old marker-less implement receipt can pass verification (exit 0)",
-            rc == 0,
+            "old marker-less implement receipt passes (exit 0) and ends with ARTIFACTS: ok",
+            rc == 0 and lines[-1:] == ["ARTIFACTS: ok"],
             f"rc={rc} stdout={stdout[:200]!r}",
         )
         h.test_result(
-            "old marker-less implement receipt produces ARTIFACTS: ok when conditions met",
-            rc == 0 and "ARTIFACTS: ok" in stdout,
-            f"rc={rc} stdout={stdout[:200]!r}",
+            "old marker-less implement receipt prints RUN_KEY_SOURCE: locate-fallback before ARTIFACTS: ok",
+            len(lines) >= 2 and lines[-2].startswith("RUN_KEY_SOURCE: locate-fallback"),
+            f"stdout={stdout[:200]!r}",
         )
 
     print()
-    print("[Section 5] Verifier output format (Step 2)")
+    print("[Section 5] OK receipt source lines and rejections (Step 2)")
 
-    # Test that verifier output includes RUN_KEY_SOURCE for implement/fix receipts
-    # (we test with old receipts since new ones require more setup)
-    with tempfile.TemporaryDirectory() as home:
-        repo, base_sha = make_test_repo(home)
-        write_cache(repo)
+    # A well-formed RUN_KEY prints RUN_KEY_SOURCE: receipt and RUN_KEY before ARTIFACTS: ok, on both paths.
+    for label, extra, prefix in (
+        ("standard", (), ""),
+        ("expect-model", ("--expect-model", "haiku"), "IMPLEMENTER_MODEL: haiku\n"),
+    ):
+        with tempfile.TemporaryDirectory() as home:
+            repo, base_sha, head_sha = setup_feature_repo(home)
+            path = write_receipt(home, prefix + keyed_receipt(head_sha))
+            rc, stdout, stderr = run_verifier(path, repo, base_sha, home, step="implement", extra=extra)
+            h.test_result(
+                f"{label}: OK receipt with RECEIPT_CONTRACT and RUN_KEY prints source and key before ARTIFACTS: ok",
+                rc == 0 and stdout.splitlines()[-3:] == [
+                    "RUN_KEY_SOURCE: receipt", "RUN_KEY: run-key-abc", "ARTIFACTS: ok"],
+                f"rc={rc} stdout={stdout[:300]!r} stderr={stderr[:200]!r}",
+            )
 
-        # Add a second commit so artifacts check passes
-        Path(f"{repo}/feature.txt").write_text("feature\n")
-        git(repo, "add", "feature.txt")
-        git(repo, "commit", "-q", "-m", "add feature")
-        head_sha = git(repo, "rev-parse", "HEAD")
-
-        # Old marker-less receipt
-        receipt = (
-            "ROUND 1\n"
-            "CHECK: just check\n"
-            "CHECK_EXIT: 0\n"
-            "CHECK_SOURCE: repo-cache\n"
-            "CHECK_SHA: " + head_sha + "\n"
-            "OUTSTANDING: none\n"
-            "Decision: OK\n"
-            "<!-- step-end -->"
-        )
-        path = write_receipt(home, receipt)
-        rc, stdout, stderr = run_verifier(path, repo, base_sha, home, step="implement")
-
-        # The plan says: "If neither line is present, the status is `grandfathered`."
-        # and output should be: "RUN_KEY_SOURCE: locate-fallback (receipt has no RECEIPT_CONTRACT line)"
-        h.test_result(
-            "verifier output for marker-less implement receipt includes RUN_KEY_SOURCE",
-            "RUN_KEY_SOURCE:" in stdout and rc == 0,
-            f"rc={rc} stdout={stdout[:200]!r}",
-        )
+    # Invalid header shapes exit 1 with their Reason.
+    rejections = (
+        ("unknown RECEIPT_CONTRACT", keyed_receipt, dict(header_extra="RECEIPT_CONTRACT: 2\nRUN_KEY: run-key-abc\n"),
+         "Reason: unknown RECEIPT_CONTRACT '2'"),
+        ("duplicated RUN_KEY", keyed_receipt,
+         dict(header_extra="RECEIPT_CONTRACT: 1\nRUN_KEY: run-key-abc\nRUN_KEY: run-key-abc\n"),
+         "Reason: receipt RUN_KEY duplicated"),
+        ("RUN_KEY below the header", keyed_receipt,
+         dict(header_extra="RECEIPT_CONTRACT: 1\n", body_extra="\nRUN_KEY: run-key-abc\n"),
+         "Reason: receipt RUN_KEY outside the header block"),
+    )
+    for label, build, kwargs, reason in rejections:
+        with tempfile.TemporaryDirectory() as home:
+            repo, base_sha, head_sha = setup_feature_repo(home)
+            path = write_receipt(home, build(head_sha, **kwargs))
+            rc, stdout, stderr = run_verifier(path, repo, base_sha, home, step="implement")
+            h.test_result(
+                f"rejection: {label} exits 1 with its Reason and no ARTIFACTS: ok",
+                rc == 1 and reason in stdout.splitlines() and "ARTIFACTS: ok" not in stdout,
+                f"rc={rc} stdout={stdout[:300]!r}",
+            )
 
     print()
     print("[Section 6] Plan/review receipt handling")
 
-    # Test that plan and review receipts do NOT get RUN_KEY_SOURCE lines
+    # A passing plan receipt must exit 0 before the negative check means anything.
     with tempfile.TemporaryDirectory() as home:
-        repo, base_sha = make_test_repo(home)
-        write_cache(repo)
-
-        plan_receipt = (
-            "2026-01-01T00:00:00Z plan begin\n"
-            "2026-01-01T00:00:01Z plan end\n"
-            "Decision: OK\n"
-            "<!-- step-end -->"
+        flow_dir, receipt = make_plan_fixture(home)
+        rc, stdout, stderr = run_plan(receipt, flow_dir, home)
+        h.test_result(
+            "passing plan receipt exits 0 with ARTIFACTS: ok",
+            rc == 0 and "ARTIFACTS: ok" in stdout.splitlines(),
+            f"rc={rc} stdout={stdout[:200]!r} stderr={stderr[:200]!r}",
         )
-        path = write_receipt(home, plan_receipt)
-        rc, stdout, stderr = run_verifier(path, repo, base_sha, home, step="plan")
-
         h.test_result(
             "verifier output for plan receipt does NOT include RUN_KEY_SOURCE",
             "RUN_KEY_SOURCE:" not in stdout,

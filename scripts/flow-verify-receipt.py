@@ -12,8 +12,9 @@ that the Fidelity audit exists to check).
 RUN_KEY parsing (#346): OK implement/fix receipts carry RECEIPT_CONTRACT and RUN_KEY lines in the header
 block (above the first blank line or <!-- step-end --> marker). The verifier parses and enforces these
 lines: present and well-formed -> `RUN_KEY_SOURCE: receipt`, absent with RECEIPT_CONTRACT: 1 -> exit 1,
-absent without marker -> `RUN_KEY_SOURCE: locate-fallback`, malformed/duplicated/misplaced -> exit 1 with
-reason. Plan and review receipts are unaffected.
+absent without marker -> `RUN_KEY_SOURCE: locate-fallback`, malformed/duplicated/misplaced/near-miss -> exit 1
+with reason (a near-miss is a tolerant-pattern match that is not the exact column-0 form). Plan and review
+receipts are unaffected.
 
 Exit codes:
   0: artifacts OK
@@ -267,11 +268,16 @@ ROUND1_HEADER_PATTERN = r"(?im)^[ \t]*(?:[#>-][ \t]*|\*[ \t]+)*\**ROUND[ \t]*1\*
 ROUND1_HEADER_RE = re.compile(ROUND1_HEADER_PATTERN)
 # Markdown table separator row (allow :?-+:? per cell)
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|$")
-# RUN_KEY grammar (#346): implements/fix receipts carry RUN_KEY lines in the header block. The pattern
-# matches a string that starts with alphanumeric, followed by 0-199 characters of alphanumeric/./,/_/-,
-# for a total max length of 200 characters. This pattern is declared once and tested against
-# implement-ledger.py's RUN_KEY_RE for equality.
+# RUN_KEY grammar (#346): implement/fix receipts carry RUN_KEY lines in the header block. The pattern
+# matches a string that starts with an alphanumeric character, followed by 0-199 characters from the set
+# alphanumeric, '.', '_', '-' (total max length 200). It must stay identical to implement-ledger.py's
+# RUN_KEY_RE; test_pattern_equality in tests/test_flow_verify_receipt_run_key.py asserts that equality.
 RUN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
+# Near-miss detector for the RUN_KEY and RECEIPT_CONTRACT lines (#346). Tolerant on purpose: case-insensitive,
+# with leading whitespace, bullets or emphasis markers before the name. A line that matches this but is not the
+# exact column-0 `RUN_KEY:` / `RECEIPT_CONTRACT:` form is a near-miss, and an OK receipt carrying one is invalid
+# rather than silently taking the locate-fallback path, so template drift cannot disable binding.
+NEAR_MISS_RE = re.compile(r"(?i)^[ \t>*_`#-]*(RUN_KEY|RECEIPT_CONTRACT)[*_`]*[ \t]*:")
 
 
 def _is_markdown_separator_row(line: str) -> bool:
@@ -1864,6 +1870,19 @@ class RunRef:
     key: Optional[str]
     reason: Optional[str]
 
+    def __post_init__(self) -> None:
+        """Reject illegal field combinations at construction, so no caller can carry one into a verdict."""
+        if self.status == "present":
+            legal = self.key is not None and RUN_KEY_RE.match(self.key) is not None and self.reason is None
+        elif self.status == "grandfathered":
+            legal = self.key is None and self.reason is None
+        else:
+            legal = self.key is None and self.reason is not None
+        if not legal:
+            raise ValueError(
+                f"illegal RunRef: status={self.status!r}, key={self.key!r}, reason={self.reason!r}"
+            )
+
 
 def _parse_run_ref(receipt: str) -> RunRef:
     """Parse and validate RECEIPT_CONTRACT and RUN_KEY lines from a receipt header (#346).
@@ -1877,12 +1896,15 @@ def _parse_run_ref(receipt: str) -> RunRef:
     - If neither line is present, return grandfathered.
     - If RUN_KEY or RECEIPT_CONTRACT appear outside the header block (after blank line), return invalid.
     - If RUN_KEY or RECEIPT_CONTRACT appear more than once, return invalid.
+    - If a line is a near-miss (matches NEAR_MISS_RE but not the exact column-0 form), return invalid. It
+      never falls through to the grandfathered locate-fallback.
     """
 
     # Find all RUN_KEY and RECEIPT_CONTRACT lines in the whole receipt
     run_key_lines = []
     receipt_contract_lines = []
     header_end = None
+    near_miss = None
 
     for i, line in enumerate(receipt.split("\n")):
         # Track where the header block ends
@@ -1894,10 +1916,22 @@ def _parse_run_ref(receipt: str) -> RunRef:
             run_key_lines.append((i, line))
         elif line.startswith("RECEIPT_CONTRACT:"):
             receipt_contract_lines.append((i, line))
+        elif near_miss is None:
+            near = NEAR_MISS_RE.match(line)
+            if near is not None:
+                name = near.group(1).upper()
+                near_miss = (
+                    f"receipt {name} near-miss at line {i + 1} "
+                    f"(must be an exact column-0 '{name}:' line)"
+                )
 
     # If header_end is still None, the whole receipt is a header
     if header_end is None:
         header_end = len(receipt.split("\n"))
+
+    # A near-miss is invalid, never grandfathered (see NEAR_MISS_RE)
+    if near_miss is not None:
+        return RunRef(status="invalid", key=None, reason=near_miss)
 
     # Check for duplicates
     if len(run_key_lines) > 1:
@@ -3436,6 +3470,9 @@ def coverage_mode(
 
 def main() -> None:
     """Main entry point."""
+    # RUN_KEY reference for an OK implement/fix receipt (#346). Bound once here, set by either verdict path
+    # (expect-model or standard), and printed before ARTIFACTS: ok.
+    run_ref: Optional[RunRef] = None
     parser = argparse.ArgumentParser(
         description="Verify step receipts against on-disk artifacts"
     )
@@ -3840,7 +3877,6 @@ def main() -> None:
             sys.exit(1)
 
     # Validate OUTSTANDING: line and ROUND 1 header for implement/fix OK receipts
-    run_ref: Optional[RunRef] = None
     if decision == "OK" and args.step in ["implement", "fix"]:
         # Check for OUTSTANDING: line using shared helper (F2)
         try:
