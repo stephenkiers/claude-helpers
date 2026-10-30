@@ -1081,9 +1081,16 @@ def check_report_checkpoint(
         if handle not in fold:
             return f"plan checkpoint incomplete (answer file missing handle: {handle})"
 
-    # Check that no file holds an unknown handle (subset of ledger)
+    # Check that no file holds an unknown handle. Handles first raised in a later round's report
+    # (e.g. a Q5 the plan agent adds after a reply) are legitimate; only handles that no report
+    # file for this attempt ever raised are unknown.
+    raised_handles = set(ledger_handles)
+    for report_data in report_files.values():
+        for item in report_data.get("items") or []:
+            if isinstance(item, dict) and "handle" in item:
+                raised_handles.add(item["handle"])
     for handle in fold.keys():
-        if handle not in ledger_handles:
+        if handle not in raised_handles:
             # We know which file holds this unknown handle from the fold
             fold_record = fold[handle]
             return f"plan checkpoint incomplete (unknown handle in {fold_record.source_file}: {handle})"
@@ -1170,6 +1177,12 @@ def check_report_checkpoint(
     for handle, disposition in final_dispositions.items():
         if disposition == "accepted":
             handle_entry = ledger_handles_and_tiers.get(handle)
+            if handle_entry is None:
+                # A handle first raised in a later round's report carries its tier on the report item.
+                for report_data in report_files.values():
+                    for r_item in report_data.get("items") or []:
+                        if isinstance(r_item, dict) and r_item.get("handle") == handle:
+                            handle_entry = r_item
             if handle_entry is None:
                 # Handle not in ledger at all
                 return f"plan checkpoint incomplete (accepted handle not in checkpoint ledger: {handle})"

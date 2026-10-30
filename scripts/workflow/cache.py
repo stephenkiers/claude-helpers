@@ -28,6 +28,15 @@ LOCK_STALE_SECONDS = 600
 # Files to seed from main worktree to new worktree
 SEEDED_FILES = ("repo-cache.json", "project.yaml")
 
+# Per-worktree local files that must never show up as untracked: the
+# implement Final check requires a clean tree, and these are written by
+# track-and-start itself.
+LOCAL_EXCLUDE_PATTERNS = (
+    ".claude/github-cache.json",
+    ".claude/repo-cache.json",
+    ".claude/project.yaml",
+)
+
 
 class TrustedCacheResult(NamedTuple):
     """Result of trusted_github_cache trust check.
@@ -552,3 +561,28 @@ def seed_worktree_cache(main_worktree: Path, new_worktree: Path) -> Tuple[List[s
     # Return partial success: seeded list and errors collected so far
     error_msg = "; ".join(errors) if errors else None
     return seeded, skipped, error_msg
+
+
+def exclude_local_cache_files(worktree: Path) -> Optional[str]:
+    """
+    Idempotently append LOCAL_EXCLUDE_PATTERNS to the repo's info/exclude
+    (shared by all worktrees, never committed). Returns an error string or None.
+    """
+    from . import git
+
+    common = git.abs_git_common_dir(worktree)
+    if common is None:
+        return "could not resolve git common dir"
+    try:
+        exclude = common / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude.read_text() if exclude.exists() else ""
+        have = set(existing.splitlines())
+        missing = [p for p in LOCAL_EXCLUDE_PATTERNS if p not in have]
+        if missing:
+            prefix = "" if not existing or existing.endswith("\n") else "\n"
+            with open(exclude, "a") as f:
+                f.write(prefix + "\n".join(missing) + "\n")
+    except OSError as e:
+        return f"failed to update info/exclude: {e}"
+    return None
