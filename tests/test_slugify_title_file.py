@@ -27,32 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _test_harness import Harness, REPO_ROOT
+from _test_harness import Harness, REPO_ROOT, extract_step1_slug_block
 
 DOC = REPO_ROOT / "commands" / "expert-plan.md"
-
-
-def extract_step1_slug_block(doc_text):
-    """
-    Extract the Step 1 slug block from the doc.
-    Starts at the TITLE_FILE= line and ends at the fallback line.
-    Returns the extracted text or None if not found.
-    """
-    lines = doc_text.splitlines()
-    start_idx = None
-    end_idx = None
-
-    for i, line in enumerate(lines):
-        if 'TITLE_FILE=' in line and 'ticket-title.txt' in line:
-            start_idx = i
-        if start_idx is not None and '[ -n "$SLUG" ] || SLUG="plan"' in line:
-            end_idx = i
-            break
-
-    if start_idx is not None and end_idx is not None:
-        return "\n".join(lines[start_idx:end_idx + 1])
-
-    return None
 
 
 def run_slug_from_file(title_file_path, slugify_script_path, temp_session_dir, shell="bash"):
