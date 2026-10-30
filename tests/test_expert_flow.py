@@ -83,6 +83,10 @@ READ_ONLY_BASH = (
     r".*fleet\.py['\"]? wait(?: .*)?",
     r".*flow-ledger\.py['\"]?(?: .*)?",
     r"python3 \"\$HOME/\.claude/scripts/flow-redo\.py['\"]?(?: .*)?",
+    # Named exceptions for the human-only Accept and continue (Hard stop item 3c and the Accept
+    # procedure; ADR-0023 2026-10-29 amendment). Narrow on purpose: only the `eligible` read and the
+    # `record` trail append, not the whole script. The orchestrator never chooses Accept itself.
+    r"python3 \"\$HOME/\.claude/scripts/flow-accept\.py\" (?:eligible|record)(?: .*)?",
 )
 ORCHESTRATOR_TOOLS = {"Read", "Write", "Task", "SendMessage", "AskUserQuestion", "ScheduleWakeup"}
 
