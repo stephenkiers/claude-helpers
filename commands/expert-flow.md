@@ -1233,7 +1233,7 @@ FAILED outcome. The verdict logged for it is `unavailable`. (This replaces the e
 treat-as-ok rule: an unreadable audit is not evidence the step was full.)
 
 After every audit, append one line to the repo-level telemetry file (`verdict` is `ok`, `reduced`, or
-`unavailable`; `ts` is ISO-8601 UTC; `ledger_lookup` is `receipt`, `locate-fallback`, or `none` for implement/fix/plan-review respectively). The `reason` is first written to a variable with a
+`unavailable`; `ts` is ISO-8601 UTC; `ledger_lookup` is `receipt` or `locate-fallback` for implement and fix (the `RUN_KEY_SOURCE` that rule 8 printed), and `none` for plan and review; a failed implement or fix audit records the source rule 8 printed, or `none` if it printed none). The `reason` is first written to a variable with a
 **quoted** heredoc, so the shell never expands it; `jq --arg` owns all JSON escaping. The reason is
 first collapsed to a single line (every newline replaced by a space) and truncated to 300 characters,
 so it can never contain a line that is exactly `REASON_EOF`:
